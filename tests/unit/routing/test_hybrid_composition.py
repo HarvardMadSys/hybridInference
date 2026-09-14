@@ -22,6 +22,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.hybrid import HybridRouter
 from routing.model_router_registry import ModelRouterRegistry
 from routing.policies import FixedPolicy
+from routing.prefill_load import PrefillLoadTracker
 from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
@@ -29,6 +30,11 @@ from serving.servers.hybrid_composition import HybridFixedRouterFactory, local_e
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+#: The real load-aware draw, captured before any fixture replaces it: the tests
+#: that want the draw pinned do not want it pinned for the tests that assert on
+#: the draw itself.
+_REAL_SELECT_INDEX = PrefillLoadTracker.select_index
 
 _MODEL_ID = "compose-model"
 _MESSAGES = [{"role": "user", "content": "hello"}]
@@ -196,12 +202,15 @@ async def test_failed_domain_falls_back_to_the_other_domain() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_a_failed_spot_stays_inside_its_domain(_first_candidate_wins: None) -> None:
-    """Only the preferred domain is retried before the hybrid layer steps in.
+async def test_a_failed_spot_moves_to_the_next_candidate_in_the_route(
+    _first_candidate_wins: None,
+) -> None:
+    """A second replica in the same domain is a separate candidate, not a retry.
 
-    If the local domain's own fallback could reach the cloud, the retry would
-    happen twice -- once inside the domain and once here -- and the cloud would
-    be dispatched before the policy ever chose it.
+    The hybrid layer drives the plan itself, so the domain's own fallback loop
+    must stay out of it: with both running, the healthy replica would be tried
+    once inside the domain and again from the plan, and the cloud would be
+    dispatched without the policy ever choosing it.
 
     The draw is pinned to the first candidate rather than merely weighted toward
     it: at 1e9 against 1e8 the healthy replica is still picked about one run in
@@ -475,8 +484,6 @@ def _frame(text: str) -> str:
 @pytest.fixture
 def _first_candidate_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the weighted draw deterministic so the domain under test is the pick."""
-    from routing.prefill_load import PrefillLoadTracker
-
     monkeypatch.setattr(PrefillLoadTracker, "select_index", lambda self, *a, **k: 0)
 
 
@@ -562,6 +569,154 @@ async def test_a_stream_that_fails_before_visible_output_still_falls_back(
 
     assert remote.stream_calls == 1, "a failure before visible output must still fall back"
     assert "CLOUD-RECOVERY" in "".join(received)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_follows_the_route_order_across_domains(
+    _first_candidate_wins: None,
+) -> None:
+    """The route's candidate order is the order that happens, domains and all.
+
+    With ``L1, cloud, L2`` and a failing ``L1``, the single router answered from
+    the cloud. Visiting one domain and then the other answers from ``L2``
+    instead -- a different endpoint, with different cost and different capacity
+    -- so the plan has to interleave the way the route does.
+    """
+    dead_local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("L1 down"),
+    )
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    second_local = _adapter(
+        f"{_MODEL_ID}:local-11500",
+        provider="local",
+        base_url="http://localhost:11500/v1",
+    )
+    router = _registry(_shared_router(dead_local, remote, second_local)).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    response = await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="route-order")
+
+    assert response["_routing"]["backend"] == "cloud"
+    assert response["_routing"]["endpoint_id"] == _CLOUD_ENDPOINT
+    assert second_local.chat_calls == 0, "the domain's own order displaced the route's"
+
+
+class _BadRequest(Exception):
+    """An upstream 400, the shape adapters raise for a malformed payload."""
+
+    status = 400
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_request_describing_failure_outranks_a_transport_failure(
+    _first_candidate_wins: None,
+) -> None:
+    """Which failure the caller is told about does not depend on domain order.
+
+    The single router surfaced the 400 a live route returned over the connection
+    error a dead one raised, because the 400 describes the request and the
+    connection error describes nothing the caller can act on. Reporting the
+    transport failure instead would tell the caller to retry a request that can
+    never succeed.
+    """
+    dead_local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("local transport failed"),
+    )
+    remote = _adapter(
+        _CLOUD_ENDPOINT,
+        provider="zai",
+        base_url="https://api.zai.example/v1",
+        chat_error=_BadRequest("invalid input"),
+    )
+    router = _registry(_shared_router(dead_local, remote)).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    with pytest.raises(_BadRequest):
+        await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="surfaced-error")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_every_failed_endpoint_is_recorded_across_domains(
+    _first_candidate_wins: None,
+) -> None:
+    """The answer names every endpoint that was tried, in the order they were.
+
+    Each attempt is one candidate now, so the history is complete by
+    construction: a domain that failed twice contributes two records, not one
+    summary of the domain. The records also keep the fields the single router's
+    ``failed_attempt`` produced, because the DB log and the fallback diagnostic
+    read an attempt's provider from them.
+    """
+    first_local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("L1 down"),
+    )
+    second_local = _adapter(
+        f"{_MODEL_ID}:local-11500",
+        provider="local",
+        base_url="http://localhost:11500/v1",
+        chat_error=ConnectionError("L2 down"),
+    )
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    router = _registry(_shared_router(first_local, second_local, remote)).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    response = await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="attempt-history")
+
+    assert response["_routing"]["backend"] == "cloud"
+    history = response["_routing"]["failed_attempts"]
+    assert [attempt["endpoint_id"] for attempt in history] == [
+        _LOCAL_ENDPOINT,
+        f"{_MODEL_ID}:local-11500",
+    ]
+    assert [attempt["provider"] for attempt in history] == ["local", "local"]
+    assert [attempt["backend"] for attempt in history] == ["local", "local"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_policy_draw_uses_the_request_prefill_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The draw that names the preferred domain is prefill-aware.
+
+    A local replica already carrying a large prefill must be steered away from,
+    which is what the estimate is for. Dropping it made every request look like a
+    zero-token one, so a second long request landed on the replica the first was
+    still prefilling.
+    """
+    monkeypatch.setattr(PrefillLoadTracker, "select_index", _REAL_SELECT_INDEX)
+    monkeypatch.setattr("routing.routers.random.random", lambda: 0.0)
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local, remote)
+    shared._prefill_load = PrefillLoadTracker(elephant_tokens=10, elephant_limit=1)
+    router = _registry(shared).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    existing = shared.prefill_load.acquire(_LOCAL_ENDPOINT, 100)
+    try:
+        response = await router.chat_completion(
+            _MODEL_ID,
+            [{"role": "user", "content": "word " * 100}],
+            request_id="prefill",
+        )
+    finally:
+        shared.prefill_load.release(existing)
+
+    assert response["_routing"]["endpoint_id"] == _CLOUD_ENDPOINT
 
 
 @pytest.mark.unit

@@ -137,7 +137,7 @@ class RoutingDecision:
 
 | 配置 | 迁移前 | 迁移后（已实现） | 目标架构 |
 |---|---|---|---|
-| `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=FixedCloudBackend(共享 FixedRouter))`；策略做全局首选，两侧都被 `endpoint_scope` 限定在自己的域内 | cloud 侧换成 `RouteWiseCloudBackend` 时即成为"全局分流 + 域内 RouteWise 选 provider"；组合根通过 `HybridFixedRouterFactory(cloud_backend=...)` 选择算法 |
+| `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=FixedCloudBackend(共享 FixedRouter))`；策略给出全局候选顺序，hybrid 层逐个候选派发，两侧的 `endpoint_scope` 仅用于限定候选归属 | cloud 侧换成 `RouteWiseCloudBackend` 时即成为"全局分流 + 域内 RouteWise 选 provider"；组合根通过 `HybridFixedRouterFactory(cloud_backend=...)` 选择算法 |
 | `router: routewise` | → `RouteWiseRouter`（**全池**候选） | **未迁移**：仍是全池 `RouteWiseRouter`，完全绕过 `HybridRouter` | 迁入 `HybridRouter` + `RouteWiseCloudBackend`；前置条件见 §3.5.4.1 |
 
 已实现与目标之间的差异是有意的，不是漏做：
@@ -187,7 +187,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 封装保留请求参数、实际 provider/endpoint、响应元数据和已有反馈语义：
 
-- **跨 backend fallback 由 HybridRouter 承担**，上限 `_MAX_BACKEND_ATTEMPTS`；某个 backend 内部的 fallback 与 hedging 仍留在该 backend 内，由 `endpoint_scope` 保证不越域。
+- **fallback 由 HybridRouter 承担，且是单一全局循环**：计划来自 `FixedPolicy.fallback_attempts`（route 顺序、逐候选、含 endpoint），每个 attempt 以 `allow_fallback=False` 派发，因此被包装的 router 只打这一个候选。某个 backend 内部的 hedging 等算法仍留在该 backend 内。
 - **已输出即提交**：流式路径每个 attempt 只缓冲**首帧**，用来判断该 attempt 是否已经产生客户端可见输出。一旦有输出，该 attempt 即被提交——后续异常直接向上抛出，不再切到另一个 backend。这与旧 `FixedRouter` 的 `chunks_yielded` 守卫一致；没有它就会把两个 backend 的回答拼进同一条 SSE 流并吞掉原始错误。未产生任何输出的 attempt 视为失败，可以继续 fallback。
 - 关闭语义：`LocalBackend` 返回下游自己的迭代器；`HybridRouter` 是转发迭代器，退出时在 `finally` 里 `aclose()` 下游迭代器。
 - 反馈只投递给一个 owner，按以下顺序判定：
@@ -225,12 +225,15 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
    选择、`eligible_adapters` 以及 `chat_completion` / `stream_chat_completion` 的
    **两条 fallback 循环**。因此本地域仍会按原有顺序在本地副本间 fallback，但不会越入
    cloud；整域失败后由 `HybridRouter` 按策略的 fallback 计划跨域。
-   校验：`test_a_failed_spot_stays_inside_its_domain`、`test_failed_domain_falls_back_to_the_other_domain`。
+   校验：`test_failed_domain_falls_back_to_the_other_domain`、`test_a_failed_spot_moves_to_the_next_candidate_in_the_route`。
 
-   **这是有意的语义变更，不是等价迁移。** 旧 `FixedRouter` 的 fallback 走**全局
-   route 顺序**（`L1, cloud, L2` 在 `L1` 失败后由 cloud 接手），新实现是**域内耗尽后
-   再跨域**（由 `L2` 接手）。候选覆盖范围相同，但优先级不同。该取舍已被采纳为新语义；
-   `FixedPolicy.fallback_backends` 不再声称与旧行为等价。
+   **跨域 fallback 保留旧的全局候选顺序。** 旧 `FixedRouter` 的 fallback 走**全局
+   route 顺序**（`L1, cloud, L2` 在 `L1` 失败后由 cloud 接手）；hybrid 层必须复现
+   同一顺序，而不是"先耗尽一个域再切另一个域"（那样会由 `L2` 接手，是不同 endpoint、
+   不同成本、不同容量）。因此 `HybridRouter` 自己驱动**整条候选序列**：
+   `FixedPolicy.fallback_attempts` 按 route 顺序给出每个候选及其 endpoint，每次派发
+   只打一个候选（`RoutingRequestOptions.allow_fallback=False`），域内 router 不再自行
+   走 fallback 循环。校验：`test_fallback_follows_the_route_order_across_domains`。
 3. **`local_scope` 的来源**：`serving/servers/hybrid_composition.py` 从共享 router
    已注册的 route 计算本地 endpoint 集合；权重不参与（权重为 0 的路由仍是本域容量）。
    本地归属是**部署决策**，按优先级取三者之一：显式 `local_scope` 集合、注入的

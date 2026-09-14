@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
 from routing.protocols import RoutingRequestOptions
+from routing.routers import select_surfaced_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -59,11 +60,6 @@ __all__ = [
     "RoutingDecision",
     "RoutingTarget",
 ]
-
-#: Cap on how many attempts one request may make across all backends. Two
-#: domains is the shipped composition; the bound exists so a policy cannot turn
-#: a failing request into an unbounded retry loop.
-_MAX_BACKEND_ATTEMPTS = 4
 
 
 class HybridRoutingError(RuntimeError):
@@ -269,57 +265,43 @@ class HybridRouter:
         routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> dict[str, Any]:
-        """Delegate one non-streaming request, falling back across backends."""
+        """Delegate one non-streaming request, following the policy's plan."""
         decision = self.select_decision(
             model_id,
             messages,
             routing_options=routing_options,
             **params,
         )
-        order = (
-            decision.backend,
-            *self._fallback_order(model_id, messages, decision, routing_options, params),
+        plan = self._attempt_plan(model_id, messages, decision, routing_options, params)
+        preferred_endpoint = _resolved_endpoint(
+            self._backends[decision.backend], decision.target, model_id
         )
 
         attempts: list[dict[str, Any]] = []
-        preferred_error: BaseException | None = None
-        preferred_endpoint: str | None = None
-        seen: set[str] = set()
-        for index, backend_name in enumerate(order):
-            if backend_name in seen or index >= _MAX_BACKEND_ATTEMPTS:
-                continue
-            seen.add(backend_name)
+        errors: list[BaseException] = []
+        for index, (backend_name, endpoint_id) in enumerate(plan):
             backend = self._backends[backend_name]
-            target = decision.target if index == 0 else None
             try:
                 response = await backend.chat_completion(
                     model_id,
                     messages,
-                    routing_options=_options_for_backend(
-                        routing_options, backend, target, model_id
+                    routing_options=_attempt_options(
+                        routing_options, backend, endpoint_id, model_id
                     ),
-                    target=target,
+                    target=decision.target if index == 0 else None,
                     **params,
                 )
             except Exception as exc:
-                attempt = _attempt_record(backend_name, exc)
-                attempts.append(attempt)
-                _append_failed_attempt(exc, attempt)
-                if index == 0:
-                    preferred_error = exc
-                    preferred_endpoint = _resolved_endpoint(backend, target, model_id)
+                attempts.append(_attempt_record(backend_name, endpoint_id, exc))
+                errors.append(exc)
                 continue
             _merge_attempt_history(response, attempts)
             _tag_backend(response, backend_name)
             # Resolve on the success path too: the metadata must say whether the
             # policy's target was in range regardless of which attempt answered.
-            _tag_preference(
-                response,
-                decision.target,
-                preferred_endpoint or _resolved_endpoint(backend, target, model_id),
-            )
+            _tag_preference(response, decision.target, preferred_endpoint)
             return response
-        _raise_after_attempts(preferred_error, attempts, model_id)
+        _raise_after_attempts(errors, attempts, model_id)
 
     def stream_chat_completion(
         self,
@@ -329,13 +311,13 @@ class HybridRouter:
         routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
-        """Delegate one streaming request, falling back across backends.
+        """Delegate one streaming request, following the policy's plan.
 
-        A response that has already yielded a chunk is committed: it is drained
-        from that point on, and an error after it propagates instead of being
-        re-attempted on another backend. Only an attempt that fails before
-        producing output may fall back, which is the same rule the single-router
-        path already applies.
+        An attempt that has produced client-visible output is committed: it is
+        drained from that point on, and an error after it propagates instead of
+        being re-attempted. Only an attempt that failed before the client could
+        see anything hands over to the next candidate, which is the same rule the
+        single-router path applies.
         """
         decision = self.select_decision(
             model_id,
@@ -343,18 +325,96 @@ class HybridRouter:
             routing_options=routing_options,
             **params,
         )
-        order = (
-            decision.backend,
-            *self._fallback_order(model_id, messages, decision, routing_options, params),
-        )
+        plan = self._attempt_plan(model_id, messages, decision, routing_options, params)
         return _fallback_stream(
             self,
             decision,
-            order,
+            plan,
             model_id,
             messages,
             routing_options,
             params,
+        )
+
+    def _attempt_plan(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        decision: RoutingDecision,
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> tuple[tuple[str, str | None], ...]:
+        """Return every attempt for this request, in order, as (backend, endpoint).
+
+        The policy supplies the candidate order; this method turns it into
+        dispatches the hybrid layer can actually make, by resolving each
+        candidate's endpoint inside the backend that owns it. A candidate that
+        backend cannot reach is dropped rather than attempted, because attempting
+        it would let the backend substitute a different endpoint.
+
+        The primary attempt always stays, even with an unresolved target: a
+        caller pin has to reach the backend that enforces it, and a policy target
+        the backend cannot honor is that backend's own selection to make.
+        """
+        primary_backend = self._backends[decision.backend]
+        primary_endpoint = _resolved_endpoint(primary_backend, decision.target, model_id)
+        plan: list[tuple[str, str | None]] = [(decision.backend, primary_endpoint)]
+
+        for backend_name, target in self._requested_fallbacks(
+            model_id, messages, decision, routing_options, params
+        ):
+            if target is None or target.endpoint_id is None:
+                # A provider-wide fallback lets the backend re-sample its own
+                # range, which is the reordering this plan exists to prevent.
+                continue
+            if target.endpoint_id == primary_endpoint:
+                continue
+            backend = self._backends[backend_name]
+            if not _serves(backend, model_id):
+                continue
+            endpoint_id = _resolved_endpoint(backend, target, model_id)
+            if endpoint_id is None:
+                continue
+            plan.append((backend_name, endpoint_id))
+        return tuple(plan)
+
+    def _requested_fallbacks(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        decision: RoutingDecision,
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> tuple[tuple[str, RoutingTarget | None], ...]:
+        """Return the policy's candidate order, preferring its richer form.
+
+        A policy that can name each candidate's endpoint implements
+        ``fallback_attempts`` and gets the route's own order, interleaved across
+        domains. One that only names domains falls back to
+        ``fallback_backends``, where each attempt is the backend's own selection.
+
+        The richer plan is not filtered by domain: consecutive candidates can
+        belong to the same one -- two local replicas in a row are the common case
+        -- and the policy has already excluded the candidate it chose.
+        """
+        attempts = getattr(self._policy, "fallback_attempts", None)
+        if callable(attempts):
+            return tuple(
+                (attempt.backend, attempt.target)
+                for attempt in attempts(
+                    model_id,
+                    messages,
+                    decision,
+                    routing_options=routing_options,
+                    **params,
+                )
+                if attempt.backend in self._backends
+            )
+        return tuple(
+            (backend_name, None)
+            for backend_name in self._fallback_order(
+                model_id, messages, decision, routing_options, params
+            )
         )
 
     def _fallback_order(
@@ -375,7 +435,9 @@ class HybridRouter:
                 routing_options=routing_options,
                 **params,
             )
-            if _serves(self._backends[backend_name], model_id)
+            if backend_name in self._backends
+            and backend_name != decision.backend
+            and _serves(self._backends[backend_name], model_id)
         )
 
     # ------------------------------------------------------------------
@@ -534,28 +596,25 @@ def _serves(backend: Any, model_id: str) -> bool:
 async def _fallback_stream(
     router: HybridRouter,
     decision: RoutingDecision,
-    order: Sequence[str],
+    plan: Sequence[tuple[str, str | None]],
     model_id: str,
     messages: list[dict[str, Any]],
     routing_options: RoutingRequestOptions | None,
     params: dict[str, Any],
 ) -> AsyncIterator[Any]:
-    """Forward the first attempt that produces output, else try the next backend."""
+    """Forward the first attempt the client can see, else try the next candidate."""
     attempts: list[dict[str, Any]] = []
-    preferred_error: BaseException | None = None
-    preferred_endpoint: str | None = None
-    seen: set[str] = set()
-    for index, backend_name in enumerate(order):
-        if backend_name in seen or index >= _MAX_BACKEND_ATTEMPTS:
-            continue
-        seen.add(backend_name)
+    errors: list[BaseException] = []
+    preferred_endpoint = _resolved_endpoint(
+        router.backend(decision.backend), decision.target, model_id
+    )
+    for index, (backend_name, endpoint_id) in enumerate(plan):
         backend = router.backend(backend_name)
-        target = decision.target if index == 0 else None
         stream = backend.stream_chat_completion(
             model_id,
             messages,
-            routing_options=_options_for_backend(routing_options, backend, target, model_id),
-            target=target,
+            routing_options=_attempt_options(routing_options, backend, endpoint_id, model_id),
+            target=decision.target if index == 0 else None,
             **params,
         )
         buffered: list[Any] = []
@@ -564,11 +623,10 @@ async def _fallback_stream(
         # the first chunk forwarded. Every backend emits a synthetic routing frame
         # before anything else (``{"choices": [], "_routing": {...}}``), and the
         # serving layer drops that frame before the response leaves the gateway,
-        # so counting it as output would refuse a cross-domain fallback that a
-        # failure before the first visible byte is still entitled to take. The
-        # single-router path draws the line in the same place: its
-        # ``chunks_yielded`` flag is set by the adapter's chunks and never by its
-        # own synthetic frame.
+        # so counting it as output would refuse a fallback that a failure before
+        # the first visible byte is still entitled to take. The single-router path
+        # draws the line in the same place: its ``chunks_yielded`` flag is set by
+        # the adapter's chunks and never by its own synthetic frame.
         committed = False
         try:
             async for chunk in stream:
@@ -593,56 +651,53 @@ async def _fallback_stream(
             # A stream that ended without producing anything never reached the
             # client, so it is a failed attempt and the plan may continue.
             empty_error = RuntimeError("stream produced no output")
-            attempts.append(_attempt_record(backend_name, empty_error))
-            if index == 0:
-                preferred_error = empty_error
-                preferred_endpoint = _resolved_endpoint(backend, target, model_id)
+            attempts.append(_attempt_record(backend_name, endpoint_id, empty_error))
+            errors.append(empty_error)
         except Exception as exc:
             if committed:
                 # The client already holds part of this answer. Restarting on
-                # another backend would emit a stream no backend ever generated,
+                # another candidate would emit a stream no backend ever generated,
                 # so the failure propagates exactly as the single-router path
                 # propagates it.
                 raise
-            attempts.append(_attempt_record(backend_name, exc))
-            if index == 0:
-                preferred_error = exc
-                preferred_endpoint = _resolved_endpoint(backend, target, model_id)
-            continue
+            attempts.append(_attempt_record(backend_name, endpoint_id, exc))
+            errors.append(exc)
         finally:
             if callable(aclose):
                 await aclose()
-    _raise_after_attempts(preferred_error, attempts, model_id)
+    _raise_after_attempts(errors, attempts, model_id)
 
 
-def _options_for_backend(
+def _attempt_options(
     routing_options: RoutingRequestOptions | None,
     backend: Any,
-    target: RoutingTarget | None,
+    endpoint_id: str | None,
     model_id: str,
 ) -> RoutingRequestOptions | None:
-    """Return request options carrying this backend's resolved target.
+    """Return request options for one planned attempt.
 
-    The policy's preference travels as ``preferred_endpoint_id`` in
+    The policy's target travels as ``preferred_endpoint_id`` in
     ``RoutingRequestOptions`` rather than as a generation parameter, so it stays
     on the router-owned control surface: adapters never see it, and it cannot be
     confused with the caller's hard ``pin_provider``.
+
+    ``allow_fallback`` is cleared because the hybrid layer owns the candidate
+    order. Leaving it set would let the backend walk its own range before the
+    plan's next candidate, which reorders attempts and can dispatch the same
+    endpoint twice -- once inside the domain and once from the plan.
     """
-    resolved = _resolved_endpoint(backend, target, model_id) if target is not None else None
     scope = _dispatch_scope(backend, model_id)
-    if resolved is None and scope is None:
-        return routing_options
     if routing_options is None:
-        return RoutingRequestOptions(preferred_endpoint_id=resolved, endpoint_scope=scope)
-    if (
-        routing_options.preferred_endpoint_id == resolved
-        and routing_options.endpoint_scope == scope
-    ):
-        return routing_options
+        return RoutingRequestOptions(
+            preferred_endpoint_id=endpoint_id,
+            endpoint_scope=scope,
+            allow_fallback=False,
+        )
     return replace(
         routing_options,
-        preferred_endpoint_id=resolved,
+        preferred_endpoint_id=endpoint_id,
         endpoint_scope=scope,
+        allow_fallback=False,
     )
 
 
@@ -670,30 +725,39 @@ def _resolved_endpoint(backend: Any, target: RoutingTarget | None, model_id: str
         return None
 
 
-def _attempt_record(backend_name: str, exc: BaseException) -> dict[str, Any]:
-    """Return the routing-metadata record for one failed attempt."""
+def _attempt_record(
+    backend_name: str,
+    endpoint_id: str | None,
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Return the routing-metadata record for one failed attempt.
+
+    The shape keeps the fields the single router's ``failed_attempt`` produced --
+    ``provider``, ``endpoint_id``, ``error_type``, ``error`` -- because consumers
+    read them: the DB log and the fallback diagnostic both resolve an attempt's
+    provider from here, and a record without one loses the attribution rather
+    than failing loudly. ``backend`` is added, since once one request can span two
+    execution domains "which domain" is worth recording and no legacy field
+    carries it.
+
+    ``provider`` comes from the failing router's own ``_routing`` block, which is
+    the only place this layer can read it: it holds no adapters. An attempt that
+    failed before any router touched it -- an empty stream -- has no provider to
+    report, and the caller falls back to the endpoint id as it always did.
+    """
     error_routing = getattr(exc, "_routing", None)
-    endpoint = backend_name
-    if isinstance(error_routing, dict) and error_routing.get("endpoint_id"):
-        endpoint = str(error_routing["endpoint_id"])
-    return {
-        "backend": backend_name,
-        "endpoint_id": endpoint,
+    routing = error_routing if isinstance(error_routing, dict) else {}
+    resolved = routing.get("endpoint_id") or endpoint_id or backend_name
+    record: dict[str, Any] = {
+        "endpoint_id": str(resolved),
         "error_type": exc.__class__.__name__,
         "error": str(exc),
     }
-
-
-def _append_failed_attempt(exc: BaseException, attempt: dict[str, Any]) -> None:
-    """Append ``attempt`` to the error's own ``_routing`` history, if it has one."""
-    routing = getattr(exc, "_routing", None)
-    if not isinstance(routing, dict):
-        return
-    existing = routing.get("failed_attempts")
-    routing["failed_attempts"] = [
-        *(existing if isinstance(existing, list) else []),
-        attempt,
-    ]
+    provider = routing.get("provider")
+    if provider:
+        record["provider"] = str(provider)
+    record["backend"] = backend_name
+    return record
 
 
 def _merge_attempt_history(response: dict[str, Any], attempts: list[dict[str, Any]]) -> None:
@@ -734,17 +798,54 @@ def _attempt_history_chunk(
 
 
 def _raise_after_attempts(
-    preferred_error: BaseException | None,
+    errors: Sequence[BaseException],
     attempts: list[dict[str, Any]],
     model_id: str,
 ) -> None:
-    """Re-raise the preferred attempt's error, as the single-router path does."""
-    if preferred_error is not None:
-        raise preferred_error
-    raise HybridRoutingError(
-        f"every configured backend failed for model {model_id}: "
-        f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
-    )
+    """Raise the error the caller should be told about, once every attempt failed.
+
+    Reuses the single-router rule (``select_surfaced_error``): the primary
+    attempt's error by default, displaced only by a later attempt's
+    request-describing status. Which failure the caller is told about therefore
+    does not depend on which domain happened to be planned first.
+
+    Every attempt is attached to whichever error is raised, so the error-log path
+    can attribute each endpoint that was tried rather than only the one whose
+    exception won.
+    """
+    if not errors:
+        raise HybridRoutingError(
+            f"every configured backend failed for model {model_id}: "
+            f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
+        )
+    surfaced = errors[select_surfaced_error(errors)]
+    _attach_attempt_history(surfaced, attempts)
+    raise surfaced
+
+
+def _attach_attempt_history(exc: BaseException, attempts: list[dict[str, Any]]) -> None:
+    """Record every attempt on the error the caller is told about.
+
+    The error may already carry the attempt its own router made, so the records
+    are merged by endpoint: the router saw one candidate, this layer saw them all,
+    and the caller should see each endpoint exactly once.
+    """
+    if not attempts:
+        return
+    routing = getattr(exc, "_routing", None)
+    if not isinstance(routing, dict):
+        return
+    existing = routing.get("failed_attempts")
+    if not isinstance(existing, list):
+        routing["failed_attempts"] = list(attempts)
+        return
+    known = {record.get("endpoint_id") for record in existing if isinstance(record, dict)}
+    for record in attempts:
+        endpoint_id = record.get("endpoint_id")
+        if endpoint_id in known:
+            continue
+        existing.append(record)
+        known.add(endpoint_id)
 
 
 def _tag_backend(response: dict[str, Any], backend_name: str) -> None:

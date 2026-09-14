@@ -222,6 +222,34 @@ def _describes_request(exc: BaseException) -> bool:
     return _http_status_of(exc) in _REQUEST_DESCRIBING_STATUSES
 
 
+def describes_request_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` reports something wrong with the request itself.
+
+    Public because the rule now has two callers: the single-router fallback loop
+    below, and the hybrid layer, which drives candidates drawn from more than one
+    execution domain and therefore has to arrive at the same answer about which
+    failure the caller is told.
+    """
+    return _describes_request(exc)
+
+
+def select_surfaced_error(errors: Sequence[BaseException]) -> int:
+    """Return the index of the error the caller should be told about.
+
+    ``errors[0]`` is the primary attempt and stays the default: a request is
+    normally reported the way the route chosen for it reported it. That default
+    is overridden in exactly one case -- the primary's failure says nothing about
+    the request while a later attempt's does. See
+    ``_REQUEST_DESCRIBING_STATUSES`` for why only those statuses qualify.
+    """
+    if _describes_request(errors[0]):
+        return 0
+    for index, error in enumerate(errors[1:], start=1):
+        if _describes_request(error):
+            return index
+    return 0
+
+
 def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
     """Choose which of several failed attempts the caller is told about.
 
@@ -241,13 +269,7 @@ def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
     Only request-describing statuses can win that way; see
     ``_REQUEST_DESCRIBING_STATUSES`` for why a fallback's 403 or 429 must not.
     """
-    primary = attempts[0]
-    if _describes_request(primary.error):
-        return primary
-    return next(
-        (attempt for attempt in attempts[1:] if _describes_request(attempt.error)),
-        primary,
-    )
+    return attempts[select_surfaced_error([attempt.error for attempt in attempts])]
 
 
 def _raise_surfaced_error(
@@ -1405,6 +1427,7 @@ class FixedRouter:
             routing_options.preferred_endpoint_id if routing_options is not None else None
         )
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
+        allow_fallback = routing_options.allow_fallback if routing_options is not None else True
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1506,6 +1529,12 @@ class FixedRouter:
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
+                raise primary_error
+            if not allow_fallback:
+                # The caller owns the candidate order and dispatches one attempt
+                # per candidate, so walking the rest of the route here would try
+                # candidates out of the order it planned -- and would try the
+                # same candidate twice, once here and once from the caller.
                 raise primary_error
             self._drop_affinity(model_id)
             route = self.routes[model_id]
@@ -1613,6 +1642,7 @@ class FixedRouter:
             routing_options.preferred_endpoint_id if routing_options is not None else None
         )
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
+        allow_fallback = routing_options.allow_fallback if routing_options is not None else True
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1735,6 +1765,12 @@ class FixedRouter:
                 }
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
+                raise primary_error
+            if not allow_fallback:
+                # The caller owns the candidate order and dispatches one attempt
+                # per candidate, so walking the rest of the route here would try
+                # candidates out of the order it planned -- and would try the
+                # same candidate twice, once here and once from the caller.
                 raise primary_error
             self._drop_affinity(model_id)
             # Once any chunk has been yielded to the client the SSE stream

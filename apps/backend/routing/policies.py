@@ -13,9 +13,10 @@ affinity and modality filtering all still come from one place. What the policy
 adds is only the split: *which domain the draw landed in*, which the
 single-component design could not name.
 
-Known gap: ``select_adapter()`` accepts the request's ``prefill_tokens`` and this
-layer does not pass it, so the draw that names the preferred domain is not
-prefill-aware. See the review notes on the hybrid migration.
+:meth:`FixedPolicy.fallback_attempts` hands the hybrid router the remaining
+candidates in the order the route declares them, so the hybrid layer can
+reproduce what the single component did: one loop over every candidate, local
+and cloud interleaved exactly as they were registered.
 
 RouteWise policies are deliberately absent. A model configured with
 ``router: routewise`` keeps its own router over its own full candidate pool for
@@ -28,8 +29,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from routing.decisions import RoutingDecision, RoutingTarget
+from routing.decisions import FallbackAttempt, RoutingDecision, RoutingTarget
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import estimate_prefill_tokens
+from routing.routers import adapter_supports_modalities
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
@@ -144,6 +147,11 @@ class FixedPolicy:
             required_modalities=(
                 routing_options.required_modalities if routing_options is not None else None
             ),
+            prefill_tokens=estimate_prefill_tokens(
+                messages,
+                tools=params.get("tools"),
+                response_format=params.get("response_format"),
+            ),
         )
         if adapter is None:
             # No draw is possible; name the domain the model is configured for
@@ -170,13 +178,13 @@ class FixedPolicy:
     ) -> Sequence[str]:
         """Return the other domain when it can serve this model.
 
-        The preferred domain is exhausted first and only then does the request
-        move to the other one. That is deliberately *not* the order the single
-        ``FixedRouter`` used: its fallback loop walked the remaining adapters in
-        route order, so a route of ``L1, cloud, L2`` answered from the cloud when
-        ``L1`` failed, while this one answers from ``L2``. Coverage is the same
-        -- every candidate is reachable -- but the priority is domain-at-a-time.
-        The migration adopted that as the new semantics; see the design doc.
+        Domain granularity only. :meth:`fallback_attempts` is what the hybrid
+        router actually consumes, because the order that has to be preserved is
+        the route's -- ``L1, cloud, L2`` answers from the cloud when ``L1``
+        fails, which no ordering of two backend names can express. This method
+        remains the protocol's contract for a policy that only classifies
+        domains, and the hybrid layer falls back to it when a policy does not
+        offer the richer plan.
 
         A caller pin suppresses the cross-domain step, because the pinned
         dispatch deliberately has no fallback at all.
@@ -189,6 +197,53 @@ class FixedPolicy:
             self._cloud_backend if decision.backend == self._local_backend else self._local_backend
         )
         return (other,) if self._domain_serves(other, model_id, local, cloud) else ()
+
+    def fallback_attempts(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        decision: RoutingDecision,
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
+    ) -> tuple[FallbackAttempt, ...]:
+        """Return the remaining candidates in the order the route declares them.
+
+        This is the order the single ``FixedRouter`` walked, and reproducing it is
+        why the hybrid layer owns the whole loop: a route of ``L1, cloud, L2``
+        answered from the cloud when ``L1`` failed, and no ordering of two backend
+        names can express that. Each attempt names its own endpoint, and the
+        hybrid layer clears ``allow_fallback`` on the dispatch, so the sequence
+        below is the sequence that happens rather than a plan a nested router may
+        reorder.
+
+        A caller pin has no fallback at all, so the plan is empty.
+        """
+        local, cloud = self._scopes()
+        if routing_options is not None and routing_options.pin_provider:
+            return ()
+        required = (
+            routing_options.required_modalities if routing_options is not None else frozenset()
+        )
+        primary_endpoint = decision.target.endpoint_id if decision.target is not None else None
+        attempts: list[FallbackAttempt] = []
+        for adapter, _weight in self._compute.eligible_adapters(model_id):
+            if not adapter_supports_modalities(adapter, required):
+                continue
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            if endpoint_id == primary_endpoint:
+                continue
+            owns_local = self._is_local(adapter, local)
+            declared = local if owns_local else cloud
+            if declared is not None and not self._in_declared(adapter, declared):
+                continue
+            attempts.append(
+                FallbackAttempt(
+                    backend=self._local_backend if owns_local else self._cloud_backend,
+                    target=RoutingTarget(endpoint_id=endpoint_id),
+                )
+            )
+        return tuple(attempts)
 
     # -- classification -------------------------------------------------
 

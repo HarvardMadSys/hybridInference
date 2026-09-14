@@ -12,7 +12,8 @@
 |---|---|
 | `apps/backend/routing/route_scope.py` | `RouteScopeView`：按模型与 endpoint 过滤的只读 `RouteTableView` 投影；`scope_view_for_endpoints` 构造助手；endpoint 归属判定 |
 | `apps/backend/routing/backends.py` | `RoutingBackend` 协议、`RoutingBackendBase` 委托基类、`LocalBackend`、`RouteWiseCloudBackend` |
-| `apps/backend/routing/hybrid.py` | `HybridRouter`、`BackendSelection` 策略协议、`HybridRoutingError`、流式转发与关闭、反馈归属 |
+| `apps/backend/routing/hybrid.py` | `HybridRouter`、`BackendSelection` 策略协议、`HybridRoutingError`、全局候选计划与派发、流式转发与关闭、反馈归属 |
+| `apps/backend/routing/decisions.py` | `RoutingDecision` / `RoutingTarget` / `FallbackAttempt`（逐候选 fallback 计划项） |
 | `apps/backend/routing/__init__.py` | 导出上述公开符号 |
 | `tests/unit/routing/test_route_scope.py` | 候选范围投影契约 |
 | `tests/unit/routing/test_routing_backends.py` | 两个 backend 的调用、委托、范围与反馈契约 |
@@ -59,4 +60,4 @@ uv run pydocstyle apps/backend/routing
 1. **routewise 迁移。** `router: routewise` 仍是全池 `RouteWiseRouter`，绕过 `HybridRouter`。迁移前置条件见设计文档 §3.5.4.1（pin 通路、首选目标语义）与 §5（生命周期、operational store、顶层策略）。设计定义已固定：新架构中 RouteWise 位于 `CloudBackend` 内，`router: routewise` 是迁移前的旧路径。
 2. **本地归属的显式来源。** `HybridFixedRouterFactory` 已支持 `local_scope` / `local_ownership`，但生产 bootstrap 目前走 `_LOCAL_HOSTS` 兼容默认；LAN 或集群 DNS 上的自建 server 会被判为远端。部署应显式传入归属来源。
 3. **`_LOCAL_HOSTS` 一致性。** `servers.registry._LOCAL_HOSTS` 与 `servers.observability.alerts._LOCAL_HOSTS` 不一致（后者含 `::1`），因此 IPv6 loopback 上的自建 server 被当作远端。改动会影响出站限流豁免范围，需单独评估。
-4. **P2 语义项（本 PR 未修，已记录）。** 跨域失败时的错误优先级（应复用 `_select_surfaced_error` 的 400/404/413/422 规则）、跨域 fallback 的 `failed_attempts` 合并、`FixedPolicy.select_backend` 未传 `prefill_tokens`。
+4. **行为保留项（已修）。** 跨域 fallback 恢复 route 全局候选顺序；最终错误复用 `select_surfaced_error` 的 400/404/413/422 规则；每次 attempt 逐候选记录，`failed_attempts` 不再丢域内失败；`FixedPolicy.select_backend` 传入请求的 `prefill_tokens`。为此新增 `RoutingRequestOptions.allow_fallback`：hybrid 层自己驱动候选序列时，被包装的 router 只打当前候选。

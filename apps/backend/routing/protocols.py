@@ -32,12 +32,19 @@ class RoutingRequestOptions:
             either -- preferring an endpoint is not enough when the preferred
             one fails and the router walks the rest of the route. ``None``
             keeps the router's full range.
+        allow_fallback: Whether this dispatch may walk the rest of the route when
+            the attempt it committed to fails. ``False`` makes it a
+            single-candidate attempt: the failure is surfaced instead. A
+            scheduling layer that plans the candidate order itself -- the hybrid
+            layer does -- sets it so the order it planned is the order that
+            happens, and so no candidate is attempted twice.
         required_modalities: Non-text input modalities the request needs.
     """
 
     pin_provider: str | None = None
     preferred_endpoint_id: str | None = None
     endpoint_scope: frozenset[str] | None = None
+    allow_fallback: bool = True
     required_modalities: frozenset[str] = frozenset()
 
 

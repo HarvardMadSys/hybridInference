@@ -27,7 +27,23 @@ if TYPE_CHECKING:
 
     from routing.protocols import RoutingRequestOptions
 
-__all__ = ["BackendSelection", "RoutingDecision", "RoutingTarget"]
+__all__ = ["BackendSelection", "FallbackAttempt", "RoutingDecision", "RoutingTarget"]
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackAttempt:
+    """One candidate a fallback plan wants tried, and the domain that owns it.
+
+    A plan is a sequence of these rather than a sequence of backend names because
+    the order that matters is the *route's*, not the domains': a route of
+    ``L1, cloud, L2`` answers from the cloud when ``L1`` fails, which no ordering
+    of two backend names can express. ``target`` names the exact endpoint, and
+    the hybrid layer clears ``allow_fallback`` on the dispatch so the backend
+    attempts that endpoint alone instead of re-walking its own range.
+    """
+
+    backend: str
+    target: RoutingTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,5 +133,12 @@ class BackendSelection(Protocol):
         Only attempts that produced no output are eligible: once a streaming
         response has yielded a chunk to the client it is committed, exactly as it
         is inside a single router.
+
+        A policy that needs to name the *endpoint* of each attempt -- or to order
+        attempts across domains rather than domain by domain -- also implements
+        ``fallback_attempts()``, returning :class:`FallbackAttempt` entries in the
+        order they should be tried. The hybrid router prefers that plan when the
+        policy provides one and derives a domain-only plan from this method
+        otherwise.
         """
         ...
