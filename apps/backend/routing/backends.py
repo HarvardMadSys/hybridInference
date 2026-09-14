@@ -33,6 +33,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import (
     ObservationScope,
     RouteScopeView,
@@ -44,6 +45,7 @@ from routing.route_scope import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection
 
+    from routing.decisions import RoutingTarget
     from routing.protocols import RouterProtocol, RoutingRequestOptions
     from routing.route_table import RouteTableView
     from routing.routers import RoutingObservation
@@ -124,9 +126,17 @@ class RoutingBackend(Protocol):
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> dict[str, Any]:
-        """Serve one non-streaming request inside this backend's range."""
+        """Serve one non-streaming request inside this backend's range.
+
+        ``target`` is the scheduling policy's preferred provider or endpoint.
+        A backend that can serve it must honor it instead of running a fresh
+        unconstrained selection; a backend that cannot must fall back to its own
+        selection and say so, never silently accept an out-of-range target.
+        ``None`` means no preference: the backend's own algorithm decides.
+        """
         ...
 
     def stream_chat_completion(
@@ -135,6 +145,7 @@ class RoutingBackend(Protocol):
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         """Serve one streaming request inside this backend's range."""
@@ -239,6 +250,7 @@ class RoutingBackendBase:
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """Delegate one non-streaming request to the wrapped router."""
@@ -255,6 +267,7 @@ class RoutingBackendBase:
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         """Delegate one streaming request to the wrapped router.
@@ -269,6 +282,35 @@ class RoutingBackendBase:
             routing_options=routing_options,
             **params,
         )
+
+    def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
+        """Resolve a policy target to an endpoint this backend can dispatch to.
+
+        Default: nothing resolves, so a backend without a target-aware router
+        serves the request with its own selection and reports the target as out
+        of range rather than failing it.
+        """
+        return None
+
+    def serves(self, model_id: str) -> bool:
+        """Return whether this backend could serve ``model_id`` at all.
+
+        The hybrid layer asks before offering a cross-backend fallback, so a
+        backend whose range does not cover the model is skipped instead of
+        becoming an attempt that is certain to fail.
+        """
+        return True
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the endpoints this backend may dispatch to for ``model_id``.
+
+        The hybrid layer puts this on every dispatch it delegates, so the
+        backend's *fallback* candidates stay inside its own domain too. Preferring
+        one endpoint is not enough on its own: if that endpoint fails, the
+        wrapped router walks the remaining route, and without a scope it would
+        walk straight out of the domain.
+        """
+        return None
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Forward feedback to the wrapped router."""
@@ -391,6 +433,57 @@ class LocalBackend(RoutingBackendBase):
     def adapter_in_scope(self, adapter: Any) -> bool:
         """Return whether ``adapter`` is inside the declared local range."""
         return self._observation_scope.includes_adapter(adapter)
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the declared local endpoints, or None when none were declared.
+
+        ``None`` is deliberate: an undeclared local scope means the wrapped
+        router already holds only local candidates, so narrowing it again would
+        be guesswork rather than a constraint the caller expressed.
+        """
+        endpoints = self._observation_scope.endpoint_scope
+        if endpoints is None:
+            return None
+        return frozenset(
+            endpoint_id
+            for endpoint_id in self.allowed_endpoints()
+            if self._observation_scope.includes_endpoint(endpoint_id)
+        )
+
+    def allowed_endpoints(self) -> frozenset[str]:
+        """Return every endpoint id this local backend currently serves.
+
+        Reads through the same dual-shape helper the provider index uses, so a
+        router holding its table in ``route_table`` works here too.
+        """
+        return frozenset(
+            endpoint_id_for_adapter(adapter) for adapter in _adapters_in_router(self._router)
+        )
+
+    def resolve_target(
+        self,
+        target: RoutingTarget,
+        model_id: str,
+    ) -> str | None:
+        """Resolve a policy target to one endpoint this backend can dispatch to.
+
+        An endpoint target is accepted only when it is inside the declared local
+        range. A provider target is resolved through the scoped router's own
+        selection, so weights, circuit admission and the prefill-aware draw
+        decide among that provider's endpoints. ``None`` means out of range:
+        the caller then runs the ordinary selection instead of fabricating a
+        target the backend cannot serve.
+        """
+        if target.endpoint_id:
+            return (
+                target.endpoint_id
+                if self._observation_scope.includes_endpoint(target.endpoint_id)
+                else None
+            )
+        resolver = getattr(self._router, "preferred_endpoint_for_provider", None)
+        if callable(resolver) and target.provider:
+            return resolver(model_id, target.provider)
+        return None
 
     def refresh_route_table(self) -> None:
         """Delegate the refresh and re-index the endpoints it may have changed."""
@@ -555,6 +648,31 @@ class RouteWiseCloudBackend(CloudBackend):
     def canonical_id(self, model_id: str) -> str:
         """Resolve ``model_id`` through the cloud candidate view."""
         return self._view.canonical_id(model_id)
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the declared cloud endpoints for ``model_id``."""
+        if not self._view.includes_model(model_id):
+            return None
+        return self.allowed_endpoints()
+
+    def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
+        """Resolve a policy target inside the declared cloud range.
+
+        Endpoint targets are checked against the same scoped view that bounds
+        every other candidate decision here, so a local endpoint can never be
+        accepted as a cloud target. Provider targets go through the wrapped
+        router's own scope-aware resolution.
+        """
+        if target.endpoint_id:
+            if not self._view.includes_model(model_id):
+                return None
+            return target.endpoint_id if target.endpoint_id in self.allowed_endpoints() else None
+        resolver = getattr(self._router, "preferred_endpoint_for_provider", None)
+        if callable(resolver) and target.provider:
+            endpoint_id = resolver(model_id, target.provider)
+            if endpoint_id is not None and endpoint_id in self.allowed_endpoints():
+                return endpoint_id
+        return None
 
     def owns_model(self, model_id: str) -> bool:
         """Return whether the cloud range covers ``model_id``."""

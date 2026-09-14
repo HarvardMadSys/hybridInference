@@ -322,6 +322,21 @@ def adapter_supports_modalities(adapter: BaseAdapter, required: frozenset[str] |
     return required <= supported
 
 
+def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None) -> bool:
+    """Return whether ``adapter`` is inside an explicit endpoint/provider set.
+
+    ``None`` means "no scope declared" and admits everything. An empty set
+    admits nothing, which is the right reading for a backend that was told it
+    owns no endpoint here.
+    """
+    if scope is None:
+        return True
+    return (
+        endpoint_id_for_adapter(adapter) in scope
+        or getattr(adapter.config, "provider", None) in scope
+    )
+
+
 class FixedRouter:
     """Weighted random routing with automatic fallback.
 
@@ -856,7 +871,12 @@ class FixedRouter:
             for alias in aliases or []:
                 self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def eligible_adapters(self, model_id: str) -> list[tuple[BaseAdapter, float]]:
+    def eligible_adapters(
+        self,
+        model_id: str,
+        *,
+        endpoint_scope: frozenset[str] | None = None,
+    ) -> list[tuple[BaseAdapter, float]]:
         """Return the adapters automatic routing may dispatch to, in route order.
 
         Applies the same two admission rules ``_select_adapter`` uses: an
@@ -879,8 +899,90 @@ class FixedRouter:
         return [
             (adapter, weight)
             for adapter, weight in snapshot
-            if weight > 0 and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
+            if weight > 0
+            and adapter_in_endpoint_scope(adapter, endpoint_scope)
+            and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
         ]
+
+    def select_adapter(
+        self,
+        model_id: str,
+        *,
+        required_modalities: frozenset[str] | None = None,
+        prefill_tokens: int = 0,
+        preferred_endpoint_id: str | None = None,
+        endpoint_scope: frozenset[str] | None = None,
+    ) -> BaseAdapter | None:
+        """Return the adapter automatic routing would choose, without dispatching.
+
+        This is the one selection algorithm in the package: the hybrid layer's
+        global policy asks this to learn which endpoint a set of weights picks,
+        and the execution path asks it again -- over a range the policy may have
+        narrowed -- when it commits. Neither copy exists, and no dispatch claim
+        is taken here, so asking is free of side effects.
+
+        Args:
+            model_id: Model identifier.
+            required_modalities: Non-text input modalities the request needs.
+            prefill_tokens: Estimated prompt size, used to steer away from
+                saturated endpoints.
+            preferred_endpoint_id: A target the caller wants honored if this
+                route can serve it. Unlike ``pin_provider`` it does not turn the
+                selection into a single-candidate dispatch: the result is still
+                an ordinary selection subject to the caller's fallback loop.
+
+        Returns:
+            Selected adapter or None if no route configured / no match.
+        """
+        return self._select_adapter(
+            model_id,
+            required_modalities=required_modalities,
+            prefill_tokens=prefill_tokens,
+            preferred_endpoint_id=preferred_endpoint_id,
+            endpoint_scope=endpoint_scope,
+        )
+
+    def preferred_endpoint_for_provider(
+        self,
+        model_id: str,
+        provider: str,
+        *,
+        required_modalities: frozenset[str] | None = None,
+        prefill_tokens: int = 0,
+    ) -> str | None:
+        """Return one admitted endpoint of ``provider``, or None if it has none.
+
+        A provider label can cover several endpoints, so a policy target naming
+        a provider still has to be resolved to one of them before it can be
+        preferred. Resolution runs through the ordinary selection rather than
+        picking the first route entry, so weights, circuit admission and the
+        prefill-aware draw decide among the provider's endpoints exactly as they
+        would have without a target.
+        """
+        route = self.routes.get(model_id)
+        if not route or not route.published or not route.adapters:
+            return None
+        effective = self._get_effective_adapters(model_id, route)
+        candidates = [
+            endpoint_id_for_adapter(adapter)
+            for adapter, _weight in effective
+            if adapter.config.provider == provider
+        ]
+        if not candidates:
+            return None
+        try:
+            for endpoint_id in candidates:
+                selected = self._select_adapter(
+                    model_id,
+                    required_modalities=required_modalities,
+                    prefill_tokens=prefill_tokens,
+                    preferred_endpoint_id=endpoint_id,
+                )
+                if selected is not None:
+                    return endpoint_id_for_adapter(selected)
+        except AllCircuitsOpenError:
+            return None
+        return None
 
     def _select_adapter(
         self,
@@ -890,12 +992,15 @@ class FixedRouter:
         required_modalities: frozenset[str] | None = None,
         prefill_tokens: int = 0,
         exclude: set[str] | None = None,
+        preferred_endpoint_id: str | None = None,
+        endpoint_scope: frozenset[str] | None = None,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
         Args:
             model_id: Model identifier.
-            pin_provider: Optional provider/endpoint_id to pin to. Overrides affinity.
+            pin_provider: Optional provider/endpoint_id to pin to. Overrides
+                affinity and disables fallback at the call site.
             required_modalities: Non-text input modalities the request needs.
                 Routes that do not declare all of them are excluded so media is
                 never dispatched to a route that cannot handle it.
@@ -906,6 +1011,15 @@ class FixedRouter:
             exclude: Endpoint ids this request has already been refused a
                 dispatch claim for, so a reselection does not hand back the
                 endpoint whose half-open probe another caller is holding.
+            preferred_endpoint_id: Target to honor when this route can serve it.
+                Preferred over affinity (the caller asked for it now), but unlike
+                ``pin_provider`` it stays a normal selection: the caller's
+                fallback loop still applies if this attempt fails, and an
+                out-of-range target degrades to ordinary selection instead of
+                failing the request.
+            endpoint_scope: Candidate range for this dispatch. Narrows the route
+                before modality filtering and before the health/affinity gates,
+                so ``exclude`` and the fallback loop inherit the same range.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -915,6 +1029,14 @@ class FixedRouter:
             return None
 
         effective = self._get_effective_adapters(model_id, route)
+        if endpoint_scope is not None:
+            # A backend that owns one execution domain narrows the route here,
+            # so its fallback candidates are inside the domain too.
+            effective = [
+                (adapter, weight)
+                for adapter, weight in effective
+                if adapter_in_endpoint_scope(adapter, endpoint_scope)
+            ]
         if required_modalities:
             effective = [
                 (adapter, weight)
@@ -926,6 +1048,10 @@ class FixedRouter:
                     f"No route for model {model_id} accepts input modalities "
                     f"{sorted(required_modalities)}"
                 )
+        if endpoint_scope is not None and not effective:
+            raise AllCircuitsOpenError(
+                f"No route for model {model_id} inside the dispatch scope: {sorted(endpoint_scope)}"
+            )
 
         if pin_provider:
             for adapter, weight in effective:
@@ -990,6 +1116,70 @@ class FixedRouter:
                 elif entry is not None:
                     del self._affinity[(affinity_key, model_id)]
 
+        # A caller-supplied target outranks affinity: it was asked for now,
+        # while affinity only remembers what served this conversation last. It
+        # is still an ordinary selection -- the caller's fallback loop applies
+        # if this endpoint fails -- so it differs from ``pin_provider``, which
+        # collapses the route to one candidate and disables fallback.
+        if preferred_endpoint_id:
+            targeted = [
+                (adapter, weight)
+                for adapter, weight in allowed
+                if endpoint_id_for_adapter(adapter) == preferred_endpoint_id
+            ]
+            if targeted:
+                return self._record_affinity_and_return(
+                    model_id,
+                    self._weighted_draw(
+                        model_id,
+                        targeted,
+                        prefill_tokens=prefill_tokens,
+                        affinity_key=affinity_key,
+                        avoid_endpoint_id=None,
+                    ),
+                    affinity_key,
+                )
+
+        chosen = self._weighted_draw(
+            model_id,
+            allowed,
+            prefill_tokens=prefill_tokens,
+            affinity_key=affinity_key,
+            avoid_endpoint_id=avoid_endpoint_id,
+        )
+        return self._record_affinity_and_return(model_id, chosen, affinity_key)
+
+    def _record_affinity_and_return(
+        self,
+        model_id: str,
+        chosen: BaseAdapter,
+        affinity_key: str | None,
+    ) -> BaseAdapter:
+        """Remember ``chosen`` for this conversation and return it."""
+        if affinity_key:
+            now = time.monotonic()
+            with self._lock:
+                self._affinity[(affinity_key, model_id)] = _Affinity(
+                    endpoint_id=endpoint_id_for_adapter(chosen),
+                    expires_at=now + AFFINITY_TTL_SECONDS,
+                )
+                self._maybe_sweep_affinity_locked(now)
+        return chosen
+
+    def _weighted_draw(
+        self,
+        model_id: str,
+        allowed: list[tuple[BaseAdapter, float]],
+        *,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        avoid_endpoint_id: str | None,
+    ) -> BaseAdapter:
+        """Draw one adapter from ``allowed`` by weight, prefill-aware.
+
+        Extracted so the preferred-target branch and ordinary selection run the
+        *same* draw, including its degrade-to-weighted-draw guard.
+        """
         total_allowed = sum(w for _, w in allowed)
         pool = (
             [(a, w / total_allowed) for a, w in allowed]
@@ -1037,18 +1227,7 @@ class FixedRouter:
                 if sum(fallback_weights) > 0
                 else random.choice(candidates)
             )
-        chosen = pool[index][0]
-
-        if affinity_key:
-            now = time.monotonic()
-            with self._lock:
-                self._affinity[(affinity_key, model_id)] = _Affinity(
-                    endpoint_id=endpoint_id_for_adapter(chosen),
-                    expires_at=now + AFFINITY_TTL_SECONDS,
-                )
-                self._maybe_sweep_affinity_locked(now)
-
-        return chosen
+        return pool[index][0]
 
     def _select_and_claim_adapter(
         self,
@@ -1057,6 +1236,8 @@ class FixedRouter:
         pin_provider: str | None = None,
         required_modalities: frozenset[str] | None = None,
         prefill_tokens: int = 0,
+        preferred_endpoint_id: str | None = None,
+        endpoint_scope: frozenset[str] | None = None,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -1095,6 +1276,24 @@ class FixedRouter:
 
         route = self.routes.get(model_id)
         attempts = len(route.adapters) if route and route.adapters else 1
+
+        # A scheduling policy's preferred endpoint is tried first, exactly once,
+        # and without a dispatch claim -- the preference names where this request
+        # should start, and it is released before the ordinary loop so a failure
+        # still walks the same fallback candidates in the same order as always.
+        # The claim is skipped because a superseded preferred attempt must not
+        # leave a half-open probe holding the endpoint it lost to.
+        if preferred_endpoint_id and attempts > 0:
+            preferred = self._select_adapter(
+                model_id,
+                required_modalities=required_modalities,
+                prefill_tokens=prefill_tokens,
+                preferred_endpoint_id=preferred_endpoint_id,
+                endpoint_scope=endpoint_scope,
+            )
+            if preferred is not None:
+                return preferred, None
+
         exclude: set[str] = set()
         for _ in range(attempts):
             adapter = self._select_adapter(
@@ -1102,6 +1301,7 @@ class FixedRouter:
                 required_modalities=required_modalities,
                 prefill_tokens=prefill_tokens,
                 exclude=exclude,
+                endpoint_scope=endpoint_scope,
             )
             if adapter is None:
                 return None, None
@@ -1181,6 +1381,10 @@ class FixedRouter:
             ValueError: If no route configured for model.
         """
         pin_provider = self._resolve_pin_provider(routing_options, params)
+        preferred_endpoint_id = (
+            routing_options.preferred_endpoint_id if routing_options is not None else None
+        )
+        endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1204,6 +1408,8 @@ class FixedRouter:
             pin_provider=pin_provider,
             required_modalities=required_modalities,
             prefill_tokens=prefill_tokens,
+            preferred_endpoint_id=preferred_endpoint_id,
+            endpoint_scope=endpoint_scope,
         )
         if not primary:
             if pin_provider:
@@ -1377,6 +1583,10 @@ class FixedRouter:
             ValueError: If no route configured for model.
         """
         pin_provider = self._resolve_pin_provider(routing_options, params)
+        preferred_endpoint_id = (
+            routing_options.preferred_endpoint_id if routing_options is not None else None
+        )
+        endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1400,6 +1610,8 @@ class FixedRouter:
             pin_provider=pin_provider,
             required_modalities=required_modalities,
             prefill_tokens=prefill_tokens,
+            preferred_endpoint_id=preferred_endpoint_id,
+            endpoint_scope=endpoint_scope,
         )
         if not primary:
             if pin_provider:

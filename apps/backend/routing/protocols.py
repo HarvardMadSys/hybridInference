@@ -15,9 +15,29 @@ __all__ = ["RouteTableRefreshable", "RouterProtocol", "RoutingRequestOptions"]
 
 @dataclass(frozen=True, slots=True)
 class RoutingRequestOptions:
-    """Router-owned request controls that must not reach provider adapters."""
+    """Router-owned request controls that must not reach provider adapters.
+
+    Attributes:
+        pin_provider: The caller's explicit hard pin. It collapses the route to
+            that provider, disables fallback, and raises when absent. Unchanged.
+        preferred_endpoint_id: The scheduling policy's preferred endpoint. A
+            *preference*, not a pin: a router that can dispatch to it must honor
+            it instead of re-sampling, a router that cannot falls back to its own
+            selection, and a failed attempt still enters the caller's ordinary
+            fallback loop. Kept separate from ``pin_provider`` precisely because
+            the two have opposite failure semantics.
+        endpoint_scope: Optional candidate range for this dispatch. A backend
+            that owns only one execution domain sets it to that domain's
+            endpoints, so its *fallback* candidates cannot escape the domain
+            either -- preferring an endpoint is not enough when the preferred
+            one fails and the router walks the rest of the route. ``None``
+            keeps the router's full range.
+        required_modalities: Non-text input modalities the request needs.
+    """
 
     pin_provider: str | None = None
+    preferred_endpoint_id: str | None = None
+    endpoint_scope: frozenset[str] | None = None
     required_modalities: frozenset[str] = frozenset()
 
 

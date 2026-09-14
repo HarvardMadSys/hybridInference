@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from routing.backends import LocalBackend, RouteWiseCloudBackend
+from routing.decisions import RoutingDecision, RoutingTarget
 from routing.hybrid import BackendSelection, HybridRouter, HybridRoutingError
 from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter, RoutingObservation
@@ -105,14 +106,16 @@ def _route_table(*adapters: _ComboAdapter) -> FixedRouter:
 
 
 @dataclass
-class _ForceBackend(BackendSelection):
-    """Test policy that always names one backend.
+class _ForceBackend:
+    """Test policy that always names one backend, optionally with a target.
 
     Stands in for the Greedy/Nimbus policies a later task will add; the hybrid
     seam must be exercised without shipping a production policy here.
     """
 
     backend_name: str
+    target: RoutingTarget | None = None
+    fallbacks: tuple[str, ...] = ()
     calls: list[str] = field(default_factory=list)
 
     def select_backend(
@@ -122,9 +125,20 @@ class _ForceBackend(BackendSelection):
         *,
         routing_options: RoutingRequestOptions | None = None,
         **params: Any,
-    ) -> str:
+    ) -> RoutingDecision:
         self.calls.append(model_id)
-        return self.backend_name
+        return RoutingDecision(backend=self.backend_name, target=self.target)
+
+    def fallback_backends(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        decision: RoutingDecision,
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
+    ) -> tuple[str, ...]:
+        return self.fallbacks
 
 
 @dataclass
@@ -143,6 +157,9 @@ class _CountingBackend:
     starts_before_this_call: int = 0
     is_local: bool = False
     is_cloud: bool = False
+    serves_model: bool = True
+    resolved_target: str | None = None
+    targets_seen: list[RoutingTarget | None] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -154,8 +171,10 @@ class _CountingBackend:
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> dict[str, Any]:
+        self.targets_seen.append(target)
         return {"choices": [], "model": model_id}
 
     async def stream_chat_completion(
@@ -164,8 +183,10 @@ class _CountingBackend:
         messages: list[dict[str, Any]],
         *,
         routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
         **params: Any,
     ) -> AsyncGenerator[str, None]:
+        self.targets_seen.append(target)
         yield "data: [DONE]\n\n"
 
     def record_observation(self, obs: RoutingObservation) -> None:
@@ -176,6 +197,12 @@ class _CountingBackend:
 
     def owns_observation(self, obs: RoutingObservation) -> bool:
         return self.owns
+
+    def serves(self, model_id: str) -> bool:
+        return self.serves_model
+
+    def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
+        return self.resolved_target
 
     async def start(self) -> bool:
         self.starts += 1
@@ -580,7 +607,7 @@ def test_dispatch_record_attributes_feedback_when_both_backends_claim_the_endpoi
     local = _CountingBackend("local", owns=True)
     cloud = _CountingBackend("cloud", owns=True)
     router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
-    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="shared-request")
+    router.select_decision(_MODEL_ID, _MESSAGES, request_id="shared-request")
 
     router.record_observation(_observation(_SHARED_ENDPOINT, request_id="shared-request"))
 
@@ -612,7 +639,7 @@ def test_nonterminal_attempt_feedback_does_not_consume_the_dispatch_record() -> 
     local = _CountingBackend("local", owns=True)
     cloud = _CountingBackend("cloud", owns=True)
     router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
-    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="fallback-request")
+    router.select_decision(_MODEL_ID, _MESSAGES, request_id="fallback-request")
 
     failed_endpoint = f"{_MODEL_ID}:primary-api"
     router.record_observation(
@@ -630,7 +657,7 @@ def test_terminal_feedback_releases_the_dispatch_record() -> None:
     local = _CountingBackend("local", owns=True)
     cloud = _CountingBackend("cloud", owns=True)
     router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
-    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="release-request")
+    router.select_decision(_MODEL_ID, _MESSAGES, request_id="release-request")
 
     router.record_observation(_observation(_SHARED_ENDPOINT, request_id="release-request"))
     assert cloud.observations == [_SHARED_ENDPOINT]

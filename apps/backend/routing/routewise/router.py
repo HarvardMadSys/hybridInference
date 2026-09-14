@@ -1287,6 +1287,35 @@ class RouteWiseRouter:
         route_table = self.route_table
         return route_table.canonical_id(model_id) if route_table is not None else model_id
 
+    def preferred_endpoint_for_provider(self, model_id: str, provider: str) -> str | None:
+        """Return a candidate endpoint of ``provider`` for a policy target.
+
+        The hybrid layer's scheduling policy may name a provider rather than one
+        endpoint; a provider can cover several endpoints, so it still has to be
+        resolved before it can be preferred. Resolution reads the candidates the
+        last route-table rebuild produced, so it can only return endpoints inside
+        the router's own scope -- a policy target outside it resolves to None and
+        the caller then runs ordinary selection.
+
+        The returned id is the candidate with the best observed mean TTFT when
+        the latency layer has a sample for these endpoints, otherwise the first
+        candidate in route order. That is a deterministic resolution, not a
+        second sampling step: the LP/targeted dispatch still happens once, in
+        :meth:`chat_completion`.
+        """
+        model_id = self.canonical_model_id(model_id)
+        pool = [
+            candidate.endpoint_id
+            for candidate in (self.route_candidates.get(model_id) or [])
+            if getattr(candidate.adapter.config, "provider", None) == provider
+        ]
+        if not pool:
+            return None
+        now = time.time()
+        return min(
+            pool, key=lambda endpoint_id: (self._mean_ttft_sec(endpoint_id, now), endpoint_id)
+        )
+
     def _validate_routes(self) -> None:
         has_stateful_provider = False
         for model_id, candidates in self.route_candidates.items():

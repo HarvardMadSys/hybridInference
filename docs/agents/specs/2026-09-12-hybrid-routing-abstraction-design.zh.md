@@ -72,6 +72,86 @@ RoutingBackend                  两侧共用的调用接口（结构协议）
 
 LocalBackend 和 CloudBackend 使用同一调用契约，复用 `RouterProtocol` 中的 `model_id`、`messages`、`RoutingRequestOptions` 与生成参数。本次没有复制一套只有类名不同的接口，也没有引入新的请求格式。
 
+## 3.5 架构边界修订（2026-09-14 第二轮）
+
+上一节的职责划分把 FixedRouter 留在了 LocalBackend 内部，这是错的。现有
+`FixedRouter` 的权重覆盖整个候选集合：它在 local、cloud 以及各 provider/endpoint
+之间分流。**这个全局决策职责属于 HybridRouter 这一层**，不属于 LocalBackend。
+LocalBackend 只承接本地调用。
+
+### 3.5.1 FixedRouter 现有职责的归属
+
+| 现有职责 | 迁移后归属 | 处理方式 |
+|---|---|---|
+| 权重解析（`raw_adapters` / `weight_override_resolver` / `disabled_provider_resolver`） | 留在 `FixedRouter` | 不变 |
+| 候选资格、模态过滤、健康准入、亲和、prefill 负载选择 | 留在 `FixedRouter` | 不变 |
+| 全局首选目标（哪个域、哪个 provider/endpoint） | 上移到策略层 | 新增 `FixedPolicy`，调用 `FixedRouter.select_adapter()` |
+| dispatch claim（半开探测、并发占位） | 留在 `FixedRouter` | 由 `_select_and_claim_adapter` 在真正派发时取得 |
+| 执行、fallback 循环、流式、取消清理、健康记录、`_routing` 元数据 | 留在 `FixedRouter` | 不变，不复制 |
+
+关键点：**选路算法只实现一次**。`FixedRouter` 暴露一个无副作用的
+`select_adapter()`（现有 `_select_adapter` 的公开入口），策略层用它做全局首选，
+执行侧在真正派发时再走一次同样算法的限定范围选择并 claim。不存在第二套加权抽样
+实现，也不存在"策略选中后后端再独立抽一次把它改掉"的情况——后端的候选范围由策略
+选中的目标收敛。
+
+### 3.5.2 结构化调度结果
+
+`BackendSelection` 的返回值从 backend 名字改成结构化结果：
+
+```python
+@dataclass(frozen=True, slots=True)
+class RoutingTarget:
+    """首选目标：provider 标签与 canonical endpoint id 明确区分。"""
+    provider: str | None = None      # 对应 provider 标签，例如 "zai"
+    endpoint_id: str | None = None   # 对应 canonical endpoint id，例如 "m:zai-api"
+
+@dataclass(frozen=True, slots=True)
+class RoutingDecision:
+    backend: str                      # 选中哪个 backend
+    target: RoutingTarget | None = None   # None 表示由该 backend 内部算法选择
+```
+
+必须支持两种场景：
+
+- **A. 只指定 cloud**：`target is None`，由 `CloudBackend` 内部算法（RouteWise）选择 provider。
+- **B. 指定 cloud + provider/endpoint**：backend 必须遵守该目标，不能重新做一次不受约束的选择。
+
+只有 `target=None` 时才允许后端自行选择；一旦给定目标，目标在范围内就必须被遵守，
+不在范围内则由该后端按既有规则选择并记录（不静默接受越界目标）。
+
+### 3.5.3 首选目标与强制 pin 的区别
+
+| | 自动路由首选目标（本层） | 调用方强制 pin（既有） |
+|---|---|---|
+| 来源 | `FixedPolicy` 的全局权重 | `RoutingRequestOptions.pin_provider` |
+| 失败后 | 按既有规则 fallback（同域或跨域） | 不 fallback，直接抛错 |
+| 找不到目标 | 退化为该 backend 的常规选择 | `ProviderPinError` / `ValueError` |
+| 元数据 | 记录首选与实际服务端点 | 现状不变 |
+
+这两个语义不能混用：`FixedRouter` 的 `pin_provider` 会关闭自动 fallback，而
+`RouteWiseRouter` 明确拒绝带 `pin_provider` 的请求（要求它们走 shared FixedRouter）。
+因此不能把内部选定目标塞进现有 `pin_provider` 就声称行为兼容。
+
+### 3.5.4 现有 fixed / routewise 配置迁移后的真实调用链
+
+| 配置 | 迁移前 | 迁移后 |
+|---|---|---|
+| `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=RouteWiseCloudBackend)`；策略做全局首选，`LocalBackend` 承接本地执行 |
+| `router: routewise` | → `RouteWiseRouter`（**全池**候选） | 保持全池 `RouteWiseRouter`，**不改成 cloud-only** |
+
+`RouteWiseCloudBackend` 是"明确限定云端范围"的组合方式，不是把现有 routewise 配置
+自动缩窄的工具。全池 RouteWise 的候选范围与行为必须原样保留。
+
+### 3.5.5 反馈归属：一个 request 可能对应多个 backend
+
+若保留跨 backend fallback，一个 request 的不同 attempt 可能由不同 backend 执行。
+反馈必须归属**实际执行该 attempt 的 backend**。因此：
+
+- 派发记录从"request_id → 单个 backend"改为按 attempt 的 endpoint 判定；
+- 不能继续假设一个 `request_id` 永远只对应一个 backend；
+- 不能广播，否则污染未服务该 attempt 的学习状态。
+
 ## 4. 薄封装的边界
 
 **LocalBackend** 把请求交给已有本地执行路径，保留普通响应、流式响应和既有错误语义。本次没有加入队列、资源预留、token 统计、TTFT 预测或 GPU 取消确认机制。本地候选集由构造方通过“把哪些 adapter 注册进被包装的 router”来表达。
