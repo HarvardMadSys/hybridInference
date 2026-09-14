@@ -59,8 +59,13 @@ class AllCircuitsOpenError(RuntimeError):
 class ManagedRouter(Protocol):
     """Router with async lifecycle hooks managed by application bootstrap."""
 
-    async def start(self) -> None:
-        """Start router-owned background work."""
+    async def start(self) -> bool:
+        """Start router-owned background work.
+
+        Returns True when this call activated the router and False when it was
+        already running, so a wrapper can tell whether stopping it is its own
+        to do.
+        """
         ...
 
     async def stop(self) -> None:

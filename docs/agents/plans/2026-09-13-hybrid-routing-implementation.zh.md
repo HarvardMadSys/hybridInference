@@ -21,6 +21,8 @@
 
 未改动 `apps/backend/routing/executor.py`（保持兼容导出），未改动生产 registry、bootstrap 与任何启动路径。
 
+`apps/backend/routing/routers.py` 与 `routewise/router.py` 各有一处必要改动：`ManagedRouter.start` 的返回类型与 `RouteWiseRouter.start()` 现在返回"本次调用是否真正拉起后台任务"的布尔值。调用方一律忽略返回值，行为不变；包装层用它判断生命周期所有权。
+
 ## 2. 分步执行记录
 
 1. **候选范围视图。** 先实现 `RouteScopeView`，使 cloud 范围成为可注入的只读对象，而不是在 RouteWise 内部加分支。权重保留原值，不重归一化。
@@ -28,6 +30,7 @@
 3. **组合对象。** `HybridRouter` 每请求调用一次策略，委托选中的 backend；流式返回转发迭代器并在关闭时关闭下游；反馈按 owner 投递一次。
 4. **共享契约扩面。** 把两个 backend 加入 `test_router_contract.py` 的参数化，使它们与 `FixedRouter`/`RouteWiseRouter` 受同一组行为契约约束。
 5. **回归与静态检查。** 跑 routing 单测、servers/routing 入口测试、全量非 DB/非 external 测试、ruff 与 pydocstyle。
+6. **Review 修复（2026-09-14，PR #1454）。** 三处封装正确性问题：反馈归属、生命周期所有权、刷新语义。详见设计文档第 4、6 节与下方验收结果。
 
 ## 3. 验收命令
 
@@ -43,8 +46,9 @@ uv run pydocstyle apps/backend/routing
 
 在本 worktree 上执行结果：
 
-- `tests/unit/routing/`：862 passed, 2 skipped（性能与池内规避用例按既有标记跳过）
-- 全量 `pytest -m "not external and not dbtest"`：5530 passed, 48 skipped, 184 deselected
+- `tests/unit/routing/`：通过（性能与池内规避用例按既有标记跳过）
+- 全量 `pytest -m "not external and not dbtest"`：通过，无回归
+- Review 的三份复现脚本（`test_pr_1454_repros.py`，审阅版本 86db016e 下 3/3 失败）在修复后 3/3 通过
 - ruff format / ruff check / pydocstyle：通过
 
 ## 4. 遗留任务（不在本次范围）

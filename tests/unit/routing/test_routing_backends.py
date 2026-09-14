@@ -112,6 +112,18 @@ def _cloud_backend(
     )
 
 
+def _local_backend(
+    *adapters: _BackendAdapter,
+    scope: frozenset[str] | None = None,
+) -> LocalBackend:
+    """Build a local backend whose declared range is the endpoints it serves."""
+    return LocalBackend(
+        _route_table(*adapters),
+        endpoint_scope=scope if scope is not None else {a.config.endpoint_id for a in adapters},
+        model_scope={_MODEL_ID},
+    )
+
+
 def _observation(endpoint_id: str, *, success: bool = True) -> RoutingObservation:
     return RoutingObservation(
         model_id=_MODEL_ID,
@@ -142,7 +154,7 @@ def test_local_backend_rejects_a_router_missing_the_request_contract() -> None:
 @pytest.mark.asyncio
 async def test_local_backend_delegates_without_rewriting_request_arguments() -> None:
     local = _adapter(_LOCAL_ENDPOINT, provider="local")
-    backend = LocalBackend(_route_table(local))
+    backend = _local_backend(local)
     options = RoutingRequestOptions()
 
     response = await backend.chat_completion(
@@ -166,7 +178,7 @@ async def test_local_backend_forwards_the_router_iterator_without_buffering() ->
         provider="local",
         stream_chunks=('data: {"choices":[{"delta":{"content":"a"}}]}\n\n',),
     )
-    backend = LocalBackend(_route_table(local))
+    backend = _local_backend(local)
 
     stream = backend.stream_chat_completion(_MODEL_ID, _MESSAGES)
 
@@ -185,7 +197,7 @@ async def test_local_backend_forwards_the_router_iterator_without_buffering() ->
 @pytest.mark.asyncio
 async def test_local_backend_preserves_upstream_error_semantics() -> None:
     local = _adapter(_LOCAL_ENDPOINT, provider="local", chat_error=RuntimeError("local down"))
-    backend = LocalBackend(_route_table(local))
+    backend = _local_backend(local)
 
     with pytest.raises(RuntimeError, match="local down") as exc_info:
         await backend.chat_completion(_MODEL_ID, _MESSAGES, request_id="local-error")
@@ -194,10 +206,21 @@ async def test_local_backend_preserves_upstream_error_semantics() -> None:
 
 
 @pytest.mark.unit
-def test_local_backend_owns_every_observation_routed_to_it() -> None:
-    backend = LocalBackend(_route_table(_adapter(_LOCAL_ENDPOINT, provider="local")))
+def test_local_backend_owns_only_observations_inside_its_declared_scope() -> None:
+    backend = _local_backend(_adapter(_LOCAL_ENDPOINT, provider="local"))
 
     assert backend.owns_observation(_observation(_LOCAL_ENDPOINT))
+    assert not backend.owns_observation(_observation(_CLOUD_ENDPOINT))
+
+
+@pytest.mark.unit
+def test_local_backend_without_a_scope_claims_every_endpoint() -> None:
+    # An undeclared scope is the single-domain default; the hybrid router keeps
+    # its dispatch record for the ambiguous case.
+    backend = LocalBackend(_route_table(_adapter(_LOCAL_ENDPOINT, provider="local")))
+
+    assert backend.endpoint_scope is None
+    assert backend.owns_observation(_observation(_CLOUD_ENDPOINT))
 
 
 @pytest.mark.unit
@@ -313,8 +336,68 @@ def test_cloud_backend_refresh_rebuilds_the_projection() -> None:
     table.register_route(_MODEL_ID, [(first, 1.0), (second, 1.0)])
     backend.refresh_route_table()
 
-    assert backend.view is not original_view
+    # The view stays the same object so the wrapped router keeps reading the
+    # source table through it; only its projection cache is dropped.
+    assert backend.view is original_view
     assert backend.allowed_endpoints() == frozenset({_CLOUD_ENDPOINT, _CLOUD_ENDPOINT_2})
+
+
+@pytest.mark.unit
+def test_cloud_backend_refresh_preserves_inflight_prefix_cache_state() -> None:
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai")
+    backend = _cloud_backend(_route_table(cloud), endpoint_scope=frozenset({_CLOUD_ENDPOINT}))
+    backend.router.pending_prefix_cache.put("inflight", ("block",), {_CLOUD_ENDPOINT: "scope"})
+
+    backend.router.refresh_route_table()
+    assert "inflight" in backend.router.pending_prefix_cache
+
+    backend.refresh_route_table()
+
+    # Re-binding through attach_route_table would clear this store and lose the
+    # prefix-cache feedback of every request still on the wire.
+    assert "inflight" in backend.router.pending_prefix_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloud_backend_does_not_stop_a_router_started_by_another_owner() -> None:
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai")
+    router = RouteWiseRouter(
+        config=RouteWiseConfig(
+            budget_alpha=0.0,
+            random_seed=0,
+            routewise_probe_enabled=True,
+            routewise_probe_interval_sec=3600,
+        ),
+    )
+    backend = RouteWiseCloudBackend(
+        router,
+        table=_route_table(cloud),
+        endpoint_scope={_CLOUD_ENDPOINT},
+        model_scope={_MODEL_ID},
+        manage_lifecycle=True,
+    )
+    await router.start()  # The composition root owns this lifecycle.
+    original_probe = router._probe_task
+    assert original_probe is not None and not original_probe.done()
+    try:
+        assert await backend.start() is False
+        assert await backend.stop() is False
+        assert router._probe_task is original_probe
+        assert not original_probe.done()
+    finally:
+        await router.stop()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_backend_lifecycle_is_opt_in() -> None:
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai")
+    backend = _cloud_backend(_route_table(cloud), endpoint_scope=frozenset({_CLOUD_ENDPOINT}))
+
+    assert backend.manages_lifecycle is False
+    assert await backend.start() is False
+    assert await backend.stop() is False
 
 
 @pytest.mark.unit

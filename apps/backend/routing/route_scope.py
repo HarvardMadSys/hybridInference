@@ -30,11 +30,57 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 __all__ = [
+    "ObservationScope",
     "RouteScopeView",
     "adapter_in_endpoint_scope",
     "endpoint_ids_in_view",
     "scope_view_for_endpoints",
 ]
+
+
+class ObservationScope:
+    """The endpoint/provider set a backend claims for feedback attribution.
+
+    Distinct from :class:`RouteScopeView` on purpose. A view answers "which
+    candidates may this router dispatch to"; an observation scope answers "did
+    this backend serve that endpoint". The two can differ: a candidate the
+    circuit breaker currently excludes is still this backend's own endpoint, so
+    its feedback must land here rather than being broadcast.
+
+    ``None`` means the backend declares no scope and claims every endpoint.
+    That is correct for a backend that is the only one in its composition, and
+    wrong for a hybrid one -- two always-claiming backends cannot be told apart
+    from an observation alone. Prefer passing the explicit set.
+    """
+
+    __slots__ = ("_endpoints",)
+
+    def __init__(self, endpoint_scope: Collection[str] | None = None) -> None:
+        self._endpoints = frozenset(endpoint_scope) if endpoint_scope is not None else None
+
+    @property
+    def endpoint_scope(self) -> frozenset[str] | None:
+        """Return the declared endpoints and provider labels, if any."""
+        return self._endpoints
+
+    def is_declared(self) -> bool:
+        """Return whether this scope narrows anything at all."""
+        return self._endpoints is not None
+
+    def includes_adapter(self, adapter: BaseAdapter) -> bool:
+        """Return whether ``adapter`` is inside the scope."""
+        if self._endpoints is None:
+            return True
+        return (
+            endpoint_id_for_adapter(adapter) in self._endpoints
+            or getattr(adapter.config, "provider", None) in self._endpoints
+        )
+
+    def includes_endpoint(self, endpoint_id: str) -> bool:
+        """Return whether an endpoint id is inside the scope."""
+        if self._endpoints is None:
+            return True
+        return endpoint_id in self._endpoints
 
 
 def adapter_in_endpoint_scope(
@@ -49,10 +95,7 @@ def adapter_in_endpoint_scope(
     """
     if not endpoint_scope:
         return False
-    return (
-        endpoint_id_for_adapter(adapter) in endpoint_scope
-        or getattr(adapter.config, "provider", None) in endpoint_scope
-    )
+    return ObservationScope(endpoint_scope).includes_adapter(adapter)
 
 
 def endpoint_ids_in_view(view: RouteTableView) -> frozenset[str]:

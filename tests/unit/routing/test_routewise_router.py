@@ -3463,3 +3463,24 @@ class TestUpstreamPriorityIsNotPublished:
         # The dispatch ran (so the assertion is not vacuous) and carried no
         # priority: an sglang backend serves these at its own default.
         assert seen == [None]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_start_reports_whether_this_call_activated_the_router():
+    """``start()`` answers "did I start it", which is what a wrapper needs.
+
+    A wrapper that treats an idempotent start as ownership would later cancel
+    background work the composition root owns, so the first call reports True
+    and any later call against a running router reports False.
+    """
+    router, _quota, _api = _make_router_with_quota_and_api()
+
+    try:
+        assert await router.start() is True
+        assert await router.start() is False
+    finally:
+        await router.stop()
+
+    assert await router.start() is True
+    await router.stop()

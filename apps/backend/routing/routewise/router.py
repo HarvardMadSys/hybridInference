@@ -511,7 +511,7 @@ class RouteWiseRouter:
         """Compatibility alias for the former private rebuild hook."""
         self.refresh_route_table()
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
         """Start periodic maintenance tasks.
 
         Checks quota-bearing pools for a calibrated envelope before any
@@ -521,9 +521,17 @@ class RouteWiseRouter:
         no fallback raises :class:`EnvelopeNotCalibratedError`, which the server
         bootstrap path propagates so deployment fails fast instead of leaving a
         model unroutable. See :meth:`_validate_envelope_calibration`.
+
+        Returns:
+            True when this call is what activated the router, False when it was
+            already running. A caller that wraps the router needs that
+            distinction to know whether stopping it is its own to do; treating
+            an idempotent start as ownership would let a wrapper cancel
+            background work the composition root owns.
         """
         async with self._lifecycle_lock:
             self._validate_envelope_calibration()
+            already_started = self._lifecycle_started
             self._lifecycle_started = True
             if self.prefix_cache.enabled and (
                 self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
@@ -540,6 +548,7 @@ class RouteWiseRouter:
                     name="RouteWiseRouter.refresh_quota_snapshots",
                 )
             await self.refresh_probe_task()
+        return not already_started
 
     async def refresh_probe_task(self) -> None:
         """Immediately reconcile the active probe loop with its config snapshot."""

@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from routing.route_scope import (
+    ObservationScope,
     RouteScopeView,
     adapter_in_endpoint_scope,
     endpoint_ids_in_view,
@@ -121,11 +122,21 @@ class RoutingBackendBase:
 
     Concrete backends add their identity rules on top (``owns_observation``);
     everything else is forwarded verbatim, so wrapping cannot silently drop an
-    operation the router already supported while the wrapped router keeps
-    ownership of its lifecycle, its adapters and its background work.
+    operation the router already supported.
+
+    Lifecycle is opt-in. By default the composition root that constructed the
+    wrapped router keeps owning it, and this backend neither starts nor stops
+    it. ``manage_lifecycle=True`` transfers that responsibility here, and even
+    then the backend only stops work this backend itself started.
     """
 
-    def __init__(self, router: RouterProtocol, *, name: str) -> None:
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        name: str,
+        manage_lifecycle: bool = False,
+    ) -> None:
         missing = [method for method in _REQUIRED_ROUTER_METHODS if not hasattr(router, method)]
         if missing:
             raise TypeError(
@@ -135,6 +146,7 @@ class RoutingBackendBase:
             )
         self._router = router
         self._name = name
+        self._manage_lifecycle = manage_lifecycle
         self._started = False
 
     @property
@@ -146,6 +158,16 @@ class RoutingBackendBase:
     def router(self) -> RouterProtocol:
         """Return the wrapped router."""
         return self._router
+
+    @property
+    def manages_lifecycle(self) -> bool:
+        """Return whether this backend may start and stop the wrapped router."""
+        return self._manage_lifecycle
+
+    @property
+    def started_here(self) -> bool:
+        """Return whether this backend started the wrapped router itself."""
+        return self._started
 
     async def chat_completion(
         self,
@@ -199,29 +221,39 @@ class RoutingBackendBase:
             return str(resolver(model_id))
         return model_id
 
-    async def start(self) -> None:
-        """Start the wrapped router's background work, once.
+    async def start(self) -> bool:
+        """Start the wrapped router's background work when this backend owns it.
 
-        Wrapping an already-started router must not start a second set of
-        maintenance tasks, so this is a no-op when it was not the caller that
-        started it. Only a start performed here is undone by :meth:`stop`.
+        Returns:
+            ``True`` only when this call actually brought the background work up
+            and therefore owns stopping it later. A backend that does not manage
+            the lifecycle, or whose router was already running under another
+            owner, returns ``False`` and never stops that work.
         """
-        if self._started:
-            return
+        if not self._manage_lifecycle or self._started:
+            return False
         start = getattr(self._router, "start", None)
         if not callable(start):
-            return
-        await start()
-        self._started = True
+            return False
+        started = await start()
+        # A router may report that it was already running, in which case this
+        # backend did not create the tasks and must not cancel them later.
+        self._started = started is not False
+        return self._started
 
-    async def stop(self) -> None:
-        """Stop background work this backend started."""
+    async def stop(self) -> bool:
+        """Stop background work, but only what this backend started.
+
+        Returns:
+            ``True`` when this call stopped the wrapped router's work.
+        """
         if not self._started:
-            return
+            return False
         stop = getattr(self._router, "stop", None)
         if callable(stop):
             await stop()
         self._started = False
+        return True
 
 
 class LocalBackend(RoutingBackendBase):
@@ -237,20 +269,51 @@ class LocalBackend(RoutingBackendBase):
     Args:
         router: The local execution path (typically a ``FixedRouter``
             registered with local adapters only).
+        endpoint_scope: Canonical endpoint ids and/or provider labels this
+            backend serves. Optional, but a hybrid composition should always
+            declare it: two backends that both claim every endpoint cannot be
+            told apart from an observation alone, so feedback for a cloud
+            request would also reach this local router.
+        model_scope: Optional canonical model ids this backend owns.
         name: Backend identity reported in routing metadata and diagnostics.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root that built the router
+            owns it.
     """
 
-    def __init__(self, router: RouterProtocol, *, name: str = "local") -> None:
-        super().__init__(router, name=name)
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        endpoint_scope: Collection[str] | None = None,
+        model_scope: Collection[str] | None = None,
+        name: str = "local",
+        manage_lifecycle: bool = False,
+    ) -> None:
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+        self._observation_scope = ObservationScope(endpoint_scope)
+        self._model_scope = frozenset(model_scope) if model_scope is not None else None
+
+    @property
+    def endpoint_scope(self) -> frozenset[str] | None:
+        """Return the declared local endpoints and provider labels, if any."""
+        return self._observation_scope.endpoint_scope
+
+    def owns_model(self, model_id: str) -> bool:
+        """Return whether the local range covers ``model_id``."""
+        if self._model_scope is None:
+            return True
+        return self.canonical_id(model_id) in self._model_scope
 
     def owns_observation(self, obs: RoutingObservation) -> bool:
-        """Return True: a local backend owns every observation routed to it.
+        """Return whether ``obs`` names an endpoint this local backend serves."""
+        if not self.owns_model(obs.model_id):
+            return False
+        return self._observation_scope.includes_endpoint(obs.endpoint_id)
 
-        The hybrid router only hands an observation to a backend the selection
-        policy chose or that claimed the endpoint, so the local side does not
-        re-derive a range it was already constructed with.
-        """
-        return True
+    def adapter_in_scope(self, adapter: Any) -> bool:
+        """Return whether ``adapter`` is inside the declared local range."""
+        return self._observation_scope.includes_adapter(adapter)
 
 
 class RouteWiseCloudBackend(RoutingBackendBase):
@@ -269,6 +332,9 @@ class RouteWiseCloudBackend(RoutingBackendBase):
             must not leak them into primaries, fallbacks or background probes.
         model_scope: Optional canonical model ids this backend owns.
         name: Backend identity reported in routing metadata and diagnostics.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root that built the router
+            owns it, and this wrapper leaves the router's background work alone.
 
     The wrapped router's ``attach_route_table`` is called once with the scoped
     view, so every route-derived structure it builds -- candidates, endpoint
@@ -284,6 +350,7 @@ class RouteWiseCloudBackend(RoutingBackendBase):
         endpoint_scope: Collection[str],
         model_scope: Collection[str] | None = None,
         name: str = "cloud",
+        manage_lifecycle: bool = False,
     ) -> None:
         if not endpoint_scope:
             raise ValueError(
@@ -291,7 +358,7 @@ class RouteWiseCloudBackend(RoutingBackendBase):
                 "declaring no cloud endpoints would let the backend fall back to "
                 "every endpoint in the process route table"
             )
-        super().__init__(router, name=name)
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
         self._table = table
         self._endpoint_scope = frozenset(endpoint_scope)
         self._model_scope = frozenset(model_scope) if model_scope is not None else None
@@ -331,15 +398,21 @@ class RouteWiseCloudBackend(RoutingBackendBase):
             attach(self._view, model_scope=self._model_scope)
 
     def refresh_route_table(self) -> None:
-        """Rebuild route-derived state from a fresh projection of the table.
+        """Rebuild route-derived state from the current route table.
 
-        A new view instance is bound so the wrapped router re-reads the source
-        table instead of a cached snapshot; the wrapped router's own refresh
-        keeps its synchronization boundary and re-derives its state.
+        Mirrors ``RouteWiseRouter.refresh_route_table`` rather than re-binding
+        the view: the view is live, so dropping its projection cache is enough
+        to make the router's own refresh re-read the source table. Re-binding
+        through ``attach_route_table`` would take that method's *attach* path,
+        which clears ``pending_prefix_cache`` -- discarding the prefix-cache
+        feedback of every in-flight request, a side effect a refresh does not
+        have today.
         """
-        self._view = self._build_view()
+        self._view.clear_cache()
         self._allowed_endpoints_cache = None
-        self._bind_view()
+        refresh = getattr(self._router, "refresh_route_table", None)
+        if callable(refresh):
+            refresh()
 
     def canonical_id(self, model_id: str) -> str:
         """Resolve ``model_id`` through the cloud candidate view."""

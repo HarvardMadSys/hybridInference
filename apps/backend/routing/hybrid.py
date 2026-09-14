@@ -14,13 +14,15 @@ Deliberate non-goals, matching the current design:
   closed consumer closes the downstream iterator it holds.
 * No admission control, queueing or resource model. Those belong to whichever
   algorithm needs them, defined when that algorithm is added.
-* No lifecycle ownership. Backends are injected already constructed; the
-  composition root that built them starts and stops them.
+* No lifecycle ownership. Backends are injected already constructed, and the
+  composition root that built them starts and stops them unless a backend
+  explicitly opted into lifecycle management.
 
-Feedback is delivered to exactly one backend. The policy decides the common
-case; an observation that arrives out of band is attributed by the endpoint it
-names, so a shared endpoint never gets two samples and a backend is never told
-about a request it did not serve.
+Feedback is delivered to exactly one backend. The backend recorded when the
+policy chose for that request wins; otherwise the single backend whose
+ownership predicate claims the endpoint does. An observation that resolves to
+no backend or to two is dropped rather than broadcast, because a duplicated
+sample corrupts the online state of a backend that never served the request.
 """
 
 from __future__ import annotations
@@ -89,13 +91,22 @@ class HybridRouter:
         local: RoutingBackend,
         cloud: RoutingBackend,
         name: str = "hybrid",
+        max_recorded_decisions: int = 4096,
     ) -> None:
+        if max_recorded_decisions < 1:
+            raise ValueError("max_recorded_decisions must be at least 1")
         self._policy = policy
         self._name = name
         self._backends: dict[str, RoutingBackend] = {}
         for backend in (local, cloud):
             self._register_backend(backend)
         self._started: set[str] = set()
+        # Which backend served which request, kept only until that request's
+        # feedback arrives. Ownership predicates alone cannot separate two
+        # backends that both claim an endpoint, so the decision made at dispatch
+        # time is the authoritative attribution when it is still available.
+        self._max_recorded_decisions = max_recorded_decisions
+        self._backend_decisions: dict[str, str] = {}
 
     def _register_backend(self, backend: RoutingBackend) -> None:
         """Register one backend, rejecting an empty or duplicate name."""
@@ -153,7 +164,41 @@ class HybridRouter:
                 f"policy selected unknown backend {selected!r}; "
                 f"registered backends are {sorted(self._backends)}"
             )
+        request_id = params.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            self._remember_backend_decision(request_id, selected)
         return selected
+
+    def _remember_backend_decision(self, request_id: str, backend_name: str) -> None:
+        """Record which backend served a request until its feedback arrives."""
+        decisions = self._backend_decisions
+        if request_id not in decisions and len(decisions) >= self._max_recorded_decisions:
+            # Bounded drop-oldest eviction: an observation that arrives after
+            # eviction falls back to endpoint ownership instead of blocking.
+            decisions.pop(next(iter(decisions)), None)
+        decisions[request_id] = backend_name
+
+    def _resolve_feedback_backend(self, obs: RoutingObservation) -> str | None:
+        """Return the one backend that served ``obs``, or None if unsettled."""
+        request_id = getattr(obs, "request_id", None)
+        if isinstance(request_id, str) and request_id:
+            recorded = self._backend_decisions.pop(request_id, None)
+            if recorded is not None:
+                return recorded
+        owners = [
+            backend_name
+            for backend_name, backend in self._backends.items()
+            if backend.owns_observation(obs)
+        ]
+        if len(owners) == 1:
+            return owners[0]
+        if not owners:
+            return None
+        # More than one backend claims this endpoint and no dispatch record
+        # survives, so attribution is genuinely undecidable. Sending the sample
+        # to every claimant would double-count one request against two
+        # learning states; refresh has already judged dropping it safer.
+        return None
 
     def backend_for_request(
         self,
@@ -227,18 +272,19 @@ class HybridRouter:
         return _closing_stream(inner, backend.name)
 
     def record_observation(self, obs: RoutingObservation) -> None:
-        """Deliver feedback to exactly the backend that served the request."""
-        owners = [backend for backend in self._backends.values() if backend.owns_observation(obs)]
-        if len(owners) == 1:
-            owners[0].record_observation(obs)
+        """Deliver feedback to exactly the backend that served the request.
+
+        Attribution uses, in order: the backend recorded when the policy chose
+        for this ``request_id``, then the single backend whose ownership
+        predicate claims the endpoint. An observation that resolves to no
+        backend, or to two, is dropped rather than broadcast: a duplicated
+        sample corrupts the online state of a backend that never served the
+        request, which is worse than a missing one.
+        """
+        backend_name = self._resolve_feedback_backend(obs)
+        if backend_name is None:
             return
-        # Two backends can legitimately expose the same endpoint id (a cloud
-        # and a local route to the same upstream). Selection already decided
-        # which one served the request, but an out-of-band observation carries
-        # no such record, so every claimant is told once rather than dropping
-        # the sample for both.
-        for backend in owners:
-            backend.record_observation(obs)
+        self._backends[backend_name].record_observation(obs)
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return the merged endpoint status of both backends."""
@@ -273,29 +319,41 @@ class HybridRouter:
             if callable(refresh):
                 refresh()
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
         """Start the backends this router owns the lifecycle of.
 
-        Only backends started here are stopped here, so a backend the
-        composition root also manages is never started twice.
+        Returns:
+            True when at least one backend was activated by this call. A backend
+            that does not manage its own lifecycle, or that reports its router
+            was already running under another owner, is not recorded as started
+            here and is therefore never stopped here.
         """
+        activated = False
         for backend_name, backend in self._backends.items():
             if backend_name in self._started:
                 continue
             start = getattr(backend, "start", None)
             if not callable(start):
                 continue
-            await start()
-            self._started.add(backend_name)
+            if await start():
+                self._started.add(backend_name)
+                activated = True
+        return activated
 
-    async def stop(self) -> None:
-        """Stop the backends this router started, in reverse order."""
+    async def stop(self) -> bool:
+        """Stop the backends this router started, in reverse order.
+
+        Returns:
+            True when at least one backend was stopped by this call.
+        """
+        stopped = False
         for backend_name in sorted(self._started, reverse=True):
             backend = self._backends[backend_name]
             stop = getattr(backend, "stop", None)
-            if callable(stop):
-                await stop()
+            if callable(stop) and await stop():
+                stopped = True
             self._started.discard(backend_name)
+        return stopped
 
 
 async def _closing_stream(

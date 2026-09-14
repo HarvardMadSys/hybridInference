@@ -129,13 +129,18 @@ class _ForceBackend(BackendSelection):
 
 @dataclass
 class _CountingBackend:
-    """Minimal backend double that counts feedback and lifecycle calls."""
+    """Minimal backend double that counts feedback and lifecycle calls.
+
+    ``starts_before_this_call`` models a router another owner already started:
+    the first start this backend attempts then reports "already running".
+    """
 
     backend_name: str
     owns: bool = True
     observations: list[str] = field(default_factory=list)
     starts: int = 0
     stops: int = 0
+    starts_before_this_call: int = 0
 
     @property
     def name(self) -> str:
@@ -170,14 +175,16 @@ class _CountingBackend:
     def owns_observation(self, obs: RoutingObservation) -> bool:
         return self.owns
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
         self.starts += 1
+        return self.starts > self.starts_before_this_call
 
-    async def stop(self) -> None:
+    async def stop(self) -> bool:
         self.stops += 1
+        return True
 
 
-def _observation(endpoint_id: str) -> RoutingObservation:
+def _observation(endpoint_id: str, *, request_id: str | None = None) -> RoutingObservation:
     return RoutingObservation(
         model_id=_MODEL_ID,
         endpoint_id=endpoint_id,
@@ -185,6 +192,7 @@ def _observation(endpoint_id: str) -> RoutingObservation:
         total_latency_ms=30.0,
         token_count=4,
         success=True,
+        request_id=request_id,
     )
 
 
@@ -198,7 +206,16 @@ def _hybrid(
 
 
 def _local_backend(adapter: _ComboAdapter) -> LocalBackend:
-    return LocalBackend(_route_table(adapter))
+    return _scoped_local_backend(adapter, _LOCAL_ENDPOINT)
+
+
+def _scoped_local_backend(adapter: _ComboAdapter, endpoint_id: str) -> LocalBackend:
+    """Build a local backend that declares the endpoints it actually serves."""
+    return LocalBackend(
+        _route_table(adapter),
+        endpoint_scope={endpoint_id},
+        model_scope={_MODEL_ID},
+    )
 
 
 def _cloud_backend(*adapters: _ComboAdapter) -> RouteWiseCloudBackend:
@@ -544,15 +561,34 @@ def test_observation_is_recorded_by_exactly_one_owning_backend() -> None:
 
 
 @pytest.mark.unit
-def test_shared_endpoint_feedback_reaches_every_claimant_once() -> None:
+def test_dispatch_record_attributes_feedback_when_both_backends_claim_the_endpoint() -> None:
+    """The backend the policy chose wins over endpoint ownership.
+
+    Two backends can both claim one endpoint id. Broadcasting the sample would
+    update a learner that never served the request, so the record written at
+    dispatch time is what decides.
+    """
+    local = _CountingBackend("local", owns=True)
+    cloud = _CountingBackend("cloud", owns=True)
+    router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
+    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="shared-request")
+
+    router.record_observation(_observation(_SHARED_ENDPOINT, request_id="shared-request"))
+
+    assert cloud.observations == [_SHARED_ENDPOINT]
+    assert local.observations == []
+
+
+@pytest.mark.unit
+def test_ambiguous_feedback_without_a_dispatch_record_is_dropped() -> None:
     local = _CountingBackend("local", owns=True)
     cloud = _CountingBackend("cloud", owns=True)
     router = _hybrid(policy=_ForceBackend("local"), local=local, cloud=cloud)
 
     router.record_observation(_observation(_SHARED_ENDPOINT))
 
-    assert local.observations == [_SHARED_ENDPOINT]
-    assert cloud.observations == [_SHARED_ENDPOINT]
+    assert local.observations == []
+    assert cloud.observations == []
 
 
 @pytest.mark.unit
@@ -609,13 +645,29 @@ async def test_lifecycle_delegation_is_idempotent() -> None:
     cloud = _CountingBackend("cloud")
     router = _hybrid(policy=_ForceBackend("local"), local=local, cloud=cloud)
 
-    await router.start()
-    await router.start()
-    await router.stop()
-    await router.stop()
+    assert await router.start() is True
+    assert await router.start() is False
+    assert await router.stop() is True
+    assert await router.stop() is False
 
     assert (local.starts, cloud.starts) == (1, 1)
     assert (local.stops, cloud.stops) == (1, 1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_backend_that_reports_already_started_is_not_stopped_here() -> None:
+    """A start the backend did not perform is not a stop it may perform."""
+    local = _CountingBackend("local")
+    already_running = _CountingBackend("cloud", starts_before_this_call=1)
+    router = _hybrid(policy=_ForceBackend("local"), local=local, cloud=already_running)
+
+    assert await router.start() is True
+    assert await router.stop() is True
+
+    assert local.starts == 1 and local.stops == 1
+    assert already_running.starts == 1
+    assert already_running.stops == 0
 
 
 def _routing_payloads(chunks: list[str]) -> list[dict[str, Any]]:
