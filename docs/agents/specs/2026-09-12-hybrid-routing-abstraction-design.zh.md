@@ -175,6 +175,40 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 新增的委托都有明确所有者，没有因为多包一层丢失现有生命周期操作。
 
+### 3.5.6 本轮完成 / 未完成（2026-09-14 第三轮）
+
+已完成（`8ab0f33b`，verified）：
+
+- `RoutingDecision` / `RoutingTarget` 结构化调度结果，provider 与 endpoint_id 明确区分；
+- `FixedRouter.select_adapter()` 公开无副作用入口，加权抽样提取为单一实现；
+  `preferred_endpoint_id`（首选目标，失败仍可 fallback）与 `endpoint_scope`
+  （候选范围，作用于 modality/健康/亲和/fallback 之前）；
+- `FixedPolicy`：fixed 的全局首选，复用同一 `FixedRouter` 选路，不重写算法；
+- `HybridRouter`：解析决策、跨 backend fallback、目标元数据、按 attempt 归属反馈；
+- backend 侧 `dispatch_scope()` / `serves()`，使被委托 attempt 的 fallback 候选
+  不越出自身域。
+
+未完成（本 PR 仍待办，不能声称已接入）：
+
+1. **registry / bootstrap 组装**：尚未让 `router: fixed` 的实际创建路径构造
+   `HybridRouter(FixedPolicy, LocalBackend, CloudBackend)`。`ModelRouterRegistry`
+   需要一个可选 factory 与 `local_scope` 解析器，bootstrap 提供它们并把
+   `HybridRouter` 纳入 `managed_routers`。
+2. **单次尝试执行**：`FixedPolicy` 选定目标后，`LocalBackend` 目前仍会把请求交给
+   完整 `FixedRouter`，其内部 fallback 循环会走遍**整条路由**（含 cloud 候选），
+   而 `endpoint_scope` 收紧的是选择范围、fallback 循环本身仍遍历
+   `_get_effective_adapters`。要让跨域 fallback 完全由 hybrid 层掌握，需要从
+   `chat_completion` / `stream_chat_completion` 提取"单次尝试"执行助手（自有
+   fallback 循环与它共用同一段代码，因此不是复制执行逻辑），并让执行域 backend
+   以单次尝试模式工作。这是接入前必须完成的一步。
+3. **`local_scope` 的真实来源**：需要一个显式的本地 endpoint 集合。代码里已有的
+   唯一 locality 判定是 `serving.servers.registry._make_provider_id` 使用的
+   `_LOCAL_HOSTS`（`serving/adapters/upstream_limiter.py` 已复用同一集合），
+   bootstrap 应据此计算 scope 并传入，而不是在 routing 包内重新推断归属。
+4. **兼容性测试**：从真实 registry/bootstrap 入口构建组合、Fixed 对
+   local/cloud/provider 的权重选择、同域与跨域 fallback、强制 pin、只选 cloud 与
+   指定目标、全池 RouteWise 范围、流式/取消/动态刷新/生命周期/反馈归属。
+
 ## 5. 接入范围
 
 本次提供可直接构造、可测试的组合入口，使用现有 router 加 mock adapters 验证封装；既有 fixed/routewise 请求入口继续工作。
