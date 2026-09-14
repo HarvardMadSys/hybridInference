@@ -524,6 +524,48 @@ async def test_stream_failure_after_a_forwarded_chunk_does_not_restart_elsewhere
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_stream_that_fails_before_visible_output_still_falls_back(
+    _first_candidate_wins: None,
+) -> None:
+    """A routing-only frame is not output, so the other domain may still serve.
+
+    Every backend emits a synthetic ``_routing`` frame before anything else, and
+    the serving layer drops it before the response leaves the gateway. Treating
+    that frame as commitment would strand the request on a backend that never
+    produced a visible byte, so the failure below must still hand over.
+    """
+    routing_only = (
+        "data: " + json.dumps({"choices": [], "_routing": {"provider": "local"}}) + "\n\n"
+    )
+    local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        stream_chunks=(routing_only,),
+        stream_error=ConnectionError("local failed before any visible output"),
+    )
+    remote = _adapter(
+        _CLOUD_ENDPOINT,
+        provider="zai",
+        base_url="https://api.zai.example/v1",
+        stream_chunks=(_frame("CLOUD-RECOVERY"),),
+    )
+    router = _registry(_shared_router(local, remote)).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    received = [
+        chunk
+        async for chunk in router.stream_chat_completion(
+            _MODEL_ID, _MESSAGES, request_id="pre-visible-failure"
+        )
+    ]
+
+    assert remote.stream_calls == 1, "a failure before visible output must still fall back"
+    assert "CLOUD-RECOVERY" in "".join(received)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_policy_preference_does_not_bypass_the_half_open_probe(
     _first_candidate_wins: None,
 ) -> None:

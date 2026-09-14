@@ -560,22 +560,23 @@ async def _fallback_stream(
         )
         buffered: list[Any] = []
         aclose = getattr(stream, "aclose", None)
-        # Set before the first forwarded chunk, not after the forwarding loop:
-        # the ``except`` below spans the whole section, so an upstream failure
-        # raised once output is already on the wire would otherwise be treated
-        # as a failed attempt and re-attempted on the next backend, splicing two
-        # answers into a single stream and swallowing the original error. The
-        # single-router path already refuses that with its own
-        # ``chunks_yielded`` guard.
+        # Commitment begins at the first chunk the *client* can see, which is not
+        # the first chunk forwarded. Every backend emits a synthetic routing frame
+        # before anything else (``{"choices": [], "_routing": {...}}``), and the
+        # serving layer drops that frame before the response leaves the gateway,
+        # so counting it as output would refuse a cross-domain fallback that a
+        # failure before the first visible byte is still entitled to take. The
+        # single-router path draws the line in the same place: its
+        # ``chunks_yielded`` flag is set by the adapter's chunks and never by its
+        # own synthetic frame.
         committed = False
         try:
             async for chunk in stream:
                 buffered.append(chunk)
                 break
             if buffered:
-                # Output exists; this attempt is committed. Forward what was
-                # held for the fallback decision, then stream the rest through.
-                committed = True
+                # Output exists; forward what was held for the fallback decision,
+                # then stream the rest through, recording commitment as it goes.
                 if attempts:
                     yield _attempt_history_chunk(
                         attempts,
@@ -583,8 +584,10 @@ async def _fallback_stream(
                         resolved_endpoint=preferred_endpoint,
                     )
                 for held in buffered:
+                    committed = committed or _is_client_visible(held)
                     yield _tag_backend_chunk(held, backend_name)
                 async for chunk in stream:
+                    committed = committed or _is_client_visible(chunk)
                     yield _tag_backend_chunk(chunk, backend_name)
                 return
             # A stream that ended without producing anything never reached the
@@ -765,6 +768,36 @@ def _tag_preference(
     if target is not None:
         routing.setdefault("preferred_target", target.describe())
         routing.setdefault("preference_in_range", resolved_endpoint is not None)
+
+
+def _is_client_visible(chunk: Any) -> bool:
+    """Return whether ``chunk`` carries anything the client will actually see.
+
+    Mirrors the serving layer's own contract (``openai_chat_serializer.
+    sanitize_chunk``): a frame is dropped before it reaches the client exactly
+    when it carries ``_routing`` metadata, no ``choices`` and no ``usage``. That
+    is the shape of the synthetic routing frame every backend emits first, and of
+    the attempt-history frame this module injects.
+
+    Nothing else is treated as invisible, so anything unrecognised -- a
+    keep-alive, a malformed frame, a byte payload -- counts as committed. Being
+    wrong in that direction only forgoes a fallback; being wrong the other way
+    would splice two answers into one stream.
+    """
+    if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        return True
+    raw = chunk[6:].strip()
+    if raw == "[DONE]":
+        return True
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return True
+    if not isinstance(payload, dict):
+        return True
+    if "_routing" not in payload:
+        return True
+    return bool(payload.get("choices")) or payload.get("usage") is not None
 
 
 def _tag_backend_chunk(chunk: Any, backend_name: str) -> Any:
