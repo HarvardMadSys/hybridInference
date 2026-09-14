@@ -93,6 +93,17 @@ For the full diagram (network layer, observability, storage), see
   comments meaning "the remote API" but isn't a formal type.
 - **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
   does weighted random selection plus automatic fallback.
+- **Backend / HybridRouter** — [apps/backend/routing/backends.py](apps/backend/routing/backends.py)
+  wraps an existing router as one execution domain (`LocalBackend`,
+  `RouteWiseCloudBackend`); [apps/backend/routing/hybrid.py](apps/backend/routing/hybrid.py)
+  delegates each request to one of two backends chosen by an injected
+  `BackendSelection` policy. A backend's candidate range is always an explicit
+  construction input: `RouteWiseCloudBackend` takes `endpoint_scope` and binds a
+  `RouteScopeView` ([apps/backend/routing/route_scope.py](apps/backend/routing/route_scope.py))
+  so primaries, fallbacks and its own probes cannot reach outside it. Nothing
+  infers "local" or "cloud" from a hostname, URL or provider name. This seam is
+  not wired into the production registry or bootstrap yet — see
+  [docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md](docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md).
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy
