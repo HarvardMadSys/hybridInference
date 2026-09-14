@@ -94,30 +94,35 @@ For the full diagram (network layer, observability, storage), see
 - **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
   does weighted random selection plus automatic fallback.
 - **Backend / HybridRouter** — [apps/backend/routing/backends.py](apps/backend/routing/backends.py)
-  wraps an existing router as one execution domain. `RoutingBackend` is the
-  shared contract; `LocalBackend` is the local side; `CloudBackend` is the
-  cloud role, with `FixedCloudBackend` (the operator's configured weights) and
-  `RouteWiseCloudBackend` as its two implementations.
-  [apps/backend/routing/hybrid.py](apps/backend/routing/hybrid.py) is typed
-  against those role names and delegates each request to one of the two
-  backends an injected `BackendSelection` policy chooses, so swapping the cloud
-  algorithm means subclassing `CloudBackend`, not editing the hybrid router. A
-  backend's candidate range is always an explicit construction input:
-  `RouteWiseCloudBackend` takes `endpoint_scope` and binds a
-  `RouteScopeView` ([apps/backend/routing/route_scope.py](apps/backend/routing/route_scope.py))
-  so primaries, fallbacks and its own probes cannot reach outside it.
-  The seam is live: `bootstrap._build_model_router_registry` builds the registry
-  with the hybrid factory attached, and `router: fixed` models with at least one
-  local endpoint enter through `HybridRouter`. Which endpoints count as local is
-  a deployment decision the composition root takes
-  ([apps/backend/serving/servers/hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)):
-  pass `local_scope` or `local_ownership` to state it, or accept the
-  `_LOCAL_HOSTS` hostname predicate as a compatibility default — that default
-  classifies by host, so a gateway-owned server on a LAN or cluster DNS address
-  reads as remote. `router: routewise` is **not** migrated yet: it still builds a
-  full-pool `RouteWiseRouter` that bypasses `HybridRouter` entirely. See
+  provides execution domains: `RoutingBackend` is the shared contract,
+  `LocalBackend` owns local execution and `CloudBackend` owns cloud execution.
+  **Fixed and RouteWise are peer routing policies**, both able to choose across
+  local and cloud candidates; future Greedy/Nimbus policies belong at the same
+  level. Local/cloud ownership is independent of RouteWise's `on_demand`,
+  `quota` and `concurrency` resource types. A local GPU deployment can be a
+  concurrency candidate when configured that way.
+  [HybridRouter](apps/backend/routing/hybrid.py) composes a policy with execution
+  domains. The current protocol is `BackendSelection`; `FixedPolicy` reuses
+  `FixedRouter` selection, and `FixedCloudBackend` reuses its execution state.
+  `RouteWisePolicy` names a target responsibility, not an already extracted
+  class: the existing `RouteWiseRouter` still combines decisions, reservations
+  and execution, using `llm_routewise.core` for algorithm primitives.
+  The bootstrap factory routes mixed `router: fixed` models through
+  `HybridRouter`; single-domain models keep the shared `FixedRouter`.
+  **Preserve `router: routewise` and its full candidate pool and behavior.**
+  Its existing registry path is valid for this refactor. Moving it into cloud,
+  narrowing its local/concurrency candidates or adding a Fixed split ahead of
+  it is not required. The existing `RouteWiseCloudBackend` is an optional scoped
+  wrapper, not the architectural home of RouteWise; keeping that public class
+  does not require wiring existing RouteWise models through it.
+  Execution scopes come from the composition root
+  ([hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)).
+  Explicit `local_scope` / `local_ownership` are supported; bootstrap currently
+  uses the hostname default, which can classify an owned LAN or cluster DNS
+  endpoint as remote. Do not infer a RouteWise resource type from that domain.
+  See
   [docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md](docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
-  for what that migration still owes.
+  for the agreed policy/execution boundary and behavior-preservation contract.
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy
