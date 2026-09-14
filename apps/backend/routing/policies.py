@@ -18,11 +18,13 @@ candidates in the order the route declares them, so the hybrid layer can
 reproduce what the single component did: one loop over every candidate, local
 and cloud interleaved exactly as they were registered.
 
-RouteWise policies are deliberately absent. A model configured with
-``router: routewise`` keeps its own router over its own full candidate pool for
-now: that entry point is the pre-migration path, and the target architecture
-puts RouteWise inside a ``CloudBackend`` instead. See the design doc's sections
-on scope and on what the migration still owes.
+RouteWise is a peer policy, not a layer of this one: a model configured with
+``router: routewise`` keeps its own router over its own full candidate pool, and
+that entry point is a valid implementation of the agreed design rather than a
+step pending migration. RouteWise may choose across local and cloud candidates,
+and its ``on_demand`` / ``quota`` / ``concurrency`` resource types are
+independent of which execution domain an endpoint belongs to. See the design doc
+for the policy/execution boundary.
 """
 
 from __future__ import annotations

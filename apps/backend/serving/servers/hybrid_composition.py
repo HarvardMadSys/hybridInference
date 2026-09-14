@@ -134,13 +134,14 @@ class HybridFixedRouterFactory:
             :func:`default_local_ownership`, the hostname predicate.
         cloud_scope: Optional explicit cloud endpoint set. ``None`` derives it as
             "every registered endpoint of the model that is not local".
-        cloud_backend: The cloud execution algorithm, as a builder taking the
-            shared router, the model id and the candidate range. ``None`` uses
+        cloud_backend: The cloud execution path, as a builder taking the shared
+            router, the model id and the candidate range. ``None`` uses
             :class:`~routing.backends.FixedCloudBackend`, the operator's
-            configured weights. Passing
-            :class:`~routing.backends.RouteWiseCloudBackend`'s builder is what
-            puts RouteWise inside the cloud domain; see the design doc for the
-            constraints that migration still has to satisfy.
+            configured weights. A builder for
+            :class:`~routing.backends.RouteWiseCloudBackend` makes that optional
+            scoped wrapper available to an explicit cloud range; it is not the
+            route a ``router: routewise`` model takes, and does not make
+            RouteWise a cloud-only policy.
     """
 
     def __init__(

@@ -974,6 +974,43 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_decision("test-model", {}).adapter
         assert selected is conc
 
+    def test_a_local_endpoint_configured_as_concurrency_still_participates(self):
+        """Execution domain and RouteWise resource type are independent.
+
+        A GPU deployment this gateway runs itself is modelled as a
+        concurrency-limited provider -- the paper's generalization to local
+        deployments -- so it belongs in the full candidate pool and is gated by
+        its concurrency limit, not by its address. Narrowing RouteWise to cloud
+        candidates, or letting a local/cloud split stand in for the resource
+        model, would drop exactly this candidate.
+        """
+        local = _make_adapter(
+            provider="local",
+            provider_type="concurrency",
+            concurrency={"limit": 1},
+            concurrency_pool="local-gpu-pool",
+            endpoint_id="test-model:local-11434",
+        )
+        local.config.base_url = "http://localhost:11434/v1"
+        remote = _make_adapter(provider_type="on_demand", endpoint_id="test-model:zai-api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(local, 1.0), (remote, 1.0)])
+
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+
+        by_endpoint = {c.endpoint_id: c for c in router.route_candidates["test-model"]}
+        assert set(by_endpoint) == {"test-model:local-11434", "test-model:zai-api"}, (
+            "a locally run candidate must stay in RouteWise's pool"
+        )
+        assert by_endpoint["test-model:local-11434"].provider_type is ProviderType.CONCURRENCY
+
+        # Its resource model still applies: with the only slot taken, the local
+        # candidate is not selectable and the on-demand one is.
+        assert _conc_pool(router).try_acquire() is True
+        decision = router._select_decision("test-model", {})
+        assert decision is not None
+        assert decision.adapter is remote
+
 
 # ---------------------------------------------------------------------------
 # Quota / API decision logic tests

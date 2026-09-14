@@ -16,10 +16,13 @@ Two implementations ship here, one per side of the composition:
 
 ``CloudBackend`` / ``RouteWiseCloudBackend``
     ``CloudBackend`` is the cloud execution role ``HybridRouter`` dispatches to;
-    ``RouteWiseCloudBackend`` is its shipped implementation, wrapping an
-    existing ``RouteWiseRouter``. Selection, fallback, quota and concurrency
-    management and streaming stay in that router; the wrapper contributes the
-    candidate range and the delegation.
+    it is defined by the role, not by any one selection algorithm.
+    ``RouteWiseCloudBackend`` is an optional scoped wrapper: given an explicit
+    cloud range it delegates to an existing ``RouteWiseRouter``, whose selection,
+    fallback, quota and concurrency management and streaming stay where they are.
+    It is not RouteWise's architectural home -- RouteWise is a routing policy in
+    its own right, able to choose across local and cloud candidates, and
+    ``router: routewise`` keeps its existing entry point and full candidate pool.
 
 Candidate ranges are explicit construction inputs. A cloud backend built over a
 table that also contains local endpoints binds a
@@ -556,8 +559,9 @@ class CloudBackend(RoutingBackendBase, ABC):
     Declaring it abstract makes an incomplete implementation fail when it is
     constructed rather than when it is first asked to attribute.
 
-    ``RouteWiseCloudBackend`` is the shipped implementation; a different cloud
-    algorithm subclasses this with its own router and its own ownership rule.
+    Subclasses supply their own router and their own ownership rule;
+    ``FixedCloudBackend`` and the optional ``RouteWiseCloudBackend`` are the two
+    that ship here.
 
     Args:
         router: The router implementing cloud selection and execution.
@@ -597,10 +601,10 @@ class FixedCloudBackend(CloudBackend):
     The counterpart of :class:`LocalBackend`, and built the same way: it wraps
     the router that holds the model's routes and is bounded by its declared
     scope, so selection, fallback and execution are delegated whole while the
-    candidate range stays inside the cloud domain. It is the cloud algorithm for
-    a ``fixed`` model -- the operator's configured weights, not RouteWise's LP --
-    while :class:`RouteWiseCloudBackend` remains the algorithm for a model that
-    configures ``router: routewise``.
+    candidate range stays inside the cloud domain. It is the cloud execution
+    path for a ``fixed`` model, which selects by the operator's configured
+    weights. A model that configures ``router: routewise`` is not routed here:
+    RouteWise is a peer policy with its own full-pool entry point.
 
     Wrapping the shared router rather than a copy of its routes is what keeps
     this domain consistent with the rest of the process: an alias resolves

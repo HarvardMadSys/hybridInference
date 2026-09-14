@@ -428,7 +428,13 @@ def test_registry_keeps_the_shared_router_when_no_route_is_local() -> None:
 
 @pytest.mark.unit
 def test_routewise_models_are_not_narrowed_by_the_hybrid_factory() -> None:
-    """``router: routewise`` keeps its own router over its own full pool."""
+    """``router: routewise`` keeps its own router over its own full pool.
+
+    The agreed design puts Fixed and RouteWise at the same level as routing
+    policies, so the hybrid factory must not claim a ``routewise`` model: no
+    Fixed split in front of it, no narrowing to cloud, no change to its
+    ``router_params``. This is the guard for that decision.
+    """
     from routing.routewise.router import RouteWiseRouter
 
     local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
@@ -1123,16 +1129,17 @@ async def test_weight_override_resolver_attached_after_build_still_applies() -> 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_routewise_can_serve_as_the_cloud_domain_inside_the_composition(
+async def test_routewise_scoped_wrapper_can_serve_an_explicit_cloud_range(
     _first_candidate_wins: None,
 ) -> None:
-    """RouteWise is a cloud *implementation*, reachable from the composition root.
+    """``RouteWiseCloudBackend`` is an optional wrapper, and it stays in range.
 
-    The factory used to hard-code ``FixedCloudBackend``, so the role the hybrid
-    router is typed against had no production implementation at all. This drives
-    RouteWise through the cloud-algorithm seam and asserts the domain bound still
-    holds: a local-only failure hands over to RouteWise, and RouteWise can only
-    reach cloud endpoints.
+    This is the wrapper's own contract, not RouteWise's standard home: a caller
+    that wants RouteWise over an explicit cloud range can supply it through the
+    factory's cloud-path builder, and the range still bounds it -- a local-only
+    failure hands over to RouteWise, and RouteWise can only reach cloud
+    endpoints. A ``router: routewise`` model keeps its own full-pool entry point
+    and is not routed here.
     """
     from routing.backends import RouteWiseCloudBackend
     from routing.routewise.config import RouteWiseConfig
