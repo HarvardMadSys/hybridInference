@@ -4,7 +4,7 @@
 - 修订：2026-09-14，按设计文档收缩为抽象重构；同日完成实现
 - 状态：已完成（生产接入未启用）
 - 分支：`murphy/dev/hybrid-routing-abstract`
-- 设计：[抽象重构设计](2026-09-12-hybrid-routing-abstraction-design.zh.md)
+- 设计：[抽象重构设计](../specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
 ## 1. 交付物
 
