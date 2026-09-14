@@ -1,4 +1,4 @@
-from .backends import LocalBackend, RouteWiseCloudBackend, RoutingBackend
+from .backends import CloudBackend, LocalBackend, RouteWiseCloudBackend, RoutingBackend
 from .config import RoutingConfig, load_routing_config
 from .executor import RouteExecutor
 from .health import HealthMonitor
@@ -12,6 +12,7 @@ from .strategies import FixedRatioStrategy
 
 __all__ = [
     "BackendSelection",
+    "CloudBackend",
     "EffectiveRoute",
     "FixedRatioStrategy",
     "FixedRouter",

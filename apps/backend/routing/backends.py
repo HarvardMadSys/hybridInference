@@ -6,7 +6,7 @@ cloud provider set -- behind the same request contract as every serving router
 policy: it answers requests it is given, reports the routing metadata it
 already produced, and forwards feedback to the collaborators it wraps.
 
-Two implementations ship here:
+Two implementations ship here, one per side of the composition:
 
 ``LocalBackend``
     Wraps an existing, already-scoped local router (``FixedRouter`` or any
@@ -14,10 +14,12 @@ Two implementations ship here:
     token accounting and no cancellation protocol: the local execution path and
     its error semantics are reused as they are.
 
-``RouteWiseCloudBackend``
-    Wraps an existing ``RouteWiseRouter``. Selection, fallback, quota and
-    concurrency management and streaming stay in that router; this class
-    contributes the candidate range and the delegation.
+``CloudBackend`` / ``RouteWiseCloudBackend``
+    ``CloudBackend`` is the cloud execution role ``HybridRouter`` dispatches to;
+    ``RouteWiseCloudBackend`` is its shipped implementation, wrapping an
+    existing ``RouteWiseRouter``. Selection, fallback, quota and concurrency
+    management and streaming stay in that router; the wrapper contributes the
+    candidate range and the delegation.
 
 Candidate ranges are explicit construction inputs. A cloud backend built over a
 table that also contains local endpoints binds a
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
     from routing.routewise.router import RouteWiseRouter
 
 __all__ = [
+    "CloudBackend",
     "LocalBackend",
     "RouteWiseCloudBackend",
     "RoutingBackend",
@@ -65,18 +68,37 @@ _REQUIRED_ROUTER_METHODS = (
 def _adapters_in_router(router: Any) -> tuple[Any, ...]:
     """Return every adapter the wrapped router currently routes to.
 
-    Read through the optional ``RouteTableView`` capability, so a router that
-    does not expose a route table simply contributes no index entries instead
-    of failing construction.
+    Two supported shapes. ``FixedRouter`` *is* the table, so it answers
+    ``iter_effective_routes()`` itself. ``RouteWiseRouter`` holds its table in
+    ``route_table`` and probes that binding, so reading only the router-level
+    protocol would leave the index empty and a provider-label scope unusable. A
+    router exposing neither contributes no entries instead of failing
+    construction.
     """
+    routes = _routes_from(_effective_route_source(router))
+    return tuple(adapter for route in routes for adapter, _weight in route.adapters)
+
+
+def _effective_route_source(router: Any) -> Any:
+    """Return the object that can enumerate routes for ``router``."""
     iterate = getattr(router, "iter_effective_routes", None)
-    if not callable(iterate):
+    if callable(iterate):
+        return router
+    route_table = getattr(router, "route_table", None)
+    if route_table is None:
+        # One-release compatibility for the former attribute name.
+        route_table = getattr(router, "fixed_router", None)
+    return route_table if callable(getattr(route_table, "iter_effective_routes", None)) else None
+
+
+def _routes_from(source: Any) -> tuple[Any, ...]:
+    """Return the route snapshot of ``source``, or nothing if it is unusable."""
+    if source is None:
         return ()
     try:
-        routes = iterate()
+        return tuple(source.iter_effective_routes())
     except Exception:  # pragma: no cover - a router with an unusable view
         return ()
-    return tuple(adapter for route in routes for adapter, _weight in route.adapters)
 
 
 @runtime_checkable
@@ -133,6 +155,20 @@ class RoutingBackend(Protocol):
         """
         ...
 
+    # Composition metadata, read with ``getattr`` so a minimal backend double
+    # stays usable. ``RoutingBackendBase`` sets both to False and each concrete
+    # side flips its own, which is how ``HybridRouter`` checks that the
+    # injection matches the side it was passed as.
+    @property
+    def is_local(self) -> bool:
+        """Return whether this backend is the local execution domain."""
+        ...
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return whether this backend is the cloud execution domain."""
+        ...
+
 
 class RoutingBackendBase:
     """Shared delegation for backends that wrap one existing router.
@@ -180,6 +216,16 @@ class RoutingBackendBase:
     def manages_lifecycle(self) -> bool:
         """Return whether this backend may start and stop the wrapped router."""
         return self._manage_lifecycle
+
+    @property
+    def is_local(self) -> bool:
+        """Return whether this backend is the local execution domain."""
+        return False
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return whether this backend is the cloud execution domain."""
+        return False
 
     @property
     def started_here(self) -> bool:
@@ -324,6 +370,11 @@ class LocalBackend(RoutingBackendBase):
         """Return the declared local endpoints and provider labels, if any."""
         return self._observation_scope.endpoint_scope
 
+    @property
+    def is_local(self) -> bool:
+        """Return whether this backend is the local execution domain."""
+        return True
+
     def owns_model(self, model_id: str) -> bool:
         """Return whether the local range covers ``model_id``."""
         if self._model_scope is None:
@@ -348,8 +399,56 @@ class LocalBackend(RoutingBackendBase):
         self._observation_scope.prime(_adapters_in_router(self._router))
 
 
-class RouteWiseCloudBackend(RoutingBackendBase):
-    """Cloud execution domain implemented by the existing RouteWise router.
+class CloudBackend(RoutingBackendBase):
+    """Cloud execution domain: a set of remote providers behind one contract.
+
+    This is the role ``HybridRouter`` dispatches a cloud request to, and the
+    extension point a different selection algorithm joins at. It exists apart
+    from :class:`LocalBackend` because the two sides are not symmetric: a local
+    backend serves whatever its own router was populated with, while a cloud
+    backend is constructed over a shared route table and must be told which
+    endpoints of it are its own.
+
+    The default here holds no network state and simply runs the wrapped
+    router's selection. ``RouteWiseCloudBackend`` is the shipped
+    implementation, and it adds the candidate-range projection that keeps
+    RouteWise's primaries, fallbacks and background probes inside that range. A
+    different cloud algorithm subclasses this with its own router.
+
+    Args:
+        router: The router implementing cloud selection and execution.
+        name: Backend identity reported in routing metadata and diagnostics.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root that built the router
+            owns it.
+    """
+
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        name: str = "cloud",
+        manage_lifecycle: bool = False,
+    ) -> None:
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return whether this backend is the cloud execution domain."""
+        return True
+
+    def owns_model(self, model_id: str) -> bool:
+        """Return whether this backend serves ``model_id``.
+
+        A cloud backend with no candidate-range projection answers for every
+        model the wrapped router knows, which is the right default for a router
+        that was built for exactly one domain. Override to narrow it.
+        """
+        return True
+
+
+class RouteWiseCloudBackend(CloudBackend):
+    """RouteWise implementation of the cloud execution role.
 
     Selection, fallback, quota/concurrency accounting, hedging and streaming
     all execute inside the wrapped :class:`RouteWiseRouter`. This class

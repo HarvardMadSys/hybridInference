@@ -33,11 +33,31 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from routing.backends import RoutingBackend
+    from routing.backends import CloudBackend, RoutingBackend
     from routing.protocols import RoutingRequestOptions
     from routing.routers import RoutingObservation
 
 __all__ = ["BackendSelection", "HybridRouter", "HybridRoutingError"]
+
+
+def _check_backend_domain(backend: RoutingBackend, domain: str) -> None:
+    """Reject a backend injected as the side it does not declare.
+
+    Read with ``getattr`` so a minimal backend double that declares no domain
+    stays usable; a backend that does declare one must declare the side it was
+    passed as, which turns a swapped injection into a clear error instead of
+    two backends answering for each other.
+    """
+    declares_local = getattr(backend, "is_local", None)
+    declares_cloud = getattr(backend, "is_cloud", None)
+    if domain == "local" and declares_cloud:
+        raise ValueError(
+            f"{type(backend).__name__} declares the cloud domain but was passed as local"
+        )
+    if domain == "cloud" and declares_local:
+        raise ValueError(
+            f"{type(backend).__name__} declares the local domain but was passed as cloud"
+        )
 
 
 class HybridRoutingError(RuntimeError):
@@ -76,12 +96,18 @@ class HybridRouter:
 
     Args:
         policy: Scheduling policy consulted once per request.
-        local: Local execution backend.
-        cloud: Cloud execution backend.
+        local: Local execution backend (:class:`routing.backends.LocalBackend`).
+        cloud: Cloud execution backend. ``HybridRouter`` only relies on the
+            :class:`routing.backends.CloudBackend` role here; the concrete
+            algorithm -- ``RouteWiseCloudBackend`` today -- is chosen by the
+            composition root, which is what makes the cloud side replaceable.
         name: Identity used when this router reports itself as a backend.
+        max_recorded_decisions: Bound on the ``request_id`` to backend map kept
+            for feedback attribution.
 
     Both backends must implement :class:`routing.backends.RoutingBackend`; the
-    two names must be distinct and must match what ``policy`` returns.
+    two names must be distinct and must match what ``policy`` returns. A
+    backend that declares its domain must declare the one it is passed as.
     """
 
     def __init__(
@@ -89,12 +115,14 @@ class HybridRouter:
         *,
         policy: BackendSelection,
         local: RoutingBackend,
-        cloud: RoutingBackend,
+        cloud: CloudBackend,
         name: str = "hybrid",
         max_recorded_decisions: int = 4096,
     ) -> None:
         if max_recorded_decisions < 1:
             raise ValueError("max_recorded_decisions must be at least 1")
+        _check_backend_domain(local, "local")
+        _check_backend_domain(cloud, "cloud")
         self._policy = policy
         self._name = name
         self._backends: dict[str, RoutingBackend] = {}

@@ -94,11 +94,15 @@ For the full diagram (network layer, observability, storage), see
 - **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
   does weighted random selection plus automatic fallback.
 - **Backend / HybridRouter** — [apps/backend/routing/backends.py](apps/backend/routing/backends.py)
-  wraps an existing router as one execution domain (`LocalBackend`,
-  `RouteWiseCloudBackend`); [apps/backend/routing/hybrid.py](apps/backend/routing/hybrid.py)
-  delegates each request to one of two backends chosen by an injected
-  `BackendSelection` policy. A backend's candidate range is always an explicit
-  construction input: `RouteWiseCloudBackend` takes `endpoint_scope` and binds a
+  wraps an existing router as one execution domain. `RoutingBackend` is the
+  shared contract; `LocalBackend` is the local side; `CloudBackend` is the
+  cloud role and `RouteWiseCloudBackend` its shipped implementation.
+  [apps/backend/routing/hybrid.py](apps/backend/routing/hybrid.py) is typed
+  against those role names and delegates each request to one of the two
+  backends an injected `BackendSelection` policy chooses, so swapping the cloud
+  algorithm means subclassing `CloudBackend`, not editing the hybrid router. A
+  backend's candidate range is always an explicit construction input:
+  `RouteWiseCloudBackend` takes `endpoint_scope` and binds a
   `RouteScopeView` ([apps/backend/routing/route_scope.py](apps/backend/routing/route_scope.py))
   so primaries, fallbacks and its own probes cannot reach outside it. Nothing
   infers "local" or "cloud" from a hostname, URL or provider name. This seam is

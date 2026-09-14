@@ -44,8 +44,9 @@ HybridRouter 是通用抽象，混合调度发生在它内部。Greedy/Nimbus �
 |---|---|---|
 | [HybridRouter](../../../apps/backend/routing/hybrid.py) | 对外接收请求，内部策略选择 backend，再委托调用 | 通用组合对象；策略经构造参数注入 |
 | [LocalBackend](../../../apps/backend/routing/backends.py) | 暴露现有 local 调用能力 | 包装调用方已配置好范围的 `RouterProtocol`（通常是 `FixedRouter`） |
-| [RoutingBackend](../../../apps/backend/routing/backends.py) | cloud 调用能力接口 | 结构协议，仅 `RouterProtocol` 加 `name` 与 `owns_observation`，不依赖任何厂商或 RouteWise 细节 |
-| [RouteWiseCloudBackend](../../../apps/backend/routing/backends.py) | 使用 Routewise 完成 cloud 调用 | 委托已有 `RouteWiseRouter`，复用其算法与执行 |
+| [RoutingBackend](../../../apps/backend/routing/backends.py) | 两侧共用的调用接口 | 结构协议，仅 `RouterProtocol` 加 `name`、`owns_observation` 与域声明，不依赖任何厂商或 RouteWise 细节 |
+| [CloudBackend](../../../apps/backend/routing/backends.py) | cloud 调用能力抽象 | `HybridRouter` 面向的云端角色；换云端算法时替换的实现点 |
+| [RouteWiseCloudBackend](../../../apps/backend/routing/backends.py) | 使用 Routewise 完成 cloud 调用 | `CloudBackend` 的具体实现，委托已有 `RouteWiseRouter`，复用其算法与执行 |
 | [RouteScopeView](../../../apps/backend/routing/route_scope.py) | 明确传入每个 backend 的候选范围 | 只读 `RouteTableView` 投影；按模型与 endpoint 过滤 |
 
 组合方式：
@@ -56,6 +57,15 @@ router = HybridRouter(
     local=local_backend,
     cloud=cloud_backend,
 )
+```
+
+类的层次是设计里那条关系图的直接映射，`HybridRouter` 只依赖抽象角色，组装时才注入具体实现：
+
+```text
+RoutingBackend                  两侧共用的调用接口（结构协议）
+├── LocalBackend                本地执行域
+└── CloudBackend                云端执行域抽象（HybridRouter 面向它）
+    └── RouteWiseCloudBackend   Routewise 的具体实现
 ```
 
 调度策略在 `routing/hybrid.py` 中定义为 `BackendSelection` 协议，属于 HybridRouter 内部替换点，不增加串行的路由服务。测试使用 `_ForceBackend` 这类强制选择 local 或 cloud 的策略；它不代表已经实现 Greedy。
@@ -123,7 +133,8 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 - **范围而不是分类。** cloud 范围由构造方给出 endpoint/provider 集合，代码里没有“这个 endpoint 是不是本地”的推断；`AGENTS.md` 已说明 endpoint 后缀不可作为归属信号。
 - **权重不重归一化。** `RouteScopeView` 保留过滤前的权重（例如 cloud 侧 0.5 在只剩 cloud 的视图里仍是 0.5），因为它是 operator 配置的整池份额，不是过滤后残余的份额。
 - **反馈先查派发记录，再退回 owner 判定，绝不广播。** 观测是同步接口，策略只在请求路径上被调用，所以 `HybridRouter` 在派发时按 `request_id` 记下选中的 backend（有界 LRU，终结反馈到达时弹出）。这解决了两个 backend 都认领同一 endpoint 时无法区分的问题；记录缺失时用唯一 owner 判定，仍无法判定就丢弃样本。
-- **范围声明与归属判定用同一套语义。** provider 标签在 `ObservationScope` 里通过 backend 自己的路由表解析为 endpoint 集合，而不是在归属判定时退化成字符串比较；这样"我声明的范围"和"我能认领的 endpoint"不会分叉。
+- **范围声明与归属判定用同一套语义。** provider 标签在 `ObservationScope` 里通过 backend 自己已绑定的路由表解析为 endpoint 集合，而不是在归属判定时退化成字符串比较；这样"我声明的范围"和"我能认领的 endpoint"不会分叉。索引来源覆盖两种既有形态：`FixedRouter` 自身即路由表（`iter_effective_routes()`），`RouteWiseRouter` 把表放在 `route_table` 上。
+- **抽象角色而不是单一泛化对象。** local 与 cloud 并不对称：local 服务它自己 router 里注册的候选，cloud 是在共享路由表上构造、必须被告知哪些 endpoint 属于它。因此保留 `CloudBackend` 作为云端角色，`HybridRouter` 面向它，具体算法由其子类提供。
 - **生命周期是显式 opt-in 而不是推断。** `manage_lifecycle` 默认 False，把所有权留给构造方；`start()` 返回布尔值让包装层能区分"我拉起的"与"本来就在跑的"，避免包装层替外部 owner 取消后台任务。
 - **`_routing` 增加 `backend` 字段。** 既有 `_routing` 字典上 `setdefault("backend", name)`，用于观测与测试归因；不覆盖 router 已写入的内容，且和其它 `_routing` 键一样被 `sanitize_chunk` 剥离，不会出现在客户端。
 

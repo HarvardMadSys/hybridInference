@@ -141,6 +141,8 @@ class _CountingBackend:
     starts: int = 0
     stops: int = 0
     starts_before_this_call: int = 0
+    is_local: bool = False
+    is_cloud: bool = False
 
     @property
     def name(self) -> str:
@@ -245,8 +247,8 @@ def test_backend_selection_protocol_is_satisfied_by_a_test_policy() -> None:
 
 @pytest.mark.unit
 def test_hybrid_router_rejects_a_duplicate_backend_name() -> None:
-    local = LocalBackend(FixedRouter(), name="same")
-    cloud = LocalBackend(FixedRouter(), name="same")
+    local = _CountingBackend("same", is_local=True)
+    cloud = _CountingBackend("same", is_cloud=True)
 
     with pytest.raises(ValueError, match="duplicate backend name"):
         HybridRouter(policy=_ForceBackend("same"), local=local, cloud=cloud)
@@ -257,8 +259,8 @@ def test_hybrid_router_rejects_an_empty_backend_name() -> None:
     with pytest.raises(ValueError, match="empty backend name"):
         HybridRouter(
             policy=_ForceBackend("local"),
-            local=LocalBackend(FixedRouter(), name=""),
-            cloud=LocalBackend(FixedRouter(), name="cloud"),
+            local=_CountingBackend("", is_local=True),
+            cloud=_CountingBackend("cloud", is_cloud=True),
         )
 
 
@@ -686,6 +688,30 @@ def test_provider_status_is_merged_across_backends() -> None:
         "local": {"local": {"circuit_state": "closed"}},
         "cloud": {"cloud": {"circuit_state": "closed"}},
     }
+
+
+@pytest.mark.unit
+def test_hybrid_router_rejects_a_backend_injected_as_the_wrong_domain() -> None:
+    local = LocalBackend(FixedRouter(), name="local")
+    cloud = _cloud_backend(_adapter(_CLOUD_ENDPOINT, provider="zai"))
+
+    with pytest.raises(ValueError, match="declares the cloud domain but was passed as local"):
+        _hybrid(policy=_ForceBackend("local"), local=cloud, cloud=cloud)
+
+    with pytest.raises(ValueError, match="declares the local domain but was passed as cloud"):
+        _hybrid(policy=_ForceBackend("local"), local=local, cloud=local)
+
+
+@pytest.mark.unit
+def test_hybrid_router_accepts_the_two_documented_domains() -> None:
+    local = LocalBackend(FixedRouter(), name="local")
+    cloud = _cloud_backend(_adapter(_CLOUD_ENDPOINT, provider="zai"))
+
+    router = _hybrid(policy=_ForceBackend("local"), local=local, cloud=cloud)
+
+    assert local.is_local is True and local.is_cloud is False
+    assert cloud.is_cloud is True and cloud.is_local is False
+    assert [backend.name for backend in router.backends()] == ["local", "cloud"]
 
 
 @pytest.mark.unit
