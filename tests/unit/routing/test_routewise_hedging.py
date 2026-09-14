@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+from llm_routewise.core import CheckpointBackupDispatch
 
 from routing.endpoint_health import EndpointHealthRegistry
+from routing.prefill_load import PrefillLoadTracker
 from routing.route_table import EffectiveRoute
 from routing.routewise import hedging as hedging_module, router as router_module
 from routing.routewise.config import RouteWiseConfig
@@ -179,6 +183,19 @@ def _make_fake_adapter(
     return adapter
 
 
+class _StepLatencyProfile:
+    """Deterministic latency CDF used to inspect prefill penalty shifts."""
+
+    def __init__(self, latency_sec: float) -> None:
+        self.latency_sec = latency_sec
+        self.calls: list[float] = []
+
+    def cdf_at(self, value_sec: float, now: float) -> float:
+        del now
+        self.calls.append(value_sec)
+        return 1.0 if value_sec >= self.latency_sec else 0.0
+
+
 def _warm_envelope(
     router: Any,
     *,
@@ -282,6 +299,100 @@ class TestHedgedAdapterNonStreaming:
         ]
 
     @pytest.mark.asyncio
+    async def test_primary_failure_forwards_health_and_forgets_only_primary(self):
+        """A failed primary leg updates health and invalidates its endpoint hint."""
+        sink = _FakeEventSink()
+        forgotten: list[str] = []
+        primary = _make_fake_adapter(
+            provider="fail-primary",
+            chat_error=RuntimeError("primary failed"),
+        )
+        backup = _make_fake_adapter(
+            provider="good-backup",
+            chat_result={"source": "backup"},
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.01,
+            event_sink=sink,
+            endpoint_failure_hook=forgotten.append,
+        )
+
+        result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
+
+        assert result["source"] == "backup"
+        assert sink.failures == [("test:fail-primary", "RuntimeError")]
+        assert forgotten == ["test:fail-primary"]
+
+    @pytest.mark.asyncio
+    async def test_primary_failure_releases_non_stream_prefill_before_backup_finishes(self):
+        """A failed primary releases its lease while a backup is still running."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        lease = tracker.acquire("test:fail-primary", 100)
+        released = asyncio.Event()
+        primary = _make_fake_adapter(
+            provider="fail-primary",
+            chat_error=RuntimeError("primary failed"),
+        )
+        backup = _make_fake_adapter(provider="good-backup")
+
+        def release_primary() -> None:
+            tracker.release(lease)
+            released.set()
+
+        async def wait_for_primary_release(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            await asyncio.wait_for(released.wait(), timeout=0.2)
+            assert tracker.backlog("test:fail-primary") == 0
+            return {"source": "backup"}
+
+        backup.chat_completion = wait_for_primary_release
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        result = await hedged.chat_completion(
+            [{"role": "user", "content": "hi"}],
+            primary_prefill_release=release_primary,
+        )
+
+        assert result["source"] == "backup"
+        assert tracker.backlog("test:fail-primary") == 0
+        assert sink.failures == [("test:fail-primary", "RuntimeError")]
+
+    @pytest.mark.asyncio
+    async def test_backup_failure_forwards_health_and_forgets_only_backup(self):
+        """A failed backup leg updates health without duplicating the failure."""
+        sink = _FakeEventSink()
+        forgotten: list[str] = []
+        primary = _make_fake_adapter(
+            provider="good-primary",
+            chat_delay=0.05,
+            chat_result={"source": "primary"},
+        )
+        backup = _make_fake_adapter(
+            provider="fail-backup",
+            chat_error=RuntimeError("backup failed"),
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.001,
+            event_sink=sink,
+            endpoint_failure_hook=forgotten.append,
+        )
+
+        result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
+
+        assert result["source"] == "primary"
+        assert sink.failures == [("test:fail-backup", "RuntimeError")]
+        assert forgotten == ["test:fail-backup"]
+
+    @pytest.mark.asyncio
     async def test_both_fail_primary_error_raised(self):
         """Both fail -> primary's error is re-raised."""
         sink = _FakeEventSink()
@@ -341,6 +452,34 @@ class TestHedgedAdapterNonStreaming:
         # Primary wins (fast); exactly one success recorded.
         assert len(sink.successes) == 1
         assert sink.successes[0] == "test:p1"
+
+    @pytest.mark.asyncio
+    async def test_backup_prefill_is_confirmed_only_when_backup_wins(self):
+        """A completed non-streaming backup confirms its own endpoint lease."""
+        sink = _FakeEventSink()
+        confirmed: list[str] = []
+        released: list[str] = []
+        primary = _make_fake_adapter(provider="primary", chat_delay=1.0)
+        backup = _make_fake_adapter(provider="backup", chat_result={"source": "backup"})
+
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: released.append("backup"),
+            metadata={"prefill_confirm": lambda: confirmed.append("backup")},
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
+
+        assert result["source"] == "backup"
+        assert confirmed == ["backup"]
+        assert released == ["backup"]
 
 
 # ===========================================================================
@@ -418,6 +557,615 @@ class TestHedgedAdapterStreaming:
         combined = "".join(chunks)
         assert "quick" in combined
         assert "test:fast-backup" in sink.successes
+
+    @pytest.mark.asyncio
+    async def test_stream_primary_failure_forwards_health_and_forgets_only_primary(self):
+        """A failed primary stream leg updates health and invalidates its hints."""
+        sink = _FakeEventSink()
+        forgotten: list[str] = []
+        primary = _make_fake_adapter(
+            provider="fail-primary",
+            stream_error=ConnectionError("primary stream failed"),
+        )
+        backup = _make_fake_adapter(
+            provider="good-backup",
+            stream_chunks=[
+                'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+            endpoint_failure_hook=forgotten.append,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        ]
+
+        assert "backup" in "".join(chunks)
+        assert sink.failures == [("test:fail-primary", "ConnectionError")]
+        assert sink.successes == ["test:good-backup"]
+        assert forgotten == ["test:fail-primary"]
+
+    @pytest.mark.asyncio
+    async def test_stream_primary_failure_releases_prefill_before_backup_output(self):
+        """A failed primary releases its lease before backup content arrives."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        lease = tracker.acquire("test:fail-primary", 100)
+        released = asyncio.Event()
+        primary = _make_fake_adapter(
+            provider="fail-primary",
+            stream_error=ConnectionError("primary stream failed"),
+        )
+        backup = _make_fake_adapter(provider="good-backup")
+
+        def release_primary() -> None:
+            tracker.release(lease)
+            released.set()
+
+        async def wait_for_primary_release(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await asyncio.wait_for(released.wait(), timeout=0.2)
+            assert tracker.backlog("test:fail-primary") == 0
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+
+        backup.stream_chat_completion = wait_for_primary_release
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion(
+                [{"role": "user", "content": "hi"}],
+                primary_prefill_release=release_primary,
+            )
+        ]
+
+        assert "backup" in "".join(chunks)
+        assert tracker.backlog("test:fail-primary") == 0
+        assert sink.failures == [("test:fail-primary", "ConnectionError")]
+
+    @pytest.mark.asyncio
+    async def test_stream_primary_empty_releases_prefill_before_backup_output(self):
+        """An empty primary stream releases its lease while backup continues."""
+        sink = _FakeEventSink()
+        backup_started = asyncio.Event()
+        primary_released = asyncio.Event()
+        release_calls: list[str] = []
+
+        primary = _make_fake_adapter(provider="empty-primary")
+
+        async def empty_primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await backup_started.wait()
+            if False:
+                yield "unreachable"
+
+        primary.stream_chat_completion = empty_primary_stream
+        backup = _make_fake_adapter(provider="good-backup")
+
+        async def wait_for_primary_release(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            backup_started.set()
+            await primary_released.wait()
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+
+        backup.stream_chat_completion = wait_for_primary_release
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: None,
+        )
+
+        def release_primary() -> None:
+            release_calls.append("primary")
+            primary_released.set()
+
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion(
+                [{"role": "user", "content": "hi"}],
+                primary_prefill_release=release_primary,
+            )
+        ]
+
+        assert "backup" in "".join(chunks)
+        assert release_calls == ["primary"]
+
+    @pytest.mark.asyncio
+    async def test_stream_backup_failure_forwards_health_and_forgets_only_backup(self):
+        """A failed backup stream leg updates health without duplicate accounting."""
+        sink = _FakeEventSink()
+        forgotten: list[str] = []
+        primary = _make_fake_adapter(
+            provider="good-primary",
+            stream_chunks=[
+                'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+            stream_delay=0.05,
+        )
+        backup = _make_fake_adapter(
+            provider="fail-backup",
+            stream_error=ConnectionError("backup stream failed"),
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.0,
+            event_sink=sink,
+            endpoint_failure_hook=forgotten.append,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        ]
+
+        assert "primary" in "".join(chunks)
+        assert sink.failures == [("test:fail-backup", "ConnectionError")]
+        assert sink.successes == ["test:good-primary"]
+        assert forgotten == ["test:fail-backup"]
+
+    @pytest.mark.asyncio
+    async def test_stream_backup_prefill_confirms_on_first_content(self):
+        """A streaming backup confirms its lease at the first content chunk."""
+        sink = _FakeEventSink()
+        confirmed: list[str] = []
+        released: list[str] = []
+        primary = _make_fake_adapter(
+            provider="slow-primary",
+            stream_chunks=[],
+            stream_delay=1.0,
+        )
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            stream_chunks=['data: {"choices":[{"delta":{"content":"quick"}}]}\n\n'],
+        )
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: released.append("backup"),
+            metadata={"prefill_confirm": lambda: confirmed.append("backup")},
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        ]
+
+        assert any("quick" in chunk for chunk in chunks)
+        assert confirmed == ["backup"]
+        assert released == ["backup"]
+
+    @pytest.mark.asyncio
+    async def test_stream_backup_buffer_cap_confirms_when_content_arrives_later(self):
+        """A cap-only backup win keeps its lease until model content arrives."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        lease = tracker.acquire("test:backup", 100, affinity_key="caller")
+        confirmed: list[str] = []
+        released: list[str] = []
+        primary = _make_fake_adapter(provider="slow-primary", stream_delay=1.0)
+        padding = "x" * (hedging_module._STREAM_RACE_BUFFER_MAX_BYTES + 1)
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            endpoint_id="test:backup",
+            stream_chunks=[
+                "data: "
+                + json.dumps({"choices": [{"delta": {"role": "assistant", "padding": padding}}]})
+                + "\n\n",
+                'data: {"choices":[{"delta":{"content":"later"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: (released.append("backup"), tracker.release(lease)),
+            metadata={
+                "prefill_confirm": lambda: (
+                    confirmed.append("backup"),
+                    tracker.release(lease, prefill_confirmed=True),
+                )
+            },
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        await stream.__anext__()  # routing metadata for the backup winner
+        precontent = await stream.__anext__()
+        assert "padding" in precontent
+        assert confirmed == []
+        assert released == []
+        assert tracker.backlog("test:backup") > 0
+
+        content = await stream.__anext__()
+        assert '"content":"later"' in content
+        assert confirmed == ["backup"]
+        assert tracker.backlog("test:backup") == 0
+
+        await stream.aclose()
+        assert confirmed == ["backup"]
+        assert released == ["backup"]
+
+    @pytest.mark.asyncio
+    async def test_stream_backup_buffer_cap_close_releases_without_confirmation(self):
+        """Closing a cap-only winner before content releases without warming."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        lease = tracker.acquire("test:backup", 100, affinity_key="caller")
+        confirmed: list[str] = []
+        released: list[str] = []
+        primary = _make_fake_adapter(provider="slow-primary", stream_delay=1.0)
+        padding = "x" * (hedging_module._STREAM_RACE_BUFFER_MAX_BYTES + 1)
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            endpoint_id="test:backup",
+            stream_chunks=[
+                "data: "
+                + json.dumps({"choices": [{"delta": {"role": "assistant", "padding": padding}}]})
+                + "\n\n",
+            ],
+        )
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: (released.append("backup"), tracker.release(lease)),
+            metadata={
+                "prefill_confirm": lambda: (
+                    confirmed.append("backup"),
+                    tracker.release(lease, prefill_confirmed=True),
+                )
+            },
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        await stream.__anext__()  # routing metadata
+        await stream.__anext__()  # cap-winning pre-content buffer
+        assert confirmed == []
+        assert tracker.backlog("test:backup") > 0
+
+        await stream.aclose()
+        assert confirmed == []
+        assert released == ["backup"]
+        assert tracker.backlog("test:backup") == 0
+
+    @pytest.mark.asyncio
+    async def test_stream_losing_backup_releases_when_race_resolves(self):
+        """A backup loser is released before the primary's decode completes."""
+        sink = _FakeEventSink()
+        released: list[str] = []
+        primary_done = asyncio.Event()
+
+        primary = _make_fake_adapter(provider="primary")
+
+        async def _primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+            await primary_done.wait()
+            yield "data: [DONE]\n\n"
+
+        primary.stream_chat_completion = _primary_stream
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: released.append("backup"),
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert "primary" in first
+        assert released == ["backup"]
+
+        primary_done.set()
+        await stream.aclose()
+        assert released == ["backup"]
+
+    @pytest.mark.asyncio
+    async def test_stream_losing_backup_releases_after_cancellation_finishes(self):
+        """A losing backup keeps its reservation until its stream is closed."""
+        sink = _FakeEventSink()
+        backup_started = asyncio.Event()
+        backup_cancelled = asyncio.Event()
+        release_saw_cancellation: list[bool] = []
+
+        primary = _make_fake_adapter(provider="primary")
+
+        async def _primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await backup_started.wait()
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+
+        primary.stream_chat_completion = _primary_stream
+        backup = _make_fake_adapter(provider="backup")
+
+        async def _backup_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            backup_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                backup_cancelled.set()
+            if False:
+                yield "unreachable"
+
+        backup.stream_chat_completion = _backup_stream
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: release_saw_cancellation.append(backup_cancelled.is_set()),
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert "primary" in first
+        assert backup_cancelled.is_set()
+        assert release_saw_cancellation == [True]
+
+        await stream.aclose()
+        assert release_saw_cancellation == [True]
+
+    @pytest.mark.asyncio
+    async def test_stream_losing_backup_releases_prefill_before_capacity(self):
+        """Load accounting does not wait for a slow loser to finish closing."""
+        sink = _FakeEventSink()
+        events: list[str] = []
+        backup_started = asyncio.Event()
+        primary = _make_fake_adapter(provider="primary")
+
+        async def _primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await backup_started.wait()
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+
+        primary.stream_chat_completion = _primary_stream
+        backup = _make_fake_adapter(provider="backup")
+
+        async def _backup_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            backup_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("backup_closed")
+            if False:
+                yield "unreachable"
+
+        backup.stream_chat_completion = _backup_stream
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: events.append("capacity"),
+            metadata={"prefill_release": lambda: events.append("prefill")},
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert "primary" in first
+        assert events[0] == "prefill"
+        assert events[-1] == "capacity"
+        assert events.index("backup_closed") < events.index("capacity")
+
+        await stream.aclose()
+        assert events.count("prefill") == 1
+        assert events.count("capacity") == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_losing_backup_releases_capacity_when_close_is_cancelled(self):
+        """A loser-local close cancellation cannot abort the winning stream."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        backup_lease = tracker.acquire("test:backup", 100)
+        backup_started = asyncio.Event()
+        release_calls: list[str] = []
+        close_calls: list[str] = []
+
+        class _CloseRaisesCancelled:
+            async def __anext__(self) -> str:
+                backup_started.set()
+                await asyncio.Event().wait()
+                raise AssertionError("backup stream unexpectedly produced output")
+
+            def __aiter__(self):
+                return self
+
+            async def aclose(self) -> None:
+                close_calls.append("backup")
+                raise asyncio.CancelledError
+
+        backup_stream = _CloseRaisesCancelled()
+        primary = _make_fake_adapter(provider="primary")
+
+        async def _primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await backup_started.wait()
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+
+        primary.stream_chat_completion = _primary_stream
+        backup = _make_fake_adapter(provider="backup")
+        backup.stream_chat_completion = lambda *args, **kwargs: backup_stream
+
+        def _release_backup() -> None:
+            release_calls.append("backup")
+            tracker.release(backup_lease)
+
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=_release_backup,
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        first = await stream.__anext__()
+
+        assert "primary" in first
+        assert sink.successes == ["test:primary"]
+        assert release_calls == ["backup"]
+        assert tracker.backlog("test:backup") == 0
+
+        # The outer stream cleanup may attempt to close the loser again, but
+        # the dispatch release remains one-shot.
+        with contextlib.suppress(asyncio.CancelledError):
+            await stream.aclose()
+        assert release_calls == ["backup"]
+        assert len(close_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_stream_losing_backup_propagates_caller_cancellation_during_close(self):
+        """Caller cancellation during loser cleanup remains observable."""
+        sink = _FakeEventSink()
+        tracker = PrefillLoadTracker()
+        backup_lease = tracker.acquire("test:backup", 100)
+        backup_started = asyncio.Event()
+        close_started = asyncio.Event()
+        release_calls: list[str] = []
+        close_calls: list[str] = []
+
+        class _CloseBlocksUntilCancelled:
+            async def __anext__(self) -> str:
+                backup_started.set()
+                await asyncio.Event().wait()
+                raise AssertionError("backup stream unexpectedly produced output")
+
+            def __aiter__(self):
+                return self
+
+            async def aclose(self) -> None:
+                close_calls.append("backup")
+                if len(close_calls) > 1:
+                    return
+                close_started.set()
+                await asyncio.Event().wait()
+
+        backup_stream = _CloseBlocksUntilCancelled()
+        primary = _make_fake_adapter(provider="primary")
+
+        async def _primary_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            await backup_started.wait()
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+
+        primary.stream_chat_completion = _primary_stream
+        backup = _make_fake_adapter(provider="backup")
+        backup.stream_chat_completion = lambda *args, **kwargs: backup_stream
+
+        def _release_backup() -> None:
+            release_calls.append("backup")
+            tracker.release(backup_lease)
+
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=_release_backup,
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        consumer = asyncio.create_task(stream.__anext__())
+        await close_started.wait()
+        consumer.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+
+        assert release_calls == ["backup"]
+        assert tracker.backlog("test:backup") == 0
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await stream.aclose()
+        assert release_calls == ["backup"]
+        assert len(close_calls) >= 2
+
+    @pytest.mark.asyncio
+    async def test_stream_backup_winner_releases_primary_when_race_resolves(self):
+        """A backup winner releases the canceled primary before output consumption."""
+        sink = _FakeEventSink()
+        primary_released: list[str] = []
+        primary = _make_fake_adapter(provider="slow-primary", stream_delay=1.0)
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            stream_chunks=[
+                'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        dispatch = CheckpointBackupDispatch(
+            backup=backup,
+            elapsed_sec=0.0,
+            release=lambda: None,
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=sink,
+            hedge_checkpoints_sec=(0.0,),
+            checkpoint_backup_selector=lambda _elapsed, _timestamp: dispatch,
+        )
+
+        stream = hedged.stream_chat_completion(
+            [{"role": "user", "content": "hi"}],
+            primary_prefill_release=lambda: primary_released.append("primary"),
+        )
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert '"endpoint_id": "test:fast-backup"' in first
+        assert primary_released == ["primary"]
+
+        await stream.aclose()
+        assert primary_released == ["primary"]
 
     @pytest.mark.asyncio
     async def test_primary_tiebreaker(self):
@@ -523,6 +1271,7 @@ class TestHedgedAdapterStreaming:
     async def test_cleanup_on_cancellation(self):
         """HedgedAdapter cleans up when the caller cancels."""
         sink = _FakeEventSink()
+        forgotten: list[str] = []
         primary = _make_fake_adapter(
             provider="primary",
             stream_chunks=[
@@ -542,6 +1291,7 @@ class TestHedgedAdapterStreaming:
             backup=backup,
             hedge_threshold_sec=0.01,
             event_sink=sink,
+            endpoint_failure_hook=forgotten.append,
         )
 
         async def _consume() -> list[str]:
@@ -556,6 +1306,8 @@ class TestHedgedAdapterStreaming:
 
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert sink.failures == []
+        assert forgotten == []
 
 
 # ===========================================================================
@@ -1185,6 +1937,127 @@ class TestRouterHedgeMode:
         assert routewise["backup_provider"] == "test-model:quota-q"
         assert routewise["backup_provider_type"] == "quota"
         assert routewise["backup_won"] is True
+
+    def test_probability_target_backup_selection_applies_prefill_penalty(self):
+        """A loaded backup is not treated as having its unadjusted TTFT profile."""
+        config = RouteWiseConfig(
+            latency_min_samples=1,
+            prefill_load_routing_enabled=True,
+            prefill_load_scale_ms_per_1k=1.0,
+        )
+        router, _api_primary, _api_backup = _make_router_with_two_api(config)
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 300.0)
+        router._latency_profiles["test-model:api-b"].record(now, 10.0)
+
+        context = {"messages": [{"role": "user", "content": "hi"}], "params": {}}
+        candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=10,
+            predicted_output_tokens=10,
+            envelope=None,
+            now=now,
+            context=context,
+        )
+        selected = next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+        primary_profile = router._latency_profiles[selected.endpoint_id]
+
+        unladen_backup = router._select_hedge_candidate_at_elapsed(
+            primary_profile=primary_profile,
+            candidates=candidates,
+            selected=selected,
+            now=now,
+            elapsed_sec=0.001,
+            latency_slo_sec=0.05,
+        )
+        assert unladen_backup is not None
+        assert unladen_backup.provider.endpoint_id == "test-model:api-b"
+        assert unladen_backup.true_mean_ms == pytest.approx(10.0)
+
+        router._prefill_load._backlog["test-model:api-b"] = 100_000
+        loaded_candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=10,
+            predicted_output_tokens=10,
+            envelope=None,
+            now=now,
+            context=context,
+        )
+        loaded_backup = router._select_hedge_candidate_at_elapsed(
+            primary_profile=primary_profile,
+            candidates=loaded_candidates,
+            selected=selected,
+            now=now,
+            elapsed_sec=0.001,
+            latency_slo_sec=0.05,
+        )
+        assert loaded_backup is None
+
+    def test_probability_target_adjusts_captured_primary_prefill_penalty(self):
+        """Hedge probability uses the primary penalty captured at selection time."""
+        from routing.routewise.router import RouteWiseRouter
+
+        router = RouteWiseRouter(
+            route_table=None,
+            config=RouteWiseConfig(
+                latency_min_samples=1,
+                latency_slo_sec=0.15,
+                prefill_load_routing_enabled=True,
+            ),
+        )
+        primary = _make_fake_adapter(endpoint_id="test-model:api-a")
+        backup = _make_fake_adapter(endpoint_id="test-model:api-b")
+        route_table = _StaticRouteTable()
+        route_table.add("test-model", [(primary, 0.5), (backup, 0.5)])
+        router.attach_route_table(route_table)
+        now = time.time()
+        context = {"messages": [{"role": "user", "content": "hi"}], "params": {}}
+        candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=10,
+            predicted_output_tokens=10,
+            envelope=None,
+            now=now,
+            context=context,
+        )
+        selected = next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+        backup_candidate = next(c for c in candidates if c.endpoint_id == "test-model:api-b")
+        selected = replace(
+            selected,
+            prefill_load_adjusted_ttft_sec=selected.mean_ttft_sec + 0.1,
+        )
+
+        primary_profile = _StepLatencyProfile(0.1)
+        backup_profile = _StepLatencyProfile(0.01)
+        router._latency_profiles[backup_candidate.endpoint_id] = backup_profile
+
+        assert primary_profile.cdf_at(0.15, now) == 1.0
+        primary_profile.calls.clear()
+        result = router._select_hedge_candidate_at_elapsed(
+            primary_profile=primary_profile,
+            candidates=candidates,
+            selected=selected,
+            now=now,
+            elapsed_sec=0.05,
+            latency_slo_sec=0.15,
+        )
+
+        assert result is not None
+        assert result.provider.endpoint_id == "test-model:api-b"
+        assert primary_profile.calls == pytest.approx([0.05])
+        assert primary_profile.latency_sec == 0.1
+        assert backup_profile.calls == pytest.approx([0.1])
+
+        no_penalty = router._select_hedge_candidate_at_elapsed(
+            primary_profile=_StepLatencyProfile(0.1),
+            candidates=candidates,
+            selected=replace(selected, prefill_load_adjusted_ttft_sec=None),
+            now=now,
+            elapsed_sec=0.05,
+            latency_slo_sec=0.15,
+        )
+        assert no_penalty is not None
+        assert no_penalty.provider.endpoint_id == "test-model:api-b"
 
     @pytest.mark.asyncio
     async def test_probability_target_reselects_backup_at_checkpoint(self):

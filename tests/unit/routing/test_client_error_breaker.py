@@ -28,6 +28,7 @@ from routing.endpoint_health import (
     _http_status_of,
     _is_client_error,
 )
+from routing.prefill_load import PrefillLoadTracker
 from routing.routewise.decisions import ProviderReservation, RoutingDecision, RoutingTrace
 from routing.routewise.prefix_cache_pending import PendingPrefixCacheStore
 from routing.routewise.router import RouteWiseRouter
@@ -176,6 +177,7 @@ class _CaptureRouteWise(RouteWiseRouter):
     def __init__(self) -> None:
         self.captured: list[dict] = []
         self.pending_prefix_cache = PendingPrefixCacheStore()
+        self._prefill_load = PrefillLoadTracker()
         # fallback_mode != "policy" so both paths re-raise right after recording.
         self.config = types.SimpleNamespace(fallback_mode="off")
         self._fake = _FakeAdapter()

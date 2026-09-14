@@ -647,7 +647,11 @@ class PrefillLoadTracker:
         elephant_limit: int = ELEPHANT_LIMIT,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._lock = threading.Lock()
+        # RLock lets a routing transaction hold the tracker while the router
+        # calls the ordinary read/lease methods.  The transaction is short and
+        # contains only local selection/accounting work; provider I/O never
+        # runs while it is held.
+        self._lock = threading.RLock()
         self._backlog: dict[str, int] = {}
         self._elephants: dict[str, int] = {}
         # Load attributed to one caller on one endpoint, so a caller's own work
@@ -658,6 +662,18 @@ class PrefillLoadTracker:
         self._elephant_tokens = max(int(elephant_tokens), 1)
         self._elephant_limit = max(int(elephant_limit), 1)
         self._clock = clock
+
+    @contextlib.contextmanager
+    def routing_transaction(self) -> Iterator[None]:
+        """Serialize a route's load snapshot and lease reservation.
+
+        Route selection must observe the same load state that its primary
+        reservation updates.  Callers should hold this context only around
+        local candidate construction/selection and lease acquisition; it must
+        not span an upstream request.
+        """
+        with self._lock:
+            yield
 
     def uncached_estimate(
         self,

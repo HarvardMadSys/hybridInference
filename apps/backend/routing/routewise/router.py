@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import PrefillLoadTracker, estimate_prefill_tokens
 from routing.routers import AllCircuitsOpenError, adapter_supports_modalities
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -310,6 +311,8 @@ class FeasibleProviderCandidate:
     concurrency_pool: str | None = None
     quota_used_fraction: float | None = None
     quota_remaining: int | None = None
+    outstanding_prefill_tokens: int = 0
+    prefill_load_adjusted_ttft_sec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -408,6 +411,7 @@ class RouteWiseRouter:
         health_registry: EndpointHealthRegistry | None = None,
         *,
         fixed_router: RouteTableView | None = None,
+        prefill_load: PrefillLoadTracker | None = None,
     ) -> None:
         if route_table is not None and fixed_router is not None:
             raise TypeError("route_table and deprecated fixed_router cannot both be provided")
@@ -452,6 +456,12 @@ class RouteWiseRouter:
         # that genuinely serves the whole table. The registry narrows this to
         # the one model it built the router for; see attach_route_table.
         self._model_scope: frozenset[str] | None = None
+
+        # Prefill-load tracker: an existing PrefillLoadTracker can be shared
+        # (e.g. from FixedRouter) so RouteWise reads the same per-endpoint
+        # outstanding prefill state. When None, RouteWise creates its own
+        # standalone tracker (backward-compatible behavior).
+        self._prefill_load = prefill_load if prefill_load is not None else PrefillLoadTracker()
 
         self.predictor = BucketMeanOutputPredictor(
             default_output=self.config.output_default_tokens,
@@ -524,6 +534,11 @@ class RouteWiseRouter:
             detail=detail,
             exc=exc,
         )
+        # Invalidate any warm-prefix hints recorded against this endpoint.
+        # A failure (restart, replacement, OOM) likely emptied its radix cache,
+        # so a hint that outlives it would let a genuinely cold mega-prefill
+        # into the preempting tier. Mirrors FixedRouter's behavior.
+        self._prefill_load.forget_endpoint(endpoint_id)
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
@@ -1447,6 +1462,33 @@ class RouteWiseRouter:
     def _mean_ttft_sec(self, endpoint_id: str, now: float) -> float:
         return self._latency_estimate(endpoint_id, now)[0]
 
+    def _prefill_load_penalty_ms(self, outstanding_tokens: int) -> float:
+        """Compute a bounded additive TTFT penalty (ms) from prefill backlog.
+
+        The penalty is linear in outstanding tokens up to a configured cap:
+        penalty = min(scale * tokens / 1000, max_penalty).
+
+        Args:
+            outstanding_tokens: Outstanding uncached prefill tokens on the
+                endpoint, as reported by PrefillLoadTracker.backlog().
+
+        Returns:
+            Penalty in milliseconds (0 if no backlog or feature disabled).
+        """
+        if outstanding_tokens <= 0 or self.config.prefill_load_scale_ms_per_1k <= 0:
+            return 0.0
+        raw_ms = self.config.prefill_load_scale_ms_per_1k * outstanding_tokens / 1000.0
+        return min(raw_ms, self.config.prefill_load_max_penalty_ms)
+
+    @staticmethod
+    def _tracked_prefill_tokens(messages: Any, params: Mapping[str, Any] | None) -> int:
+        """Estimate the complete request body charged to prefill accounting."""
+        return estimate_prefill_tokens(
+            messages if isinstance(messages, list) else None,
+            tools=params.get("tools") if params is not None else None,
+            response_format=params.get("response_format") if params is not None else None,
+        )
+
     def _api_cost_for_adapter(
         self,
         adapter: BaseAdapter,
@@ -1655,6 +1697,19 @@ class RouteWiseRouter:
                 concurrency_pool_id = None
 
             mean_ttft_sec, mean_ttft_source = self._latency_estimate(endpoint_id, now)
+
+            # Prefill-load-aware adjustment: read the existing tracker's
+            # outstanding prefill tokens for this endpoint and compute a bounded
+            # additive TTFT penalty. This is a soft signal — it never makes an
+            # endpoint infeasible, only less attractive in the LP.
+            outstanding_prefill_tokens = 0
+            prefill_load_adjusted_ttft_sec: float | None = None
+            if self.config.prefill_load_routing_enabled:
+                outstanding_prefill_tokens = self._prefill_load.backlog(endpoint_id)
+                penalty_ms = self._prefill_load_penalty_ms(outstanding_prefill_tokens)
+                if penalty_ms > 0:
+                    prefill_load_adjusted_ttft_sec = mean_ttft_sec + penalty_ms / 1000.0
+
             candidates.append(
                 FeasibleProviderCandidate(
                     endpoint_id=endpoint_id,
@@ -1673,6 +1728,8 @@ class RouteWiseRouter:
                     concurrency_pool=concurrency_pool_id,
                     quota_used_fraction=used_fraction,
                     quota_remaining=quota_remaining,
+                    outstanding_prefill_tokens=outstanding_prefill_tokens,
+                    prefill_load_adjusted_ttft_sec=prefill_load_adjusted_ttft_sec,
                 )
             )
         if not has_modality_match:
@@ -1940,6 +1997,17 @@ class RouteWiseRouter:
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
+            "candidate_outstanding_prefill_tokens": {
+                c.endpoint_id: c.outstanding_prefill_tokens
+                for c in candidates
+                if c.outstanding_prefill_tokens > 0
+            },
+            "candidate_prefill_load_adjusted_ttft_sec": {
+                c.endpoint_id: c.prefill_load_adjusted_ttft_sec
+                for c in candidates
+                if c.prefill_load_adjusted_ttft_sec is not None
+            },
+            "prefill_load_routing_enabled": self.config.prefill_load_routing_enabled,
             "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
             "candidate_quota_remaining": {
                 c.endpoint_id: c.quota_remaining
@@ -2072,6 +2140,21 @@ class RouteWiseRouter:
     ) -> CheckpointBackupDispatch | None:
         """Select and reserve a backup at one in-flight checkpoint."""
         with self._route_commit_lock:
+            if self.config.prefill_load_routing_enabled:
+                with self._prefill_load.routing_transaction():
+                    return self._select_checkpoint_backup_locked(
+                        model_id=model_id,
+                        decision=decision,
+                        context=context,
+                        prompt_tokens=prompt_tokens,
+                        predicted_output_tokens=predicted_output_tokens,
+                        envelope=envelope,
+                        selected=selected,
+                        checkpoints_sec=checkpoints_sec,
+                        latency_slo_sec=latency_slo_sec,
+                        elapsed_sec=elapsed_sec,
+                        checkpoint_ts=checkpoint_ts,
+                    )
             return self._select_checkpoint_backup_locked(
                 model_id=model_id,
                 decision=decision,
@@ -2159,6 +2242,32 @@ class RouteWiseRouter:
         if reservation is None:
             return None
 
+        # The backup is a separate upstream dispatch. Charge it to its own
+        # endpoint as soon as the hedge starts, and keep the lease lifecycle
+        # with the hedge adapter so a cancelled loser cannot leave stale load
+        # behind. The primary lease is owned by the execution wrapper.
+        backup_lease = None
+        if self.config.prefill_load_routing_enabled:
+            request_params = context.get("params") if isinstance(context, dict) else None
+            tracked_tokens = self._tracked_prefill_tokens(
+                context.get("messages") if isinstance(context, dict) else None,
+                request_params if isinstance(request_params, dict) else None,
+            )
+            backup_lease = self._prefill_load.acquire(
+                backup.endpoint_id,
+                tracked_tokens,
+            )
+
+        def _confirm_backup_prefill() -> None:
+            self._prefill_load.release(backup_lease, prefill_confirmed=True)
+
+        def _release_backup_prefill() -> None:
+            self._prefill_load.release(backup_lease)
+
+        def _release_backup_resources() -> None:
+            _release_backup_prefill()
+            reservation.release()
+
         try:
             self._record_hedge_dispatch(
                 decision=decision,
@@ -2170,12 +2279,16 @@ class RouteWiseRouter:
                 backup=backup.adapter,
                 elapsed_sec=elapsed_sec,
                 success_probability=current.success_probability,
-                release=reservation.release,
+                release=_release_backup_resources,
+                metadata={
+                    "prefill_confirm": _confirm_backup_prefill,
+                    "prefill_release": _release_backup_prefill,
+                },
             )
         except BaseException:
             # ``HedgedAdapter._start_backup_at`` swallows whatever this raises,
             # so nothing downstream would ever release a commit made above it.
-            reservation.release()
+            _release_backup_resources()
             raise
 
     def _select_hedge_candidate_at_elapsed(
@@ -2189,32 +2302,65 @@ class RouteWiseRouter:
         latency_slo_sec: float,
     ) -> BackupCandidate[FeasibleProviderCandidate] | None:
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
+        primary_prefill_penalty_sec = self._candidate_prefill_penalty_sec(selected)
         for candidate in candidates:
             if candidate.endpoint_id == selected.endpoint_id:
                 continue
             profile = self._latency_profiles.get(candidate.endpoint_id)
             if profile is None:
                 continue
+            prefill_penalty_sec = self._candidate_prefill_penalty_sec(candidate)
+
+            def primary_cdf(value_ms: float) -> float:
+                adjusted_value_sec = value_ms / 1000.0 - primary_prefill_penalty_sec
+                if adjusted_value_sec <= 0.0:
+                    return 0.0
+                return primary_profile.cdf_at(adjusted_value_sec, now)
+
+            def backup_cdf(
+                value_ms: float,
+                *,
+                profile=profile,
+                prefill_penalty_sec=prefill_penalty_sec,
+                now=now,
+            ) -> float:
+                adjusted_value_sec = value_ms / 1000.0 - prefill_penalty_sec
+                if adjusted_value_sec <= 0.0:
+                    return 0.0
+                return profile.cdf_at(adjusted_value_sec, now)
+
             success_probability = combined_success_probability(
-                lambda value_ms: primary_profile.cdf_at(value_ms / 1000.0, now),
-                lambda value_ms, backup_profile=profile: backup_profile.cdf_at(
-                    value_ms / 1000.0,
-                    now,
-                ),
+                primary_cdf,
+                backup_cdf,
                 elapsed_ms=elapsed_sec * 1000.0,
                 slo_ms=latency_slo_sec * 1000.0,
                 dispatch_overhead_ms=0.0,
+            )
+            adjusted_mean_ttft_sec = (
+                candidate.prefill_load_adjusted_ttft_sec
+                if candidate.prefill_load_adjusted_ttft_sec is not None
+                else candidate.mean_ttft_sec
             )
             backup_candidates.append(
                 BackupCandidate(
                     provider=candidate,
                     success_probability=success_probability,
                     marginal_cost=self._routing_dollar_estimate(candidate),
-                    true_mean_ms=candidate.mean_ttft_sec * 1000.0,
+                    true_mean_ms=adjusted_mean_ttft_sec * 1000.0,
                     success_target=HEDGE_SUCCESS_TARGET,
                 )
             )
         return select_probability_backup(backup_candidates)
+
+    @staticmethod
+    def _candidate_prefill_penalty_sec(candidate: FeasibleProviderCandidate) -> float:
+        """Return the candidate's additive prefill penalty in seconds."""
+        if candidate.prefill_load_adjusted_ttft_sec is None:
+            return 0.0
+        return max(
+            0.0,
+            candidate.prefill_load_adjusted_ttft_sec - candidate.mean_ttft_sec,
+        )
 
     def _record_hedge_dispatch(
         self,
@@ -2335,6 +2481,8 @@ class RouteWiseRouter:
         model_id: str,
         context: dict[str, Any],
         trace: RoutingTrace | None = None,
+        *,
+        reserve_prefill: bool = False,
     ) -> RoutingDecision | None:
         model_id = self.canonical_model_id(model_id)
         if model_id not in self.classified:
@@ -2348,6 +2496,17 @@ class RouteWiseRouter:
             trace.request_id = str(request_id)
 
         with self._route_commit_lock:
+            if self.config.prefill_load_routing_enabled and reserve_prefill:
+                # The tracker lock makes the load snapshot used by
+                # _build_candidates and the primary lease reservation one
+                # linearizable operation.  No provider I/O occurs here.
+                with self._prefill_load.routing_transaction():
+                    return self._select_decision_locked(
+                        model_id,
+                        context,
+                        trace,
+                        reserve_prefill=True,
+                    )
             return self._select_decision_locked(model_id, context, trace)
 
     def _select_decision_locked(
@@ -2355,6 +2514,8 @@ class RouteWiseRouter:
         model_id: str,
         context: dict[str, Any],
         trace: RoutingTrace,
+        *,
+        reserve_prefill: bool = False,
     ) -> RoutingDecision | None:
         prompt_tokens = self._prompt_tokens_from_context(context)
         prediction = self._predict_output(model_id, prompt_tokens, context)
@@ -2390,7 +2551,13 @@ class RouteWiseRouter:
         # committing, remove it and re-solve with the remaining candidates.
         while candidates:
             lp_candidates = [
-                LPCandidate(c.endpoint_id, c.effective_cost_usd, c.mean_ttft_sec)
+                LPCandidate(
+                    c.endpoint_id,
+                    c.effective_cost_usd,
+                    c.prefill_load_adjusted_ttft_sec
+                    if c.prefill_load_adjusted_ttft_sec is not None
+                    else c.mean_ttft_sec,
+                )
                 for c in candidates
             ]
             solution = solve_cost_budgeted_mean_ttft(
@@ -2404,7 +2571,10 @@ class RouteWiseRouter:
                 return None
             reservation = self._commit_candidate(selected)
             if reservation is not None:
+                prefill_lease = None
                 try:
+                    if reserve_prefill:
+                        prefill_lease = self._acquire_prefill_lease(selected, context)
                     hedge_plan = self._select_hedge_plan(
                         selected=selected,
                         now=now,
@@ -2426,6 +2596,12 @@ class RouteWiseRouter:
                         reservation=reservation,
                         metadata=metadata,
                         trace=trace,
+                        prefill_lease=prefill_lease,
+                        prefill_release=(
+                            None
+                            if prefill_lease is None
+                            else lambda lease=prefill_lease: self._prefill_load.release(lease)
+                        ),
                     )
                     if hedge_plan is not None:
 
@@ -2455,6 +2631,7 @@ class RouteWiseRouter:
                         decision.adapter = HedgedAdapter(
                             primary=selected.adapter,
                             event_sink=self._health_registry,
+                            endpoint_failure_hook=self._prefill_load.forget_endpoint,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                         )
@@ -2467,6 +2644,7 @@ class RouteWiseRouter:
                 except BaseException:
                     # Construction happens after a provider commit. Keep the
                     # ownership lexical even if metadata or hedge setup fails.
+                    self._prefill_load.release(prefill_lease)
                     reservation.release()
                     raise
             # Losing the commit race on a recovering endpoint is the same
@@ -2477,6 +2655,30 @@ class RouteWiseRouter:
             if not candidates:
                 return None
         return None
+
+    def _acquire_prefill_lease(
+        self,
+        selected: FeasibleProviderCandidate,
+        context: dict[str, Any],
+    ) -> Any:
+        """Reserve the selected primary's prefill work before returning it.
+
+        This is called only from the tracker routing transaction.  The lease
+        is attached to the returned decision, so the attempt owns its release
+        even if dispatch fails before the execution helper starts.
+        """
+        params = context.get("params")
+        tracked_tokens = self._tracked_prefill_tokens(
+            context.get("messages"),
+            params if isinstance(params, dict) else None,
+        )
+        # RouteWise does not yet receive #1417's authoritative cache evidence
+        # on this branch. Do not consume FixedRouter's older caller-scoped
+        # warm hint as though it were verified locality.
+        return self._prefill_load.acquire(
+            selected.endpoint_id,
+            tracked_tokens,
+        )
 
     def _stash_prefix_for_commit(
         self,
@@ -2787,13 +2989,35 @@ class RouteWiseRouter:
     ) -> dict[str, Any]:
         adapter = decision.adapter
         original_config = getattr(adapter, "config", None)
+        lease = decision.prefill_lease
+
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
-            # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
-            # _execute_stream_adapter.
+            if lease is None and self.config.prefill_load_routing_enabled:
+                # Use the prefill tracker's whole-request estimator to capture
+                # tools, response_format, tool_calls, etc. — not just message content.
+                tracked_tokens = self._tracked_prefill_tokens(messages, params)
+                # Track this request's prefill pressure so subsequent RouteWise decisions
+                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
+                lease = self._prefill_load.acquire(
+                    endpoint_id,
+                    tracked_tokens,
+                )
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
-                result = await adapter.chat_completion(messages, **params)
+                if isinstance(adapter, HedgedAdapter):
+                    primary_prefill_release = (
+                        None
+                        if lease is None
+                        else lambda lease=lease: self._prefill_load.release(lease)
+                    )
+                    result = await adapter.chat_completion(
+                        messages,
+                        primary_prefill_release=primary_prefill_release,
+                        **params,
+                    )
+                else:
+                    result = await adapter.chat_completion(messages, **params)
                 # HedgedAdapter reports every leg outcome, including the winner,
                 # directly to the shared registry. Counting the composite here
                 # would inflate availability and reset the breaker twice.
@@ -2802,9 +3026,20 @@ class RouteWiseRouter:
                     # that actually served, so resolve the endpoint after the call.
                     self._on_success(endpoint_id_for_adapter(adapter))
             if getattr(adapter, "config", None) is not original_config:
-                decision.metadata["backup_won"] = True
+                # Backup won: primary did not complete prefill. Release the
+                # primary lease without confirmation rather than confirming a
+                # warm-prefix hint for an endpoint whose request was cancelled.
+                self._prefill_load.release(lease)
+            else:
+                # Primary won: a returned response proves this endpoint finished
+                # prefilling this prompt, which is what makes its prefix safe to remember.
+                self._prefill_load.release(lease, prefill_confirmed=True)
             return result
         finally:
+            # Release prefill lease if it was acquired. Idempotent: no-op if
+            # already released with prefill_confirmed=True.
+            if lease is not None:
+                self._prefill_load.release(lease)
             # Single call site: _record_hedge_explorer_samples appends a
             # latency sample per invocation, so calling this in both try and
             # finally double-recorded the losing leg's TTFT on success.
@@ -2816,39 +3051,88 @@ class RouteWiseRouter:
         decision: RoutingDecision,
         model_id: str,
         messages: list[dict[str, Any]],
+        *,
+        prefill_lease: Any = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         adapter = decision.adapter
         original_config = getattr(adapter, "config", None)
+        lease = prefill_lease
+
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
-            # Deliberately no req_ctx.UPSTREAM_PRIORITY, in either execution
-            # path. A priority ranks a request by the *un-cached* prefill it
-            # imposes, and that discount comes from the per-caller prompt-size
-            # memory in FixedRouter's PrefillLoadTracker -- which this router
-            # neither owns nor feeds, because #1267 wired prefill accounting
-            # into FixedRouter only. Publishing the raw prompt size instead
-            # would stamp every warm long-context continuation as an elephant
-            # and have the upstream schedule it last and preempt it: worse than
-            # publishing nothing, which simply leaves an sglang backend using
-            # its own default priority for these models, exactly as before.
-            #
-            # So `priority_scheduling: true` is inert for a model on
-            # `router: routewise`. Giving RouteWise its own prefill accounting
-            # is what would fix it, and that is a larger change than this.
+            # A caller that supplied the outer stream lease has already paid the
+            # whole-request estimation cost. Only the fallback path estimates and
+            # acquires here (for direct/internal callers without that lease).
+            if lease is None and self.config.prefill_load_routing_enabled:
+                # Use the prefill tracker's whole-request estimator to capture
+                # tools, response_format, tool_calls, etc. — not just message content.
+                tracked_tokens = self._tracked_prefill_tokens(messages, params)
+                # Track this request's prefill pressure so subsequent RouteWise decisions
+                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
+                lease = self._prefill_load.acquire(
+                    endpoint_id,
+                    tracked_tokens,
+                )
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True
-                async for chunk in adapter.stream_chat_completion(messages, **params):
-                    if first and has_non_empty_content(chunk):
-                        first = False
-                        # HedgedAdapter already records the winning leg. For
-                        # other adapters, resolve the endpoint after first output
-                        # in case the adapter swapped its serving config.
-                        if not getattr(adapter, "reports_leg_outcomes", False):
-                            self._on_success(endpoint_id_for_adapter(adapter))
-                    yield chunk
+                if isinstance(adapter, HedgedAdapter):
+                    primary_prefill_release = (
+                        None
+                        if lease is None
+                        else lambda lease=lease: self._prefill_load.release(lease)
+                    )
+                    async for chunk in adapter.stream_chat_completion(
+                        messages,
+                        primary_prefill_release=primary_prefill_release,
+                        **params,
+                    ):
+                        if first and has_non_empty_content(chunk):
+                            first = False
+                            # First token arrived: prefill complete for the serving
+                            # endpoint. A HedgedAdapter confirms a backup leg itself;
+                            # the wrapper only confirms its primary lease when the
+                            # primary produced the winning first token.
+                            serving_endpoint = endpoint_id_for_adapter(adapter)
+                            if serving_endpoint != endpoint_id:
+                                # Hedge won: the primary request was cancelled before
+                                # prefill completed, so do not create a primary hint.
+                                self._prefill_load.release(lease)
+                            else:
+                                self._prefill_load.release(lease, prefill_confirmed=True)
+                            # HedgedAdapter already records the winning leg. For
+                            # other adapters, resolve the endpoint after first output
+                            # in case the adapter swapped its serving config.
+                            if not getattr(adapter, "reports_leg_outcomes", False):
+                                self._on_success(endpoint_id_for_adapter(adapter))
+                        yield chunk
+                else:
+                    async for chunk in adapter.stream_chat_completion(messages, **params):
+                        if first and has_non_empty_content(chunk):
+                            first = False
+                            # First token arrived: prefill complete for the serving
+                            # endpoint. A HedgedAdapter confirms a backup leg itself;
+                            # the wrapper only confirms its primary lease when the
+                            # primary produced the winning first token.
+                            serving_endpoint = endpoint_id_for_adapter(adapter)
+                            if serving_endpoint != endpoint_id:
+                                # Hedge won: the primary request was cancelled before
+                                # prefill completed, so do not create a primary hint.
+                                self._prefill_load.release(lease)
+                            else:
+                                self._prefill_load.release(lease, prefill_confirmed=True)
+                            # HedgedAdapter already records the winning leg. For
+                            # other adapters, resolve the endpoint after first output
+                            # in case the adapter swapped its serving config.
+                            if not getattr(adapter, "reports_leg_outcomes", False):
+                                self._on_success(endpoint_id_for_adapter(adapter))
+                        yield chunk
         finally:
+            # Release prefill lease if it was acquired. Idempotent: no-op if
+            # already released with prefill_confirmed=True.
+            if lease is not None:
+                self._prefill_load.release(lease)
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True
             self._apply_hedge_execution_metadata(decision)
@@ -2907,7 +3191,12 @@ class RouteWiseRouter:
 
         try:
             while True:
-                next_decision = self._select_decision(model_id, context, trace)
+                next_decision = self._select_decision(
+                    model_id,
+                    context,
+                    trace,
+                    reserve_prefill=True,
+                )
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
@@ -3012,7 +3301,12 @@ class RouteWiseRouter:
 
         try:
             while True:
-                next_decision = self._select_decision(model_id, context, trace)
+                next_decision = self._select_decision(
+                    model_id,
+                    context,
+                    trace,
+                    reserve_prefill=True,
+                )
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
@@ -3032,6 +3326,7 @@ class RouteWiseRouter:
                         decision,
                         model_id,
                         messages,
+                        prefill_lease=decision.prefill_lease,
                         **params,
                     ):
                         self.pending_prefix_cache.touch(str(request_id))

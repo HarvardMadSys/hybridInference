@@ -681,10 +681,11 @@ async def initialize() -> AppServices:
         )
 
     endpoint_health_registry = EndpointHealthRegistry()
+    router = RouteExecutor(health_registry=endpoint_health_registry)
     router_dependencies = RouterBuildDependencies(
         health_registry=endpoint_health_registry,
+        prefill_load=router.prefill_load,
     )
-    router = RouteExecutor(health_registry=endpoint_health_registry)
 
     settings = get_settings()
     db_logger = _init_db_logger()

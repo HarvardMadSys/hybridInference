@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
-    PrefillLease,
     PrefillLoadTracker,
     conversation_fingerprint,
     estimate_prefill_tokens,
@@ -1194,12 +1193,29 @@ class FixedRouter:
         )
         # Proof, for the next turn, that it really contains this prompt.
         anchor = prompt_anchor(messages)
-        primary, primary_claim = self._select_and_claim_adapter(
-            model_id,
-            pin_provider=pin_provider,
-            required_modalities=required_modalities,
-            prefill_tokens=prefill_tokens,
-        )
+        primary = None
+        primary_claim = None
+        lease = None
+        try:
+            with self._prefill_load.routing_transaction():
+                primary, primary_claim = self._select_and_claim_adapter(
+                    model_id,
+                    pin_provider=pin_provider,
+                    required_modalities=required_modalities,
+                    prefill_tokens=prefill_tokens,
+                )
+                if primary is not None:
+                    lease = self._prefill_load.acquire(
+                        endpoint_id_for_adapter(primary),
+                        prefill_tokens,
+                        affinity_key=affinity_key,
+                        fingerprint=fingerprint,
+                        anchor=anchor,
+                    )
+        except BaseException:
+            if primary_claim is not None:
+                self._health_registry.end_dispatch(primary_claim)
+            raise
         if not primary:
             if pin_provider:
                 raise ProviderPinError(
@@ -1218,13 +1234,6 @@ class FixedRouter:
                 },
             ):
                 self._ensure_health(endpoint_id)
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    prefill_tokens,
-                    affinity_key=affinity_key,
-                    fingerprint=fingerprint,
-                    anchor=anchor,
-                )
                 try:
                     resp = await primary.chat_completion(messages, **params)
                     # A returned response proves this endpoint finished
@@ -1390,12 +1399,29 @@ class FixedRouter:
         )
         # Proof, for the next turn, that it really contains this prompt.
         anchor = prompt_anchor(messages)
-        primary, primary_claim = self._select_and_claim_adapter(
-            model_id,
-            pin_provider=pin_provider,
-            required_modalities=required_modalities,
-            prefill_tokens=prefill_tokens,
-        )
+        primary = None
+        primary_claim = None
+        lease = None
+        try:
+            with self._prefill_load.routing_transaction():
+                primary, primary_claim = self._select_and_claim_adapter(
+                    model_id,
+                    pin_provider=pin_provider,
+                    required_modalities=required_modalities,
+                    prefill_tokens=prefill_tokens,
+                )
+                if primary is not None:
+                    lease = self._prefill_load.acquire(
+                        endpoint_id_for_adapter(primary),
+                        prefill_tokens,
+                        affinity_key=affinity_key,
+                        fingerprint=fingerprint,
+                        anchor=anchor,
+                    )
+        except BaseException:
+            if primary_claim is not None:
+                self._health_registry.end_dispatch(primary_claim)
+            raise
         if not primary:
             if pin_provider:
                 raise ProviderPinError(
@@ -1403,7 +1429,6 @@ class FixedRouter:
                 )
             raise ValueError(f"No route configured for model {model_id}")
         chunks_yielded = False
-        lease: PrefillLease | None = None
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
@@ -1425,13 +1450,6 @@ class FixedRouter:
                 # Charged before the first yield so the lease brackets the whole
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
-                lease = self._prefill_load.acquire(
-                    primary_endpoint_id,
-                    prefill_tokens,
-                    affinity_key=affinity_key,
-                    fingerprint=fingerprint,
-                    anchor=anchor,
-                )
                 yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):

@@ -154,6 +154,13 @@ models:
       # reason, prefix-cache discount and quota use); the console reads none
       # of it, so it is off by default rather than stored on every request.
       # decision_metadata_candidate_detail: false
+      # Prefill-load-aware routing. When enabled, RouteWise reads the existing
+      # PrefillLoadTracker (per-endpoint outstanding uncached prefill tokens) and
+      # adds a bounded soft TTFT penalty to loaded endpoints in the LP. Soft
+      # signal only: never makes an endpoint infeasible. Default off.
+      # prefill_load_routing_enabled: false
+      # prefill_load_scale_ms_per_1k: 1.0       # ms penalty per 1K tokens
+      # prefill_load_max_penalty_ms: 5000.0      # cap on penalty
 
     route:
       # Premium: answers immediately, costs more.
