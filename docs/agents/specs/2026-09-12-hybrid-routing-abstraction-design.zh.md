@@ -135,13 +135,38 @@ class RoutingDecision:
 
 ### 3.5.4 现有 fixed / routewise 配置迁移后的真实调用链
 
-| 配置 | 迁移前 | 迁移后 |
-|---|---|---|
-| `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=RouteWiseCloudBackend)`；策略做全局首选，`LocalBackend` 承接本地执行 |
-| `router: routewise` | → `RouteWiseRouter`（**全池**候选） | 保持全池 `RouteWiseRouter`，**不改成 cloud-only** |
+| 配置 | 迁移前 | 迁移后（已实现） | 目标架构 |
+|---|---|---|---|
+| `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=FixedCloudBackend(共享 FixedRouter))`；策略做全局首选，两侧都被 `endpoint_scope` 限定在自己的域内 | cloud 侧换成 `RouteWiseCloudBackend` 时即成为"全局分流 + 域内 RouteWise 选 provider"；组合根通过 `HybridFixedRouterFactory(cloud_backend=...)` 选择算法 |
+| `router: routewise` | → `RouteWiseRouter`（**全池**候选） | **未迁移**：仍是全池 `RouteWiseRouter`，完全绕过 `HybridRouter` | 迁入 `HybridRouter` + `RouteWiseCloudBackend`；前置条件见 §3.5.4.1 |
 
-`RouteWiseCloudBackend` 是"明确限定云端范围"的组合方式，不是把现有 routewise 配置
-自动缩窄的工具。全池 RouteWise 的候选范围与行为必须原样保留。
+已实现与目标之间的差异是有意的，不是漏做：
+
+- `fixed` 模型的 cloud 算法是 operator 配置的权重（`FixedCloudBackend`），因为那正是
+  `router: fixed` 的语义。`RouteWiseCloudBackend` 是同一 `CloudBackend` role 的另一个
+  实现，通过 `HybridFixedRouterFactory(cloud_backend=...)` 注入，已有组合级测试覆盖
+  （`test_routewise_can_serve_as_the_cloud_domain_inside_the_composition`）。
+- `router: routewise` 是**迁移前的旧路径**，不是"HybridRouter 层的策略"。在它迁入
+  cloud 域之前，不能把它算作新架构的一部分。
+
+### 3.5.4.1 RouteWise 迁入 cloud 域的前置条件
+
+`RouteWiseRouter` 当前与 hybrid 的控制面有两处不兼容，必须在迁移前解决，否则会引入
+行为回归：
+
+1. **强制 pin**：`RouteWiseRouter._validate_routing_options` 对 `pin_provider` 直接
+   `raise ValueError("pinned requests must be dispatched through the shared FixedRouter")`。
+   pin 目前由共享 `FixedRouter` 承接，且它的 pin 分支**不受 `endpoint_scope` 约束**
+   （`_select_and_claim_adapter` 的 pin 分支不传 scope）。因此如果把某模型的 cloud 侧
+   换成 RouteWise，该模型上"pin 一个云 provider"的请求会从可用变为报错。迁移需要一条
+   显式的 pin 通路（第三个 backend，或让策略在 pin 时把请求交给包装了共享 router 的
+   一侧）。
+2. **首选目标与候选范围**：`RouteWiseRouter` 只读 `routing_options.required_modalities`，
+   完全忽略 `preferred_endpoint_id` 与 `endpoint_scope`。云侧的域内限定目前靠
+   `RouteWiseCloudBackend` 绑定的 `RouteScopeView` 实现（有效），但 `FixedPolicy`
+   抽出的首选端点会被 RouteWise 丢弃，即 cloud 域内的 provider 选择改由 RouteWise 的
+   LP 决定。这是目标架构的预期语义，但属于**行为变更**，需要与 `fixed` 模型的
+   operator 权重语义一起显式记录。
 
 ### 3.5.5 反馈归属：一个 request 可能对应多个 backend
 
@@ -162,8 +187,9 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 封装保留请求参数、实际 provider/endpoint、响应元数据和已有反馈语义：
 
-- HybridRouter 不叠加跨 backend 重试；某个 backend 内部的 fallback 与 hedging 仍留在该 backend 内。
-- 流式路径不缓冲：`LocalBackend` 与 `HybridRouter` 都返回下游自己的迭代器/转发迭代器，关闭消费者会关闭下游迭代器。
+- **跨 backend fallback 由 HybridRouter 承担**，上限 `_MAX_BACKEND_ATTEMPTS`；某个 backend 内部的 fallback 与 hedging 仍留在该 backend 内，由 `endpoint_scope` 保证不越域。
+- **已输出即提交**：流式路径每个 attempt 只缓冲**首帧**，用来判断该 attempt 是否已经产生客户端可见输出。一旦有输出，该 attempt 即被提交——后续异常直接向上抛出，不再切到另一个 backend。这与旧 `FixedRouter` 的 `chunks_yielded` 守卫一致；没有它就会把两个 backend 的回答拼进同一条 SSE 流并吞掉原始错误。未产生任何输出的 attempt 视为失败，可以继续 fallback。
+- 关闭语义：`LocalBackend` 返回下游自己的迭代器；`HybridRouter` 是转发迭代器，退出时在 `finally` 里 `aclose()` 下游迭代器。
 - 反馈只投递给一个 owner，按以下顺序判定：
   1. 该 `request_id` 在派发时由策略选中的 backend；
   2. 唯一认领该 endpoint 的 backend（`owns_observation`）；
@@ -188,7 +214,8 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 - backend 侧 `dispatch_scope()` / `serves()`，使被委托 attempt 的 fallback 候选
   不越出自身域。
 
-接入已完成（`git log` 第三轮后续提交）：
+接入状态：已接线并在生产 bootstrap 路径上生效（`router: fixed` + 至少一个本地端点）。
+以下各项均已实现；§5.1 列出尚未迁移的部分。
 
 1. **registry / bootstrap 组装**：`ModelRouterRegistry` 增加可选
    `HybridRouterFactory`（`set_hybrid_router_factory()` 在首次 `get_router` 前绑定）。
@@ -196,15 +223,27 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
    `FixedRouter`。
 2. **域内 fallback 保留、跨域由 hybrid 层掌握**：`endpoint_scope` 现在同时作用于
    选择、`eligible_adapters` 以及 `chat_completion` / `stream_chat_completion` 的
-   **两条 fallback 循环**。因此本地域仍会按原有顺序在本地副本间 fallback（行为不
-   变），但不会越入 cloud；整域失败后由 `HybridRouter` 按策略的 fallback 计划跨域。
-   校验：`test_domain_internal_fallback_is_preserved`（本地两次尝试、cloud 零次）与
-   `test_a_dead_domain_hands_over_without_leaving_domain_retries_behind`。
-3. **`local_scope` 的真实来源**：`serving/servers/hybrid_composition.py` 复用网关唯一
-   的 locality 判定 `serving.adapters.upstream_limiter.is_local_endpoint`
-   （它本身复用 `servers.registry._LOCAL_HOSTS`），从共享 router 已注册的 route 计算
-   本地 endpoint 集合；权重不参与（权重为 0 的路由仍是本域容量）。全部为远端时
-   factory 返回 None，模型留在共享 router 上。
+   **两条 fallback 循环**。因此本地域仍会按原有顺序在本地副本间 fallback，但不会越入
+   cloud；整域失败后由 `HybridRouter` 按策略的 fallback 计划跨域。
+   校验：`test_a_failed_spot_stays_inside_its_domain`、`test_failed_domain_falls_back_to_the_other_domain`。
+
+   **这是有意的语义变更，不是等价迁移。** 旧 `FixedRouter` 的 fallback 走**全局
+   route 顺序**（`L1, cloud, L2` 在 `L1` 失败后由 cloud 接手），新实现是**域内耗尽后
+   再跨域**（由 `L2` 接手）。候选覆盖范围相同，但优先级不同。该取舍已被采纳为新语义；
+   `FixedPolicy.fallback_backends` 不再声称与旧行为等价。
+3. **`local_scope` 的来源**：`serving/servers/hybrid_composition.py` 从共享 router
+   已注册的 route 计算本地 endpoint 集合；权重不参与（权重为 0 的路由仍是本域容量）。
+   本地归属是**部署决策**，按优先级取三者之一：显式 `local_scope` 集合、注入的
+   `local_ownership` 解析器、或兼容默认的 `_LOCAL_HOSTS` hostname 判定
+   （`serving.adapters.upstream_limiter.is_local_endpoint`）。hostname 默认会漏判：
+   LAN 地址（`http://10.0.0.5:8000`）与集群 DNS 名（`http://vllm-1.svc...`）都读作
+   远端，`0.0.0.0` 读作本地，且 `servers.registry._LOCAL_HOSTS` 与
+   `serving.observability.alerts._LOCAL_HOSTS` 目前不一致（后者含 `::1`）。
+   全部为远端时 factory 返回 None，模型留在共享 router 上。
+
+   域划分**不冻结在构造时**：`_LiveDomainScopes` 每次从当前 route 表重新推导，
+   两侧 backend 与 policy 共用同一个读取口，`refresh_route_tables()` 之后新增/删除的
+   endpoint 会同时改变派发、目标解析与反馈归属。
 4. **cloud 侧执行域**：新增 `FixedCloudBackend`（`CloudBackend` 的具体实现），持有
    只含 cloud 候选的 router。这一点是必需的：若把共享 router 交给 cloud backend，
    当首选 cloud 目标失败时它会沿整条路由 fallback 回本地。
@@ -214,13 +253,13 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 ## 5. 接入范围
 
-本次提供可直接构造、可测试的组合入口，使用现有 router 加 mock adapters 验证封装；既有 fixed/routewise 请求入口继续工作。
+本次**已接线**：`bootstrap._build_model_router_registry` 在建 registry 的同一次调用里装上 hybrid factory，`router: fixed` 且至少有一个本地端点的模型经 `HybridRouter` 进入；不再需要新的 strategy 名（复用 `fixed`）。两侧 backend 都包装**共享** `FixedRouter`，由 `endpoint_scope` 限定各自域，因此不需要按范围分别注册路由。
 
-本次**没有**把生产 registry 中的顶层 Routewise 替换成嵌套对象，也没有启用新的生产 hybrid 策略。未来启用组合路由时，至少需要同步处理以下几处（本次已在文档中记录，未改动代码）：
+本次**没有**迁移 `router: routewise`：生产 registry 里的顶层 RouteWise 仍是全池候选，绕过 `HybridRouter`。迁移需要先解决 §3.5.4.1 的两项，并同步处理：
 
-1. `ModelRouterRegistry` 以 strategy 名为键构造 router；hybrid 需要一个新的策略名与参数模型。
-2. [bootstrap](../../../apps/backend/serving/servers/bootstrap.py) 的 `_collect_routewise_routers` 直接 `isinstance(router, RouteWiseRouter)` 判定，嵌套在 `RouteWiseCloudBackend` 里的 router 不会被识别，因此其 `start()`/`stop()` 与 `attach_operational_store()` 不会被调用。
-3. 生产 `FixedRouter` 持有全部路由；要构造“只有本地候选”的 LocalBackend，需要在组装处按范围分别注册，或给本地侧提供同样显式的范围输入。
+1. [bootstrap](../../../apps/backend/serving/servers/bootstrap.py) 的 `_collect_routewise_routers` 直接 `isinstance(router, RouteWiseRouter)` 判定，嵌套在 `RouteWiseCloudBackend` 里的 router 不会被识别，因此其 `start()`/`stop()` 与 `attach_operational_store()` 不会被调用。
+2. RouteWise 的 envelope 校准与 quota pool 需要 operational store 已挂载，否则 `start()` 会因未校准而 hard-fail；这决定了嵌套 RouteWise 的生命周期必须由组合根接管。
+3. `router: routewise` 模型需要一个新的顶层策略来回答"本地还是云端"；现有 `FixedPolicy` 的语义是"operator 配置的全局权重抽签"，与 RouteWise 模型的既定行为不必然一致。
 
 ## 6. 完成条件与验证
 
@@ -229,6 +268,13 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 | 1. 可注入两个 backend 与测试策略；选择任一侧时只执行对应侧 | `tests/unit/routing/test_hybrid_router.py::test_forced_local_policy_executes_only_the_local_backend`、`...forced_cloud...` |
 | 2. 普通与流式均可用；参数、路由控制字段、输出顺序与元数据正确 | `test_router_owned_options_never_reach_the_adapter`、`test_streaming_forwards_order_and_attributes_the_backend`、`test_hybrid_streams_through_a_real_local_backend_in_order` |
 | 3. 不缓冲完整流、不吞异常与取消，已启动迭代器按现有语义关闭 | `test_streaming_does_not_run_the_backend_before_the_first_read`、`test_closing_the_hybrid_stream_closes_the_downstream_iterator`、`test_stream_exceptions_propagate_unchanged` |
+| 3a. 已输出后不再跨域重启（对齐 `FixedRouter` 的 `chunks_yielded`） | `test_hybrid_composition.py::test_stream_failure_after_a_forwarded_chunk_does_not_restart_elsewhere` |
+| 3b. 首选目标是自动调度而非强制 pin，必须取半开探测 claim | `test_hybrid_composition.py::test_policy_preference_does_not_bypass_the_half_open_probe` |
+| 3c. 域划分随 `refresh_route_tables()` 同步（增删两个方向） | `test_hybrid_composition.py::test_route_refresh_moves_dispatch_off_a_removed_cloud_endpoint`、`test_route_refresh_moves_a_new_local_endpoint_into_the_local_domain` |
+| 3d. alias 请求保持 canonical 域划分；云域保留注册权重与后挂的 override resolver | `test_hybrid_composition.py::test_alias_requests_keep_the_canonical_domain_split`、`test_cloud_domain_keeps_the_registered_weight_override_baseline`、`test_weight_override_resolver_attached_after_build_still_applies` |
+| 3e. 接入从生产入口验证，且晚于首次 lookup 的安装会被拒绝 | `tests/unit/servers/test_hybrid_bootstrap_wiring.py` |
+| 3f. RouteWise 可作为 cloud 域接入组合，且域界仍然成立 | `test_hybrid_composition.py::test_routewise_can_serve_as_the_cloud_domain_inside_the_composition` |
+| 3g. 声明的 `cloud_scope` 真正约束策略；provider 标签范围能认领云侧反馈 | `test_hybrid_composition.py::test_a_declared_cloud_scope_gates_the_policy`、`test_provider_label_cloud_scope_still_attributes_cloud_feedback` |
 | 4. LocalBackend 复用现有调用路径；RoutewiseCloudBackend 实际委托 RouteWiseRouter | `tests/unit/routing/test_routing_backends.py`；共享契约参数化里的 `local-backend` / `cloud-backend` |
 | 5. cloud 候选与 fallback 不越到 local；共享对象与反馈不重复处理 | `test_cloud_backend_never_dispatches_a_local_candidate`、`test_cloud_backend_fallback_stays_inside_the_cloud_range`、`test_cloud_backend_excludes_local_endpoints_from_background_probes`、`test_observation_is_recorded_by_exactly_one_owning_backend`、`test_dispatch_record_attributes_feedback_when_both_backends_claim_the_endpoint`、`test_ambiguous_feedback_without_a_dispatch_record_is_dropped` |
 | 6. 既有 router contract、路由表、registry 与 stream 回归通过 | `tests/unit/routing/`、`tests/unit/servers`、`tests/servers/test_admin_routing_*`、`tests/integration/test_routing_yaml_driven_dispatch.py`；全量 `pytest -m "not external and not dbtest"` |

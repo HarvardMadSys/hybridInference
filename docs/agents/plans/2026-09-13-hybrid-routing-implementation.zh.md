@@ -2,7 +2,7 @@
 
 - 日期：2026-09-13
 - 修订：2026-09-14，按设计文档收缩为抽象重构；同日完成实现
-- 状态：已完成（生产接入未启用）
+- 状态：已完成并接线（`router: fixed` 生效；`router: routewise` 未迁移）
 - 分支：`murphy/dev/hybrid-routing-abstract`
 - 设计：[抽象重构设计](../specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
@@ -19,7 +19,9 @@
 | `tests/unit/routing/test_hybrid_router.py` | 组合、策略替换点、流式、反馈、生命周期契约 |
 | `tests/unit/routing/test_router_contract.py` | 共享 router 契约参数化加入 `local-backend` 与 `cloud-backend` |
 
-未改动 `apps/backend/routing/executor.py`（保持兼容导出），未改动生产 registry、bootstrap 与任何启动路径。
+未改动 `apps/backend/routing/executor.py`（保持兼容导出）。
+
+生产路径**已改动**（原本文档称未改动，与提交内容不符，此处更正）：`model_router_registry.py` 增加 `HybridRouterFactory` 与 `set_hybrid_router_factory()`；`bootstrap.py` 增加 `_build_model_router_registry()`，在建 registry 的同一次调用里安装 factory，使 `router: fixed` 模型经 `HybridRouter` 进入；`hybrid_composition.py`、`policies.py`、`decisions.py`、`route_scope.py` 为新增文件。
 
 `apps/backend/routing/routers.py` 与 `routewise/router.py` 各有一处必要改动：`ManagedRouter.start` 的返回类型与 `RouteWiseRouter.start()` 现在返回"本次调用是否真正拉起后台任务"的布尔值。调用方一律忽略返回值，行为不变；包装层用它判断生命周期所有权。
 
@@ -47,13 +49,14 @@ uv run pydocstyle apps/backend/routing
 在本 worktree 上执行结果：
 
 - `tests/unit/routing/`：通过（性能与池内规避用例按既有标记跳过）
+- `tests/unit/servers/test_hybrid_bootstrap_wiring.py`：通过（接入从生产入口 `_build_model_router_registry` 验证）
 - 全量 `pytest -m "not external and not dbtest"`：通过，无回归
 - Review 的三份复现脚本（`test_pr_1454_repros.py`，审阅版本 86db016e 下 3/3 失败）在修复后 3/3 通过
 - ruff format / ruff check / pydocstyle：通过
 
 ## 4. 遗留任务（不在本次范围）
 
-1. **生产策略。** 需要注册一个新的 strategy（名称与参数模型）才能让 `models.yaml` 选择 hybrid。本次只提供替换点与测试策略。
-2. **bootstrap 识别。** `_collect_routewise_routers` 依赖 `isinstance(..., RouteWiseRouter)`；嵌套后需要改为从组合中取出 cloud router，否则 RouteWise 的生命周期与 operational store 绑定不会发生。
-3. **本地候选拆分。** 生产 `FixedRouter` 持有全部路由；组装 hybrid 时需要构造只含本地候选的 router，或为本地侧提供同样显式的范围输入。
-4. **纳入 registry 的刷新语义。** `HybridRouter.refresh_route_table()` 已具备委托能力，但尚未在真实启动路径上验证。
+1. **routewise 迁移。** `router: routewise` 仍是全池 `RouteWiseRouter`，绕过 `HybridRouter`。迁移前置条件见设计文档 §3.5.4.1（pin 通路、首选目标语义）与 §5（生命周期、operational store、顶层策略）。设计定义已固定：新架构中 RouteWise 位于 `CloudBackend` 内，`router: routewise` 是迁移前的旧路径。
+2. **本地归属的显式来源。** `HybridFixedRouterFactory` 已支持 `local_scope` / `local_ownership`，但生产 bootstrap 目前走 `_LOCAL_HOSTS` 兼容默认；LAN 或集群 DNS 上的自建 server 会被判为远端。部署应显式传入归属来源。
+3. **`_LOCAL_HOSTS` 一致性。** `servers.registry._LOCAL_HOSTS` 与 `servers.observability.alerts._LOCAL_HOSTS` 不一致（后者含 `::1`），因此 IPv6 loopback 上的自建 server 被当作远端。改动会影响出站限流豁免范围，需单独评估。
+4. **P2 语义项（本 PR 未修，已记录）。** 跨域失败时的错误优先级（应复用 `_select_surfaced_error` 的 400/404/413/422 规则）、跨域 fallback 的 `failed_attempts` 合并、`FixedPolicy.select_backend` 未传 `prefill_tokens`。
