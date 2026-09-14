@@ -157,6 +157,8 @@ TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选
 
 范围在比较和求交之前**统一规范化为当前模型的 canonical endpoint 集合**：声明范围与绑定可能分别用 provider 标签和 endpoint id 表达，直接对两者做字符串集合运算会把同一个有效范围误判为空。窄于池声明范围的调用方范围必须传到子 Router 的候选集合，而不只是放在请求选项里。
 
+只分域步骤落到 leaf 上时的处理**只适用于 fallback 条目**：该步骤没有点名 endpoint，而 leaf 无法选路，它自己的绑定就是这一步唯一可能的含义，因此展开为精确目标。**首选 attempt 不这样展开**——调用方为它指定了 target，leaf 服务不了该 target 时，这个 attempt 仍然是委托并被 leaf 拒绝，不会退化成“改打它自己绑定的那个 endpoint”。
+
 ### 4.2 共同上下文
 
 普通请求和流式请求使用相同的派发语义，并保留以下请求上下文：

@@ -446,9 +446,13 @@ class HybridRouter:
                 backend=decision.backend,
                 endpoint_id=primary_endpoint,
                 # A leaf has no selection to degrade to, so once its binding
-                # resolves its instruction is exact. A pool keeps the preference
-                # semantics the existing wrappers are built on: an unresolvable
-                # target is that pool's own selection to make.
+                # resolves its instruction is exact. An unresolved binding on a
+                # leaf primary is *not* expanded to the leaf's own endpoint the
+                # way a domain-level fallback step is: the caller named a target
+                # for this attempt and the leaf cannot serve it, so the attempt
+                # stays a delegation and the leaf refuses it. A pool keeps the
+                # preference semantics the existing wrappers are built on: an
+                # unresolvable target is that pool's own selection to make.
                 exact=primary_endpoint is not None and not primary_delegates,
                 domain_fallback=not per_endpoint and primary_delegates,
             )
