@@ -160,6 +160,11 @@ class RoutingDecision:
 
 判定由 `_requested_fallbacks()` 返回，两种形态不得相互推断：把只分域计划当成"候选不可达"会让另一域永远不被执行；把逐 endpoint 计划交给 backend 自行重选会打乱全局顺序、并让已经在计划中越过的候选被打第二次。
 
+"一个 endpoint 只派发一次"是全局不变量，两条规则共同保证：
+
+1. **hybrid 层记录实际派发过的 endpoint**，计划里再出现就跳过。首选 attempt 的 target 是偏好，claim 被拒时 router 会自己换候选——换上来的候选可能正是计划后面的一项，只靠"计划排除首选目标"挡不住（校验：`test_a_substituted_primary_does_not_revisit_the_candidate_it_used`）。
+2. **`require_target` 高于会话亲和**：亲和回答的是"这个会话上次由谁服务"，而计划指定下一候选时，那个 endpoint 恰恰是刚失败、已经被越过的。`_select_adapter` 因此在 `require_target` 为真时跳过亲和捷径（校验：`test_affinity_cannot_override_a_planned_target`）。
+
 ### 3.5.4.2 强制 pin 的归属（已决定，不需要第三个 backend）
 
 生产 HTTP 入口对带 pin 的请求**根本不进 registry**：

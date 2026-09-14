@@ -1139,7 +1139,13 @@ class FixedRouter:
         # Set when a pin is dropped for backlog, so selection does not simply
         # hand the caller straight back to the endpoint it was moved off.
         avoid_endpoint_id: str | None = None
-        if affinity_key:
+        # A required target outranks affinity. Affinity remembers what served
+        # this conversation last, and honoring it here would hand back an
+        # endpoint the caller has explicitly ruled out for this dispatch -- the
+        # planned candidate would be silently replaced by the one the plan has
+        # already left behind. The entry is left alone rather than dropped: it is
+        # still the right answer for the next ordinary selection.
+        if affinity_key and not require_target:
             now = time.monotonic()
             with self._lock:
                 entry = self._affinity.get((affinity_key, model_id))

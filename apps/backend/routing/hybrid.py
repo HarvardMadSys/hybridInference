@@ -309,7 +309,15 @@ class HybridRouter:
 
         attempts: list[dict[str, Any]] = []
         errors: list[BaseException] = []
+        dispatched: set[str] = set()
         for index, attempt in enumerate(plan):
+            if attempt.endpoint_id is not None and attempt.endpoint_id in dispatched:
+                # The primary attempt may substitute a candidate the plan has not
+                # reached yet, so the plan can still name an endpoint that has
+                # already run. The single router never retried an endpoint it had
+                # dispatched; retrying here would double both the upstream request
+                # and the failure it recorded.
+                continue
             backend = self._backends[attempt.backend]
             try:
                 response = await backend.chat_completion(
@@ -327,6 +335,7 @@ class HybridRouter:
             except Exception as exc:
                 attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
+                _remember_dispatched(dispatched, attempt, exc)
                 continue
             _merge_attempt_history(response, attempts)
             _tag_backend(response, attempt.backend)
@@ -683,7 +692,12 @@ async def _fallback_stream(
     preferred_endpoint = _resolved_endpoint(
         router.backend(decision.backend), decision.target, model_id
     )
+    dispatched: set[str] = set()
     for index, attempt in enumerate(plan):
+        if attempt.endpoint_id is not None and attempt.endpoint_id in dispatched:
+            # See HybridRouter.chat_completion: the plan can name an endpoint a
+            # substituted primary already ran, and it must not run twice.
+            continue
         backend = router.backend(attempt.backend)
         stream = backend.stream_chat_completion(
             model_id,
@@ -743,6 +757,7 @@ async def _fallback_stream(
                 raise
             attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
             errors.append(exc)
+            _remember_dispatched(dispatched, attempt, exc)
         finally:
             if callable(aclose):
                 await aclose()
@@ -809,6 +824,27 @@ def _resolved_endpoint(backend: Any, target: RoutingTarget | None, model_id: str
         return resolve(target, model_id)
     except Exception:  # pragma: no cover - diagnostics must not fail a request
         return None
+
+
+def _remember_dispatched(
+    dispatched: set[str],
+    attempt: _Attempt,
+    exc: BaseException,
+) -> None:
+    """Record the endpoint a failed attempt actually ran, if one can be named.
+
+    The router reports the endpoint it dispatched in the error's ``_routing``
+    block, and that can differ from the one the plan named: the primary attempt's
+    target is a preference, so a target the router cannot admit is replaced by its
+    own selection. The plan has to learn which endpoint that was, or it will
+    dispatch it a second time.
+    """
+    routing = getattr(exc, "_routing", None)
+    observed = routing.get("endpoint_id") if isinstance(routing, dict) else None
+    if not isinstance(observed, str) or not observed:
+        observed = attempt.endpoint_id
+    if observed is not None:
+        dispatched.add(observed)
 
 
 def _attempt_record(

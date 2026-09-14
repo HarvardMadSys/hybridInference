@@ -676,6 +676,85 @@ async def test_a_candidate_that_cannot_be_dispatched_is_skipped_not_substituted(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_substituted_primary_does_not_revisit_the_candidate_it_used(
+    _first_candidate_wins: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The plan must not re-dispatch an endpoint a substituted primary ran.
+
+    The primary attempt's target is a preference, so a refused claim makes the
+    router pick the next replica itself -- and that replica is also in the plan.
+    The single router skipped a candidate it had already dispatched; running it
+    twice doubles both the upstream request and the failure recorded for it.
+    """
+    first_local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    second_local = _adapter(
+        f"{_MODEL_ID}:local-11500",
+        provider="local",
+        base_url="http://localhost:11500/v1",
+        chat_error=ConnectionError("L2 down"),
+    )
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(first_local, second_local, remote)
+    health = shared.endpoint_health_registry
+    original_begin_dispatch = health.begin_dispatch
+
+    def begin(endpoint_id: str, original: Any = original_begin_dispatch) -> Any:
+        if endpoint_id == _LOCAL_ENDPOINT:
+            return None
+        return original(endpoint_id)
+
+    monkeypatch.setattr(health, "begin_dispatch", begin)
+    router = _registry(shared).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    response = await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="substituted")
+
+    assert response["_routing"]["endpoint_id"] == _CLOUD_ENDPOINT
+    assert first_local.chat_calls == 0, "the refused candidate was dispatched anyway"
+    assert second_local.chat_calls == 1, "the substituted replica was dispatched twice"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_affinity_cannot_override_a_planned_target(
+    _first_candidate_wins: None,
+) -> None:
+    """A required candidate outranks the conversation's remembered endpoint.
+
+    Affinity answers "what served this conversation last", which is exactly the
+    endpoint the plan has already left behind by the time it names the next one.
+    Letting affinity win sends the retry back to the replica that just failed and
+    skips the planned candidate entirely.
+    """
+    from serving.utils import context as req_ctx
+
+    first_local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("L1 down"),
+    )
+    second_local = _adapter(
+        f"{_MODEL_ID}:local-11500",
+        provider="local",
+        base_url="http://localhost:11500/v1",
+    )
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(first_local, second_local, remote)
+    router = _registry(shared).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    with req_ctx.push(affinity_key="conversation"):
+        response = await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="affinity")
+
+    assert response["_routing"]["endpoint_id"] == f"{_MODEL_ID}:local-11500"
+    assert first_local.chat_calls == 1
+    assert second_local.chat_calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fallback_follows_the_route_order_across_domains(
     _first_candidate_wins: None,
 ) -> None:
