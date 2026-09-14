@@ -61,7 +61,7 @@ class ObservationScope:
     from an observation alone. Prefer passing the explicit set.
     """
 
-    __slots__ = ("_endpoint_providers", "_endpoints", "_providers")
+    __slots__ = ("_endpoint_providers", "_endpoints")
 
     def __init__(
         self,
@@ -70,10 +70,9 @@ class ObservationScope:
         adapters: Iterable[BaseAdapter] = (),
     ) -> None:
         self._endpoints = frozenset(endpoint_scope) if endpoint_scope is not None else None
-        self._providers: frozenset[str] = frozenset()
         self._endpoint_providers: dict[str, str] = {}
         if self._endpoints is not None:
-            self._index_adapters(adapters)
+            self.prime(adapters)
 
     @property
     def endpoint_scope(self) -> frozenset[str] | None:
@@ -85,18 +84,33 @@ class ObservationScope:
         return self._endpoints is not None
 
     def prime(self, adapters: Iterable[BaseAdapter]) -> None:
-        """Index adapters so provider entries can resolve to endpoint ids."""
-        if self._endpoints is not None:
-            self._index_adapters(adapters)
+        """Rebuild the endpoint-to-provider index from ``adapters``.
+
+        Authoritative, not incremental: the index describes the range as it is
+        now, so an endpoint no longer present stops being claimed. Rebuilding
+        also keeps the map bounded under repeated route churn, which appending
+        would not.
+        """
+        if self._endpoints is None:
+            return
+        indexed: dict[str, str] = {}
+        for adapter in adapters:
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            provider = getattr(adapter.config, "provider", None)
+            if isinstance(provider, str):
+                indexed[endpoint_id] = provider
+        self._endpoint_providers = indexed
 
     def includes_adapter(self, adapter: BaseAdapter) -> bool:
         """Return whether ``adapter`` is inside the scope."""
-        if self._endpoints is None:
+        endpoints = self._endpoints
+        if endpoints is None:
             return True
+        endpoint_id = endpoint_id_for_adapter(adapter)
         provider = getattr(adapter.config, "provider", None)
-        if isinstance(provider, str):
-            self._endpoint_providers[endpoint_id_for_adapter(adapter)] = provider
-        return self.includes_endpoint(endpoint_id_for_adapter(adapter))
+        if endpoint_id in endpoints:
+            return True
+        return isinstance(provider, str) and provider in endpoints
 
     def includes_endpoint(self, endpoint_id: str) -> bool:
         """Return whether an endpoint id is inside the scope.
@@ -112,19 +126,7 @@ class ObservationScope:
         if endpoint_id in endpoints:
             return True
         provider = self._endpoint_providers.get(endpoint_id)
-        return provider is not None and provider in self._providers
-
-    def _index_adapters(self, adapters: Iterable[BaseAdapter]) -> None:
-        """Record which endpoint ids each declared provider label covers."""
-        for adapter in adapters:
-            endpoint_id = endpoint_id_for_adapter(adapter)
-            provider = getattr(adapter.config, "provider", None)
-            if isinstance(provider, str):
-                self._endpoint_providers[endpoint_id] = provider
-        known_providers = set(self._endpoint_providers.values())
-        self._providers = frozenset(
-            entry for entry in self._endpoints or () if entry in known_providers
-        )
+        return provider is not None and provider in endpoints
 
 
 def adapter_in_endpoint_scope(

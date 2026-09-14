@@ -235,6 +235,30 @@ def test_local_backend_resolves_a_provider_scope_to_the_endpoints_it_serves() ->
 
 
 @pytest.mark.unit
+def test_local_backend_refresh_drops_a_removed_endpoint_from_its_scope() -> None:
+    """A rebuilt index must forget endpoints the route no longer serves.
+
+    Otherwise a removed adapter keeps being claimed forever, and if that
+    endpoint is later served by another side the ownership turns ambiguous and
+    its feedback is dropped.
+    """
+    removed = _adapter(_LOCAL_ENDPOINT, provider="local-service")
+    backend = LocalBackend(
+        _route_table(removed),
+        endpoint_scope={"local-service"},
+        model_scope={_MODEL_ID},
+    )
+    assert backend.owns_observation(_observation(_LOCAL_ENDPOINT))
+
+    replacement = _adapter(_CLOUD_ENDPOINT_2, provider="local-service")
+    backend.router.register_route(_MODEL_ID, [(replacement, 1.0)])
+    backend.refresh_route_table()
+
+    assert backend.owns_observation(_observation(_CLOUD_ENDPOINT_2))
+    assert not backend.owns_observation(_observation(_LOCAL_ENDPOINT))
+
+
+@pytest.mark.unit
 def test_local_backend_without_a_scope_claims_every_endpoint() -> None:
     # An undeclared scope is the single-domain default; the hybrid router keeps
     # its dispatch record for the ambiguous case.

@@ -123,6 +123,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 | 云请求的反馈不进入 local 学习状态 | `tests/unit/routing/test_routing_backends.py::test_local_backend_owns_only_observations_inside_its_declared_scope`、`test_hybrid_router.py::test_dispatch_record_attributes_feedback_when_both_backends_claim_the_endpoint` |
 | 非终结反馈不消费派发记录，终结反馈才释放 | `test_hybrid_router.py::test_nonterminal_attempt_feedback_does_not_consume_the_dispatch_record`、`test_terminal_feedback_releases_the_dispatch_record` |
 | provider 标签范围能认领它实际服务的 endpoint | `test_routing_backends.py::test_local_backend_resolves_a_provider_scope_to_the_endpoints_it_serves`、`test_route_scope.py::test_observation_scope_resolves_a_provider_label_to_its_endpoints` |
+| provider 索引覆盖两种 router 形态，且刷新时整体重建 | `test_routing_backends.py::test_local_backend_refresh_drops_a_removed_endpoint_from_its_scope`、`test_route_scope.py::test_observation_scope_indexes_adapters_seen_after_construction` |
 | 不接管外部已启动 router 的生命周期 | `test_routing_backends.py::test_cloud_backend_does_not_stop_a_router_started_by_another_owner`、`test_backend_lifecycle_is_opt_in`、`test_hybrid_router.py::test_backend_that_reports_already_started_is_not_stopped_here`、`test_routewise_router.py::test_start_reports_whether_this_call_activated_the_router` |
 | 刷新候选保留在途请求的反馈状态 | `test_routing_backends.py::test_cloud_backend_refresh_preserves_inflight_prefix_cache_state` |
 
@@ -133,7 +134,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 - **范围而不是分类。** cloud 范围由构造方给出 endpoint/provider 集合，代码里没有“这个 endpoint 是不是本地”的推断；`AGENTS.md` 已说明 endpoint 后缀不可作为归属信号。
 - **权重不重归一化。** `RouteScopeView` 保留过滤前的权重（例如 cloud 侧 0.5 在只剩 cloud 的视图里仍是 0.5），因为它是 operator 配置的整池份额，不是过滤后残余的份额。
 - **反馈先查派发记录，再退回 owner 判定，绝不广播。** 观测是同步接口，策略只在请求路径上被调用，所以 `HybridRouter` 在派发时按 `request_id` 记下选中的 backend（有界 LRU，终结反馈到达时弹出）。这解决了两个 backend 都认领同一 endpoint 时无法区分的问题；记录缺失时用唯一 owner 判定，仍无法判定就丢弃样本。
-- **范围声明与归属判定用同一套语义。** provider 标签在 `ObservationScope` 里通过 backend 自己已绑定的路由表解析为 endpoint 集合，而不是在归属判定时退化成字符串比较；这样"我声明的范围"和"我能认领的 endpoint"不会分叉。索引来源覆盖两种既有形态：`FixedRouter` 自身即路由表（`iter_effective_routes()`），`RouteWiseRouter` 把表放在 `route_table` 上。
+- **范围声明与归属判定用同一套语义。** provider 标签在 `ObservationScope` 里通过 backend 自己已绑定的路由表解析为 endpoint 集合，而不是在归属判定时退化成字符串比较；这样"我声明的范围"和"我能认领的 endpoint"不会分叉。索引来源覆盖两种既有形态：`FixedRouter` 自身即路由表（`iter_effective_routes()`），`RouteWiseRouter` 把表放在 `route_table` 上。索引在刷新时按当前快照**整体重建**而不是增量追加：被移除的 endpoint 必须停止被认领，否则它会永久留在归属范围里（当该 endpoint 后来由另一侧服务时归属变歧义、反馈被丢弃），且反复的路由变会更加让这个映射无界增长。
 - **抽象角色而不是单一泛化对象。** local 与 cloud 并不对称：local 服务它自己 router 里注册的候选，cloud 是在共享路由表上构造、必须被告知哪些 endpoint 属于它。因此保留 `CloudBackend` 作为云端角色，`HybridRouter` 面向它，具体算法由其子类提供。
 - **生命周期是显式 opt-in 而不是推断。** `manage_lifecycle` 默认 False，把所有权留给构造方；`start()` 返回布尔值让包装层能区分"我拉起的"与"本来就在跑的"，避免包装层替外部 owner 取消后台任务。
 - **`_routing` 增加 `backend` 字段。** 既有 `_routing` 字典上 `setdefault("backend", name)`，用于观测与测试归因；不覆盖 router 已写入的内容，且和其它 `_routing` 键一样被 `sanitize_chunk` 剥离，不会出现在客户端。
