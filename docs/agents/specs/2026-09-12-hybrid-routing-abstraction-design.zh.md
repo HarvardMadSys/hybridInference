@@ -138,7 +138,7 @@ class RoutingDecision:
 | 配置 | 迁移前 | 迁移后（已实现） | 目标架构 |
 |---|---|---|---|
 | `router: fixed` | `ModelRouterRegistry.get_router()` → 共享 `FixedRouter` | → `HybridRouter(policy=FixedPolicy, local=LocalBackend(共享 FixedRouter), cloud=FixedCloudBackend(共享 FixedRouter))`；策略给出全局候选顺序，hybrid 层逐个候选派发，两侧的 `endpoint_scope` 仅用于限定候选归属 | cloud 侧换成 `RouteWiseCloudBackend` 时即成为"全局分流 + 域内 RouteWise 选 provider"；组合根通过 `HybridFixedRouterFactory(cloud_backend=...)` 选择算法 |
-| `router: routewise` | → `RouteWiseRouter`（**全池**候选） | **未迁移**：仍是全池 `RouteWiseRouter`，完全绕过 `HybridRouter` | 迁入 `HybridRouter` + `RouteWiseCloudBackend`；前置条件见 §3.5.4.1 |
+| `router: routewise` | → `RouteWiseRouter`（**全池**候选） | **未迁移**：仍是全池 `RouteWiseRouter`，完全绕过 `HybridRouter` | 迁入 `HybridRouter` + `RouteWiseCloudBackend`；需显式配置，前置条件见 §3.5.4.3 |
 
 已实现与目标之间的差异是有意的，不是漏做：
 
@@ -149,24 +149,40 @@ class RoutingDecision:
 - `router: routewise` 是**迁移前的旧路径**，不是"HybridRouter 层的策略"。在它迁入
   cloud 域之前，不能把它算作新架构的一部分。
 
-### 3.5.4.1 RouteWise 迁入 cloud 域的前置条件
+### 3.5.4.1 候选计划：两种形态，不能混同
 
-`RouteWiseRouter` 当前与 hybrid 的控制面有两处不兼容，必须在迁移前解决，否则会引入
-行为回归：
+`HybridRouter` 自己驱动整条候选序列，因此它必须知道策略给出的是哪一种计划：
 
-1. **强制 pin**：`RouteWiseRouter._validate_routing_options` 对 `pin_provider` 直接
-   `raise ValueError("pinned requests must be dispatched through the shared FixedRouter")`。
-   pin 目前由共享 `FixedRouter` 承接，且它的 pin 分支**不受 `endpoint_scope` 约束**
-   （`_select_and_claim_adapter` 的 pin 分支不传 scope）。因此如果把某模型的 cloud 侧
-   换成 RouteWise，该模型上"pin 一个云 provider"的请求会从可用变为报错。迁移需要一条
-   显式的 pin 通路（第三个 backend，或让策略在 pin 时把请求交给包装了共享 router 的
-   一侧）。
-2. **首选目标与候选范围**：`RouteWiseRouter` 只读 `routing_options.required_modalities`，
-   完全忽略 `preferred_endpoint_id` 与 `endpoint_scope`。云侧的域内限定目前靠
-   `RouteWiseCloudBackend` 绑定的 `RouteScopeView` 实现（有效），但 `FixedPolicy`
-   抽出的首选端点会被 RouteWise 丢弃，即 cloud 域内的 provider 选择改由 RouteWise 的
-   LP 决定。这是目标架构的预期语义，但属于**行为变更**，需要与 `fixed` 模型的
-   operator 权重语义一起显式记录。
+| 形态 | 来源 | 每次 attempt 的语义 |
+|---|---|---|
+| 逐 endpoint 计划 | `FixedPolicy.fallback_attempts()` | 计划已指定该 attempt 打哪个 endpoint。因此同时设置 `allow_fallback=False`（被包装的 router 不许自行走 fallback 循环）与 `require_target=True`（不许在选择阶段替换成别的候选）。目标不可派发时抛 `TargetUnavailableError`，由 hybrid 层**跳过该候选并继续计划**——与旧 `FixedRouter` 在 `begin_dispatch` 被拒时 `continue` 同一语义，且不记录成上游故障 |
+| 只分域计划 | `BackendSelection.fallback_backends()` | 策略只表达"先 local，失败后 cloud"，没有候选信息。此时保留 backend 自行选择候选的能力，也保留其域内 fallback（`allow_fallback=True`），目标留空而不是被当作不可达候选丢弃 |
+
+判定由 `_requested_fallbacks()` 返回，两种形态不得相互推断：把只分域计划当成"候选不可达"会让另一域永远不被执行；把逐 endpoint 计划交给 backend 自行重选会打乱全局顺序、并让已经在计划中越过的候选被打第二次。
+
+### 3.5.4.2 强制 pin 的归属（已决定，不需要第三个 backend）
+
+生产 HTTP 入口对带 pin 的请求**根本不进 registry**：
+
+```python
+# apps/backend/serving/servers/routers/completions.py
+active_router = router_exec
+if model_router_registry is not None and pin_provider is None:
+    active_router = model_router_registry.get_router(model)
+```
+
+即 pin 请求走共享 `FixedRouter`，由它的 pin 分支保证"不 fallback、找不到就 `ProviderPinError`"；`RouteWiseRouter` 拒绝 pin 的那条例外路径因此不会被触发。**保留这条兼容通路**，不引入第三个 backend。
+
+将来若把 pin 也统一进 `HybridRouter`，届时按目标归属派发：云端 pin 属于 `CloudBackend`，需要 `RouteWiseRouter` 接受 pin（当前它直接 `raise ValueError`），并明确 pin 是唯一不受 `endpoint_scope` 约束的越域豁免。
+
+### 3.5.4.3 `router: routewise` 的迁移（需要显式配置，且不得宣称等价）
+
+顶层策略先用 `FixedPolicy` 的分域就够，不必等 Greedy/Nimbus：按配置比例决定 local/cloud；选中 cloud 且没有指定具体目标时，由 `RouteWiseCloudBackend` 内部的 RouteWise 选择云 provider。原有"全局固定 provider 权重"模式继续保留。
+
+把现有 `router: routewise` 迁进这个组合必须是**显式配置**，并且不能宣称与原来的全池选择等价——全池 RouteWise 的候选范围、quota/concurrency 记账与生命周期都不同。迁移还需同步处理：
+
+1. `_collect_routewise_routers` 依赖 `isinstance(router, RouteWiseRouter)`；嵌套进 `RouteWiseCloudBackend` 后取不到，`start()`/`stop()` 与 `attach_operational_store()` 不会发生。
+2. RouteWise 的 envelope 校准需要 operational store 已挂载，否则 `start()` 会因未校准而 hard-fail，因此嵌套 RouteWise 的生命周期必须由组合根接管。
 
 ### 3.5.5 反馈归属：一个 request 可能对应多个 backend
 
@@ -215,7 +231,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
   不越出自身域。
 
 接入状态：已接线并在生产 bootstrap 路径上生效（`router: fixed` + 至少一个本地端点）。
-以下各项均已实现；§5.1 列出尚未迁移的部分。
+以下各项均已实现；§3.5.4.3 与 §5 列出尚未迁移的部分。
 
 1. **registry / bootstrap 组装**：`ModelRouterRegistry` 增加可选
    `HybridRouterFactory`（`set_hybrid_router_factory()` 在首次 `get_router` 前绑定）。
@@ -258,7 +274,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 本次**已接线**：`bootstrap._build_model_router_registry` 在建 registry 的同一次调用里装上 hybrid factory，`router: fixed` 且至少有一个本地端点的模型经 `HybridRouter` 进入；不再需要新的 strategy 名（复用 `fixed`）。两侧 backend 都包装**共享** `FixedRouter`，由 `endpoint_scope` 限定各自域，因此不需要按范围分别注册路由。
 
-本次**没有**迁移 `router: routewise`：生产 registry 里的顶层 RouteWise 仍是全池候选，绕过 `HybridRouter`。迁移需要先解决 §3.5.4.1 的两项，并同步处理：
+本次**没有**迁移 `router: routewise`：生产 registry 里的顶层 RouteWise 仍是全池候选，绕过 `HybridRouter`。按 §3.5.4.3 的决定，迁移必须显式配置、不得宣称与全池选择等价，并同步处理：
 
 1. [bootstrap](../../../apps/backend/serving/servers/bootstrap.py) 的 `_collect_routewise_routers` 直接 `isinstance(router, RouteWiseRouter)` 判定，嵌套在 `RouteWiseCloudBackend` 里的 router 不会被识别，因此其 `start()`/`stop()` 与 `attach_operational_store()` 不会被调用。
 2. RouteWise 的 envelope 校准与 quota pool 需要 operational store 已挂载，否则 `start()` 会因未校准而 hard-fail；这决定了嵌套 RouteWise 的生命周期必须由组合根接管。

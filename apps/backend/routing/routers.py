@@ -55,6 +55,18 @@ class AllCircuitsOpenError(RuntimeError):
     """Raised when all provider circuits are open (full outage)."""
 
 
+class TargetUnavailableError(RuntimeError):
+    """Raised when a dispatch required an endpoint that cannot be used right now.
+
+    Distinct from a dispatch failure: nothing was sent upstream, so there is no
+    upstream fault to report and no health sample to record. The circuit is open,
+    or a concurrent request holds the endpoint's half-open probe. A caller that
+    planned one candidate per attempt -- the hybrid layer does -- reads this as
+    "skip this candidate and keep going", which is what the single router's own
+    fallback loop does when a claim is refused.
+    """
+
+
 @runtime_checkable
 class ManagedRouter(Protocol):
     """Router with async lifecycle hooks managed by application bootstrap."""
@@ -1025,6 +1037,7 @@ class FixedRouter:
         exclude: set[str] | None = None,
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
+        require_target: bool = False,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -1051,6 +1064,11 @@ class FixedRouter:
             endpoint_scope: Candidate range for this dispatch. Narrows the route
                 before modality filtering and before the health/affinity gates,
                 so ``exclude`` and the fallback loop inherit the same range.
+            require_target: When True, ``preferred_endpoint_id`` is the only
+                endpoint this selection may return. An endpoint that is not
+                admissible raises :class:`TargetUnavailableError` instead of
+                being replaced by the ordinary draw, so a caller that planned one
+                candidate per attempt is told which candidate it lost.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -1170,6 +1188,13 @@ class FixedRouter:
                     ),
                     affinity_key,
                 )
+            if require_target:
+                # Falling through would hand back a different endpoint: the
+                # caller asked for this one, and a substituted candidate can
+                # reorder a plan that has already tried the substitute.
+                raise TargetUnavailableError(
+                    f"endpoint {preferred_endpoint_id!r} is not admissible for model {model_id}"
+                )
 
         chosen = self._weighted_draw(
             model_id,
@@ -1269,6 +1294,7 @@ class FixedRouter:
         prefill_tokens: int = 0,
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
+        require_target: bool = False,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -1294,6 +1320,12 @@ class FixedRouter:
         An explicit pin bypasses admission entirely, as it always has, so it
         neither consults nor spends a probe -- and holds no claim to release,
         which is what keeps pinned traffic from freeing somebody else's.
+
+        ``require_target`` makes the preferred endpoint the only acceptable
+        candidate: when it cannot be admitted, or when its probe is already held,
+        this raises :class:`TargetUnavailableError` rather than reselecting over
+        the rest -- reselecting is how a planned candidate silently becomes a
+        different one.
         """
         if pin_provider:
             return (
@@ -1325,16 +1357,23 @@ class FixedRouter:
                 prefill_tokens=prefill_tokens,
                 preferred_endpoint_id=preferred_endpoint_id,
                 endpoint_scope=endpoint_scope,
+                require_target=require_target,
             )
             if preferred is not None:
                 preferred_endpoint = endpoint_id_for_adapter(preferred)
                 claim = self._health_registry.begin_dispatch(preferred_endpoint)
                 if claim is not None:
                     return preferred, claim
-                # Another request holds this endpoint's probe. Drop the
-                # preference for this selection only and let the ordinary loop
-                # reselect over the rest, which is what a refused claim does for
-                # every other candidate.
+                if require_target:
+                    # Another request holds this endpoint's probe. The caller
+                    # named one candidate per attempt, so reselecting here would
+                    # dispatch an endpoint its plan has not reached yet.
+                    raise TargetUnavailableError(
+                        f"endpoint {preferred_endpoint!r} is already probed for model {model_id}"
+                    )
+                # Otherwise drop the preference for this selection only and let
+                # the ordinary loop reselect over the rest, which is what a
+                # refused claim does for every other candidate.
                 exclude.add(preferred_endpoint)
 
         for _ in range(attempts):
@@ -1428,6 +1467,7 @@ class FixedRouter:
         )
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         allow_fallback = routing_options.allow_fallback if routing_options is not None else True
+        require_target = routing_options.require_target if routing_options is not None else False
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1453,6 +1493,7 @@ class FixedRouter:
             prefill_tokens=prefill_tokens,
             preferred_endpoint_id=preferred_endpoint_id,
             endpoint_scope=endpoint_scope,
+            require_target=require_target,
         )
         if not primary:
             if pin_provider:
@@ -1643,6 +1684,7 @@ class FixedRouter:
         )
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         allow_fallback = routing_options.allow_fallback if routing_options is not None else True
+        require_target = routing_options.require_target if routing_options is not None else False
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -1668,6 +1710,7 @@ class FixedRouter:
             prefill_tokens=prefill_tokens,
             preferred_endpoint_id=preferred_endpoint_id,
             endpoint_scope=endpoint_scope,
+            require_target=require_target,
         )
         if not primary:
             if pin_provider:

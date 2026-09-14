@@ -38,6 +38,13 @@ class RoutingRequestOptions:
             scheduling layer that plans the candidate order itself -- the hybrid
             layer does -- sets it so the order it planned is the order that
             happens, and so no candidate is attempted twice.
+        require_target: Whether ``preferred_endpoint_id`` is the only endpoint
+            this dispatch may use. The default treats a target as a preference:
+            an endpoint that is not admissible is replaced by the router's own
+            selection. ``True`` forbids that substitution and raises
+            :class:`~routing.routers.TargetUnavailableError` instead, so a caller
+            that planned one candidate per attempt learns the candidate is
+            unavailable rather than silently getting a different one.
         required_modalities: Non-text input modalities the request needs.
     """
 
@@ -45,6 +52,7 @@ class RoutingRequestOptions:
     preferred_endpoint_id: str | None = None
     endpoint_scope: frozenset[str] | None = None
     allow_fallback: bool = True
+    require_target: bool = False
     required_modalities: frozenset[str] = frozenset()
 
 

@@ -571,6 +571,109 @@ async def test_a_stream_that_fails_before_visible_output_still_falls_back(
     assert "CLOUD-RECOVERY" in "".join(received)
 
 
+class _DomainPolicy:
+    """A policy that only classifies domains, as ``BackendSelection`` permits."""
+
+    def select_backend(self, *args: Any, **kwargs: Any) -> Any:
+        from routing.decisions import RoutingDecision
+
+        return RoutingDecision(backend="local")
+
+    def fallback_backends(self, *args: Any, **kwargs: Any) -> tuple[str, ...]:
+        return ("cloud",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_domain_only_policy_can_still_fall_back(streaming: bool) -> None:
+    """A policy that names domains, not candidates, still reaches the other one.
+
+    ``fallback_backends`` carries no target by design, so its entries must not be
+    mistaken for unreachable candidates: the backend keeps its own selection and
+    its own in-domain order, and the request lands on the other domain when this
+    one fails.
+    """
+    local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("local down"),
+        stream_error=ConnectionError("local down"),
+    )
+    remote = _adapter(
+        _CLOUD_ENDPOINT,
+        provider="zai",
+        base_url="https://api.zai.example/v1",
+        stream_chunks=(_frame("ok"),),
+    )
+    shared = _shared_router(local, remote)
+    router = HybridRouter(
+        policy=_DomainPolicy(),
+        local=LocalBackend(shared, endpoint_scope={_LOCAL_ENDPOINT}, model_scope={_MODEL_ID}),
+        cloud=FixedCloudBackend(shared, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+
+    if streaming:
+        chunks = [chunk async for chunk in router.stream_chat_completion(_MODEL_ID, _MESSAGES)]
+        assert any('"content"' in chunk for chunk in chunks)
+    else:
+        await router.chat_completion(_MODEL_ID, _MESSAGES)
+
+    assert remote.stream_calls if streaming else remote.chat_calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_candidate_that_cannot_be_dispatched_is_skipped_not_substituted(
+    _first_candidate_wins: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A planned candidate that loses its probe hands back, it does not re-pick.
+
+    With ``L1, C1, L2, C2`` and a failing ``L1``, the single router skipped a
+    ``C1`` whose claim was refused and moved on to ``L2``. Letting the cloud
+    backend substitute ``C2`` would jump over ``L2`` and reorder the route --
+    and ``C2`` is reached later anyway.
+    """
+    first_local = _adapter(
+        _LOCAL_ENDPOINT,
+        provider="local",
+        base_url=_LOCAL_URL,
+        chat_error=ConnectionError("L1 down"),
+    )
+    cloud_one = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    second_local = _adapter(
+        f"{_MODEL_ID}:local-11500",
+        provider="local",
+        base_url="http://localhost:11500/v1",
+    )
+    cloud_two = _adapter(
+        f"{_MODEL_ID}:cloud2-api",
+        provider="other",
+        base_url="https://other.example.test/v1",
+    )
+    shared = _shared_router(first_local, cloud_one, second_local, cloud_two)
+    health = shared.endpoint_health_registry
+    original_begin_dispatch = health.begin_dispatch
+
+    def begin(endpoint_id: str, original: Any = original_begin_dispatch) -> Any:
+        # A candidate can be admitted while planning and still lose its half-open
+        # probe to a concurrent request at the dispatch boundary.
+        if endpoint_id == _CLOUD_ENDPOINT:
+            return None
+        return original(endpoint_id)
+
+    monkeypatch.setattr(health, "begin_dispatch", begin)
+    router = _registry(shared).get_router(_MODEL_ID)
+    assert isinstance(router, HybridRouter)
+
+    response = await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="refused-claim")
+
+    assert response["_routing"]["endpoint_id"] == f"{_MODEL_ID}:local-11500"
+    assert cloud_two.chat_calls == 0
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_follows_the_route_order_across_domains(

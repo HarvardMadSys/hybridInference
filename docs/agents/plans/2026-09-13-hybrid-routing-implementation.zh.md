@@ -2,7 +2,7 @@
 
 - 日期：2026-09-13
 - 修订：2026-09-14，按设计文档收缩为抽象重构；同日完成实现
-- 状态：已完成并接线（`router: fixed` 生效；`router: routewise` 未迁移）
+- 状态：已完成并接线（`router: fixed` 生效并保留原 fallback 行为；`router: routewise` 未迁移）
 - 分支：`murphy/dev/hybrid-routing-abstract`
 - 设计：[抽象重构设计](../specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
@@ -57,7 +57,7 @@ uv run pydocstyle apps/backend/routing
 
 ## 4. 遗留任务（不在本次范围）
 
-1. **routewise 迁移。** `router: routewise` 仍是全池 `RouteWiseRouter`，绕过 `HybridRouter`。迁移前置条件见设计文档 §3.5.4.1（pin 通路、首选目标语义）与 §5（生命周期、operational store、顶层策略）。设计定义已固定：新架构中 RouteWise 位于 `CloudBackend` 内，`router: routewise` 是迁移前的旧路径。
+1. **routewise 迁移（需显式配置）。** `router: routewise` 仍是全池 `RouteWiseRouter`，绕过 `HybridRouter`。设计定义已固定（设计文档 §3.5.4.3）：新架构中 RouteWise 位于 `CloudBackend` 内，顶层先用 `FixedPolicy` 分域，`router: routewise` 是迁移前的旧路径；迁移必须显式配置且不得宣称与全池选择等价。pin 不需要新 backend——`completions.py` 已让带 pin 的请求直接走共享 `FixedRouter`（§3.5.4.2）。
 2. **本地归属的显式来源。** `HybridFixedRouterFactory` 已支持 `local_scope` / `local_ownership`，但生产 bootstrap 目前走 `_LOCAL_HOSTS` 兼容默认；LAN 或集群 DNS 上的自建 server 会被判为远端。部署应显式传入归属来源。
 3. **`_LOCAL_HOSTS` 一致性。** `servers.registry._LOCAL_HOSTS` 与 `servers.observability.alerts._LOCAL_HOSTS` 不一致（后者含 `::1`），因此 IPv6 loopback 上的自建 server 被当作远端。改动会影响出站限流豁免范围，需单独评估。
 4. **行为保留项（已修）。** 跨域 fallback 恢复 route 全局候选顺序；最终错误复用 `select_surfaced_error` 的 400/404/413/422 规则；每次 attempt 逐候选记录，`failed_attempts` 不再丢域内失败；`FixedPolicy.select_backend` 传入请求的 `prefill_tokens`。为此新增 `RoutingRequestOptions.allow_fallback`：hybrid 层自己驱动候选序列时，被包装的 router 只打当前候选。

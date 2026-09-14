@@ -40,12 +40,16 @@ Deliberate non-goals, matching the current design:
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
 from routing.protocols import RoutingRequestOptions
-from routing.routers import select_surfaced_error
+from routing.routers import (
+    AllCircuitsOpenError,
+    TargetUnavailableError,
+    select_surfaced_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -69,6 +73,32 @@ class HybridRoutingError(RuntimeError):
     returning a malformed decision. These are composition errors, not upstream
     failures, so they are never counted as upstream attempts.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class _Attempt:
+    """One dispatch this layer has planned.
+
+    ``exact`` and ``domain_fallback`` describe two different questions, which is
+    why they are not one flag:
+
+    ``exact``
+        May the wrapped router substitute another candidate for ``endpoint_id``?
+        False only for the policy's own pick, whose target is a preference by
+        contract. A planned candidate is True: substituting it reorders the plan
+        and can dispatch an endpoint the plan has already left behind.
+    ``domain_fallback``
+        May the wrapped router walk the rest of its own range when this attempt
+        fails? False when this layer owns the candidate order, because the
+        router's own loop would try candidates out of order and some of them
+        twice. True for a policy that only classifies domains, where in-domain
+        order belongs to the backend.
+    """
+
+    backend: str
+    endpoint_id: str | None
+    exact: bool
+    domain_fallback: bool
 
 
 def _check_backend_domain(backend: RoutingBackend, domain: str) -> None:
@@ -279,24 +309,27 @@ class HybridRouter:
 
         attempts: list[dict[str, Any]] = []
         errors: list[BaseException] = []
-        for index, (backend_name, endpoint_id) in enumerate(plan):
-            backend = self._backends[backend_name]
+        for index, attempt in enumerate(plan):
+            backend = self._backends[attempt.backend]
             try:
                 response = await backend.chat_completion(
                     model_id,
                     messages,
-                    routing_options=_attempt_options(
-                        routing_options, backend, endpoint_id, model_id
-                    ),
+                    routing_options=_attempt_options(routing_options, backend, attempt, model_id),
                     target=decision.target if index == 0 else None,
                     **params,
                 )
+            except (TargetUnavailableError, AllCircuitsOpenError) as exc:
+                if not attempt.exact:
+                    attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
+                    errors.append(exc)
+                continue
             except Exception as exc:
-                attempts.append(_attempt_record(backend_name, endpoint_id, exc))
+                attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
                 continue
             _merge_attempt_history(response, attempts)
-            _tag_backend(response, backend_name)
+            _tag_backend(response, attempt.backend)
             # Resolve on the success path too: the metadata must say whether the
             # policy's target was in range regardless of which attempt answered.
             _tag_preference(response, decision.target, preferred_endpoint)
@@ -343,8 +376,8 @@ class HybridRouter:
         decision: RoutingDecision,
         routing_options: RoutingRequestOptions | None,
         params: dict[str, Any],
-    ) -> tuple[tuple[str, str | None], ...]:
-        """Return every attempt for this request, in order, as (backend, endpoint).
+    ) -> tuple[_Attempt, ...]:
+        """Return every attempt for this request, in order.
 
         The policy supplies the candidate order; this method turns it into
         dispatches the hybrid layer can actually make, by resolving each
@@ -352,30 +385,64 @@ class HybridRouter:
         backend cannot reach is dropped rather than attempted, because attempting
         it would let the backend substitute a different endpoint.
 
+        Two plan shapes are supported and they are not interchangeable. A
+        per-endpoint plan (``fallback_attempts``) hands over the whole order, so
+        this layer disables both the wrapped router's in-domain loop and its
+        freedom to substitute the candidate it was given. A domain-only plan
+        (``fallback_backends``) says nothing about candidates, so those attempts
+        keep the backend's own selection and its in-domain order -- and their
+        target is deliberately left unset rather than dropped.
+
         The primary attempt always stays, even with an unresolved target: a
         caller pin has to reach the backend that enforces it, and a policy target
         the backend cannot honor is that backend's own selection to make.
         """
         primary_backend = self._backends[decision.backend]
         primary_endpoint = _resolved_endpoint(primary_backend, decision.target, model_id)
-        plan: list[tuple[str, str | None]] = [(decision.backend, primary_endpoint)]
-
-        for backend_name, target in self._requested_fallbacks(
+        fallbacks, per_endpoint = self._requested_fallbacks(
             model_id, messages, decision, routing_options, params
-        ):
-            if target is None or target.endpoint_id is None:
-                # A provider-wide fallback lets the backend re-sample its own
+        )
+        plan: list[_Attempt] = [
+            _Attempt(
+                backend=decision.backend,
+                endpoint_id=primary_endpoint,
+                exact=False,
+                domain_fallback=not per_endpoint,
+            )
+        ]
+
+        for backend_name, target in fallbacks:
+            backend = self._backends[backend_name]
+            if not _serves(backend, model_id):
+                continue
+            if target is None:
+                # Domain-level: this backend chooses, and may walk its own range.
+                plan.append(
+                    _Attempt(
+                        backend=backend_name,
+                        endpoint_id=None,
+                        exact=False,
+                        domain_fallback=True,
+                    )
+                )
+                continue
+            if target.endpoint_id is None:
+                # A provider-wide target would let the backend re-sample its own
                 # range, which is the reordering this plan exists to prevent.
                 continue
             if target.endpoint_id == primary_endpoint:
                 continue
-            backend = self._backends[backend_name]
-            if not _serves(backend, model_id):
-                continue
             endpoint_id = _resolved_endpoint(backend, target, model_id)
             if endpoint_id is None:
                 continue
-            plan.append((backend_name, endpoint_id))
+            plan.append(
+                _Attempt(
+                    backend=backend_name,
+                    endpoint_id=endpoint_id,
+                    exact=True,
+                    domain_fallback=False,
+                )
+            )
         return tuple(plan)
 
     def _requested_fallbacks(
@@ -385,13 +452,15 @@ class HybridRouter:
         decision: RoutingDecision,
         routing_options: RoutingRequestOptions | None,
         params: dict[str, Any],
-    ) -> tuple[tuple[str, RoutingTarget | None], ...]:
-        """Return the policy's candidate order, preferring its richer form.
+    ) -> tuple[tuple[tuple[str, RoutingTarget | None], ...], bool]:
+        """Return the policy's candidate order and whether it names candidates.
 
         A policy that can name each candidate's endpoint implements
         ``fallback_attempts`` and gets the route's own order, interleaved across
         domains. One that only names domains falls back to
-        ``fallback_backends``, where each attempt is the backend's own selection.
+        ``fallback_backends``; those entries carry no target, and the boolean
+        tells the caller to leave the backend's own selection and in-domain order
+        alone rather than treating the absent target as an unreachable candidate.
 
         The richer plan is not filtered by domain: consecutive candidates can
         belong to the same one -- two local replicas in a row are the common case
@@ -399,22 +468,28 @@ class HybridRouter:
         """
         attempts = getattr(self._policy, "fallback_attempts", None)
         if callable(attempts):
-            return tuple(
-                (attempt.backend, attempt.target)
-                for attempt in attempts(
-                    model_id,
-                    messages,
-                    decision,
-                    routing_options=routing_options,
-                    **params,
+            return (
+                tuple(
+                    (attempt.backend, attempt.target)
+                    for attempt in attempts(
+                        model_id,
+                        messages,
+                        decision,
+                        routing_options=routing_options,
+                        **params,
+                    )
+                    if attempt.backend in self._backends
+                ),
+                True,
+            )
+        return (
+            tuple(
+                (backend_name, None)
+                for backend_name in self._fallback_order(
+                    model_id, messages, decision, routing_options, params
                 )
-                if attempt.backend in self._backends
-            )
-        return tuple(
-            (backend_name, None)
-            for backend_name in self._fallback_order(
-                model_id, messages, decision, routing_options, params
-            )
+            ),
+            False,
         )
 
     def _fallback_order(
@@ -596,7 +671,7 @@ def _serves(backend: Any, model_id: str) -> bool:
 async def _fallback_stream(
     router: HybridRouter,
     decision: RoutingDecision,
-    plan: Sequence[tuple[str, str | None]],
+    plan: Sequence[_Attempt],
     model_id: str,
     messages: list[dict[str, Any]],
     routing_options: RoutingRequestOptions | None,
@@ -608,12 +683,12 @@ async def _fallback_stream(
     preferred_endpoint = _resolved_endpoint(
         router.backend(decision.backend), decision.target, model_id
     )
-    for index, (backend_name, endpoint_id) in enumerate(plan):
-        backend = router.backend(backend_name)
+    for index, attempt in enumerate(plan):
+        backend = router.backend(attempt.backend)
         stream = backend.stream_chat_completion(
             model_id,
             messages,
-            routing_options=_attempt_options(routing_options, backend, endpoint_id, model_id),
+            routing_options=_attempt_options(routing_options, backend, attempt, model_id),
             target=decision.target if index == 0 else None,
             **params,
         )
@@ -643,16 +718,22 @@ async def _fallback_stream(
                     )
                 for held in buffered:
                     committed = committed or _is_client_visible(held)
-                    yield _tag_backend_chunk(held, backend_name)
+                    yield _tag_backend_chunk(held, attempt.backend)
                 async for chunk in stream:
                     committed = committed or _is_client_visible(chunk)
-                    yield _tag_backend_chunk(chunk, backend_name)
+                    yield _tag_backend_chunk(chunk, attempt.backend)
                 return
             # A stream that ended without producing anything never reached the
             # client, so it is a failed attempt and the plan may continue.
             empty_error = RuntimeError("stream produced no output")
-            attempts.append(_attempt_record(backend_name, endpoint_id, empty_error))
+            attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, empty_error))
             errors.append(empty_error)
+        except (TargetUnavailableError, AllCircuitsOpenError) as exc:
+            if committed:  # pragma: no cover - unavailability precedes any output
+                raise
+            if not attempt.exact:
+                attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
+                errors.append(exc)
         except Exception as exc:
             if committed:
                 # The client already holds part of this answer. Restarting on
@@ -660,7 +741,7 @@ async def _fallback_stream(
                 # so the failure propagates exactly as the single-router path
                 # propagates it.
                 raise
-            attempts.append(_attempt_record(backend_name, endpoint_id, exc))
+            attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
             errors.append(exc)
         finally:
             if callable(aclose):
@@ -671,33 +752,38 @@ async def _fallback_stream(
 def _attempt_options(
     routing_options: RoutingRequestOptions | None,
     backend: Any,
-    endpoint_id: str | None,
+    attempt: _Attempt,
     model_id: str,
 ) -> RoutingRequestOptions | None:
     """Return request options for one planned attempt.
 
-    The policy's target travels as ``preferred_endpoint_id`` in
-    ``RoutingRequestOptions`` rather than as a generation parameter, so it stays
-    on the router-owned control surface: adapters never see it, and it cannot be
-    confused with the caller's hard ``pin_provider``.
+    The target travels as ``preferred_endpoint_id`` in ``RoutingRequestOptions``
+    rather than as a generation parameter, so it stays on the router-owned
+    control surface: adapters never see it, and it cannot be confused with the
+    caller's hard ``pin_provider``.
 
-    ``allow_fallback`` is cleared because the hybrid layer owns the candidate
-    order. Leaving it set would let the backend walk its own range before the
-    plan's next candidate, which reorders attempts and can dispatch the same
-    endpoint twice -- once inside the domain and once from the plan.
+    The two flags come from the plan. ``allow_fallback`` is cleared when this
+    layer owns the candidate order -- otherwise the backend walks its own range
+    before the plan's next candidate, reordering attempts and dispatching some
+    endpoints twice. ``require_target`` is set when the plan named one candidate,
+    so a candidate that cannot be admitted comes back as
+    :class:`TargetUnavailableError` and the plan moves on instead of the router
+    quietly substituting a different endpoint.
     """
     scope = _dispatch_scope(backend, model_id)
     if routing_options is None:
         return RoutingRequestOptions(
-            preferred_endpoint_id=endpoint_id,
+            preferred_endpoint_id=attempt.endpoint_id,
             endpoint_scope=scope,
-            allow_fallback=False,
+            allow_fallback=attempt.domain_fallback,
+            require_target=attempt.exact,
         )
     return replace(
         routing_options,
-        preferred_endpoint_id=endpoint_id,
+        preferred_endpoint_id=attempt.endpoint_id,
         endpoint_scope=scope,
-        allow_fallback=False,
+        allow_fallback=attempt.domain_fallback,
+        require_target=attempt.exact,
     )
 
 
