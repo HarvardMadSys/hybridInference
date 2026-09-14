@@ -49,6 +49,70 @@ _INCOMPLETE_STREAM_ERROR = (
     "Upstream stream ended without a terminal finish_reason or [DONE] sentinel"
 )
 
+
+class UpstreamStreamError(aiohttp.ClientError):
+    """An error the upstream reported *inside* an otherwise-200 SSE stream.
+
+    OpenAI-compatible servers -- this gateway among them -- answer a mid-stream
+    failure with a ``data: {"error": {...}}`` frame and then close, emitting no
+    terminal ``finish_reason`` and no ``[DONE]``. To a reader that only looks
+    for terminators, that is indistinguishable from a truncated generation, so
+    the adapter raised ``_INCOMPLETE_STREAM_ERROR`` -- a statusless
+    ``aiohttp.ClientError`` -- and the frame's own explanation was dropped.
+
+    A statusless exception is the problem. ``endpoint_health.record_failure``
+    exempts client errors from the circuit breaker by duck-typing an HTTP
+    status off the exception, so a relayed 4xx that the upstream had *already*
+    excused as the caller's fault ("you've reached your concurrent request
+    limit") arrived here with nothing to classify on, counted against the
+    endpoint, and paged -- while the upstream itself had logged
+    ``client_error_skip_breaker`` for the very same request.
+
+    Carrying ``status`` restores that classification, and the message carries
+    the upstream's own text so the caller reads the real reason instead of a
+    framing complaint. ``ClientError`` is the base so the existing mid-stream
+    ``except aiohttp.ClientError`` handling (key release, propagation) is
+    unchanged.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+# Used when an error frame names no usable HTTP status. Not a client error, so
+# the breaker still counts it -- which is what a statusless error frame did
+# before this, and the safe direction for an upstream fault we cannot classify.
+_UNCLASSIFIED_STREAM_ERROR_STATUS = 502
+
+
+def _stream_error_status(error: Any) -> int:
+    """Extract the HTTP status an upstream error frame reports, or 502."""
+    if isinstance(error, dict):
+        # ``code`` is the OpenAI-compatible spelling, and it is frequently a
+        # string enum ("rate_limit_exceeded") rather than a number -- only an
+        # in-range int is a status. ``status`` / ``status_code`` cover the
+        # servers that mirror the HTTP code under a different key.
+        for key in ("code", "status", "status_code"):
+            val = error.get(key)
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, int) and 100 <= val <= 599:
+                return val
+    return _UNCLASSIFIED_STREAM_ERROR_STATUS
+
+
+def _stream_error_message(error: Any) -> str:
+    """Render an upstream error frame as a single operator-readable line."""
+    if isinstance(error, dict):
+        msg = error.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return "Upstream reported an error mid-stream"
+
+
 # Total timeout (seconds) for a non-streaming upstream completion POST. The old
 # 120s cap killed long-but-healthy generations (reasoning models, large
 # max_tokens) with a generic 502 even while the upstream was still producing.
@@ -1404,6 +1468,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # client-side cancellations (CancelledError, GeneratorExit) are
         # BaseExceptions that never mute either.
         stream_error = False
+        stream_error_status: int | None = None
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -1420,6 +1485,18 @@ class OpenAICompatAdapter(BaseAdapter):
                         data = json.loads(data_str)
 
                         raw_choices = data.get("choices") if isinstance(data, dict) else None
+
+                        # An error frame ends the stream: the upstream is
+                        # telling us why it stopped, so surface *that* rather
+                        # than letting the loop fall out and report the missing
+                        # terminator. Guarded on empty choices because a normal
+                        # content chunk may legitimately carry a null `error`.
+                        if isinstance(data, dict) and data.get("error") and not raw_choices:
+                            error = data["error"]
+                            raise UpstreamStreamError(
+                                _stream_error_message(error),
+                                _stream_error_status(error),
+                            )
                         if isinstance(raw_choices, list) and any(
                             isinstance(choice, dict) and bool(choice.get("finish_reason"))
                             for choice in raw_choices
@@ -1475,6 +1552,13 @@ class OpenAICompatAdapter(BaseAdapter):
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
             stream_error = True
+            # An error *frame* names a status, and a 4xx one is the caller's
+            # request being refused -- the key is healthy and muting it would
+            # sideline a working credential over someone else's bad request.
+            # Hand the pool the real status and let its own policy decide;
+            # everything statusless keeps the historical 0 ("non-HTTP failure").
+            if isinstance(e, UpstreamStreamError):
+                stream_error_status = e.status
             raise
         finally:
             # The outbound slot was held for the whole generation, not just the
@@ -1485,7 +1569,11 @@ class OpenAICompatAdapter(BaseAdapter):
             if active_slot is not None:
                 active_slot.release(status_code=0 if stream_error else 200)
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(active_lease, status_code=0 if stream_error else 200)
+                if stream_error:
+                    release_status = stream_error_status if stream_error_status else 0
+                else:
+                    release_status = 200
+                self._key_pool.release(active_lease, status_code=release_status)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={

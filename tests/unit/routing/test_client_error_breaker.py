@@ -31,6 +31,7 @@ from routing.endpoint_health import (
 from routing.routewise.decisions import ProviderReservation, RoutingDecision, RoutingTrace
 from routing.routewise.prefix_cache_pending import PendingPrefixCacheStore
 from routing.routewise.router import RouteWiseRouter
+from serving.adapters.openai_compat import UpstreamStreamError
 
 
 class _StatusError(Exception):
@@ -224,3 +225,42 @@ def test_routewise_stream_forwards_exc_to_on_failure():
     exc = router.captured[-1]["exc"]
     assert exc is not None
     assert _is_client_error(exc) is True
+
+
+def test_upstream_sse_error_frame_reaches_the_exemption(monkeypatch):
+    """The production page, end to end: the exemption needs a status to read.
+
+    An OpenAI-compatible upstream reports a mid-stream failure as a
+    ``data: {"error": {...}}`` frame and then closes, emitting no terminal
+    ``finish_reason`` and no ``[DONE]``. The adapter used to read only the
+    missing terminator and raise a statusless ``aiohttp.ClientError``, so a 403
+    the upstream had already excused as the caller's fault arrived here with
+    nothing to classify on -- it counted, and the breaker paged. Now the frame's
+    status rides on the exception, and the existing exemption does the rest.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    endpoint_id = "kimi-k2.7-code:staging-api"
+    registry.record_success(endpoint_id)
+    baseline = registry.snapshot()[endpoint_id]["availability"]
+
+    registry.record_failure(
+        endpoint_id,
+        reason="stream_exception",
+        exc=UpstreamStreamError("You've reached your concurrent request limit.", 403),
+    )
+
+    status = registry.snapshot()[endpoint_id]
+    assert status["circuit_state"] == _CircuitState.CLOSED
+    assert status["availability"] == baseline
+
+    # A frame whose status is a genuine upstream fault still counts, so the
+    # exemption cannot be used to make a broken endpoint look healthy.
+    registry.record_failure(
+        endpoint_id,
+        reason="stream_exception",
+        exc=UpstreamStreamError("upstream exploded", 502),
+    )
+    assert registry.snapshot()[endpoint_id]["availability"] < baseline
