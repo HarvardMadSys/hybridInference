@@ -306,6 +306,8 @@ class FeasibleProviderCandidate:
     prefix_cache_discount_usd: float = 0.0
     prefix_cache_expected_tokens: float = 0.0
     prefix_cache_adjustment_applied: bool = False
+    prefix_cache_evidence_state: str = "UNKNOWN"
+    prefix_cache_evidence_confidence: float = 0.0
     quota_pool: str | None = None
     concurrency_pool: str | None = None
     quota_used_fraction: float | None = None
@@ -1577,6 +1579,11 @@ class RouteWiseRouter:
                 output_tokens=predicted_output_tokens,
             )
 
+            # Default evidence fields (overridden in the on_demand branch when
+            # prefix-cache cost adjustment applies).
+            evidence_state = "UNKNOWN"
+            evidence_confidence = 0.0
+
             provider_type: Literal["on_demand", "quota", "concurrency"]
             if route_candidate.provider_type is ProviderType.ON_DEMAND:
                 provider_type = "on_demand"
@@ -1591,6 +1598,8 @@ class RouteWiseRouter:
                         prefix_discount,
                         prefix_expected,
                         prefix_applied,
+                        evidence_state,
+                        evidence_confidence,
                     ) = self._apply_prefix_cache_cost_adjustment(
                         model_id=model_id,
                         route_candidate=route_candidate,
@@ -1669,6 +1678,8 @@ class RouteWiseRouter:
                     prefix_cache_discount_usd=prefix_discount,
                     prefix_cache_expected_tokens=prefix_expected,
                     prefix_cache_adjustment_applied=prefix_applied,
+                    prefix_cache_evidence_state=evidence_state,
+                    prefix_cache_evidence_confidence=evidence_confidence,
                     quota_pool=quota_pool_id,
                     concurrency_pool=concurrency_pool_id,
                     quota_used_fraction=used_fraction,
@@ -1730,17 +1741,17 @@ class RouteWiseRouter:
         pricing: CandidatePricing,
         cold_cost: float,
         prefix_context: tuple[tuple[Any, ...], dict[str, Any]],
-    ) -> tuple[float, float, float, bool]:
+    ) -> tuple[float, float, float, bool, str, float]:
         """Return API effective cost after a guarded prefix-cache discount."""
         adapter = route_candidate.adapter
         if self._has_rotating_key_pool(adapter):
-            return cold_cost, 0.0, 0.0, False
+            return cold_cost, 0.0, 0.0, False, "UNKNOWN", 0.0
         delta = price_delta_per_token(
             pricing.prompt,
             pricing.cache_read,
         )
         if delta <= 0.0:
-            return cold_cost, 0.0, 0.0, False
+            return cold_cost, 0.0, 0.0, False, "UNKNOWN", 0.0
 
         blocks, info = prefix_context
         provider_id = str(getattr(adapter.config, "provider", "") or "")
@@ -1765,7 +1776,14 @@ class RouteWiseRouter:
         )
         discount = record.cache_discount if record.would_apply else 0.0
         adjusted = max(0.0, cold_cost - discount)
-        return adjusted, discount, record.expected_cached_tokens, record.would_apply
+        return (
+            adjusted,
+            discount,
+            record.expected_cached_tokens,
+            record.would_apply,
+            record.evidence_state,
+            record.evidence_confidence,
+        )
 
     @staticmethod
     def _has_rotating_key_pool(adapter: Any) -> bool:
@@ -2029,6 +2047,16 @@ class RouteWiseRouter:
                         c.endpoint_id: c.quota_used_fraction
                         for c in candidates
                         if c.quota_used_fraction is not None
+                    },
+                    "candidate_prefix_cache_evidence_states": {
+                        c.endpoint_id: c.prefix_cache_evidence_state
+                        for c in candidates
+                        if c.prefix_cache_evidence_state != "UNKNOWN"
+                    },
+                    "candidate_prefix_cache_evidence_confidence": {
+                        c.endpoint_id: c.prefix_cache_evidence_confidence
+                        for c in candidates
+                        if c.prefix_cache_evidence_confidence > 0.0
                     },
                 }
             )
@@ -2457,6 +2485,11 @@ class RouteWiseRouter:
                             event_sink=self._health_registry,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
+                            backup_dispatch_hook=lambda backup: (
+                                self._reserve_prefix_generation_for_dispatch(
+                                    str(trace.request_id), endpoint_id_for_adapter(backup)
+                                )
+                            ),
                         )
                     if self.prefix_cache.enabled:
                         self._stash_prefix_for_commit(
@@ -2483,11 +2516,13 @@ class RouteWiseRouter:
         prefix_context: tuple[tuple[Any, ...], dict[str, Any]] | None,
         request_id: str | None,
     ) -> None:
-        """Stash request blocks and eligible-candidate scopes for the warm on success.
+        """Stash request blocks and eligible-candidate scopes for a later dispatch.
 
         The scopes were collected by :meth:`_apply_prefix_cache_cost_adjustment`
         while pricing candidates, so only providers the cost estimate applied to
-        (direct, cache-priced, non-rotating) are present. The commit
+        (direct, cache-priced, non-rotating) are present. Generation ownership is
+        added later by :meth:`_reserve_prefix_generation_for_dispatch` for each
+        endpoint that actually starts a dispatch. The commit
         (:meth:`_commit_prefix_cache_observation`) looks the winning endpoint up by
         id, so a winner without a scope here -- e.g. a rotating-key or no-delta
         provider -- is simply not warmed.
@@ -2504,37 +2539,126 @@ class RouteWiseRouter:
         stash_key = str(request_id or "")
         if not stash_key:
             return
-        self.pending_prefix_cache.put(stash_key, blocks, scopes)
+        self.pending_prefix_cache.put(
+            stash_key,
+            blocks,
+            scopes,
+            merge=True,
+        )
+
+    def _reserve_prefix_generation_for_dispatch(
+        self,
+        request_id: str | None,
+        endpoint_id: str | None,
+    ) -> None:
+        """Reserve prefix ownership only after a concrete endpoint dispatch starts."""
+        if not self.prefix_cache.enabled or not request_id or not endpoint_id:
+            return
+        request_key = str(request_id)
+        endpoint_key = str(endpoint_id)
+        scope = self.pending_prefix_cache.scope_for(request_key, endpoint_key)
+        if scope is None:
+            return
+        if self.pending_prefix_cache.generation_for(request_key, endpoint_key) is not None:
+            return
+        generations = self.prefix_cache.reserve_generations([scope])
+        generation = generations.get(scope)
+        if generation is not None:
+            self.pending_prefix_cache.set_generation(request_key, endpoint_key, generation)
 
     def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
-        """On a selected success, commit the winning provider's prefix to memory.
+        """On a selected observation, update prefix memory and cache evidence.
 
-        Only successful observations warm history, and only under the endpoint that
-        actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
-        attempts are never recorded as warm. ``RoutingObservation.request_id``
-        explicitly correlates the success with its route-time prefix snapshot.
+        Two distinct concerns are handled separately:
+
+        1. **Prefix warming** (``obs.success``): only successful dispatches
+           may have populated the endpoint's cache. A non-terminal failed
+           attempt must not consume the stash because the winning
+           fallback/hedge observation still needs it.
+
+        2. **Authoritative cache evidence** (``obs.cached_tokens``): observed
+           cache usage is recorded whenever it is available, independently
+           of whether the completion produced content. A streamed HTTP 200
+           with no completion content has ``success=False`` but may still
+           carry authoritative ``cached_tokens`` that must update evidence.
         """
         request_id = str(getattr(obs, "request_id", None) or "")
         if not request_id:
             return
-        # A non-terminal failed attempt must not consume the stash because the
-        # winning fallback/hedge observation still needs it. A terminal failed
-        # observation (including an empty completion) has no future winner and
-        # therefore discards it without warming.
+
+        # Record authoritative cache evidence BEFORE the success/warming gate
+        # so that a streamed empty-completion path (success=False) still
+        # learns from an observed cache hit or miss.
+        cached_tokens = getattr(obs, "cached_tokens", None)
+        endpoint_id = getattr(obs, "endpoint_id", None)
+
         if not obs.success:
             if getattr(obs, "terminal", True):
-                self.pending_prefix_cache.discard(request_id)
+                # Terminal failure: no future winner. If authoritative cache
+                # evidence exists, extract the stash scope BEFORE discarding
+                # so the evidence can still be recorded.
+                if endpoint_id and cached_tokens is not None:
+                    stashed = self.pending_prefix_cache.pop(request_id)
+                    if stashed is not None:
+                        scope = stashed.scopes.get(endpoint_id)
+                        if scope is not None:
+                            generation = stashed.generations.get(endpoint_id)
+                            if cached_tokens > 0 and self.prefix_cache.remember(
+                                scope,
+                                stashed.blocks,
+                                generation=generation,
+                            ):
+                                # Bind positive evidence to the exact stashed
+                                # prefix so a later request matching these
+                                # blocks can use the observed cache hit.
+                                self.prefix_cache.record_evidence(
+                                    scope,
+                                    cached_tokens,
+                                    generation=generation,
+                                    blocks=stashed.blocks,
+                                )
+                            elif cached_tokens == 0:
+                                # A miss is measured before this request can
+                                # warm the cache. Do not replace remembered
+                                # prefix memory on a failed/empty response;
+                                # only update evidence if the exact remembered
+                                # prefix is still current.
+                                self.prefix_cache.record_evidence(
+                                    scope,
+                                    cached_tokens,
+                                    generation=generation,
+                                    blocks=stashed.blocks,
+                                )
+                else:
+                    self.pending_prefix_cache.discard(request_id)
             return
+
         stashed = self.pending_prefix_cache.pop(request_id)
         if stashed is None:
             return
         scope = stashed.scopes.get(obs.endpoint_id)
         if scope is None:
             return
-        self.prefix_cache.remember(
+        generation = stashed.generations.get(obs.endpoint_id)
+        if not self.prefix_cache.remember(
             scope,
             stashed.blocks,
-        )
+            generation=generation,
+        ):
+            return
+        # Record authoritative observed cache usage as evidence.
+        if cached_tokens is not None:
+            self.prefix_cache.record_evidence(
+                scope,
+                cached_tokens,
+                generation=generation,
+                blocks=stashed.blocks,
+                materialization_candidate=True,
+            )
+        else:
+            # No authoritative observation: successful dispatch may still
+            # establish potential warming.
+            self.prefix_cache.record_dispatch(scope, generation=generation)
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:
@@ -2789,6 +2913,7 @@ class RouteWiseRouter:
         original_config = getattr(adapter, "config", None)
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
+            self._reserve_prefix_generation_for_dispatch(decision.trace.request_id, endpoint_id)
             # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
             # _execute_stream_adapter.
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
@@ -2822,6 +2947,7 @@ class RouteWiseRouter:
         original_config = getattr(adapter, "config", None)
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
+            self._reserve_prefix_generation_for_dispatch(decision.trace.request_id, endpoint_id)
             # Deliberately no req_ctx.UPSTREAM_PRIORITY, in either execution
             # path. A priority ranks a request by the *un-cached* prefill it
             # imposes, and that discount comes from the per-caller prompt-size

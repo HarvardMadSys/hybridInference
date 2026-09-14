@@ -409,6 +409,10 @@ class TestRouteWiseRouterPrefixCacheWarm:
         router._stash_prefix_for_commit((blocks, {"scopes": scopes}), request_id)
 
     @staticmethod
+    def _dispatch(router, request_id, endpoint_id):
+        router._reserve_prefix_generation_for_dispatch(request_id, endpoint_id)
+
+    @staticmethod
     def _observe(router, request_id, endpoint_id, *, success=True):
         router._commit_prefix_cache_observation(
             _obs(
@@ -435,6 +439,85 @@ class TestRouteWiseRouterPrefixCacheWarm:
         signal = self._lookup(router, scope_a)
         assert signal.has_history is True
         assert signal.matched_prefix_tokens > 0
+
+    def test_only_dispatched_candidates_reserve_generations(self):
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        scope_b = self._scope(router, "prov-b", "prov-b:h:1")
+
+        self._stash(router, "r1", {"prov-a:h:1": scope_a, "prov-b:h:1": scope_b})
+        assert router.prefix_cache._scope_generations == {}
+
+        self._dispatch(router, "r1", "prov-b:h:1")
+
+        assert scope_a not in router.prefix_cache._scope_generations
+        assert scope_b in router.prefix_cache._scope_generations
+
+    def test_unrelated_candidate_does_not_supersede_dispatched_generation(self):
+        """A's X observation survives B evaluating X while dispatching Y."""
+        router = self._router()
+        scope_x = self._scope(router, "prov-x", "prov-x:h:1")
+        scope_y = self._scope(router, "prov-y", "prov-y:h:1")
+        blocks_a = router.prefix_cache.build_blocks(_MSGS1)
+        blocks_b = router.prefix_cache.build_blocks(_MSGS2)
+
+        self._stash(
+            router,
+            "request-a",
+            {"prov-x:h:1": scope_x, "prov-y:h:1": scope_y},
+            messages=_MSGS1,
+        )
+        self._dispatch(router, "request-a", "prov-x:h:1")
+        generation_x = router.prefix_cache._scope_generations[scope_x]
+
+        self._stash(
+            router,
+            "request-b",
+            {"prov-x:h:1": scope_x, "prov-y:h:1": scope_y},
+            messages=_MSGS2,
+        )
+        self._dispatch(router, "request-b", "prov-y:h:1")
+
+        assert router.prefix_cache._scope_generations[scope_x] == generation_x
+        router._commit_prefix_cache_observation(_obs("prov-x:h:1", request_id="request-a"))
+        assert router.prefix_cache.memory.current_blocks(scope_x) == blocks_a
+        assert router.prefix_cache.memory.current_blocks(scope_y) is None
+        assert router.pending_prefix_cache.pop("request-b") is not None
+
+        # A newer dispatch to X does supersede the older X generation.
+        self._stash(
+            router,
+            "request-c",
+            {"prov-x:h:1": scope_x},
+            messages=_MSGS2,
+        )
+        self._dispatch(router, "request-c", "prov-x:h:1")
+        router._commit_prefix_cache_observation(_obs("prov-x:h:1", request_id="request-c"))
+        assert router.prefix_cache.memory.current_blocks(scope_x) == blocks_b
+
+    def test_retry_stashes_accumulate_only_actual_dispatch_generations(self):
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        scope_b = self._scope(router, "prov-b", "prov-b:h:1")
+        scope_c = self._scope(router, "prov-c", "prov-c:h:1")
+
+        self._stash(
+            router,
+            "retry",
+            {"prov-a:h:1": scope_a, "prov-b:h:1": scope_b},
+        )
+        self._dispatch(router, "retry", "prov-a:h:1")
+        self._stash(
+            router,
+            "retry",
+            {"prov-b:h:1": scope_b, "prov-c:h:1": scope_c},
+        )
+        self._dispatch(router, "retry", "prov-b:h:1")
+
+        entry = router.pending_prefix_cache.pop("retry")
+        assert entry is not None
+        assert set(entry.generations) == {"prov-a:h:1", "prov-b:h:1"}
+        assert "prov-c:h:1" in entry.scopes
 
     def test_failed_does_not_warm_and_keeps_stash_for_fallback_winner(self):
         # The logging path emits one failed observation per failed attempt
@@ -577,6 +660,8 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             cache_params="{}",
         )
         router.prefix_cache.remember(scope, blocks)
+        # Record verified reuse evidence so the discount can apply.
+        router.prefix_cache.record_evidence(scope, cached_tokens=800)
 
     @staticmethod
     def _select(router: RouteWiseRouter):

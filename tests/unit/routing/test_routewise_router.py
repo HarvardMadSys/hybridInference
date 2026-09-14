@@ -3667,6 +3667,30 @@ class TestRouteWiseDecisionMetadata:
         assert decision.metadata["backup_won"] is True
 
     @pytest.mark.asyncio
+    async def test_hedge_backup_dispatch_hook_runs_only_when_backup_launches(self):
+        """A prefix-generation hook fires at backup dispatch, not consideration."""
+        router, _quota, _api = _make_router_with_quota_and_api()
+        primary_adapter = _make_adapter(
+            provider="primary",
+            endpoint_id="test-model:primary",
+        )
+        backup_adapter = _make_adapter(
+            provider="backup",
+            endpoint_id="test-model:backup",
+        )
+        dispatch_hook = MagicMock()
+        hedged = HedgedAdapter(
+            primary=primary_adapter,
+            backup=backup_adapter,
+            hedge_threshold_sec=0.0,
+            event_sink=router._health_registry,
+            backup_dispatch_hook=dispatch_hook,
+        )
+
+        assert hedged._start_backup_at(0.0) is not None
+        dispatch_hook.assert_called_once_with(backup_adapter)
+
+    @pytest.mark.asyncio
     async def test_exception_carries_routewise_in_routing(self):
         """When chat_completion fails, exception._routing contains routewise metadata."""
         router, quota, api = _make_router_with_quota_and_api()
