@@ -6,6 +6,14 @@ cloud provider set -- behind the same request contract as every serving router
 policy: it answers requests it is given, reports the routing metadata it
 already produced, and forwards feedback to the collaborators it wraps.
 
+A backend sits on one side of a dispatch boundary, and the boundary has two
+shapes. A :class:`LeafBackend` is the end of the recursion: it executes one bound
+endpoint and has no selection of its own. A :class:`TreeBackend` holds a routing
+subtree and delegates to a scoped internal router. ``LocalBackend`` and
+``CloudBackend`` are deployment-ownership wrappers over that second shape; the
+distinction that matters for a dispatch is which of the two a backend is, not
+which domain it belongs to.
+
 Two implementations ship here, one per side of the composition:
 
 ``LocalBackend``
@@ -34,9 +42,17 @@ here infers ownership from a hostname, URL or provider name.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from routing.dispatch import (
+    BackendDispatch,
+    DelegatePool,
+    DispatchMismatchError,
+    ExecuteEndpoint,
+)
 from routing.endpoints import endpoint_id_for_adapter
+from routing.protocols import RoutingRequestOptions
 from routing.route_scope import (
     ObservationScope,
     RouteScopeView,
@@ -49,7 +65,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Collection
 
     from routing.decisions import RoutingTarget
-    from routing.protocols import RouterProtocol, RoutingRequestOptions
+    from routing.protocols import RouterProtocol
     from routing.route_table import RouteTableView
     from routing.routers import RoutingObservation
     from routing.routewise.router import RouteWiseRouter
@@ -57,10 +73,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CloudBackend",
     "FixedCloudBackend",
+    "LeafBackend",
     "LocalBackend",
     "RouteWiseCloudBackend",
     "RoutingBackend",
     "RoutingBackendBase",
+    "TreeBackend",
 ]
 
 #: Methods every router must expose to be usable as a backend execution path.
@@ -386,7 +404,309 @@ class RoutingBackendBase:
         return True
 
 
-class LocalBackend(RoutingBackendBase):
+class LeafBackend(RoutingBackendBase):
+    """The end of the recursion: one bound endpoint, executed exactly.
+
+    The caller has already chosen, so this backend has nothing to select: it
+    dispatches the endpoint it was bound to, and neither substitutes another one
+    nor falls back to a route. Handed a :class:`~routing.dispatch.DelegatePool`
+    instruction it refuses outright -- it has no pool to delegate to -- and
+    handed a binding for a different endpoint it refuses too, because accepting
+    either would mean inventing a selection this class does not have.
+
+    Execution itself is not reimplemented. The wrapped router still performs the
+    dispatch, with the exact target and no fallback allowed, so health claims,
+    prefill accounting and routing metadata stay in the one place that already
+    produces them.
+
+    Args:
+        router: The router that will execute the bound endpoint.
+        endpoint_id: The one canonical endpoint this leaf may execute.
+        model_id: Canonical model the endpoint belongs to, when the caller knows
+            it. Recorded so ownership and refusal messages can name the binding.
+        name: Backend identity reported in routing metadata and diagnostics.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root owns it.
+    """
+
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        endpoint_id: str,
+        model_id: str | None = None,
+        name: str = "leaf",
+        manage_lifecycle: bool = False,
+    ) -> None:
+        if not endpoint_id:
+            raise ValueError("LeafBackend requires a non-empty endpoint_id")
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+        self._endpoint_id = endpoint_id
+        self._model_id = model_id
+
+    #: A leaf has no pool to delegate to, and says so, so a caller that would
+    #: otherwise hand it a delegation is told to name an endpoint instead.
+    accepts_delegation = False
+
+    @property
+    def endpoint_id(self) -> str:
+        """Return the one endpoint this leaf executes."""
+        return self._endpoint_id
+
+    @property
+    def is_local(self) -> bool:
+        """Return whether this leaf is the local execution domain.
+
+        Undeclared: a leaf says *which endpoint* it runs, and a deployment's
+        local/cloud split is a separate decision the composition root makes.
+        """
+        return False
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return whether this leaf is the cloud execution domain."""
+        return False
+
+    def owns_model(self, model_id: str) -> bool:
+        """Return whether the bound endpoint belongs to ``model_id``."""
+        if self._model_id is None:
+            return True
+        return self.canonical_id(model_id) == self._model_id
+
+    def owns_observation(self, obs: RoutingObservation) -> bool:
+        """Return whether ``obs`` names the endpoint this leaf executed."""
+        if not self.owns_model(obs.model_id):
+            return False
+        return obs.endpoint_id == self._endpoint_id
+
+    def serves(self, model_id: str) -> bool:
+        """Return whether this leaf can serve ``model_id``."""
+        return self.owns_model(model_id)
+
+    def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
+        """Resolve a policy target, which here can only be the bound endpoint."""
+        if target.endpoint_id == self._endpoint_id:
+            return self._endpoint_id
+        return None
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the single-endpoint range this leaf may dispatch to."""
+        return frozenset({self._endpoint_id})
+
+    def check_instruction(self, instruction: BackendDispatch, model_id: str) -> None:
+        """Refuse anything but an exact dispatch of the bound endpoint."""
+        if isinstance(instruction, ExecuteEndpoint):
+            bound = instruction.binding.endpoint_id
+            if bound != self._endpoint_id:
+                raise DispatchMismatchError(
+                    f"{type(self).__name__} {self.name!r} is bound to {self._endpoint_id!r} "
+                    f"and was asked to execute {bound!r}"
+                )
+            return
+        raise DispatchMismatchError(
+            f"{type(self).__name__} {self.name!r} executes one endpoint and has no "
+            f"pool to delegate to, but was handed pool {instruction.pool_id!r}"
+        )
+
+    def _exact_options(
+        self,
+        routing_options: RoutingRequestOptions | None,
+    ) -> RoutingRequestOptions:
+        """Return options that make the dispatch exactly this endpoint.
+
+        ``require_target`` forbids the router substituting another candidate, and
+        ``allow_fallback`` forbids it walking the route after a failure. Together
+        they are what makes the instruction binding rather than advisory.
+        """
+        if routing_options is None:
+            return RoutingRequestOptions(
+                preferred_endpoint_id=self._endpoint_id,
+                endpoint_scope=frozenset({self._endpoint_id}),
+                allow_fallback=False,
+                require_target=True,
+            )
+        return replace(
+            routing_options,
+            preferred_endpoint_id=self._endpoint_id,
+            endpoint_scope=frozenset({self._endpoint_id}),
+            allow_fallback=False,
+            require_target=True,
+        )
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Execute the bound endpoint."""
+        return await self._router.chat_completion(
+            model_id,
+            messages,
+            routing_options=self._exact_options(routing_options),
+            **params,
+        )
+
+    def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Execute the bound endpoint as a stream."""
+        return self._router.stream_chat_completion(
+            model_id,
+            messages,
+            routing_options=self._exact_options(routing_options),
+            **params,
+        )
+
+
+class TreeBackend(RoutingBackendBase):
+    """A routing subtree: the request is delegated to a scoped internal router.
+
+    This backend is the entry to a pool. It carries the pool's identity and its
+    candidate scope, and it hands selection to the router it wraps, which keeps
+    its own retries, hedging and admission. What it does not do is reimplement
+    any of that.
+
+    An exact instruction is still honored inside the declared scope -- that is
+    what the existing local and cloud wrappers already do, and their behavior is
+    unchanged -- but a binding for an endpoint outside the scope is refused
+    before any upstream I/O, because the alternative is a subtree quietly serving
+    a request it was not granted.
+
+    Args:
+        router: The router implementing this pool's selection and execution.
+        name: Backend identity reported in routing metadata and diagnostics.
+        pool_id: Identity a delegation must name to reach this pool. Defaults to
+            ``name``: a backend built without an explicit pool is its own pool.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root owns it.
+    """
+
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        name: str = "tree",
+        pool_id: str | None = None,
+        manage_lifecycle: bool = False,
+    ) -> None:
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+        self._pool_id = pool_id or name
+
+    #: A pool is what a delegation addresses.
+    accepts_delegation = True
+
+    @property
+    def pool_id(self) -> str:
+        """Return the identity a delegation must name to reach this pool."""
+        return self._pool_id
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the candidate range this pool may dispatch inside.
+
+        ``None`` means the pool declares no range of its own and the wrapped
+        router's full table is its scope. Subclasses that know their range
+        override this.
+        """
+        return None
+
+    def check_instruction(self, instruction: BackendDispatch, model_id: str) -> None:
+        """Refuse a delegation to another pool, or a binding outside this range."""
+        if isinstance(instruction, DelegatePool):
+            if instruction.pool_id != self._pool_id:
+                raise DispatchMismatchError(
+                    f"{type(self).__name__} {self.name!r} is pool {self._pool_id!r} and was "
+                    f"asked to serve pool {instruction.pool_id!r}"
+                )
+            return
+        scope = self.dispatch_scope(model_id)
+        if scope is None:
+            return
+        bound = instruction.binding.endpoint_id
+        if bound not in scope:
+            raise DispatchMismatchError(
+                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(scope)} "
+                f"and was asked to execute {bound!r}"
+            )
+
+    def _scoped_options(
+        self,
+        routing_options: RoutingRequestOptions | None,
+        model_id: str,
+    ) -> RoutingRequestOptions | None:
+        """Return options narrowed to the range this pool is allowed to use.
+
+        A delegation grants selection *inside this pool*, so the pool bounds its
+        own selection instead of trusting the caller to have done it. The
+        effective range is the intersection of this pool's declared range and
+        whatever range the caller already imposed -- a child scope may narrow the
+        parent's grant, never widen it.
+
+        An empty intersection means the caller granted nothing this pool can
+        serve. That is a composition error, not an upstream failure, and it is
+        reported as one before anything is sent.
+        """
+        declared = self.dispatch_scope(model_id)
+        if declared is None:
+            return routing_options
+        imposed = routing_options.endpoint_scope if routing_options is not None else None
+        effective = declared if imposed is None else (imposed & declared)
+        if not effective:
+            raise DispatchMismatchError(
+                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(declared)} "
+                f"and was restricted to {sorted(imposed or ())}"
+            )
+        if routing_options is None:
+            return RoutingRequestOptions(endpoint_scope=effective)
+        if routing_options.endpoint_scope == effective:
+            return routing_options
+        return replace(routing_options, endpoint_scope=effective)
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Serve one request inside this pool's range."""
+        return await self._router.chat_completion(
+            model_id,
+            messages,
+            routing_options=self._scoped_options(routing_options, model_id),
+            **params,
+        )
+
+    def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        target: RoutingTarget | None = None,
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Serve one streaming request inside this pool's range."""
+        return self._router.stream_chat_completion(
+            model_id,
+            messages,
+            routing_options=self._scoped_options(routing_options, model_id),
+            **params,
+        )
+
+
+class LocalBackend(TreeBackend):
     """Local execution domain: an existing, already-scoped local router.
 
     The caller composes the local candidate set by building the wrapped router
@@ -540,7 +860,7 @@ class LocalBackend(RoutingBackendBase):
         self._observation_scope = self._build_observation_scope()
 
 
-class CloudBackend(RoutingBackendBase, ABC):
+class CloudBackend(TreeBackend, ABC):
     """Cloud execution domain: a set of remote providers behind one contract.
 
     This is the role ``HybridRouter`` dispatches a cloud request to, and the

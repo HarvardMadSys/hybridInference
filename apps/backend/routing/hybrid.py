@@ -44,6 +44,13 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
+from routing.dispatch import (
+    accepts_delegation,
+    backend_pool_id,
+    bound_endpoint,
+    check_dispatch,
+    dispatch_for_attempt,
+)
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AllCircuitsOpenError,
@@ -319,6 +326,20 @@ class HybridRouter:
                 # and the failure it recorded.
                 continue
             backend = self._backends[attempt.backend]
+            # The instruction is what makes this attempt binding rather than
+            # advisory, and it is checked before the backend runs: a mismatch is
+            # a composition error, so it must not be dispatched, counted as an
+            # attempt, or recorded as an upstream fault.
+            check_dispatch(
+                backend,
+                dispatch_for_attempt(
+                    pool_id=backend_pool_id(backend),
+                    model_id=model_id,
+                    endpoint_id=attempt.endpoint_id,
+                    exact=attempt.exact,
+                ),
+                model_id,
+            )
             try:
                 response = await backend.chat_completion(
                     model_id,
@@ -408,6 +429,7 @@ class HybridRouter:
         """
         primary_backend = self._backends[decision.backend]
         primary_endpoint = _resolved_endpoint(primary_backend, decision.target, model_id)
+        primary_delegates = accepts_delegation(primary_backend)
         fallbacks, per_endpoint = self._requested_fallbacks(
             model_id, messages, decision, routing_options, params
         )
@@ -415,8 +437,12 @@ class HybridRouter:
             _Attempt(
                 backend=decision.backend,
                 endpoint_id=primary_endpoint,
-                exact=False,
-                domain_fallback=not per_endpoint,
+                # A leaf has no selection to degrade to, so once its binding
+                # resolves its instruction is exact. A pool keeps the preference
+                # semantics the existing wrappers are built on: an unresolvable
+                # target is that pool's own selection to make.
+                exact=primary_endpoint is not None and not primary_delegates,
+                domain_fallback=not per_endpoint and primary_delegates,
             )
         ]
 
@@ -425,6 +451,22 @@ class HybridRouter:
             if not _serves(backend, model_id):
                 continue
             if target is None:
+                if not accepts_delegation(backend):
+                    # A domain-level step names no endpoint, and a leaf cannot
+                    # choose one. Its own binding is the only endpoint that step
+                    # could mean, so use it; without one there is nothing to run.
+                    bound = bound_endpoint(backend)
+                    if bound is None:
+                        continue
+                    plan.append(
+                        _Attempt(
+                            backend=backend_name,
+                            endpoint_id=bound,
+                            exact=True,
+                            domain_fallback=False,
+                        )
+                    )
+                    continue
                 # Domain-level: this backend chooses, and may walk its own range.
                 plan.append(
                     _Attempt(
@@ -699,6 +741,18 @@ async def _fallback_stream(
             # substituted primary already ran, and it must not run twice.
             continue
         backend = router.backend(attempt.backend)
+        # Same check, same reason as the non-streaming path: refuse a mismatched
+        # instruction before the generator can produce any upstream I/O.
+        check_dispatch(
+            backend,
+            dispatch_for_attempt(
+                pool_id=backend_pool_id(backend),
+                model_id=model_id,
+                endpoint_id=attempt.endpoint_id,
+                exact=attempt.exact,
+            ),
+            model_id,
+        )
         stream = backend.stream_chat_completion(
             model_id,
             messages,
