@@ -91,38 +91,55 @@ For the full diagram (network layer, observability, storage), see
   `<octet>-api`, and an admin-supplied `route_id` becomes the `endpoint_id`
   verbatim. The word "upstream" appears informally in code
   comments meaning "the remote API" but isn't a formal type.
-- **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
-  does weighted random selection plus automatic fallback.
-- **Backend / HybridRouter** — [apps/backend/routing/backends.py](apps/backend/routing/backends.py)
-  provides execution domains: `RoutingBackend` is the shared contract,
-  `LocalBackend` owns local execution and `CloudBackend` owns cloud execution.
-  **Fixed and RouteWise are peer routing policies**, both able to choose across
-  local and cloud candidates; future Greedy/Nimbus policies belong at the same
-  level. Local/cloud ownership is independent of RouteWise's `on_demand`,
-  `quota` and `concurrency` resource types. A local GPU deployment can be a
-  concurrency candidate when configured that way.
-  [HybridRouter](apps/backend/routing/hybrid.py) composes a policy with execution
-  domains. The current protocol is `BackendSelection`; `FixedPolicy` reuses
-  `FixedRouter` selection, and `FixedCloudBackend` reuses its execution state.
-  `RouteWisePolicy` names a target responsibility, not an already extracted
-  class: the existing `RouteWiseRouter` still combines decisions, reservations
-  and execution, using `llm_routewise.core` for algorithm primitives.
-  The bootstrap factory routes mixed `router: fixed` models through
-  `HybridRouter`; single-domain models keep the shared `FixedRouter`.
-  **Preserve `router: routewise` and its full candidate pool and behavior.**
-  Its existing registry path is valid for this refactor. Moving it into cloud,
-  narrowing its local/concurrency candidates or adding a Fixed split ahead of
-  it is not required. The existing `RouteWiseCloudBackend` is an optional scoped
-  wrapper, not the architectural home of RouteWise; keeping that public class
-  does not require wiring existing RouteWise models through it.
-  Execution scopes come from the composition root
+- **Router / HybridRouter abstraction** — the agreed design uses one common
+  router contract with independent strategy implementations. Reuse
+  [RouterProtocol](apps/backend/routing/protocols.py) as that contract; do not
+  create a duplicate interface merely to name it `HybridRouter`. `FixedRouter`
+  in [routers.py](apps/backend/routing/routers.py) and `RouteWiseRouter` are
+  peer implementations, both able to select across local and cloud candidates.
+  Future Greedy/Nimbus routers belong at the same level. Each implementation
+  owns its routing, retry and feedback flow; shared helpers need not impose one
+  execution loop on every strategy. A separate `RouteWisePolicy` is not required.
+  **Naming distinction:** the existing concrete
+  [routing.hybrid.HybridRouter](apps/backend/routing/hybrid.py) composes a policy
+  with backends; it is not the common interface in the design. Its `FixedPolicy`
+  / `BackendSelection` can remain internal or compatibility implementation
+  details. Preserve public imports if names change.
+  The current bootstrap sends mixed `router: fixed` models through that
+  concrete composition and single-domain models through the shared FixedRouter.
+  `router: routewise` directly returns RouteWiseRouter. Returning a concrete
+  implementation through the common contract is valid; it does not by itself
+  prove that the target backend execution boundary is wired.
+- **Backend** — [backends.py](apps/backend/routing/backends.py) provides local
+  and cloud execution domains. In the target design, the router selects a
+  canonical endpoint and coordinates subsequent attempts; a backend executes
+  that endpoint through existing adapters, without resampling or cross-endpoint
+  fallback. Existing wrappers still delegate to full routers and permit broader
+  selection behavior: preserve their compatibility contracts while introducing
+  the strict dispatch boundary. Do not describe those wrappers as the completed
+  target or duplicate adapter implementations and shared state.
+  **Preserve Fixed and RouteWise request behavior.** RouteWise keeps its full
+  candidate pool, reservations, re-solving, hedging, learning and lifecycle,
+  using `llm_routewise.core` for algorithm primitives. Do not force it through
+  the concrete composition router, a Fixed domain split, or a cloud-only pool.
+  `RouteWiseCloudBackend` is an optional scoped compatibility wrapper, not the
+  architectural home of RouteWise, and need not be removed for this design.
+  Local/cloud ownership is independent of `on_demand`, `quota` and `concurrency`.
+  A local GPU deployment can be a concurrency candidate when explicitly
+  configured; do not recreate capacity pools per backend or model binding.
+  Keep model `router` / `router_params`, defaults, registry caching, aliases and
+  Admin switching. Verify in-flight requests and feedback retain their original
+  owner across updates; preserving configuration alone is not proof of this.
+  Execution scopes currently come from the composition root
   ([hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)).
   Explicit `local_scope` / `local_ownership` are supported; bootstrap currently
   uses the hostname default, which can classify an owned LAN or cluster DNS
   endpoint as remote. Do not infer a RouteWise resource type from that domain.
   See
   [docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md](docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
-  for the agreed policy/execution boundary and behavior-preservation contract.
+  for the agreed router/execution boundary, current implementation differences
+  and behavior-preservation contract. That document revision changes no runtime
+  code and does not claim the target integration has been completed.
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy
