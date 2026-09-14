@@ -91,13 +91,26 @@ class FixedPolicy:
         pin's own error behavior is unchanged and still enforced by the backend
         router, not here.
         """
-        pin = routing_options.pin_provider if routing_options is not None else None
+        options = routing_options
+        pin = options.pin_provider if options is not None else None
         if pin:
             owner = self._domain_for_pin(model_id, pin)
             return RoutingDecision(
                 backend=owner,
                 target=RoutingTarget(provider=pin),
             )
+        preferred = options.preferred_endpoint_id if options is not None else None
+        if preferred:
+            # An endpoint preference names one domain, so the policy does not
+            # draw: drawing first and handing the target to whichever domain won
+            # would deliver it to a backend that must ignore it, and the caller's
+            # choice would be silently replaced by the weights.
+            owner = self._domain_for_endpoint(model_id, preferred)
+            if owner is not None:
+                return RoutingDecision(
+                    backend=owner,
+                    target=RoutingTarget(endpoint_id=preferred),
+                )
         adapter = self._compute.select_adapter(
             model_id,
             required_modalities=(
@@ -156,6 +169,14 @@ class FixedPolicy:
             endpoint_id_for_adapter(adapter) in self._local_scope
             or getattr(adapter.config, "provider", None) in self._local_scope
         )
+
+    def _domain_for_endpoint(self, model_id: str, endpoint_id: str) -> str | None:
+        """Return the backend owning ``endpoint_id``, or None if it is unknown."""
+        for adapter, _weight in self._compute.eligible_adapters(model_id):
+            if endpoint_id_for_adapter(adapter) != endpoint_id:
+                continue
+            return self._local_backend if self._is_local(adapter) else self._cloud_backend
+        return None
 
     def _domain_for_pin(self, model_id: str, provider: str) -> str:
         """Return the backend that owns a pinned provider or endpoint."""

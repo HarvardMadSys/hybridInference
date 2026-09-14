@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CloudBackend",
+    "FixedCloudBackend",
     "LocalBackend",
     "RouteWiseCloudBackend",
     "RoutingBackend",
@@ -545,6 +546,84 @@ class CloudBackend(RoutingBackendBase, ABC):
         that was built for exactly one domain. Override to narrow it.
         """
         return True
+
+
+class FixedCloudBackend(CloudBackend):
+    """Cloud execution domain over a router that already holds cloud candidates.
+
+    The counterpart of :class:`LocalBackend`: where the local side wraps the
+    shared router and is bounded by its declared scope, this side is given a
+    router whose route *is* the cloud range, so selection, fallback and
+    execution are delegated whole. It is the cloud algorithm for a ``fixed``
+    model -- the operator's configured weights, not RouteWise's LP -- while
+    :class:`RouteWiseCloudBackend` remains the algorithm for a model that
+    configures ``router: routewise``.
+
+    Args:
+        router: A router holding only this backend's candidates.
+        endpoint_scope: The endpoints that router may dispatch to. Recorded so
+            target resolution and feedback attribution agree with execution.
+        model_scope: Optional canonical model ids this backend owns.
+        name: Backend identity reported in routing metadata and diagnostics.
+        manage_lifecycle: When True this backend starts and stops the wrapped
+            router. Default False: the composition root owns it.
+    """
+
+    def __init__(
+        self,
+        router: RouterProtocol,
+        *,
+        endpoint_scope: Collection[str],
+        model_scope: Collection[str] | None = None,
+        name: str = "cloud",
+        manage_lifecycle: bool = False,
+    ) -> None:
+        if not endpoint_scope:
+            raise ValueError(
+                "FixedCloudBackend requires a non-empty endpoint_scope; with no "
+                "cloud endpoints declared this backend cannot serve anything"
+            )
+        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+        self._endpoint_scope = frozenset(endpoint_scope)
+        self._model_scope = frozenset(model_scope) if model_scope is not None else None
+
+    @property
+    def endpoint_scope(self) -> frozenset[str]:
+        """Return the declared cloud endpoints and provider labels."""
+        return self._endpoint_scope
+
+    def serves(self, model_id: str) -> bool:
+        """Return whether the cloud range covers ``model_id``."""
+        if self._model_scope is None:
+            return True
+        return self.canonical_id(model_id) in self._model_scope
+
+    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+        """Return the declared cloud endpoints for ``model_id``."""
+        return self._endpoint_scope if self.serves(model_id) else None
+
+    def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
+        """Resolve a policy target inside the declared cloud range."""
+        if not self.serves(model_id):
+            return None
+        if target.endpoint_id:
+            return target.endpoint_id if target.endpoint_id in self._endpoint_scope else None
+        resolver = getattr(self._router, "preferred_endpoint_for_provider", None)
+        if callable(resolver) and target.provider:
+            endpoint_id = resolver(model_id, target.provider)
+            if endpoint_id is not None and endpoint_id in self._endpoint_scope:
+                return endpoint_id
+        return None
+
+    def owns_observation(self, obs: RoutingObservation) -> bool:
+        """Return whether ``obs`` names an endpoint inside the cloud range."""
+        if not self.serves(obs.model_id):
+            return False
+        return obs.endpoint_id in self._endpoint_scope
+
+    def adapter_in_scope(self, adapter: Any) -> bool:
+        """Return whether ``adapter`` is inside the declared cloud range."""
+        return adapter_in_endpoint_scope(adapter, self._endpoint_scope)
 
 
 class RouteWiseCloudBackend(CloudBackend):

@@ -627,6 +627,29 @@ async def _init_router_and_models(
     return embedding_adapters, model_infos
 
 
+def _attach_hybrid_router_factory(
+    model_router_registry: ModelRouterRegistry,
+    router_dependencies: Any,
+) -> None:
+    """Attach the hybrid composition hook, or leave the shared router in place.
+
+    Failure to attach is not fatal: a deployment whose routes are all remote has
+    no local/cloud split to express, and the shared ``FixedRouter`` already
+    serves it correctly. The reason is logged so the absence is visible rather
+    than silent.
+    """
+    try:
+        from serving.servers.hybrid_composition import HybridFixedRouterFactory
+
+        factory = HybridFixedRouterFactory(
+            registry=model_router_registry,
+            health_registry=router_dependencies.health_registry,
+        )
+        model_router_registry.set_hybrid_router_factory(factory)
+    except Exception as exc:
+        logger.warning(f"Hybrid router composition not enabled: {exc}")
+
+
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     """Optionally load the routing manager and apply weights from YAML.
 

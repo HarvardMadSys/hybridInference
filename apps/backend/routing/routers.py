@@ -1492,6 +1492,12 @@ class FixedRouter:
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
+                if not adapter_in_endpoint_scope(adapter, endpoint_scope):
+                    # The dispatch scope bounds fallback too: a backend that owns
+                    # one execution domain must not walk out of it when its
+                    # preferred attempt fails. Selection is already narrowed;
+                    # this loop reads the raw route, so it needs the same gate.
+                    continue
                 endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):
                     continue
@@ -1722,6 +1728,10 @@ class FixedRouter:
             route = self.routes[model_id]
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
+                    continue
+                if not adapter_in_endpoint_scope(adapter, endpoint_scope):
+                    # Same domain bound as the non-streaming fallback loop: a
+                    # scoped dispatch must not leave its domain on failure.
                     continue
                 adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):

@@ -297,6 +297,36 @@ def test_routewise_cloud_backend_is_a_concrete_cloud_role() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_scoped_local_dispatch_does_not_fall_back_into_the_cloud() -> None:
+    """A domain's fallback candidates must stay inside its own domain.
+
+    ``preferred_endpoint_id`` only aims the first attempt. If that attempt
+    fails, the wrapped router walks the rest of the route, and on the shared
+    production router those remaining candidates include the cloud endpoints --
+    so the dispatch scope, not the preference, is what bounds the domain.
+    """
+    from routing.protocols import RoutingRequestOptions
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", chat_error=ConnectionError("local down"))
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai")
+    router = FixedRouter()
+    router.register_route(_MODEL_ID, [(local, 1.0), (cloud, 1.0)])
+
+    # The local attempt's own error surfaces: the cloud candidate was never
+    # tried, so it could not become a fallback.
+    with pytest.raises(ConnectionError, match="local down"):
+        await router.chat_completion(
+            _MODEL_ID,
+            _MESSAGES,
+            routing_options=RoutingRequestOptions(endpoint_scope=frozenset({_LOCAL_ENDPOINT})),
+        )
+
+    assert local.chat_calls == 1
+    assert cloud.chat_calls == 0
+
+
+@pytest.mark.unit
 def test_cloud_backend_requires_an_explicit_endpoint_scope() -> None:
     table = _route_table(_adapter(_CLOUD_ENDPOINT))
 

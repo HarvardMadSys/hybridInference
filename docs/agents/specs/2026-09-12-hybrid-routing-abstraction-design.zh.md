@@ -175,7 +175,7 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 
 新增的委托都有明确所有者，没有因为多包一层丢失现有生命周期操作。
 
-### 3.5.6 本轮完成 / 未完成（2026-09-14 第三轮）
+### 3.5.6 实现状态（2026-09-14 第三轮，接入已完成）
 
 已完成（`8ab0f33b`，verified）：
 
@@ -188,26 +188,29 @@ cloud 候选范围通过 `endpoint_scope` 显式传入（endpoint id 和/或 pro
 - backend 侧 `dispatch_scope()` / `serves()`，使被委托 attempt 的 fallback 候选
   不越出自身域。
 
-未完成（本 PR 仍待办，不能声称已接入）：
+接入已完成（`git log` 第三轮后续提交）：
 
-1. **registry / bootstrap 组装**：尚未让 `router: fixed` 的实际创建路径构造
-   `HybridRouter(FixedPolicy, LocalBackend, CloudBackend)`。`ModelRouterRegistry`
-   需要一个可选 factory 与 `local_scope` 解析器，bootstrap 提供它们并把
-   `HybridRouter` 纳入 `managed_routers`。
-2. **单次尝试执行**：`FixedPolicy` 选定目标后，`LocalBackend` 目前仍会把请求交给
-   完整 `FixedRouter`，其内部 fallback 循环会走遍**整条路由**（含 cloud 候选），
-   而 `endpoint_scope` 收紧的是选择范围、fallback 循环本身仍遍历
-   `_get_effective_adapters`。要让跨域 fallback 完全由 hybrid 层掌握，需要从
-   `chat_completion` / `stream_chat_completion` 提取"单次尝试"执行助手（自有
-   fallback 循环与它共用同一段代码，因此不是复制执行逻辑），并让执行域 backend
-   以单次尝试模式工作。这是接入前必须完成的一步。
-3. **`local_scope` 的真实来源**：需要一个显式的本地 endpoint 集合。代码里已有的
-   唯一 locality 判定是 `serving.servers.registry._make_provider_id` 使用的
-   `_LOCAL_HOSTS`（`serving/adapters/upstream_limiter.py` 已复用同一集合），
-   bootstrap 应据此计算 scope 并传入，而不是在 routing 包内重新推断归属。
-4. **兼容性测试**：从真实 registry/bootstrap 入口构建组合、Fixed 对
-   local/cloud/provider 的权重选择、同域与跨域 fallback、强制 pin、只选 cloud 与
-   指定目标、全池 RouteWise 范围、流式/取消/动态刷新/生命周期/反馈归属。
+1. **registry / bootstrap 组装**：`ModelRouterRegistry` 增加可选
+   `HybridRouterFactory`（`set_hybrid_router_factory()` 在首次 `get_router` 前绑定）。
+   `router: fixed` 分支在 factory 接受时返回 `HybridRouter`，拒绝时保持原共享
+   `FixedRouter`。
+2. **域内 fallback 保留、跨域由 hybrid 层掌握**：`endpoint_scope` 现在同时作用于
+   选择、`eligible_adapters` 以及 `chat_completion` / `stream_chat_completion` 的
+   **两条 fallback 循环**。因此本地域仍会按原有顺序在本地副本间 fallback（行为不
+   变），但不会越入 cloud；整域失败后由 `HybridRouter` 按策略的 fallback 计划跨域。
+   校验：`test_domain_internal_fallback_is_preserved`（本地两次尝试、cloud 零次）与
+   `test_a_dead_domain_hands_over_without_leaving_domain_retries_behind`。
+3. **`local_scope` 的真实来源**：`serving/servers/hybrid_composition.py` 复用网关唯一
+   的 locality 判定 `serving.adapters.upstream_limiter.is_local_endpoint`
+   （它本身复用 `servers.registry._LOCAL_HOSTS`），从共享 router 已注册的 route 计算
+   本地 endpoint 集合；权重不参与（权重为 0 的路由仍是本域容量）。全部为远端时
+   factory 返回 None，模型留在共享 router 上。
+4. **cloud 侧执行域**：新增 `FixedCloudBackend`（`CloudBackend` 的具体实现），持有
+   只含 cloud 候选的 router。这一点是必需的：若把共享 router 交给 cloud backend，
+   当首选 cloud 目标失败时它会沿整条路由 fallback 回本地。
+5. **兼容性测试**：`tests/unit/routing/test_hybrid_composition.py` 从真实 registry
+   入口构建组合，覆盖 local/cloud/provider 分流、跨域 fallback、域内 fallback、
+   强制 pin、指定目标不被重抽样、routewise 不被缩窄、反馈按 attempt 归属。
 
 ## 5. 接入范围
 

@@ -311,7 +311,13 @@ class HybridRouter:
                 continue
             _merge_attempt_history(response, attempts)
             _tag_backend(response, backend_name)
-            _tag_preference(response, decision.target, preferred_endpoint)
+            # Resolve on the success path too: the metadata must say whether the
+            # policy's target was in range regardless of which attempt answered.
+            _tag_preference(
+                response,
+                decision.target,
+                preferred_endpoint or _resolved_endpoint(backend, target, model_id),
+            )
             return response
         _raise_after_attempts(preferred_error, attempts, model_id)
 
