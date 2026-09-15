@@ -519,12 +519,8 @@ msgstr ""
 "`RouteExecutor` 重新导出。请改为编辑 `apps/backend/routing/routers.py`。"
 
 #: ../developer/architecture.md:222
-msgid "Routing also has a composition implementation, `HybridRouter` (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool and delegates each attempt to a `TreeBackend`. It is not a third `router:` value: a `router: fixed` model opts in with `router_params.hybrid_composition: true`, and only when it actually has a route that classifies as local. Every other `fixed` model keeps the shared `FixedRouter`, and `routewise` models keep their own entry point and full candidate pool."
-msgstr ""
-"路由层还有一个组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`）：它跨本地池与云端池做规划，把每"
-"一次尝试委托给 `TreeBackend`。它不是第三个 `router:` 取值：`router: fixed` 的模型通过 "
-"`router_params.hybrid_composition: true` 选择性启用，而且只有确实存在被判定为本地的路由时才生效。其他 "
-"`fixed` 模型继续使用共享的 `FixedRouter`，`routewise` 模型则保留自己的入口和完整候选池。"
+msgid "Routing also has a composition implementation, `HybridRouter` (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool and delegates each attempt to a `TreeBackend`. It is not a third `router:` value: a `router: fixed` model opts in with `router_params.hybrid_composition: true`, and composition is built only when both local and cloud candidates exist. Every other `fixed` model keeps the shared `FixedRouter`, and `routewise` models keep their own entry point and full candidate pool. The ordinary Fixed and RouteWise paths already execute through `LeafBackend`; enabling composition is a separate choice."
+msgstr "路由层还提供组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`），它在 local 与 cloud 两个池之间规划尝试，并把每次尝试委托给一个 `TreeBackend`。它不是第三种 `router:` 配置值：`router: fixed` 模型通过 `router_params.hybrid_composition: true` 显式启用，而且只有同时存在 local 和 cloud 候选时才构建组合。其余 `fixed` 模型继续使用共享 `FixedRouter`，`routewise` 模型继续使用自己的入口和完整候选池。普通 Fixed 和 RouteWise 路径已经通过 `LeafBackend` 执行；是否启用组合是另一项选择。"
 
 #: ../developer/architecture.md:215
 msgid "Two layers of \"strategy\""

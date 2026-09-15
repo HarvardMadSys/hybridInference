@@ -223,10 +223,11 @@ Routing also has a composition implementation, `HybridRouter`
 (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool
 and delegates each attempt to a `TreeBackend`. It is not a third `router:`
 value: a `router: fixed` model opts in with
-`router_params.hybrid_composition: true`, and only when it actually has a route
-that classifies as local. Every other `fixed` model keeps the shared
+`router_params.hybrid_composition: true`, and composition is built only when
+both local and cloud candidates exist. Every other `fixed` model keeps the shared
 `FixedRouter`, and `routewise` models keep their own entry point and full
-candidate pool.
+candidate pool. The ordinary Fixed and RouteWise paths already execute through
+`LeafBackend`; enabling composition is a separate choice.
 
 ### Two layers of "strategy"
 

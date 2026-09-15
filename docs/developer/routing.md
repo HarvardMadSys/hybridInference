@@ -22,14 +22,11 @@ Four pieces, all under `apps/backend/routing/`:
 | Routing | `routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`) | Chooses the endpoint for a request, admits it against capacity, walks the fallback order, and records endpoint health. |
 | Execution | `backends.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
 
-A router decides; a backend executes. Keeping those two jobs apart is what makes
-"this exact endpoint ran" checkable instead of conventional: the router binds the
-adapter it selected into an `EndpointBinding`, and a `LeafBackend` runs that
-adapter as it is — no queue, no reservation, no health record, no `_routing`
-block of its own. Every one of those already belongs to the router that chose the
-endpoint, and a second copy would double-count it. A `TreeBackend` is the other
-side of the same boundary: the entry to a scoped pool, which hands selection to
-the router it wraps. See
+A router owns selection, admission, retries, and feedback. Once it chooses an
+endpoint, it creates an `EndpointBinding` holding the selected adapter, and a
+`LeafBackend` calls that adapter. A `TreeBackend` provides a different capability:
+it delegates to a router inside a declared candidate pool. The wrapped router
+keeps its own selection and execution flow. See
 [Leaves, pools, and dispatch instructions](#leaves-pools-and-dispatch-instructions).
 
 `apps/backend/routing/executor.py` is a backward-compatibility shim that re-exports
@@ -47,63 +44,89 @@ returns for a model depends on its `router:` field:
 - `routewise` — a `RouteWiseRouter` over the model's full candidate pool, local
   and cloud alike.
 - `fixed` — the shared `FixedRouter`, unless the model opts in to composition
-  with `router_params.hybrid_composition: true` **and** at least one route
-  classifies as local. That builds a `HybridRouter`
+  with `router_params.hybrid_composition: true` **and** has both local and cloud
+  candidates. That builds a `HybridRouter`
   (`serving/servers/hybrid_composition.py`) over a `LocalBackend` and a cloud
-  backend instead. A model whose routes are all remote keeps the plain
-  `FixedRouter` either way: it has no local/cloud split to compose.
+  backend instead. All-local and all-cloud models keep the shared `FixedRouter`
+  even when the option is enabled.
 
-Both entry points execute through the same leaf, so turning composition on
-changes who chooses, not how a chosen endpoint is run.
+**The leaf execution boundary is already used by ordinary Fixed and RouteWise.**
+Existing configurations use these paths without enabling composition:
+
+```text
+FixedRouter     -> LeafBackend -> selected Adapter
+RouteWiseRouter -> LeafBackend -> selected Adapter
+```
+
+Both routers can select from local and cloud endpoints in the same model's
+route. `hybrid_composition` enables the additional `HybridRouter` layer that
+plans across separate local/cloud pools; it is not required to use either the
+leaf boundary or a mixed candidate pool.
 
 ## Leaves, pools, and dispatch instructions
 
-A router that has finished deciding does not call an adapter directly once the
-model is composed. It hands the backend one of exactly two instructions
-(`apps/backend/routing/dispatch.py`):
+`LeafBackend` uses the adapter's call signature and directly forwards its
+chat call or stream iterator. It does not implement the router-shaped
+`RoutingBackend` protocol. Pool wrappers such as `TreeBackend` implement that
+protocol and forward requests to a scoped router.
 
-| Instruction | Means | Carried out by |
+For composed dispatch, `HybridRouter` uses two explicit instructions
+(`apps/backend/routing/dispatch.py`) to state what a pool may do:
+
+| Instruction | Permission | Pool behavior |
 |---|---|---|
-| `ExecuteEndpoint(binding)` | Call this one endpoint, and no other. | `LeafBackend` |
-| `DelegatePool(pool_id)` | Serve this request inside that pool; choose the endpoint yourself. | `TreeBackend` |
+| `ExecuteEndpoint(binding)` | Execute exactly the bound endpoint. | `TreeBackend` accepts a binding within its model and endpoint scope. The child router admits that target and executes it through a leaf, with re-selection and fallback disabled. |
+| `DelegatePool(pool_id)` | Select inside the named pool. | `TreeBackend` delegates selection, admission, retries, and hedging to its scoped router. |
 
-The two are not interchangeable, and the direction of the mistake matters: a
-pool handed a leaf instruction would silently re-select, and a leaf handed a pool
-instruction would have to invent a selection it has no scope for. `check_dispatch()`
-refuses either mismatch *before any upstream I/O*, as a composition error. It is
-never counted as an attempt, never recorded as a provider failure, and never
-triggers fallback — nothing was sent, so there is no upstream to blame.
+An exact dispatch can therefore pass through a child router for admission;
+the instruction limits that router to the bound endpoint. `check_dispatch()`
+and the pool's request validation reject a wrong pool, an excluded model, or an
+out-of-scope binding before upstream I/O. Such composition errors propagate
+without fallback or a provider failure sample. A leaf has no pool-selection
+capability and cannot carry out `DelegatePool`.
 
 `EndpointBinding` carries the endpoint id, the model, the pool, a diagnostic
 route-table `generation`, and **the adapter itself**. Holding the adapter is the
 point: execution does not look the target up a second time, so an admin route
 edit cannot redirect a request that is already in flight. Binding and leaf
 construction both reject an inconsistent endpoint identity, and a leaf refuses a
-composite executor that reports outcomes for several endpoints at once —
-composition belongs above the leaf, one leaf per leg.
+composite executor that reports outcomes for several endpoints at once. Each
+hedge leg gets its own leaf. If a RouteWise candidate has been replaced by a
+different adapter object for the same endpoint, RouteWise rejects the old
+binding before reserving capacity: admission and execution must use the same
+adapter. `generation` is diagnostic only; it does not decide whether a binding
+is stale.
 
-**The router keeps the numbers.** Selection, the admission claim, the prefill
+**Accounting stays with the owning router.** Selection, the admission claim, the prefill
 lease, retry and hedge bookkeeping, `_routing` metadata, and the feedback handed
 to `record_observation()` all stay with the router that chose the endpoint. A
-leaf adds none of them, which is what keeps one request counted once.
+leaf adds no second copy of this state or accounting.
 
-**A pool's fallback range is a scope, not a preference.** A backend built over a
-table that still contains endpoints outside its domain binds a `RouteScopeView`
-(`route_scope.py`), so its primaries, its fallbacks, and its own background
-probes cannot leave the declared range — preferring an endpoint is not enough
-when the preferred one fails and the router walks the rest of the route. Scopes
-are normalized to canonical endpoint ids before they are compared, and an empty
-scope stays empty: it is never read as "no restriction".
+**Pool scopes constrain selection and fallback.** `LocalBackend` and
+`FixedCloudBackend` enforce model grants and narrow `RoutingRequestOptions.endpoint_scope`
+before forwarding to the shared router. `RouteWiseCloudBackend` also binds a
+`RouteScopeView` (`route_scope.py`), keeping the child router's candidate
+selection, retries, hedge legs, and active probes inside its cloud range.
+Provider labels are expanded to canonical endpoint ids within the requested
+model before scopes are compared. A caller's scope can narrow the pool's grant;
+an empty intersection is refused, never treated as unrestricted access.
 
-**Nothing above this boundary changes.** Requests still arrive through
-`chat_completion()` / `stream_chat_completion()` with `routing_options`, and
-`dispatch_for_attempt()` maps the existing `preferred_endpoint_id` /
-`require_target` / `allow_fallback` combination onto one of the two instructions.
-It never upgrades a preference into a hard target: a preference keeps delegating,
-which is what it has always meant. A target the router cannot dispatch is a
-configuration-and-capacity outcome, not an upstream fault — a full concurrency
-slot raises `TargetUnavailableError`, and the serving layer answers **503**
-without a provider failure sample.
+**Requests keep the router API.** Calls use `chat_completion()` or
+`stream_chat_completion()` with `routing_options`. For each composed attempt,
+`dispatch_for_attempt()` constructs the instruction; the resolved binding,
+scope, and target/fallback controls travel through `RoutingRequestOptions` to
+the child router. A preferred endpoint allows selection of another candidate
+unless `require_target` is set. `allow_fallback` controls retries after an
+executed attempt fails.
+
+**Admission refusal does not report an upstream failure.** A configured pool
+with no available capacity can raise `TargetUnavailableError`. `HybridRouter`
+then tries the next permitted attempt; a successful fallback is returned normally.
+If all attempts are refused without reaching an upstream, the final refusal
+maps to **503**. A streaming response whose headers have already been sent
+carries code **503** in its SSE error instead of changing the HTTP status.
+If upstream attempts did fail, the router's error-selection rules determine
+the final error.
 
 Composition is opt-in per model, and off by default:
 
@@ -119,6 +142,11 @@ loop, so the default entry point stays the shared `FixedRouter` until they are;
 see [#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457). Pins
 from the HTTP API and the admin playground keep using the shared `FixedRouter`
 regardless.
+
+Candidate scopes do not divide physical capacity. Each `RouteWiseRouter` still
+owns its resource managers; sharing a constrained pool across independent
+instances and rejecting unsupported duplicate-pool configurations remain
+deferred to the same issue.
 
 ## Choosing a router per model
 
@@ -473,11 +501,10 @@ def get_provider_status(self) -> dict[str, dict[str, Any]]: ...
 `RoutingRequestOptions` carries the router-owned controls that must never be
 forwarded to a provider adapter: `pin_provider` (the caller's hard pin, which
 collapses the route to one provider and disables fallback), `preferred_endpoint_id`
-(a preference, not a pin — a router that cannot serve it re-samples, and a failed
-attempt still enters the ordinary fallback loop), `endpoint_scope` (the candidate
-range this dispatch may choose from), `allow_fallback`, `bound_endpoint` (the
-binding the caller already validated, so the dispatch runs the adapter it was
-admitted for), `require_target`, and `required_modalities`.
+(the preferred endpoint unless `require_target` makes it mandatory),
+`endpoint_scope` (the allowed candidate range), `allow_fallback` (whether an
+execution failure may try another candidate), `bound_endpoint` (the resolved
+adapter binding), `require_target`, and `required_modalities`.
 `RoutingObservation` (`routers.py`) is how the serving layer reports a
 completed request — endpoint id, TTFT, total latency, token counts, success,
 and a `strategy_metadata` dict the strategy itself populated during selection.
@@ -681,14 +708,14 @@ Points worth copying:
   `router_cls(params=validated, ...)`.
 - **Reuse `endpoint_id_for_adapter`.** Endpoint ids are the key for health,
   latency profiling, and log attribution; deriving your own would split them.
-- **Bind the adapter you chose, and let a leaf run it.** A strategy that calls
-  an adapter directly is fine on its own. A strategy that is composed with, or
-  delegates to, another router should hand over an `ExecuteEndpoint` built from
-  the adapter it already resolved (`binding_for_adapter()`) rather than a target
-  id the callee would look up again — otherwise a route edit between the
-  decision and the dispatch can send the request somewhere it was never admitted
-  for. Keep admission, health recording, and `_routing` metadata in your router;
-  a `LeafBackend` deliberately keeps none of them.
+- **Execute selected adapters through a leaf.** Follow Fixed and RouteWise:
+  create a binding with `binding_for_adapter()` and a leaf with
+  `LeafBackend.for_binding()`, then call the leaf with the adapter's arguments.
+  Keep admission, health, and `_routing` metadata in the owning router. When
+  delegating to a pool, use `ExecuteEndpoint` only if the parent has resolved an
+  exact target; use `DelegatePool` when the child should choose. The child still
+  performs admission, so pass the resolved binding and the target/fallback
+  controls through `RoutingRequestOptions` as well.
 
 ### 4. Register it at import time
 
@@ -755,11 +782,12 @@ mean-TTFT linear program over them, and samples a primary from the resulting
 sparse mixture. It is a per-model opt-in (`router: routewise`), and each
 opted-in model gets its own `RouteWiseRouter` instance.
 
-A primary, both hedge legs, and the active latency probe all execute through the
-same `LeafBackend`, so selection, admission, prefill, and feedback accounting
-stay inside `RouteWiseRouter` while the object that runs is the adapter the
-attempt was admitted for. RouteWise is not a subtree of the composition: it
-keeps its full candidate pool and its own entry point.
+The primary, each hedge leg, and each active latency probe execute through a
+leaf bound to that endpoint's adapter. Selection, admission, reservations, and
+feedback accounting remain inside `RouteWiseRouter`. A model configured with
+`router: routewise` uses this router directly over its full candidate pool. An
+explicit composition can instead wrap a cloud-scoped instance in
+`RouteWiseCloudBackend`; the same router implementation supports both positions.
 
 Its implementation lives in a separate package: the MIT-licensed
 [`llm-routewise`](https://github.com/HarvardMadSys/RouteWise), which this
