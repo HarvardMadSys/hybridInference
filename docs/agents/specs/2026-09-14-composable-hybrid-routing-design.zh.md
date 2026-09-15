@@ -3,7 +3,8 @@
 - 日期：2026-09-14
 - 更新：2026-09-15，明确抽象重构范围与后续拓扑接入的区别
 - 状态：抽象重构设计；包含当前实现说明与未来扩展示例
-- 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract`（包含 2026-09-15 的契约修复与 opt-in 接线）
+- 代码参照：[PR #1454](https://github.com/HarvardMadSys/hybridInference/pull/1454)，合并提交 [`df0c187f7d2ec3858f0c7aa6244bb985564a7dc1`](https://github.com/HarvardMadSys/hybridInference/commit/df0c187f7d2ec3858f0c7aa6244bb985564a7dc1)（包含契约修复与 opt-in 接线）
+- 延期工作：[Issue #1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) 跟踪 affinity、claim 全池重抽、fallback circuit 时机、流式 DB 历史与共享受限池所有权。
 - 核心场景：RouteWise 可以直接路由 local + cloud，也可以在 Greedy / 未来 Nimbus 下面只路由 cloud
 - 前序设计：[Hybrid Routing 抽象重构设计](2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
