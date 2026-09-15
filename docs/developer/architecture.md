@@ -8,6 +8,10 @@ decoupled from the *endpoint* that actually serves it, so the same client call
 can be load-balanced, failed over, priced, and logged across a mix of machines
 you own and machines you rent.
 
+For the router, leaf and pool relationships, jump to the
+[routing diagrams](#router-types-and-execution-boundaries), which distinguish
+current request paths from future extensions.
+
 The backend is one Python package tree under `apps/backend/`, split in two:
 
 | Directory | Responsibility |
@@ -228,6 +232,92 @@ both local and cloud candidates exist. Every other `fixed` model keeps the share
 `FixedRouter`, and `routewise` models keep their own entry point and full
 candidate pool. The ordinary Fixed and RouteWise paths already execute through
 `LeafBackend`; enabling composition is a separate choice.
+
+### Router types and execution boundaries
+
+The diagrams below adapt the [composable routing design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
+into a map of the current implementation and its planned extensions. The first
+diagram shows type relationships; the following three show request paths.
+
+```{figure} _static/diagrams/routing-contracts.svg
+:alt: Fixed and RouteWise implement RouterProtocol and execute through LeafBackend and Adapter. Future Greedy and Nimbus are peers. TreeBackend implements RoutingBackend and holds a scoped RouterProtocol instance.
+:width: 840px
+:align: center
+
+Router contracts and endpoint execution. Dashed boxes mark future strategies.
+```
+
+`FixedRouter` and `RouteWiseRouter` are peer implementations of `RouterProtocol`;
+future `GreedyRouter` and `NimbusRouter` belong at that same level. Each router
+keeps its own selection, admission, retry and feedback flow. `LeafBackend` binds
+one adapter and executes it. It uses the adapter's calling convention and does
+not implement the router-shaped `RoutingBackend` protocol. `TreeBackend`
+implements that pool protocol and holds a scoped router; the held router can be
+RouteWise without making RouteWise a different kind of strategy.
+
+### Full-pool RouteWise: available today
+
+```{figure} _static/diagrams/routing-routewise.svg
+:alt: ModelRouterRegistry sends model A to full-pool RouteWise. Local endpoint L and cloud endpoint C each have their own LeafBackend and Adapter.
+:width: 760px
+:align: center
+
+Full-pool RouteWise selects across local and cloud candidates directly.
+```
+
+With `router: routewise`, the registry returns `RouteWiseRouter` directly. It
+keeps the model's full candidate pool, reservations, re-solving, hedging and
+learning. The two branches show possible endpoints, not a requirement to call
+both: each actual attempt or hedge leg executes its own bound leaf. The ordinary
+`router: fixed` path also uses `FixedRouter` → `LeafBackend` → `Adapter`, without
+enabling composition.
+
+### Fixed composition: explicitly enabled
+
+```{figure} _static/diagrams/routing-fixed-composition.svg
+:alt: HybridRouter and FixedPolicy dispatch through LocalBackend or FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared FixedRouter, which executes the selected endpoint through its own LeafBackend and Adapter.
+:width: 820px
+:align: center
+
+Current Fixed composition: two scoped pool wrappers, one shared FixedRouter.
+```
+
+A mixed `router: fixed` model enters this path only with
+`router_params.hybrid_composition: true` and both local and cloud candidates.
+`HybridRouter` uses `FixedPolicy` to plan attempts; `LocalBackend` and
+`FixedCloudBackend` forward their scope and dispatch constraints to the same
+shared `FixedRouter`. The shared instance does not erase those per-attempt
+restrictions. Admission and health accounting remain in the router; the leaf
+executes the bound adapter.
+
+This is the concrete composition class, not the common router interface. Its
+affinity, rejected-primary re-selection and fallback circuit timing still have
+[deferred differences](https://github.com/HarvardMadSys/hybridInference/issues/1457)
+from the ordinary Fixed path, which is why composition remains opt-in.
+
+### Greedy with cloud RouteWise: future extension
+
+```{figure} _static/diagrams/routing-greedy-future.svg
+:alt: Future Greedy admits a local endpoint or delegates a cloud pool to TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud endpoint has its own LeafBackend and Adapter.
+:width: 820px
+:align: center
+
+Planned topology, not an available router configuration: Greedy owns local admission; RouteWise owns selection inside the cloud pool.
+```
+
+The same `RouteWiseRouter` implementation can occupy the model's entry point
+in the full-pool diagram or a cloud-scoped position here. Those roles use
+separate instances with their own scopes; a live instance is not switched
+between scopes per request. After local admission is refused, a future Greedy
+router can delegate cloud selection to a `TreeBackend`, whose inner RouteWise
+router owns cloud selection, retries and hedging.
+
+Greedy and Nimbus are not registered strategies today. This example describes
+two routing levels, not arbitrary recursive configurations. Sharing physical
+quota or concurrency across independent router instances also requires the
+[deferred resource ownership work](https://github.com/HarvardMadSys/hybridInference/issues/1457):
+separate scopes do not create separate capacity. Local/cloud ownership remains
+independent of the resource types `on_demand`, `quota` and `concurrency`.
 
 ### Two layers of "strategy"
 

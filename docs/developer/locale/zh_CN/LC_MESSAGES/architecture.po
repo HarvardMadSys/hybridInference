@@ -24,6 +24,10 @@ msgstr ""
 msgid "Architecture"
 msgstr "架构"
 
+#: ../developer/architecture.md:11
+msgid "For the router, leaf and pool relationships, jump to the [routing diagrams](#router-types-and-execution-boundaries), which distinguish current request paths from future extensions."
+msgstr "Router、leaf 与 pool 的关系请看[路由架构图](#router-types-and-execution-boundaries)，其中明确区分了当前请求路径和未来扩展。"
+
 #: ../developer/architecture.md:3
 msgid ""
 "HybridInference is a FastAPI gateway that speaks the OpenAI/OpenRouter "
@@ -1261,3 +1265,79 @@ msgstr ""
 "**扩展点是声明式的**。新 provider：一个 `kind`；如果它的 API 不是 OpenAI 兼容的，再加一个 "
 "adapter。新的路由行为：在 `apps/backend/routing/strategies/` "
 "下放一个自注册的模块。两者都不需要动请求处理器。"
+
+#: ../developer/architecture.md:232
+msgid "Router types and execution boundaries"
+msgstr "Router 类型与执行边界"
+
+#: ../developer/architecture.md:234
+msgid "The diagrams below adapt the [composable routing design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md) into a map of the current implementation and its planned extensions. The first diagram shows type relationships; the following three show request paths."
+msgstr "下面的图根据[可组合路由设计](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)整理，展示当前实现及未来扩展。第一张是类型关系图，后面三张是请求路径图。"
+
+#: ../developer/architecture.md:238
+msgid "Fixed and RouteWise implement RouterProtocol and execute through LeafBackend and Adapter. Future Greedy and Nimbus are peers. TreeBackend implements RoutingBackend and holds a scoped RouterProtocol instance."
+msgstr "Fixed 和 RouteWise 实现 RouterProtocol，通过 LeafBackend 和 Adapter 执行。未来的 Greedy 和 Nimbus 与它们同层。TreeBackend 实现 RoutingBackend，并持有一个范围受限的 RouterProtocol 实例。"
+
+#: ../developer/architecture.md:243
+msgid "Router contracts and endpoint execution. Dashed boxes mark future strategies."
+msgstr "Router 契约与端点执行。虚线方框表示未来策略。"
+
+#: ../developer/architecture.md:246
+msgid "`FixedRouter` and `RouteWiseRouter` are peer implementations of `RouterProtocol`; future `GreedyRouter` and `NimbusRouter` belong at that same level. Each router keeps its own selection, admission, retry and feedback flow. `LeafBackend` binds one adapter and executes it. It uses the adapter's calling convention and does not implement the router-shaped `RoutingBackend` protocol. `TreeBackend` implements that pool protocol and holds a scoped router; the held router can be RouteWise without making RouteWise a different kind of strategy."
+msgstr "`FixedRouter` 和 `RouteWiseRouter` 是 `RouterProtocol` 的同层实现；未来的 `GreedyRouter`、`NimbusRouter` 也位于这一层。每个 Router 保留自己的选择、准入、重试和反馈流程。`LeafBackend` 绑定并执行一个 Adapter，使用 Adapter 的调用签名，不实现具有 Router 方法形状的 `RoutingBackend` 协议。`TreeBackend` 实现该池协议，并持有一个范围受限的 Router；这个 Router 可以是 RouteWise，而不改变 RouteWise 作为同层路由策略的身份。"
+
+#: ../developer/architecture.md:254
+msgid "Full-pool RouteWise: available today"
+msgstr "全池 RouteWise：当前已支持"
+
+#: ../developer/architecture.md:256
+msgid "ModelRouterRegistry sends model A to full-pool RouteWise. Local endpoint L and cloud endpoint C each have their own LeafBackend and Adapter."
+msgstr "ModelRouterRegistry 将模型 A 交给全池 RouteWise。本地端点 L 和云端端点 C 各自拥有独立的 LeafBackend 和 Adapter。"
+
+#: ../developer/architecture.md:261
+msgid "Full-pool RouteWise selects across local and cloud candidates directly."
+msgstr "全池 RouteWise 直接在本地与云端候选中选择。"
+
+#: ../developer/architecture.md:264
+msgid "With `router: routewise`, the registry returns `RouteWiseRouter` directly. It keeps the model's full candidate pool, reservations, re-solving, hedging and learning. The two branches show possible endpoints, not a requirement to call both: each actual attempt or hedge leg executes its own bound leaf. The ordinary `router: fixed` path also uses `FixedRouter` → `LeafBackend` → `Adapter`, without enabling composition."
+msgstr "配置 `router: routewise` 时，Registry 直接返回 `RouteWiseRouter`。它保留模型的完整候选池、预留、重新求解、hedging 和学习机制。图中两条分支表示可能选中的端点，并不要求同时调用：每次实际 attempt 或 hedge 支路都执行各自绑定的 leaf。普通 `router: fixed` 路径同样使用 `FixedRouter` → `LeafBackend` → `Adapter`，无需开启组合。"
+
+#: ../developer/architecture.md:271
+msgid "Fixed composition: explicitly enabled"
+msgstr "Fixed 组合：需要显式开启"
+
+#: ../developer/architecture.md:273
+msgid "HybridRouter and FixedPolicy dispatch through LocalBackend or FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared FixedRouter, which executes the selected endpoint through its own LeafBackend and Adapter."
+msgstr "HybridRouter 与 FixedPolicy 通过 LocalBackend 或 FixedCloudBackend 派发。两个范围受限的 TreeBackend 包装持有同一个共享 FixedRouter，由它通过端点各自的 LeafBackend 和 Adapter 执行。"
+
+#: ../developer/architecture.md:278
+msgid "Current Fixed composition: two scoped pool wrappers, one shared FixedRouter."
+msgstr "当前的 Fixed 组合：两个范围受限的池包装，共用一个 FixedRouter。"
+
+#: ../developer/architecture.md:281
+msgid "A mixed `router: fixed` model enters this path only with `router_params.hybrid_composition: true` and both local and cloud candidates. `HybridRouter` uses `FixedPolicy` to plan attempts; `LocalBackend` and `FixedCloudBackend` forward their scope and dispatch constraints to the same shared `FixedRouter`. The shared instance does not erase those per-attempt restrictions. Admission and health accounting remain in the router; the leaf executes the bound adapter."
+msgstr "混合 `router: fixed` 模型只有在设置 `router_params.hybrid_composition: true` 且同时存在本地与云端候选时，才进入这条路径。`HybridRouter` 使用 `FixedPolicy` 规划 attempt；`LocalBackend` 和 `FixedCloudBackend` 将各自的范围与派发约束传给同一个共享 `FixedRouter`。共享实例不会取消每次 attempt 的限制。准入和健康记账仍由 Router 负责，leaf 执行已经绑定的 Adapter。"
+
+#: ../developer/architecture.md:289
+msgid "This is the concrete composition class, not the common router interface. Its affinity, rejected-primary re-selection and fallback circuit timing still have [deferred differences](https://github.com/HarvardMadSys/hybridInference/issues/1457) from the ordinary Fixed path, which is why composition remains opt-in."
+msgstr "这里是具体组合类，而不是公共 Router 接口。它在 affinity、首选准入被拒后的重新选择、fallback 的 circuit 检查时机上，与普通 Fixed 路径仍有[延期处理的差异](https://github.com/HarvardMadSys/hybridInference/issues/1457)，因此组合继续保持显式开启。"
+
+#: ../developer/architecture.md:294
+msgid "Greedy with cloud RouteWise: future extension"
+msgstr "Greedy 与云端 RouteWise：未来扩展"
+
+#: ../developer/architecture.md:296
+msgid "Future Greedy admits a local endpoint or delegates a cloud pool to TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud endpoint has its own LeafBackend and Adapter."
+msgstr "未来的 Greedy 接纳本地端点，或者将云端池委托给 TreeBackend 与仅覆盖云端的 RouteWise 实例。每个选中的云端端点各自拥有 LeafBackend 和 Adapter。"
+
+#: ../developer/architecture.md:301
+msgid "Planned topology, not an available router configuration: Greedy owns local admission; RouteWise owns selection inside the cloud pool."
+msgstr "规划中的拓扑，尚不是可用的 Router 配置：Greedy 负责本地准入，RouteWise 负责云端池内的选择。"
+
+#: ../developer/architecture.md:304
+msgid "The same `RouteWiseRouter` implementation can occupy the model's entry point in the full-pool diagram or a cloud-scoped position here. Those roles use separate instances with their own scopes; a live instance is not switched between scopes per request. After local admission is refused, a future Greedy router can delegate cloud selection to a `TreeBackend`, whose inner RouteWise router owns cloud selection, retries and hedging."
+msgstr "同一个 `RouteWiseRouter` 实现既可以位于全池图中的模型入口，也可以位于此图中的云端子层。这两种角色分别使用具有各自范围的实例，不会按请求切换一个活跃实例的 scope。本地准入被拒后，未来的 Greedy Router 可以将云端选择委托给 `TreeBackend`，由它内部的 RouteWise Router 负责云端选择、重试和 hedging。"
+
+#: ../developer/architecture.md:311
+msgid "Greedy and Nimbus are not registered strategies today. This example describes two routing levels, not arbitrary recursive configurations. Sharing physical quota or concurrency across independent router instances also requires the [deferred resource ownership work](https://github.com/HarvardMadSys/hybridInference/issues/1457): separate scopes do not create separate capacity. Local/cloud ownership remains independent of the resource types `on_demand`, `quota` and `concurrency`."
+msgstr "Greedy 和 Nimbus 目前尚未注册为可用策略。这个示例描述两层路由，不表示支持任意递归配置。多个独立 Router 实例共享物理 quota 或 concurrency，还需要完成[延期的资源所有权工作](https://github.com/HarvardMadSys/hybridInference/issues/1457)：不同 scope 不会产生独立容量。本地/云端归属与 `on_demand`、`quota`、`concurrency` 资源类型仍是独立维度。"

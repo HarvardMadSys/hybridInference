@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="796" viewBox="0 0 820 796" role="img" aria-labelledby="title desc">
+  <title id="title">Opt-in Fixed composition</title>
+  <desc id="desc">A mixed Fixed model with hybrid_composition enabled uses HybridRouter and FixedPolicy. LocalBackend and FixedCloudBackend are scoped TreeBackend wrappers around one shared FixedRouter. Per-attempt scope is preserved through admission and Leaf execution.</desc>
+  <!-- Editable SVG source. No browser scripts, external fonts or build-time renderer. -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#64748b"/></marker>
+    <marker id="implements" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9" orient="auto"><path d="M1 1L11 6L1 11Z" fill="white" stroke="#64748b" stroke-width="1.5"/></marker>
+  </defs>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; text-anchor: middle; fill: #172b4d; }
+    .title { font-size: 18px; font-weight: 600; }
+    .detail { font-size: 14px; fill: #475569; }
+    .label { font-size: 14px; fill: #475569; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+    .edge { fill: none; stroke: #64748b; stroke-width: 2; }
+    .router { fill: #eff6ff; stroke: #4078b5; }
+    .pool { fill: #f5f3ff; stroke: #8064ad; }
+    .leaf { fill: #edfaf5; stroke: #35816c; }
+    .plain { fill: #f8fafc; stroke: #94a3b8; }
+    .future { fill: #fff9ed; stroke: #a86d12; stroke-dasharray: 7 5; }
+    .node { stroke-width: 1.6; }
+  </style>
+  <rect width="820" height="796" fill="white"/>
+  <path class="edge" d="M410 84V126" marker-end="url(#arrow)"/>
+  <path class="edge" d="M410 206V244H200V286" marker-end="url(#arrow)"/>
+  <path class="edge" d="M410 244H620V286" marker-end="url(#arrow)"/>
+  <path class="edge" d="M200 368V404H410V438" marker-end="url(#arrow)"/>
+  <path class="edge" d="M620 368V404H410"/>
+  <path class="edge" d="M410 520V558H205V596" marker-end="url(#arrow)"/>
+  <path class="edge" d="M410 558H615V596" marker-end="url(#arrow)"/>
+  <path class="edge" d="M205 662V716" marker-end="url(#arrow)"/>
+  <path class="edge" d="M615 662V716" marker-end="url(#arrow)"/>
+  <g>
+    <rect class="node plain" x="235" y="22" width="350" height="62" rx="10"/>
+    <text class="title" x="410" y="48">ModelRouterRegistry</text>
+    <text class="detail" x="410" y="70">model B · router: fixed</text>
+  </g>
+  <g>
+    <rect class="node router" x="210" y="126" width="400" height="80" rx="10"/>
+    <text class="title" x="410" y="161">HybridRouter</text>
+    <text class="detail" x="410" y="183">policy: FixedPolicy</text>
+  </g>
+  <g>
+    <rect class="node pool" x="25" y="286" width="350" height="82" rx="10"/>
+    <text class="title" x="200" y="322">LocalBackend</text>
+    <text class="detail" x="200" y="344">TreeBackend · local scope</text>
+  </g>
+  <g>
+    <rect class="node pool" x="445" y="286" width="350" height="82" rx="10"/>
+    <text class="title" x="620" y="322">FixedCloudBackend</text>
+    <text class="detail" x="620" y="344">TreeBackend · cloud scope</text>
+  </g>
+  <g>
+    <rect class="node router" x="185" y="438" width="450" height="82" rx="10"/>
+    <text class="title" x="410" y="463">FixedRouter</text>
+    <text class="detail" x="410" y="485">One shared instance</text>
+    <text class="detail" x="410" y="507">Scope passed per attempt</text>
+  </g>
+  <g>
+    <rect class="node leaf" x="40" y="596" width="330" height="66" rx="10"/>
+    <text class="title" x="205" y="624">LeafBackend(L)</text>
+    <text class="detail" x="205" y="646">Bound local endpoint</text>
+  </g>
+  <g>
+    <rect class="node leaf" x="450" y="596" width="330" height="66" rx="10"/>
+    <text class="title" x="615" y="624">LeafBackend(C)</text>
+    <text class="detail" x="615" y="646">Bound cloud endpoint</text>
+  </g>
+  <g>
+    <rect class="node plain" x="40" y="716" width="330" height="60" rx="10"/>
+    <text class="title" x="205" y="752">Adapter(L) → Local service</text>
+
+  </g>
+  <g>
+    <rect class="node plain" x="450" y="716" width="330" height="60" rx="10"/>
+    <text class="title" x="615" y="752">Adapter(C) → Cloud API</text>
+
+  </g>
+  <text class="label" x="200" y="270">local attempt</text>
+  <text class="label" x="620" y="270">cloud attempt</text>
+  <text class="label" x="410" y="390">scope + dispatch constraints</text>
+</svg>
+
