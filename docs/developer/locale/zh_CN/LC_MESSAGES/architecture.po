@@ -302,14 +302,17 @@ msgid "5. Dispatch, fallback, and the circuit breaker"
 msgstr "5\\. 分发、回退与熔断器"
 
 #: ../developer/architecture.md:151
-msgid ""
-"`FixedRouter.chat_completion` / `stream_chat_completion` call the chosen "
-"adapter. On success the endpoint is recorded healthy and the response "
-"carries an internal `_routing` block (provider, base URL, `endpoint_id`)."
+msgid "`FixedRouter.chat_completion` / `stream_chat_completion` call the chosen adapter. The call itself goes through the execution boundary: the router binds the adapter it selected into an `EndpointBinding` and a `LeafBackend` runs that adapter, so nothing is re-resolved between the decision and the call. The router keeps the admission claim, the prefill lease, the attempt history and the `_routing` metadata; the leaf keeps none of them. See [Leaves, pools, and dispatch instructions](routing.md#leaves-pools-and-dispatch-instructions)."
 msgstr ""
 "`FixedRouter.chat_completion` / `stream_chat_completion` 调用选中的 "
-"adapter。成功时该端点被记为健康，响应里带上一个内部的 `_routing` 块（provider、base "
-"URL、`endpoint_id`）。"
+"adapter。这次调用本身经由执行边界：router 把它选中的 adapter 绑进一个 `EndpointBinding`，由 "
+"`LeafBackend` 执行该 adapter，因此在决策与调用之间不会再解析一次目标。准入凭据、prefill 租约、尝试历史和 "
+"`_routing` 元数据都留在 router 上；叶子一样都不保留。见[叶子、池与派发指令](routing.md#leaves-pools-and"
+"-dispatch-instructions)。"
+
+#: ../developer/architecture.md:159
+msgid "On success the endpoint is recorded healthy and the response carries an internal `_routing` block (provider, base URL, `endpoint_id`)."
+msgstr "成功时该端点被记为健康，响应里带上一个内部的 `_routing` 块（provider、base URL、`endpoint_id`）。"
 
 #: ../developer/architecture.md:155
 msgid ""
@@ -514,6 +517,14 @@ msgid ""
 msgstr ""
 "`apps/backend/routing/executor.py` 是一个向后兼容的 shim，把 `FixedRouter` 以它的旧名字 "
 "`RouteExecutor` 重新导出。请改为编辑 `apps/backend/routing/routers.py`。"
+
+#: ../developer/architecture.md:222
+msgid "Routing also has a composition implementation, `HybridRouter` (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool and delegates each attempt to a `TreeBackend`. It is not a third `router:` value: a `router: fixed` model opts in with `router_params.hybrid_composition: true`, and only when it actually has a route that classifies as local. Every other `fixed` model keeps the shared `FixedRouter`, and `routewise` models keep their own entry point and full candidate pool."
+msgstr ""
+"路由层还有一个组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`）：它跨本地池与云端池做规划，把每"
+"一次尝试委托给 `TreeBackend`。它不是第三个 `router:` 取值：`router: fixed` 的模型通过 "
+"`router_params.hybrid_composition: true` 选择性启用，而且只有确实存在被判定为本地的路由时才生效。其他 "
+"`fixed` 模型继续使用共享的 `FixedRouter`，`routewise` 模型则保留自己的入口和完整候选池。"
 
 #: ../developer/architecture.md:215
 msgid "Two layers of \"strategy\""
