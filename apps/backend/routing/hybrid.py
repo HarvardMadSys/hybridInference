@@ -855,7 +855,11 @@ def _attempt_options(
     :class:`TargetUnavailableError` and the plan moves on instead of the router
     quietly substituting a different endpoint.
     """
-    scope = _dispatch_scope(backend, model_id)
+    scope = _attempt_scope(
+        backend,
+        model_id,
+        routing_options.endpoint_scope if routing_options is not None else None,
+    )
     if routing_options is None:
         return RoutingRequestOptions(
             preferred_endpoint_id=attempt.endpoint_id,
@@ -870,6 +874,34 @@ def _attempt_options(
         allow_fallback=attempt.domain_fallback,
         require_target=attempt.exact,
     )
+
+
+def _attempt_scope(
+    backend: Any,
+    model_id: str,
+    imposed: frozenset[str] | None,
+) -> frozenset[str] | None:
+    """Return the range this attempt may dispatch inside.
+
+    The caller's grant is preserved and *intersected* with the backend's own
+    range, never replaced by it. Replacing widens a restriction the caller made:
+    a request allowed to use one cloud endpoint would be handed the pool's whole
+    range, and the pool's own intersection check cannot recover a narrower grant
+    it was never given.
+
+    Both sides are expanded to canonical endpoints first, because either may be
+    written as provider labels. An empty grant stays empty: turning "you may use
+    nothing" into "no restriction" is the one reading that must never happen.
+    """
+    declared = _dispatch_scope(backend, model_id)
+    if imposed is None:
+        return declared
+    if declared is None:
+        return imposed
+    normalize = getattr(backend, "scope_endpoints", None)
+    if not callable(normalize):
+        return imposed & declared
+    return normalize(imposed) & normalize(declared)
 
 
 def _dispatch_scope(backend: Any, model_id: str) -> frozenset[str] | None:

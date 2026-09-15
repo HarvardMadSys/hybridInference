@@ -9,6 +9,7 @@ never an upstream fault.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -551,21 +552,37 @@ def test_a_label_range_accepts_an_exact_binding_it_covers() -> None:
     )
 
 
-def _routewise_pool(*adapters: _RecordingAdapter) -> RouteWiseCloudBackend:
-    """Build a scoped RouteWise wrapper over ``adapters``."""
+def _routewise_router(table: FixedRouter) -> Any:
+    """Build a RouteWise router over ``table``."""
     from routing.routewise.config import RouteWiseConfig
     from routing.routewise.router import RouteWiseRouter
 
+    return RouteWiseRouter(
+        route_table=table,
+        config=RouteWiseConfig(budget_alpha=0.0, random_seed=0, routewise_probe_enabled=False),
+    )
+
+
+def _routewise_pool(*adapters: _RecordingAdapter) -> RouteWiseCloudBackend:
+    """Build a scoped RouteWise wrapper over ``adapters``."""
     table = _shared_router(*adapters)
     return RouteWiseCloudBackend(
-        RouteWiseRouter(
-            route_table=table,
-            config=RouteWiseConfig(budget_alpha=0.0, random_seed=0, routewise_probe_enabled=False),
-        ),
+        _routewise_router(table),
         table=table,
         endpoint_scope={endpoint_id_for_adapter(adapter) for adapter in adapters},
         model_scope={_MODEL_ID},
     )
+
+
+async def _drain(router: Any, options: Any, *, collect: bool = False) -> Any:
+    """Consume a stream, returning the chunks when asked for them."""
+    chunks = [
+        chunk
+        async for chunk in router.stream_chat_completion(
+            _MODEL_ID, _MESSAGES, routing_options=options, request_id="drain"
+        )
+    ]
+    return chunks if collect else None
 
 
 @pytest.mark.unit
@@ -649,6 +666,117 @@ async def test_a_composition_error_propagates_from_the_streaming_path_too() -> N
 
     assert local_adapter.stream_calls == 0
     assert cloud_adapter.stream_calls == 0
+
+
+def _routing_metadata(result: Any) -> list[dict[str, Any]]:
+    """Collect every ``_routing`` payload a response or stream carried."""
+    if isinstance(result, dict):
+        return [result.get("_routing", {})]
+    found: list[dict[str, Any]] = []
+    for chunk in result:
+        if isinstance(chunk, str) and chunk.startswith("data: "):
+            raw = chunk[6:].strip()
+            if raw == "[DONE]":
+                continue
+            found.append(json.loads(raw).get("_routing", {}))
+    return found
+
+
+class _DelegateToCloudPolicy:
+    """Policy that hands the request to the cloud pool and nothing else."""
+
+    def select_backend(self, *args: Any, **kwargs: Any) -> RoutingDecision:
+        return RoutingDecision(backend="cloud")
+
+    def fallback_backends(self, *args: Any, **kwargs: Any) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_the_caller_range_survives_the_composition_to_a_pool(streaming: bool) -> None:
+    """The hybrid layer forwards a caller's grant, it does not replace it.
+
+    Replacing it with the pool's own range hands the pool back a wider grant
+    than the caller made, and the pool's intersection check cannot recover a
+    restriction it never received -- the request is then served by an endpoint
+    the caller excluded.
+    """
+    local = _adapter(_LOCAL_ENDPOINT, provider="owned", base_url=_LOCAL_URL)
+    allowed = _adapter(_CLOUD_ENDPOINT, provider="expensive", base_url="https://a.example/v1")
+    cheaper = _adapter(f"{_MODEL_ID}:cloud-b", provider="cheap", base_url="https://b.example/v1")
+    shared = _shared_router(local, allowed, cheaper)
+    router = HybridRouter(
+        policy=_DelegateToCloudPolicy(),
+        local=LocalBackend(shared, endpoint_scope={_LOCAL_ENDPOINT}, model_scope={_MODEL_ID}),
+        cloud=RouteWiseCloudBackend(
+            _routewise_router(shared),
+            table=shared,
+            endpoint_scope={_CLOUD_ENDPOINT, f"{_MODEL_ID}:cloud-b"},
+            model_scope={_MODEL_ID},
+        ),
+    )
+
+    options = RoutingRequestOptions(endpoint_scope=frozenset({_CLOUD_ENDPOINT}))
+    if streaming:
+        await _drain(router, options)
+    else:
+        await router.chat_completion(_MODEL_ID, _MESSAGES, routing_options=options)
+
+    assert allowed.chat_calls + allowed.stream_calls == 1
+    assert cheaper.chat_calls + cheaper.stream_calls == 0, (
+        "the composition widened the range the caller granted"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_busy_exact_target_is_not_a_provider_failure(streaming: bool) -> None:
+    """A configured endpoint whose capacity is spent has not failed.
+
+    Nothing was sent to it, so recording an attempt would invent an upstream
+    fault and poison the feedback and the failure history. The plan moves on
+    instead, and the capacity another request holds stays held.
+    """
+    local = _adapter(_LOCAL_ENDPOINT, provider="owned", base_url=_LOCAL_URL)
+    local.config.provider_type = "concurrency"
+    local.config.concurrency_pool = "one-slot"
+    local.config.concurrency = {"limit": 1}
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="metered", base_url="https://a.example/v1")
+    table = _shared_router(local, cloud)
+    local_router = _routewise_router(table)
+    pool = local_router.concurrency_pools["one-slot"]
+    assert pool.try_acquire()
+    router = HybridRouter(
+        policy=_PlannedPolicy(
+            primary="local",
+            primary_endpoint=_LOCAL_ENDPOINT,
+            fallback_endpoint=_CLOUD_ENDPOINT,
+        ),
+        local=LeafBackend(
+            local_router, endpoint_id=_LOCAL_ENDPOINT, model_id=_MODEL_ID, name="local"
+        ),
+        cloud=FixedCloudBackend(table, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+    try:
+        result = (
+            await _drain(router, None, collect=True)
+            if streaming
+            else await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="busy-exact")
+        )
+        assert local.chat_calls == 0 and local.stream_calls == 0
+        assert cloud.chat_calls + cloud.stream_calls == 1
+        assert pool.active == 1, "another request's occupied slot was released"
+        failures = [
+            attempt
+            for metadata in _routing_metadata(result)
+            for attempt in metadata.get("failed_attempts", [])
+        ]
+        assert not failures, f"nothing was sent, but attempts were recorded: {failures}"
+    finally:
+        pool.release()
 
 
 # ---------------------------------------------------------------------------

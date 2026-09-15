@@ -55,7 +55,11 @@ if TYPE_CHECKING:
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import adapter_in_endpoint_scope
-from routing.routers import AllCircuitsOpenError, adapter_supports_modalities
+from routing.routers import (
+    AllCircuitsOpenError,
+    TargetUnavailableError,
+    adapter_supports_modalities,
+)
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
@@ -1587,6 +1591,7 @@ class RouteWiseRouter:
         now: float,
         context: dict[str, Any] | None = None,
         admission_refused: set[str] | None = None,
+        capacity_refused: set[str] | None = None,
     ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
         model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
@@ -1679,6 +1684,8 @@ class RouteWiseRouter:
                     # snapshot lands rather than priced off invented state.
                     continue
                 if quota_pool.remaining <= 0:
+                    if capacity_refused is not None:
+                        capacity_refused.add(endpoint_id)
                     continue
                 used_fraction = quota_pool.used_fraction
                 quota_remaining = quota_pool.remaining
@@ -1697,7 +1704,13 @@ class RouteWiseRouter:
                 concurrency_pool = (
                     self.concurrency_pools.get(concurrency_pool_id) if concurrency_pool_id else None
                 )
-                if concurrency_pool is None or concurrency_pool.available <= 0:
+                if concurrency_pool is None:
+                    continue
+                if concurrency_pool.available <= 0:
+                    # Configured, just busy: a capacity refusal, not a missing
+                    # route and not a provider fault -- nothing was sent.
+                    if capacity_refused is not None:
+                        capacity_refused.add(endpoint_id)
                     continue
                 provider_type = "concurrency"
                 cost = 0.0
@@ -2373,7 +2386,13 @@ class RouteWiseRouter:
             routing["fallback_policy"] = "routewise_resolve"
             routing["failed_attempts"] = dedupe_failed_attempts(failed_attempts)
 
-    def _no_decision_error(self, model_id: str, trace: RoutingTrace) -> Exception:
+    def _no_decision_error(
+        self,
+        model_id: str,
+        trace: RoutingTrace,
+        *,
+        required_endpoint_id: str | None = None,
+    ) -> Exception:
         """Say *why* the solve came back empty, in the terms the client needs.
 
         A bare ValueError here maps to a 500 and reads, to an operator, as a
@@ -2383,11 +2402,33 @@ class RouteWiseRouter:
         and this caller is not the prober. That is the condition FixedRouter
         raises ``AllCircuitsOpenError`` for, mapped to 503 so the client backs
         off and retries instead of chasing a phantom misconfiguration.
+
+        An exact dispatch adds a third case: the caller named one endpoint, it is
+        configured, and it cannot be dispatched *right now* -- its circuit is
+        open, its probe is held, or its capacity is spent. That is
+        ``TargetUnavailableError``, which says "nothing was sent, try the next
+        candidate" instead of "the deployment is wrong" or "an upstream failed".
+        An endpoint that is not configured for this model at all is still the
+        configuration error the ValueError describes.
         """
+        if required_endpoint_id is not None and required_endpoint_id in {
+            candidate.endpoint_id for candidate in self.route_candidates.get(model_id, ())
+        }:
+            refused = sorted(trace.admission_refused | trace.capacity_refused)
+            return TargetUnavailableError(
+                f"endpoint {required_endpoint_id!r} is configured for model {model_id} but "
+                f"cannot be dispatched right now: "
+                f"{refused or ['no admissible candidate']}"
+            )
         if trace.admission_refused:
             return AllCircuitsOpenError(
                 f"All provider circuits are open for model {model_id}: "
                 f"{sorted(trace.admission_refused)}"
+            )
+        if trace.capacity_refused:
+            return TargetUnavailableError(
+                f"no candidate for model {model_id} has capacity right now: "
+                f"{sorted(trace.capacity_refused)}"
             )
         return ValueError(f"No route configured for model {model_id}")
 
@@ -2427,6 +2468,7 @@ class RouteWiseRouter:
         now = time.time()
 
         admission_refused: set[str] = set()
+        capacity_refused: set[str] = set()
         candidates, prefix_context = self._build_candidates(
             model_id,
             prompt_tokens=prompt_tokens,
@@ -2435,8 +2477,10 @@ class RouteWiseRouter:
             now=now,
             context=context,
             admission_refused=admission_refused,
+            capacity_refused=capacity_refused,
         )
         trace.admission_refused = admission_refused
+        trace.capacity_refused = capacity_refused
         excluded_endpoint_ids = trace.excluded_endpoint_ids
         if excluded_endpoint_ids:
             candidates = [
@@ -2986,7 +3030,11 @@ class RouteWiseRouter:
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
-                    raise self._no_decision_error(model_id, trace)
+                    raise self._no_decision_error(
+                        model_id,
+                        trace,
+                        required_endpoint_id=context.get("required_endpoint_id"),
+                    )
 
                 decision = next_decision
                 primary = decision.adapter
@@ -3105,7 +3153,11 @@ class RouteWiseRouter:
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
-                    raise self._no_decision_error(model_id, trace)
+                    raise self._no_decision_error(
+                        model_id,
+                        trace,
+                        required_endpoint_id=context.get("required_endpoint_id"),
+                    )
 
                 decision = next_decision
                 primary = decision.adapter
