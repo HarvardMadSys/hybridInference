@@ -49,8 +49,9 @@ from routing.dispatch import (
     BackendDispatch,
     DelegatePool,
     DispatchMismatchError,
+    EndpointBinding,
     ExecuteEndpoint,
-    supports_exact_dispatch,
+    binding_for_adapter,
 )
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
@@ -420,55 +421,105 @@ class RoutingBackendBase:
         return True
 
 
-class LeafBackend(RoutingBackendBase):
-    """The end of the recursion: one bound endpoint, executed exactly.
+class LeafBackend:
+    """One adapter, bound to one endpoint, executed as it is.
 
-    The caller has already chosen, so this backend has nothing to select: it
-    dispatches the endpoint it was bound to, and neither substitutes another one
-    nor falls back to a route. Handed a :class:`~routing.dispatch.DelegatePool`
-    instruction it refuses outright -- it has no pool to delegate to -- and
-    handed a binding for a different endpoint it refuses too, because accepting
-    either would mean inventing a selection this class does not have.
+    This is the end of the dispatch recursion and nothing more: it calls the
+    adapter it was built with and hands back whatever that call produced. It
+    keeps no queue, no reservation, no health record, no failed-attempt sample,
+    no ``_routing`` block and no connection lifecycle, because every one of those
+    already belongs to the router that chose this endpoint -- a second copy here
+    would double-count them.
 
-    Execution itself is not reimplemented. The wrapped router still performs the
-    dispatch, with the exact target and no fallback allowed, so health claims,
-    prefill accounting and routing metadata stay in the one place that already
-    produces them.
+    Binding the adapter is what makes "execute exactly this endpoint" true rather
+    than conventional. Nothing is looked up at dispatch time, so a route edit
+    cannot redirect a request that is already in flight, and a caller releases
+    the capacity it reserved through the reservation it already holds rather than
+    through anything this object remembers.
+
+    ``config`` is the adapter's own config object, not a copy: upstream metadata,
+    endpoint identity and the response ``_routing`` block are all read from it,
+    and a copy would silently stop matching the adapter it came from.
+
+    The call signatures are the adapter's, not the router's. A leaf stands in for
+    one adapter wherever an adapter is executed, so the router that wrapped it
+    keeps doing the deciding, the admission, the accounting and the metadata.
 
     Args:
-        router: The router that will execute the bound endpoint.
-        endpoint_id: The one canonical endpoint this leaf may execute.
-        model_id: Canonical model the endpoint belongs to, when the caller knows
-            it. Recorded so ownership and refusal messages can name the binding.
-        name: Backend identity reported in routing metadata and diagnostics.
-        manage_lifecycle: When True this backend starts and stops the wrapped
-            router. Default False: the composition root owns it.
+        adapter: The adapter that runs this endpoint.
+        endpoint_id: Canonical endpoint id, recorded for identity and diagnostics.
+        model_id: Canonical model the endpoint was resolved for.
+        pool_id: Pool the binding was resolved inside, when the caller knows it.
+        generation: Route-table generation the binding was taken from. Diagnostics
+            only; nothing consults it to decide where a request goes.
+        name: Identity reported in diagnostics.
     """
+
+    __slots__ = (
+        "_adapter",
+        "_endpoint_id",
+        "_generation",
+        "_model_id",
+        "_name",
+        "_pool_id",
+    )
 
     def __init__(
         self,
-        router: RouterProtocol,
+        adapter: Any,
         *,
         endpoint_id: str,
-        model_id: str | None = None,
+        model_id: str,
+        pool_id: str | None = None,
+        generation: int | None = None,
         name: str = "leaf",
-        manage_lifecycle: bool = False,
     ) -> None:
         if not endpoint_id:
             raise ValueError("LeafBackend requires a non-empty endpoint_id")
-        if not supports_exact_dispatch(router):
+        if not model_id:
+            raise ValueError("LeafBackend requires a non-empty model_id")
+        if getattr(adapter, "reports_leg_outcomes", False) is True:
+            # A composite executor races or fans out across endpoints, so binding
+            # it to one endpoint would be a claim it cannot keep -- and the
+            # per-leg accounting it already does would sit under a boundary that
+            # says one endpoint ran. Composition belongs above the leaf.
+            #
+            # Read as the literal True, like every other caller of this marker: a
+            # test double built from MagicMock answers any attribute with a
+            # truthy Mock, and a leaf must not refuse an ordinary adapter because
+            # of what the double would have said.
             raise DispatchMismatchError(
-                f"LeafBackend executes exactly one endpoint, which requires a router that "
-                f"honors an exact dispatch; {type(router).__name__} does not declare "
-                f"supports_exact_dispatch. Wrap a router that does, or adapt this one first."
+                f"{type(adapter).__name__} executes across endpoints and cannot be bound "
+                f"to the single endpoint {endpoint_id!r}; wrap each leg in its own leaf"
             )
-        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+        self._adapter = adapter
         self._endpoint_id = endpoint_id
         self._model_id = model_id
+        self._pool_id = pool_id
+        self._generation = generation
+        self._name = name
 
-    #: A leaf has no pool to delegate to, and says so, so a caller that would
-    #: otherwise hand it a delegation is told to name an endpoint instead.
-    accepts_delegation = False
+    @classmethod
+    def for_binding(cls, binding: EndpointBinding, *, name: str = "leaf") -> LeafBackend:
+        """Return the leaf that executes ``binding``."""
+        return cls(
+            binding.adapter,
+            endpoint_id=binding.endpoint_id,
+            model_id=binding.model_id,
+            pool_id=binding.pool_id,
+            generation=binding.generation,
+            name=name,
+        )
+
+    @property
+    def config(self) -> Any:
+        """Return the bound adapter's own config object."""
+        return self._adapter.config
+
+    @property
+    def adapter(self) -> Any:
+        """Return the bound adapter."""
+        return self._adapter
 
     @property
     def endpoint_id(self) -> str:
@@ -476,42 +527,67 @@ class LeafBackend(RoutingBackendBase):
         return self._endpoint_id
 
     @property
-    def is_local(self) -> bool:
-        """Return whether this leaf is the local execution domain.
-
-        Undeclared: a leaf says *which endpoint* it runs, and a deployment's
-        local/cloud split is a separate decision the composition root makes.
-        """
-        return False
+    def model_id(self) -> str:
+        """Return the model the endpoint was resolved for."""
+        return self._model_id
 
     @property
-    def is_cloud(self) -> bool:
-        """Return whether this leaf is the cloud execution domain."""
-        return False
+    def pool_id(self) -> str | None:
+        """Return the pool the binding was resolved inside, if it was named."""
+        return self._pool_id
 
-    def owns_model(self, model_id: str) -> bool:
-        """Return whether the bound endpoint belongs to ``model_id``."""
-        if self._model_id is None:
-            return True
-        return self.canonical_id(model_id) == self._model_id
+    @property
+    def generation(self) -> int | None:
+        """Return the route-table generation the binding was taken from."""
+        return self._generation
+
+    @property
+    def name(self) -> str:
+        """Return this leaf's identity in diagnostics."""
+        return self._name
+
+    async def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Run the bound adapter and return its response unchanged."""
+        return await self._adapter.chat_completion(messages, **params)
+
+    def stream_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Return the bound adapter's own iterator.
+
+        A plain ``def`` on purpose: wrapping it in another generator would insert
+        a frame between the caller and the upstream stream, which changes when the
+        connection is opened and closed and can swallow a cancellation.
+        """
+        return self._adapter.stream_chat_completion(messages, **params)
 
     def owns_observation(self, obs: RoutingObservation) -> bool:
         """Return whether ``obs`` names the endpoint this leaf executed."""
-        if not self.owns_model(obs.model_id):
-            return False
-        return obs.endpoint_id == self._endpoint_id
+        return obs.model_id == self._model_id and obs.endpoint_id == self._endpoint_id
+
+    def owns_model(self, model_id: str) -> bool:
+        """Return whether the bound endpoint belongs to ``model_id``."""
+        return model_id == self._model_id
+
+    def canonical_id(self, model_id: str) -> str:
+        """Return ``model_id``; a leaf has no route table to resolve aliases in."""
+        return model_id
 
     def serves(self, model_id: str) -> bool:
         """Return whether this leaf can serve ``model_id``."""
         return self.owns_model(model_id)
 
     def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
-        """Resolve a policy target, which here can only be the bound endpoint."""
-        if target.endpoint_id == self._endpoint_id:
-            return self._endpoint_id
-        return None
+        """Resolve a target, which here can only be the bound endpoint."""
+        return self._endpoint_id if target.endpoint_id == self._endpoint_id else None
 
-    def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
+    def dispatch_scope(self, model_id: str) -> frozenset[str]:
         """Return the single-endpoint range this leaf may dispatch to."""
         return frozenset({self._endpoint_id})
 
@@ -521,81 +597,13 @@ class LeafBackend(RoutingBackendBase):
             bound = instruction.binding.endpoint_id
             if bound != self._endpoint_id:
                 raise DispatchMismatchError(
-                    f"{type(self).__name__} {self.name!r} is bound to {self._endpoint_id!r} "
+                    f"{type(self).__name__} {self._name!r} is bound to {self._endpoint_id!r} "
                     f"and was asked to execute {bound!r}"
                 )
             return
         raise DispatchMismatchError(
-            f"{type(self).__name__} {self.name!r} executes one endpoint and has no "
+            f"{type(self).__name__} {self._name!r} executes one endpoint and has no "
             f"pool to delegate to, but was handed pool {instruction.pool_id!r}"
-        )
-
-    def _exact_options(
-        self,
-        routing_options: RoutingRequestOptions | None,
-    ) -> RoutingRequestOptions:
-        """Return options that make the dispatch exactly this endpoint.
-
-        ``require_target`` forbids the router substituting another candidate, and
-        ``allow_fallback`` forbids it walking the route after a failure. Together
-        they are what makes the instruction binding rather than advisory.
-        """
-        imposed = routing_options.endpoint_scope if routing_options is not None else None
-        if imposed is not None and self._endpoint_id not in self.scope_endpoints(imposed):
-            # A child scope narrows its parent's grant and never widens it. The
-            # caller has already said which endpoints are usable; dispatching the
-            # binding anyway would serve one it excluded.
-            raise DispatchMismatchError(
-                f"{type(self).__name__} {self.name!r} is bound to {self._endpoint_id!r}, "
-                f"which is outside the range the caller granted ({sorted(imposed)})"
-            )
-        if routing_options is None:
-            return RoutingRequestOptions(
-                preferred_endpoint_id=self._endpoint_id,
-                endpoint_scope=frozenset({self._endpoint_id}),
-                allow_fallback=False,
-                require_target=True,
-            )
-        return replace(
-            routing_options,
-            preferred_endpoint_id=self._endpoint_id,
-            endpoint_scope=frozenset({self._endpoint_id}),
-            allow_fallback=False,
-            require_target=True,
-        )
-
-    async def chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        routing_options: RoutingRequestOptions | None = None,
-        target: RoutingTarget | None = None,
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Execute the bound endpoint."""
-        return await self._router.chat_completion(
-            model_id,
-            messages,
-            routing_options=self._exact_options(routing_options),
-            **params,
-        )
-
-    def stream_chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        routing_options: RoutingRequestOptions | None = None,
-        target: RoutingTarget | None = None,
-        **params: Any,
-    ) -> AsyncIterator[Any]:
-        """Execute the bound endpoint as a stream."""
-        return self._router.stream_chat_completion(
-            model_id,
-            messages,
-            routing_options=self._exact_options(routing_options),
-            **params,
         )
 
 
@@ -633,9 +641,6 @@ class TreeBackend(RoutingBackendBase):
         super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
         self._pool_id = pool_id or name
 
-    #: A pool is what a delegation addresses.
-    accepts_delegation = True
-
     @property
     def pool_id(self) -> str:
         """Return the identity a delegation must name to reach this pool."""
@@ -671,6 +676,19 @@ class TreeBackend(RoutingBackendBase):
                 f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(allowed)} "
                 f"and was asked to execute {bound!r}"
             )
+
+    def binding_for(self, model_id: str, endpoint_id: str) -> EndpointBinding | None:
+        """Return the execution binding for one endpoint inside this pool.
+
+        The endpoint is looked up in the pool's own route table, so a binding can
+        only name something this pool actually serves. ``None`` means it serves
+        no such endpoint, which a caller must read as "not dispatchable here"
+        rather than as a licence to choose another one.
+        """
+        for adapter in _adapters_in_router(self._router):
+            if endpoint_id_for_adapter(adapter) == endpoint_id:
+                return binding_for_adapter(adapter, model_id=model_id, pool_id=self._pool_id)
+        return None
 
     def _scoped_options(
         self,

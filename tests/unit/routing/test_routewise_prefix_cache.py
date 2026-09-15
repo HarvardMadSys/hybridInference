@@ -28,6 +28,15 @@ from serving.utils import context as req_ctx
 SECRET = b"unit-test-secret"
 
 
+def _bound_adapter(executor):
+    """Return the adapter a decision's executor is bound to.
+
+    A decision names a leaf that executes one adapter, so tests asserting which
+    endpoint was chosen unwrap it rather than comparing the executor itself.
+    """
+    return getattr(executor, "adapter", executor)
+
+
 def _scope(session: str = "s1", provider: str = "p1") -> CacheScope:
     return CacheScope(
         user_hash="u1",
@@ -600,7 +609,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         decision = self._select(router)
 
         assert decision is not None
-        assert decision.adapter is cold_cheaper
+        assert _bound_adapter(decision.adapter) is cold_cheaper
         meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "cold_api_cost"
         assert meta["candidate_costs_usd"]["prov-b:h:1"] == pytest.approx(
@@ -615,7 +624,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         decision = self._select(router)
 
         assert decision is not None
-        assert decision.adapter is warm_slightly_pricier
+        assert _bound_adapter(decision.adapter) is warm_slightly_pricier
         meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "prefix_cache_adjusted_api_cost"
         assert meta["candidate_prefix_cache_discounts_usd"]["prov-b:h:1"] > 0
@@ -638,7 +647,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         decision = self._select(router)
 
         assert decision is not None
-        assert decision.adapter is cold_cheaper
+        assert _bound_adapter(decision.adapter) is cold_cheaper
         meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "cold_api_cost"
         assert "prov-b:h:1" not in meta["candidate_prefix_cache_discounts_usd"]
@@ -665,7 +674,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             )
 
         assert decision is not None
-        assert decision.adapter is cold_cheaper
+        assert _bound_adapter(decision.adapter) is cold_cheaper
         assert len(router.pending_prefix_cache) == 0
 
     def test_eligible_scopes_collected_excludes_rotating_pool(self):

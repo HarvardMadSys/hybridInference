@@ -25,21 +25,20 @@ and one-way: :func:`dispatch_for_attempt` maps the existing
 onto one of these instructions. It never upgrades a *preference* into a hard
 target -- a preference keeps delegating, which is what it has always meant.
 
-Not carried here yet, and named so the gap is visible rather than implied: the
-adapter and routing-snapshot fields the design calls for in a binding, and the
-end-to-end deadline context. Both belong with the leaf
-execution work, because populating them means resolving adapters at bind time and
-moving ownership of the upstream attempt -- neither of which this contract
-change does.
+A binding carries the adapter that runs the endpoint, so execution does not
+re-resolve a target that could have changed since the decision. What a binding
+deliberately does not carry is a reservation: capacity is acquired and released
+by the router that owns the attempt, through the reservation it already holds.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from routing.backends import RoutingBackend
+    from serving.adapters.base import BaseAdapter
 
 __all__ = [
     "BackendDispatch",
@@ -47,11 +46,9 @@ __all__ = [
     "DispatchMismatchError",
     "EndpointBinding",
     "ExecuteEndpoint",
-    "accepts_delegation",
-    "bound_endpoint",
+    "binding_for_adapter",
     "check_dispatch",
     "dispatch_for_attempt",
-    "supports_exact_dispatch",
 ]
 
 
@@ -68,30 +65,45 @@ class DispatchMismatchError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class EndpointBinding:
-    """One endpoint, resolved, together with the pool it was resolved inside.
+    """One endpoint, resolved: the adapter that runs it and where it came from.
+
+    A binding is what makes "execute exactly this endpoint" checkable rather than
+    conventional. It carries the adapter itself, so execution does not re-look-up
+    a target that could have changed since the decision; the endpoint identity
+    stays alongside for metadata, health and attribution, which are keyed by
+    endpoint id rather than by object.
 
     Args:
         endpoint_id: Canonical endpoint id, e.g. ``"combo-model:zai-api"``.
         model_id: Canonical model the endpoint was resolved for.
+        adapter: The adapter that executes this endpoint. Holding the reference is
+            what prevents a re-resolved target: a route edit cannot redirect a
+            request that is already in flight.
         pool_id: The pool the binding was resolved inside, when the caller knows
             it. A binding that crosses its pool's scope is the composition's
             mistake, and naming the pool is what lets it be reported as one.
-
-    The adapter and route-snapshot fields the design calls for are deliberately
-    absent for now: this phase introduces the instruction boundary without moving
-    where an attempt executes, so a binding records *what* was resolved, not a
-    direct handle to run it with.
+        generation: Optional route-table generation the binding was taken from.
+            Diagnostics only -- it records which snapshot the caller saw, and is
+            never consulted to decide where a request goes. A caller that wants
+            to know whether a binding is stale compares it, it does not re-resolve.
     """
 
     endpoint_id: str
     model_id: str
+    adapter: BaseAdapter
     pool_id: str | None = None
+    generation: int | None = None
 
     def __post_init__(self) -> None:
         if not self.endpoint_id:
             raise ValueError("EndpointBinding requires a non-empty endpoint_id")
         if not self.model_id:
             raise ValueError("EndpointBinding requires a non-empty model_id")
+        if self.adapter is None:
+            raise ValueError(
+                "EndpointBinding requires the adapter that executes this endpoint; a "
+                "binding without one would have to re-resolve its target at dispatch"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +132,7 @@ def dispatch_for_attempt(
     *,
     pool_id: str,
     model_id: str,
-    endpoint_id: str | None,
+    binding: EndpointBinding | None,
     exact: bool,
 ) -> BackendDispatch:
     """Map one planned attempt onto the instruction that expresses it.
@@ -131,19 +143,19 @@ def dispatch_for_attempt(
     means once a plan has committed to a candidate; anything else delegates, and
     a preference stays a preference.
 
-    ``exact`` without an endpoint is a composition error: a hard target that
-    names nothing cannot be expressed, and turning it into a delegation would
-    hand over selection the caller meant to keep.
+    ``exact`` without a resolved binding is a composition error: a hard target
+    that names nothing cannot be expressed, and turning it into a delegation
+    would hand over selection the caller meant to keep.
     """
     if exact:
-        if not endpoint_id:
+        if binding is None:
             raise DispatchMismatchError(
-                "an exact dispatch requires an endpoint_id; the caller asked for one "
-                "endpoint to be executed and named none"
+                "an exact dispatch requires a resolved endpoint binding; the caller "
+                "asked for one endpoint to be executed and named none"
             )
-        return ExecuteEndpoint(
-            EndpointBinding(endpoint_id=endpoint_id, model_id=model_id, pool_id=pool_id)
-        )
+        if binding.pool_id is None:
+            binding = replace(binding, pool_id=pool_id)
+        return ExecuteEndpoint(binding)
     return DelegatePool(pool_id=pool_id)
 
 
@@ -160,43 +172,23 @@ def check_dispatch(backend: RoutingBackend, instruction: BackendDispatch, model_
         checker(instruction, model_id)
 
 
-def accepts_delegation(backend: Any) -> bool:
-    """Return whether ``backend`` may be handed a pool delegation.
+def binding_for_adapter(
+    adapter: Any,
+    *,
+    model_id: str,
+    pool_id: str | None = None,
+    generation: int | None = None,
+) -> EndpointBinding:
+    """Return the execution binding for one already-resolved adapter."""
+    from routing.endpoints import endpoint_id_for_adapter
 
-    Defaults to True, which is the compatibility behavior of the existing local
-    and cloud wrappers: they delegate to a full router, so a delegation is
-    exactly what they expect. A backend that declares ``accepts_delegation =
-    False`` -- a leaf, which has one endpoint and no selection -- is refused
-    instead, and the caller has to name the endpoint it wants executed.
-    """
-    declared = getattr(backend, "accepts_delegation", None)
-    return True if declared is None else bool(declared)
-
-
-def supports_exact_dispatch(router: Any) -> bool:
-    """Return whether ``router`` declares that it honors an exact dispatch.
-
-    A leaf cannot verify the claim by reading the code of whatever it was handed,
-    so this is a declaration the router makes and the leaf requires: honoring
-    ``require_target`` means refusing to substitute another endpoint, and
-    honoring ``allow_fallback=False`` means not walking the rest of the route.
-    Requesting those controls from a router that ignores them produces a dispatch
-    to an endpoint nobody asked for, which is exactly the failure the leaf exists
-    to prevent, so the leaf refuses such a router at construction.
-    """
-    return bool(getattr(router, "supports_exact_dispatch", False))
-
-
-def bound_endpoint(backend: Any) -> str | None:
-    """Return the single endpoint ``backend`` is bound to, if it is bound to one.
-
-    A leaf knows this; a pool does not, which is the whole difference between
-    them. Used by the compatibility mapping to turn a domain-level step into an
-    exact dispatch when the domain it names is a leaf, rather than dropping a
-    step that is perfectly well defined.
-    """
-    declared = getattr(backend, "endpoint_id", None)
-    return declared if isinstance(declared, str) and declared else None
+    return EndpointBinding(
+        endpoint_id=endpoint_id_for_adapter(adapter),
+        model_id=model_id,
+        adapter=adapter,
+        pool_id=pool_id,
+        generation=generation,
+    )
 
 
 def backend_pool_id(backend: Any) -> str:

@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
+from routing.backends import LeafBackend
+from routing.dispatch import EndpointBinding, binding_for_adapter
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
@@ -383,16 +385,6 @@ class FixedRouter:
             ``params.local_fraction`` is currently informational; the existing
             weighted-random selection over ``routes`` is unchanged.
     """
-
-    #: Declares that this router honors an exact dispatch: ``require_target``
-    #: makes ``preferred_endpoint_id`` binding instead of substitutable, and
-    #: ``allow_fallback=False`` stops it walking the rest of the route. A leaf
-    #: backend requires this declaration rather than assuming it, so a router
-    #: that would ignore the controls is refused instead of silently answering
-    #: from an endpoint nobody asked for.
-    supports_exact_dispatch = True
-    #: Declares that ``endpoint_scope`` bounds selection *and* fallback here.
-    supports_endpoint_scope = True
 
     def __init__(
         self,
@@ -1413,6 +1405,21 @@ class FixedRouter:
             f"All provider circuits are open or probing for model {model_id}: {sorted(exclude)}"
         )
 
+    def binding_for(self, adapter: BaseAdapter, model_id: str) -> EndpointBinding:
+        """Return the execution binding for an adapter this router has committed to.
+
+        Taken after selection and admission, so the binding names the endpoint
+        that is about to run rather than one that might be chosen. It holds the
+        adapter itself: execution then runs exactly that object, and a route edit
+        cannot redirect a request that is already in flight.
+        """
+        return binding_for_adapter(adapter, model_id=model_id)
+
+    @staticmethod
+    def _leaf_for(binding: EndpointBinding) -> LeafBackend:
+        """Return the leaf that executes ``binding``."""
+        return LeafBackend.for_binding(binding)
+
     def _dispatch_priority(
         self,
         endpoint_id: str,
@@ -1537,7 +1544,9 @@ class FixedRouter:
                     anchor=anchor,
                 )
                 try:
-                    resp = await primary.chat_completion(messages, **params)
+                    resp = await self._leaf_for(
+                        self.binding_for(primary, model_id)
+                    ).chat_completion(messages, **params)
                     # A returned response proves this endpoint finished
                     # prefilling this prompt, which is what makes its prefix
                     # safe to remember.
@@ -1635,7 +1644,9 @@ class FixedRouter:
                             anchor=anchor,
                         )
                         try:
-                            resp = await adapter.chat_completion(messages, **params)
+                            resp = await self._leaf_for(
+                                self.binding_for(adapter, model_id)
+                            ).chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
                         finally:
                             self._prefill_load.release(lease)
@@ -1765,7 +1776,9 @@ class FixedRouter:
                     anchor=anchor,
                 )
                 yield routing_chunk(primary)
-                async for chunk in primary.stream_chat_completion(messages, **params):
+                async for chunk in self._leaf_for(
+                    self.binding_for(primary, model_id)
+                ).stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
@@ -1887,7 +1900,9 @@ class FixedRouter:
                             fingerprint=fingerprint,
                             anchor=anchor,
                         )
-                        async for chunk in adapter.stream_chat_completion(messages, **params):
+                        async for chunk in self._leaf_for(
+                            self.binding_for(adapter, model_id)
+                        ).stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)

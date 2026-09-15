@@ -89,7 +89,7 @@ classDiagram
 
 ## 3. 支持的运行结构
 
-本节两张图描述抽象的目标用法，其中 Greedy / Nimbus 是未来扩展示例。参照提交中，`router: routewise` 已直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 和显式派发类型已经存在。当前 LeafBackend 持有一个支持精确派发的 Router，由该 Router 调用 Adapter，现有请求构建路径尚未使用这个类。是否实现叶子执行边界应按精确目标、绑定和执行所有权判断，不以是否构造同名类为唯一标准。混合 `router: fixed` 当前经过具体 HybridRouter 和 Local/FixedCloud 包装，仍需验证其行为兼容性。
+本节两张图描述抽象的目标用法，其中 Greedy / Nimbus 是未来扩展示例。参照提交中，`router: routewise` 直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 与显式派发类型均已实现并接线。**`LeafBackend` 绑定的是 Adapter 本身**（一个 endpoint 一个 leaf），执行时不查表、不换目标，也不自行记账；`FixedRouter` 的 primary / fallback（普通与流式）、`RouteWiseRouter` 的 decision 与两条 hedge leg、以及 RouteWise 主动探测都用同一个 leaf 执行，选择、准入、prefill 与反馈记账仍留在原 Router 内。`TreeBackend` 继续承担受限池委托。混合 `router: fixed` 经过具体 HybridRouter 与 Local/FixedCloud 包装；Greedy / Nimbus 仍未实现。
 
 ### 3.1 全池 RouteWise
 
@@ -156,7 +156,7 @@ BackendDispatch = ExecuteEndpoint | DelegatePool
 
 `EndpointBinding` 表示已解析的 endpoint id、实际 Adapter 及适用的路由快照/版本；不只是在派发时重新查表的字符串。对应 attempt 另外持有已经取得的预留。`DelegatePool.pool_id` 必须匹配 Backend 的声明范围，并与模型、模态、调用方约束取交集。
 
-LeafBackend 只接受它绑定的那一个 ExecuteEndpoint，并在构造时要求被包装的 Router 声明支持精确派发（`supports_exact_dispatch`）；不声明的 Router 在构建阶段被拒绝，而不是接受之后忽略约束。
+LeafBackend 绑定一个 Adapter 与一个 canonical endpoint，只执行它：构造时拒绝把跨 endpoint 的组合执行对象（如 hedging 组合）当作叶子，因为那会让"只运行了一个 endpoint"的边界与它实际做的事不符。它的 `config` 就是原 Adapter 的 config 对象，调用签名也是 Adapter 的签名，因此可以在任何执行 Adapter 的位置替换进去，而不引入第二套记账。
 
 TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选路。它还接受**落在自己声明范围内**的 ExecuteEndpoint，这是保留旧包装精确派发的兼容能力，不是角色互斥的例外：越界绑定同样在 I/O 前拒绝。两种角色的严格互斥是目标，当前对 TreeBackend 保留这一条兼容路径，已由 `TreeBackend.check_instruction` 与测试锁定。
 
@@ -451,7 +451,7 @@ PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来�
 | 场景 | 必须证明的行为 |
 |---|---|
 | 同一算法两种位置 | 全池 RouteWise 能选择 local；cloud 子 RouteWise 的请求、重试、hedge 和探测均不能访问 local |
-| 精确派发 | 指定 endpoint 缺失、越界或不可准入时，不调用另一个 endpoint |
+| 精确派发 | 指定 endpoint 缺失、越界或不可准入时，不调用另一个 endpoint；叶子执行的 Adapter 即绑定时解析出的那一个，不重新查表 |
 | 池委托 | 上层只指定 cloud pool，实际 endpoint 由子 Router 选择；父层不先重复抽签或占用同一云端槽 |
 | 资源类型正交 | cloud concurrency 候选可用且有槽时参与云端决策；local concurrency 仍能参与全池 RouteWise |
 | 多实例共享 | 两个 Router/模型/新旧版本访问同一资源池，总使用不超过真实上限；未实现共享时配置被拒绝 |

@@ -46,9 +46,8 @@ from typing import TYPE_CHECKING, Any
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
 from routing.dispatch import (
     DispatchMismatchError,
-    accepts_delegation,
+    EndpointBinding,
     backend_pool_id,
-    bound_endpoint,
     check_dispatch,
     dispatch_for_attempt,
 )
@@ -91,10 +90,10 @@ class _Attempt:
     why they are not one flag:
 
     ``exact``
-        May the wrapped router substitute another candidate for ``endpoint_id``?
-        False only for the policy's own pick, whose target is a preference by
-        contract. A planned candidate is True: substituting it reorders the plan
-        and can dispatch an endpoint the plan has already left behind.
+        Must the wrapped router use ``endpoint_id`` and no other? False for the
+        policy's own pick, whose target is a preference by contract. A planned
+        candidate is True: substituting it reorders the plan and can dispatch an
+        endpoint the plan has already left behind.
     ``domain_fallback``
         May the wrapped router walk the rest of its own range when this attempt
         fails? False when this layer owns the candidate order, because the
@@ -340,7 +339,7 @@ class HybridRouter:
                 dispatch_for_attempt(
                     pool_id=backend_pool_id(backend),
                     model_id=model_id,
-                    endpoint_id=attempt.endpoint_id,
+                    binding=_binding_for_attempt(backend, model_id, attempt),
                     exact=attempt.exact,
                 ),
                 model_id,
@@ -432,11 +431,11 @@ class HybridRouter:
 
         Two plan shapes are supported and they are not interchangeable. A
         per-endpoint plan (``fallback_attempts``) hands over the whole order, so
-        this layer disables both the wrapped router's in-domain loop and its
-        freedom to substitute the candidate it was given. A domain-only plan
-        (``fallback_backends``) says nothing about candidates, so those attempts
-        keep the backend's own selection and its in-domain order -- and their
-        target is deliberately left unset rather than dropped.
+        this layer disables the wrapped router's in-domain loop and requires the
+        candidate it named. A domain-only plan (``fallback_backends``) says
+        nothing about candidates, so those attempts keep the backend's own
+        selection and its in-domain order -- and their target is deliberately
+        left unset rather than dropped.
 
         The primary attempt always stays, even with an unresolved target: a
         caller pin has to reach the backend that enforces it, and a policy target
@@ -444,7 +443,6 @@ class HybridRouter:
         """
         primary_backend = self._backends[decision.backend]
         primary_endpoint = _resolved_endpoint(primary_backend, decision.target, model_id)
-        primary_delegates = accepts_delegation(primary_backend)
         fallbacks, per_endpoint = self._requested_fallbacks(
             model_id, messages, decision, routing_options, params
         )
@@ -452,16 +450,12 @@ class HybridRouter:
             _Attempt(
                 backend=decision.backend,
                 endpoint_id=primary_endpoint,
-                # A leaf has no selection to degrade to, so once its binding
-                # resolves its instruction is exact. An unresolved binding on a
-                # leaf primary is *not* expanded to the leaf's own endpoint the
-                # way a domain-level fallback step is: the caller named a target
-                # for this attempt and the leaf cannot serve it, so the attempt
-                # stays a delegation and the leaf refuses it. A pool keeps the
-                # preference semantics the existing wrappers are built on: an
-                # unresolvable target is that pool's own selection to make.
-                exact=primary_endpoint is not None and not primary_delegates,
-                domain_fallback=not per_endpoint and primary_delegates,
+                # The primary's target is a preference: a pool that cannot
+                # honor it makes its own selection, which is the semantics the
+                # existing wrappers are built on. The plan's later entries are
+                # what pin the candidates after it.
+                exact=False,
+                domain_fallback=not per_endpoint,
             )
         ]
 
@@ -470,22 +464,6 @@ class HybridRouter:
             if not _serves(backend, model_id):
                 continue
             if target is None:
-                if not accepts_delegation(backend):
-                    # A domain-level step names no endpoint, and a leaf cannot
-                    # choose one. Its own binding is the only endpoint that step
-                    # could mean, so use it; without one there is nothing to run.
-                    bound = bound_endpoint(backend)
-                    if bound is None:
-                        continue
-                    plan.append(
-                        _Attempt(
-                            backend=backend_name,
-                            endpoint_id=bound,
-                            exact=True,
-                            domain_fallback=False,
-                        )
-                    )
-                    continue
                 # Domain-level: this backend chooses, and may walk its own range.
                 plan.append(
                     _Attempt(
@@ -768,7 +746,7 @@ async def _fallback_stream(
             dispatch_for_attempt(
                 pool_id=backend_pool_id(backend),
                 model_id=model_id,
-                endpoint_id=attempt.endpoint_id,
+                binding=_binding_for_attempt(backend, model_id, attempt),
                 exact=attempt.exact,
             ),
             model_id,
@@ -882,6 +860,27 @@ def _attempt_options(
         allow_fallback=attempt.domain_fallback,
         require_target=attempt.exact,
     )
+
+
+def _binding_for_attempt(
+    backend: Any,
+    model_id: str,
+    attempt: _Attempt,
+) -> EndpointBinding | None:
+    """Return the execution binding an attempt names, if the backend resolves it.
+
+    Read from the backend rather than built here: the pool is what knows which
+    endpoints it serves, and a binding invented by the caller could name an
+    endpoint the pool cannot reach. ``None`` means it could not resolve one, which
+    an exact attempt reads as a composition error rather than as permission to
+    substitute another endpoint.
+    """
+    if attempt.endpoint_id is None:
+        return None
+    resolve = getattr(backend, "binding_for", None)
+    if not callable(resolve):
+        return None
+    return resolve(model_id, attempt.endpoint_id)
 
 
 def _attempt_scope(

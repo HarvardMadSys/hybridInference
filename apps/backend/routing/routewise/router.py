@@ -52,6 +52,8 @@ if TYPE_CHECKING:
 
     from .config import RouteWiseConfig
 
+from routing.backends import LeafBackend
+from routing.dispatch import binding_for_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import adapter_in_endpoint_scope
@@ -404,15 +406,6 @@ class RouteWiseRouter:
     router only changes the selection policy for models configured with
     ``router: routewise``.
     """
-
-    #: See ``FixedRouter.supports_exact_dispatch``. RouteWise honors both
-    #: controls at its feasible-set boundary: an exact dispatch restricts the
-    #: candidates to the one endpoint it named, and ``endpoint_scope`` restricts
-    #: them to the range the caller granted. Both are opt-in, so a request that
-    #: sets neither -- every existing ``router: routewise`` request -- is decided
-    #: over the full pool exactly as before.
-    supports_exact_dispatch = True
-    supports_endpoint_scope = True
 
     def __init__(
         self,
@@ -1024,7 +1017,7 @@ class RouteWiseRouter:
         try:
             async with _probe_concurrency_gate().slot():
                 ttft_ms = await asyncio.wait_for(
-                    self._measure_probe_ttft_ms(adapter),
+                    self._measure_probe_ttft_ms(self._leaf_for_adapter(adapter, model_id)),
                     timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
                 )
         except Exception as exc:
@@ -2241,7 +2234,7 @@ class RouteWiseRouter:
                 success_probability=current.success_probability,
             )
             return CheckpointBackupDispatch(
-                backup=backup.adapter,
+                backup=self._leaf_for_adapter(backup.adapter, model_id),
                 elapsed_sec=elapsed_sec,
                 success_probability=current.success_probability,
                 release=reservation.release,
@@ -2527,7 +2520,7 @@ class RouteWiseRouter:
                     )
                     trace.begin_decision(metadata)
                     decision = RoutingDecision(
-                        adapter=selected.adapter,
+                        adapter=self._leaf_for_adapter(selected.adapter, model_id),
                         reservation=reservation,
                         metadata=metadata,
                         trace=trace,
@@ -2558,7 +2551,7 @@ class RouteWiseRouter:
                             )
 
                         decision.adapter = HedgedAdapter(
-                            primary=selected.adapter,
+                            primary=self._leaf_for_adapter(selected.adapter, model_id),
                             event_sink=self._health_registry,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
@@ -2582,6 +2575,16 @@ class RouteWiseRouter:
             if not candidates:
                 return None
         return None
+
+    def _leaf_for_adapter(self, adapter: Any, model_id: str) -> LeafBackend:
+        """Return the leaf that executes one already-chosen endpoint.
+
+        Taken at the point a candidate is committed to, so the binding names the
+        endpoint about to run. Execution then calls that adapter object directly:
+        a route edit cannot redirect a request that is already in flight, and the
+        reservation this router holds stays the one that gets released.
+        """
+        return LeafBackend.for_binding(binding_for_adapter(adapter, model_id=model_id))
 
     def _stash_prefix_for_commit(
         self,
