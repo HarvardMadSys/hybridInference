@@ -36,6 +36,7 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from routing.traffic_policy import scheduling_priority_for_traffic
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
@@ -48,7 +49,10 @@ from serving.exceptions import (
     scrub_error_for_user,
 )
 from serving.grant_auth import ledger_attribution
-from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
+from serving.model_access import (
+    is_model_disabled_for_user,
+    is_model_outside_grant_scope,
+)
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing
@@ -69,7 +73,15 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.session_identity import consume_session_fields, session_identity
+from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.traffic_classifier import (
+    TrafficEvidence,
+    classification_to_metadata,
+    classify_traffic,
+    compute_request_shape_hash,
+)
+from serving.utils.traffic_state import get_traffic_observation_state
 
 if TYPE_CHECKING:
     from fastapi.exceptions import RequestValidationError
@@ -279,7 +291,9 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     from serving.servers.middleware.error import _build_error_response
 
     content = _build_error_response(
-        safe_detail_text(exc.detail, exc.status_code), code=exc.status_code, typ=err_type
+        safe_detail_text(exc.detail, exc.status_code),
+        code=exc.status_code,
+        typ=err_type,
     )
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
@@ -490,7 +504,11 @@ async def _resolve(
     if not for_dispatch:
         adapter, _ = route.adapters[0]
         return canonical, route, adapter
-    return canonical, route, _pick_dispatch_adapter(model_id, canonical, router_exec, user_role)
+    return (
+        canonical,
+        route,
+        _pick_dispatch_adapter(model_id, canonical, router_exec, user_role),
+    )
 
 
 def _pick_adapter_for_role(adapters, user_role: str):
@@ -648,7 +666,10 @@ async def _maybe_reroute_small_reasoning_call(
         return canonical, route, adapter
     try:
         new_canonical, new_route, new_adapter = await _resolve(
-            _SMALL_MAXTOK_REROUTE_TARGET, router_exec, user_ctx, model_visibility_resolver
+            _SMALL_MAXTOK_REROUTE_TARGET,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
         )
     except HTTPException:
         # Target not configured, not visible to this caller, or currently
@@ -1220,7 +1241,11 @@ def _resolve_stream_usage(
     #    mid-stream; its output_tokens is only a placeholder, handled in step 3.
     acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
     if isinstance(acc_usage, dict):
-        for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        for key in (
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
             value = acc_usage.get(key)
             if isinstance(value, int) and value > 0:
                 base[key] = value
@@ -1342,7 +1367,7 @@ async def anthropic_messages(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
-    _conc=Depends(enforce_user_concurrency),
+    concurrency_observation: int | None = Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
     request_id = f"amsg_{int(time.time() * 1_000_000)}"
@@ -1380,6 +1405,27 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: messages")
     if "max_tokens" not in body:
         return _anthropic_error(400, "Missing required field: max_tokens")
+
+    # Resolve the session once from the pristine inbound body. Both traffic
+    # observation and request logging use this same value; the body is mutated
+    # below for provider dispatch.
+    declared_session = session_identity(request.headers, body)
+
+    # Capture the arrival-side clock before model resolution, rerouting, and
+    # provider admission. The eventual post-admission commit must retain this
+    # timestamp so slow requests do not distort the next request's cadence.
+    is_authenticated = bool(user_ctx.get("authenticated"))
+    is_synthetic_probe = is_trusted_probe(request, user_ctx)
+    traffic_user_id = (
+        None if is_synthetic_probe else user_ctx.get("user_id") if is_authenticated else None
+    )
+    traffic_state = get_traffic_observation_state()
+    arrival_value = getattr(request.state, req_ctx.REQUEST_ARRIVAL_TIMESTAMP, None)
+    arrival_timestamp = (
+        float(arrival_value)
+        if isinstance(arrival_value, (int, float)) and not isinstance(arrival_value, bool)
+        else time.monotonic()
+    )
 
     # Before dispatch, so this covers the native passthrough as well as the
     # translated path. A native Anthropic upstream is forwarded this body
@@ -1428,14 +1474,8 @@ async def anthropic_messages(
 
     request_payload_for_log = copy.deepcopy(body)
 
-    # Which session this request belongs to. This is the surface Claude Code
-    # uses, and it sends no ``X-Session-ID``: it packs the run into
-    # ``metadata.user_id`` instead (see serving/utils/session_identity.py). Read
-    # that idiom or every request of a session logs session_id = NULL, and
-    # nothing downstream can put one session's rows back together. Resolved from
-    # the pristine copy above rather than ``body``, which dispatch rewrites from
-    # here on; recorded into the log metadata further down.
-    declared_session = session_identity(request.headers, request_payload_for_log)
+    # The session was resolved from the pristine inbound body above. The copied
+    # payload is retained for logging because dispatch rewrites ``body`` below.
     # The body declarations are for the gateway, not for any provider:
     # Anthropic's Messages metadata admits ``user_id`` alone, and the native path
     # forwards this body verbatim, so leaving one in would turn a labelled
@@ -1500,6 +1540,65 @@ async def anthropic_messages(
         # the common case -- and it gets the same 503 the empty-eligible path
         # above gives, which this surface renders as overloaded_error.
         return _anthropic_error(503, f"No provider is currently available for model '{model_id}'")
+
+    # Observe only requests that passed model visibility, provider availability,
+    # and dispatch admission. Rejected requests, including a caller that loses
+    # a half-open probe race, must not poison the authenticated user's cadence,
+    # shape, session, or request-count history used by the next valid request.
+    # This endpoint has a separate native-format path, so keeping the
+    # observation here covers the Claude Code traffic it primarily serves.
+    traffic_session = declared_session
+    traffic_messages = body.get("messages")
+    traffic_message_count = len(traffic_messages) if isinstance(traffic_messages, list) else 0
+    traffic_shape_hash = compute_request_shape_hash(
+        model=str(model_id or ""),
+        messages_count=traffic_message_count,
+        max_tokens=body.get("max_tokens") if isinstance(body.get("max_tokens"), int) else None,
+        temperature=(
+            body.get("temperature") if isinstance(body.get("temperature"), (int, float)) else None
+        ),
+    )
+    traffic_observations = traffic_state.preview_request(
+        user_id=traffic_user_id,
+        shape_hash=traffic_shape_hash,
+        session_id=traffic_session.session_id if traffic_session is not None else None,
+        observed_at=arrival_timestamp,
+    )
+    traffic_classification = classify_traffic(
+        TrafficEvidence(
+            inter_arrival_ms=traffic_observations.get("inter_arrival_ms"),
+            concurrent_requests=(concurrency_observation if is_authenticated else None),
+            shape_repeat_count=(
+                int(traffic_observations["shape_repeat_count"])
+                if traffic_observations.get("shape_repeat_count") is not None
+                else None
+            ),
+            session_continuity=traffic_observations.get("session_continuity"),
+            is_authenticated=is_authenticated,
+            user_agent=request.headers.get("user-agent"),
+            request_count=(
+                int(traffic_observations["request_count"])
+                if traffic_observations.get("request_count") is not None
+                else None
+            ),
+        )
+    )
+    req_ctx.update(classification_to_metadata(traffic_classification))
+
+    traffic_observation_recorded = False
+
+    def _record_traffic_observation() -> None:
+        """Commit behavioral history once this request actually dispatches."""
+        nonlocal traffic_observation_recorded
+        if traffic_observation_recorded:
+            return
+        traffic_state.record_request(
+            user_id=traffic_user_id,
+            shape_hash=traffic_shape_hash,
+            session_id=traffic_session.session_id if traffic_session is not None else None,
+            observed_at=arrival_timestamp,
+        )
+        traffic_observation_recorded = True
 
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
@@ -1569,17 +1668,24 @@ async def anthropic_messages(
         until the process restarts. Selection would then steer traffic away
         from a replica that is idle, which is worse than not accounting at all.
         """
+        priority = priority_for_prefill(
+            prefill_load.uncached_estimate(
+                dispatch_endpoint_id,
+                prefill_tokens,
+                prefill_affinity,
+                fingerprint=prefill_fingerprint,
+                messages=prefill_messages,
+            )
+        )
+        priority = scheduling_priority_for_traffic(
+            priority,
+            traffic_classification.class_hint.value,
+            traffic_classification.confidence,
+            interactive_priority=priority_for_prefill(0),
+        )
         req_ctx.update(
             {
-                req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
-                    prefill_load.uncached_estimate(
-                        dispatch_endpoint_id,
-                        prefill_tokens,
-                        prefill_affinity,
-                        fingerprint=prefill_fingerprint,
-                        messages=prefill_messages,
-                    )
-                )
+                req_ctx.UPSTREAM_PRIORITY: priority,
             }
         )
         return prefill_load.acquire(
@@ -1618,6 +1724,7 @@ async def anthropic_messages(
         # this surface supplies neither routewise metadata nor base_url, so no
         # other rung of its fallback chain is reachable.
         "endpoint_id": dispatch_endpoint_id,
+        **classification_to_metadata(traffic_classification),
     }
     # The session resolved from the client's request, back where the body was
     # still pristine (see above).
@@ -1654,6 +1761,10 @@ async def anthropic_messages(
         }
 
         async def _gen():
+            # A StreamingResponse can be constructed and then abandoned before
+            # Starlette starts iterating it. The callback is installed below in
+            # the request context and fires only after the adapter's outbound
+            # admission gate succeeds in the reader task.
             # Bound to this generator's execution: see _begin_prefill.
             prefill_lease = _begin_prefill()
             request_usage = {
@@ -1794,6 +1905,10 @@ async def anthropic_messages(
                         # here on.
                         saw_upstream_frame = True
                         if item is _STREAM_SENTINEL:
+                            # A clean sentinel proves the adapter entered and
+                            # completed its stream, even when it emitted no
+                            # content-bearing frame.
+                            _record_traffic_observation()
                             # Clean end of body. ``_parse_sse_chunk`` only emits
                             # an event once it sees the blank line SSE delimits
                             # events with, so an upstream that closed straight
@@ -1829,6 +1944,10 @@ async def anthropic_messages(
                             break
                         if isinstance(item, Exception):
                             raise item
+                        # Custom adapters may not know the internal callback.
+                        # Reaching the queue means their stream actually
+                        # yielded after any adapter-side admission work.
+                        _record_traffic_observation()
                         chunk = item
                         if isinstance(chunk, str):
                             chunk = chunk.encode("utf-8")
@@ -1991,7 +2110,8 @@ async def anthropic_messages(
                     except Exception:
                         # Usage recovery must never cost us the log row itself.
                         logger.debug(
-                            f"[{request_id}] stream usage resolution failed", exc_info=True
+                            f"[{request_id}] stream usage resolution failed",
+                            exc_info=True,
                         )
                         resolved_usage, usage_estimated = request_usage, False
                     log_metadata = (
@@ -2025,11 +2145,21 @@ async def anthropic_messages(
                         user_id=user_ctx.get("user_id"),
                     )
 
+        # The stream is consumed after this handler returns, often in a task
+        # with a copied context. Publish the callback durably so the adapter's
+        # slot acquisition can notify the same idempotent recorder.
+        req_ctx.update({req_ctx.TRAFFIC_ADMISSION_CALLBACK: _record_traffic_observation})
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
 
     prefill_lease = _begin_prefill()
     try:
-        resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
+        # The adapter owns outbound admission. Its callback fires after the
+        # slot/key gate; the post-success call keeps legacy adapters compatible.
+        with req_ctx.push(**{req_ctx.TRAFFIC_ADMISSION_CALLBACK: _record_traffic_observation}):
+            resp = await adapter.messages(
+                body, request_id=request_id, extra_headers=forwarded_headers
+            )
+        _record_traffic_observation()
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
@@ -2295,7 +2425,11 @@ async def anthropic_count_tokens(
     # not blind the client's context tracking.
     try:
         await _resolve(
-            model_id, router_exec, user_ctx, model_visibility_resolver, for_dispatch=False
+            model_id,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
+            for_dispatch=False,
         )
     except HTTPException as exc:
         # Visibility check only, and _resolve's messages are static contract

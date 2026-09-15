@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import compat, completions
@@ -34,6 +35,30 @@ class _Adapter(BaseAdapter):
         yield self.format_stream_chunk(model=self.config.id, content="ok")
 
 
+class _CapturingRouter(RouteExecutor):
+    """Fixed router that records the typed options received by a wrapper."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.routing_options: list[Any] = []
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: Any = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        self.routing_options.append(routing_options)
+        return await super().chat_completion(
+            model_id,
+            messages,
+            routing_options=routing_options,
+            **params,
+        )
+
+
 def _cfg(model_id: str) -> ModelConfig:
     return ModelConfig(id=model_id, name=model_id, provider="test", base_url="http://test")
 
@@ -41,7 +66,7 @@ def _cfg(model_id: str) -> ModelConfig:
 @pytest.fixture
 async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
-    router = RouteExecutor()
+    router = _CapturingRouter()
     t = _Adapter(_cfg("trk"))
     router.register_route("trk", [(t, 1.0)])
 
@@ -113,3 +138,33 @@ async def test_legacy_completions_preserves_parameters(compat_app: FastAPI):
         assert adapter.last_params["max_tokens"] == 100
         assert adapter.last_params["top_p"] == 0.9
         assert adapter.last_messages[0]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/completion", {"model": "trk", "messages": [{"role": "user", "content": "hi"}]}),
+        ("/v1/completions", {"model": "trk", "prompt": "hello"}),
+    ],
+)
+async def test_compat_wrappers_forward_admitted_concurrency(
+    compat_app: FastAPI,
+    path: str,
+    payload: dict[str, Any],
+):
+    """Compatibility wrappers preserve the concurrency evidence for routing."""
+    user = {"user_id": f"compat-{path}", "authenticated": True, "role": "internal"}
+    compat_app.dependency_overrides[verify_api_key] = lambda: user
+    compat_app.dependency_overrides[enforce_user_concurrency] = lambda: 5
+
+    transport = ASGITransport(app=compat_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(path, json=payload)
+
+    assert response.status_code == status.HTTP_200_OK
+    router = compat_app.state.services.router
+    options = router.routing_options[-1]
+    assert options is not None
+    assert options.traffic_confidence is not None
+    assert options.traffic_confidence > 0

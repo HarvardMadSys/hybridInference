@@ -25,6 +25,7 @@ from serving.adapters.upstream_limiter import (
     upstream_slot,
 )
 from serving.http import AsyncHTTPClient
+from serving.utils import context as req_ctx
 
 PROVIDER = "zai"
 KEY_A = "sk-aaa"
@@ -481,6 +482,65 @@ def _adapter(**overrides) -> OpenAICompatAdapter:
     # HTTP mocks. A throwaway client dies with the test instead.
     adapter.http = AsyncHTTPClient()
     return adapter
+
+
+class _NeverAdmittedOpenAIAdapter(OpenAICompatAdapter):
+    """Adapter test double whose outbound gate rejects every request."""
+
+    async def _acquire_upstream_slot(self, api_key):
+        raise UpstreamSaturated("no outbound slot")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_traffic_admission_callback_waits_for_outbound_slot(stream):
+    config = ModelConfig(
+        id="glm-4.7",
+        name="GLM 4.7",
+        provider=PROVIDER,
+        base_url=REMOTE,
+        api_key=KEY_A,
+        provider_model_id="glm-4.7",
+        processor="default",
+        supported_params=["temperature", "max_tokens"],
+    )
+    adapter = _NeverAdmittedOpenAIAdapter(config)
+    admitted: list[bool] = []
+
+    with req_ctx.push(**{req_ctx.TRAFFIC_ADMISSION_CALLBACK: lambda: admitted.append(True)}):
+        if stream:
+            with pytest.raises(UpstreamSaturated):
+                async for _chunk in adapter.stream_chat_completion(
+                    [{"role": "user", "content": "x"}]
+                ):
+                    pass
+        else:
+            with pytest.raises(UpstreamSaturated):
+                await adapter.chat_completion([{"role": "user", "content": "x"}])
+
+    assert admitted == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("pooled", [False, True])
+async def test_admission_callback_failure_releases_outbound_slot(installed_limiter, stream, pooled):
+    """Bookkeeping failure must not strand a slot after adapter admission."""
+    adapter = _adapter(api_keys=[KEY_A] if pooled else None)
+
+    def fail_admission():
+        raise RuntimeError("traffic observation failed")
+
+    with req_ctx.push(**{req_ctx.TRAFFIC_ADMISSION_CALLBACK: fail_admission}):
+        if stream:
+            with pytest.raises(RuntimeError, match="traffic observation failed"):
+                async for _chunk in adapter.stream_chat_completion(
+                    [{"role": "user", "content": "x"}]
+                ):
+                    pass
+        else:
+            with pytest.raises(RuntimeError, match="traffic observation failed"):
+                await adapter.chat_completion([{"role": "user", "content": "x"}])
+
+    assert _state(installed_limiter)["in_flight"] == 0
 
 
 def _chunk(delta: dict, finish_reason: str | None = None) -> str:

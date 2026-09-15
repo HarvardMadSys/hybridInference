@@ -25,6 +25,7 @@ import aiohttp
 
 from serving.http import AsyncHTTPClient
 from serving.stream import done_sentinel
+from serving.utils.context import notify_traffic_admitted
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -207,6 +208,7 @@ class AnthropicAdapter(BaseAdapter):
         # deterministic 4xx double-bills / hammers a 429'd provider). Resilience
         # comes from the router's fallback chain (same policy as openai_compat).
         async with self._upstream_slot():
+            notify_traffic_admitted()
             upstream = await http.json_post_with_retry(
                 self._upstream_url(),
                 json=payload,
@@ -290,6 +292,7 @@ class AnthropicAdapter(BaseAdapter):
                 timeout=timeout,
             ) as resp,
         ):
+            notify_traffic_admitted()
             if resp.status >= 400:
                 error_body = await resp.text()
                 raise aiohttp.ClientResponseError(
@@ -383,6 +386,7 @@ class AnthropicAdapter(BaseAdapter):
         http = AsyncHTTPClient.shared()
         # retries=1: non-idempotent POST, see chat_completion.
         async with self._upstream_slot():
+            notify_traffic_admitted()
             return await http.json_post_with_retry(
                 self._upstream_url(),
                 json=forward,
@@ -432,6 +436,7 @@ class AnthropicAdapter(BaseAdapter):
                 timeout=timeout,
             ) as resp,
         ):
+            notify_traffic_admitted()
             if resp.status >= 400:
                 error_body = await resp.text()
                 raise aiohttp.ClientResponseError(

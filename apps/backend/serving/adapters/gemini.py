@@ -9,6 +9,7 @@ from typing import Any
 
 import aiohttp
 
+from serving.utils.context import notify_traffic_admitted
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -354,6 +355,7 @@ class GeminiAdapter(BaseAdapter):
         # chain (same policy as openai_compat). The explicit timeout replaces
         # the previous unbounded wait.
         async with self._upstream_slot():
+            notify_traffic_admitted()
             data = await self.http.json_post_with_retry(
                 url,
                 json=request_body,
@@ -523,6 +525,7 @@ class GeminiAdapter(BaseAdapter):
         # AIMD state.
         upstream_outcome: int | None = None
         try:
+            notify_traffic_admitted()
             async for line in self.http.stream_post(
                 url, json=request_body, headers=headers, mode="auto"
             ):

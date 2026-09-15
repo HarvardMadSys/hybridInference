@@ -36,7 +36,7 @@ async def single_completion(
     completions_logger=Depends(get_completions_logger),
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
-    _concurrency_slot=Depends(enforce_user_concurrency),
+    concurrency_observation: int | None = Depends(enforce_user_concurrency),
 ):
     """Compatibility alias for single-shot completion requests.
 
@@ -54,6 +54,7 @@ async def single_completion(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        concurrency_observation=concurrency_observation,
     )
 
 
@@ -70,7 +71,7 @@ async def legacy_completions(
     completions_logger=Depends(get_completions_logger),
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
-    _concurrency_slot=Depends(enforce_user_concurrency),
+    concurrency_observation: int | None = Depends(enforce_user_concurrency),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
     body = await request.json()
@@ -91,4 +92,5 @@ async def legacy_completions(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        concurrency_observation=concurrency_observation,
     )

@@ -364,10 +364,10 @@ def _make_exempt_app(
     # itself, and re-reading it for the handler is exercised separately. A
     # parameterless handler matches the pattern used by the other tests here
     # and avoids FastAPI re-parsing a body stream the gate already consumed.
-    @app.post("/probe", dependencies=[Depends(enforce_user_concurrency)])
-    async def probe():
+    @app.post("/probe")
+    async def probe(admitted_count: int | None = Depends(enforce_user_concurrency)):
         await app.unary_event.wait()
-        return {"ok": True}
+        return {"ok": True, "admitted_count": admitted_count}
 
     return app
 
@@ -476,8 +476,12 @@ async def test_exempt_budget_independent_of_normal_budget():
 
         # Release everything.
         app.unary_event.set()  # type: ignore[attr-defined]
-        assert (await normal_task).status_code == 200
-        assert (await exempt_task).status_code == 200
+        normal_response = await normal_task
+        exempt_response = await exempt_task
+        assert normal_response.status_code == 200
+        assert exempt_response.status_code == 200
+        assert normal_response.json()["admitted_count"] == 1
+        assert exempt_response.json()["admitted_count"] == 2
 
 
 @pytest.mark.asyncio

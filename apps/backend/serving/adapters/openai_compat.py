@@ -16,6 +16,7 @@ import aiohttp
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
+from serving.utils.context import notify_traffic_admitted
 from serving.utils.logging import get_logger
 from serving.utils.messages import flatten_text_content, merge_leading_system_messages
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
@@ -782,6 +783,7 @@ class OpenAICompatAdapter(BaseAdapter):
             # re-running the same generation (mirrors the pooled path, which does
             # one json_post per key).
             try:
+                notify_traffic_admitted()
                 response = await self.http.json_post_with_retry(
                     url=url,
                     json=payload,
@@ -856,8 +858,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 last_error = saturated
                 continue
 
-            headers = self._build_headers(api_key_override=api_key)
             try:
+                notify_traffic_admitted()
+                headers = self._build_headers(api_key_override=api_key)
                 response = await self.http.json_post(
                     url=url,
                     json=payload,
@@ -893,13 +896,16 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
                 last_error = e
                 continue  # try next key
+            except BaseException:
+                # Admission bookkeeping is request-local and may still fail
+                # (for example, while hashing malformed client metadata). It
+                # must never strand either resource already acquired here.
+                slot.release()
+                self._key_pool.release(lease, status_code=None)
+                raise
             else:
                 slot.release(status_code=200)
-            finally:
-                # Idempotent; covers an exit neither branch above saw.
-                slot.release()
-
-            self._key_pool.release(lease, status_code=200)
+                self._key_pool.release(lease, status_code=200)
             logger.debug(
                 "key_pool_active_affinities",
                 extra={
@@ -960,10 +966,11 @@ class OpenAICompatAdapter(BaseAdapter):
         if self._key_pool is None:
             headers = self._build_headers()
             slot = await self._acquire_upstream_slot(self.config.api_key)
-            stream_iter = self.http.stream_post(
-                url=url, json=payload, headers=headers, timeout=timeout
-            )
             try:
+                notify_traffic_admitted()
+                stream_iter = self.http.stream_post(
+                    url=url, json=payload, headers=headers, timeout=timeout
+                )
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
                 # Empty stream is incomplete. Yield no lease/chunk so the
@@ -1029,11 +1036,12 @@ class OpenAICompatAdapter(BaseAdapter):
                 last_error = saturated
                 continue
 
-            headers = self._build_headers(api_key_override=api_key)
-            stream_iter = self.http.stream_post(
-                url=url, json=payload, headers=headers, timeout=timeout
-            )
             try:
+                notify_traffic_admitted()
+                headers = self._build_headers(api_key_override=api_key)
+                stream_iter = self.http.stream_post(
+                    url=url, json=payload, headers=headers, timeout=timeout
+                )
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
                 # A 2xx response with no stream events is incomplete. Do not
@@ -1099,6 +1107,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 # downstream ever learns this attempt happened. The key pool
                 # needs nothing; a neutral release is its no-op.
                 slot.release()
+                self._key_pool.release(lease, status_code=None)
                 raise
 
             # First chunk read successfully — commit the lease and the slot
@@ -1548,7 +1557,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 float(sock_read) if sock_read else 0.0,
                 endpoint_id=stream_endpoint_id,
             ) from exc
-        except aiohttp.ClientError:
+        except aiohttp.ClientError as exc:
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
             stream_error = True
@@ -1557,8 +1566,8 @@ class OpenAICompatAdapter(BaseAdapter):
             # sideline a working credential over someone else's bad request.
             # Hand the pool the real status and let its own policy decide;
             # everything statusless keeps the historical 0 ("non-HTTP failure").
-            if isinstance(e, UpstreamStreamError):
-                stream_error_status = e.status
+            if isinstance(exc, UpstreamStreamError):
+                stream_error_status = exc.status
             raise
         finally:
             # The outbound slot was held for the whole generation, not just the

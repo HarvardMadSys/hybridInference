@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import secrets
+import time
 from typing import TYPE_CHECKING
 
 from serving.utils import context as req_ctx
@@ -38,7 +39,9 @@ class RequestIdMiddleware:
         if not req_id:
             req_id = secrets.token_hex(12)
 
-        scope.setdefault("state", {})["request_id"] = req_id
+        request_state = scope.setdefault("state", {})
+        request_state["request_id"] = req_id
+        request_state[req_ctx.REQUEST_ARRIVAL_TIMESTAMP] = time.monotonic()
         # Clear every per-request key before the request runs, so a request that
         # doesn't populate one cannot inherit a prior request's value when the
         # same task handles sequential scopes. The set lives in

@@ -14,6 +14,7 @@ from routing.routers import AllCircuitsOpenError, FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.utils.context import notify_traffic_admitted
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -47,6 +48,9 @@ class _ContractAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         self.chat_calls += 1
         self.chat_params.append(dict(params))
+        # Simulate the concrete adapter's outbound admission point. The router
+        # only installs the callback; it must not fire it before this point.
+        notify_traffic_admitted()
         if self.chat_error is not None:
             raise self.chat_error
         return self.format_response(content="ok", model=self.config.id)
@@ -58,6 +62,7 @@ class _ContractAdapter(BaseAdapter):
     ) -> AsyncGenerator[str, None]:
         self.stream_calls += 1
         self.stream_params.append(dict(params))
+        notify_traffic_admitted()
         for chunk in self.stream_chunks:
             yield chunk
         if self.stream_error is not None:
@@ -176,6 +181,71 @@ async def test_routing_options_are_consumed_before_adapter_dispatch(
 
     assert all("routing_options" not in params for params in primary.chat_params)
     assert all("routing_options" not in params for params in primary.stream_params)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_admission_callback_runs_at_adapter_admission(
+    router_factory: _RouterFactory,
+) -> None:
+    primary = _adapter("primary")
+    router = router_factory.build([primary])
+    observed_calls: list[int] = []
+
+    await router.chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=RoutingRequestOptions(
+            on_dispatch_admitted=lambda: observed_calls.append(primary.chat_calls),
+        ),
+    )
+
+    assert observed_calls == [1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_admission_callback_runs_before_adapter_failure_after_admission(
+    router_factory: _RouterFactory,
+) -> None:
+    primary = _adapter("primary", chat_error=RuntimeError("upstream failed"))
+    router = router_factory.build([primary])
+    admitted: list[bool] = []
+
+    with pytest.raises(RuntimeError, match="upstream failed"):
+        await router.chat_completion(
+            _MODEL_ID,
+            _MESSAGES,
+            routing_options=RoutingRequestOptions(
+                on_dispatch_admitted=lambda: admitted.append(True),
+            ),
+        )
+
+    assert admitted == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_admission_callback_runs_at_stream_adapter_admission(
+    router_factory: _RouterFactory,
+) -> None:
+    primary = _adapter(
+        "primary",
+        stream_chunks=('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',),
+    )
+    router = router_factory.build([primary])
+    observed_calls: list[int] = []
+
+    async for _chunk in router.stream_chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=RoutingRequestOptions(
+            on_dispatch_admitted=lambda: observed_calls.append(primary.stream_calls),
+        ),
+    ):
+        pass
+
+    assert observed_calls == [1]
 
 
 @pytest.mark.unit

@@ -180,6 +180,15 @@ class UserConcurrencyLimiter:
             return
         slot.release()
 
+    def in_flight(self, user_id: str) -> int:
+        """Return the current in-flight count for an acquired identity."""
+        slot = self._slots.get(user_id)
+        return slot.in_use if slot is not None else 0
+
+    def in_flight_for_user(self, user_id: str) -> int:
+        """Return in-flight work across the user's normal and exempt slots."""
+        return self.in_flight(user_id) + self.in_flight(_exempt_slot_key(user_id))
+
     def role_for(self, user_id: str) -> str | None:
         """Return the role label captured at slot creation, or None."""
         slot = self._slots.get(user_id)
@@ -223,7 +232,7 @@ async def enforce_user_concurrency(
     router: Any = Depends(get_router),
     concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[int | None, None]:
     """Acquire a per-user concurrency slot or raise 429.
 
     Models flagged as concurrency-exempt ("not limited by concurrency") do not
@@ -240,7 +249,7 @@ async def enforce_user_concurrency(
         # If the limiter isn't configured (e.g., misconfigured deployment),
         # fail open — never block requests when the gate itself is broken.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        yield
+        yield None
         return
 
     # Concurrency-exemption check. Restricted to POST requests: only the
@@ -348,7 +357,10 @@ async def enforce_user_concurrency(
         )
 
     try:
-        yield
+        # The current request is included. This is an observation from the
+        # same admission counter that enforces the limit, not a second
+        # best-effort counter that can drift from the real concurrency.
+        yield limiter.in_flight_for_user(user_id)
     finally:
         try:
             limiter.release(slot_key)

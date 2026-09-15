@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
 from serving.stream import done_sentinel, make_final_usage_chunk
+from serving.utils.context import notify_traffic_admitted
 from serving.utils.logging import get_logger
 
 from .base import BaseAdapter
@@ -171,6 +172,7 @@ class ClaudeAdapter(BaseAdapter):
         # on a deterministic 4xx would double-bill and add latency; resilience
         # comes from the router's fallback chain (same policy as openai_compat).
         async with self._upstream_slot():
+            notify_traffic_admitted()
             data = await self.http.json_post_with_retry(
                 endpoint,
                 json=payload,
@@ -278,6 +280,7 @@ class ClaudeAdapter(BaseAdapter):
         # disconnect closing this generator mid-stream — moves no AIMD state.
         upstream_outcome: int | None = None
         try:
+            notify_traffic_admitted()
             # Google Vertex API may return non-streaming JSON instead of SSE
             # Try to use ndjson mode which is more tolerant
             async for line in self.http.stream_post(

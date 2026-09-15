@@ -126,7 +126,7 @@ async def create_response(
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
     response_store=Depends(get_response_store),
-    _concurrency_slot=Depends(enforce_user_concurrency),
+    concurrency_observation: int | None = Depends(enforce_user_concurrency),
 ):
     """Handle an OpenAI Responses API create request (stream or non-stream)."""
     try:
@@ -220,6 +220,7 @@ async def create_response(
             completions_logger=completions_logger,
             pricing_lookup=pricing_lookup,
             cost_tracker=cost_tracker,
+            concurrency_observation=concurrency_observation,
             response_store=response_store,
             body=body,
             model=model,
@@ -247,6 +248,7 @@ async def create_response(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        concurrency_observation=concurrency_observation,
     )
     if not isinstance(chat_result, dict):
         raise HTTPException(502, "Unexpected upstream response shape")
@@ -289,6 +291,7 @@ async def _stream_response(
     completions_logger: Any,
     pricing_lookup: Any,
     cost_tracker: Any,
+    concurrency_observation: int | None,
     response_store: Any,
     body: dict[str, Any],
     model: str,
@@ -318,6 +321,7 @@ async def _stream_response(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        concurrency_observation=concurrency_observation,
     )
 
     translator = ResponsesStreamTranslator(

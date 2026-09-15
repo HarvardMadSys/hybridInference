@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from typing import Any
 
 import pytest
@@ -17,6 +18,9 @@ async def _drive(headers: list[tuple[bytes, bytes]], captured: dict) -> None:
     async def app(scope: dict, receive: Any, send: Any) -> None:
         captured.clear()
         captured.update(req_ctx.get())
+        captured[req_ctx.REQUEST_ARRIVAL_TIMESTAMP] = scope["state"].get(
+            req_ctx.REQUEST_ARRIVAL_TIMESTAMP
+        )
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -36,6 +40,18 @@ async def test_captures_user_agent_into_context() -> None:
     await _drive([(b"user-agent", b"my-client/9.9")], captured)
     assert captured.get("client_user_agent") == "my-client/9.9"
     assert captured.get("request_id")
+
+
+@pytest.mark.asyncio
+async def test_stamps_arrival_at_request_boundary() -> None:
+    captured: dict = {}
+    before = time.monotonic()
+    await _drive([], captured)
+    after = time.monotonic()
+
+    arrival = captured[req_ctx.REQUEST_ARRIVAL_TIMESTAMP]
+    assert isinstance(arrival, float)
+    assert before <= arrival <= after
 
 
 @pytest.mark.asyncio
@@ -156,6 +172,11 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         # middleware demotes probe lines from it, so a leftover True would
         # demote the next request on the task to DEBUG.
         "synthetic_probe",
+        "traffic_admission_callback",
+        "traffic_automation_score",
+        "traffic_classification",
+        "traffic_confidence",
+        "traffic_reasons",
     }
 )
 

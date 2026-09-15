@@ -27,6 +27,23 @@ MODEL_NOT_FOUND = "model_not_found"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
+# Request-local online traffic classification. These are routing hints, not
+# durable user attributes; keeping them in the scope reset list prevents a
+# request handled by the same task from inheriting the prior request's signal.
+TRAFFIC_CLASSIFICATION = "traffic_classification"
+TRAFFIC_AUTOMATION_SCORE = "traffic_automation_score"
+TRAFFIC_CONFIDENCE = "traffic_confidence"
+TRAFFIC_REASONS = "traffic_reasons"
+# Callback installed by typed serving routers and fired by an adapter only once
+# its own outbound admission gate has succeeded. Keeping this in request context
+# avoids forwarding router-only controls through provider adapter kwargs.
+TRAFFIC_ADMISSION_CALLBACK = "traffic_admission_callback"
+
+# Request.state key stamped by RequestIdMiddleware at the ASGI request boundary.
+# Delegated handlers reuse the same Request object, so wrappers cannot move the
+# traffic cadence clock past dependency or translation work.
+REQUEST_ARRIVAL_TIMESTAMP = "request_arrival_timestamp"
+
 # UTC datetime captured once at the HTTP request boundary. Scheduled pricing
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
@@ -69,6 +86,11 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    TRAFFIC_CLASSIFICATION,
+    TRAFFIC_AUTOMATION_SCORE,
+    TRAFFIC_CONFIDENCE,
+    TRAFFIC_REASONS,
+    TRAFFIC_ADMISSION_CALLBACK,
     PRICING_TIME,
     CLIENT_ERROR_KIND,
     PROVIDER,
@@ -102,6 +124,13 @@ def update(values: dict[str, Any]) -> None:
     current = dict(current_value) if current_value is not None else {}
     current.update(values)
     _ctx.set(current)
+
+
+def notify_traffic_admitted() -> None:
+    """Notify the current request after adapter-level admission succeeds."""
+    callback = get().get(TRAFFIC_ADMISSION_CALLBACK)
+    if callable(callback):
+        callback()
 
 
 @contextmanager
@@ -177,11 +206,18 @@ __all__ = [
     "MODEL_NOT_FOUND",
     "PRICING_TIME",
     "PROVIDER",
+    "REQUEST_ARRIVAL_TIMESTAMP",
     "REQUEST_SCOPED_KEYS",
     "ROUTER_PROVIDER_SENTINEL",
+    "TRAFFIC_ADMISSION_CALLBACK",
+    "TRAFFIC_AUTOMATION_SCORE",
+    "TRAFFIC_CLASSIFICATION",
+    "TRAFFIC_CONFIDENCE",
+    "TRAFFIC_REASONS",
     "USER_ROLE",
     "get",
     "mark_model_not_found",
+    "notify_traffic_admitted",
     "publish_upstream_provider",
     "push",
     "reset_request_scope",

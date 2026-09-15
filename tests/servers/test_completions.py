@@ -2350,6 +2350,11 @@ async def test_unpinned_custom_strategy_does_not_receive_routing_options(
     registry = MagicMock()
     registry.get_router.return_value = custom_router
     pin_app.state.services.model_router_registry = registry
+    pin_app.dependency_overrides[verify_api_key] = lambda: {
+        "authenticated": True,
+        "user_id": f"legacy-custom-router-{stream}",
+        "role": "internal",
+    }
 
     if stream:
         async with pin_client.stream(

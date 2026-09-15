@@ -134,6 +134,47 @@ class ToolAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class CapturingRouter(RouteExecutor):
+    """Fixed router that records the typed options received by delegation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.routing_options: list[Any] = []
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: Any = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        self.routing_options.append(routing_options)
+        return await super().chat_completion(
+            model_id,
+            messages,
+            routing_options=routing_options,
+            **params,
+        )
+
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: Any = None,
+        **params: Any,
+    ):
+        self.routing_options.append(routing_options)
+        async for chunk in super().stream_chat_completion(
+            model_id,
+            messages,
+            routing_options=routing_options,
+            **params,
+        ):
+            yield chunk
+
+
 class _FakeResponseStore:
     """In-memory ResponseStore stand-in for router tests."""
 
@@ -178,7 +219,7 @@ async def responses_store() -> _FakeResponseStore:
 
 @pytest_asyncio.fixture
 async def responses_app(responses_store, mock_db_logger, mock_operational_store, mock_log_store):
-    router = RouteExecutor()
+    router = CapturingRouter()
     router.register_route(TEXT_MODEL, [(TextAdapter(_cfg(TEXT_MODEL)), 1.0)])
     router.register_route(TOOL_MODEL, [(ToolAdapter(_cfg(TOOL_MODEL)), 1.0)])
 
@@ -244,6 +285,33 @@ async def test_basic_text_response(responses_client):
     assert out["output"][0]["content"][0]["text"] == "Hello there"
     assert out["usage"]["input_tokens"] == 5
     assert out["usage"]["output_tokens"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_responses_delegate_forwards_admitted_concurrency(
+    responses_client,
+    responses_app,
+    stream: bool,
+):
+    """Responses delegation preserves the admitted count for classification."""
+    responses_app.dependency_overrides[enforce_user_concurrency] = lambda: 5
+    body = {"model": TEXT_MODEL, "input": "hello", "stream": stream}
+
+    if stream:
+        async with responses_client.stream(
+            "POST", "/v1/responses", json=body, headers=_auth()
+        ) as response:
+            assert response.status_code == 200
+            _ = [line async for line in response.aiter_lines()]
+    else:
+        response = await responses_client.post("/v1/responses", json=body, headers=_auth())
+        assert response.status_code == 200
+
+    options = responses_app.state.services.router.routing_options[-1]
+    assert options is not None
+    assert options.traffic_confidence is not None
+    assert options.traffic_confidence > 0
 
 
 @pytest.mark.asyncio
