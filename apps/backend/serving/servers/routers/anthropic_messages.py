@@ -1362,7 +1362,7 @@ async def anthropic_messages(
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": derive_affinity_key(
                 auth_key_hash,
-                ip_info.client_ip,
+                ip_info,
                 grant_id=user_ctx.get("agent_grant_id"),
             ),
         }

@@ -28,7 +28,9 @@ async def test_verify_admin_token_success(monkeypatch, mock_request):
         request=mock_request,
         authorization="Bearer test-admin",
     )
-    assert result == "127.0.0.1"
+    # Loopback is not an automatically trusted client identity. Without an
+    # explicitly configured direct-client network, the resolver fails closed.
+    assert result == "unknown"
 
 
 @pytest.mark.asyncio

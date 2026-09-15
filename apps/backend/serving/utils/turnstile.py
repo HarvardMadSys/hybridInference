@@ -17,7 +17,7 @@ def _get_secret_key() -> str:
     return os.getenv("TURNSTILE_SECRET_KEY", "").strip()
 
 
-async def verify_turnstile_token(token: str | None, remote_ip: str) -> bool:
+async def verify_turnstile_token(token: str | None, remote_ip: str | None = None) -> bool:
     """Verify a Cloudflare Turnstile token against the siteverify endpoint.
 
     Returns True when no secret key is configured (verification disabled),
@@ -32,7 +32,9 @@ async def verify_turnstile_token(token: str | None, remote_ip: str) -> bool:
     if not token:
         return False
 
-    data = {"secret": secret_key, "response": token, "remoteip": remote_ip}
+    data = {"secret": secret_key, "response": token}
+    if remote_ip:
+        data["remoteip"] = remote_ip
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(_VERIFY_URL, data=data)

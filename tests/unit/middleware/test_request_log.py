@@ -214,6 +214,21 @@ class TestRequestLogMiddleware:
     ):
         """Request logs carry both trusted client IP and socket peer IP."""
         monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+        # Mock get_client_ip_info in the middleware module where it's imported.
+        from serving.utils.request_ip import ClientIpInfo
+
+        monkeypatch.setattr(
+            "serving.servers.middleware.request_log.get_client_ip_info",
+            lambda request: ClientIpInfo(
+                client_ip="203.0.113.8",
+                peer_ip="172.19.0.1",
+                source="x-forwarded-for",
+                trusted_proxy_headers=True,
+                resolved=True,
+                x_forwarded_for="203.0.113.8",
+                x_real_ip="203.0.113.8",
+            ),
+        )
 
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(
@@ -254,6 +269,21 @@ class TestRequestLogMiddleware:
 
         monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
         monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+        # Mock get_client_ip_info in the middleware module where it's imported.
+        from serving.utils.request_ip import ClientIpInfo
+
+        monkeypatch.setattr(
+            "serving.servers.middleware.request_log.get_client_ip_info",
+            lambda request: ClientIpInfo(
+                client_ip="2001:db8:abcd:1234::5",
+                peer_ip="172.19.0.1",
+                source="cf-connecting-ip",
+                trusted_proxy_headers=True,
+                resolved=True,
+                x_forwarded_for="1.2.3.4, 2001:db8:abcd:1234::5",
+                cf_connecting_ip="2001:db8:abcd:1234::5",
+            ),
+        )
 
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(

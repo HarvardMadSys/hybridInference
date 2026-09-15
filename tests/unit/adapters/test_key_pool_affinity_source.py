@@ -4,6 +4,7 @@
 stay warm. Which caller that is comes from ``req_ctx``: the ``affinity_key``
 every request surface publishes, with ``auth_key_hash`` as a fallback and the
 ``_anon`` sentinel only for internal traffic that has no caller identity at all.
+An explicit ``None`` is non-sticky for unresolved anonymous requests.
 
 The load-bearing property is *independence*: two distinct callers must get two
 distinct bindings, so one caller's rotation can't drag another off its key.
@@ -75,7 +76,7 @@ def test_anon_sentinel_only_without_any_caller_identity():
     """Health probes / warmups publish neither key and legitimately share a binding."""
     assert _pool_affinity_key() == "_anon"
     req_ctx.set({"affinity_key": None, "auth_key_hash": "_anon"})
-    assert _pool_affinity_key() == "_anon"
+    assert _pool_affinity_key() is None
 
 
 async def test_two_callers_get_independent_affinity_entries():
@@ -93,13 +94,13 @@ async def test_two_callers_get_independent_affinity_entries():
     assert set(pool._affinity) == {"hash-a", "ip:198.51.100.4"}
 
 
-async def test_callers_without_identity_share_one_entry():
-    """The contrast case: no published identity still collapses onto ``_anon``."""
+async def test_unresolved_callers_do_not_create_a_shared_entry():
+    """Explicitly unresolved callers bypass pool affinity entirely."""
     adapter = _make_adapter(["k1", "k2"])
 
-    await _chat_as(adapter, {})
-    await _chat_as(adapter, {})
+    await _chat_as(adapter, {"affinity_key": None, "auth_key_hash": "_anon"})
+    await _chat_as(adapter, {"affinity_key": None, "auth_key_hash": "_anon"})
 
     pool = adapter._key_pool
     assert pool is not None
-    assert set(pool._affinity) == {"_anon"}
+    assert pool.affinity_count() == 0

@@ -333,20 +333,22 @@ def _caller_role() -> str | None:
     return role if isinstance(role, str) and role else None
 
 
-def _pool_affinity_key() -> str:
+def _pool_affinity_key() -> str | None:
     """Return the caller identity the key pool binds an upstream key to.
 
     Prefers ``affinity_key`` — the per-caller value every request surface
-    publishes (the API-key hash when authenticated, an IP bucket otherwise) —
-    and falls back to ``auth_key_hash`` for any producer that still writes only
-    that. ``_anon`` is the last resort for internal traffic with no caller
-    identity at all (health probes, warmups, the admin playground); sharing one
-    binding is correct there, since there is no caller to keep sticky.
+    publishes (the API-key hash when authenticated, an IP bucket otherwise).
+    An explicit ``None`` means the producer knows caller provenance is
+    unresolved and requests non-sticky pool selection. Missing context retains
+    the ``auth_key_hash`` fallback, with ``_anon`` as the last resort for
+    internal traffic such as health probes and warmups.
     """
     from serving.utils import context as req_ctx
 
     ctx = req_ctx.get()
-    return ctx.get("affinity_key") or ctx.get("auth_key_hash") or "_anon"
+    if "affinity_key" in ctx:
+        return ctx["affinity_key"]
+    return ctx.get("auth_key_hash") or "_anon"
 
 
 def _key_pool_provider_label(config: Any) -> str:
@@ -852,12 +854,18 @@ class OpenAICompatAdapter(BaseAdapter):
                 # pass picks a different key. The lease is released neutrally —
                 # nothing was sent, so the key is neither credited with a
                 # success nor charged with a failure, and it must not be muted.
-                self._key_pool.release(lease, status_code=None)
+                lease.release(status_code=None)
                 last_error = saturated
                 continue
+            except BaseException:
+                # Cancellation before the upstream request starts must not
+                # leave a non-affine recovery probe claimed.
+                lease.release(status_code=None)
+                raise
 
-            headers = self._build_headers(api_key_override=api_key)
+            lease_outcome: ReleaseOutcome | None = None
             try:
+                headers = self._build_headers(api_key_override=api_key)
                 response = await self.http.json_post(
                     url=url,
                     json=payload,
@@ -867,7 +875,8 @@ class OpenAICompatAdapter(BaseAdapter):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
                 slot.release(status_code=status)
-                outcome = self._key_pool.release(lease, status_code=status, tried=tried)
+                outcome = lease.release(status_code=status, tried=tried)
+                lease_outcome = outcome
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Either a request-scoped client error (fails identically on
                     # every key) or a transient error on the last usable key —
@@ -895,11 +904,16 @@ class OpenAICompatAdapter(BaseAdapter):
                 continue  # try next key
             else:
                 slot.release(status_code=200)
+                lease_outcome = lease.release(status_code=200)
             finally:
-                # Idempotent; covers an exit neither branch above saw.
-                slot.release()
-
-            self._key_pool.release(lease, status_code=200)
+                # The lease is one-shot. This neutral fallback covers
+                # cancellation and arbitrary adapter/HTTP exceptions without
+                # requiring an exception-specific release branch.
+                try:
+                    slot.release()
+                finally:
+                    if lease_outcome is None:
+                        lease.release(status_code=None)
             logger.debug(
                 "key_pool_active_affinities",
                 extra={
@@ -1025,16 +1039,24 @@ class OpenAICompatAdapter(BaseAdapter):
                 # allowance is full, a sibling's may not be. Neutral lease
                 # release — nothing was sent, so the key is neither credited nor
                 # muted.
-                self._key_pool.release(lease, status_code=None)
+                lease.release(status_code=None)
                 last_error = saturated
                 continue
+            except BaseException:
+                # Cancellation before the stream is opened still owns the
+                # lease, even though no slot was acquired.
+                lease.release(status_code=None)
+                raise
 
-            headers = self._build_headers(api_key_override=api_key)
-            stream_iter = self.http.stream_post(
-                url=url, json=payload, headers=headers, timeout=timeout
-            )
+            handed_off = False
+            lease_outcome: ReleaseOutcome | None = None
             try:
+                headers = self._build_headers(api_key_override=api_key)
+                stream_iter = self.http.stream_post(
+                    url=url, json=payload, headers=headers, timeout=timeout
+                )
                 first = await stream_iter.__anext__()
+                handed_off = True
             except StopAsyncIteration:
                 # A 2xx response with no stream events is incomplete. Do not
                 # retry after the upstream accepted the generation request, but
@@ -1044,7 +1066,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 # signal, and it is the mute -- not a rotation here -- that moves
                 # the next request along.
                 slot.release(status_code=0)
-                self._key_pool.release(lease, status_code=0)
+                lease_outcome = lease.release(status_code=0)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={
@@ -1058,7 +1080,8 @@ class OpenAICompatAdapter(BaseAdapter):
                 # Status error — raised by the client before any response body
                 # byte is read, so re-issuing the request on another key is safe.
                 slot.release(status_code=e.status)
-                outcome = self._key_pool.release(lease, status_code=e.status, tried=tried)
+                outcome = lease.release(status_code=e.status, tried=tried)
+                lease_outcome = outcome
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Nothing to rotate to: request-scoped error, or a transient
                     # error on the last usable key — propagate.
@@ -1091,15 +1114,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 # Neutral (None), NOT 200: crediting a success here would reset
                 # the sole-key backoff streak mid-outage.
                 slot.release(status_code=None)
-                self._key_pool.release(lease, status_code=None)
                 raise
             except BaseException:
                 # Cancellation before the first chunk: the slot is held for a
                 # request that no longer exists, so hand it back here — nothing
-                # downstream ever learns this attempt happened. The key pool
-                # needs nothing; a neutral release is its no-op.
+                # downstream ever learns this attempt happened. The neutral
+                # lease fallback below also clears any claimed recovery probe.
                 slot.release()
                 raise
+            finally:
+                if not handed_off and lease_outcome is None:
+                    lease.release(status_code=None)
 
             # First chunk read successfully — commit the lease and the slot
             # (caller releases both on stream end).
@@ -1469,6 +1494,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # BaseExceptions that never mute either.
         stream_error = False
         stream_error_status: int | None = None
+        stream_cancelled = False
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -1548,7 +1574,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 float(sock_read) if sock_read else 0.0,
                 endpoint_id=stream_endpoint_id,
             ) from exc
-        except aiohttp.ClientError:
+        except aiohttp.ClientError as e:
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
             stream_error = True
@@ -1560,6 +1586,11 @@ class OpenAICompatAdapter(BaseAdapter):
             if isinstance(e, UpstreamStreamError):
                 stream_error_status = e.status
             raise
+        except (asyncio.CancelledError, GeneratorExit):
+            # Client-side termination is not evidence that the upstream key
+            # failed. Keep both the limiter slot and key-pool state neutral.
+            stream_cancelled = True
+            raise
         finally:
             # The outbound slot was held for the whole generation, not just the
             # response open, so it comes back here — on every exit path this
@@ -1567,13 +1598,17 @@ class OpenAICompatAdapter(BaseAdapter):
             # included. Released with the same outcome as the lease, and
             # unconditionally on the pool: a pool-less adapter still holds one.
             if active_slot is not None:
-                active_slot.release(status_code=0 if stream_error else 200)
+                active_slot.release(
+                    status_code=None if stream_cancelled else (0 if stream_error else 200)
+                )
             if active_lease is not None and self._key_pool is not None:
-                if stream_error:
+                if stream_cancelled:
+                    release_status = None
+                elif stream_error:
                     release_status = stream_error_status if stream_error_status else 0
                 else:
                     release_status = 200
-                self._key_pool.release(active_lease, status_code=release_status)
+                active_lease.release(status_code=release_status)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={

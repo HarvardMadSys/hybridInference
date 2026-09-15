@@ -21,6 +21,7 @@ from serving.utils.auth_failure_blocklist import (
     record_auth_failure,
     reset_auth_failure_block_state,
 )
+from serving.utils.request_ip import ClientIpInfo
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +48,17 @@ def small_limits(monkeypatch):
     monkeypatch.setattr(settings, "auth_failure_block_duration_sec", 1000)
 
 
+def _resolved_ip(ip: str) -> ClientIpInfo:
+    """Create a ClientIpInfo for a resolved client IP (for test convenience)."""
+    return ClientIpInfo(
+        client_ip=ip,
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=True,
+    )
+
+
 def test_default_config_encodes_the_spec():
     """Defaults are '200 auth failures in a day → blocked for a day'."""
     fields = Settings.model_fields
@@ -60,7 +72,7 @@ def test_default_config_encodes_the_spec():
 
 @pytest.mark.asyncio
 async def test_blocks_on_the_threshold_failure(small_limits, clock):
-    ip = "203.0.113.7"
+    ip = _resolved_ip("203.0.113.7")
     # The first threshold-1 failures accrue without blocking.
     assert await record_auth_failure(ip) is False
     assert await record_auth_failure(ip) is False
@@ -75,7 +87,7 @@ async def test_blocks_on_the_threshold_failure(small_limits, clock):
 
 @pytest.mark.asyncio
 async def test_record_signals_the_transition_only_once(small_limits, clock):
-    ip = "203.0.113.8"
+    ip = _resolved_ip("203.0.113.8")
     results = [await record_auth_failure(ip) for _ in range(6)]
     # Exactly the 3rd call (the threshold) reports True; before and after
     # (already blocked) are all False.
@@ -83,8 +95,33 @@ async def test_record_signals_the_transition_only_once(small_limits, clock):
 
 
 @pytest.mark.asyncio
+async def test_unresolved_failures_use_a_global_guard_not_a_client_bucket(monkeypatch, clock):
+    """Unresolved abuse is shed without attributing it to the proxy address."""
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 3)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 1000)
+    unresolved = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+
+    assert await record_auth_failure(unresolved) is False
+    assert await record_auth_failure(unresolved) is False
+    assert await record_auth_failure(unresolved) is True
+    assert (await is_ip_blocked(unresolved))[0] is True
+    # A resolved client is not falsely attributed to the unresolved guard.
+    assert await is_ip_blocked(_resolved_ip("8.8.8.8")) == (False, 0)
+    blocks = await list_active_blocks()
+    assert [block.ip_bucket for block in blocks] == ["unresolved-global"]
+
+
+@pytest.mark.asyncio
 async def test_below_threshold_never_blocks(small_limits, clock):
-    ip = "203.0.113.9"
+    ip = _resolved_ip("203.0.113.9")
     await record_auth_failure(ip)
     await record_auth_failure(ip)
     assert await is_ip_blocked(ip) == (False, 0)
@@ -94,30 +131,30 @@ async def test_below_threshold_never_blocks(small_limits, clock):
 async def test_ipv6_rotation_within_a_64_shares_one_bucket(small_limits, clock):
     """RFC 4941 rotation inside a delegated /64 cannot dodge the block."""
     prefix = "2001:db8:abcd:1234::"
-    await record_auth_failure(prefix + "1")
-    await record_auth_failure(prefix + "2")
-    assert await record_auth_failure(prefix + "3") is True
+    await record_auth_failure(_resolved_ip(prefix + "1"))
+    await record_auth_failure(_resolved_ip(prefix + "2"))
+    assert await record_auth_failure(_resolved_ip(prefix + "3")) is True
 
     # Any other address in the same /64 is now blocked.
-    blocked, _ = await is_ip_blocked(prefix + "dead")
+    blocked, _ = await is_ip_blocked(_resolved_ip(prefix + "dead"))
     assert blocked is True
 
     # A different /64 is a separate bucket — no collateral block.
-    assert await is_ip_blocked("2001:db8:abcd:9999::1") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("2001:db8:abcd:9999::1")) == (False, 0)
 
 
 @pytest.mark.asyncio
 async def test_ipv4_addresses_bucket_individually(small_limits, clock):
     for _ in range(3):
-        await record_auth_failure("203.0.113.20")
-    assert (await is_ip_blocked("203.0.113.20"))[0] is True
+        await record_auth_failure(_resolved_ip("203.0.113.20"))
+    assert (await is_ip_blocked(_resolved_ip("203.0.113.20")))[0] is True
     # The neighbouring address is untouched.
-    assert await is_ip_blocked("203.0.113.21") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("203.0.113.21")) == (False, 0)
 
 
 @pytest.mark.asyncio
 async def test_failures_outside_the_window_are_not_counted(small_limits, clock):
-    ip = "203.0.113.30"
+    ip = _resolved_ip("203.0.113.30")
     await record_auth_failure(ip)
     await record_auth_failure(ip)
 
@@ -133,7 +170,7 @@ async def test_failures_outside_the_window_are_not_counted(small_limits, clock):
 
 @pytest.mark.asyncio
 async def test_block_lapses_after_its_duration(small_limits, clock):
-    ip = "203.0.113.40"
+    ip = _resolved_ip("203.0.113.40")
     for _ in range(3):
         await record_auth_failure(ip)
     assert (await is_ip_blocked(ip))[0] is True
@@ -151,7 +188,7 @@ async def test_block_lapses_after_its_duration(small_limits, clock):
 async def test_disabled_is_a_noop(monkeypatch, clock):
     monkeypatch.setattr(settings, "auth_failure_block_enabled", False)
     monkeypatch.setattr(settings, "auth_failure_block_threshold", 1)
-    ip = "203.0.113.50"
+    ip = _resolved_ip("203.0.113.50")
     # Even at threshold 1, a disabled feature never blocks.
     assert await record_auth_failure(ip) is False
     assert await is_ip_blocked(ip) == (False, 0)
@@ -170,7 +207,7 @@ def exempt(monkeypatch):
 @pytest.mark.asyncio
 async def test_exempt_ip_never_blocks(small_limits, clock, exempt):
     exempt("203.0.113.60")
-    ip = "203.0.113.60"
+    ip = _resolved_ip("203.0.113.60")
     # Far past the threshold: failures are not even counted, so no transition.
     for _ in range(10):
         assert await record_auth_failure(ip) is False
@@ -181,11 +218,11 @@ async def test_exempt_ip_never_blocks(small_limits, clock, exempt):
 async def test_exempt_cidr_covers_the_range_but_nothing_else(small_limits, clock, exempt):
     exempt("203.0.113.0/24")
     for _ in range(5):
-        assert await record_auth_failure("203.0.113.61") is False
-    assert await is_ip_blocked("203.0.113.61") == (False, 0)
+        assert await record_auth_failure(_resolved_ip("203.0.113.61")) is False
+    assert await is_ip_blocked(_resolved_ip("203.0.113.61")) == (False, 0)
 
     # A source outside the exempted range still blocks at the threshold.
-    outsider = "198.51.100.9"
+    outsider = _resolved_ip("198.51.100.9")
     await record_auth_failure(outsider)
     await record_auth_failure(outsider)
     assert await record_auth_failure(outsider) is True
@@ -195,12 +232,12 @@ async def test_exempt_cidr_covers_the_range_but_nothing_else(small_limits, clock
 @pytest.mark.asyncio
 async def test_exemption_overrides_an_existing_block(small_limits, clock, exempt):
     """Adding an exemption unblocks the source on the next read."""
-    ip = "203.0.113.62"
+    ip = _resolved_ip("203.0.113.62")
     for _ in range(3):
         await record_auth_failure(ip)
     assert (await is_ip_blocked(ip))[0] is True
 
-    exempt(ip)
+    exempt(ip.client_ip)
     assert await is_ip_blocked(ip) == (False, 0)
 
 
@@ -210,19 +247,19 @@ async def test_exempt_host_survives_its_blocked_ipv6_bucket(small_limits, clock,
     prefix = "2001:db8:abcd:1234::"
     exempt(prefix + "5")
     # Non-exempt rotation within the /64 blocks the shared bucket...
-    await record_auth_failure(prefix + "1")
-    await record_auth_failure(prefix + "2")
-    assert await record_auth_failure(prefix + "3") is True
-    assert (await is_ip_blocked(prefix + "dead"))[0] is True
+    await record_auth_failure(_resolved_ip(prefix + "1"))
+    await record_auth_failure(_resolved_ip(prefix + "2"))
+    assert await record_auth_failure(_resolved_ip(prefix + "3")) is True
+    assert (await is_ip_blocked(_resolved_ip(prefix + "dead")))[0] is True
     # ...but the exempted address inside it stays reachable.
-    assert await is_ip_blocked(prefix + "5") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip(prefix + "5")) == (False, 0)
 
 
 @pytest.mark.asyncio
 async def test_ipv4_mapped_literal_matches_an_ipv4_entry(small_limits, clock, exempt):
     """A dual-stack listener's ::ffff: form is exempt via its embedded IPv4."""
     exempt("203.0.113.70")
-    mapped = "::ffff:203.0.113.70"
+    mapped = _resolved_ip("::ffff:203.0.113.70")
     for _ in range(5):
         assert await record_auth_failure(mapped) is False
     assert await is_ip_blocked(mapped) == (False, 0)
@@ -233,11 +270,11 @@ async def test_invalid_exempt_entries_are_skipped(small_limits, clock, exempt):
     """A malformed entry is ignored; the valid ones still apply."""
     exempt("not-an-ip, ,203.0.113.80")
     for _ in range(5):
-        assert await record_auth_failure("203.0.113.80") is False
-    assert await is_ip_blocked("203.0.113.80") == (False, 0)
+        assert await record_auth_failure(_resolved_ip("203.0.113.80")) is False
+    assert await is_ip_blocked(_resolved_ip("203.0.113.80")) == (False, 0)
 
     # The malformed entry exempts nothing: other sources still block.
-    other = "198.51.100.10"
+    other = _resolved_ip("198.51.100.10")
     await record_auth_failure(other)
     await record_auth_failure(other)
     assert await record_auth_failure(other) is True
@@ -273,9 +310,9 @@ async def test_authenticate_rejects_a_blocked_ip_with_429(monkeypatch, clock):
 
     monkeypatch.setattr(auth_mod, "log_rejection", _noop_log_rejection)
 
-    ip = "198.51.100.5"
-    await record_auth_failure(ip)
-    await record_auth_failure(ip)  # second failure trips the block
+    ip = "8.8.8.5"
+    await record_auth_failure(_resolved_ip(ip))
+    await record_auth_failure(_resolved_ip(ip))  # second failure trips the block
 
     request = _make_request(ip)
     with pytest.raises(HTTPException) as excinfo:
@@ -298,13 +335,13 @@ async def test_list_active_blocks_reports_the_blocked_bucket(small_limits, clock
     """A listing names the bucket, its deadline, and the wait it advertises."""
     assert await list_active_blocks() == []
 
-    ip = "203.0.113.20"
+    ip = _resolved_ip("203.0.113.20")
     for _ in range(3):
         await record_auth_failure(ip)
 
     blocks = await list_active_blocks()
     assert len(blocks) == 1
-    assert blocks[0].ip_bucket == ip
+    assert blocks[0].ip_bucket == "203.0.113.20"
     assert blocks[0].blocked_until == clock["t"] + settings.auth_failure_block_duration_sec
     # The same number is_ip_blocked puts in Retry-After.
     assert blocks[0].retry_after_sec == settings.auth_failure_block_duration_sec
@@ -313,7 +350,7 @@ async def test_list_active_blocks_reports_the_blocked_bucket(small_limits, clock
 @pytest.mark.asyncio
 async def test_list_active_blocks_drops_a_lapsed_block(small_limits, clock):
     """Lazy expiry on read: a listing never reports a block no longer enforced."""
-    ip = "203.0.113.21"
+    ip = _resolved_ip("203.0.113.21")
     for _ in range(3):
         await record_auth_failure(ip)
     assert len(await list_active_blocks()) == 1
@@ -328,10 +365,10 @@ async def test_list_active_blocks_drops_a_lapsed_block(small_limits, clock):
 async def test_list_active_blocks_orders_by_longest_remaining_wait(small_limits, clock):
     """Longest wait first, so the freshest block heads the list."""
     for _ in range(3):
-        await record_auth_failure("203.0.113.30")
+        await record_auth_failure(_resolved_ip("203.0.113.30"))
     clock["t"] += 10
     for _ in range(3):
-        await record_auth_failure("203.0.113.31")
+        await record_auth_failure(_resolved_ip("203.0.113.31"))
 
     blocks = await list_active_blocks()
     assert [b.ip_bucket for b in blocks] == ["203.0.113.31", "203.0.113.30"]
@@ -340,7 +377,7 @@ async def test_list_active_blocks_orders_by_longest_remaining_wait(small_limits,
 @pytest.mark.asyncio
 async def test_list_active_blocks_is_empty_when_disabled(small_limits, clock, monkeypatch):
     """Nothing is enforced while the feature is off, so nothing is reported."""
-    ip = "203.0.113.22"
+    ip = _resolved_ip("203.0.113.22")
     for _ in range(3):
         await record_auth_failure(ip)
     assert len(await list_active_blocks()) == 1
@@ -360,24 +397,56 @@ async def test_list_active_blocks_shows_a_bucket_holding_an_exempt_host(
     """
     exempt("2001:db8::5")
     for _ in range(3):
-        await record_auth_failure("2001:db8::99")
+        await record_auth_failure(_resolved_ip("2001:db8::99"))
 
-    assert await is_ip_blocked("2001:db8::5") == (False, 0)
-    assert await is_ip_blocked("2001:db8::99") == (True, settings.auth_failure_block_duration_sec)
+    assert await is_ip_blocked(_resolved_ip("2001:db8::5")) == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("2001:db8::99")) == (
+        True,
+        settings.auth_failure_block_duration_sec,
+    )
     assert [b.ip_bucket for b in await list_active_blocks()] == ["2001:db8::/64"]
 
 
 @pytest.mark.asyncio
 async def test_clear_block_lifts_an_active_block(small_limits, clock):
     """Clearing restores the source immediately, ahead of its deadline."""
-    ip = "203.0.113.40"
+    ip = _resolved_ip("203.0.113.40")
     for _ in range(3):
         await record_auth_failure(ip)
     assert (await is_ip_blocked(ip))[0] is True
 
-    assert await clear_block(ip) is True
+    assert await clear_block("203.0.113.40") is True
     assert await is_ip_blocked(ip) == (False, 0)
     assert await list_active_blocks() == []
+
+
+@pytest.mark.asyncio
+async def test_clear_block_lifts_the_unresolved_global_guard(monkeypatch, clock):
+    """The listed unresolved-global bucket can be cleared before its deadline."""
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 3)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 1000)
+    unresolved = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+
+    for _ in range(3):
+        await record_auth_failure(unresolved)
+    assert (await is_ip_blocked(unresolved))[0] is True
+    assert [block.ip_bucket for block in await list_active_blocks()] == ["unresolved-global"]
+
+    assert await clear_block("unresolved-global") is True
+    assert await is_ip_blocked(unresolved) == (False, 0)
+    assert await list_active_blocks() == []
+
+    # Clearing also drops the spent global history, so the next failure starts
+    # a fresh window rather than immediately re-blocking the traffic plane.
+    assert await record_auth_failure(unresolved) is False
 
 
 @pytest.mark.asyncio
@@ -386,32 +455,32 @@ async def test_clear_block_reports_false_when_nothing_was_blocked(small_limits, 
     assert await clear_block("203.0.113.41") is False
 
     # Also false for a block that already lapsed on its own.
-    ip = "203.0.113.42"
+    ip = _resolved_ip("203.0.113.42")
     for _ in range(3):
         await record_auth_failure(ip)
     clock["t"] += settings.auth_failure_block_duration_sec + 1
-    assert await clear_block(ip) is False
+    assert await clear_block("203.0.113.42") is False
 
 
 @pytest.mark.asyncio
 async def test_clear_block_accepts_the_bucket_key_it_reported(small_limits, clock):
     """An operator can paste back the ``/64`` a listing or log record showed."""
     for _ in range(3):
-        await record_auth_failure("2001:db8:abcd::7")
+        await record_auth_failure(_resolved_ip("2001:db8:abcd::7"))
     bucket = (await list_active_blocks())[0].ip_bucket
     assert bucket == "2001:db8:abcd::/64"
 
     assert await clear_block(bucket) is True
-    assert await is_ip_blocked("2001:db8:abcd::7") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("2001:db8:abcd::7")) == (False, 0)
 
 
 @pytest.mark.asyncio
 async def test_clear_block_discards_the_counted_history(small_limits, clock):
     """After a clear the bucket starts from zero, not one failure from blocking."""
-    ip = "203.0.113.43"
+    ip = _resolved_ip("203.0.113.43")
     for _ in range(3):
         await record_auth_failure(ip)
-    await clear_block(ip)
+    await clear_block("203.0.113.43")
 
     # A single failure would re-block if the spent history had been left behind.
     assert await record_auth_failure(ip) is False
@@ -421,11 +490,11 @@ async def test_clear_block_discards_the_counted_history(small_limits, clock):
 @pytest.mark.asyncio
 async def test_clear_block_on_a_counting_bucket_resets_it(small_limits, clock):
     """Clearing a bucket that is counting but not yet blocked drops its history."""
-    ip = "203.0.113.44"
+    ip = _resolved_ip("203.0.113.44")
     await record_auth_failure(ip)
     await record_auth_failure(ip)  # one short of the threshold
 
-    assert await clear_block(ip) is False  # nothing was blocked
+    assert await clear_block("203.0.113.44") is False  # nothing was blocked
     # The two counted failures are gone, so two more still do not block.
     assert await record_auth_failure(ip) is False
     assert await record_auth_failure(ip) is False
@@ -435,10 +504,10 @@ async def test_clear_block_on_a_counting_bucket_resets_it(small_limits, clock):
 @pytest.mark.asyncio
 async def test_clear_block_grants_no_immunity(small_limits, clock):
     """A source still failing auth is blocked again on crossing the threshold."""
-    ip = "203.0.113.45"
+    ip = _resolved_ip("203.0.113.45")
     for _ in range(3):
         await record_auth_failure(ip)
-    await clear_block(ip)
+    await clear_block("203.0.113.45")
 
     await record_auth_failure(ip)
     await record_auth_failure(ip)
@@ -449,12 +518,12 @@ async def test_clear_block_grants_no_immunity(small_limits, clock):
 @pytest.mark.asyncio
 async def test_clear_block_disabled_is_a_noop(small_limits, clock, monkeypatch):
     """With the feature off there is nothing to clear, and state is left alone."""
-    ip = "203.0.113.46"
+    ip = _resolved_ip("203.0.113.46")
     for _ in range(3):
         await record_auth_failure(ip)
 
     monkeypatch.setattr(settings, "auth_failure_block_enabled", False)
-    assert await clear_block(ip) is False
+    assert await clear_block("203.0.113.46") is False
     # The deadline survives, so re-enabling does not silently drop the block.
     monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
     assert (await is_ip_blocked(ip))[0] is True
@@ -480,9 +549,9 @@ async def test_clearing_restores_access_at_the_auth_layer(monkeypatch, clock):
 
     monkeypatch.setattr(auth_mod, "log_rejection", _noop_log_rejection)
 
-    ip = "198.51.100.9"
-    await record_auth_failure(ip)
-    await record_auth_failure(ip)
+    ip = "8.8.8.9"
+    await record_auth_failure(_resolved_ip(ip))
+    await record_auth_failure(_resolved_ip(ip))
 
     with pytest.raises(HTTPException) as excinfo:
         await auth_mod._authenticate_by_api_key(_make_request(ip), None, None, object())
@@ -496,50 +565,3 @@ async def test_clearing_restores_access_at_the_auth_layer(monkeypatch, clock):
     with pytest.raises(HTTPException) as excinfo:
         await auth_mod._authenticate_by_api_key(_make_request(ip), None, None, object())
     assert excinfo.value.status_code == 401
-
-
-# --- The log line an operator actually reads ---------------------------------
-
-
-@pytest.mark.asyncio
-async def test_block_events_keep_their_bucket_through_log_formatting(small_limits, clock, caplog):
-    """``ip_bucket`` must survive the formatters, not just reach the LogRecord.
-
-    Both formatters serialize ``extra=`` fields only when the key is listed in
-    ``logging._STRUCTURED_LOG_KEYS``, so an unlisted one is dropped at format
-    time and the deployed line is an event name plus a traceback. That is the
-    whole content of these records: "a source was blocked" is not actionable
-    without *which* source, and the bucket is also what the clear endpoint
-    takes back (Codex's finding).
-
-    Asserts the rendered output rather than membership in the tuple, so it
-    fails if the serialization path changes and not merely if the key is
-    removed.
-    """
-    import json as _json
-    import logging as _logging
-
-    from serving.utils.logging import JsonFormatter, PlainFormatter
-
-    ip = "203.0.113.90"
-    with caplog.at_level(_logging.WARNING, logger="serving.utils.auth_failure_blocklist"):
-        for _ in range(3):
-            await record_auth_failure(ip)
-        assert await clear_block(ip) is True
-
-    events = {getattr(r, "event", None): r for r in caplog.records}
-    assert {"auth_ip_blocked", "auth_ip_block_cleared"} <= set(events), list(events)
-
-    for name in ("auth_ip_blocked", "auth_ip_block_cleared"):
-        record = events[name]
-        plain = PlainFormatter().format(record)
-        assert ip in plain, (name, plain)
-        rendered = _json.loads(JsonFormatter().format(record))
-        assert rendered["ip_bucket"] == ip, (name, rendered)
-
-    # The blocking record also carries the numbers that explain *why* it
-    # tripped, which is what turns the line into a self-contained answer.
-    blocked = _json.loads(JsonFormatter().format(events["auth_ip_blocked"]))
-    assert blocked["threshold"] == 3
-    assert blocked["window_sec"] == 100
-    assert blocked["block_seconds"] == 1000

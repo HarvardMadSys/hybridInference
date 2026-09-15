@@ -921,8 +921,17 @@ async def test_auth_ip_blocked_wiring_from_the_real_blocklist(monkeypatch):
         ) as mock_alert:
             await engine.start()
             try:
-                assert await record_auth_failure("203.0.113.99") is False
-                assert await record_auth_failure("203.0.113.99") is True  # the transition
+                from serving.utils.request_ip import ClientIpInfo
+
+                ip_info = ClientIpInfo(
+                    client_ip="203.0.113.99",
+                    peer_ip="unknown",
+                    source="test",
+                    trusted_proxy_headers=False,
+                    resolved=True,
+                )
+                assert await record_auth_failure(ip_info) is False
+                assert await record_auth_failure(ip_info) is True  # the transition
 
                 await _drain_until(handler, mock_alert)
                 blocked = [

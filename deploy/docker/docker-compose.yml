@@ -38,7 +38,11 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
-      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-1}
+      # Fail closed: the compose default does NOT trust forwarding headers.
+      # Proxy-header processing is inert without a non-empty TRUSTED_PROXIES /
+      # TRUSTED_CLOUDFLARE_NETWORKS authorizing the socket peer; set both in
+      # the deployment .env for the actual proxy topology.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-0}
       # Opt-in only. Trusting CF-Connecting-IP is safe solely when the origin
       # cannot be reached except through Cloudflare (Authenticated Origin Pulls
       # or a Cloudflare IP allowlist) — otherwise anyone hitting the origin

@@ -22,6 +22,8 @@ adapter's loop does.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from serving.adapters.key_pool import (
@@ -59,6 +61,21 @@ def test_acquire_single_key_returns_that_key():
     assert key == "only-key"
     assert lease.key_index == 0
     assert lease.affinity_key == "user-A"
+
+
+def test_lease_context_neutral_cleanup_is_one_shot():
+    """Exceptional cleanup cannot later apply a second outcome to the lease."""
+    pool = KeyPool(keys=["only-key"], provider_label="test")
+    _, lease = pool.acquire(None)
+
+    with pytest.raises(RuntimeError, match="boom"), lease:
+        raise RuntimeError("boom")
+
+    # The context manager already finalized the lease neutrally. A late status
+    # must not count a second release or mute the key.
+    assert lease.release(status_code=429) is ReleaseOutcome.PROPAGATE
+    assert pool._keys[0].cooldown_until == 0.0
+    assert pool._keys[0].consecutive_failures == 0
 
 
 def test_new_users_all_get_the_first_key():
@@ -123,6 +140,164 @@ def test_concurrent_users_share_the_first_key():
     a, _ = pool.acquire("user-A")
     b, _ = pool.acquire("user-B")
     assert a == b == "k0"
+
+
+def test_non_affine_failure_advances_shared_start_without_binding():
+    """Unresolved callers skip a recently failing key without sharing affinity."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+
+    first_key, first_lease = pool.acquire(None)
+    assert first_key == "k0"
+    assert pool.release(first_lease, status_code=503, tried={0}) is ReleaseOutcome.ROTATED
+
+    second_key, second_lease = pool.acquire(None)
+    assert second_key == "k1"
+    pool.release(second_lease, status_code=200)
+
+    # The successful non-affine key remains the next starting point, but no
+    # caller-specific binding was created.
+    assert pool.acquire(None)[0] == "k1"
+    assert pool.affinity_count() == 0
+
+
+def test_non_affine_cursor_crosses_reservation_tiers_after_failure():
+    """A failed reserved key does not regain first position on every request."""
+    pool = KeyPool(
+        keys=["reserved", "shared"],
+        provider_label="test",
+        min_roles={"reserved": "pro"},
+    )
+
+    first_key, first_lease = pool.acquire(None, role="pro")
+    assert first_key == "reserved"
+    assert pool.release(first_lease, status_code=503, tried={0}) is ReleaseOutcome.ROTATED
+
+    second_key, second_lease = pool.acquire(None, role="pro")
+    assert second_key == "shared"
+    pool.release(second_lease, status_code=200)
+
+    # The cursor remains on the shared tier until another failure advances it;
+    # the failed reserved key must not be retried first for every caller.
+    third_key, third_lease = pool.acquire(None, role="pro")
+    assert third_key == "shared"
+    pool.release(third_lease, status_code=200)
+
+
+def test_non_affine_failover_reprobes_failed_preferred_key_on_bounded_cadence():
+    """A recovered preferred key is retried without a request-by-request storm."""
+    pool = KeyPool(keys=["preferred", "fallback"], provider_label="test")
+
+    first_key, first_lease = pool.acquire(None)
+    assert first_key == "preferred"
+    assert pool.release(first_lease, status_code=503, tried={0}) is ReleaseOutcome.ROTATED
+
+    fallback_key, fallback_lease = pool.acquire(None)
+    assert fallback_key == "fallback"
+    pool.release(fallback_lease, status_code=200)
+
+    # Keep using the successful fallback until the bounded recovery probe is due.
+    assert pool.acquire(None)[0] == "fallback"
+    pool._non_affine_reprobe_at[None] = time.monotonic()
+
+    recovered_key, recovered_lease = pool.acquire(None)
+    assert recovered_key == "preferred"
+    pool.release(recovered_lease, status_code=200)
+
+    # A successful probe restores the normal preferred-key order.
+    assert pool.acquire(None)[0] == "preferred"
+
+
+def test_non_affine_recovery_probe_is_claimed_once():
+    """Concurrent unresolved callers do not all retry one due probe."""
+    pool = KeyPool(keys=["preferred", "fallback"], provider_label="test")
+
+    _, failed = pool.acquire(None)
+    pool.release(failed, status_code=503, tried={0})
+    pool._non_affine_reprobe_at[None] = time.monotonic()
+
+    probe_key, probe = pool.acquire(None)
+    assert probe_key == "preferred"
+    fallback_key, fallback = pool.acquire(None)
+    assert fallback_key == "fallback"
+
+    pool.release(probe, status_code=200)
+    pool.release(fallback, status_code=200)
+
+
+def test_non_affine_reprobe_preserves_original_failed_preference():
+    """Fallback failures do not replace the original recovery target."""
+    pool = KeyPool(keys=["preferred", "fallback", "last"], provider_label="test")
+
+    _, first = pool.acquire(None)
+    pool.release(first, status_code=503, tried={0})
+    _, second = pool.acquire(None)
+    pool.release(second, status_code=503, tried={0, 1})
+    _, third = pool.acquire(None)
+    pool.release(third, status_code=200)
+
+    pool._non_affine_reprobe_at[None] = time.monotonic()
+    probe_key, probe = pool.acquire(None)
+    assert probe_key == "preferred"
+    pool.release(probe, status_code=200)
+
+
+def test_key_pool_change_resets_non_affine_priority_state():
+    """A new reservation is not hidden behind a stale failover cursor."""
+    pool = KeyPool(keys=["preferred", "fallback"], provider_label="test")
+
+    _, failed = pool.acquire(None, role="pro")
+    pool.release(failed, status_code=503, tried={0})
+    _, fallback = pool.acquire(None, role="pro")
+    pool.release(fallback, status_code=200)
+
+    pool.add_key("reserved", min_role="pro")
+    selected, _lease = pool.acquire(None, role="pro")
+    assert selected == "reserved"
+
+
+def test_stale_non_affine_release_cannot_restore_cleared_state():
+    """A lease acquired before a topology change cannot recreate its cursor."""
+    pool = KeyPool(keys=["preferred", "fallback"], provider_label="test")
+
+    _, stale_lease = pool.acquire(None, role="pro")
+    pool.add_key("reserved", min_role="pro")
+
+    assert pool.release(stale_lease, status_code=503, tried={0}) is ReleaseOutcome.PROPAGATE
+    assert pool._non_affine_cursor == {}
+    assert pool._non_affine_reprobe_index == {}
+    assert pool._non_affine_reprobe_at == {}
+    assert pool._non_affine_reprobe_in_flight == {}
+    assert pool.acquire(None, role="pro")[0] == "reserved"
+
+
+def test_non_affine_probe_success_only_resets_its_role():
+    """A recovered role does not erase another role's recovery state."""
+    pool = KeyPool(keys=["preferred", "fallback"], provider_label="test")
+
+    _, free_failed = pool.acquire(None)
+    pool.release(free_failed, status_code=503, tried={0})
+    _, pro_failed = pool.acquire(None, role="pro")
+    pool.release(pro_failed, status_code=503, tried={0})
+
+    pool._non_affine_reprobe_at[None] = time.monotonic()
+    free_probe_key, free_probe = pool.acquire(None)
+    assert free_probe_key == "preferred"
+    pool.release(free_probe, status_code=200)
+
+    assert pool._non_affine_reprobe_index.get("pro") == 0
+
+
+def test_non_affine_fresh_cursor_preserves_reservation_priority():
+    """A fresh non-affine caller starts in the highest eligible tier."""
+    pool = KeyPool(
+        keys=["shared", "reserved"],
+        provider_label="test",
+        min_roles={"reserved": "pro"},
+    )
+
+    key, _lease = pool.acquire(None, role="pro")
+
+    assert key == "reserved"
 
 
 @pytest.mark.parametrize("status_code", [429, 401, 402, 403, 408, 425, 500, 503, 599, 0])

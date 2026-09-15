@@ -56,9 +56,9 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from serving.config.settings import ROLE_RANK, has_role
 
@@ -218,17 +218,39 @@ def _role_may_use(role: str | None, state: _KeyState) -> bool:
 
 @dataclass
 class Lease:
-    """Round-trip token returned by ``KeyPool.acquire`` and consumed by ``release``.
+    """One-shot lifecycle token returned by ``KeyPool.acquire``.
 
     ``role`` is the caller's role at acquire time (None for an unrestricted
     internal caller). ``release`` replays it so the sole-remaining-key backoff is
     judged against the keys *this* caller could have rotated to — a key reserved
     for a higher tier is not a fallback for a free-tier request.
+
+    A lease can be used as a context manager for neutral cleanup. Explicit
+    ``release`` calls finalize it with the observed outcome; a later release is
+    a no-op, which makes a ``finally`` cleanup safe on every exception path.
     """
 
     key_index: int
-    affinity_key: str
+    affinity_key: str | None
     role: str | None = None
+    # Topology generation at acquire time. Releases from before a key add,
+    # removal, or re-tier must not repopulate state that the change cleared.
+    topology_generation: int = 0
+    _pool: KeyPool | None = field(default=None, repr=False, compare=False)
+    _released: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def release(self, *, status_code: int | None, tried: Collection[int] = ()) -> ReleaseOutcome:
+        """Finalize this lease once, returning the pool's release decision."""
+        if self._pool is None:
+            raise RuntimeError("Lease is not attached to a KeyPool")
+        return self._pool.release(self, status_code=status_code, tried=tried)
+
+    def __enter__(self) -> Lease:
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> bool:
+        self.release(status_code=None)
+        return False
 
 
 class KeyPool:
@@ -250,6 +272,10 @@ class KeyPool:
     # the mute only paces a key that keeps failing.
     SOLE_KEY_BACKOFF_THRESHOLD: int = 2
     SOLE_KEY_BACKOFF_BASE_SECONDS: float = 15.0
+    # Do not starve a non-affine caller's preferred key after a transient
+    # failover.  Reprobe it periodically rather than on every request, which
+    # would turn a still-broken key into a retry storm.
+    NON_AFFINE_REPROBE_INTERVAL_SECONDS: float = 30.0
 
     def __init__(
         self,
@@ -275,6 +301,17 @@ class KeyPool:
             _KeyState(key=k, min_role=normalize_min_role(roles.get(k))) for k in deduped
         ]
         self._affinity: dict[str, _Affinity] = {}
+        # Non-affine callers have no identity-safe binding to persist. Keep a
+        # pool-level starting point only so a key that just failed does not
+        # become the first attempt for every unresolved caller forever.
+        self._non_affine_cursor: dict[str | None, int] = {}
+        # ``_non_affine_reprobe_index`` remembers the key that was skipped by a
+        # non-affine failover.  The deadline gives that key a bounded recovery
+        # probe without making every request pay the failed round trip.
+        self._non_affine_reprobe_index: dict[str | None, int] = {}
+        self._non_affine_reprobe_at: dict[str | None, float] = {}
+        self._non_affine_reprobe_in_flight: dict[str | None, int] = {}
+        self._topology_generation = 0
         self._lock = threading.Lock()
         self._provider_label = provider_label
 
@@ -339,10 +376,10 @@ class KeyPool:
                     retiered = state.min_role != normalized
                     state.min_role = normalized
                 if reactivated or retiered:
-                    self._drop_repointed_affinities_locked(now)
+                    self._mark_topology_changed_locked(now)
                 return idx
             self._keys.append(_KeyState(key=key, min_role=normalize_min_role(min_role)))
-            self._drop_repointed_affinities_locked(now)
+            self._mark_topology_changed_locked(now)
             return len(self._keys) - 1
 
     def set_key_min_role(self, key: str, min_role: str | None) -> bool:
@@ -377,8 +414,28 @@ class KeyPool:
                 state.min_role = normalized
                 changed = True
             if changed:
-                self._drop_repointed_affinities_locked(now)
+                self._mark_topology_changed_locked(now)
         return found
+
+    def _mark_topology_changed_locked(self, now: float) -> None:
+        """Invalidate state whose key ordering or eligibility just changed."""
+        self._topology_generation += 1
+        self._clear_non_affine_state_locked()
+        self._drop_repointed_affinities_locked(now)
+
+    def _clear_non_affine_state_locked(self) -> None:
+        """Forget cursor and recovery-probe state after key-pool changes."""
+        self._non_affine_cursor.clear()
+        self._non_affine_reprobe_index.clear()
+        self._non_affine_reprobe_at.clear()
+        self._non_affine_reprobe_in_flight.clear()
+
+    def _clear_non_affine_role_state_locked(self, role: str | None) -> None:
+        """Forget recovery state for one role without disturbing other roles."""
+        self._non_affine_cursor.pop(role, None)
+        self._non_affine_reprobe_index.pop(role, None)
+        self._non_affine_reprobe_at.pop(role, None)
+        self._non_affine_reprobe_in_flight.pop(role, None)
 
     def _drop_repointed_affinities_locked(self, now: float) -> None:
         """Drop bindings that no longer point at what selection would choose now.
@@ -427,7 +484,7 @@ class KeyPool:
             for _idx, state in enumerate(self._keys):
                 if state.key == key and not state.removed:
                     state.removed = True
-                    self._drop_repointed_affinities_locked(now)
+                    self._mark_topology_changed_locked(now)
                     return True
             return False
 
@@ -437,7 +494,7 @@ class KeyPool:
 
     def acquire(
         self,
-        affinity_key: str,
+        affinity_key: str | None,
         *,
         role: str | None = None,
         exclude: Collection[int] = (),
@@ -468,7 +525,11 @@ class KeyPool:
         with self._lock:
             self._maybe_sweep_locked(now)
 
-            existing = self._affinity.get(affinity_key)
+            # ``None`` is an explicit non-sticky caller. Do not use it as a
+            # dictionary key: unresolved anonymous requests have no identity
+            # we can safely share, while internal probes still use their
+            # explicit ``_anon`` sentinel through the normal path.
+            existing = self._affinity.get(affinity_key) if affinity_key is not None else None
             if existing is not None:
                 bound = self._keys[existing.key_index]
                 # Affinity is honored only when it is still valid AND the bound key
@@ -497,11 +558,16 @@ class KeyPool:
                 ):
                     idx = existing.key_index
                     self._keys[idx].request_count += 1
-                    return self._keys[idx].key, Lease(idx, affinity_key, role)
+                    return self._keys[idx].key, Lease(
+                        idx, affinity_key, role, self._topology_generation, self
+                    )
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
-            idx = self._pick_first_available_locked(now, role, exclude)
+            if affinity_key is None:
+                idx = self._pick_non_affine_locked(now, role, exclude)
+            else:
+                idx = self._pick_first_available_locked(now, role, exclude)
             if idx is None:
                 prefix = (
                     f"No usable API key for provider {self._provider_label!r} "
@@ -527,13 +593,16 @@ class KeyPool:
                     prefix + "every key the caller may use is muted or reserved for a higher tier"
                 )
 
-            self._affinity[affinity_key] = _Affinity(
-                key_index=idx,
-                expires_at=now + self.AFFINITY_TTL_SECONDS,
-                role=role,
-            )
+            if affinity_key is not None:
+                self._affinity[affinity_key] = _Affinity(
+                    key_index=idx,
+                    expires_at=now + self.AFFINITY_TTL_SECONDS,
+                    role=role,
+                )
             self._keys[idx].request_count += 1
-            return self._keys[idx].key, Lease(idx, affinity_key, role)
+            return self._keys[idx].key, Lease(
+                idx, affinity_key, role, self._topology_generation, self
+            )
 
     def _pick_first_available_locked(
         self, now: float, role: str | None = None, exclude: Collection[int] = ()
@@ -545,11 +614,11 @@ class KeyPool:
         earlier ones are muted or excluded. ``request_count`` is no longer a
         selection signal — it is retained purely for telemetry.
 
-        Reservation reorders that scan rather than replacing it: keys reserved
-        for the highest tier the caller still qualifies for come first, then
-        configuration order within a tier. An entitled caller therefore spends
-        the capacity set aside for it before falling back to the shared keys the
-        lower tiers depend on.
+        Reservation reorders that scan rather than replacing it for affine
+        callers: keys reserved for the highest tier the caller still qualifies
+        for come first, then configuration order within a tier. Non-affine
+        callers use the failure-aware cursor below so a failed reserved key does
+        not remain the first attempt on every request.
         """
         candidates = [
             (-ROLE_RANK.get(state.min_role, 0), i)
@@ -632,17 +701,70 @@ class KeyPool:
             A ``ReleaseOutcome``: ``ROTATED`` or ``MUTED`` if the caller should
             try another key, ``PROPAGATE`` if it should surface the error.
         """
+        with self._lock:
+            if lease._released:
+                return ReleaseOutcome.PROPAGATE
+            lease._released = True
+
         if status_code is None:
+            if lease.affinity_key is None:
+                with self._lock:
+                    if lease.topology_generation != self._topology_generation:
+                        return ReleaseOutcome.PROPAGATE
+                    if self._non_affine_reprobe_in_flight.get(lease.role) == lease.key_index:
+                        self._non_affine_reprobe_in_flight.pop(lease.role, None)
             return ReleaseOutcome.PROPAGATE
         if not should_mute_status(status_code):
             if 200 <= status_code < 300:
                 with self._lock:
+                    if lease.topology_generation != self._topology_generation:
+                        return ReleaseOutcome.PROPAGATE
                     self._keys[lease.key_index].consecutive_failures = 0
+                    if lease.affinity_key is None:
+                        if self._non_affine_reprobe_in_flight.get(lease.role) == lease.key_index:
+                            self._non_affine_reprobe_in_flight.pop(lease.role, None)
+                        if self._non_affine_reprobe_index.get(lease.role) == lease.key_index:
+                            # The skipped key recovered.  Return to the ordinary
+                            # preferred-key order for subsequent non-affine calls.
+                            self._clear_non_affine_role_state_locked(lease.role)
+            elif lease.affinity_key is None:
+                with self._lock:
+                    if lease.topology_generation != self._topology_generation:
+                        return ReleaseOutcome.PROPAGATE
+                    if self._non_affine_reprobe_in_flight.get(lease.role) == lease.key_index:
+                        self._non_affine_reprobe_in_flight.pop(lease.role, None)
             return ReleaseOutcome.PROPAGATE
         with self._lock:
             now = time.monotonic()
+            if lease.topology_generation != self._topology_generation:
+                return ReleaseOutcome.PROPAGATE
             state = self._keys[lease.key_index]
+
+            if (
+                lease.affinity_key is None
+                and self._non_affine_reprobe_in_flight.get(lease.role) == lease.key_index
+            ):
+                # The claim belongs to this lease, regardless of whether the
+                # request eventually succeeds or fails.
+                self._non_affine_reprobe_in_flight.pop(lease.role, None)
+
             state.consecutive_failures += 1
+
+            if lease.affinity_key is None:
+                self._non_affine_cursor[lease.role] = (lease.key_index + 1) % len(self._keys)
+                # Preserve the original preferred key as the recovery target
+                # while this role is failing over through other keys. Replacing
+                # it on every fallback failure can starve the preferred tier.
+                if lease.role not in self._non_affine_reprobe_index:
+                    self._non_affine_reprobe_index[lease.role] = lease.key_index
+                    self._non_affine_reprobe_at[lease.role] = (
+                        now + self.NON_AFFINE_REPROBE_INTERVAL_SECONDS
+                    )
+                elif self._non_affine_reprobe_index[lease.role] == lease.key_index:
+                    # A failed recovery probe gets another bounded retry window.
+                    self._non_affine_reprobe_at[lease.role] = (
+                        now + self.NON_AFFINE_REPROBE_INTERVAL_SECONDS
+                    )
 
             # Rotate before muting: somewhere untried to go means this failure
             # costs the request one retry, not the key its place in the pool.
@@ -686,6 +808,60 @@ class KeyPool:
 
             state.cooldown_until = now + self.MUTE_SECONDS
             return ReleaseOutcome.MUTED
+
+    def _pick_non_affine_locked(
+        self, now: float, role: str | None, exclude: Collection[int]
+    ) -> int | None:
+        """Pick a non-affine key from a failure-aware, non-sticky cursor.
+
+        The cursor is deliberately pool-level rather than caller-keyed: an
+        unresolved caller has no safe identity to persist. It only changes the
+        starting point after a failed lease, preventing every such request from
+        paying the same failed-key round trip. It walks all keys the role may
+        use, including lower reservation tiers, so a failed reserved key does
+        not regain first position before the next non-affine request.
+        """
+        candidates = [
+            i
+            for i, state in enumerate(self._keys)
+            if not state.removed
+            and state.cooldown_until <= now
+            and i not in exclude
+            and _role_may_use(role, state)
+        ]
+        if not candidates:
+            return None
+
+        reprobe_index = self._non_affine_reprobe_index.get(role)
+        if (
+            reprobe_index is not None
+            and now >= self._non_affine_reprobe_at.get(role, float("inf"))
+            and reprobe_index in candidates
+        ):
+            if role not in self._non_affine_reprobe_in_flight:
+                self._non_affine_reprobe_in_flight[role] = reprobe_index
+                return reprobe_index
+            # A recovery probe is already in flight. Do not send another
+            # unresolved caller to the same key; choose another candidate or
+            # report exhaustion if none is available.
+            candidates = [i for i in candidates if i != self._non_affine_reprobe_in_flight[role]]
+            if not candidates:
+                return None
+
+        cursor = self._non_affine_cursor.get(role)
+        if cursor is None:
+            # Preserve reservation preference for a fresh non-affine caller.
+            # Once a failure has advanced the pool cursor, the failure-aware
+            # walk may cross tiers so the failed reserved key is not retried
+            # first forever.
+            highest_rank = max(ROLE_RANK.get(self._keys[i].min_role, 0) for i in candidates)
+            candidates = [
+                i for i in candidates if ROLE_RANK.get(self._keys[i].min_role, 0) == highest_rank
+            ]
+            return min(candidates)
+
+        cursor %= len(self._keys)
+        return min(candidates, key=lambda i: (i - cursor) % len(self._keys))
 
     def _has_untried_usable_key_locked(
         self,
