@@ -3,7 +3,7 @@
 - 日期：2026-09-14
 - 更新：2026-09-15，明确抽象重构范围与后续拓扑接入的区别
 - 状态：抽象重构设计；包含当前实现说明与未来扩展示例
-- 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract@c71c07be0478e2062dc8bc398098de8f90a3e214`
+- 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract`（包含 2026-09-15 的契约修复与 opt-in 接线）
 - 核心场景：RouteWise 可以直接路由 local + cloud，也可以在 Greedy / 未来 Nimbus 下面只路由 cloud
 - 前序设计：[Hybrid Routing 抽象重构设计](2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
@@ -21,7 +21,7 @@
 6. local / cloud 是部署归属；on_demand / quota / concurrency 是资源模型。两者独立。
 7. 实际容量按资源池共享，尝试、预留、反馈和生命周期都有明确所有者。增加一层包装不能复制容量或重复记账。
 
-这份提案更新前序设计中的 Backend 边界：“只能执行指定 endpoint”适用于叶子派发；明确委托服务池时，池内 Router 可以选择 endpoint。前序关于公共 Router 契约、保留 Fixed / RouteWise 行为、模型绑定和复用 Adapter 的决定继续保留。前序实施计划和 AGENTS.md 中较窄的 Backend 定义，不应被当作本提案的最终契约；本次不改写那些历史文件。
+这份提案更新前序设计中的 Backend 边界：“只能执行指定 endpoint”适用于叶子派发；明确委托服务池时，池内 Router 可以选择 endpoint。前序关于公共 Router 契约、保留 Fixed / RouteWise 行为、模型绑定和复用 Adapter 的决定继续保留。前序实施计划和 AGENTS.md 中较窄的 Backend 定义，不应被当作本提案的最终契约；9/12 文档保留历史方案并标注后继契约，AGENTS.md 以本文的实现边界为准。
 
 ### 1.1 交付范围
 
@@ -45,8 +45,8 @@ PR #1454 不需要实现或接入 Greedy / Nimbus，也不需要新增它们的�
 | RouterProtocol | 统一普通请求、流式、反馈和诊断的对外调用 | 不要求所有算法返回同一种内部决策结构或共用控制循环 |
 | 具体 Router | 在自身范围内选路，组织准入、重试、hedging 和学习 | 只管理自己获得的决策权限和请求状态 |
 | RoutingBackend | 向上层提供可委托的推理能力及明确范围 | 不根据一个含糊的 target 偏好猜测是否有重新选路权限 |
-| LeafBackend，拟议角色 | 叶子节点，执行已经绑定的 endpoint | 复用 Adapter；递归到此结束，不再向下委托或跨 endpoint fallback |
-| TreeBackend，拟议角色 | 路由子树的入口，通过内部 Router 选择下游 | 校验范围、传递上下文和结果；不重复实现内部 Router 的算法 |
+| LeafBackend | 叶子节点，执行已经绑定的 endpoint | 复用 Adapter；递归到此结束，不再向下委托或跨 endpoint fallback |
+| TreeBackend | 路由子树的入口，通过内部 Router 选择下游 | 校验范围、传递上下文和结果；不重复实现内部 Router 的算法 |
 | LocalBackend / CloudBackend | 表达部署归属的角色或便捷包装 | 可以采用叶子或服务池实现，不要求两套相同的协议代码 |
 | Adapter | 连接、认证、协议和响应适配 | 不承担上层候选池选择 |
 
@@ -68,14 +68,15 @@ classDiagram
     class RoutingBackend {
         <<interface>>
     }
-    RoutingBackend <|.. LeafBackend
+    FixedRouter ..> LeafBackend : executes
+    RouteWiseRouter ..> LeafBackend : executes
     RoutingBackend <|.. TreeBackend
     GreedyRouter ..> RoutingBackend : delegates
     TreeBackend o-- RouterProtocol : wraps a scoped router
     LeafBackend --> Adapter : executes one endpoint
 ```
 
-这是类型关系图，箭头表示接口实现、持有或调用依赖，不表示请求依次经过所有方框。TreeBackend 连到 RouterProtocol，表示它持有一个符合该契约的具体 Router，例如 RouteWiseRouter。`LeafBackend` / `TreeBackend` 是拟议角色名称，可通过现有类和薄的辅助组件实现。没有实质职责的转发包装不必单独建类。现有具体 `routing.hybrid.HybridRouter` 仍是一种组合实现，不是公共接口；其 FixedPolicy 等内部抽象无需强加给 RouteWise。
+这是类型关系图，箭头表示接口实现、持有或调用依赖，不表示请求依次经过所有方框。TreeBackend 连到 RouterProtocol，表示它持有一个符合该契约的具体 Router，例如 RouteWiseRouter。`LeafBackend` 使用 Adapter 调用签名，不实现 Router 形状的 `RoutingBackend`；`TreeBackend` 实现该池委托协议。没有实质职责的转发包装不必单独建类。现有具体 `routing.hybrid.HybridRouter` 仍是一种组合实现，不是公共接口；其 FixedPolicy 等内部抽象无需强加给 RouteWise。
 
 ### 2.2 三种容易混淆的 pool
 
@@ -89,7 +90,7 @@ classDiagram
 
 ## 3. 支持的运行结构
 
-本节两张图描述抽象的目标用法，其中 Greedy / Nimbus 是未来扩展示例。参照提交中，`router: routewise` 直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 与显式派发类型均已实现并接线。**`LeafBackend` 绑定的是 Adapter 本身**（一个 endpoint 一个 leaf），执行时不查表、不换目标，也不自行记账；`FixedRouter` 的 primary / fallback（普通与流式）、`RouteWiseRouter` 的 decision 与两条 hedge leg、以及 RouteWise 主动探测都用同一个 leaf 执行，选择、准入、prefill 与反馈记账仍留在原 Router 内。`TreeBackend` 继续承担受限池委托。混合 `router: fixed` 经过具体 HybridRouter 与 Local/FixedCloud 包装；Greedy / Nimbus 仍未实现。
+本节两张图描述抽象的目标用法，其中 Greedy / Nimbus 是未来扩展示例。参照提交中，`router: routewise` 直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 与显式派发类型均已实现并接线。**`LeafBackend` 绑定的是 Adapter 本身**（一个 endpoint 一个 leaf），执行时不查表、不换目标，也不自行记账；`FixedRouter` 的 primary / fallback（普通与流式）、`RouteWiseRouter` 的 decision 与两条 hedge leg、以及 RouteWise 主动探测都用同一个 leaf 执行，选择、准入、prefill 与反馈记账仍留在原 Router 内。`TreeBackend` 继续承担受限池委托。只有显式设置 `router_params.hybrid_composition: true` 的混合 `router: fixed` 才经过具体 HybridRouter 与 Local/FixedCloud 包装；默认仍返回共享 FixedRouter；Greedy / Nimbus 仍未实现。
 
 ### 3.1 全池 RouteWise
 
@@ -158,15 +159,15 @@ BackendDispatch = ExecuteEndpoint | DelegatePool
 
 LeafBackend 绑定一个 Adapter 与一个 canonical endpoint，只执行它：构造时拒绝把跨 endpoint 的组合执行对象（如 hedging 组合）当作叶子，因为那会让"只运行了一个 endpoint"的边界与它实际做的事不符。它的 `config` 就是原 Adapter 的 config 对象，调用签名也是 Adapter 的签名，因此可以在任何执行 Adapter 的位置替换进去，而不引入第二套记账。
 
-TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选路。它还接受**落在自己声明范围内**的 ExecuteEndpoint，这是保留旧包装精确派发的兼容能力，不是角色互斥的例外：越界绑定同样在 I/O 前拒绝。两种角色的严格互斥是目标，当前对 TreeBackend 保留这一条兼容路径，已由 `TreeBackend.check_instruction` 与测试锁定。
+TreeBackend 支持两种受限派发：DelegatePool 允许内部 Router 在授权范围内选路；ExecuteEndpoint 限定一个已绑定的 endpoint，经子 Router 完成该目标的准入后，由 Leaf 执行。精确派发仍经过子 Router，但不得重新选择或 fallback 到其他 endpoint；无须把准入移进 Leaf。
 
-派发入口在产生上游 I/O 前拒绝不匹配的指令。若父 Router 已经选定具体 endpoint，就走 LeafBackend 派发，不再调用子 Router 重新选一次。组合错误（不匹配指令、空范围）不计入 attempt、不产生 provider 故障样本、不触发自动 fallback，普通与流式两条路径一致。
+派发入口在产生上游 I/O 前拒绝不匹配的模型、endpoint 或范围。binding 的 Adapter 必须与 endpoint 一致；查找仅在请求模型的路由内进行。组合错误不计入 attempt、不产生 provider 故障样本、不触发自动 fallback，普通与流式两条路径一致。
 
 范围在比较和求交之前**统一规范化为当前模型的 canonical endpoint 集合**：声明范围与绑定可能分别用 provider 标签和 endpoint id 表达，直接对两者做字符串集合运算会把同一个有效范围误判为空。窄于池声明范围的调用方范围必须传到子 Router 的候选集合，而不只是放在请求选项里。
 
 调用方施加的范围在**每一层转发时都被保留并与下层自身范围求交**，不会被下层的完整范围替换。否则上层交集的正确性无法补偿下层已经收到的扩大范围：只授权 `{cloud A}` 的请求会拿到整个 cloud 池的候选集，再由其子 Router 合法地选出更便宜的 `B`。空范围与空交集保持为空，不能被解释成"不限范围"。Backend 未声明范围时，调用方的限制同样保留。
 
-"配置齐全但当前不可派发"与"没有配置"是两种结果：前者的 capacity 已被占满（如 concurrency 槽位用尽），应表达为 `TargetUnavailableError`——没有发出上游请求，因此不产生 provider 失败样本，由上层按原计划继续；后者仍是配置错误。**是否记账只取决于"有没有发出上游请求"，与 attempt 是 leaf 精确派发还是 pool 委托无关**：两者都不产生 provider 失败样本。计划全部不可用时，仍要把不可用原因（准入拒绝本身）返回给调用方，而不是退化成笼统的"所有 backend 都失败"。只分域步骤落到 leaf 上时的处理**只适用于 fallback 条目**：该步骤没有点名 endpoint，而 leaf 无法选路，它自己的绑定就是这一步唯一可能的含义，因此展开为精确目标。**首选 attempt 不这样展开**——调用方为它指定了 target，leaf 服务不了该 target 时，这个 attempt 仍然是委托并被 leaf 拒绝，不会退化成“改打它自己绑定的那个 endpoint”。
+"配置齐全但当前不可派发"与"没有配置"是两种结果：前者的 capacity 已被占满（如 concurrency 槽位用尽），应表达为 `TargetUnavailableError`——没有发出上游请求，因此不产生 provider 失败样本，由上层按原计划继续；后者仍是配置错误。**是否记账只取决于"有没有发出上游请求"，与 attempt 是 leaf 精确派发还是 pool 委托无关**：两者都不产生 provider 失败样本。计划全部不可用时，仍要把不可用原因（准入拒绝本身）返回给调用方，而不是退化成笼统的"所有 backend 都失败"。HybridRouter 的后端是 pool；Leaf 使用 Adapter 签名，不作为该组合类的 Router 形状后端注入。
 
 ### 4.2 共同上下文
 
@@ -281,7 +282,21 @@ models:
 
 构建结果为一个绑定模型完整候选池的 RouteWiseRouter。Fixed 模型继续使用 `router: fixed`；未显式选择组合时，不自动改成两阶段选择。
 
-### 7.2 分层模式：新增的拟议配置
+### 7.2 Fixed 组合：显式启用
+
+```yaml
+models:
+  - id: model-b
+    router: fixed
+    router_params:
+      hybrid_composition: true
+```
+
+`hybrid_composition` 默认为 false。开启且同时存在 local/cloud 候选时才构建 HybridRouter；默认配置、单域 Fixed 及全池 RouteWise 保持原入口。Leaf 执行改造对两种入口均生效。
+
+组合路径与原 Fixed 的 affinity 更新、primary claim 被拒后的全池重抽、fallback 候选的实时 circuit 判断尚未证明等价。本 PR 通过默认关闭组合保护既有模型；这三项必须在后续默认接线变更前修复并验证。流式 fallback 历史的 DB 持久化是 dev 已有问题，单独处理，不作为此次等价回归。
+
+### 7.3 分层模式：新增的拟议配置
 
 以下字段为设计草案，当前解析器尚不支持。示例中的 endpoint id、容量和校准值仅用于解释结构；正式配置必须引用真实部署、已有 endpoint 和测量得到的参数。
 
@@ -340,7 +355,7 @@ model-b
 
 调用方的 `max_tokens` 等生成参数继续沿用现有校验、适配和转发语义。
 
-### 7.3 构建校验
+### 7.4 构建校验
 
 - 池和准入 profile 均可解析，endpoint 属于模型及声明的部署归属，参数单位和取值合法。
 - 本模型的 local/cloud 范围不重叠；初次启用时要求两侧均非空。单域模型可沿用原入口，无须虚构另一侧。
@@ -446,7 +461,7 @@ PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来�
 
 ### 12.1 PR #1454：抽象与既有行为
 
-验收以精确派发、池委托、范围约束、资源与反馈所有权，以及 Fixed / RouteWise 既有行为等价为准，不依赖 Greedy 实现。
+验收以精确派发、池委托、范围约束、资源与反馈所有权，以及默认 Fixed / RouteWise 入口保持原行为为准，不依赖 Greedy 实现。显式启用的 Fixed 组合仍有 §7.2 所列行为差异，其默认接线不在本 PR 范围内。
 
 | 场景 | 必须证明的行为 |
 |---|---|
@@ -461,9 +476,9 @@ PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来�
 | 反馈与成本 | 反馈回到实际 Router 版本和 endpoint；失败/hedge 信息保留，叶子与父聚合不重复学习或计费 |
 | 动态范围与切换 | 空 scope 不扩成全池；刷新不丢在途状态；新组合发布失败保留旧入口，旧预留引用原池 |
 | 配置兼容 | 原 fixed / routewise 配置、默认值、别名、pin 和错误归因保持原行为；新字段通过明确校验 |
-| 现有请求入口 | 现有模型经 serving / Registry / bootstrap 使用重构后的实现；生命周期、Admin、operational store 和探测保持可达；启动/停止责任只执行一次 |
+| 现有请求入口 | 默认 Fixed / RouteWise 经 serving / Registry / bootstrap 使用 Leaf；显式启用的混合 Fixed 另验组合接线；生命周期、Admin、operational store 和探测保持可达；启动/停止责任只执行一次 |
 
-回归基础包括 [test_routing_backends.py](../../../tests/unit/routing/test_routing_backends.py)、[test_hybrid_router.py](../../../tests/unit/routing/test_hybrid_router.py)、[test_routewise_router.py](../../../tests/unit/routing/test_routewise_router.py) 和 [test_hybrid_bootstrap_wiring.py](../../../tests/unit/servers/test_hybrid_bootstrap_wiring.py)。新增测试应能区分错误实现，例如两个实例争用同一个只有一个槽位的池，而不只是检查类名和构造成功。
+回归基础包括 [test_routing_backends.py](../../../tests/unit/routing/test_routing_backends.py)、[test_hybrid_router.py](../../../tests/unit/routing/test_hybrid_router.py)、[test_routewise_router.py](../../../tests/unit/routing/test_routewise_router.py) 和 [test_hybrid_bootstrap_wiring.py](../../../tests/unit/servers/test_hybrid_bootstrap_wiring.py)。新增测试应能区分错误实现，例如跨模型复用 route id、越界 pin、刷新与跨域 fallback 后的反馈归属，而不只是检查类名和构造成功；跨实例共享容量测试随 §6.1 延期。
 
 ### 12.2 未来扩展示例：Greedy 组合
 

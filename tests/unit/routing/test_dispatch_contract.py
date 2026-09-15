@@ -270,7 +270,9 @@ def test_a_leaf_refuses_a_delegation_and_a_foreign_endpoint() -> None:
             leaf,
             ExecuteEndpoint(
                 EndpointBinding(
-                    endpoint_id=_SECOND_LOCAL_ENDPOINT, model_id=_MODEL_ID, adapter=adapter
+                    endpoint_id=_SECOND_LOCAL_ENDPOINT,
+                    model_id=_MODEL_ID,
+                    adapter=_adapter(_SECOND_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL),
                 )
             ),
             _MODEL_ID,

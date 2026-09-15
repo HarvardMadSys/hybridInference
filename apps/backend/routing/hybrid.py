@@ -21,9 +21,8 @@ Two things live here that neither domain can do for the other:
     A request can now be served by more than one backend: attempt 1 on local,
     answer from cloud. Feedback is routed per observation, by the endpoint the
     observation names, so each attempt reaches the backend that actually ran it.
-    The dispatch record is a tie-breaker for an endpoint two backends both claim
-    and a cheap guard against mis-attribution; it is not an assumption that one
-    request id maps to one backend.
+    The dispatch record retains actual endpoint ownership through fallback and
+    route refresh; current scopes are used only when no request record survives.
 
 Deliberate non-goals, matching the current design:
 
@@ -40,7 +39,7 @@ Deliberate non-goals, matching the current design:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
@@ -71,6 +70,15 @@ __all__ = [
     "RoutingDecision",
     "RoutingTarget",
 ]
+
+
+@dataclass
+class _FeedbackDispatch:
+    """Keep request ownership independent of subsequent route-table edits."""
+
+    model_id: str
+    backend: str
+    endpoints: dict[str, str] = field(default_factory=dict)
 
 
 class HybridRoutingError(RuntimeError):
@@ -172,7 +180,7 @@ class HybridRouter:
         # two backends that both claim an endpoint, so the decision made at
         # dispatch time is the authoritative tie-breaker while it is available.
         self._max_recorded_decisions = max_recorded_decisions
-        self._backend_decisions: dict[str, str] = {}
+        self._backend_decisions: dict[str, _FeedbackDispatch] = {}
 
     # ------------------------------------------------------------------
     # Composition
@@ -247,7 +255,7 @@ class HybridRouter:
         # decided, and the feedback path needs that decision whether the request
         # is dispatched by this class or by a caller that resolves the backend
         # itself.
-        self._remember_backend_decision(params.get("request_id"), decision.backend)
+        self._remember_backend_decision(params.get("request_id"), decision.backend, model_id)
         return decision
 
     def fallback_backends(
@@ -371,10 +379,24 @@ class HybridRouter:
                 # this request.
                 raise
             except Exception as exc:
+                self._remember_backend_decision(
+                    params.get("request_id"),
+                    attempt.backend,
+                    model_id,
+                    routing=getattr(exc, "_routing", None),
+                    endpoint_id=attempt.endpoint_id,
+                )
                 attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
                 _remember_dispatched(dispatched, attempt, exc)
                 continue
+            self._remember_backend_decision(
+                params.get("request_id"),
+                attempt.backend,
+                model_id,
+                routing=response.get("_routing"),
+                endpoint_id=attempt.endpoint_id,
+            )
             _merge_attempt_history(response, attempts)
             _tag_backend(response, attempt.backend)
             # Resolve on the success path too: the metadata must say whether the
@@ -577,7 +599,7 @@ class HybridRouter:
         request can now produce attempts on more than one backend: the local
         attempt's failure sample belongs to the local backend even when the
         request was answered from the cloud. The dispatch record for this
-        ``request_id`` breaks a tie when two backends both claim the endpoint,
+        ``request_id`` takes precedence over the current endpoint scopes,
         and the terminal observation releases it so a late duplicate cannot be
         counted twice.
         """
@@ -588,6 +610,19 @@ class HybridRouter:
 
     def _resolve_feedback_backend(self, obs: RoutingObservation) -> str | None:
         """Return the one backend that ran the attempt ``obs`` describes."""
+        request_id = getattr(obs, "request_id", None)
+        recorded = self._backend_decisions.get(request_id) if isinstance(request_id, str) else None
+        if recorded is not None:
+            if self.canonical_id(obs.model_id) != recorded.model_id:
+                return None
+            backend = recorded.endpoints.get(obs.endpoint_id)
+            # Metadata-less backends can still identify the domain that actually
+            # handled the request. Once endpoints are reported, do not attribute
+            # an unrelated endpoint to the most recent domain.
+            if backend is None and not recorded.endpoints:
+                backend = recorded.backend
+            self._release_decision(obs)
+            return backend
         owners = [
             backend_name
             for backend_name, backend in self._backends.items()
@@ -596,17 +631,6 @@ class HybridRouter:
         if len(owners) == 1:
             self._release_decision(obs)
             return owners[0]
-        request_id = getattr(obs, "request_id", None)
-        if isinstance(request_id, str) and request_id:
-            recorded = self._backend_decisions.get(request_id)
-            if recorded is not None and recorded in owners:
-                self._release_decision(obs)
-                return recorded
-            if recorded is not None and not owners:
-                # The endpoint belongs to no backend here, so this observation
-                # is a leftover the record cannot explain. Drop the record: the
-                # request it described has concluded.
-                self._backend_decisions.pop(request_id, None)
         # No owner, or several with nothing to separate them: sending the sample
         # to every claimant would double-count one attempt against two learning
         # states, which is worse than dropping it.
@@ -620,8 +644,16 @@ class HybridRouter:
         if isinstance(request_id, str) and request_id:
             self._backend_decisions.pop(request_id, None)
 
-    def _remember_backend_decision(self, request_id: Any, backend_name: str) -> None:
-        """Record which backend served a request until its feedback arrives."""
+    def _remember_backend_decision(
+        self,
+        request_id: Any,
+        backend_name: str,
+        model_id: str,
+        *,
+        routing: Any = None,
+        endpoint_id: str | None = None,
+    ) -> None:
+        """Record actual endpoint ownership before histories from other pools merge."""
         if not isinstance(request_id, str) or not request_id:
             return
         decisions = self._backend_decisions
@@ -629,7 +661,37 @@ class HybridRouter:
             # Bounded drop-oldest eviction: an observation that arrives after
             # eviction falls back to endpoint ownership instead of blocking.
             decisions.pop(next(iter(decisions)), None)
-        decisions[request_id] = backend_name
+        record = decisions.setdefault(
+            request_id, _FeedbackDispatch(self.canonical_id(model_id), backend_name)
+        )
+        record.backend = backend_name
+        routing = routing if isinstance(routing, dict) else {}
+        endpoint = routing.get("endpoint_id") or endpoint_id
+        if isinstance(endpoint, str) and endpoint:
+            record.endpoints[endpoint] = backend_name
+        failures = routing.get("failed_attempts")
+        if isinstance(failures, list):
+            for failure in failures:
+                endpoint = failure.get("endpoint_id") if isinstance(failure, dict) else None
+                if isinstance(endpoint, str) and endpoint:
+                    record.endpoints[endpoint] = backend_name
+
+    def _remember_stream_dispatch(
+        self, request_id: Any, attempt: _Attempt, model_id: str, chunk: Any
+    ) -> None:
+        """Capture routing frames while forwarding the original stream unchanged."""
+        payload = chunk if isinstance(chunk, dict) else {}
+        if isinstance(chunk, str) and chunk.startswith("data: "):
+            try:
+                payload = json.loads(chunk[6:].strip())
+            except ValueError:
+                payload = {}
+        self._remember_backend_decision(
+            request_id,
+            attempt.backend,
+            model_id,
+            routing=payload.get("_routing") if isinstance(payload, dict) else None,
+        )
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return the merged endpoint status of both backends."""
@@ -775,6 +837,7 @@ async def _fallback_stream(
         committed = False
         try:
             async for chunk in stream:
+                router._remember_stream_dispatch(params.get("request_id"), attempt, model_id, chunk)
                 buffered.append(chunk)
                 break
             if buffered:
@@ -790,6 +853,9 @@ async def _fallback_stream(
                     committed = committed or _is_client_visible(held)
                     yield _tag_backend_chunk(held, attempt.backend)
                 async for chunk in stream:
+                    router._remember_stream_dispatch(
+                        params.get("request_id"), attempt, model_id, chunk
+                    )
                     committed = committed or _is_client_visible(chunk)
                     yield _tag_backend_chunk(chunk, attempt.backend)
                 return
@@ -809,6 +875,13 @@ async def _fallback_stream(
             # propagate it rather than recording a provider failure or continuing.
             raise
         except Exception as exc:
+            router._remember_backend_decision(
+                params.get("request_id"),
+                attempt.backend,
+                model_id,
+                routing=getattr(exc, "_routing", None),
+                endpoint_id=attempt.endpoint_id,
+            )
             if committed:
                 # The client already holds part of this answer. Restarting on
                 # another candidate would emit a stream no backend ever generated,

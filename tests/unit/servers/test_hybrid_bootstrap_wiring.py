@@ -59,9 +59,16 @@ def _bootstrap_shaped_pieces() -> tuple[RouterBuildDependencies, FixedRouter]:
     return (dependencies, shared)
 
 
-def _registry_for(dependencies: RouterBuildDependencies, shared: FixedRouter) -> Any:
+def _registry_for(
+    dependencies: RouterBuildDependencies, shared: FixedRouter, *, opt_in: bool | None = True
+) -> Any:
     return _build_model_router_registry(
-        models_config={_MODEL_ID: {"router": "fixed"}},
+        models_config={
+            _MODEL_ID: {
+                "router": "fixed",
+                "router_params": {} if opt_in is None else {"hybrid_composition": opt_in},
+            }
+        },
         default_router_name="fixed",
         alias_to_model={},
         router_dependencies=dependencies,
@@ -70,7 +77,8 @@ def _registry_for(dependencies: RouterBuildDependencies, shared: FixedRouter) ->
 
 
 @pytest.mark.unit
-def test_bootstrap_registry_builds_a_hybrid_router_for_a_mixed_model() -> None:
+@pytest.mark.parametrize("opt_in", [None, False, True])
+def test_bootstrap_registry_builds_a_hybrid_router_for_a_mixed_model(opt_in: bool | None) -> None:
     """The production entry point is what makes the seam live."""
     dependencies, shared = _bootstrap_shaped_pieces()
     shared.register_route(
@@ -87,9 +95,12 @@ def test_bootstrap_registry_builds_a_hybrid_router_for_a_mixed_model() -> None:
         ],
     )
 
-    registry = _registry_for(dependencies, shared)
+    registry = _registry_for(dependencies, shared, opt_in=opt_in)
 
-    assert isinstance(registry.get_router(_MODEL_ID), HybridRouter)
+    if opt_in:
+        assert isinstance(registry.get_router(_MODEL_ID), HybridRouter)
+    else:
+        assert registry.get_router(_MODEL_ID) is shared
 
 
 @pytest.mark.unit

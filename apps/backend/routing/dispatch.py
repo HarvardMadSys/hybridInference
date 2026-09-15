@@ -36,6 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from routing.endpoints import endpoint_id_for_adapter
+
 if TYPE_CHECKING:
     from routing.backends import RoutingBackend
     from serving.adapters.base import BaseAdapter
@@ -105,6 +107,8 @@ class EndpointBinding:
                 "EndpointBinding requires the adapter that executes this endpoint; a "
                 "binding without one would have to re-resolve its target at dispatch"
             )
+        if endpoint_id_for_adapter(self.adapter) != self.endpoint_id:
+            raise DispatchMismatchError("Execution binding endpoint does not match its adapter")
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +185,6 @@ def binding_for_adapter(
     generation: int | None = None,
 ) -> EndpointBinding:
     """Return the execution binding for one already-resolved adapter."""
-    from routing.endpoints import endpoint_id_for_adapter
-
     return EndpointBinding(
         endpoint_id=endpoint_id_for_adapter(adapter),
         model_id=model_id,
@@ -211,8 +213,6 @@ def execution_adapter(selected: Any, routing_options: Any) -> Any:
     bound = getattr(routing_options, "bound_endpoint", None)
     if bound is None:
         return selected
-    from routing.endpoints import endpoint_id_for_adapter
-
     selected_endpoint = endpoint_id_for_adapter(selected)
     if bound.endpoint_id == selected_endpoint:
         return bound.adapter

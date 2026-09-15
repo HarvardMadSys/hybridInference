@@ -129,7 +129,9 @@ def _registry(shared: FixedRouter) -> ModelRouterRegistry:
     report into the same circuit state the shared router uses.
     """
     registry = ModelRouterRegistry(
-        models_config={_MODEL_ID: {"router": "fixed"}},
+        models_config={
+            _MODEL_ID: {"router": "fixed", "router_params": {"hybrid_composition": True}}
+        },
         default_router_name="fixed",
         shared_fixed_router=shared,
     )
@@ -1031,7 +1033,9 @@ async def test_alias_requests_keep_the_canonical_domain_split(
     shared = FixedRouter(health_registry=EndpointHealthRegistry())
     shared.register_route(_MODEL_ID, [(local, 1.0), (remote, 1.0)], aliases=[alias])
     registry = ModelRouterRegistry(
-        models_config={_MODEL_ID: {"router": "fixed"}},
+        models_config={
+            _MODEL_ID: {"router": "fixed", "router_params": {"hybrid_composition": True}}
+        },
         default_router_name="fixed",
         alias_to_model={alias: _MODEL_ID},
         shared_fixed_router=shared,
@@ -1171,7 +1175,9 @@ async def test_routewise_scoped_wrapper_can_serve_an_explicit_cloud_range(
         )
 
     registry = ModelRouterRegistry(
-        models_config={_MODEL_ID: {"router": "fixed"}},
+        models_config={
+            _MODEL_ID: {"router": "fixed", "router_params": {"hybrid_composition": True}}
+        },
         default_router_name="fixed",
         shared_fixed_router=shared,
     )

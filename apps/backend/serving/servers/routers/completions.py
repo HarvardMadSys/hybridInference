@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from routing.endpoints import endpoint_id_for_adapter
 from routing.executor import ProviderPinError
 from routing.protocols import RoutingRequestOptions
-from routing.routers import AllCircuitsOpenError
+from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
@@ -1144,7 +1144,7 @@ async def chat_completions(
             detail=scrub_error_for_user(exc, request_id, 400),
         ) from exc
 
-    except AllCircuitsOpenError as exc:
+    except (AllCircuitsOpenError, TargetUnavailableError) as exc:
         # Full provider outage: every circuit breaker for this model is open.
         # Surface this as 503 Service Unavailable so clients can distinguish
         # "we're temporarily overloaded / all upstreams down" from a generic

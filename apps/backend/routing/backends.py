@@ -92,7 +92,7 @@ _REQUIRED_ROUTER_METHODS = (
 )
 
 
-def _adapters_in_router(router: Any) -> tuple[Any, ...]:
+def _adapters_in_router(router: Any, model_id: str | None = None) -> tuple[Any, ...]:
     """Return every adapter the wrapped router currently routes to.
 
     Two supported shapes. ``FixedRouter`` *is* the table, so it answers
@@ -102,7 +102,11 @@ def _adapters_in_router(router: Any) -> tuple[Any, ...]:
     router exposing neither contributes no entries instead of failing
     construction.
     """
-    routes = _routes_from(_effective_route_source(router))
+    source = _effective_route_source(router)
+    routes = _routes_from(source)
+    if model_id is not None:
+        canonical = source.canonical_id(model_id)
+        routes = tuple(route for route in routes if route.canonical_model_id == canonical)
     return tuple(adapter for route in routes for adapter, _weight in route.adapters)
 
 
@@ -356,7 +360,9 @@ class RoutingBackendBase:
         """
         return None
 
-    def scope_endpoints(self, scope: Collection[str]) -> frozenset[str]:
+    def scope_endpoints(
+        self, scope: Collection[str], model_id: str | None = None
+    ) -> frozenset[str]:
         """Expand a declared range into the canonical endpoints it resolves to.
 
         A range may name canonical endpoint ids, provider labels, or both. Every
@@ -367,7 +373,7 @@ class RoutingBackendBase:
         """
         return frozenset(
             endpoint_id_for_adapter(adapter)
-            for adapter in _adapters_in_router(self._router)
+            for adapter in _adapters_in_router(self._router, model_id)
             if adapter_in_endpoint_scope(adapter, scope)
         )
 
@@ -478,6 +484,8 @@ class LeafBackend:
             raise ValueError("LeafBackend requires a non-empty endpoint_id")
         if not model_id:
             raise ValueError("LeafBackend requires a non-empty model_id")
+        if endpoint_id_for_adapter(adapter) != endpoint_id:
+            raise DispatchMismatchError("LeafBackend endpoint does not match its adapter")
         if getattr(adapter, "reports_leg_outcomes", False) is True:
             # A composite executor races or fans out across endpoints, so binding
             # it to one endpoint would be a claim it cannot keep -- and the
@@ -657,6 +665,7 @@ class TreeBackend(RoutingBackendBase):
 
     def check_instruction(self, instruction: BackendDispatch, model_id: str) -> None:
         """Refuse a delegation to another pool, or a binding outside this range."""
+        self._require_model(model_id)
         if isinstance(instruction, DelegatePool):
             if instruction.pool_id != self._pool_id:
                 raise DispatchMismatchError(
@@ -664,12 +673,14 @@ class TreeBackend(RoutingBackendBase):
                     f"asked to serve pool {instruction.pool_id!r}"
                 )
             return
+        if self.canonical_id(instruction.binding.model_id) != self.canonical_id(model_id):
+            raise DispatchMismatchError("Execution binding belongs to a different model")
         scope = self.dispatch_scope(model_id)
         if scope is None:
             return
         # Both sides normalized to canonical endpoints first: the declared range
         # may be expressed as provider labels, and the binding names an endpoint.
-        allowed = self.scope_endpoints(scope)
+        allowed = self.scope_endpoints(scope, model_id)
         bound = instruction.binding.endpoint_id
         if bound not in allowed:
             raise DispatchMismatchError(
@@ -685,10 +696,19 @@ class TreeBackend(RoutingBackendBase):
         no such endpoint, which a caller must read as "not dispatchable here"
         rather than as a licence to choose another one.
         """
-        for adapter in _adapters_in_router(self._router):
+        self._require_model(model_id)
+        scope = self.dispatch_scope(model_id)
+        if scope is not None and endpoint_id not in self.scope_endpoints(scope, model_id):
+            return None
+        for adapter in _adapters_in_router(self._router, model_id):
             if endpoint_id_for_adapter(adapter) == endpoint_id:
                 return binding_for_adapter(adapter, model_id=model_id, pool_id=self._pool_id)
         return None
+
+    def _require_model(self, model_id: str) -> None:
+        """Refuse models outside this pool before checking endpoint grants."""
+        if not self.serves(model_id):
+            raise DispatchMismatchError(f"Pool {self.pool_id!r} does not serve model {model_id!r}")
 
     def _scoped_options(
         self,
@@ -707,12 +727,22 @@ class TreeBackend(RoutingBackendBase):
         serve. That is a composition error, not an upstream failure, and it is
         reported as one before anything is sent.
         """
+        self._require_model(model_id)
+        if (
+            routing_options is not None
+            and routing_options.bound_endpoint is not None
+            and self.canonical_id(routing_options.bound_endpoint.model_id)
+            != self.canonical_id(model_id)
+        ):
+            raise DispatchMismatchError("Execution binding belongs to a different model")
         declared = self.dispatch_scope(model_id)
         if declared is None:
             return routing_options
-        allowed = self.scope_endpoints(declared)
+        allowed = self.scope_endpoints(declared, model_id)
         imposed = routing_options.endpoint_scope if routing_options is not None else None
-        effective = allowed if imposed is None else (self.scope_endpoints(imposed) & allowed)
+        effective = (
+            allowed if imposed is None else (self.scope_endpoints(imposed, model_id) & allowed)
+        )
         if not effective:
             raise DispatchMismatchError(
                 f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(allowed)} "
@@ -830,6 +860,10 @@ class LocalBackend(TreeBackend):
         if self._model_scope is None:
             return True
         return self.canonical_id(model_id) in self._model_scope
+
+    def serves(self, model_id: str) -> bool:
+        """Return whether this pool grants access to ``model_id``."""
+        return self.owns_model(model_id)
 
     def owns_observation(self, obs: RoutingObservation) -> bool:
         """Return whether ``obs`` names an endpoint this local backend serves."""
@@ -1046,7 +1080,7 @@ class FixedCloudBackend(CloudBackend):
 
     def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
         """Return the declared cloud endpoints for ``model_id``."""
-        return self._observation_scope.endpoint_scope if self.serves(model_id) else None
+        return self._observation_scope.endpoint_scope if self.serves(model_id) else frozenset()
 
     def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
         """Resolve a policy target inside the declared cloud range."""
@@ -1188,10 +1222,14 @@ class RouteWiseCloudBackend(CloudBackend):
         """Resolve ``model_id`` through the cloud candidate view."""
         return self._view.canonical_id(model_id)
 
+    def serves(self, model_id: str) -> bool:
+        """Return whether the scoped cloud view includes ``model_id``."""
+        return self._view.includes_model(model_id)
+
     def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
         """Return the declared cloud endpoints for ``model_id``."""
         if not self._view.includes_model(model_id):
-            return None
+            return frozenset()
         return self.allowed_endpoints()
 
     def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:

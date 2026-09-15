@@ -3,7 +3,8 @@
 This module is the composition root's half of the hybrid seam. ``FixedPolicy``
 and the backends decide and execute; this file answers the one question only the
 serving layer can answer -- *which endpoints are local for this deployment* --
-and builds the ``HybridRouter`` a ``router: fixed`` model's requests enter.
+and builds ``HybridRouter`` only when a ``router: fixed`` model explicitly
+enables ``router_params.hybrid_composition``. Existing models keep FixedRouter.
 
 Locality is a deployment decision, and this builder takes it as one. A caller
 may declare the local range directly (``local_scope``), supply its own ownership
@@ -186,7 +187,8 @@ class HybridFixedRouterFactory:
         params: dict[str, Any],
     ) -> Any | None:
         """Return the hybrid router for ``model_id``, or None to keep the shared one."""
-        del params  # router_params stay validated by the strategy, not consumed here
+        if not params.get("hybrid_composition", False):
+            return None
         self._check_health_registry(shared_fixed, model_id)
         scopes = _LiveDomainScopes(shared_fixed, model_id, is_local=self._owns_local)
         if not scopes.local():

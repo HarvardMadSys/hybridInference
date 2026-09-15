@@ -105,8 +105,11 @@ For the full diagram (network layer, observability, storage), see
   with backends; it is not the common interface in the design. Its `FixedPolicy`
   / `BackendSelection` can remain internal or compatibility implementation
   details. Preserve public imports if names change.
-  The current bootstrap sends mixed `router: fixed` models through that
-  concrete composition and single-domain models through the shared FixedRouter.
+  The current bootstrap uses that concrete composition only for mixed
+  `router: fixed` models with `router_params.hybrid_composition: true`.
+  Other Fixed models retain the shared FixedRouter. The opt-in composition
+  still differs in affinity, rejected primary claim re-selection, and fallback
+  circuit timing; resolve those before enabling it by default.
   `router: routewise` directly returns RouteWiseRouter. Returning a concrete
   implementation through the common contract is valid; it does not by itself
   prove that the target backend execution boundary is wired.
@@ -147,10 +150,8 @@ For the full diagram (network layer, observability, storage), see
   uses the hostname default, which can classify an owned LAN or cluster DNS
   endpoint as remote. Do not infer a RouteWise resource type from that domain.
   See
-  [docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md](docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
-  for the agreed router/execution boundary, current implementation differences
-  and behavior-preservation contract. That document revision changes no runtime
-  code and does not claim the target integration has been completed.
+  [docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
+  for the current router, leaf and pool contracts, opt-in wiring and deferred work.
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy

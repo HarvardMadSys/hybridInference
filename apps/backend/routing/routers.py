@@ -1342,6 +1342,7 @@ class FixedRouter:
                     pin_provider=pin_provider,
                     required_modalities=required_modalities,
                     prefill_tokens=prefill_tokens,
+                    endpoint_scope=endpoint_scope,
                 ),
                 None,
             )

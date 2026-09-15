@@ -1,5 +1,7 @@
 # Hybrid Routing 抽象重构设计
 
+> 后续边界以 [9/14 设计](2026-09-14-composable-hybrid-routing-design.zh.md) 为准。本文的“只执行指定 endpoint”约束对应现在的 LeafBackend；LocalBackend / CloudBackend 已是 TreeBackend 池包装，可委托内部 Router 在授权范围内选路。下文保留早期方案用于对照，不能将其当作当前池契约。
+
 - 日期：2026-09-12
 - 修订：2026-09-14，按用户最新确认，采用公共 Router 契约、独立策略实现与共享 Backend 执行契约
 - 状态：本轮更新设计文档；目标架构尚未据此完成代码调整或部署验证

@@ -31,7 +31,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from routing.routers import AllCircuitsOpenError
+from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import (
@@ -63,7 +63,7 @@ _SENTINEL: Any = object()
 
 def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
     """Return the HTTP status carried by common upstream exception shapes."""
-    if isinstance(exc, AllCircuitsOpenError):
+    if isinstance(exc, (AllCircuitsOpenError, TargetUnavailableError)):
         return 503
 
     status_code = None
