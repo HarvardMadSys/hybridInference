@@ -409,8 +409,8 @@ Nimbus 若要卸载等待请求，应优先在尚未派发的集合上做决定�
 | [backends.py](../../../apps/backend/routing/backends.py)、[dispatch.py](../../../apps/backend/routing/dispatch.py) | 已有 LeafBackend / TreeBackend、Local/Cloud 包装及显式派发类型；继续复用范围与权限校验，补齐叶子绑定中的 Adapter/快照及生产执行接线 |
 | [route_scope.py](../../../apps/backend/routing/route_scope.py)、[route_table.py](../../../apps/backend/routing/route_table.py) | 复用候选范围投影、模型/endpoint 解析与快照，不复制 Adapter 状态 |
 | [hybrid.py](../../../apps/backend/routing/hybrid.py)、[decisions.py](../../../apps/backend/routing/decisions.py) | 复用已有转发、记录和兼容行为；旧 preference/fallback 组合不能代替新契约的显式权限 |
-| [RouteWiseRouter](../../../apps/backend/routing/routewise/router.py) | 保留算法、学习、重求解、hedging 和全池入口；云端子实例绑定受限视图，补齐共享资源注入和叶子派发接线 |
-| [concurrency.py](../../../apps/backend/routing/routewise/concurrency.py) | 复用现有 manager 的原子准入原语，修正跨 Router 实例的取得和共享边界 |
+| [RouteWiseRouter](../../../apps/backend/routing/routewise/router.py) | 保留算法、学习、重求解、hedging 和全池入口；云端子实例绑定受限视图，叶子派发接线已完成。共享资源注入按 §6.1 延期，不属于 PR #1454 |
+| [concurrency.py](../../../apps/backend/routing/routewise/concurrency.py) | 复用现有 manager 的原子准入原语。跨 Router 实例的取得与共享边界按 §6.1 延期，不属于 PR #1454 |
 | [FixedRouter](../../../apps/backend/routing/routers.py) | 保持全局权重、健康、亲和、prefill 和 fallback 顺序；不把原 `L1 → cloud → L2` 改成先耗尽一个域 |
 | [model_router_registry.py](../../../apps/backend/routing/model_router_registry.py) | 继续按模型构建/缓存入口；补充完整组合配置的构建、切换和排空 |
 | [hybrid_composition.py](../../../apps/backend/serving/servers/hybrid_composition.py)、[bootstrap.py](../../../apps/backend/serving/servers/bootstrap.py) | 已有可注入 cloud backend 的构建入口；验证现有组合的共享资源引用、请求转发和子 Router 生命周期管理 |
@@ -432,7 +432,7 @@ PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来�
 
 保留直接全池 RouteWise，验证现有 Fixed / RouteWise 模型经 serving / Registry / bootstrap 使用重构后的实现。普通请求、SSE、取消、反馈、探测和状态恢复保持原有行为；类已定义或可以单独构造不能替代请求路径验证。
 
-验证既有模型切换、路由范围变化、共享池容量更新及旧请求排空。这里的请求路径验证指网关调用链验证，不要求新增 Greedy 算法，也不把上线部署作为抽象是否成立的定义。
+验证既有模型切换、路由范围变化及旧请求排空。共享池容量更新属于延期的共享容量所有权（§6.1），本轮不作为验收项。这里的请求路径验证指网关调用链验证，不要求新增 Greedy 算法，也不把上线部署作为抽象是否成立的定义。
 
 ### 11.3 未来可选：Greedy 组合
 
@@ -454,7 +454,7 @@ PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来�
 | 精确派发 | 指定 endpoint 缺失、越界或不可准入时，不调用另一个 endpoint；叶子执行的 Adapter 即绑定时解析出的那一个，不重新查表 |
 | 池委托 | 上层只指定 cloud pool，实际 endpoint 由子 Router 选择；父层不先重复抽签或占用同一云端槽 |
 | 资源类型正交 | cloud concurrency 候选可用且有槽时参与云端决策；local concurrency 仍能参与全池 RouteWise |
-| 多实例共享 | 两个 Router/模型/新旧版本访问同一资源池，总使用不超过真实上限；未实现共享时配置被拒绝 |
+| 多实例共享 **（不在 PR #1454 范围，见 §6.1）** | 后续项，本轮不验：两个 Router/模型/新旧版本访问同一资源池时总使用不超过真实上限、未实现共享时配置被拒绝，都随共享容量所有权一起延期。当前状态见 §12.1 之后的说明 |
 | 资源生命周期 | 成功、失败、取消、hedge loser 和准入竞争失败均正确清理；quota 不被通用释放错误退还 |
 | 失败边界 | 各 Router 保留自身的失败处理规则；云端内部失败由子 Router 处理；包装层不引入循环、重复尝试或虚构 provider 故障 |
 | 流式 | 普通/SSE 路径目标语义一致；关闭迭代器向下取消；可见输出后不拼接另一条回答 |
