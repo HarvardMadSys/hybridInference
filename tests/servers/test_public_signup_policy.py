@@ -14,7 +14,7 @@ from serving.auth.signup_policy import (
 from serving.config.distribution import get_distribution_config
 from serving.config.runtime_settings import init_runtime_settings
 from serving.config.settings import get_settings
-from serving.servers.deps import get_db_logger, get_operational_store
+from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
 from serving.servers.routers import auth_routes, site_config
 from tests.fixtures.auth_factories import create_signup_request
 
@@ -43,6 +43,11 @@ async def signup_client(monkeypatch):
     app.include_router(site_config.router)
     app.dependency_overrides[get_operational_store] = lambda: store
     app.dependency_overrides[get_db_logger] = lambda: None
+    unavailable_log_store = AsyncMock()
+    unavailable_log_store.account_has_erasure_fence.side_effect = AssertionError(
+        "signup must not perform a post-commit LogStore fence lookup"
+    )
+    app.dependency_overrides[get_log_store] = lambda: unavailable_log_store
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, store
     invalidate_allowlist_cache()

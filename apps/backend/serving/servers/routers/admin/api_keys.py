@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.exceptions import HardDeleteStateChanged
 from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
@@ -68,17 +69,23 @@ async def create_api_key(
     key_hash = hash_api_key(plaintext_key)
     key_prefix = plaintext_key[:12]
 
-    row = await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=payload.user_id,
-        user_name=payload.user_name,
-        quota_daily_cost_usd=payload.quota_daily_cost_usd,
-        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
-        expires_at=payload.expires_at,
-        notes=payload.notes,
-        metadata=payload.metadata,
-    )
+    try:
+        row = await op_store.create_key(
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=payload.user_id,
+            user_name=payload.user_name,
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            metadata=payload.metadata,
+        )
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "This account has a hard-delete in progress or no longer exists.",
+        ) from None
 
     await log_admin_action(
         op_store,
@@ -255,7 +262,13 @@ async def update_api_key(
     if not existing:
         raise HTTPException(404, f"User '{user_id}' not found")
 
-    await op_store.update_key(user_id, **payload_dict)
+    try:
+        await op_store.update_key(user_id, **payload_dict)
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "This account has a hard-delete in progress or no longer exists.",
+        ) from None
 
     await log_admin_action(
         op_store,
@@ -295,7 +308,13 @@ async def revoke_api_key(
     if not existing:
         raise HTTPException(404, f"User '{user_id}' not found")
 
-    await op_store.revoke_key(user_id, hard_delete=hard_delete)
+    try:
+        await op_store.revoke_key(user_id, hard_delete=hard_delete)
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "This account has a hard-delete in progress or no longer exists.",
+        ) from None
 
     if hard_delete:
         action_type = "hard_delete_key"
@@ -308,6 +327,12 @@ async def revoke_api_key(
             f"API key for user '{user_id}' has been revoked. User can no longer access the API."
         )
 
-    await log_admin_action(op_store, admin_id, action_type, user_id, {"hard_delete": hard_delete})
+    await log_admin_action(
+        op_store,
+        admin_id,
+        action_type,
+        user_id,
+        {"hard_delete": hard_delete},
+    )
 
     return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)

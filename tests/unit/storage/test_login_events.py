@@ -157,7 +157,7 @@ async def test_hard_delete_user_sweeps_login_events(store: PostgresOperationalSt
             "Doomed",
             "$2b$12$X",
             "free",
-            "active",
+            "deleted",
         )
         await conn.execute(
             "INSERT INTO users (id, email, user_name, password_hash, role, status) "
@@ -188,8 +188,10 @@ async def test_hard_delete_user_sweeps_login_events(store: PostgresOperationalSt
         user_agent=None,
     )
 
+    claim_token = await store.begin_hard_delete_user("doomed")
     counts = await store.hard_delete_user(
         "doomed",
+        claim_token=claim_token.token,
         admin_ip="127.0.0.1",
         admin_id="admin1",
         reason="test",

@@ -95,6 +95,8 @@ async def test_log_admin_action_writes_entry(monkeypatch):
         target_user_id="user123",
         details={"quota": 100},
         success=True,
+        target_is_user=True,
+        target_missing_identity_fenced=None,
     )
 
 

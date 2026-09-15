@@ -216,6 +216,7 @@ async def admin_set_provider_disabled(
         "providers.disabled.update",
         provider,
         {"provider": provider, "disabled": payload.disabled},
+        target_is_user=False,
     )
 
     return SetProviderDisabledResponse(

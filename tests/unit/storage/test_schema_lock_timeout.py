@@ -19,15 +19,41 @@ The invariants below are what keep that from recurring:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from serving.storage.log_schema import (
     _DDL_LOCK_TIMEOUT,
+    ErasureFenceUnavailable,
     SchemaLockUnavailable,
+    _non_blank_secret,
+    check_erasure_fence,
     ensure_api_logs_schema,
+    fence_account_digest,
+    fingerprint_secret,
+    protect_api_logs_insert,
+    validate_or_init_fingerprint,
 )
+
+
+class _ClosablePool:
+    """Minimal pool double that records whether initialization cleaned it up."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, None), ("", None), ("   \t", None), ("  stable-secret  ", "stable-secret")],
+)
+def test_non_blank_secret_normalizes_blank_values(value, expected):
+    assert _non_blank_secret(value) == expected
 
 
 class _PostgresError(Exception):
@@ -36,6 +62,106 @@ class _PostgresError(Exception):
     def __init__(self, sqlstate: str) -> None:
         super().__init__(f"postgres error {sqlstate}")
         self.sqlstate = sqlstate
+
+
+class _FencePrerequisiteConn:
+    """Small schema simulator for the deferrable api_logs migration path."""
+
+    def __init__(self) -> None:
+        self.relations: set[str] = set()
+        self.statements: list[str] = []
+
+    async def execute(self, sql: str, *_args: object) -> str:
+        self.statements.append(sql)
+        normalized = " ".join(sql.split()).lower()
+        for relation in ("erasure_fence", "erasure_fence_metadata", "api_logs"):
+            if f"create table if not exists {relation}" in normalized:
+                self.relations.add(relation)
+        if normalized.startswith("alter table api_logs"):
+            raise _PostgresError("55P03")
+        return "OK"
+
+    async def fetch(self, sql: str, *_args: object) -> list[dict[str, str]]:
+        del sql
+        return []
+
+    async def fetchrow(self, sql: str, *_args: object) -> dict[str, int] | None:
+        assert "erasure_fence" in sql
+        assert "erasure_fence" in self.relations, (
+            "runtime fence lookup ran before the fence schema was created"
+        )
+        return None
+
+
+class _FingerprintMismatchConn:
+    """Connection double with a durable fingerprint from an older secret."""
+
+    def __init__(self, stored_fingerprint: str) -> None:
+        self.stored_fingerprint = stored_fingerprint
+        self.statements: list[tuple[str, tuple[object, ...]]] = []
+        self.transaction_states: list[bool] = []
+        self._transaction_depth = 0
+
+    def is_in_transaction(self) -> bool:
+        return self._transaction_depth > 0
+
+    @asynccontextmanager
+    async def transaction(self):
+        self._transaction_depth += 1
+        try:
+            yield
+        finally:
+            self._transaction_depth -= 1
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.transaction_states.append(self.is_in_transaction())
+        self.statements.append((sql, args))
+        if "INSERT INTO erasure_fence_metadata" in sql:
+            return "INSERT 0 0"
+        return "OK"
+
+    async def fetchval(self, sql: str, *args: object) -> str | bool:
+        self.transaction_states.append(self.is_in_transaction())
+        self.statements.append((sql, args))
+        if "FROM erasure_fence)" in sql:
+            return True
+        assert "FROM erasure_fence_metadata" in sql
+        return self.stored_fingerprint
+
+
+class _FingerprintInitConn:
+    """Connection double for first-start namespace pinning."""
+
+    def __init__(self) -> None:
+        self.stored_fingerprint: str | None = None
+        self.statements: list[tuple[str, tuple[object, ...]]] = []
+        self._transaction_depth = 0
+
+    def is_in_transaction(self) -> bool:
+        return self._transaction_depth > 0
+
+    @asynccontextmanager
+    async def transaction(self):
+        self._transaction_depth += 1
+        try:
+            yield
+        finally:
+            self._transaction_depth -= 1
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.statements.append((sql, args))
+        if "INSERT INTO erasure_fence_metadata" in sql:
+            if self.stored_fingerprint is not None:
+                return "INSERT 0 0"
+            self.stored_fingerprint = str(args[1])
+            return "INSERT 0 1"
+        return "OK"
+
+    async def fetchval(self, sql: str, *_args: object) -> str | bool | None:
+        if "FROM erasure_fence_metadata" in sql:
+            return self.stored_fingerprint
+        assert "FROM erasure_fence)" in sql
+        return False
 
 
 def _conn(execute_side_effect=None) -> tuple[MagicMock, list[str]]:
@@ -52,6 +178,92 @@ def _conn(execute_side_effect=None) -> tuple[MagicMock, list[str]]:
     conn.execute = AsyncMock(side_effect=_execute)
     conn.fetch = AsyncMock(return_value=[])
     return conn, statements
+
+
+@pytest.mark.asyncio
+async def test_fence_schema_survives_deferrable_api_logs_migration():
+    """A deferred api_logs DDL cannot leave runtime fence queries unusable."""
+    conn = _FencePrerequisiteConn()
+
+    with pytest.raises(SchemaLockUnavailable):
+        await ensure_api_logs_schema(conn)
+
+    assert {"erasure_fence", "erasure_fence_metadata"} <= conn.relations
+    fence_key = fence_account_digest("test-user", "test-secret")
+    assert await check_erasure_fence(conn, fence_keys=[fence_key]) is False
+
+    assert (
+        await protect_api_logs_insert(
+            conn,
+            fence_secret="test-secret",
+            user_id="test-user",
+            credential_owner_id=None,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_secret_mismatch_fails_closed_without_delete_recovery():
+    """A rotated secret cannot silently create a new fence namespace."""
+    conn = _FingerprintMismatchConn(fingerprint_secret("original"))
+    with pytest.raises(ErasureFenceUnavailable) as exc_info:
+        await validate_or_init_fingerprint(conn, secret="rotated")
+
+    message = str(exc_info.value).lower()
+    assert "restore the original erasure_fence_secret" in message
+    assert "do not delete erasure_fence" in message
+    assert "manually delete" not in message
+    assert any(
+        "CREATE TABLE IF NOT EXISTS erasure_fence_metadata" in sql for sql, _ in conn.statements
+    )
+    # An existing fingerprint is authoritative; a mismatched secret must not
+    # attempt to create or replace a second namespace.
+    assert not any("INSERT INTO erasure_fence_metadata" in sql for sql, _ in conn.statements)
+    assert not any("DELETE" in sql.upper() for sql, _ in conn.statements)
+    assert conn.transaction_states
+    assert all(conn.transaction_states)
+    assert conn._transaction_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_database_logger_closes_pool_and_propagates_secret_mismatch():
+    """A fatal fence mismatch must not degrade into a logger-less service."""
+    from serving.storage.database import DatabaseLogger
+
+    pool = _ClosablePool()
+    logger = DatabaseLogger({}, fence_secret="rotated")
+    mismatch = ErasureFenceUnavailable("restore the original secret")
+
+    with (
+        patch(
+            "serving.storage.database.asyncpg.create_pool",
+            new=AsyncMock(return_value=pool),
+        ),
+        patch.object(logger, "_create_tables", new=AsyncMock(side_effect=mismatch)),
+        pytest.raises(ErasureFenceUnavailable, match="restore the original"),
+    ):
+        await logger.initialize()
+
+    assert pool.closed is True
+    assert logger.pool is None
+
+
+@pytest.mark.asyncio
+async def test_first_start_pins_namespace_before_any_fence():
+    """Different workers cannot pass startup with different empty namespaces."""
+    conn = _FingerprintInitConn()
+
+    await validate_or_init_fingerprint(conn, secret="first-secret")
+    assert conn.stored_fingerprint == fingerprint_secret("first-secret")
+
+    with pytest.raises(ErasureFenceUnavailable) as exc_info:
+        await validate_or_init_fingerprint(conn, secret="second-secret")
+
+    assert "restore the original erasure_fence_secret" in str(exc_info.value).lower()
+    assert conn.stored_fingerprint == fingerprint_secret("first-secret")
+    assert not any("UPDATE " in sql.upper() for sql, _ in conn.statements)
+    assert conn._transaction_depth == 0
 
 
 @pytest.mark.asyncio

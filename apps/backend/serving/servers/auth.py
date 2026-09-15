@@ -887,12 +887,16 @@ async def log_admin_action(
     target_user_id: str | None = None,
     details: dict[str, Any] | None = None,
     success: bool = True,
+    target_is_user: bool = True,
+    target_missing_identity_fenced: bool | None = None,
 ) -> None:
     """Log admin action to audit trail.
 
     Accepts either an OperationalStore or a legacy DatabaseLogger. Callers
     are migrating to pass the store directly; during transition both are
-    supported.
+    supported. When the target user row is missing, the callee decides
+    whether to redact the identifier: the LogStore owns the erasure fence and
+    the operational store never queries its table.
 
     Args:
         db_logger: OperationalStore or DatabaseLogger instance
@@ -901,6 +905,10 @@ async def log_admin_action(
         target_user_id: User ID affected by the action (if applicable)
         details: Additional context (will be stored as JSONB)
         success: Whether the action succeeded
+        target_is_user: Whether ``target_user_id`` names a user identity. Set
+            false for non-user targets such as provider names.
+        target_missing_identity_fenced: Whether the LogStore reports an
+            erasure fence for a target whose ``users`` row is missing.
     """
     if not db_logger:
         return  # Silently skip if logging not configured
@@ -913,6 +921,8 @@ async def log_admin_action(
             target_user_id=target_user_id,
             details=details,
             success=success,
+            target_is_user=target_is_user,
+            target_missing_identity_fenced=target_missing_identity_fenced,
         )
         return
 
@@ -922,7 +932,30 @@ async def log_admin_action(
 
     import json
 
-    async with db_logger.pool.acquire() as conn:
+    async with db_logger.pool.acquire() as conn, conn.transaction():
+        audit_target_user_id = target_user_id
+        audit_details = dict(details) if details else None
+        if target_user_id is not None and target_is_user:
+            row = await conn.fetchrow(
+                "SELECT hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                target_user_id,
+            )
+            if row is None:
+                # The row lookup is the transaction's authoritative view. A
+                # pre-transaction fence check can become stale while a hard
+                # delete commits, so every missing identity is redacted.
+                audit_target_user_id = None
+                audit_details = {
+                    "target_user_id_redacted": (
+                        "erasure_fence" if target_missing_identity_fenced else "missing_identity"
+                    )
+                }
+            elif row.get("hard_delete_pending", False):
+                # The mutation may have committed before this audit
+                # transaction acquired the claim row lock. Record success
+                # without allowing identifying details to outlive the purge.
+                audit_target_user_id = None
+                audit_details = {"target_user_id_redacted": "hard_delete_in_progress"}
         await conn.execute(
             """
             INSERT INTO admin_audit_log (admin_ip, action, target_user_id, details, success)
@@ -930,7 +963,7 @@ async def log_admin_action(
             """,
             admin_ip,
             action,
-            target_user_id,
-            json.dumps(details) if details else None,
+            audit_target_user_id,
+            json.dumps(audit_details) if audit_details else None,
             success,
         )

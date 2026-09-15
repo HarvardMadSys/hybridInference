@@ -86,6 +86,22 @@ class TestAPIKeyManagement:
         assert data["api_key"] not in json.dumps(details)
 
     @pytest.mark.asyncio
+    async def test_create_api_key_does_not_require_log_store(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_app_services
+    ):
+        """Self-service key creation must not depend on the LogStore being available."""
+
+        class UnavailableLogStore:
+            async def account_has_erasure_fence(self, user_id: str) -> bool:
+                raise AssertionError("self-service key creation must not preflight LogStore")
+
+        auth_app_services.log_store = UnavailableLogStore()
+
+        response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+
+        assert response.status_code == 201
+
+    @pytest.mark.asyncio
     async def test_create_duplicate_api_key(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
     ):

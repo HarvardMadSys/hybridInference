@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -53,6 +54,27 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+
+class HardDeleteClaimProvenance(str, Enum):
+    """How a hard-delete claim was obtained by the current operation."""
+
+    NEW = "new"
+    REUSED = "reused"
+    RECOVERED = "recovered"
+
+
+@dataclass(frozen=True)
+class HardDeleteClaim:
+    """Durable claim token plus its ownership provenance."""
+
+    token: str
+    provenance: HardDeleteClaimProvenance
+
+    @property
+    def newly_acquired(self) -> bool:
+        """Whether this request owns a fresh, releasable pre-fence claim."""
+        return self.provenance is HardDeleteClaimProvenance.NEW
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +209,49 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        allow_existing_fence: bool = False,
+        recover_stale_claim: bool = False,
+    ) -> HardDeleteClaim:
+        """Atomically claim a soft-deleted user for hard deletion.
+
+        The durable operational-store marker serializes hard-delete with
+        resume even when the LogStore uses a different database. Repeating
+        the claim for an already-pending deleted user is rejected so a
+        concurrent attempt cannot take ownership from the active operation.
+        Once the caller has independently verified that the LogStore fence is
+        already durable, ``allow_existing_fence`` permits a retry to take over
+        a claim only after it is past the recovery grace period. The takeover
+        replaces and renews the claim token atomically; a live token is never
+        shared by concurrent destructive operations.
+        An active claim remains owned by its current worker and is rejected, so
+        a concurrent request cannot enter the destructive phase with the same
+        token. A retry without that proof may begin only after a failed
+        pre-fence attempt releases its claim.
+        ``recover_stale_claim`` is an explicit operator takeover for a claim
+        left by a process that exited before the fence transaction. It requires
+        the claim to be older than the implementation's recovery grace period;
+        reclaimed claims remain pending if the takeover fails before fencing.
+        The returned claim token must be supplied to release or finish the
+        claim. Its provenance tells callers whether this request may release
+        it after a pre-fence failure.
+        """
+
+    @abstractmethod
+    async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Release a claim installed by a failed pre-fence hard-delete.
+
+        Implementations must clear the marker only while the account remains
+        soft-deleted and claimed by ``claim_token``. Callers use this only
+        after the LogStore confirms that no erasure fence was established, so
+        a failed purge can be retried without clearing another attempt's
+        claim.
+        """
+
+    @abstractmethod
     async def resume_user(
         self,
         user_id: str,
@@ -207,6 +272,7 @@ class OperationalStore(ABC):
         self,
         user_id: str,
         *,
+        claim_token: str,
         admin_ip: str,
         admin_id: str,
         reason: str | None = None,
@@ -407,8 +473,16 @@ class OperationalStore(ABC):
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        missing_identity_fenced: bool | None = None,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``)."""
+        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
+
+        ``missing_identity_fenced`` is the LogStore-validated erasure-fence
+        answer for a key-only identity whose ``users`` row is gone. The
+        LogStore owns the fence; the operational store must never query the
+        fence table itself. ``None`` means no LogStore verification is
+        available and a missing identity fails closed.
+        """
 
     @abstractmethod
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -429,12 +503,32 @@ class OperationalStore(ABC):
         """Fetch full key row for a given *user_id* (admin detail view)."""
 
     @abstractmethod
-    async def update_key(self, user_id: str, **fields: Any) -> None:
-        """Dynamically update key columns for *user_id*."""
+    async def update_key(
+        self,
+        user_id: str,
+        missing_identity_fenced: bool | None = None,
+        **fields: Any,
+    ) -> None:
+        """Dynamically update key columns for *user_id*.
+
+        ``missing_identity_fenced`` is the LogStore-validated erasure-fence
+        answer for a key-only identity (see :meth:`create_key`).
+        """
 
     @abstractmethod
-    async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
-        """Soft-revoke (status='revoked') or hard-delete the key."""
+    async def revoke_key(
+        self,
+        user_id: str,
+        *,
+        hard_delete: bool = False,
+        missing_identity_fenced: bool | None = None,
+    ) -> None:
+        """Soft-revoke (status='revoked') or hard-delete the key.
+
+        ``missing_identity_fenced`` is the LogStore-validated erasure-fence
+        answer for a key-only identity (see :meth:`create_key`). Destructive
+        revocation does not require this cross-store answer.
+        """
 
     @abstractmethod
     async def regenerate_key(
@@ -443,8 +537,13 @@ class OperationalStore(ABC):
         *,
         new_key_hash: str,
         new_key_prefix: str,
+        missing_identity_fenced: bool | None = None,
     ) -> str:
-        """Atomically replace the key hash/prefix. Returns old key_prefix."""
+        """Atomically replace the key hash/prefix. Returns old key_prefix.
+
+        ``missing_identity_fenced`` is the LogStore-validated erasure-fence
+        answer for a key-only identity (see :meth:`create_key`).
+        """
 
     @abstractmethod
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
@@ -699,8 +798,19 @@ class OperationalStore(ABC):
         target_user_id: str | None = None,
         details: dict[str, Any] | None = None,
         success: bool = True,
+        target_is_user: bool = True,
+        target_missing_identity_fenced: bool | None = None,
     ) -> None:
-        """Insert a row into admin_audit_log."""
+        """Insert a row into admin_audit_log.
+
+        ``target_missing_identity_fenced`` carries the LogStore-validated
+        erasure-fence answer for a missing target, so the operational store
+        can redact identifying rows without querying the LogStore-owned fence
+        table. ``target_is_user`` is false for non-user targets, such as
+        provider names, which must not be looked up or redacted as users. If a
+        user is already claimed for hard-delete, the audit target and details
+        are redacted so a committed mutation is not reported as failed.
+        """
 
     @abstractmethod
     async def list_audit_log(
@@ -1601,7 +1711,26 @@ class LogStore(ABC):
         *user_id*.  Returns ``{table_name: row_count}`` (implementations that
         cannot return per-statement counts may return ``{}``).
 
-        Called by the admin hard-delete endpoint AFTER the OperationalStore
-        wipe completes.  Cross-pool failure semantics are documented at the
-        endpoint.
+        Must establish the erasure fence (issue #1421) **before or atomically
+        with** the destructive log purge, so once this method returns there is
+        a durable fact saying that log rows identifying that account may no
+        longer be created. Implementations should run the fence establishment
+        and the DELETE in a single transaction.
+
+        Called by the admin hard-delete endpoint BEFORE the OperationalStore
+        wipe so that a LogStore failure leaves the user row + audit untouched
+        and the admin can retry. Cross-pool failure semantics are documented
+        at the endpoint.
+        """
+
+    @abstractmethod
+    async def account_has_erasure_fence(self, user_id: str) -> bool:
+        """Return True if an erasure fence exists for *user_id*.
+
+        Used by the admin resume endpoint to refuse reactivation of a
+        hard-deleted (fenced) account. A fenced account cannot be resumed
+        because its erasure fence is permanent: the hard-delete already
+        purged its logs, and the fence prevents new identifying rows from
+        being created. Reactivating it would produce an active account
+        whose logs silently disappear.
         """

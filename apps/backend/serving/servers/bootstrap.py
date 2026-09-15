@@ -39,9 +39,12 @@ from serving.servers.routewise_compat import (
 )
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
-from serving.storage.log_schema import SchemaLockUnavailable
+from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
 from serving.storage.postgres_log import PostgresLogStore
-from serving.storage.postgres_operational import PostgresOperationalStore
+from serving.storage.postgres_operational import (
+    PostgresOperationalStore,
+    RequiredOperationalSchemaUnavailable,
+)
 from serving.storage.responses_store import ResponseStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
@@ -143,6 +146,12 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
     """
     try:
         await pg_operational.initialize()
+    except RequiredOperationalSchemaUnavailable:
+        logger.error(
+            "Operational store cannot start until the hard-delete claim column "
+            "is installed; refusing to serve against an unsafe schema."
+        )
+        raise
     except SchemaLockUnavailable as lock_exc:
         logger.warning(
             f"Operational schema migration deferred: {_describe_exc(lock_exc)}. "
@@ -558,10 +567,20 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
         logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
+        from serving.storage.log_schema import resolve_fence_secret
+
         return DatabaseLogger(
             db_config,
             store_full_prompts=settings.db_store_full_content,
+            fence_secret=resolve_fence_secret(settings.erasure_fence_secret),
         )
+    except ErasureFenceUnavailable:
+        # Missing or invalid fence-secret configuration is a privacy-boundary
+        # failure. It must not be converted into a missing logger, because an
+        # auth-disabled process would otherwise continue without protected
+        # persistence and an auth-enabled process would fail later in less
+        # obvious ways.
+        raise
     except Exception as exc:
         logger.warning(f"Failed to create database logger: {exc}")
         return None
@@ -786,6 +805,11 @@ async def initialize() -> AppServices:
                                 f"{stop_exc}"
                             )
                 break
+            except ErasureFenceUnavailable:
+                # A pinned secret mismatch is a privacy-boundary violation,
+                # not a transient migration failure. Propagate it instead
+                # of retrying and eventually starting without a logger.
+                raise
             except Exception as exc:
                 if attempt < max_retries - 1:
                     logger.warning(
@@ -898,12 +922,21 @@ async def initialize() -> AppServices:
     responses_store = None
 
     if db_logger and db_logger.pool:
+        # Resolve the erasure-fence derivation secret. Fail closed: if no
+        # secret is available, the hard-delete endpoint cannot guarantee
+        # the #1421 invariant, so we raise at startup rather than silently
+        # degrading to the pre-#1421 racy behavior.
+        from serving.storage.log_schema import resolve_fence_secret
+
+        fence_secret = resolve_fence_secret(settings.erasure_fence_secret)
+
         pg_operational = PostgresOperationalStore(db_logger.pool)
         await _initialize_operational_store(pg_operational)
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
+            fence_secret=fence_secret,
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")

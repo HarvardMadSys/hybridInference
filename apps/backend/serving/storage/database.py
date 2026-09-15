@@ -15,6 +15,7 @@ from typing import Any
 import asyncpg
 
 from serving.storage.log_schema import (
+    ErasureFenceUnavailable,
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
@@ -23,6 +24,8 @@ from serving.storage.log_schema import (
     drop_columns_if_present,
     ensure_api_logs_schema,
     execute_ddl,
+    protect_api_logs_insert,
+    validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
 from serving.storage.utils import (
@@ -65,15 +68,21 @@ class DatabaseLogger:
         self,
         db_config: dict[str, str],
         store_full_prompts: bool = True,
+        fence_secret: str | None = None,
     ):
         """Initialize the logger with a DSN/config mapping.
 
         Args:
             db_config: Mapping with asyncpg pool connection arguments.
             store_full_prompts: If False, prompt and response fields will be NULL.
+            fence_secret: Server secret used to derive non-reversible
+                erasure-fence digests. Resolved at startup by
+                :func:`serving.storage.log_schema.resolve_fence_secret`,
+                which fails closed if no stable secret is configured.
         """
         self.db_config = db_config
         self.store_full_prompts = store_full_prompts
+        self.fence_secret = fence_secret
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
 
@@ -82,7 +91,14 @@ class DatabaseLogger:
         self.pool = await asyncpg.create_pool(
             **self.db_config, min_size=2, max_size=10, command_timeout=60
         )
-        await self._create_tables()
+        try:
+            await self._create_tables()
+        except ErasureFenceUnavailable:
+            # A fingerprint mismatch is a durable privacy boundary, not a
+            # transient database startup error. Do not let bootstrap retry and
+            # eventually disable logging while retaining an open pool.
+            await self.cleanup()
+            raise
 
     async def ensure_schema(self) -> None:
         """Re-run schema creation/migration against the existing pool.
@@ -98,6 +114,10 @@ class DatabaseLogger:
         if self.pool is None:
             raise RuntimeError("DatabaseLogger not initialized")
         async with self.pool.acquire() as conn:
+            if self.fence_secret:
+                # Validate the existing fence namespace before a deferrable
+                # api_logs migration can return early.
+                await validate_or_init_fingerprint(conn, secret=self.fence_secret)
             # api_logs + api_stats_hourly (table, migrations, indexes) live in a
             # single shared module so this boot-time builder and the runtime
             # PostgresLogStore.initialize cannot drift. Add future api_logs
@@ -937,7 +957,29 @@ class DatabaseLogger:
             or _string_or_none(provider)
         )
 
-        async with self.pool.acquire() as conn:
+        # Determine the two account identifiers this row could carry. Either
+        # would identify the deleted account in api_logs after a hard-delete,
+        # so both must be checked against the erasure fence (issue #1421).
+        _row_user_id = (sanitized_metadata or {}).get("user_id")
+        _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+
+        async with self.pool.acquire() as conn, conn.transaction():
+            # Erasure fence check (issue #1421): if any account this row would
+            # identify has been hard-deleted, do not create an identifying row.
+            _row_user_id = (sanitized_metadata or {}).get("user_id")
+            _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+            if await protect_api_logs_insert(
+                conn,
+                fence_secret=self.fence_secret,
+                user_id=_row_user_id,
+                credential_owner_id=_row_credential_owner,
+            ):
+                logger.info(
+                    "log_request suppressed: erasure fence hit for request %s",
+                    request_id,
+                )
+                return
+
             await conn.execute(
                 """
                 INSERT INTO api_logs (

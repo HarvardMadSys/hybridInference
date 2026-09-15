@@ -19,6 +19,7 @@ from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
 from serving.servers.registry import ModelRegistrationInfo
+from serving.storage.log_schema import ErasureFenceUnavailable
 
 
 def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
@@ -187,6 +188,20 @@ class TestBootstrapInitialization:
             mock_logger.initialize.assert_called_once()
             mock_pg_op.initialize.assert_called_once()
             assert isinstance(services.model_visibility_resolver, ModelVisibilityResolver)
+
+    @pytest.mark.asyncio
+    async def test_initialize_propagates_erasure_fence_mismatch(self, mock_env):
+        """A pinned fence mismatch must abort bootstrap instead of disabling logging."""
+        mock_logger = AsyncMock()
+        mock_logger.initialize.side_effect = ErasureFenceUnavailable("restore the original secret")
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=mock_logger),
+            pytest.raises(ErasureFenceUnavailable, match="restore the original"),
+        ):
+            await bootstrap.initialize()
+
+        mock_logger.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_initialize_attaches_model_visibility_resolver_when_operational_store_exists(
@@ -946,6 +961,19 @@ class TestBootstrapHelpers:
         logger = bootstrap._init_db_logger()
 
         assert logger is None
+
+    def test_init_db_logger_propagates_missing_fence_secret(self, monkeypatch):
+        """Missing fence configuration must not be converted into no logger."""
+        monkeypatch.setenv("DB_ENABLED", "true")
+        monkeypatch.setenv("USER_AUTH_ENABLED", "false")
+        monkeypatch.setenv("API_KEY_SECRET", "")
+        monkeypatch.setenv("ERASURE_FENCE_SECRET", "")
+
+        from serving.config.settings import get_settings
+
+        get_settings.cache_clear()
+        with pytest.raises(ErasureFenceUnavailable, match="No erasure-fence secret"):
+            bootstrap._init_db_logger()
 
     @pytest.mark.asyncio
     async def test_init_router_with_remote_models(self, monkeypatch, tmp_path):

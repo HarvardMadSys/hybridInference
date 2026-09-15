@@ -39,6 +39,7 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_db_logger,
+    get_log_store,
     get_operational_store,
     verify_admin_access,
 )
@@ -478,6 +479,7 @@ async def admin_sample_usage(
     payload: UsageInsightsRequest,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
 ) -> UsageInsightsSamplesResponse:
     """Return the same random sample Analyze usage would send to the LLM.
 
@@ -497,6 +499,11 @@ async def admin_sample_usage(
         "usage_insights_samples",
         target_user_id=user_id,
         details={"sampled_requests": len(samples), "scope": scope},
+        target_missing_identity_fenced=(
+            None
+            if user_id is None or log_store is None
+            else await log_store.account_has_erasure_fence(user_id)
+        ),
     )
 
     return UsageInsightsSamplesResponse(
@@ -513,6 +520,7 @@ async def admin_analyze_usage(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
     op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> UsageInsightsResponse:
     """Sample stored request payloads and summarize how users use the gateway."""
     if not db_logger or not db_logger.pool:
@@ -546,6 +554,11 @@ async def admin_analyze_usage(
         "usage_insights_analyze",
         target_user_id=user_id,
         details={"sampled_requests": used, "model": model, "scope": scope},
+        target_missing_identity_fenced=(
+            None
+            if user_id is None or log_store is None
+            else await log_store.account_has_erasure_fence(user_id)
+        ),
     )
 
     return UsageInsightsResponse(
