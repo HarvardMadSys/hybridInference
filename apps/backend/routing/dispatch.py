@@ -27,7 +27,7 @@ target -- a preference keeps delegating, which is what it has always meant.
 
 Not carried here yet, and named so the gap is visible rather than implied: the
 adapter and routing-snapshot fields the design calls for in a binding, and the
-end-to-end deadline / attempt budget context. Both belong with the leaf
+end-to-end deadline context. Both belong with the leaf
 execution work, because populating them means resolving adapters at bind time and
 moving ownership of the upstream attempt -- neither of which this contract
 change does.

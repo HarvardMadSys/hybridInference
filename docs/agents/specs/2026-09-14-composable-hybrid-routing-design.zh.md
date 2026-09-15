@@ -1,8 +1,9 @@
 # 可组合的 Hybrid Routing 设计
 
 - 日期：2026-09-14
+- 更新：2026-09-15，明确抽象重构范围与后续拓扑接入的区别
 - 状态：设计提案；本文新增文档，不代表所述接口、配置和 Greedy 生产接线已经实现
-- 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract@ea9ad22fe14d96b9b2d414e337cba040d9ce28a4`
+- 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract@c71c07be0478e2062dc8bc398098de8f90a3e214`
 - 核心场景：RouteWise 可以直接路由 local + cloud，也可以在 Greedy / 未来 Nimbus 下面只路由 cloud
 - 前序设计：[Hybrid Routing 抽象重构设计](2026-09-12-hybrid-routing-abstraction-design.zh.md)
 
@@ -24,12 +25,16 @@
 
 ### 1.1 交付范围
 
-目标实现首先支持以下两种拓扑，并保持现有 Fixed 入口兼容：
+PR #1454 的交付范围是抽象重构：整理 Router、Backend 和 Adapter 的职责及组合边界，保持现有 Fixed / RouteWise 的算法和请求行为。RouteWise 的成本优化、`budget_alpha`、准入、预留、重求解、重试、hedging、学习和生命周期继续由现有实现负责；包装层不增加一套算法规则。
+
+抽象要支持以下两种目标拓扑，并保持现有 Fixed 入口兼容：
 
 - 全池模式：`RouteWise(local + cloud)`。
 - 分层模式：`Greedy(local admission, cloud = RouteWise(cloud scope))`。
 
 第一版组合限制为入口 Router 加一个云端子 Router，不提供任意递归路由图。Nimbus、云端估计接口与基于这些估计的跨层决策列入后续阶段。本文不要求重写 `llm-routewise`、统一所有策略的内部循环，也不改变未选择新拓扑的模型行为。
+
+Greedy 的生产接入、具体准入模型与校准、分层配置实现属于后续集成。下文保留这些内容以说明抽象的目标用法；这些新功能不作为 PR #1454 抽象重构的验收前置条件。
 
 ## 2. 核心对象与关系
 
@@ -83,6 +88,8 @@ classDiagram
 候选池不同可以共享同一资源池；候选范围缩小也不会自动划分出一份独立物理容量。配置和日志应分别记录这些身份。
 
 ## 3. 支持的运行结构
+
+本节两张图描述目标调用结构。参照提交中，`router: routewise` 已直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 和显式派发类型已经存在，但生产路径尚未构造 LeafBackend，Greedy / Nimbus 也尚未接入。混合 `router: fixed` 当前经过具体 HybridRouter 和 Local/FixedCloud 包装，仍需按本设计验证其行为兼容性。
 
 ### 3.1 全池 RouteWise
 
@@ -166,11 +173,11 @@ TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选
 普通请求和流式请求使用相同的派发语义，并保留以下请求上下文：
 
 - request id、父调用记录、当前 Router 实例/版本及 route path。
-- 端到端 deadline、首 token 期限、取消信号，以及适用的重试/hedge 预算。
-- canonical model、模态、输出上限和经过验证的调用方限制。
+- 已有的端到端 deadline、首 token 期限和取消信号。
+- canonical model、模态、调用方已有的生成参数和经过验证的调用方限制。
 - 实际 attempt 的绑定、资源预留及执行记录。
 
-子调用不能重新开始计算端到端期限，也不能丢弃上层约束。新分层路径的上游尝试预算在整个请求内共享，实际派发和 hedge leg 才消耗尝试额度；Wrapper 转发不算一次上游尝试。原有单层路径的默认行为保持兼容。
+子调用不能重新开始计算已有的端到端期限，也不能丢弃上层约束。重试和 hedging 沿用各 Router 的既有规则，包装层保留这些行为与实际尝试记录。
 
 具体数据载体可复用现有 request options、trace 和 observation；路由控制字段必须在 Adapter 边界被隔离，不泄露到 provider 参数或客户端输出。
 
@@ -180,15 +187,15 @@ TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选
 
 provider 标签可能对应多个 endpoint，不等同于精确 endpoint id。经过现有校验的 HTTP `pin_provider` 继续保留到共享 FixedRouter 的兼容路径；如果其目标与新拓扑共享受限资源，也必须纳入同一容量账本或被配置校验阻止绕过。保持 pin 的对外行为不等于允许绕过资源上限。
 
-## 5. Greedy 第一版的行为
+## 5. 后续 Greedy 接入的行为
 
 ### 5.1 本地准入
 
 采用本地优先基线：只有在本地资源和预测 TTFT 均可接受时才留在本地，否则委托云端池。生产接入复用 Nimbus 仓库中现有 Greedy 算法的思路，但补齐 gateway 并发、观测和响应生命周期。
 
-所需数据包括：tokenizer 对齐的 prompt 长度、已规范化且实际执行会遵守的生成上限、KV block 大小和容量、部署校准的 prefill/decode 参数，以及已接纳请求的等待/执行状态。不能使用请求完成后才知道的真实生成长度。
+准入所需的请求特征、生成长度估计、KV 预留方式和校准参数由后续 Greedy 集成单独确定。预测只使用当时可知的信息，不能使用请求完成后才知道的真实生成长度；抽象层负责传递已有请求参数和资源预留。
 
-峰值预留按 `ceil((prompt_tokens + generation_cap) / kv_block_size) * kv_block_size` 计算；预测检查和预留提交位于同一个同步边界，或通过版本检查后重试，防止两个到达同时看到相同空闲容量。
+预测检查和预留提交位于同一个同步边界，或通过版本检查后重试，防止两个到达同时看到相同空闲容量。
 
 第一版使用一个有明确校准和容量归属的本地执行池。预留与被调用的 endpoint/实际资源池一致；不能对池 A 预留后让另一个本地 Router 随意改去池 B。支持异构本地池或复杂副本选择时另行扩展。
 
@@ -206,7 +213,7 @@ Greedy 第一版不对已经接纳的请求做主动淘汰，也不维护一个�
 
 ### 5.3 失败与流式提交
 
-- 本地执行在任何客户端可见输出前失败：默认允许 Greedy 转云一次，受剩余 deadline 和尝试预算约束。释放本地预留前须满足实际执行结束或确认取消的条件。
+- 本地执行在任何客户端可见输出前失败：默认允许 Greedy 转云一次，受剩余 deadline 约束。释放本地预留前须满足实际执行结束或确认取消的条件。
 - 云端请求的 provider fallback、重求解和 hedging 由云端 RouteWise 管理；其最终失败返回 Greedy。第一版不自动从 cloud 再回 local，避免循环和重复本地准入。
 - 无可行候选、容量 claim 被拒和实际 provider 失败分别记录；没有发出上游请求就不产生上游故障样本。
 - 任一路径已经产生客户端可见输出后，不切换为另一条回答拼接进同一个流；沿用现有流式提交和最终错误语义。
@@ -295,7 +302,6 @@ local_admission_profiles:
     mode: kv_ttft
     kv_capacity_tokens: 65536
     kv_block_size: 16
-    generation_cap_tokens: 2048
     prefill_tokens_per_second: 10000
     decode_seconds_per_token: 0.03
     first_token_overhead_ms: 20
@@ -332,7 +338,7 @@ model-b
 
 `execution_domain` 是服务池归属声明，必须与显式部署配置一致；云端 endpoint 的 `provider_type`、`concurrency_pool`、`quota_pool` 等资源配置继续放在已有 route 配置中。声明 Backend pool 不复制这些资源定义。
 
-准入 profile 的固定生成上限是第一版预测和预留使用的保守 cap。实际调用必须受同一 cap 约束；请求超过 cap 时在路由前明确拒绝，不静默截断用户要求。请求更小的 cap 可以保守地按 profile cap 预留。输出参数的适配和校验保证 local/cloud 两条路径具有一致的规范化语义。
+调用方的 `max_tokens` 等生成参数继续沿用现有校验、适配和转发语义。
 
 ### 7.3 构建校验
 
@@ -364,7 +370,7 @@ RouteWise 的 `budget_alpha` 在当前候选成本范围内解释；限定 cloud
 
 | 估计内容 | 语义 |
 |---|---|
-| 请求和约束标识 | 估计针对相同的模型、输出上限和请求特征 |
+| 请求和约束标识 | 估计针对相同的模型、调用方生成参数和请求特征 |
 | 可行性 | 当前存在可行候选、暂不可行或未知；不保证派发时仍有容量 |
 | 预估成本 | 声明币种、计费单位，以及边际费用或容量机会成本的口径 |
 | 预估 TTFT / 完成时间 | 声明统计口径；池内耗时与已经发生的上层等待分开 |
@@ -390,7 +396,7 @@ Nimbus 若要卸载等待请求，应优先在尚未派发的集合上做决定�
 | 仅独立同层 Router | 结构简单，适合全池算法直接替换 | 不方便表达 Greedy 委托云端 RouteWise | 保留该用法，同时允许组合 |
 | 只把 RouteWise 放在 cloud | 本地准入与云端选择分工直接 | 限制全池 RouteWise，跨域权衡受上层规则约束 | 作为可选拓扑，不固定算法位置 |
 | 统一具体 HybridRouter 引擎 + Policy | 公共循环足够时，新策略接入短 | 需要表达 RouteWise 的重求解/hedging 和 Nimbus 的队列行为 | 不强制，复用确实相同的辅助逻辑 |
-| 任意 Router 递归组合 | 扩展范围大 | 配置、预算、循环、资源与反馈所有权复杂 | 第一版只提供有界两层组合 |
+| 任意 Router 递归组合 | 扩展范围大 | 配置、循环、资源与反馈所有权复杂 | 第一版只提供有界两层组合 |
 | 可替换 Router + 显式池委托 | 同时覆盖全池和分层模式 | 必须补清范围、共享资源和请求所有权 | 采用 |
 
 ## 10. 当前代码的复用点与差距
@@ -400,7 +406,7 @@ Nimbus 若要卸载等待请求，应优先在尚未派发的集合上做决定�
 | 现有实现 | 复用方式与需要完成的工作 |
 |---|---|
 | [protocols.py](../../../apps/backend/routing/protocols.py) | 保留唯一 RouterProtocol；为新的显式委托上下文设计兼容入口 |
-| [backends.py](../../../apps/backend/routing/backends.py) | 已有 Local/Cloud 包装及 RouteWiseCloudBackend；后者的范围限制与委托可作为 TreeBackend 基础，补齐与精确叶子执行的语义区分 |
+| [backends.py](../../../apps/backend/routing/backends.py)、[dispatch.py](../../../apps/backend/routing/dispatch.py) | 已有 LeafBackend / TreeBackend、Local/Cloud 包装及显式派发类型；继续复用范围与权限校验，补齐叶子绑定中的 Adapter/快照及生产执行接线 |
 | [route_scope.py](../../../apps/backend/routing/route_scope.py)、[route_table.py](../../../apps/backend/routing/route_table.py) | 复用候选范围投影、模型/endpoint 解析与快照，不复制 Adapter 状态 |
 | [hybrid.py](../../../apps/backend/routing/hybrid.py)、[decisions.py](../../../apps/backend/routing/decisions.py) | 复用已有转发、记录和兼容行为；旧 preference/fallback 组合不能代替新契约的显式权限 |
 | [RouteWiseRouter](../../../apps/backend/routing/routewise/router.py) | 保留算法、学习、重求解、hedging 和全池入口；云端子实例绑定受限视图，补齐共享资源注入和叶子派发接线 |
@@ -413,6 +419,8 @@ Nimbus 若要卸载等待请求，应优先在尚未派发的集合上做决定�
 Nimbus 仓库的 `router/greedy.py` 已有基于 KV 预留和预测 TTFT 的基线；`router/nimbus.py` 提供请求状态与 tick 逻辑。这些位于另一个仓库，不是 hybridInference 的已安装依赖。集成时固定来源版本、明确模块归属并接入真实生命周期，不直接把实验 runner 当作生产 Router。源码位置作为复用线索，本设计不附带迁移这些文件。
 
 ## 11. 实施顺序
+
+以下是完整设计的实施路线。PR #1454 按第 1.1 节完成抽象边界和既有行为保持；Greedy、分层配置与 Nimbus 的接入分别在后续工作中验收。
 
 ### 阶段 A：契约和资源边界
 
@@ -436,6 +444,8 @@ Nimbus 仓库的 `router/greedy.py` 已有基于 KV 预留和预测 TTFT 的基�
 
 ## 12. 验收标准
 
+本表覆盖完整目标设计。PR #1454 的验收以精确派发、池委托、范围约束、资源与反馈所有权，以及 Fixed / RouteWise 既有行为等价为准；涉及 Greedy、新分层配置及新增运行拓扑的项目，在对应功能接入时验收。
+
 | 场景 | 必须证明的行为 |
 |---|---|
 | 同一算法两种位置 | 全池 RouteWise 能选择 local；cloud 子 RouteWise 的请求、重试、hedge 和探测均不能访问 local |
@@ -445,7 +455,7 @@ Nimbus 仓库的 `router/greedy.py` 已有基于 KV 预留和预测 TTFT 的基�
 | 资源类型正交 | cloud concurrency 候选可用且有槽时参与云端决策；local concurrency 仍能参与全池 RouteWise |
 | 多实例共享 | 两个 Router/模型/新旧版本访问同一资源池，总使用不超过真实上限；未实现共享时配置被拒绝 |
 | 资源生命周期 | 成功、失败、取消、hedge loser 和准入竞争失败均正确清理；quota 不被通用释放错误退还 |
-| 失败边界 | 本地失败后受预算控制转云；云端内部失败由子 Router 处理；无循环、重复尝试和虚构 provider 故障 |
+| 失败边界 | 各 Router 保留自身的失败处理规则；云端内部失败由子 Router 处理；包装层不引入循环、重复尝试或虚构 provider 故障 |
 | 流式 | 普通/SSE 路径目标语义一致；关闭迭代器向下取消；可见输出后不拼接另一条回答 |
 | 反馈与成本 | 反馈回到实际 Router 版本和 endpoint；失败/hedge 信息保留，叶子与父聚合不重复学习或计费 |
 | 动态范围与切换 | 空 scope 不扩成全池；刷新不丢在途状态；新组合发布失败保留旧入口，旧预留引用原池 |
