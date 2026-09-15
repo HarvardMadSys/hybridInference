@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.backends import LeafBackend
-from routing.dispatch import binding_for_adapter
+from routing.dispatch import binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import adapter_in_endpoint_scope
@@ -2222,6 +2222,9 @@ class RouteWiseRouter:
         # checkpoint, the profile-less skip in
         # ``_select_hedge_candidate_at_elapsed`` -- can drop a candidate without
         # dispatching to it, and a probe spent there would never be reported on.
+        # Same ordering as the primary: bind before committing, so an unusable
+        # backup costs no quota.
+        backup_leaf = self._leaf_for_adapter(backup.adapter, model_id)
         reservation = self._commit_candidate(backup)
         if reservation is None:
             return None
@@ -2234,7 +2237,7 @@ class RouteWiseRouter:
                 success_probability=current.success_probability,
             )
             return CheckpointBackupDispatch(
-                backup=self._leaf_for_adapter(backup.adapter, model_id),
+                backup=backup_leaf,
                 elapsed_sec=elapsed_sec,
                 success_probability=current.success_probability,
                 release=reservation.release,
@@ -2500,6 +2503,13 @@ class RouteWiseRouter:
             selected = self._sample_solution(candidates, solution)
             if selected is None:
                 return None
+            # Built before the commit, deliberately: a binding this router cannot
+            # honor is a composition error, and releasing a reservation does not
+            # refund quota that commit already spent.
+            leaf = self._leaf_for_adapter(
+                execution_adapter(selected.adapter, context.get("routing_options")),
+                model_id,
+            )
             reservation = self._commit_candidate(selected)
             if reservation is not None:
                 try:
@@ -2520,7 +2530,7 @@ class RouteWiseRouter:
                     )
                     trace.begin_decision(metadata)
                     decision = RoutingDecision(
-                        adapter=self._leaf_for_adapter(selected.adapter, model_id),
+                        adapter=leaf,
                         reservation=reservation,
                         metadata=metadata,
                         trace=trace,
@@ -2551,7 +2561,7 @@ class RouteWiseRouter:
                             )
 
                         decision.adapter = HedgedAdapter(
-                            primary=self._leaf_for_adapter(selected.adapter, model_id),
+                            primary=leaf,
                             event_sink=self._health_registry,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
@@ -3021,6 +3031,7 @@ class RouteWiseRouter:
                 if routing_options is not None and routing_options.require_target
                 else None
             ),
+            "routing_options": routing_options,
         }
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
@@ -3142,6 +3153,7 @@ class RouteWiseRouter:
                 if routing_options is not None and routing_options.require_target
                 else None
             ),
+            "routing_options": routing_options,
         }
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None

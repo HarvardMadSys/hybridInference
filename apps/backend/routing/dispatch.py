@@ -49,6 +49,7 @@ __all__ = [
     "binding_for_adapter",
     "check_dispatch",
     "dispatch_for_attempt",
+    "execution_adapter",
 ]
 
 
@@ -188,6 +189,39 @@ def binding_for_adapter(
         adapter=adapter,
         pool_id=pool_id,
         generation=generation,
+    )
+
+
+def execution_adapter(selected: Any, routing_options: Any) -> Any:
+    """Return the adapter one dispatch should run.
+
+    A caller that committed to a resolved binding executes that binding's
+    adapter rather than whatever the route holds now: the request finishes on the
+    object it was admitted for, so a route edit cannot redirect it. Selection,
+    admission, prefill and accounting are untouched -- they already ran against
+    the route, and only the executed object comes from the binding.
+
+    Without a binding this is simply the selected adapter. With one that names
+    the endpoint selection committed to, it is that binding's adapter. With one
+    that names a different endpoint the two disagree: a required target cannot be
+    reconciled and is refused, while a mere preference has already been replaced
+    by the router's own selection and leaves the binding inapplicable to that
+    candidate.
+    """
+    bound = getattr(routing_options, "bound_endpoint", None)
+    if bound is None:
+        return selected
+    from routing.endpoints import endpoint_id_for_adapter
+
+    selected_endpoint = endpoint_id_for_adapter(selected)
+    if bound.endpoint_id == selected_endpoint:
+        return bound.adapter
+    if not getattr(routing_options, "require_target", False):
+        return selected
+    raise DispatchMismatchError(
+        f"the dispatch bound {bound.endpoint_id!r} but selection committed to "
+        f"{selected_endpoint!r}; a required binding cannot be reconciled with a "
+        f"different endpoint"
     )
 
 

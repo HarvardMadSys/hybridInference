@@ -330,6 +330,7 @@ class HybridRouter:
                 # and the failure it recorded.
                 continue
             backend = self._backends[attempt.backend]
+            binding = _binding_for_attempt(backend, model_id, attempt)
             # The instruction is what makes this attempt binding rather than
             # advisory, and it is checked before the backend runs: a mismatch is
             # a composition error, so it must not be dispatched, counted as an
@@ -339,7 +340,7 @@ class HybridRouter:
                 dispatch_for_attempt(
                     pool_id=backend_pool_id(backend),
                     model_id=model_id,
-                    binding=_binding_for_attempt(backend, model_id, attempt),
+                    binding=binding,
                     exact=attempt.exact,
                 ),
                 model_id,
@@ -348,7 +349,9 @@ class HybridRouter:
                 response = await backend.chat_completion(
                     model_id,
                     messages,
-                    routing_options=_attempt_options(routing_options, backend, attempt, model_id),
+                    routing_options=_attempt_options(
+                        routing_options, backend, attempt, model_id, binding
+                    ),
                     target=decision.target if index == 0 else None,
                     **params,
                 )
@@ -739,6 +742,7 @@ async def _fallback_stream(
             # substituted primary already ran, and it must not run twice.
             continue
         backend = router.backend(attempt.backend)
+        binding = _binding_for_attempt(backend, model_id, attempt)
         # Same check, same reason as the non-streaming path: refuse a mismatched
         # instruction before the generator can produce any upstream I/O.
         check_dispatch(
@@ -746,7 +750,7 @@ async def _fallback_stream(
             dispatch_for_attempt(
                 pool_id=backend_pool_id(backend),
                 model_id=model_id,
-                binding=_binding_for_attempt(backend, model_id, attempt),
+                binding=binding,
                 exact=attempt.exact,
             ),
             model_id,
@@ -754,7 +758,7 @@ async def _fallback_stream(
         stream = backend.stream_chat_completion(
             model_id,
             messages,
-            routing_options=_attempt_options(routing_options, backend, attempt, model_id),
+            routing_options=_attempt_options(routing_options, backend, attempt, model_id, binding),
             target=decision.target if index == 0 else None,
             **params,
         )
@@ -825,6 +829,7 @@ def _attempt_options(
     backend: Any,
     attempt: _Attempt,
     model_id: str,
+    binding: EndpointBinding | None,
 ) -> RoutingRequestOptions | None:
     """Return request options for one planned attempt.
 
@@ -851,6 +856,7 @@ def _attempt_options(
             preferred_endpoint_id=attempt.endpoint_id,
             endpoint_scope=scope,
             allow_fallback=attempt.domain_fallback,
+            bound_endpoint=binding,
             require_target=attempt.exact,
         )
     return replace(
@@ -858,6 +864,7 @@ def _attempt_options(
         preferred_endpoint_id=attempt.endpoint_id,
         endpoint_scope=scope,
         allow_fallback=attempt.domain_fallback,
+        bound_endpoint=binding,
         require_target=attempt.exact,
     )
 

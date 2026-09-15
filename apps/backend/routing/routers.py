@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.backends import LeafBackend
-from routing.dispatch import EndpointBinding, binding_for_adapter
+from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
@@ -1524,11 +1524,17 @@ class FixedRouter:
                     f"Pinned provider '{pin_provider}' not found for model {model_id}"
                 )
             raise ValueError(f"No route configured for model {model_id}")
+        # The adapter this dispatch runs comes from the caller's binding when it
+        # committed to one, and the leaf is built here -- before the attempt --
+        # so a binding that cannot be honored is refused as a composition error
+        # instead of being recorded as a provider failure.
+        execution = execution_adapter(primary, routing_options)
+        leaf = self._leaf_for(self.binding_for(execution, model_id))
         try:
             endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
                 model=model_id,
-                provider=primary.config.provider,
+                provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                         endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
@@ -1544,9 +1550,7 @@ class FixedRouter:
                     anchor=anchor,
                 )
                 try:
-                    resp = await self._leaf_for(
-                        self.binding_for(primary, model_id)
-                    ).chat_completion(messages, **params)
+                    resp = await leaf.chat_completion(messages, **params)
                     # A returned response proves this endpoint finished
                     # prefilling this prompt, which is what makes its prefix
                     # safe to remember.
@@ -1558,8 +1562,8 @@ class FixedRouter:
             # only set default routing if the adapter didn't provide one.
             if "_routing" not in resp:
                 resp["_routing"] = {
-                    "provider": primary.config.provider,
-                    "base_url": primary.config.base_url,
+                    "provider": execution.config.provider,
+                    "base_url": execution.config.base_url,
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
             resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
@@ -1572,7 +1576,7 @@ class FixedRouter:
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(execution, primary_error)]
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
@@ -1587,8 +1591,8 @@ class FixedRouter:
             # fallback attempt appended after this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
-                    "provider": primary.config.provider,
-                    "base_url": primary.config.base_url,
+                    "provider": execution.config.provider,
+                    "base_url": execution.config.base_url,
                     "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
@@ -1616,6 +1620,10 @@ class FixedRouter:
                 endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):
                     continue
+                # Resolved before the claim so a binding this router cannot honor
+                # costs no admission slot.
+                execution = execution_adapter(adapter, routing_options)
+                leaf = self._leaf_for(self.binding_for(execution, model_id))
                 # Fallback is still automatic routing, so it must honor the
                 # same shared circuit eligibility as the initial selection.
                 # Explicit pinning returned above and remains the sole circuit
@@ -1628,7 +1636,7 @@ class FixedRouter:
                 try:
                     with req_ctx.push(
                         model=model_id,
-                        provider=adapter.config.provider,
+                        provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                                 endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
@@ -1644,9 +1652,7 @@ class FixedRouter:
                             anchor=anchor,
                         )
                         try:
-                            resp = await self._leaf_for(
-                                self.binding_for(adapter, model_id)
-                            ).chat_completion(messages, **params)
+                            resp = await leaf.chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
                         finally:
                             self._prefill_load.release(lease)
@@ -1667,8 +1673,8 @@ class FixedRouter:
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(failed_attempt(adapter, fallback_error))
-                    attempts.append(_RouteAttempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(execution, fallback_error))
+                    attempts.append(_RouteAttempt(execution, fallback_error))
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
@@ -1745,13 +1751,15 @@ class FixedRouter:
                     f"Pinned provider '{pin_provider}' not found for model {model_id}"
                 )
             raise ValueError(f"No route configured for model {model_id}")
+        execution = execution_adapter(primary, routing_options)
+        leaf = self._leaf_for(self.binding_for(execution, model_id))
         chunks_yielded = False
         lease: PrefillLease | None = None
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
                 model=model_id,
-                provider=primary.config.provider,
+                provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                         primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
@@ -1776,9 +1784,7 @@ class FixedRouter:
                     anchor=anchor,
                 )
                 yield routing_chunk(primary)
-                async for chunk in self._leaf_for(
-                    self.binding_for(primary, model_id)
-                ).stream_chat_completion(messages, **params):
+                async for chunk in leaf.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
@@ -1803,7 +1809,7 @@ class FixedRouter:
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(execution, primary_error)]
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
@@ -1830,8 +1836,8 @@ class FixedRouter:
             # this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
-                    "provider": primary.config.provider,
-                    "base_url": primary.config.base_url,
+                    "provider": execution.config.provider,
+                    "base_url": execution.config.base_url,
                     "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
@@ -1864,6 +1870,10 @@ class FixedRouter:
                 adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):
                     continue
+                # Resolved before the claim, for the same reason as the
+                # non-streaming loop: an unusable binding costs no probe slot.
+                execution = execution_adapter(adapter, routing_options)
+                leaf = self._leaf_for(self.binding_for(execution, model_id))
                 # Synthetic routing chunks are emitted only after circuit
                 # admission so an open automatic fallback is never exposed as
                 # an attempted upstream. Explicit pinning returned above. The
@@ -1876,7 +1886,7 @@ class FixedRouter:
                 try:
                     with req_ctx.push(
                         model=model_id,
-                        provider=adapter.config.provider,
+                        provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                                 adapter_endpoint_id,
@@ -1888,7 +1898,7 @@ class FixedRouter:
                         },
                     ):
                         yield routing_chunk(
-                            adapter,
+                            execution,
                             fallback=True,
                             failed_attempts=failed_attempts,
                         )
@@ -1900,9 +1910,7 @@ class FixedRouter:
                             fingerprint=fingerprint,
                             anchor=anchor,
                         )
-                        async for chunk in self._leaf_for(
-                            self.binding_for(adapter, model_id)
-                        ).stream_chat_completion(messages, **params):
+                        async for chunk in leaf.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
@@ -1917,8 +1925,8 @@ class FixedRouter:
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(failed_attempt(adapter, fallback_error))
-                    attempts.append(_RouteAttempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(execution, fallback_error))
+                    attempts.append(_RouteAttempt(execution, fallback_error))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet

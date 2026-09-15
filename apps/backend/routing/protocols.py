@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from routing.dispatch import EndpointBinding
     from routing.routers import RoutingObservation
 
 __all__ = ["RouteTableRefreshable", "RouterProtocol", "RoutingRequestOptions"]
@@ -38,6 +39,13 @@ class RoutingRequestOptions:
             scheduling layer that plans the candidate order itself -- the hybrid
             layer does -- sets it so the order it planned is the order that
             happens, and so no candidate is attempted twice.
+        bound_endpoint: The caller's resolved binding for this dispatch. A caller
+            that already chose the endpoint -- the hybrid layer, when it planned
+            one candidate per attempt -- hands over the binding it validated, so
+            the dispatch runs the adapter it was admitted for even if the route
+            table has since replaced that adapter. Selection, admission, prefill
+            and accounting still run against the route: only the executed object
+            comes from here. ``None`` keeps the router's own resolution.
         require_target: Whether ``preferred_endpoint_id`` is the only endpoint
             this dispatch may use. The default treats a target as a preference:
             an endpoint that is not admissible is replaced by the router's own
@@ -52,6 +60,7 @@ class RoutingRequestOptions:
     preferred_endpoint_id: str | None = None
     endpoint_scope: frozenset[str] | None = None
     allow_fallback: bool = True
+    bound_endpoint: EndpointBinding | None = None
     require_target: bool = False
     required_modalities: frozenset[str] = frozenset()
 
