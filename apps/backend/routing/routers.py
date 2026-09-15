@@ -1682,8 +1682,8 @@ class FixedRouter:
                         self._on_success(endpoint_id)
                     if "_routing" not in resp:
                         resp["_routing"] = {
-                            "provider": adapter.config.provider,
-                            "base_url": adapter.config.base_url,
+                            "provider": execution.config.provider,
+                            "base_url": execution.config.base_url,
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(adapter))

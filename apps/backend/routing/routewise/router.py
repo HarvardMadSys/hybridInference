@@ -2506,23 +2506,28 @@ class RouteWiseRouter:
             # Built before the commit, deliberately: a binding this router cannot
             # honor is a composition error, and releasing a reservation does not
             # refund quota that commit already spent.
-            bound = getattr(context.get("routing_options"), "bound_endpoint", None)
-            if bound is not None and bound.adapter is not selected.adapter:
-                # The route now resolves a different adapter for this endpoint --
-                # a refresh landed between the plan and this solve. Committing
-                # would spend the *current* candidate's capacity while the I/O ran
-                # on the adapter bound earlier, so one account's limit would pay
-                # for another account's request. Refused rather than reconciled.
+            execution = execution_adapter(selected.adapter, context.get("routing_options"))
+            if execution is not selected.adapter:
+                # The binding applies to a different object than the candidate the
+                # reservation would be taken from. That is the same endpoint whose
+                # route now resolves a replacement -- a refresh landed between the
+                # plan and this solve -- so committing would spend the *current*
+                # candidate's capacity while the I/O ran on the adapter bound
+                # earlier, letting one account's limit pay for another account's
+                # request. Refused rather than reconciled.
+                #
+                # A preference that the router replaced with a different endpoint
+                # does not reach here: ``execution_adapter`` leaves a non-required
+                # binding inapplicable to that candidate and returns the candidate
+                # itself, so the ordinary substitution still runs and is admitted
+                # and executed as the candidate it chose.
                 raise DispatchMismatchError(
                     f"the dispatch is bound to the adapter resolved at plan time, but "
                     f"selection now resolves a different adapter for "
                     f"{selected.endpoint_id!r}; admission and execution would draw on "
                     f"different capacity"
                 )
-            leaf = self._leaf_for_adapter(
-                execution_adapter(selected.adapter, context.get("routing_options")),
-                model_id,
-            )
+            leaf = self._leaf_for_adapter(execution, model_id)
             reservation = self._commit_candidate(selected)
             if reservation is not None:
                 try:
