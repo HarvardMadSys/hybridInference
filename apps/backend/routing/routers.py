@@ -1405,6 +1405,29 @@ class FixedRouter:
             f"All provider circuits are open or probing for model {model_id}: {sorted(exclude)}"
         )
 
+    def bind_execution(
+        self,
+        adapter: BaseAdapter,
+        routing_options: RoutingRequestOptions | None,
+        model_id: str,
+        claim: DispatchClaim | None,
+    ) -> LeafBackend:
+        """Return the leaf one attempt executes through, releasing ``claim`` on refusal.
+
+        A binding this router cannot honor is a composition error, so it must not
+        reach the failure accounting -- but the selection already took a dispatch
+        claim for this endpoint, and a claim that is never handed back keeps a
+        recovering endpoint out of rotation until its deadline. Releasing it here
+        is the only unwind this path has.
+        """
+        try:
+            return self._leaf_for(
+                self.binding_for(execution_adapter(adapter, routing_options), model_id)
+            )
+        except BaseException:
+            self._health_registry.end_dispatch(claim)
+            raise
+
     def binding_for(self, adapter: BaseAdapter, model_id: str) -> EndpointBinding:
         """Return the execution binding for an adapter this router has committed to.
 
@@ -1528,8 +1551,8 @@ class FixedRouter:
         # committed to one, and the leaf is built here -- before the attempt --
         # so a binding that cannot be honored is refused as a composition error
         # instead of being recorded as a provider failure.
-        execution = execution_adapter(primary, routing_options)
-        leaf = self._leaf_for(self.binding_for(execution, model_id))
+        leaf = self.bind_execution(primary, routing_options, model_id, primary_claim)
+        execution = leaf.adapter
         try:
             endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
@@ -1751,8 +1774,8 @@ class FixedRouter:
                     f"Pinned provider '{pin_provider}' not found for model {model_id}"
                 )
             raise ValueError(f"No route configured for model {model_id}")
-        execution = execution_adapter(primary, routing_options)
-        leaf = self._leaf_for(self.binding_for(execution, model_id))
+        leaf = self.bind_execution(primary, routing_options, model_id, primary_claim)
+        execution = leaf.adapter
         chunks_yielded = False
         lease: PrefillLease | None = None
         try:
@@ -1783,7 +1806,7 @@ class FixedRouter:
                     fingerprint=fingerprint,
                     anchor=anchor,
                 )
-                yield routing_chunk(primary)
+                yield routing_chunk(execution)
                 async for chunk in leaf.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.

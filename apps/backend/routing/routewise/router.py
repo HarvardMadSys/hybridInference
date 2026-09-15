@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.backends import LeafBackend
-from routing.dispatch import binding_for_adapter, execution_adapter
+from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import adapter_in_endpoint_scope
@@ -2506,6 +2506,19 @@ class RouteWiseRouter:
             # Built before the commit, deliberately: a binding this router cannot
             # honor is a composition error, and releasing a reservation does not
             # refund quota that commit already spent.
+            bound = getattr(context.get("routing_options"), "bound_endpoint", None)
+            if bound is not None and bound.adapter is not selected.adapter:
+                # The route now resolves a different adapter for this endpoint --
+                # a refresh landed between the plan and this solve. Committing
+                # would spend the *current* candidate's capacity while the I/O ran
+                # on the adapter bound earlier, so one account's limit would pay
+                # for another account's request. Refused rather than reconciled.
+                raise DispatchMismatchError(
+                    f"the dispatch is bound to the adapter resolved at plan time, but "
+                    f"selection now resolves a different adapter for "
+                    f"{selected.endpoint_id!r}; admission and execution would draw on "
+                    f"different capacity"
+                )
             leaf = self._leaf_for_adapter(
                 execution_adapter(selected.adapter, context.get("routing_options")),
                 model_id,
