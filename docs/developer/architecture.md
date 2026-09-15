@@ -149,7 +149,14 @@ a silent switch would make the pin meaningless.
 ### 5. Dispatch, fallback, and the circuit breaker
 
 `FixedRouter.chat_completion` / `stream_chat_completion` call the chosen
-adapter. On success the endpoint is recorded healthy and the response carries an
+adapter. The call itself goes through the execution boundary: the router binds
+the adapter it selected into an `EndpointBinding` and a `LeafBackend` runs that
+adapter, so nothing is re-resolved between the decision and the call. The router
+keeps the admission claim, the prefill lease, the attempt history and the
+`_routing` metadata; the leaf keeps none of them. See
+[Leaves, pools, and dispatch instructions](routing.md#leaves-pools-and-dispatch-instructions).
+
+On success the endpoint is recorded healthy and the response carries an
 internal `_routing` block (provider, base URL, `endpoint_id`).
 
 On failure the endpoint records a failure and — unless the caller pinned a
@@ -211,6 +218,16 @@ silently falling back to a default.
 `apps/backend/routing/executor.py` is a backward-compatibility shim that
 re-exports `FixedRouter` under its old name `RouteExecutor`. Edit
 `apps/backend/routing/routers.py` instead.
+
+Routing also has a composition implementation, `HybridRouter`
+(`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool
+and delegates each attempt to a `TreeBackend`. It is not a third `router:`
+value: a `router: fixed` model opts in with
+`router_params.hybrid_composition: true`, and composition is built only when
+both local and cloud candidates exist. Every other `fixed` model keeps the shared
+`FixedRouter`, and `routewise` models keep their own entry point and full
+candidate pool. The ordinary Fixed and RouteWise paths already execute through
+`LeafBackend`; enabling composition is a separate choice.
 
 ### Two layers of "strategy"
 
