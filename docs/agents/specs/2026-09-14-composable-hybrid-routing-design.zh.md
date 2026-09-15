@@ -2,7 +2,7 @@
 
 - 日期：2026-09-14
 - 更新：2026-09-15，明确抽象重构范围与后续拓扑接入的区别
-- 状态：设计提案；本文新增文档，不代表所述接口、配置和 Greedy 生产接线已经实现
+- 状态：抽象重构设计；包含当前实现说明与未来扩展示例
 - 代码参照：PR #1454，`murphy/dev/hybrid-routing-abstract@c71c07be0478e2062dc8bc398098de8f90a3e214`
 - 核心场景：RouteWise 可以直接路由 local + cloud，也可以在 Greedy / 未来 Nimbus 下面只路由 cloud
 - 前序设计：[Hybrid Routing 抽象重构设计](2026-09-12-hybrid-routing-abstraction-design.zh.md)
@@ -34,7 +34,7 @@ PR #1454 的交付范围是抽象重构：整理 Router、Backend 和 Adapter �
 
 第一版组合限制为入口 Router 加一个云端子 Router，不提供任意递归路由图。Nimbus、云端估计接口与基于这些估计的跨层决策列入后续阶段。本文不要求重写 `llm-routewise`、统一所有策略的内部循环，也不改变未选择新拓扑的模型行为。
 
-Greedy 的生产接入、具体准入模型与校准、分层配置实现属于后续集成。下文保留这些内容以说明抽象的目标用法；这些新功能不作为 PR #1454 抽象重构的验收前置条件。
+PR #1454 不需要实现或接入 Greedy / Nimbus，也不需要新增它们的模型配置、准入模型或校准能力。下文的 Greedy 组合只用于说明抽象未来如何扩展；没有 Greedy 实现不是本 PR 的缺口。池委托与范围约束可以使用已有 Router 或测试替身验证。
 
 ## 2. 核心对象与关系
 
@@ -89,7 +89,7 @@ classDiagram
 
 ## 3. 支持的运行结构
 
-本节两张图描述目标调用结构。参照提交中，`router: routewise` 已直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 和显式派发类型已经存在，但生产路径尚未构造 LeafBackend，Greedy / Nimbus 也尚未接入。混合 `router: fixed` 当前经过具体 HybridRouter 和 Local/FixedCloud 包装，仍需按本设计验证其行为兼容性。
+本节两张图描述抽象的目标用法，其中 Greedy / Nimbus 是未来扩展示例。参照提交中，`router: routewise` 已直接进入全池 RouteWise；`LeafBackend` / `TreeBackend` 和显式派发类型已经存在。当前 LeafBackend 持有一个支持精确派发的 Router，由该 Router 调用 Adapter，现有请求构建路径尚未使用这个类。是否实现叶子执行边界应按精确目标、绑定和执行所有权判断，不以是否构造同名类为唯一标准。混合 `router: fixed` 当前经过具体 HybridRouter 和 Local/FixedCloud 包装，仍需验证其行为兼容性。
 
 ### 3.1 全池 RouteWise
 
@@ -103,7 +103,7 @@ flowchart TD
 
 RouteWise 在模型完整候选池中决策，保持原有成本、延迟、准入、重新求解和 hedging 语义。它不必先决定 local / cloud，也不必经过 Greedy。显式配置为 concurrency 的本地 endpoint 继续参与全池选择。
 
-### 3.2 Greedy + 云端 RouteWise
+### 3.2 扩展示例：Greedy + 云端 RouteWise
 
 ```mermaid
 flowchart TD
@@ -413,45 +413,46 @@ Nimbus 若要卸载等待请求，应优先在尚未派发的集合上做决定�
 | [concurrency.py](../../../apps/backend/routing/routewise/concurrency.py) | 复用现有 manager 的原子准入原语，修正跨 Router 实例的取得和共享边界 |
 | [FixedRouter](../../../apps/backend/routing/routers.py) | 保持全局权重、健康、亲和、prefill 和 fallback 顺序；不把原 `L1 → cloud → L2` 改成先耗尽一个域 |
 | [model_router_registry.py](../../../apps/backend/routing/model_router_registry.py) | 继续按模型构建/缓存入口；补充完整组合配置的构建、切换和排空 |
-| [hybrid_composition.py](../../../apps/backend/serving/servers/hybrid_composition.py)、[bootstrap.py](../../../apps/backend/serving/servers/bootstrap.py) | 已有可注入 cloud backend 的构建入口；补充 Greedy 工厂、共享资源所有者和子 Router 生命周期管理 |
+| [hybrid_composition.py](../../../apps/backend/serving/servers/hybrid_composition.py)、[bootstrap.py](../../../apps/backend/serving/servers/bootstrap.py) | 已有可注入 cloud backend 的构建入口；验证现有组合的共享资源引用、请求转发和子 Router 生命周期管理 |
 | [BaseAdapter](../../../apps/backend/serving/adapters/base.py) | 继续承担真实 provider 调用；不因引入 Backend 重写协议适配 |
 
 Nimbus 仓库的 `router/greedy.py` 已有基于 KV 预留和预测 TTFT 的基线；`router/nimbus.py` 提供请求状态与 tick 逻辑。这些位于另一个仓库，不是 hybridInference 的已安装依赖。集成时固定来源版本、明确模块归属并接入真实生命周期，不直接把实验 runner 当作生产 Router。源码位置作为复用线索，本设计不附带迁移这些文件。
 
-## 11. 实施顺序
+## 11. 本次实施与未来扩展
 
-以下是完整设计的实施路线。PR #1454 按第 1.1 节完成抽象边界和既有行为保持；Greedy、分层配置与 Nimbus 的接入分别在后续工作中验收。
+PR #1454 完成以下抽象与兼容性工作。Greedy / Nimbus 仅作为未来可选扩展，不是本次实施的后续必做阶段。
 
-### 阶段 A：契约和资源边界
+### 11.1 本次：契约和资源边界
 
 落实精确 endpoint / 池委托的显式语义、请求上下文和兼容映射；保留现有公共导入和单层行为。构建共享资源所有者并注入现有 manager，未覆盖的重复受限池和 worker 组合启动失败。
 
 验收重点是语义与所有权：实际调用哪个 endpoint、哪一个请求持有什么资源、谁允许发起下一次尝试。`routing/executor.py` 的兼容 shim 保持不动。
 
-### 阶段 B：同时跑通两种拓扑
+### 11.2 本次：现有请求路径与行为对照
 
-保留直接全池 RouteWise；新增 Greedy 的本地准入适配和 cloud 池委托，复用受限 RouteWise 包装。按模型配置构建入口，接通普通请求、SSE、取消、反馈、探测和状态恢复。
+保留直接全池 RouteWise，验证现有 Fixed / RouteWise 模型经 serving / Registry / bootstrap 使用重构后的实现。普通请求、SSE、取消、反馈、探测和状态恢复保持原有行为；类已定义或可以单独构造不能替代请求路径验证。
 
-验收通过真实 serving / Registry / bootstrap 路径完成，而不只单独构造包装类。
+验证既有模型切换、路由范围变化、共享池容量更新及旧请求排空。这里的请求路径验证指网关调用链验证，不要求新增 Greedy 算法，也不把上线部署作为抽象是否成立的定义。
 
-### 阶段 C：动态配置和行为对照
+### 11.3 未来可选：Greedy 组合
 
-验证新旧组合切换、路由范围变化、共享池容量更新及旧请求排空。对 Fixed / RouteWise 既有行为做回归对照，对 Greedy + RouteWise 做受控 workload 比较和运行部署验证。
+若未来单独接入 Greedy，可复用本次池委托抽象，实现本地准入和 cloud RouteWise 组合，再增加模型配置、受控 workload 对照及部署验证。
 
-### 阶段 D：估计接口与 Nimbus
+### 11.4 未来可选：估计接口与 Nimbus
 
-先明确云端估计口径与误差，再接入 Nimbus 所需的等待集合、进度和选择性卸载；使用相同端到端评价口径验证协同收益。阶段 D 不作为 A–C 的前置依赖，也不由增加一层包装宣称完成。
+若未来单独接入 Nimbus，先明确云端估计口径与误差，再接入所需的等待集合、进度和选择性卸载，并使用相同端到端评价口径验证协同收益。
 
 ## 12. 验收标准
 
-本表覆盖完整目标设计。PR #1454 的验收以精确派发、池委托、范围约束、资源与反馈所有权，以及 Fixed / RouteWise 既有行为等价为准；涉及 Greedy、新分层配置及新增运行拓扑的项目，在对应功能接入时验收。
+### 12.1 PR #1454：抽象与既有行为
+
+验收以精确派发、池委托、范围约束、资源与反馈所有权，以及 Fixed / RouteWise 既有行为等价为准，不依赖 Greedy 实现。
 
 | 场景 | 必须证明的行为 |
 |---|---|
 | 同一算法两种位置 | 全池 RouteWise 能选择 local；cloud 子 RouteWise 的请求、重试、hedge 和探测均不能访问 local |
 | 精确派发 | 指定 endpoint 缺失、越界或不可准入时，不调用另一个 endpoint |
 | 池委托 | 上层只指定 cloud pool，实际 endpoint 由子 Router 选择；父层不先重复抽签或占用同一云端槽 |
-| Greedy 基线 | 同步到达不会超额预留；本地可接纳时执行本地，KV/TTFT 不可接受时转云；预测只用当时可知的数据 |
 | 资源类型正交 | cloud concurrency 候选可用且有槽时参与云端决策；local concurrency 仍能参与全池 RouteWise |
 | 多实例共享 | 两个 Router/模型/新旧版本访问同一资源池，总使用不超过真实上限；未实现共享时配置被拒绝 |
 | 资源生命周期 | 成功、失败、取消、hedge loser 和准入竞争失败均正确清理；quota 不被通用释放错误退还 |
@@ -460,8 +461,20 @@ Nimbus 仓库的 `router/greedy.py` 已有基于 KV 预留和预测 TTFT 的基�
 | 反馈与成本 | 反馈回到实际 Router 版本和 endpoint；失败/hedge 信息保留，叶子与父聚合不重复学习或计费 |
 | 动态范围与切换 | 空 scope 不扩成全池；刷新不丢在途状态；新组合发布失败保留旧入口，旧预留引用原池 |
 | 配置兼容 | 原 fixed / routewise 配置、默认值、别名、pin 和错误归因保持原行为；新字段通过明确校验 |
-| 真实入口 | 生命周期、Admin、operational store 和探测能访问云端子 Router；启动/停止责任只执行一次 |
+| 现有请求入口 | 现有模型经 serving / Registry / bootstrap 使用重构后的实现；生命周期、Admin、operational store 和探测保持可达；启动/停止责任只执行一次 |
 
 回归基础包括 [test_routing_backends.py](../../../tests/unit/routing/test_routing_backends.py)、[test_hybrid_router.py](../../../tests/unit/routing/test_hybrid_router.py)、[test_routewise_router.py](../../../tests/unit/routing/test_routewise_router.py) 和 [test_hybrid_bootstrap_wiring.py](../../../tests/unit/servers/test_hybrid_bootstrap_wiring.py)。新增测试应能区分错误实现，例如两个实例争用同一个只有一个槽位的池，而不只是检查类名和构造成功。
+
+### 12.2 未来扩展示例：Greedy 组合
+
+以下项目仅在未来单独实现 Greedy 时适用，不用于评审 PR #1454：
+
+| 场景 | 对应功能接入时验证 |
+|---|---|
+| Greedy 基线 | 同步到达不会超额预留；本地可接纳时执行本地，KV/TTFT 不可接受时转云；预测只用当时可知的数据 |
+| 分层模型配置 | 显式选择 Greedy 后能构建本地准入与 cloud RouteWise 组合；缺少池或准入配置时明确拒绝 |
+| 分层请求流程 | 本地准入、转云、子 Router 生命周期与端到端观测在该拓扑下有效 |
+
+### 12.3 文档交付检查
 
 本轮为 Markdown 文档交付，检查本文件与仓库本地链接、代码围栏、Python/YAML 示例语法和空白。新文件尚未进入 Git 索引时，仓库的 tracked-file 链接检查不会自动覆盖它，必须单独检查。上述行为测试和部署验证属于后续代码实施，不能用文档检查结果替代。
