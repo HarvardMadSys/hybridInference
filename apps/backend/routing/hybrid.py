@@ -317,6 +317,10 @@ class HybridRouter:
 
         attempts: list[dict[str, Any]] = []
         errors: list[BaseException] = []
+        # Admission refusals: nothing was sent, so there is no upstream fault to
+        # record. Kept apart from ``errors`` so that a plan which was entirely
+        # unavailable still reports *why*, without inventing a failed attempt.
+        refusals: list[BaseException] = []
         dispatched: set[str] = set()
         for index, attempt in enumerate(plan):
             if attempt.endpoint_id is not None and attempt.endpoint_id in dispatched:
@@ -350,9 +354,12 @@ class HybridRouter:
                     **params,
                 )
             except (TargetUnavailableError, AllCircuitsOpenError) as exc:
-                if not attempt.exact:
-                    attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
-                    errors.append(exc)
+                # Whether this attempt was an exact binding or a pool delegation,
+                # nothing reached an upstream: the endpoint was not admissible or
+                # had no capacity left. Recording it would report a provider
+                # fault for an endpoint nothing was sent to, and the single
+                # router had no attempt to record here either.
+                refusals.append(exc)
                 continue
             except DispatchMismatchError:
                 # A composition error raised inside the backend, from a range
@@ -372,7 +379,7 @@ class HybridRouter:
             # policy's target was in range regardless of which attempt answered.
             _tag_preference(response, decision.target, preferred_endpoint)
             return response
-        _raise_after_attempts(errors, attempts, model_id)
+        _raise_after_attempts(errors, attempts, refusals, model_id)
 
     def stream_chat_completion(
         self,
@@ -743,6 +750,7 @@ async def _fallback_stream(
     """Forward the first attempt the client can see, else try the next candidate."""
     attempts: list[dict[str, Any]] = []
     errors: list[BaseException] = []
+    refusals: list[BaseException] = []
     preferred_endpoint = _resolved_endpoint(
         router.backend(decision.backend), decision.target, model_id
     )
@@ -811,9 +819,9 @@ async def _fallback_stream(
         except (TargetUnavailableError, AllCircuitsOpenError) as exc:
             if committed:  # pragma: no cover - unavailability precedes any output
                 raise
-            if not attempt.exact:
-                attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
-                errors.append(exc)
+            # Same disposition as the non-streaming path: an admission refusal is
+            # not an upstream failure, for a leaf and for a pool alike.
+            refusals.append(exc)
         except DispatchMismatchError:
             # Same composition error, same disposition as the non-streaming path:
             # propagate it rather than recording a provider failure or continuing.
@@ -831,7 +839,7 @@ async def _fallback_stream(
         finally:
             if callable(aclose):
                 await aclose()
-    _raise_after_attempts(errors, attempts, model_id)
+    _raise_after_attempts(errors, attempts, refusals, model_id)
 
 
 def _attempt_options(
@@ -1024,6 +1032,7 @@ def _attempt_history_chunk(
 def _raise_after_attempts(
     errors: Sequence[BaseException],
     attempts: list[dict[str, Any]],
+    refusals: Sequence[BaseException],
     model_id: str,
 ) -> None:
     """Raise the error the caller should be told about, once every attempt failed.
@@ -1036,15 +1045,22 @@ def _raise_after_attempts(
     Every attempt is attached to whichever error is raised, so the error-log path
     can attribute each endpoint that was tried rather than only the one whose
     exception won.
+
+    A plan that never reached an upstream has no attempts to report and no
+    surfacing rule to apply. It still has to say why nothing could be used, so the
+    first admission refusal -- the reason the attempt chosen for this request was
+    refused -- is raised instead of a generic "every backend failed".
     """
-    if not errors:
-        raise HybridRoutingError(
-            f"every configured backend failed for model {model_id}: "
-            f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
-        )
-    surfaced = errors[select_surfaced_error(errors)]
-    _attach_attempt_history(surfaced, attempts)
-    raise surfaced
+    if errors:
+        surfaced = errors[select_surfaced_error(errors)]
+        _attach_attempt_history(surfaced, attempts)
+        raise surfaced
+    if refusals:
+        raise refusals[0]
+    raise HybridRoutingError(
+        f"every configured backend failed for model {model_id}: "
+        f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
+    )
 
 
 def _attach_attempt_history(exc: BaseException, attempts: list[dict[str, Any]]) -> None:

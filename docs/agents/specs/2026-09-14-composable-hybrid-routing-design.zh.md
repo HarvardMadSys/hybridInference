@@ -159,7 +159,7 @@ TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选
 
 调用方施加的范围在**每一层转发时都被保留并与下层自身范围求交**，不会被下层的完整范围替换。否则上层交集的正确性无法补偿下层已经收到的扩大范围：只授权 `{cloud A}` 的请求会拿到整个 cloud 池的候选集，再由其子 Router 合法地选出更便宜的 `B`。空范围与空交集保持为空，不能被解释成"不限范围"。Backend 未声明范围时，调用方的限制同样保留。
 
-"配置齐全但当前不可派发"与"没有配置"是两种结果：前者的 capacity 已被占满（如 concurrency 槽位用尽），应表达为 `TargetUnavailableError`——没有发出上游请求，因此不产生 provider 失败样本，由上层按原计划继续；后者仍是配置错误。只分域步骤落到 leaf 上时的处理**只适用于 fallback 条目**：该步骤没有点名 endpoint，而 leaf 无法选路，它自己的绑定就是这一步唯一可能的含义，因此展开为精确目标。**首选 attempt 不这样展开**——调用方为它指定了 target，leaf 服务不了该 target 时，这个 attempt 仍然是委托并被 leaf 拒绝，不会退化成“改打它自己绑定的那个 endpoint”。
+"配置齐全但当前不可派发"与"没有配置"是两种结果：前者的 capacity 已被占满（如 concurrency 槽位用尽），应表达为 `TargetUnavailableError`——没有发出上游请求，因此不产生 provider 失败样本，由上层按原计划继续；后者仍是配置错误。**是否记账只取决于"有没有发出上游请求"，与 attempt 是 leaf 精确派发还是 pool 委托无关**：两者都不产生 provider 失败样本。计划全部不可用时，仍要把不可用原因（准入拒绝本身）返回给调用方，而不是退化成笼统的"所有 backend 都失败"。只分域步骤落到 leaf 上时的处理**只适用于 fallback 条目**：该步骤没有点名 endpoint，而 leaf 无法选路，它自己的绑定就是这一步唯一可能的含义，因此展开为精确目标。**首选 attempt 不这样展开**——调用方为它指定了 target，leaf 服务不了该 target 时，这个 attempt 仍然是委托并被 leaf 拒绝，不会退化成“改打它自己绑定的那个 endpoint”。
 
 ### 4.2 共同上下文
 

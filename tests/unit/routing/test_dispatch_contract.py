@@ -779,6 +779,91 @@ async def test_a_busy_exact_target_is_not_a_provider_failure(streaming: bool) ->
         pool.release()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_busy_pool_delegation_is_not_a_provider_failure(streaming: bool) -> None:
+    """A pool with no capacity left has not failed either.
+
+    Whether the attempt was an exact binding or a delegation does not change
+    whether an upstream was contacted, and only that decides whether there is a
+    provider fault to record. The plan keeps going and the capacity another
+    request holds stays held.
+    """
+    local = _adapter(_LOCAL_ENDPOINT, provider="owned", base_url=_LOCAL_URL)
+    local.config.provider_type = "concurrency"
+    local.config.concurrency_pool = "one-slot"
+    local.config.concurrency = {"limit": 1}
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="metered", base_url="https://a.example/v1")
+    table = _shared_router(local, cloud)
+    local_router = _routewise_router(table)
+    pool = local_router.concurrency_pools["one-slot"]
+    assert pool.try_acquire()
+    router = HybridRouter(
+        policy=_PlannedPolicy(
+            primary="local",
+            primary_endpoint=_LOCAL_ENDPOINT,
+            fallback_endpoint=_CLOUD_ENDPOINT,
+        ),
+        local=LocalBackend(local_router, endpoint_scope={_LOCAL_ENDPOINT}, model_scope={_MODEL_ID}),
+        cloud=FixedCloudBackend(table, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+    try:
+        result = (
+            await _drain(router, None, collect=True)
+            if streaming
+            else await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="busy-pool")
+        )
+        assert local.chat_calls == 0 and local.stream_calls == 0
+        assert cloud.chat_calls + cloud.stream_calls == 1
+        assert pool.active == 1, "another request's occupied slot was released"
+        failures = [
+            attempt
+            for metadata in _routing_metadata(result)
+            for attempt in metadata.get("failed_attempts", [])
+        ]
+        assert not failures, f"nothing was sent, but attempts were recorded: {failures}"
+    finally:
+        pool.release()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_plan_that_was_never_dispatched_still_reports_why() -> None:
+    """Dropping the failed sample must not drop the reason.
+
+    With every candidate refused, the caller is told that nothing was admissible
+    -- the refusal itself -- rather than a generic "every backend failed".
+    """
+    import time as _time
+
+    from routing.endpoint_health import _CircuitState
+    from routing.routers import AllCircuitsOpenError
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local, cloud)
+    health = shared.endpoint_health_registry
+    health.ensure(_CLOUD_ENDPOINT)
+    circuit = health._circuits[_CLOUD_ENDPOINT]
+    circuit.state = _CircuitState.OPEN
+    circuit.last_opened = _time.perf_counter()
+    router = HybridRouter(
+        policy=_DelegateToCloudPolicy(),
+        local=LocalBackend(shared, endpoint_scope={_LOCAL_ENDPOINT}, model_scope={_MODEL_ID}),
+        cloud=FixedCloudBackend(shared, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+
+    with pytest.raises(AllCircuitsOpenError) as raised:
+        await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="all-refused")
+
+    assert local.chat_calls == 0
+    assert cloud.chat_calls == 0
+    # The refusal is the reason, not an attempt: nothing was sent, so the error
+    # must not carry a failure record for an endpoint that was never contacted.
+    assert not getattr(raised.value, "_routing", {}).get("failed_attempts")
+
+
 # ---------------------------------------------------------------------------
 # The boundary inside a composition
 # ---------------------------------------------------------------------------
