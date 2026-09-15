@@ -61,6 +61,11 @@ class RoutingTrace:
     # a deployment error, and a 500 -- from "every provider is busy recovering",
     # which is transient and owes the client a 503 it can retry.
     admission_refused: set[str] = field(default_factory=set)
+    # Endpoints the most recent solve dropped because the resource they draw from
+    # had nothing left to give -- an exhausted concurrency pool, a spent quota.
+    # Separate from ``admission_refused`` because these are capacity, not health:
+    # nothing was sent, so this must not be reported as a provider fault.
+    capacity_refused: set[str] = field(default_factory=set)
     initial_selected_endpoint: str | None = None
     initial_selected_provider_type: str | None = None
     fallback_policy: str | None = None

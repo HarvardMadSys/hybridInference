@@ -24,6 +24,15 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
+def _bound_adapter(executor):
+    """Return the adapter a decision's executor is bound to.
+
+    A hedge leg is a leaf that executes one adapter, so tests asserting which
+    endpoint a leg runs unwrap it rather than comparing the executor itself.
+    """
+    return getattr(executor, "adapter", executor)
+
+
 class _StaticRouteTable:
     """Small RouteTableView double for RouteWise hedge fixtures."""
 
@@ -725,7 +734,7 @@ class TestRouterHedgeMode:
         assert decision is not None
         selected = decision.adapter
         assert isinstance(selected, HedgedAdapter)
-        assert selected.primary is api_a
+        assert _bound_adapter(selected.primary) is api_a
         assert selected.backup is None
         assert selected.hedge_checkpoints_sec
         assert selected.hedge_threshold_sec > 0.0

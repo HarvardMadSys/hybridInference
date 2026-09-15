@@ -91,8 +91,67 @@ For the full diagram (network layer, observability, storage), see
   `<octet>-api`, and an admin-supplied `route_id` becomes the `endpoint_id`
   verbatim. The word "upstream" appears informally in code
   comments meaning "the remote API" but isn't a formal type.
-- **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
-  does weighted random selection plus automatic fallback.
+- **Router / HybridRouter abstraction** — the agreed design uses one common
+  router contract with independent strategy implementations. Reuse
+  [RouterProtocol](apps/backend/routing/protocols.py) as that contract; do not
+  create a duplicate interface merely to name it `HybridRouter`. `FixedRouter`
+  in [routers.py](apps/backend/routing/routers.py) and `RouteWiseRouter` are
+  peer implementations, both able to select across local and cloud candidates.
+  Future Greedy/Nimbus routers belong at the same level. Each implementation
+  owns its routing, retry and feedback flow; shared helpers need not impose one
+  execution loop on every strategy. A separate `RouteWisePolicy` is not required.
+  **Naming distinction:** the existing concrete
+  [routing.hybrid.HybridRouter](apps/backend/routing/hybrid.py) composes a policy
+  with backends; it is not the common interface in the design. Its `FixedPolicy`
+  / `BackendSelection` can remain internal or compatibility implementation
+  details. Preserve public imports if names change.
+  The current bootstrap uses that concrete composition only for mixed
+  `router: fixed` models with `router_params.hybrid_composition: true`.
+  Other Fixed models retain the shared FixedRouter. The opt-in composition
+  still differs in affinity, rejected primary claim re-selection, and fallback
+  circuit timing; resolve those before enabling it by default.
+  `router: routewise` directly returns RouteWiseRouter. Returning a concrete
+  implementation through the common contract is valid; it does not by itself
+  prove that the target backend execution boundary is wired.
+- **Backend / Leaf** — [backends.py](apps/backend/routing/backends.py) provides
+  callable inference capability in one of two shapes. A `LeafBackend` binds the
+  **adapter itself, for one endpoint**: it runs that adapter and returns what it
+  produced, and it keeps no queue, reservation, health record, failed-attempt
+  sample or `_routing` block of its own -- the router that chose the endpoint
+  keeps every one of those, and a second copy would double-count them. Its call
+  signatures are the adapter's, so a leaf stands in for one adapter wherever an
+  adapter is executed. A `TreeBackend` is the entry to a routing subtree and
+  delegates to a scoped internal router; `LocalBackend` and `CloudBackend` are
+  pools in that sense.
+  The instructions are explicit and distinct
+  ([dispatch.py](apps/backend/routing/dispatch.py)): `ExecuteEndpoint` binds one
+  endpoint through an `EndpointBinding` that carries the resolved adapter, and
+  `DelegatePool` grants selection inside a named pool. A mismatch is refused
+  before any upstream I/O as a composition error -- never recorded as an
+  attempted provider. `FixedRouter` (chat and stream, primary and fallback),
+  `RouteWiseRouter` (its decision and both hedge legs) and RouteWise's active
+  latency probe all execute through the same leaf, so the selection, admission,
+  prefill and feedback accounting stay where they already were.
+  **Preserve Fixed and RouteWise request behavior.** RouteWise keeps its full
+  candidate pool, reservations, re-solving, hedging, learning and lifecycle,
+  using `llm_routewise.core` for algorithm primitives. Do not force it through
+  the concrete composition router, a Fixed domain split, or a cloud-only pool.
+  `RouteWiseCloudBackend` is an optional scoped compatibility wrapper, not the
+  architectural home of RouteWise, and need not be removed for this design.
+  Local/cloud ownership is independent of `on_demand`, `quota` and `concurrency`.
+  A local GPU deployment can be a concurrency candidate when explicitly
+  configured; do not recreate capacity pools per backend or model binding.
+  Keep model `router` / `router_params`, defaults, registry caching, aliases and
+  Admin switching. Verify in-flight requests and feedback retain their original
+  owner across updates; preserving configuration alone is not proof of this.
+  Execution scopes currently come from the composition root
+  ([hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)).
+  Explicit `local_scope` / `local_ownership` are supported; bootstrap currently
+  uses the hostname default, which can classify an owned LAN or cluster DNS
+  endpoint as remote. Do not infer a RouteWise resource type from that domain.
+  See
+  [docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
+  for the current router, leaf and pool contracts, opt-in wiring and deferred work.
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy

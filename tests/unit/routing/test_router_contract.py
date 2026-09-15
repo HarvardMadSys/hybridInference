@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from routing.backends import LocalBackend, RouteWiseCloudBackend
 from routing.protocols import RouterProtocol, RouteTableRefreshable, RoutingRequestOptions
 from routing.route_table import RouteTableView
 from routing.routers import AllCircuitsOpenError, FixedRouter
@@ -102,34 +103,71 @@ class _RouterFactory:
     build: Callable[[list[_ContractAdapter]], RouterProtocol]
 
 
-@pytest.fixture(params=("fixed", "routewise"))
+def _build_fixed(adapters: list[_ContractAdapter]) -> FixedRouter:
+    router = FixedRouter()
+    # Keep later adapters eligible for fallback while making the first
+    # selection deterministic for the contract scenarios.
+    weights = [1e100, *(1.0 for _ in adapters[1:])]
+    router.register_route(_MODEL_ID, list(zip(adapters, weights, strict=True)))
+    return router
+
+
+def _build_routewise(adapters: list[_ContractAdapter]) -> RouteWiseRouter:
+    route_table = FixedRouter()
+    route_table.register_route(
+        _MODEL_ID,
+        [(adapter, 1.0) for adapter in adapters],
+    )
+    return RouteWiseRouter(
+        route_table=route_table,
+        config=RouteWiseConfig(
+            budget_alpha=0.0,
+            fallback_mode="policy",
+            random_seed=0,
+        ),
+    )
+
+
+def _contract_endpoint_scope(adapters: list[_ContractAdapter]) -> set[str]:
+    """Return every endpoint id the contract adapters declare."""
+    return {adapter.config.endpoint_id for adapter in adapters}
+
+
+def _build_local_backend(adapters: list[_ContractAdapter]) -> LocalBackend:
+    return LocalBackend(_build_fixed(adapters))
+
+
+def _build_cloud_backend(adapters: list[_ContractAdapter]) -> RouteWiseCloudBackend:
+    route_table = FixedRouter()
+    route_table.register_route(
+        _MODEL_ID,
+        [(adapter, 1.0) for adapter in adapters],
+    )
+    router = RouteWiseRouter(
+        config=RouteWiseConfig(
+            budget_alpha=0.0,
+            fallback_mode="policy",
+            random_seed=0,
+        ),
+    )
+    return RouteWiseCloudBackend(
+        router,
+        table=route_table,
+        endpoint_scope=_contract_endpoint_scope(adapters),
+        model_scope={_MODEL_ID},
+    )
+
+
+@pytest.fixture(params=("fixed", "routewise", "local-backend", "cloud-backend"))
 def router_factory(request: pytest.FixtureRequest) -> _RouterFactory:
-    def build_fixed(adapters: list[_ContractAdapter]) -> FixedRouter:
-        router = FixedRouter()
-        # Keep later adapters eligible for fallback while making the first
-        # selection deterministic for the contract scenarios.
-        weights = [1e100, *(1.0 for _ in adapters[1:])]
-        router.register_route(_MODEL_ID, list(zip(adapters, weights, strict=True)))
-        return router
-
-    def build_routewise(adapters: list[_ContractAdapter]) -> RouteWiseRouter:
-        route_table = FixedRouter()
-        route_table.register_route(
-            _MODEL_ID,
-            [(adapter, 1.0) for adapter in adapters],
-        )
-        return RouteWiseRouter(
-            route_table=route_table,
-            config=RouteWiseConfig(
-                budget_alpha=0.0,
-                fallback_mode="policy",
-                random_seed=0,
-            ),
-        )
-
-    if request.param == "fixed":
-        return _RouterFactory(name="fixed", build=build_fixed)
-    return _RouterFactory(name="routewise", build=build_routewise)
+    builders = {
+        "fixed": _build_fixed,
+        "routewise": _build_routewise,
+        "local-backend": _build_local_backend,
+        "cloud-backend": _build_cloud_backend,
+    }
+    name = request.param
+    return _RouterFactory(name=name, build=builders[name])
 
 
 @pytest.mark.unit

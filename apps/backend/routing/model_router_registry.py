@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
@@ -45,6 +45,28 @@ def _attach_accepts_model_scope(attach: Any) -> bool:
     if "model_scope" in parameters:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+@runtime_checkable
+class HybridRouterFactory(Protocol):
+    """Composition hook that builds the hybrid entry point for one model.
+
+    Implemented by the composition root (``serving.servers.bootstrap``), which
+    is the only place that knows a deployment's explicit local endpoint range.
+    Returning ``None`` means "leave this model on the shared fixed router": a
+    deployment with no local scope configured cannot express the split, and
+    silently treating every route as cloud would change its behavior.
+    """
+
+    def build(
+        self,
+        *,
+        shared_fixed: FixedRouter,
+        model_id: str,
+        params: dict[str, Any],
+    ) -> RouterProtocol | None:
+        """Return the hybrid router for ``model_id``, or None to keep the shared one."""
+        ...
 
 
 class StaleRouterStrategyChangeError(RuntimeError):
@@ -100,8 +122,10 @@ class ModelRouterRegistry:
         dependencies: RouterBuildDependencies | None = None,
         *,
         shared_fixed_router: FixedRouter | None = None,
+        hybrid_router_factory: HybridRouterFactory | None = None,
     ) -> None:
         self._configs = models_config
+        self._hybrid_router_factory = hybrid_router_factory
         self._default = default_router_name
         self._cache: dict[str, RouterProtocol] = {}
         self._alias_to_model = dict(alias_to_model or {})
@@ -127,6 +151,20 @@ class ModelRouterRegistry:
         ):
             raise ValueError("shared FixedRouter must use RouterBuildDependencies.health_registry")
         self._shared_fixed = fixed_router
+
+    def set_hybrid_router_factory(self, factory: HybridRouterFactory) -> None:
+        """Attach the hybrid composition hook after construction.
+
+        The composition root builds this factory from the registry it is
+        attaching to (the factory derives each model's local scope from the
+        registry's route table), so the two cannot be supplied in one call. It
+        must be attached before the first ``get_router`` for it to take effect,
+        which this guard enforces rather than silently building the wrong router
+        for whichever models were already cached.
+        """
+        if self._cache:
+            raise RuntimeError("hybrid router factory must be attached before router lookup")
+        self._hybrid_router_factory = factory
 
     def bind_fixed_router(self, fixed_router: FixedRouter) -> None:
         """Compatibility shim for registering the shared ``FixedRouter``.
@@ -183,6 +221,20 @@ class ModelRouterRegistry:
                 dependencies=self._dependencies,
             )
             router: RouterProtocol = shared_fixed
+            if self._hybrid_router_factory is not None:
+                # Composition root opted into the hybrid seam: the model's
+                # requests enter through HybridRouter, which runs the global
+                # `fixed` decision above the local and cloud execution domains.
+                # The plain shared router stays in place when the factory
+                # declines (for example no local scope is configured), so a
+                # deployment that cannot express the split keeps working.
+                hybrid = self._hybrid_router_factory.build(
+                    shared_fixed=shared_fixed,
+                    model_id=canonical_model_id,
+                    params=params,
+                )
+                if hybrid is not None:
+                    router = hybrid
         else:
             router = build_router(name, params, dependencies=self._dependencies)
             # Late-bind the read-only route-table port for RouteWise (and any

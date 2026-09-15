@@ -21,11 +21,14 @@ class FixedParams(BaseModel):
             ``models.yaml`` already encode the local/remote split, so
             ``FixedRouter`` does not consult this field today.  Kept in the
             schema for forward compatibility with hybrid weighting.
+        hybrid_composition: Explicitly enable local/cloud composition for this
+            model. Defaults to False until Fixed selection equivalence is proven.
     """
 
     model_config = {"extra": "forbid"}
 
     local_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    hybrid_composition: bool = False
 
 
 register_strategy("fixed")((FixedRouter, FixedParams))

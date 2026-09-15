@@ -37,6 +37,15 @@ _HEALTHY_ENDPOINT = f"{_MODEL_ID}:healthy"
 _RECOVERING_ENDPOINT = f"{_MODEL_ID}:recovering"
 
 
+def _bound_adapter(executor):
+    """Return the adapter a decision's executor is bound to.
+
+    A decision names a leaf that executes one adapter, so tests asserting which
+    endpoint was chosen unwrap it rather than comparing the executor itself.
+    """
+    return getattr(executor, "adapter", executor)
+
+
 @pytest.fixture(autouse=True)
 def _one_failure_opens_a_thirty_second_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "1")
@@ -391,7 +400,7 @@ async def test_routewise_enumeration_leaves_a_half_open_endpoint_probeable() -> 
 
     for _ in range(20):
         decision = router._select_decision(_MODEL_ID, {})
-        assert decision.adapter is healthy
+        assert _bound_adapter(decision.adapter) is healthy
         decision.release()
 
     assert registry.begin_dispatch(_RECOVERING_ENDPOINT) is not None
@@ -409,7 +418,7 @@ async def test_routewise_selection_claims_the_probe_for_the_request_it_serves() 
     _elapse_cooldown(registry, _RECOVERING_ENDPOINT)
 
     decision = router._select_decision(_MODEL_ID, {})
-    assert decision.adapter is recovering
+    assert _bound_adapter(decision.adapter) is recovering
     # The probe is in flight and this route has nowhere else to go. Probe
     # contention is not a missing route: it is transient and the client should
     # retry, so it surfaces as the 503-mapped error FixedRouter raises for the
@@ -419,7 +428,7 @@ async def test_routewise_selection_claims_the_probe_for_the_request_it_serves() 
         await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="second")
     # Releasing the decision returns both of the resources it committed.
     decision.release()
-    assert router._select_decision(_MODEL_ID, {}).adapter is recovering
+    assert _bound_adapter(router._select_decision(_MODEL_ID, {}).adapter) is recovering
 
 
 class _AbandonableAdapter(_CountingAdapter):

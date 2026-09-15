@@ -755,6 +755,46 @@ async def test_runtime_forced_buffered_stream_preserves_all_circuits_open_503(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_unavailable_routing_target_surfaces_503(completions_app, monkeypatch, streaming):
+    """An admission refusal is service unavailability on both completion paths."""
+    from routing.routers import TargetUnavailableError
+
+    router = completions_app.state.services.router
+
+    async def refuse_chat(*args, **kwargs):
+        raise TargetUnavailableError("pool is full")
+
+    async def refuse_stream(*args, **kwargs):
+        raise TargetUnavailableError("pool is full")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(router, "chat_completion", refuse_chat)
+    monkeypatch.setattr(router, "stream_chat_completion", refuse_stream)
+    async with AsyncClient(
+        transport=ASGITransport(app=completions_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": streaming,
+            },
+        )
+    if streaming:
+        assert response.status_code == 200
+        errors = [
+            json.loads(line[6:])["error"]
+            for line in response.text.splitlines()
+            if line.startswith("data: {") and '"error"' in line
+        ]
+        assert errors and errors[0]["code"] == 503
+    else:
+        assert response.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_model_not_found_returns_404(completions_client: AsyncClient):
     resp = await completions_client.post(
         "/v1/chat/completions",

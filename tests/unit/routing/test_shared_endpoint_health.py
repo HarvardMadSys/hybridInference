@@ -24,6 +24,15 @@ _PRIMARY_ENDPOINT = f"{_MODEL_ID}:primary"
 _BACKUP_ENDPOINT = f"{_MODEL_ID}:backup"
 
 
+def _bound_adapter(executor):
+    """Return the adapter a decision's executor is bound to.
+
+    A decision names a leaf that executes one adapter, so tests asserting which
+    endpoint was chosen unwrap it rather than comparing the executor itself.
+    """
+    return getattr(executor, "adapter", executor)
+
+
 class _BehaviorAdapter(BaseAdapter):
     def __init__(
         self,
@@ -147,7 +156,7 @@ async def test_fixed_pinned_failure_excludes_endpoint_from_routewise() -> None:
     )
     decision = routewise._select_decision(_MODEL_ID, {})
     assert decision is not None
-    assert decision.adapter is backup
+    assert _bound_adapter(decision.adapter) is backup
 
 
 @pytest.mark.asyncio

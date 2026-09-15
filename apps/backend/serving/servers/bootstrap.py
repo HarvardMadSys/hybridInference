@@ -627,6 +627,58 @@ async def _init_router_and_models(
     return embedding_adapters, model_infos
 
 
+def _build_model_router_registry(
+    *,
+    models_config: dict[str, Any],
+    default_router_name: str,
+    alias_to_model: dict[str, str],
+    router_dependencies: Any,
+    shared_router: Any,
+) -> ModelRouterRegistry:
+    """Build the per-model router registry with its composition hooks attached.
+
+    Building and attaching live in one call on purpose. The hybrid factory is
+    consulted only while a router is being built, and
+    ``set_hybrid_router_factory`` refuses to attach once anything is cached -- so
+    a caller that builds the registry first and attaches later leaves every model
+    on the plain shared router without an error to show for it. Keeping the two
+    steps inseparable makes that ordering impossible to get wrong, and gives the
+    wiring a production-shaped entry point to test.
+    """
+    registry = ModelRouterRegistry(
+        models_config=models_config,
+        default_router_name=default_router_name,
+        alias_to_model=alias_to_model,
+        dependencies=router_dependencies,
+        shared_fixed_router=shared_router,
+    )
+    _attach_hybrid_router_factory(registry, router_dependencies)
+    return registry
+
+
+def _attach_hybrid_router_factory(
+    model_router_registry: ModelRouterRegistry,
+    router_dependencies: Any,
+) -> None:
+    """Attach the hybrid composition hook, or leave the shared router in place.
+
+    Failure to attach is not fatal: a deployment whose routes are all remote has
+    no local/cloud split to express, and the shared ``FixedRouter`` already
+    serves it correctly. The reason is logged so the absence is visible rather
+    than silent.
+    """
+    try:
+        from serving.servers.hybrid_composition import HybridFixedRouterFactory
+
+        factory = HybridFixedRouterFactory(
+            registry=model_router_registry,
+            health_registry=router_dependencies.health_registry,
+        )
+        model_router_registry.set_hybrid_router_factory(factory)
+    except Exception as exc:
+        logger.warning(f"Hybrid router composition not enabled: {exc}")
+
+
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     """Optionally load the routing manager and apply weights from YAML.
 
@@ -854,12 +906,12 @@ async def initialize() -> AppServices:
     if settings.enable_routewise and default_router_name == "fixed":
         default_router_name = "routewise"
 
-    model_router_registry = ModelRouterRegistry(
+    model_router_registry = _build_model_router_registry(
         models_config=models_config,
         default_router_name=default_router_name,
         alias_to_model=alias_to_model,
-        dependencies=router_dependencies,
-        shared_fixed_router=router,
+        router_dependencies=router_dependencies,
+        shared_router=router,
     )
     model_router_transition_locks: dict[str, asyncio.Lock] = {}
 
