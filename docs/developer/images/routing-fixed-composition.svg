@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="812" viewBox="0 0 980 812" role="img" aria-labelledby="t-fixed-composition d-fixed-composition">
+  <title id="t-fixed-composition">Opt-in Fixed composition</title>
+  <desc id="d-fixed-composition">A mixed router: fixed model with hybrid_composition enabled resolves to HybridRouter, which plans attempts with FixedPolicy. The primary attempt delegates to a pool; each planned fallback names one endpoint. LocalBackend and FixedCloudBackend are scoped TreeBackend wrappers around one shared FixedRouter, which executes the selected endpoint through its own LeafBackend and Adapter.</desc>
+  <!-- Editable SVG source. No browser scripts, external fonts or build-time renderer. -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse"><path d="M0 0.6L9.4 5L0 9.4Z" fill="#8b97a8"/></marker>
+    <marker id="i" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9"
+            orient="auto"><path d="M1.2 1.2L10.8 6L1.2 10.8Z" fill="#fbfcfe" stroke="#8b97a8"
+            stroke-width="1.4"/></marker>
+    <filter id="sh" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#1f2a37" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; text-anchor: middle; fill: #1f2a37; }
+    .t { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 16px; font-weight: 600; fill: #111827; }
+    .d { font-size: 13.5px; fill: #64748b; }
+    .l { font-size: 12.5px; fill: #52607a; paint-order: stroke; stroke: #fbfcfe;
+         stroke-width: 6px; stroke-linejoin: round; }
+    .m { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 12.5px; fill: #3f4c63; paint-order: stroke;
+         stroke: #fbfcfe; stroke-width: 6px; stroke-linejoin: round; }
+    .lg { font-size: 12.5px; fill: #64748b; text-anchor: start; }
+    .ct { font-size: 12.5px; fill: #8b97a8; text-anchor: start; }
+    .cm { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 13px; fill: #3f4c63; text-anchor: start; }
+    .cs { font-size: 12.3px; fill: #64748b; text-anchor: start; }
+    .e { fill: none; stroke: #8b97a8; stroke-width: 1.8; stroke-linecap: round; }
+    .dash { stroke-dasharray: 7 5; }
+    .n { stroke-width: 1.5; filter: url(#sh); }
+    .router { fill: #eef5ff; stroke: #5b8def; }
+    .pool { fill: #f5f2ff; stroke: #8b7cd8; }
+    .leaf { fill: #ecfbf4; stroke: #3aa987; }
+    .plain { fill: #f7f9fc; stroke: #9fb0c4; }
+    .future { fill: #fffaef; stroke: #d99a2b; stroke-dasharray: 7 5; }
+  </style>
+  <rect x="0.75" y="0.75" width="978.5" height="810.5" rx="14" fill="#fbfcfe" stroke="#e7ecf3"/>
+  <path class="e" d="M440 82 L440 124" marker-end="url(#a)"/>
+  <path class="e" d="M440 212 L440 233 Q440 244 429 244 L211 244 Q200 244 200 255 L200 274" marker-end="url(#a)"/>
+  <path class="e" d="M440 244 L669 244 Q680 244 680 255 L680 274" marker-end="url(#a)"/>
+  <path class="e" d="M200 358 L200 389 Q200 400 211 400 L429 400 Q440 400 440 411 L440 432" marker-end="url(#a)"/>
+  <path class="e" d="M680 358 L680 389 Q680 400 669 400 L444 400"/>
+  <path class="e" d="M440 524 L440 549 Q440 560 429 560 L211 560 Q200 560 200 571 L200 592" marker-end="url(#a)"/>
+  <path class="e" d="M440 560 L669 560 Q680 560 680 571 L680 592" marker-end="url(#a)"/>
+  <path class="e" d="M200 662 L200 712" marker-end="url(#a)"/>
+  <path class="e" d="M680 662 L680 712" marker-end="url(#a)"/>
+  <path class="e" d="M650 170 L692 170" stroke-dasharray="4 4"/>
+  <g>
+    <rect x="692" y="116" width="282" height="126" rx="10" fill="#fbfcff" stroke="#cfd8e6" stroke-dasharray="5 4"/>
+    <text class="ct" x="710" y="142">dispatch instruction per attempt</text>
+    <text class="cm" x="710" y="169">DelegatePool(pool_id)</text>
+    <text class="cs" x="710" y="188">primary · the target is a preference</text>
+    <text class="cm" x="710" y="213">ExecuteEndpoint(binding)</text>
+    <text class="cs" x="710" y="232">planned fallback · that endpoint only</text>
+  </g>
+  <g>
+    <rect class="n plain" x="260" y="20" width="360" height="62" rx="11"/>
+    <text class="t" x="440" y="48">ModelRouterRegistry</text>
+    <text class="d" x="440" y="69">model B · router: fixed + hybrid_composition</text>
+  </g>
+  <g>
+    <rect class="n router" x="230" y="124" width="420" height="88" rx="11"/>
+    <text class="t" x="440" y="155">HybridRouter</text>
+    <text class="d" x="440" y="176">policy: FixedPolicy</text>
+    <text class="d" x="440" y="195">plans the attempt order</text>
+  </g>
+  <g>
+    <rect class="n pool" x="30" y="274" width="340" height="84" rx="11"/>
+    <text class="t" x="200" y="313">LocalBackend</text>
+    <text class="d" x="200" y="334">TreeBackend · local scope</text>
+  </g>
+  <g>
+    <rect class="n pool" x="510" y="274" width="340" height="84" rx="11"/>
+    <text class="t" x="680" y="313">FixedCloudBackend</text>
+    <text class="d" x="680" y="334">TreeBackend · cloud scope</text>
+  </g>
+  <g>
+    <rect class="n router" x="215" y="432" width="450" height="92" rx="11"/>
+    <text class="t" x="440" y="465">FixedRouter</text>
+    <text class="d" x="440" y="486">one shared instance</text>
+    <text class="d" x="440" y="505">scope arrives with each attempt</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="45" y="592" width="310" height="70" rx="11"/>
+    <text class="t" x="200" y="624">LeafBackend</text>
+    <text class="d" x="200" y="645">bound local endpoint</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="525" y="592" width="310" height="70" rx="11"/>
+    <text class="t" x="680" y="624">LeafBackend</text>
+    <text class="d" x="680" y="645">bound cloud endpoint</text>
+  </g>
+  <g>
+    <rect class="n plain" x="45" y="712" width="310" height="66" rx="11"/>
+    <text class="t" x="200" y="742">Adapter</text>
+    <text class="d" x="200" y="763">local service</text>
+  </g>
+  <g>
+    <rect class="n plain" x="525" y="712" width="310" height="66" rx="11"/>
+    <text class="t" x="680" y="742">Adapter</text>
+    <text class="d" x="680" y="763">cloud API</text>
+  </g>
+  <text class="l" x="200" y="236">local attempt</text>
+  <text class="l" x="628" y="236">cloud attempt</text>
+  <text class="l" x="440" y="392">scope and target travel with the attempt</text>
+</svg>

@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="790" viewBox="0 0 900 790" role="img" aria-labelledby="t-greedy-future d-greedy-future">
+  <title id="t-greedy-future">Greedy with a cloud-scoped RouteWise</title>
+  <desc id="d-greedy-future">A planned topology, not a configuration that exists. A future GreedyRouter, drawn dashed, either admits a local endpoint or delegates the cloud pool to a TreeBackend holding a cloud-scoped RouteWiseRouter. Those pool classes exist today; only the entry router and the configuration that would reach it are missing. Each selected cloud endpoint runs through its own LeafBackend and Adapter.</desc>
+  <!-- Editable SVG source. No browser scripts, external fonts or build-time renderer. -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse"><path d="M0 0.6L9.4 5L0 9.4Z" fill="#8b97a8"/></marker>
+    <marker id="i" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9"
+            orient="auto"><path d="M1.2 1.2L10.8 6L1.2 10.8Z" fill="#fbfcfe" stroke="#8b97a8"
+            stroke-width="1.4"/></marker>
+    <filter id="sh" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#1f2a37" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; text-anchor: middle; fill: #1f2a37; }
+    .t { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 16px; font-weight: 600; fill: #111827; }
+    .d { font-size: 13.5px; fill: #64748b; }
+    .l { font-size: 12.5px; fill: #52607a; paint-order: stroke; stroke: #fbfcfe;
+         stroke-width: 6px; stroke-linejoin: round; }
+    .m { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 12.5px; fill: #3f4c63; paint-order: stroke;
+         stroke: #fbfcfe; stroke-width: 6px; stroke-linejoin: round; }
+    .lg { font-size: 12.5px; fill: #64748b; text-anchor: start; }
+    .ct { font-size: 12.5px; fill: #8b97a8; text-anchor: start; }
+    .cm { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 13px; fill: #3f4c63; text-anchor: start; }
+    .cs { font-size: 12.3px; fill: #64748b; text-anchor: start; }
+    .e { fill: none; stroke: #8b97a8; stroke-width: 1.8; stroke-linecap: round; }
+    .dash { stroke-dasharray: 7 5; }
+    .n { stroke-width: 1.5; filter: url(#sh); }
+    .router { fill: #eef5ff; stroke: #5b8def; }
+    .pool { fill: #f5f2ff; stroke: #8b7cd8; }
+    .leaf { fill: #ecfbf4; stroke: #3aa987; }
+    .plain { fill: #f7f9fc; stroke: #9fb0c4; }
+    .future { fill: #fffaef; stroke: #d99a2b; stroke-dasharray: 7 5; }
+  </style>
+  <rect x="0.75" y="0.75" width="898.5" height="788.5" rx="14" fill="#fbfcfe" stroke="#e7ecf3"/>
+  <path class="e dash" d="M450 82 L450 126" marker-end="url(#a)"/>
+  <path class="e dash" d="M370 204 L370 233 Q370 244 359 244 L176 244 Q165 244 165 255 L165 296" marker-end="url(#a)"/>
+  <path class="e dash" d="M530 204 L530 221 Q530 232 541 232 L629 232 Q640 232 640 243 L640 264" marker-end="url(#a)"/>
+  <path class="e" d="M165 366 L165 416" marker-end="url(#a)"/>
+  <path class="e" d="M165 478 L165 528" marker-end="url(#a)"/>
+  <path class="e" d="M640 356 L640 396" marker-end="url(#a)"/>
+  <path class="e" d="M640 476 L640 501 Q640 512 629 512 L518 512 Q507 512 507 523 L507 544" marker-end="url(#a)"/>
+  <path class="e" d="M640 512 L751 512 Q762 512 762 523 L762 544" marker-end="url(#a)"/>
+  <path class="e" d="M507 610 L507 650" marker-end="url(#a)"/>
+  <path class="e" d="M762 610 L762 650" marker-end="url(#a)"/>
+  <g>
+    <rect class="n plain" x="290" y="20" width="320" height="62" rx="11"/>
+    <text class="t" x="450" y="48">ModelRouterRegistry</text>
+    <text class="d" x="450" y="69">model C</text>
+  </g>
+  <g>
+    <rect class="n future" x="290" y="126" width="320" height="78" rx="11"/>
+    <text class="t" x="450" y="162">GreedyRouter</text>
+    <text class="d" x="450" y="183">not built yet · owns local admission</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="35" y="296" width="260" height="70" rx="11"/>
+    <text class="t" x="165" y="328">LeafBackend</text>
+    <text class="d" x="165" y="349">bound local endpoint</text>
+  </g>
+  <g>
+    <rect class="n plain" x="35" y="416" width="260" height="62" rx="11"/>
+    <text class="t" x="165" y="444">Adapter</text>
+    <text class="d" x="165" y="465">local</text>
+  </g>
+  <g>
+    <rect class="n plain" x="35" y="528" width="260" height="66" rx="11"/>
+    <text class="t" x="165" y="567">Owned local service</text>
+  </g>
+  <g>
+    <rect class="n pool" x="450" y="264" width="400" height="92" rx="11"/>
+    <text class="t" x="650" y="297">TreeBackend</text>
+    <text class="d" x="650" y="318">scope = cloud</text>
+    <text class="d" x="650" y="337">e.g. RouteWiseCloudBackend</text>
+  </g>
+  <g>
+    <rect class="n router" x="450" y="396" width="400" height="80" rx="11"/>
+    <text class="t" x="650" y="433">RouteWiseRouter</text>
+    <text class="d" x="650" y="454">scope = cloud</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="400" y="544" width="215" height="66" rx="11"/>
+    <text class="t" x="507.5" y="574">LeafBackend</text>
+    <text class="d" x="507.5" y="595">cloud endpoint 1</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="655" y="544" width="215" height="66" rx="11"/>
+    <text class="t" x="762.5" y="574">LeafBackend</text>
+    <text class="d" x="762.5" y="595">cloud endpoint 2</text>
+  </g>
+  <g>
+    <rect class="n plain" x="400" y="650" width="215" height="72" rx="11"/>
+    <text class="t" x="507.5" y="683">Adapter</text>
+    <text class="d" x="507.5" y="704">provider_type: concurrency</text>
+  </g>
+  <g>
+    <rect class="n plain" x="655" y="650" width="215" height="72" rx="11"/>
+    <text class="t" x="762.5" y="683">Adapter</text>
+    <text class="d" x="762.5" y="704">provider_type: on_demand</text>
+  </g>
+  <text class="l" x="165" y="236">local admission succeeds</text>
+  <text class="m" x="690" y="224">DelegatePool(cloud)</text>
+  <text class="l" x="712" y="386">scoped router</text>
+  <text class="l" x="600" y="504">selects one cloud endpoint</text>
+  <g>
+    <rect class="future" x="35" y="748" width="20" height="13" rx="4" stroke-width="1.5"/>
+    <text class="lg" x="63" y="758">not built yet</text>
+  </g>
+  <text class="lg" x="185" y="758">every solid box is a class that exists today</text>
+</svg>
