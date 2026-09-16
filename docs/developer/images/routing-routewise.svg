@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="590" viewBox="0 0 820 590" role="img" aria-labelledby="t-routewise d-routewise">
+  <title id="t-routewise">Full-pool RouteWise</title>
+  <desc id="d-routewise">ModelRouterRegistry gives model A to RouteWiseRouter, whose candidate pool holds both local and cloud endpoints. Whichever endpoint it selects is executed through that endpoint's own LeafBackend and Adapter.</desc>
+  <!-- Editable SVG source. No browser scripts, external fonts or build-time renderer. -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse"><path d="M0 0.6L9.4 5L0 9.4Z" fill="#8b97a8"/></marker>
+    <marker id="i" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9"
+            orient="auto"><path d="M1.2 1.2L10.8 6L1.2 10.8Z" fill="#fbfcfe" stroke="#8b97a8"
+            stroke-width="1.4"/></marker>
+    <filter id="sh" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#1f2a37" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; text-anchor: middle; fill: #1f2a37; }
+    .t { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 16px; font-weight: 600; fill: #111827; }
+    .d { font-size: 13.5px; fill: #64748b; }
+    .l { font-size: 12.5px; fill: #52607a; paint-order: stroke; stroke: #fbfcfe;
+         stroke-width: 6px; stroke-linejoin: round; }
+    .m { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 12.5px; fill: #3f4c63; paint-order: stroke;
+         stroke: #fbfcfe; stroke-width: 6px; stroke-linejoin: round; }
+    .lg { font-size: 12.5px; fill: #64748b; text-anchor: start; }
+    .ct { font-size: 12.5px; fill: #8b97a8; text-anchor: start; }
+    .cm { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 13px; fill: #3f4c63; text-anchor: start; }
+    .cs { font-size: 12.3px; fill: #64748b; text-anchor: start; }
+    .e { fill: none; stroke: #8b97a8; stroke-width: 1.8; stroke-linecap: round; }
+    .dash { stroke-dasharray: 7 5; }
+    .n { stroke-width: 1.5; filter: url(#sh); }
+    .router { fill: #eef5ff; stroke: #5b8def; }
+    .pool { fill: #f5f2ff; stroke: #8b7cd8; }
+    .leaf { fill: #ecfbf4; stroke: #3aa987; }
+    .plain { fill: #f7f9fc; stroke: #9fb0c4; }
+    .future { fill: #fffaef; stroke: #d99a2b; stroke-dasharray: 7 5; }
+  </style>
+  <rect x="0.75" y="0.75" width="818.5" height="588.5" rx="14" fill="#fbfcfe" stroke="#e7ecf3"/>
+  <path class="e" d="M410 84 L410 128" marker-end="url(#a)"/>
+  <path class="e" d="M410 206 L410 229 Q410 240 399 240 L211 240 Q200 240 200 251 L200 276" marker-end="url(#a)"/>
+  <path class="e" d="M410 240 L609 240 Q620 240 620 251 L620 276" marker-end="url(#a)"/>
+  <path class="e" d="M200 346 L200 396" marker-end="url(#a)"/>
+  <path class="e" d="M620 346 L620 396" marker-end="url(#a)"/>
+  <path class="e" d="M200 458 L200 508" marker-end="url(#a)"/>
+  <path class="e" d="M620 458 L620 508" marker-end="url(#a)"/>
+  <g>
+    <rect class="n plain" x="230" y="22" width="360" height="62" rx="11"/>
+    <text class="t" x="410" y="50">ModelRouterRegistry</text>
+    <text class="d" x="410" y="71">model A · router: routewise</text>
+  </g>
+  <g>
+    <rect class="n router" x="195" y="128" width="430" height="78" rx="11"/>
+    <text class="t" x="410" y="164">RouteWiseRouter</text>
+    <text class="d" x="410" y="185">candidate pool = local + cloud</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="60" y="276" width="280" height="70" rx="11"/>
+    <text class="t" x="200" y="308">LeafBackend</text>
+    <text class="d" x="200" y="329">bound local endpoint</text>
+  </g>
+  <g>
+    <rect class="n leaf" x="480" y="276" width="280" height="70" rx="11"/>
+    <text class="t" x="620" y="308">LeafBackend</text>
+    <text class="d" x="620" y="329">bound cloud endpoint</text>
+  </g>
+  <g>
+    <rect class="n plain" x="60" y="396" width="280" height="62" rx="11"/>
+    <text class="t" x="200" y="424">Adapter</text>
+    <text class="d" x="200" y="445">local</text>
+  </g>
+  <g>
+    <rect class="n plain" x="480" y="396" width="280" height="62" rx="11"/>
+    <text class="t" x="620" y="424">Adapter</text>
+    <text class="d" x="620" y="445">cloud</text>
+  </g>
+  <g>
+    <rect class="n plain" x="60" y="508" width="280" height="62" rx="11"/>
+    <text class="t" x="200" y="545">Local service</text>
+  </g>
+  <g>
+    <rect class="n plain" x="480" y="508" width="280" height="62" rx="11"/>
+    <text class="t" x="620" y="545">Cloud API</text>
+  </g>
+  <text class="l" x="200" y="232">selects endpoint L</text>
+  <text class="l" x="620" y="232">selects endpoint C</text>
+</svg>

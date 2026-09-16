@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="632" viewBox="0 0 1000 632" role="img" aria-labelledby="t-contracts d-contracts">
+  <title id="t-contracts">Router contracts and endpoint execution</title>
+  <desc id="d-contracts">FixedRouter, RouteWiseRouter and HybridRouter implement RouterProtocol. Fixed and RouteWise execute a chosen endpoint through LeafBackend, which calls one Adapter. HybridRouter owns no endpoint selection and delegates to a RoutingBackend pool, which TreeBackend implements by holding a scoped router. GreedyRouter and NimbusRouter are drawn dashed because they do not exist yet.</desc>
+  <!-- Editable SVG source. No browser scripts, external fonts or build-time renderer. -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse"><path d="M0 0.6L9.4 5L0 9.4Z" fill="#8b97a8"/></marker>
+    <marker id="i" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="9" markerHeight="9"
+            orient="auto"><path d="M1.2 1.2L10.8 6L1.2 10.8Z" fill="#fbfcfe" stroke="#8b97a8"
+            stroke-width="1.4"/></marker>
+    <filter id="sh" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#1f2a37" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; text-anchor: middle; fill: #1f2a37; }
+    .t { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 16px; font-weight: 600; fill: #111827; }
+    .d { font-size: 13.5px; fill: #64748b; }
+    .l { font-size: 12.5px; fill: #52607a; paint-order: stroke; stroke: #fbfcfe;
+         stroke-width: 6px; stroke-linejoin: round; }
+    .m { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 12.5px; fill: #3f4c63; paint-order: stroke;
+         stroke: #fbfcfe; stroke-width: 6px; stroke-linejoin: round; }
+    .lg { font-size: 12.5px; fill: #64748b; text-anchor: start; }
+    .ct { font-size: 12.5px; fill: #8b97a8; text-anchor: start; }
+    .cm { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size: 13px; fill: #3f4c63; text-anchor: start; }
+    .cs { font-size: 12.3px; fill: #64748b; text-anchor: start; }
+    .e { fill: none; stroke: #8b97a8; stroke-width: 1.8; stroke-linecap: round; }
+    .dash { stroke-dasharray: 7 5; }
+    .n { stroke-width: 1.5; filter: url(#sh); }
+    .router { fill: #eef5ff; stroke: #5b8def; }
+    .pool { fill: #f5f2ff; stroke: #8b7cd8; }
+    .leaf { fill: #ecfbf4; stroke: #3aa987; }
+    .plain { fill: #f7f9fc; stroke: #9fb0c4; }
+    .future { fill: #fffaef; stroke: #d99a2b; stroke-dasharray: 7 5; }
+  </style>
+  <rect x="0.75" y="0.75" width="998.5" height="630.5" rx="14" fill="#fbfcfe" stroke="#e7ecf3"/>
+  <path class="e" d="M108 168 L108 150 Q108 140 118 140 L889 140 Q899 140 899 150 L899 168"/>
+  <path class="e" d="M312 168 L312 140"/>
+  <path class="e" d="M523 168 L523 140"/>
+  <path class="e dash" d="M717 168 L717 140"/>
+  <path class="e" d="M500 140 L500 90" marker-end="url(#i)"/>
+  <g>
+    <rect class="n router" x="270" y="22" width="460" height="66" rx="11"/>
+    <text class="t" x="500" y="52">RouterProtocol</text>
+    <text class="d" x="500" y="73">Shared request and feedback contract</text>
+  </g>
+  <g>
+    <rect class="n router" x="20" y="168" width="176" height="76" rx="11"/>
+    <text class="t" x="108" y="203">FixedRouter</text>
+    <text class="d" x="108" y="224">registered: fixed</text>
+  </g>
+  <g>
+    <rect class="n router" x="212" y="168" width="200" height="76" rx="11"/>
+    <text class="t" x="312" y="203">RouteWiseRouter</text>
+    <text class="d" x="312" y="224">registered: routewise</text>
+  </g>
+  <g>
+    <rect class="n router" x="428" y="168" width="190" height="76" rx="11"/>
+    <text class="t" x="523" y="203">HybridRouter</text>
+    <text class="d" x="523" y="224">composition, opt-in</text>
+  </g>
+  <g>
+    <rect class="n future" x="634" y="168" width="166" height="76" rx="11"/>
+    <text class="t" x="717" y="203">GreedyRouter</text>
+    <text class="d" x="717" y="224">not built yet</text>
+  </g>
+  <g>
+    <rect class="n future" x="816" y="168" width="166" height="76" rx="11"/>
+    <text class="t" x="899" y="203">NimbusRouter</text>
+    <text class="d" x="899" y="224">not built yet</text>
+  </g>
+  <path class="e" d="M108 244 L108 285 Q108 296 119 296 L239 296 Q250 296 250 307 L250 330" marker-end="url(#a)"/>
+  <path class="e" d="M312 244 L312 285 Q312 296 301 296 L254 296"/>
+  <path class="e" d="M523 244 L523 291 Q523 302 534 302 L689 302 Q700 302 700 313 L700 330" marker-end="url(#a)"/>
+  <path class="e dash" d="M717 244 L717 271 Q717 282 728 282 L779 282 Q790 282 790 293 L790 330" marker-end="url(#a)"/>
+  <g>
+    <rect class="n leaf" x="110" y="330" width="280" height="74" rx="11"/>
+    <text class="t" x="250" y="364">LeafBackend</text>
+    <text class="d" x="250" y="385">bound to one endpoint</text>
+  </g>
+  <g>
+    <rect class="n pool" x="580" y="330" width="340" height="74" rx="11"/>
+    <text class="t" x="750" y="364">RoutingBackend</text>
+    <text class="d" x="750" y="385">scoped pool contract</text>
+  </g>
+  <path class="e" d="M250 404 L250 466" marker-end="url(#a)"/>
+  <path class="e" d="M740 466 L740 406" marker-end="url(#i)"/>
+  <g>
+    <rect class="n plain" x="110" y="466" width="280" height="74" rx="11"/>
+    <text class="t" x="250" y="500">Adapter</text>
+    <text class="d" x="250" y="521">one upstream endpoint</text>
+  </g>
+  <g>
+    <rect class="n pool" x="580" y="466" width="340" height="86" rx="11"/>
+    <text class="t" x="750" y="496">TreeBackend</text>
+    <text class="d" x="750" y="517">router: RouterProtocol</text>
+    <text class="d" x="750" y="536">holds a scoped router</text>
+  </g>
+  <text class="l" x="556" y="120">implements</text>
+  <text class="l" x="184" y="288">executes</text>
+  <text class="l" x="608" y="294">delegates</text>
+  <text class="l" x="768" y="274">delegates</text>
+  <text class="l" x="292" y="442">calls</text>
+  <text class="l" x="796" y="442">implements</text>
+  <g>
+    <rect class="router" x="110" y="586" width="20" height="13" rx="4" stroke-width="1.5"/>
+    <text class="lg" x="138" y="596">router</text>
+    <rect class="pool" x="181.4" y="586" width="20" height="13" rx="4" stroke-width="1.5"/>
+    <text class="lg" x="209.4" y="596">pool contract</text>
+    <rect class="leaf" x="301.1" y="586" width="20" height="13" rx="4" stroke-width="1.5"/>
+    <text class="lg" x="329.1" y="596">leaf</text>
+    <rect class="future" x="358.7" y="586" width="20" height="13" rx="4" stroke-width="1.5"/>
+    <text class="lg" x="386.7" y="596">not built yet</text>
+  </g>
+</svg>

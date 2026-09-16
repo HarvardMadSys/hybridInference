@@ -46,29 +46,29 @@ msgid ""
 "two:"
 msgstr "后端是 `apps/backend/` 下的一棵 Python 包树，分成两半："
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Directory"
 msgstr "目录"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Responsibility"
 msgstr "职责"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`apps/backend/serving/`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "HTTP surface, authentication and quota, request schemas, provider "
 "adapters, storage, observability"
 msgstr "HTTP 接口、认证与配额、请求 schema、provider adapter、存储、可观测性"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`apps/backend/routing/`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Route table, router strategies, endpoint health, circuit breaker, fallback"
 msgstr "路由表、router 策略、端点健康、熔断器、回退"
 
@@ -314,7 +314,7 @@ msgstr ""
 msgid "On success the endpoint is recorded healthy and the response carries an internal `_routing` block (provider, base URL, `endpoint_id`)."
 msgstr "成功时该端点被记为健康，响应里带上一个内部的 `_routing` 块（provider、base URL、`endpoint_id`）。"
 
-#: ../developer/architecture.md:155
+#: ../developer/architecture.md:162
 msgid ""
 "On failure the endpoint records a failure and — unless the caller pinned "
 "a provider — the router walks the model's remaining route legs in route "
@@ -329,73 +329,73 @@ msgstr ""
 "`failed_attempts` 列表，这个列表随最终的响应或错误一起传出，因此请求日志会把失败归因到真实的上游，而不是归给 "
 "router。如果每条分支都失败，则重新抛出*最初*那个错误。"
 
-#: ../developer/architecture.md:163
+#: ../developer/architecture.md:170
 msgid ""
 "Circuit state lives per `endpoint_id` in "
 "`apps/backend/routing/endpoint_health.py`:"
 msgstr "熔断器状态按 `endpoint_id` 保存在 `apps/backend/routing/endpoint_health.py`："
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Knob"
 msgstr "参数"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Env var"
 msgstr "环境变量"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Default"
 msgstr "默认值"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Consecutive failures that open a circuit"
 msgstr "连续多少次失败会打开熔断器"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`CIRCUIT_FAILURE_THRESHOLD`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "3"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Seconds an open circuit waits before a half-open probe"
 msgstr "熔断器打开后，等待多少秒才做一次半开探测"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`CIRCUIT_COOLDOWN_SECONDS`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "30"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Availability floor"
 msgstr "可用率下限"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`CIRCUIT_MIN_AVAILABILITY`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "0.7"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "EWMA smoothing for the availability estimate"
 msgstr "可用率估计的 EWMA 平滑系数"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`ROUTER_HEALTH_EWMA_ALPHA`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "0.1"
 msgstr ""
 
-#: ../developer/architecture.md:173
+#: ../developer/architecture.md:180
 msgid ""
 "Client errors do not trip the breaker: a 4xx other than 408, 429, 401, "
 "and 407 is the caller's problem, and counting it would let one malformed "
@@ -407,7 +407,7 @@ msgstr ""
 "是调用方自己的问题，把它计入会让一个畸形请求就把一个端点从所有人手里夺走。408 和 429 表示上游过载，计入；401 和 407 "
 "是对*网关自己的*凭据的明确拒绝，也计入，因为没有哪个用户能修好它们。"
 
-#: ../developer/architecture.md:179
+#: ../developer/architecture.md:186
 msgid ""
 "Separately, `RoutingManager` can start a `HealthMonitor` that polls the "
 "`/health` path of local endpoints listed in the routing config, on the "
@@ -419,11 +419,11 @@ msgstr ""
 "的间隔轮询路由配置中列出的本地端点的 `/health` 路径。它只探测本地部署——远程 provider "
 "不提供这个路径，探测只会让它们平白被标记为不健康。"
 
-#: ../developer/architecture.md:184
+#: ../developer/architecture.md:191
 msgid "6. Logging"
 msgstr "6\\. 日志"
 
-#: ../developer/architecture.md:186
+#: ../developer/architecture.md:193
 msgid ""
 "After the response is produced, `CompletionsLogger` "
 "(`apps/backend/serving/servers/routers/completions_logging.py`) schedules"
@@ -436,33 +436,37 @@ msgstr ""
 " `api_logs` 写一行，以及把一个 `RoutingObservation` 交回给 router。`FixedRouter` "
 "会忽略这些观测；在线学习类的 router 用它们更新自己的代价模型。"
 
-#: ../developer/architecture.md:192
+#: ../developer/architecture.md:199
 msgid "The routing engine in detail"
 msgstr "路由引擎详解"
 
-#: ../developer/architecture.md:194
+#: ../developer/architecture.md:201
+msgid "For the same relationships as pictures, jump to the [routing diagrams](#router-types-and-execution-boundaries), which distinguish current request paths from future extensions."
+msgstr "同样的关系也有图：见[路由架构图](#router-types-and-execution-boundaries)，其中明确区分了当前请求路径和未来扩展。"
+
+#: ../developer/architecture.md:205
 msgid "Routers and strategies"
 msgstr "router 与策略"
 
-#: ../developer/architecture.md:196
+#: ../developer/architecture.md:207
 msgid ""
 "There are exactly three modules under `apps/backend/routing/strategies/`,"
 " and they are not all the same kind of thing:"
 msgstr "`apps/backend/routing/strategies/` 下正好有三个模块，而它们并不是同一类东西："
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Module"
 msgstr "模块"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "What it is"
 msgstr "它是什么"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`fixed.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "Registers the `fixed` strategy: weighted-random selection with automatic "
 "fallback, implemented by `FixedRouter` in "
@@ -471,11 +475,11 @@ msgstr ""
 "注册 `fixed` 策略：带自动回退的按权重随机选择，由 `apps/backend/routing/routers.py` 中的 "
 "`FixedRouter` 实现"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`routewise.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "Registers the `routewise` strategy: a cost-aware router that learns from "
 "`RoutingObservation` feedback, implemented under "
@@ -484,11 +488,11 @@ msgstr ""
 "注册 `routewise` 策略：一个感知代价的 router，从 `RoutingObservation` 反馈中学习，实现在 "
 "`apps/backend/routing/routewise/` 下"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`weight.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "Not a per-model router at all. `FixedRatioStrategy` splits a *weight "
 "budget* between the local and remote endpoint groups; it is used by "
@@ -497,7 +501,7 @@ msgstr ""
 "根本不是按模型的 router。`FixedRatioStrategy` 在本地端点组和远程端点组之间切分一份*权重预算*；用它的是 "
 "`RoutingManager`，不是 router 注册表"
 
-#: ../developer/architecture.md:205
+#: ../developer/architecture.md:216
 msgid ""
 "`fixed` and `routewise` are the only values `router:` accepts. Selecting "
 "an unregistered name fails configuration validation with a message "
@@ -509,7 +513,7 @@ msgstr ""
 "这两个值。选一个未注册的名字会让配置校验失败，并在错误消息里列出已知的策略。每个策略都声明了一个 `extra=\"forbid\"` 的 "
 "Pydantic 参数模型，因此 `router_params:` 里的拼写错误会在启动时失败，而不是悄悄退回默认值。"
 
-#: ../developer/architecture.md:211
+#: ../developer/architecture.md:222
 msgid ""
 "`apps/backend/routing/executor.py` is a backward-compatibility shim that "
 "re-exports `FixedRouter` under its old name `RouteExecutor`. Edit "
@@ -518,19 +522,15 @@ msgstr ""
 "`apps/backend/routing/executor.py` 是一个向后兼容的 shim，把 `FixedRouter` 以它的旧名字 "
 "`RouteExecutor` 重新导出。请改为编辑 `apps/backend/routing/routers.py`。"
 
-#: ../developer/architecture.md:222
-msgid "Routing also has a composition implementation, `HybridRouter` (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool and delegates each attempt to a `TreeBackend`. It is not a third `router:` value: a `router: fixed` model opts in with `router_params.hybrid_composition: true`, and composition is built only when both local and cloud candidates exist. Every other `fixed` model keeps the shared `FixedRouter`, and `routewise` models keep their own entry point and full candidate pool. The ordinary Fixed and RouteWise paths already execute through `LeafBackend`; enabling composition is a separate choice."
-msgstr "路由层还提供组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`），它在 local 与 cloud 两个池之间规划尝试，并把每次尝试委托给一个 `TreeBackend`。它不是第三种 `router:` 配置值：`router: fixed` 模型通过 `router_params.hybrid_composition: true` 显式启用，而且只有同时存在 local 和 cloud 候选时才构建组合。其余 `fixed` 模型继续使用共享 `FixedRouter`，`routewise` 模型继续使用自己的入口和完整候选池。普通 Fixed 和 RouteWise 路径已经通过 `LeafBackend` 执行；是否启用组合是另一项选择。"
-
-#: ../developer/architecture.md:215
+#: ../developer/architecture.md:226
 msgid "Two layers of \"strategy\""
 msgstr "两层「策略」"
 
-#: ../developer/architecture.md:217
+#: ../developer/architecture.md:228
 msgid "This is the part that most often confuses newcomers:"
 msgstr "这是最常把新人绕晕的地方："
 
-#: ../developer/architecture.md:234
+#: ../developer/architecture.md:245
 msgid ""
 "`RoutingManager` only rewrites weights when the effective strategy is "
 "`fixed`; it returns without touching anything otherwise. Per-route "
@@ -541,15 +541,123 @@ msgstr ""
 "只有当生效的策略是 `fixed` 时，`RoutingManager` "
 "才会重写权重；否则它什么都不碰就返回。模型注册表里声明的逐路由权重本身已经编码了本地/远程的切分，所以一个没有在路由配置里列出端点池的部署，就直接保留它声明的权重。"
 
-#: ../developer/architecture.md:240
+#: ../developer/architecture.md:251
+msgid "Router types and execution boundaries"
+msgstr "Router 类型与执行边界"
+
+#: ../developer/architecture.md:253
+msgid "Routing also has a composition implementation, `HybridRouter` (`apps/backend/routing/hybrid.py`), which plans across a local and a cloud pool and delegates each attempt to a `TreeBackend`. It is not a third `router:` value: a `router: fixed` model opts in with `router_params.hybrid_composition: true`, and composition is built only when both local and cloud candidates exist. Every other `fixed` model keeps the shared `FixedRouter`, and `routewise` models keep their own entry point and full candidate pool. The ordinary Fixed and RouteWise paths already execute through `LeafBackend`; enabling composition is a separate choice."
+msgstr "路由层还提供组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`），它在 local 与 cloud 两个池之间规划尝试，并把每次尝试委托给一个 `TreeBackend`。它不是第三种 `router:` 配置值：`router: fixed` 模型通过 `router_params.hybrid_composition: true` 显式启用，而且只有同时存在 local 和 cloud 候选时才构建组合。其余 `fixed` 模型继续使用共享 `FixedRouter`，`routewise` 模型继续使用自己的入口和完整候选池。普通 Fixed 和 RouteWise 路径已经通过 `LeafBackend` 执行；是否启用组合是另一项选择。"
+
+#: ../developer/architecture.md:263
+msgid "The pool side exists so that one algorithm can own admission for a domain while a different algorithm owns selection inside it, with neither one enumerating the other's endpoints."
+msgstr "池这一层存在的意义在于：一个算法可以负责某个域的准入，另一个算法负责该域内部的选择，而两者都不必枚举对方的端点。"
+
+#: ../developer/architecture.md:267
+msgid "The diagrams below adapt the [composable routing design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md) into a map of the current implementation and its planned extensions. The first shows type relationships; the following three show request paths. A dashed box or edge marks something that does not exist yet."
+msgstr "下面的图根据[可组合路由设计](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)整理，画出当前实现及其计划中的扩展。第一张是类型关系图，后面三张是请求路径图。虚线方框或虚线连线表示尚未实现的部分。"
+
+#: ../developer/architecture.md:272
+msgid "![FixedRouter, RouteWiseRouter and HybridRouter implement RouterProtocol. Fixed and RouteWise execute a chosen endpoint through LeafBackend, which calls one Adapter. HybridRouter selects no endpoint of its own and delegates to the RoutingBackend pool contract, which TreeBackend implements by holding a scoped router. GreedyRouter and NimbusRouter are dashed because they do not exist yet.](images/routing-contracts.svg)"
+msgstr "![FixedRouter、RouteWiseRouter 和 HybridRouter 都实现 RouterProtocol。Fixed 和 RouteWise 通过 LeafBackend 执行选中的端点，由 LeafBackend 调用一个 Adapter。HybridRouter 自己不选择端点，而是委托给 RoutingBackend 池契约，TreeBackend 通过持有一个范围受限的 Router 来实现该契约。GreedyRouter 和 NimbusRouter 画成虚线，因为它们尚未实现。](images/routing-contracts.svg)"
+
+#: ../developer/architecture.md:272
+msgid "FixedRouter, RouteWiseRouter and HybridRouter implement RouterProtocol. Fixed and RouteWise execute a chosen endpoint through LeafBackend, which calls one Adapter. HybridRouter selects no endpoint of its own and delegates to the RoutingBackend pool contract, which TreeBackend implements by holding a scoped router. GreedyRouter and NimbusRouter are dashed because they do not exist yet."
+msgstr "FixedRouter、RouteWiseRouter 和 HybridRouter 都实现 RouterProtocol。Fixed 和 RouteWise 通过 LeafBackend 执行选中的端点，由 LeafBackend 调用一个 Adapter。HybridRouter 自己不选择端点，而是委托给 RoutingBackend 池契约，TreeBackend 通过持有一个范围受限的 Router 来实现该契约。GreedyRouter 和 NimbusRouter 画成虚线，因为它们尚未实现。"
+
+#: ../developer/architecture.md:274
+msgid "*Router contracts and endpoint execution. Dashed boxes and edges mark what is not built yet.*"
+msgstr "*Router 契约与端点执行。虚线方框和虚线连线标出尚未实现的部分*"
+
+#: ../developer/architecture.md:277
+msgid "`FixedRouter` and `RouteWiseRouter` are peer implementations of `RouterProtocol`; future `GreedyRouter` and `NimbusRouter` belong at that same level. `HybridRouter` sits there too, as a composition rather than a strategy: it selects no endpoint itself and hands every attempt to a pool. Each router keeps its own selection, admission, retry and feedback flow. `LeafBackend` binds one adapter and executes it. It uses the adapter's calling convention and does not implement the router-shaped `RoutingBackend` protocol, which is what makes a leaf the end of the recursion. `TreeBackend` implements that pool protocol and holds a scoped router; the held router can be RouteWise without making RouteWise a different kind of strategy."
+msgstr "`FixedRouter` 和 `RouteWiseRouter` 是 `RouterProtocol` 的同层实现；未来的 `GreedyRouter`、`NimbusRouter` 也位于这一层。`HybridRouter` 同样在这一层，只是它是组合而不是策略：它自己不选端点，而是把每次 attempt 交给一个池。每个 Router 保留自己的选择、准入、重试和反馈流程。`LeafBackend` 绑定并执行一个 Adapter，它使用 Adapter 的调用签名，不实现具有 Router 方法形状的 `RoutingBackend` 协议 —— 这正是叶子成为递归终点的原因。`TreeBackend` 实现该池协议，并持有一个范围受限的 Router；这个 Router 可以是 RouteWise，而不改变 RouteWise 作为同层路由策略的身份。"
+
+#: ../developer/architecture.md:288
+msgid "Full-pool RouteWise: available today"
+msgstr "全池 RouteWise：当前已支持"
+
+#: ../developer/architecture.md:290
+msgid "![ModelRouterRegistry sends model A to full-pool RouteWise. Local endpoint L and cloud endpoint C each have their own LeafBackend and Adapter.](images/routing-routewise.svg)"
+msgstr "![ModelRouterRegistry 将模型 A 交给全池 RouteWise。本地端点 L 和云端端点 C 各自拥有独立的 LeafBackend 和 Adapter。](images/routing-routewise.svg)"
+
+#: ../developer/architecture.md:290
+msgid "ModelRouterRegistry sends model A to full-pool RouteWise. Local endpoint L and cloud endpoint C each have their own LeafBackend and Adapter."
+msgstr "ModelRouterRegistry 将模型 A 交给全池 RouteWise。本地端点 L 和云端端点 C 各自拥有独立的 LeafBackend 和 Adapter。"
+
+#: ../developer/architecture.md:292
+msgid "*Full-pool RouteWise selects across local and cloud candidates directly.*"
+msgstr "*全池 RouteWise 直接在本地与云端候选中选择*"
+
+#: ../developer/architecture.md:294
+msgid "With `router: routewise`, the registry returns `RouteWiseRouter` directly. It keeps the model's full candidate pool, reservations, re-solving, hedging and learning. The two branches show possible endpoints, not a requirement to call both: each actual attempt or hedge leg executes its own bound leaf. The ordinary `router: fixed` path also uses `FixedRouter` → `LeafBackend` → `Adapter`, without enabling composition."
+msgstr "配置 `router: routewise` 时，Registry 直接返回 `RouteWiseRouter`。它保留模型的完整候选池、预留、重新求解、hedging 和学习机制。图中两条分支表示可能选中的端点，并不要求同时调用：每次实际 attempt 或 hedge 支路都执行各自绑定的 leaf。普通 `router: fixed` 路径同样使用 `FixedRouter` → `LeafBackend` → `Adapter`，无需开启组合。"
+
+#: ../developer/architecture.md:301
+msgid "Fixed composition: explicitly enabled"
+msgstr "Fixed 组合：需要显式开启"
+
+#: ../developer/architecture.md:303
+msgid "![HybridRouter and FixedPolicy dispatch through LocalBackend or FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared FixedRouter, which executes the selected endpoint through its own LeafBackend and Adapter.](images/routing-fixed-composition.svg)"
+msgstr "![HybridRouter 与 FixedPolicy 通过 LocalBackend 或 FixedCloudBackend 派发。两个范围受限的 TreeBackend 包装持有同一个共享 FixedRouter，由它通过端点各自的 LeafBackend 和 Adapter 执行。](images/routing-fixed-composition.svg)"
+
+#: ../developer/architecture.md:303
+msgid "HybridRouter and FixedPolicy dispatch through LocalBackend or FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared FixedRouter, which executes the selected endpoint through its own LeafBackend and Adapter."
+msgstr "HybridRouter 与 FixedPolicy 通过 LocalBackend 或 FixedCloudBackend 派发。两个范围受限的 TreeBackend 包装持有同一个共享 FixedRouter，由它通过端点各自的 LeafBackend 和 Adapter 执行。"
+
+#: ../developer/architecture.md:305
+msgid "*Current Fixed composition: two scoped pool wrappers, one shared FixedRouter.*"
+msgstr "*当前的 Fixed 组合：两个范围受限的池包装，共用一个 FixedRouter*"
+
+#: ../developer/architecture.md:307
+msgid "A mixed `router: fixed` model enters this path only with `router_params.hybrid_composition: true` and both local and cloud candidates. `HybridRouter` uses `FixedPolicy` to plan attempts; `LocalBackend` and `FixedCloudBackend` forward their scope and dispatch constraints to the same shared `FixedRouter`. The shared instance does not erase those per-attempt restrictions. Admission and health accounting remain in the router; the leaf executes the bound adapter."
+msgstr "混合 `router: fixed` 模型只有在设置 `router_params.hybrid_composition: true` 且同时存在本地与云端候选时，才进入这条路径。`HybridRouter` 使用 `FixedPolicy` 规划 attempt；`LocalBackend` 和 `FixedCloudBackend` 将各自的范围与派发约束传给同一个共享 `FixedRouter`。共享实例不会取消每次 attempt 的限制。准入和健康记账仍由 Router 负责，leaf 执行已经绑定的 Adapter。"
+
+#: ../developer/architecture.md:315
+msgid "Each attempt carries one of the two instructions in `apps/backend/routing/dispatch.py`, which is what makes it binding rather than advisory. The primary attempt is a `DelegatePool(pool_id)`: the policy's target travels with it as a preference, and the pool may select something else inside its own scope. Every planned fallback is an `ExecuteEndpoint(binding)` — that endpoint and no other — so the child router cannot reorder the candidates the composition has committed to. Either way the instruction is checked before any upstream I/O, and a pool that cannot carry it out reports a composition error instead of falling back. The full table is in [Leaves, pools, and dispatch instructions](routing.md#leaves-pools-and-dispatch-instructions)."
+msgstr "每次 attempt 都带上 `apps/backend/routing/dispatch.py` 里两条指令之一，这正是它具有约束力、而不只是建议的原因。首次 attempt 是 `DelegatePool(pool_id)`：policy 选出的目标只作为偏好随请求传下去，池可以在自己的 scope 内改选别的端点。计划内的每个 fallback 都是 `ExecuteEndpoint(binding)` —— 只能执行这一个端点 —— 于是子 Router 无法打乱组合层已经确定的候选顺序。两种情况下，指令都在任何上游 I/O 之前校验；执行不了该指令的池报组合错误，而不是回退。完整的表格见[叶子、池与派发指令](routing.md#leaves-pools-and-dispatch-instructions)。"
+
+#: ../developer/architecture.md:326
+msgid "This is the concrete composition class, not the common router interface. Its affinity, its re-selection after a rejected primary claim and its fallback circuit timing were never shown equivalent to the ordinary Fixed path — [#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) enumerates the differences — which is why composition stays opt-in instead of becoming the default."
+msgstr "这里是具体的组合类，而不是公共 Router 接口。它的 affinity、首选 claim 被拒后的重新选择、以及 fallback 的 circuit 检查时机，从未被证明与普通 Fixed 路径等价 —— [#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) 列出了这些差异 —— 所以组合保持显式开启，而没有成为默认。"
+
+#: ../developer/architecture.md:332
+msgid "Greedy with cloud RouteWise: future extension"
+msgstr "Greedy 与云端 RouteWise：未来扩展"
+
+#: ../developer/architecture.md:334
+msgid "![A future Greedy admits a local endpoint or delegates a cloud pool to TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud endpoint has its own LeafBackend and Adapter. Greedy and the edges out of it are dashed because they do not exist.](images/routing-greedy-future.svg)"
+msgstr "![未来的 Greedy 接纳一个本地端点，或者把云端池委托给 TreeBackend 与一个仅覆盖云端的 RouteWise 实例。每个选中的云端端点各自拥有 LeafBackend 和 Adapter。Greedy 以及它发出的连线画成虚线，因为它们并不存在。](images/routing-greedy-future.svg)"
+
+#: ../developer/architecture.md:334
+msgid "A future Greedy admits a local endpoint or delegates a cloud pool to TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud endpoint has its own LeafBackend and Adapter. Greedy and the edges out of it are dashed because they do not exist."
+msgstr "未来的 Greedy 接纳一个本地端点，或者把云端池委托给 TreeBackend 与一个仅覆盖云端的 RouteWise 实例。每个选中的云端端点各自拥有 LeafBackend 和 Adapter。Greedy 以及它发出的连线画成虚线，因为它们并不存在。"
+
+#: ../developer/architecture.md:336
+msgid "*Planned topology, not an available router configuration: Greedy would own local admission; RouteWise would own selection inside the cloud pool.*"
+msgstr "*计划中的拓扑，而不是现有的 Router 配置：Greedy 负责本地准入，RouteWise 负责云端池内部的选择*"
+
+#: ../developer/architecture.md:339
+msgid "The same `RouteWiseRouter` implementation can occupy the model's entry point in the full-pool diagram or a cloud-scoped position here. Those roles use separate instances with their own scopes; a live instance is not switched between scopes per request. After local admission is refused, a future Greedy router can delegate cloud selection to a `TreeBackend`, whose inner RouteWise router owns cloud selection, retries and hedging."
+msgstr "同一个 `RouteWiseRouter` 实现既可以位于全池图中的模型入口，也可以位于此图中的云端子层。这两种角色分别使用具有各自范围的实例，不会按请求切换一个活跃实例的 scope。本地准入被拒后，未来的 Greedy Router 可以将云端选择委托给 `TreeBackend`，由它内部的 RouteWise Router 负责云端选择、重试和 hedging。"
+
+#: ../developer/architecture.md:346
+msgid "What is missing is the entry point, not the pool below it. `TreeBackend` and `RouteWiseCloudBackend` are in `apps/backend/routing/backends.py` today, and `HybridFixedRouterFactory` already accepts a `cloud_backend` builder (`apps/backend/serving/servers/hybrid_composition.py`), so a composition root can put a cloud-scoped RouteWise under a pool right now. `GreedyRouter` and `NimbusRouter` are not registered strategies, and no `models.yaml` field names one, so nothing reaches this shape from configuration."
+msgstr "缺的是入口，而不是它下面的池。`TreeBackend` 和 `RouteWiseCloudBackend` 今天就在 `apps/backend/routing/backends.py` 里，`HybridFixedRouterFactory` 也已经接受 `cloud_backend` 构造器（`apps/backend/serving/servers/hybrid_composition.py`），所以 composition root 现在就可以把一个仅覆盖云端的 RouteWise 放到池下面。而 `GreedyRouter` 和 `NimbusRouter` 不是已注册的策略，`models.yaml` 里也没有字段能指定它们，因此没有任何配置能走到这张图的形状。"
+
+#: ../developer/architecture.md:354
+msgid "This example describes two routing levels, not arbitrary recursive configurations. Sharing physical quota or concurrency across independent router instances would also need an ownership implementation nobody has written: separate scopes do not create separate capacity, and [#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) scopes what that would take. Local/cloud ownership stays independent of the `provider_type` values `on_demand`, `quota` and `concurrency`."
+msgstr "这个例子描述的是两层路由，而不是任意递归的配置。让相互独立的 Router 实例共享同一份物理 quota 或 concurrency，还需要一套没有人写过的所有权实现：不同的 scope 不会产生独立的容量，[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) 界定了这件事的范围。本地/云端归属与 `provider_type` 的取值 `on_demand`、`quota`、`concurrency` 仍是彼此独立的两个维度。"
+
+#: ../developer/architecture.md:361
 msgid "`provider` versus `endpoint_id`"
 msgstr "`provider` 与 `endpoint_id`"
 
-#: ../developer/architecture.md:242
+#: ../developer/architecture.md:363
 msgid "Two identifiers look similar and mean different things."
 msgstr "这两个标识符长得像，意思却不同。"
 
-#: ../developer/architecture.md:244
+#: ../developer/architecture.md:365
 msgid ""
 "`provider` is a label on the route. It defaults to the adapter kind and "
 "can be overridden per route with `provider:` in the model registry. It is"
@@ -568,8 +676,7 @@ msgstr ""
 "派生出来的标签——`apps/backend/serving/servers/registry.py` 中的 "
 "`RESERVED_PROVIDER_LABELS` 会拒绝这些标签，包括启动扩展注册的 kind。"
 
-#: ../developer/architecture.md:253
-#, python-brace-format
+#: ../developer/architecture.md:374
 msgid ""
 "`endpoint_id` is the unique key for *one endpoint of one model*, minted "
 "by `_make_provider_id` as `{model_id}:{location}`:"
@@ -577,7 +684,7 @@ msgstr ""
 "`endpoint_id` 是*某个模型的某个端点*的唯一键，由 `_make_provider_id` 铸造为 "
 "`{model_id}:{location}`："
 
-#: ../developer/architecture.md:256
+#: ../developer/architecture.md:377
 msgid ""
 "a host in `_LOCAL_HOSTS` (`localhost`, `127.0.0.1`, `0.0.0.0`, "
 "`host.docker.internal`) yields `local-<port>`, or `local` when there is "
@@ -587,13 +694,13 @@ msgstr ""
 "中的主机（`localhost`、`127.0.0.1`、`0.0.0.0`、`host.docker.internal`）得到 "
 "`local-<port>`，没有端口时是 `local`；"
 
-#: ../developer/architecture.md:259
+#: ../developer/architecture.md:380
 msgid ""
 "otherwise the location is derived from the kind or hostname, e.g. `<model"
 ">:openrouter-api`."
 msgstr "否则位置由 kind 或主机名派生，例如 `<model>:openrouter-api`。"
 
-#: ../developer/architecture.md:262
+#: ../developer/architecture.md:383
 msgid ""
 "Latency profiles, availability tracking, and circuit-breaker state are "
 "all keyed on `endpoint_id`, which is why two route legs pointing at the "
@@ -603,7 +710,7 @@ msgstr ""
 "延迟画像、可用性追踪和熔断器状态全都以 `endpoint_id` 为键，这也是为什么两条指向同一个 base "
 "URL、但钉住不同上游的路由分支，仍然各自拥有独立的熔断器。"
 
-#: ../developer/architecture.md:266
+#: ../developer/architecture.md:387
 msgid ""
 "The suffix is not an ownership signal. A gateway-owned server on a LAN "
 "address is stamped from its hostname like any remote service, and an "
@@ -613,11 +720,11 @@ msgstr ""
 "后缀不是所有权信号。一台网关自有、跑在局域网地址上的服务器，会像任何远程服务一样按主机名打标；而管理员提供的 `route_id` 会原样成为 "
 "`endpoint_id`。不要从这个字符串去推断「这台机器是不是我的」。"
 
-#: ../developer/architecture.md:271
+#: ../developer/architecture.md:392
 msgid "Adapters"
 msgstr "适配器"
 
-#: ../developer/architecture.md:273
+#: ../developer/architecture.md:394
 msgid ""
 "An **adapter** is the object that knows how to talk to one provider: it "
 "builds the URL and headers, holds the API key (or a rotating pool of "
@@ -632,78 +739,77 @@ msgstr ""
 "`apps/backend/serving/adapters/`，由 "
 "`apps/backend/serving/servers/registry.py` 中的 `_make_adapter` 从模型注册表构造。"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Class"
 msgstr "类"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Covers"
 msgstr "覆盖范围"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`openai_compat.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`OpenAICompatAdapter`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "Every OpenAI-compatible service, including local vLLM, SGLang, and "
 "Ollama. Local inference servers have no dedicated adapter"
 msgstr "所有 OpenAI 兼容的服务，包括本地的 vLLM、SGLang 和 Ollama。本地推理服务器没有专用 adapter"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`openrouter.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`OpenRouterAdapter`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "OpenRouter; see [Routing through OpenRouter](openrouter.md)"
 msgstr "OpenRouter；见[通过 OpenRouter 路由](openrouter.md)"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`anthropic.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`AnthropicAdapter`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "The Anthropic Messages API directly"
 msgstr "直连 Anthropic Messages API"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`claude.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`ClaudeAdapter`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Claude served through Google Vertex"
 msgstr "通过 Google Vertex 提供的 Claude"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`gemini.py`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`GeminiAdapter`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "The Gemini API"
 msgstr "Gemini API"
 
-#: ../developer/architecture.md:288
-#, python-brace-format
+#: ../developer/architecture.md:409
 msgid ""
 "`_make_adapter` first checks the factory table populated by explicitly "
 "enabled [backend extensions](configuration.md#backend-extensions). "
@@ -721,7 +827,7 @@ msgstr ""
 "true}`。扩展工厂则在这些默认值应用前接收配置字典。接入本身已兼容 OpenAI 的 provider 通常只需选择 "
 "profile，不必编写新类；见[添加新模型](adding-models.md)。"
 
-#: ../developer/architecture.md:297
+#: ../developer/architecture.md:418
 msgid ""
 "Key rotation is an adapter concern. When a route declares `api_keys:` "
 "(plural), `OpenAICompatAdapter` draws from a pool: a key that hits a key-"
@@ -742,11 +848,11 @@ msgstr ""
 "400 和 422 这类与请求本身相关的错误在每个 key 上都会失败，因此立即向上传播，而不是把整个池子烧掉。补全的 POST "
 "绝不会用*同一个* key 重试——重发一次非幂等的生成会让它被计费两次。韧性来自 router 的回退链，而不是盲目重试。"
 
-#: ../developer/architecture.md:308
+#: ../developer/architecture.md:429
 msgid "Streaming timeouts"
 msgstr "流式超时"
 
-#: ../developer/architecture.md:310
+#: ../developer/architecture.md:431
 msgid ""
 "An upstream that stops sending mid-generation while keeping the socket "
 "open is a fault the gateway has to notice on its own. Waiting for the "
@@ -761,59 +867,59 @@ msgstr ""
 "而到那时，已经提交给该端点的每一条流都一起死了，而新的流还在持续被派发到它上面。"
 "一个流式请求受四个时钟约束，它们有意错开，以便最内层的那个先报告："
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Clock"
 msgstr "时钟"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`STREAM_IDLE_TIMEOUT_SECONDS`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "180s"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Gap between two data-bearing SSE frames, after the first"
 msgstr "首帧之后，两个带数据 SSE 帧之间的间隔"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`STREAM_MAX_IDLE_S`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "240s"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Same gap on `/v1/messages`, counted in *forwarded* frames"
 msgstr "`/v1/messages` 上的同一间隔，按*转发出去的*帧计算"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`STREAM_FIRST_BYTE_TIMEOUT_SECONDS`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "unset"
 msgstr "未设置"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Connect to first frame, i.e. prefill"
 msgstr "从建连到首帧，即 prefill 阶段"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`STREAM_REQUEST_TIMEOUT_SECONDS`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "3600s"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "The whole streaming response"
 msgstr "整个流式响应"
 
-#: ../developer/architecture.md:324
+#: ../developer/architecture.md:445
 msgid ""
 "The first-byte and inter-chunk budgets are separate on purpose. A socket-"
 "level read timeout (`sock_read`) restarts on every read, so it cannot "
@@ -833,7 +939,7 @@ msgstr ""
 "两者都可以用非正数关掉。`/v1/messages` 保留自己更宽松的上限，因为它数的是网关转发出去的帧："
 "一个被缓冲的 XML 工具调用可能被扣住一分多钟，而上游根本没有空闲。"
 
-#: ../developer/architecture.md:334
+#: ../developer/architecture.md:455
 msgid ""
 "When the inter-chunk budget expires, `OpenAICompatAdapter` raises "
 "`UpstreamStreamIdleError` — distinct from the end-of-body "
@@ -847,11 +953,11 @@ msgstr ""
 "它以 `stream_exception` 的形式向上传播，因此端点会损失可用性、熔断器会打开，"
 "而不是给残缺的回答套上一个凭空造出来的 `[DONE]`。"
 
-#: ../developer/architecture.md:341
+#: ../developer/architecture.md:462
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/architecture.md:343
+#: ../developer/architecture.md:464
 msgid ""
 "Three YAML files describe a deployment: a model registry, a routing "
 "config, and an alert config. **They are not at fixed paths.** "
@@ -862,13 +968,13 @@ msgstr ""
 "文件描述一个部署：模型注册表、路由配置和告警配置。**它们并不在固定路径上**。`apps/backend/serving/config/distribution.py`"
 " 中的 `resolve_config_path()` 按三步优先级逐个解析它们："
 
-#: ../developer/architecture.md:348
+#: ../developer/architecture.md:469
 msgid ""
 "**An explicit environment variable** — `MODELS_CONFIG_PATH`, "
 "`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`. Always wins."
 msgstr "**显式的环境变量**——`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`。总是优先。"
 
-#: ../developer/architecture.md:350
+#: ../developer/architecture.md:471
 msgid ""
 "**The distribution manifest** — a single versioned YAML naming the site "
 "identity and the config-file locations, pointed at by "
@@ -880,7 +986,7 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_PATH` 指向。manifest 里的相对 `paths:` 相对于 manifest "
 "自身所在的目录解析，因此 `distributions/<name>/` 下的部署 overlay 是自包含的。"
 
-#: ../developer/architecture.md:355
+#: ../developer/architecture.md:476
 msgid ""
 "**Built-in defaults** — `config/examples/models.openrouter.yaml` and "
 "`config/examples/routing.minimal.yaml`. This is what a fresh clone with "
@@ -894,7 +1000,7 @@ msgstr ""
 "时拿到的就是这个：给一个 `OPENROUTER_API_KEY`，网关就能提供一份可用的模型目录。告警的默认路径是 "
 "`config/alerts.yaml`——本仓库刻意不提供这个文件；没有告警文件时，采用内置阈值。"
 
-#: ../developer/architecture.md:362
+#: ../developer/architecture.md:483
 msgid ""
 "The manifest is opt-in and defaults to a dry run. With "
 "`DISTRIBUTION_CONFIG_PATH` set but `DISTRIBUTION_CONFIG_MODE` unset, the "
@@ -911,8 +1017,7 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_MODE=active` 会让 manifest 里的路径真正生效；在该模式下，加载失败的 "
 "manifest 会让进程直接停下，而不是悄悄提供一份与所声明的部署不同的注册表。"
 
-#: ../developer/architecture.md:370
-#, python-brace-format
+#: ../developer/architecture.md:491
 msgid ""
 "All three YAML files support environment interpolation, but not the same "
 "dialect. The model registry expands only a whole value that is exactly "
@@ -929,33 +1034,33 @@ msgstr ""
 "`_expand_env_value`）。一条路由的 `api_key`、`api_keys` 或 `base_url` "
 "如果展开成空，要么被跳过（如果该路由标记为可选），要么导致启动失败——绝不会被注册成一个死端点。"
 
-#: ../developer/architecture.md:379
+#: ../developer/architecture.md:500
 msgid ""
 "See [Configuration](configuration.md) for the field-by-field reference "
 "and [Quickstart](router-tutorial.md) for a working end-to-end example."
 msgstr "逐字段的参考见[配置](configuration.md)，可运行的端到端示例见[快速开始](router-tutorial.md)。"
 
-#: ../developer/architecture.md:382
+#: ../developer/architecture.md:503
 msgid "Storage"
 msgstr "存储"
 
-#: ../developer/architecture.md:384
+#: ../developer/architecture.md:505
 msgid ""
 "Persistence is defined by two abstract base classes in "
 "`apps/backend/serving/storage/base.py`:"
 msgstr "持久化由 `apps/backend/serving/storage/base.py` 中的两个抽象基类定义："
 
-#: ../developer/architecture.md:387
+#: ../developer/architecture.md:508
 msgid ""
 "**`OperationalStore`** — accounts, API keys, roles, quotas, admin-managed"
 " providers and routes, runtime settings."
 msgstr "**`OperationalStore`**——账户、API key、角色、配额、管理员管理的 provider 与路由、运行时设置。"
 
-#: ../developer/architecture.md:389
+#: ../developer/architecture.md:510
 msgid "**`LogStore`** — the request log."
 msgstr "**`LogStore`**——请求日志。"
 
-#: ../developer/architecture.md:391
+#: ../developer/architecture.md:512
 msgid ""
 "Postgres implements both (`postgres_operational.py`, `postgres_log.py`). "
 "`CachedOperationalStore` wraps the operational store with an in-process "
@@ -965,7 +1070,7 @@ msgstr ""
 "两个都实现了（`postgres_operational.py`、`postgres_log.py`）。`CachedOperationalStore`"
 " 给操作型存储包了一层进程内缓存，因为每一个请求的认证都要查它。"
 
-#: ../developer/architecture.md:395
+#: ../developer/architecture.md:516
 msgid ""
 "The request log table `api_logs` and its hourly rollup are defined in "
 "exactly one place, `apps/backend/serving/storage/log_schema.py`, applied "
@@ -982,7 +1087,7 @@ msgstr ""
 "`latency_ms`、各项 token 计数、`cost_usd`（按模型自身定价向调用方计费的金额）和 "
 "`upstream_cost_usd`（上游报告的金额，如果它报告的话）。"
 
-#: ../developer/architecture.md:403
+#: ../developer/architecture.md:524
 msgid ""
 "Schema migrations read the catalog first and issue only the DDL that is "
 "actually missing, under a bounded lock wait — an `ALTER TABLE` that "
@@ -992,7 +1097,7 @@ msgstr ""
 "表结构迁移会先读系统目录（catalog），只发出确实缺失的那部分 DDL，并且在有上限的锁等待下执行——一条排在长查询后面的 `ALTER "
 "TABLE`，会把排在它后面的每一个读者都挡住。见[数据库](database.md)。"
 
-#: ../developer/architecture.md:407
+#: ../developer/architecture.md:528
 msgid ""
 "The gateway starts without a database. `/health` then reports "
 "`database_connected: false`, and request logging and accounts are "
@@ -1003,17 +1108,17 @@ msgstr ""
 "false`，请求日志和账户功能不可用，但路由和补全照常工作——这正是 router 教程的第一阶段完全不需要 Postgres "
 "就能跑起来的原因。"
 
-#: ../developer/architecture.md:412
+#: ../developer/architecture.md:533
 msgid "Observability"
 msgstr "可观测性"
 
-#: ../developer/architecture.md:414
+#: ../developer/architecture.md:535
 msgid ""
 "There is no Prometheus exporter; it was removed. The supported surfaces "
 "are:"
 msgstr "没有 Prometheus exporter，它已经被移除。受支持的观测面是："
 
-#: ../developer/architecture.md:416
+#: ../developer/architecture.md:537
 msgid ""
 "**Structured logs.** `RequestLogMiddleware` emits one record per HTTP "
 "request; `apps/backend/serving/utils/logging.py` shapes them and "
@@ -1023,13 +1128,13 @@ msgstr ""
 "请求发出一条记录；`apps/backend/serving/utils/logging.py` 负责整形，并在 "
 "`LOG_LEVEL=DEBUG` 之外抑制健康探测路径带来的噪声。"
 
-#: ../developer/architecture.md:419
+#: ../developer/architecture.md:540
 msgid ""
 "**The request log.** `api_logs` is the durable record and the source for "
 "the admin dashboards and usage reporting."
 msgstr "**请求日志**。`api_logs` 是持久的记录，也是管理员仪表盘和用量报表的数据来源。"
 
-#: ../developer/architecture.md:421
+#: ../developer/architecture.md:542
 msgid ""
 "**Health endpoints.** `/health` is a liveness check that returns 200 with"
 " `status: \"degraded\"` when a configured store is down but traffic can "
@@ -1043,7 +1148,7 @@ msgstr ""
 "是严格版本：除非配置的一切都正常，否则返回 503。`/health/deep` "
 "额外给出每个端点的可用性和熔断器状态，只要有任何一个端点处于降级状态，它就报告 `degraded`。"
 
-#: ../developer/architecture.md:427
+#: ../developer/architecture.md:548
 msgid ""
 "**Alerting.** `alert_slack()` and `alert_on_transition()` in "
 "`apps/backend/serving/observability/alerts.py` post to a Slack webhook "
@@ -1060,103 +1165,103 @@ msgstr ""
 "链解析出来的告警配置；没有告警文件时使用内置阈值。熔断器会在 `circuit_open` "
 "状态转换时、以及上游凭据被拒时呼叫值班，并按端点设置冷却时间，让持续存在的故障以固定节奏重复呼叫，而不是刷屏。"
 
-#: ../developer/architecture.md:436
+#: ../developer/architecture.md:557
 msgid "HTTP surface"
 msgstr "HTTP 接口"
 
-#: ../developer/architecture.md:438
+#: ../developer/architecture.md:559
 msgid "Client-facing groups, all served by the same app:"
 msgstr "面向客户端的分组，全部由同一个应用提供："
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Group"
 msgstr "分组"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Paths"
 msgstr "路径"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Auth"
 msgstr "认证"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "OpenAI-compatible inference"
 msgstr "OpenAI 兼容推理"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "`POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, "
 "`POST /v1/embeddings`, `POST /v1/responses`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "API key"
 msgstr "API 密钥"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Anthropic-compatible inference"
 msgstr "Anthropic 兼容推理"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Model catalog"
 msgstr "模型目录"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid ""
 "`GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET "
 "/anthropic/v1/models`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Optional — a key only widens what is listed"
 msgstr "可选——key 只会放宽列出的范围"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Health"
 msgstr "健康检查"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`GET /health`, `/health/ready`, `/health/deep`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "None"
 msgstr "无"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Public routing disclosure"
 msgstr "公开路由信息披露"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`GET /routing`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Admin"
 msgstr "管理员"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*`"
 msgstr "`GET /admin/routing`、`GET /admin/stats` 以及 `/admin/*` 的其余部分"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Accounts and console APIs"
 msgstr "账户与控制台 API"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "`/auth/*`, `/user/*`, `/site-config`"
 msgstr ""
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:0
 msgid "Mixed"
 msgstr "混合"
 
-#: ../developer/architecture.md:451
+#: ../developer/architecture.md:572
 msgid ""
 "`GET /routing` requires no authentication and returns each published "
 "route's provider label, **upstream base URL**, and traffic weight. If "
@@ -1171,7 +1276,7 @@ msgstr ""
 "还额外包含未发布的路由和路由管理器状态，但需要在 `Authorization: Bearer ...` 请求头中提供管理员的 JWT 或 "
 "`ADMIN_TOKEN`。"
 
-#: ../developer/architecture.md:459
+#: ../developer/architecture.md:580
 msgid ""
 "`/v1/models` shape-shifts by client: an Anthropic-family client calling "
 "it receives the Anthropic list response, while `/models` and "
@@ -1180,11 +1285,11 @@ msgstr ""
 "`/v1/models` 会随客户端变形：Anthropic 系的客户端调用它，会拿到 Anthropic 的列表响应；而 `/models` 和"
 " `/openrouter/models` 始终返回 OpenAI/OpenRouter 的形状。"
 
-#: ../developer/architecture.md:463
+#: ../developer/architecture.md:584
 msgid "Deployment shape"
 msgstr "部署形态"
 
-#: ../developer/architecture.md:465
+#: ../developer/architecture.md:586
 msgid ""
 "The repository ships Dockerfiles and Compose files under "
 "`deploy/docker/`: `Dockerfile.backend` (the gateway), "
@@ -1197,7 +1302,7 @@ msgstr ""
 "Next.js 控制台）、`Dockerfile.rocm`（AMD GPU 变体）和 `docker-compose.yml`。systemd "
 "单元在 `deploy/systemd/`。"
 
-#: ../developer/architecture.md:470
+#: ../developer/architecture.md:591
 msgid ""
 "The console and the API share one origin: the Next.js rewrites in "
 "`apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, "
@@ -1213,45 +1318,45 @@ msgstr ""
 "rewrites——而不是某份反向代理配置——才是[公网路径表](public-path-table.md)。前端有自己的工具链和质量门禁，与 "
 "Python 的 `make` 目标相互独立。"
 
-#: ../developer/architecture.md:478
+#: ../developer/architecture.md:599
 msgid ""
 "See [Deployment Guide](deployment.md) to run it, "
 "[Installation](installation.md) for a local checkout, and "
 "[Contributing](contributing.md) before sending a change."
 msgstr "运行它见[部署指南](deployment.md)，本地检出见[安装](installation.md)，提交改动前先看[参与贡献](contributing.md)。"
 
-#: ../developer/architecture.md:481
+#: ../developer/architecture.md:602
 msgid "Design principles"
 msgstr "设计原则"
 
-#: ../developer/architecture.md:483
+#: ../developer/architecture.md:604
 msgid ""
 "**One model id, many endpoints.** Clients name a model; the gateway owns "
 "which machine serves it. Everything else follows from that."
 msgstr "**一个模型 id，多个端点**。客户端点名一个模型；由网关掌握哪台机器来服务它。其余的一切都由此推导而来。"
 
-#: ../developer/architecture.md:485
+#: ../developer/architecture.md:606
 msgid ""
 "**Failure is routed around, not retried into.** A non-idempotent "
 "generation is never re-sent to the same endpoint; resilience comes from "
 "the fallback chain and the circuit breaker."
 msgstr "**故障是被绕过去的，不是往里重试的**。非幂等的生成绝不会重发到同一个端点；韧性来自回退链和熔断器。"
 
-#: ../developer/architecture.md:488
+#: ../developer/architecture.md:609
 msgid ""
 "**A caller learns nothing it is not entitled to.** Access failures "
 "collapse to a uniform `404`, and upstream errors are scrubbed before they"
 " reach a client."
 msgstr "**调用方不会知道任何它无权知道的东西**。访问失败一律收敛成统一的 `404`，上游错误在到达客户端之前会被清洗。"
 
-#: ../developer/architecture.md:491
+#: ../developer/architecture.md:612
 msgid ""
 "**Configuration is a deployment's, not the project's.** The repository "
 "ships runnable examples; a real deployment supplies its own registry and "
 "routing files through the resolution chain above."
 msgstr "**配置属于部署，不属于项目**。仓库提供可运行的示例；真实的部署通过上面那条解析链提供自己的注册表和路由文件。"
 
-#: ../developer/architecture.md:494
+#: ../developer/architecture.md:615
 msgid ""
 "**Extension points are declarative.** New provider: a `kind` and, if the "
 "API is not OpenAI-compatible, an adapter. New routing behaviour: a module"
