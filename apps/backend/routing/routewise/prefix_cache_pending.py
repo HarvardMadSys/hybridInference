@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +27,7 @@ class PendingPrefixCacheEntry:
     scopes: Mapping[str, Any]
     created_at: float
     last_activity_at: float
+    generations: Mapping[str, int] = field(default_factory=dict)
 
 
 class PendingPrefixCacheStore:
@@ -45,7 +46,15 @@ class PendingPrefixCacheStore:
         self._entries: dict[str, PendingPrefixCacheEntry] = {}
         self._lock = RLock()
 
-    def put(self, request_id: str, blocks: Any, scopes: Mapping[str, Any]) -> None:
+    def put(
+        self,
+        request_id: str,
+        blocks: Any,
+        scopes: Mapping[str, Any],
+        generations: Mapping[str, int] | None = None,
+        *,
+        merge: bool = False,
+    ) -> None:
         """Store one request, evicting oldest entries when the cap is exceeded."""
         if not request_id or not scopes:
             return
@@ -62,13 +71,22 @@ class PendingPrefixCacheStore:
                     removed = self._entries.pop(stale_request_id)
                     evicted.append((stale_request_id, removed, len(self._entries), "ttl"))
             prior = self._entries.get(request_id)
+            if merge and prior is not None:
+                stored_scopes = dict(prior.scopes)
+                stored_scopes.update(scopes)
+                stored_generations = dict(prior.generations)
+                stored_generations.update(generations or {})
+            else:
+                stored_scopes = dict(scopes)
+                stored_generations = dict(generations or {})
             self._entries[request_id] = PendingPrefixCacheEntry(
                 blocks=blocks,
-                scopes=dict(scopes),
+                scopes=stored_scopes,
                 # A retry may update which endpoint scopes can eventually be
                 # warmed, but it must not renew the pending entry forever.
                 created_at=prior.created_at if prior is not None else now,
                 last_activity_at=prior.last_activity_at if prior is not None else now,
+                generations=stored_generations,
             )
             while len(self._entries) > self._max_entries:
                 oldest_request_id = next(iter(self._entries))
@@ -104,6 +122,7 @@ class PendingPrefixCacheStore:
                     scopes=entry.scopes,
                     created_at=entry.created_at,
                     last_activity_at=now,
+                    generations=entry.generations,
                 )
         if expired is not None:
             self._emit_eviction(
@@ -115,6 +134,65 @@ class PendingPrefixCacheStore:
             )
             return False
         return True
+
+    def scope_for(self, request_id: str, endpoint_id: str) -> Any | None:
+        """Return a live request scope for an endpoint, if one was stashed."""
+        if not request_id or not endpoint_id:
+            return None
+        now = self._clock()
+        expired: PendingPrefixCacheEntry | None = None
+        pending_count = 0
+        with self._lock:
+            entry = self._entries.get(request_id)
+            if entry is None:
+                return None
+            if self._is_expired(entry, now):
+                expired = self._entries.pop(request_id)
+                pending_count = len(self._entries)
+                scope = None
+            else:
+                scope = entry.scopes.get(endpoint_id)
+        if expired is not None:
+            self._emit_eviction(
+                request_id,
+                expired,
+                now=now,
+                reason="ttl",
+                pending_count=pending_count,
+            )
+        return scope
+
+    def set_generation(self, request_id: str, endpoint_id: str, generation: int) -> bool:
+        """Attach a dispatch generation to an existing endpoint scope."""
+        if not request_id or not endpoint_id:
+            return False
+        with self._lock:
+            entry = self._entries.get(request_id)
+            if entry is None or endpoint_id not in entry.scopes:
+                return False
+            generations = dict(entry.generations)
+            prior_generation = generations.get(endpoint_id)
+            if prior_generation is not None:
+                return prior_generation == generation
+            generations[endpoint_id] = int(generation)
+            self._entries[request_id] = PendingPrefixCacheEntry(
+                blocks=entry.blocks,
+                scopes=entry.scopes,
+                created_at=entry.created_at,
+                last_activity_at=entry.last_activity_at,
+                generations=generations,
+            )
+            return True
+
+    def generation_for(self, request_id: str, endpoint_id: str) -> int | None:
+        """Return an endpoint's already-claimed generation, if present."""
+        if not request_id or not endpoint_id:
+            return None
+        with self._lock:
+            entry = self._entries.get(request_id)
+            if entry is None:
+                return None
+            return entry.generations.get(endpoint_id)
 
     def pop(self, request_id: str) -> PendingPrefixCacheEntry | None:
         """Consume a live entry, rejecting and reporting one that expired first."""

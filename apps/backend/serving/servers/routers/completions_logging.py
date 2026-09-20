@@ -107,6 +107,7 @@ class CompletionsLogger:
         prompt_tokens: int,
         completion_tokens: int,
         success: bool,
+        cached_tokens: int | None = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -115,6 +116,10 @@ class CompletionsLogger:
         exception path — which today receives a raw dict from the adapter —
         keeps working without further plumbing changes. ``request_id`` is
         forwarded explicitly rather than recovered from ambient request context.
+
+        ``cached_tokens`` is the authoritative observed cache usage from the
+        provider (``None`` = unknown). It MUST NOT be synthesized: if the
+        provider did not report usage, leave it as ``None``.
         """
         failed_attempts = _extract_failed_attempts(routing)
         seen_failed_attempts: set[tuple[str, str | None, str | None]] = set()
@@ -141,6 +146,7 @@ class CompletionsLogger:
                     success=False,
                     request_id=request_id,
                     terminal=False,
+                    cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
             )
@@ -157,6 +163,7 @@ class CompletionsLogger:
             success=success,
             request_id=request_id,
             terminal=True,
+            cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
         )
         active_router.record_observation(obs)
