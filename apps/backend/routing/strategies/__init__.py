@@ -99,6 +99,21 @@ def _accepts_health_registry(router_cls: type) -> bool:
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
 
 
+def _accepts_prefill_load(router_cls: type) -> bool:
+    """Return whether a registered router constructor accepts prefill_load injection."""
+    try:
+        parameters = inspect.signature(router_cls).parameters
+    except (TypeError, ValueError):
+        return False
+    prefill_parameter = parameters.get("prefill_load")
+    if prefill_parameter is not None and prefill_parameter.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }:
+        return True
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
 def _validated_strategy(
     name: str,
     params: dict[str, Any] | None,
@@ -174,10 +189,13 @@ def build_router(
         dependencies=dependencies,
     )
     if dependencies is not None:
-        return router_cls(
-            params=validated,
-            health_registry=dependencies.health_registry,
-        )
+        kwargs: dict[str, Any] = {
+            "params": validated,
+            "health_registry": dependencies.health_registry,
+        }
+        if dependencies.prefill_load is not None and _accepts_prefill_load(router_cls):
+            kwargs["prefill_load"] = dependencies.prefill_load
+        return router_cls(**kwargs)
     return router_cls(params=validated)
 
 

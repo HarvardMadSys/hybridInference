@@ -11,12 +11,14 @@ import logging
 import threading
 import time
 import weakref
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import routing.routewise.router as routewise_router_module
+from routing.prefill_load import PrefillLoadTracker
 from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
@@ -34,6 +36,7 @@ from routing.routewise.router import (
     _ProbeConcurrencyGate,
 )
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
+from serving.utils import context as req_ctx
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -4066,3 +4069,771 @@ async def test_start_reports_whether_this_call_activated_the_router():
 
     assert await router.start() is True
     await router.stop()
+
+
+# ---------------------------------------------------------------------------
+# Prefill-load-aware routing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPrefillLoadPenalty:
+    """Tests for the _prefill_load_penalty_ms helper."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    async def test_binding_failure_releases_prefill_lease(self, operation):
+        """A refused leaf binding cannot strand the dispatch's prefill lease."""
+        adapter = _make_adapter(endpoint_id=f"test-model:bind-{operation}")
+        router = FixedRouter()
+        router.register_route("test-model", [(adapter, 1.0)])
+
+        with (
+            patch.object(
+                router,
+                "bind_execution",
+                side_effect=RuntimeError("binding refused"),
+            ),
+            pytest.raises(RuntimeError, match="binding refused"),
+        ):
+            if operation == "chat":
+                await router.chat_completion(
+                    "test-model",
+                    [{"role": "user", "content": "x" * 4000}],
+                )
+            else:
+                stream = router.stream_chat_completion(
+                    "test-model",
+                    [{"role": "user", "content": "x" * 4000}],
+                )
+                await stream.__anext__()
+
+        assert router._prefill_load.backlog(f"test-model:bind-{operation}") == 0
+
+    def test_zero_backlog_returns_zero(self):
+        router = RouteWiseRouter(config=RouteWiseConfig(prefill_load_routing_enabled=True))
+        assert router._prefill_load_penalty_ms(0) == 0.0
+
+    def test_negative_backlog_returns_zero(self):
+        router = RouteWiseRouter(config=RouteWiseConfig(prefill_load_routing_enabled=True))
+        assert router._prefill_load_penalty_ms(-100) == 0.0
+
+    def test_tracked_prefill_tokens_include_request_level_fields(self):
+        """Hedge and normal dispatches charge tools and response schemas too."""
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        messages = [{"role": "user", "content": "hi"}]
+        base = router._tracked_prefill_tokens(messages, {})
+        expanded = router._tracked_prefill_tokens(
+            messages,
+            {
+                "tools": [
+                    {"type": "function", "function": {"name": "x", "description": "d" * 400}}
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"schema": {"type": "object"}},
+                },
+            },
+        )
+        assert expanded > base
+
+    @pytest.mark.asyncio
+    async def test_stream_prefill_lease_exists_before_routing_chunk(self):
+        """Concurrent selections can see a stream's lease immediately."""
+        adapter = _make_adapter(endpoint_id="test-model:stream")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True),
+        )
+
+        async def _stream(*args: Any, **kwargs: Any):
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+
+        adapter.stream_chat_completion = _stream
+        stream = router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "x" * 4000}],
+            request_id="req-prefill-before-routing",
+        )
+
+        routing_chunk = await stream.__anext__()
+        assert '"_routing"' in routing_chunk
+        expected_tokens = router._tracked_prefill_tokens(
+            [{"role": "user", "content": "x" * 4000}],
+            {},
+        )
+        assert router._prefill_load.backlog("test-model:stream") == expected_tokens
+
+        await stream.aclose()
+        assert router._prefill_load.backlog("test-model:stream") == 0
+
+    @pytest.mark.asyncio
+    async def test_disabled_dispatch_does_not_track_load_or_prefix_hint(self):
+        """Disabled RouteWise prefill tracking has no execution-side effects."""
+        from serving.utils import context as req_ctx
+
+        adapter = _make_adapter(endpoint_id="test-model:disabled")
+
+        async def _chat(messages, **params):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        adapter.chat_completion = _chat
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(prefill_load_routing_enabled=False),
+        )
+        messages = [{"role": "user", "content": "x" * 4000}]
+
+        with req_ctx.push(affinity_key="caller"):
+            await router._execute_adapter(
+                _unreserved_decision(adapter),
+                "test-model",
+                messages,
+            )
+
+        assert router._prefill_load.backlog("test-model:disabled") == 0
+        assert router._prefill_load._prefix_hints == {}
+
+    def test_linear_penalty(self):
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(
+                prefill_load_routing_enabled=True, prefill_load_scale_ms_per_1k=1.0
+            )
+        )
+        # 1000 tokens * 1.0 / 1000 = 1ms
+        assert router._prefill_load_penalty_ms(1000) == 1.0
+
+    def test_penalty_scales_with_tokens(self):
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(
+                prefill_load_routing_enabled=True, prefill_load_scale_ms_per_1k=1.0
+            )
+        )
+        # 200K tokens * 1.0 / 1000 = 200ms
+        assert router._prefill_load_penalty_ms(200_000) == 200.0
+
+    def test_penalty_caps_at_max(self):
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(
+                prefill_load_routing_enabled=True,
+                prefill_load_scale_ms_per_1k=1.0,
+                prefill_load_max_penalty_ms=500.0,
+            )
+        )
+        # 1M tokens would be 1000ms but cap is 500ms
+        assert router._prefill_load_penalty_ms(1_000_000) == 500.0
+
+    def test_zero_scale_returns_zero(self):
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(
+                prefill_load_routing_enabled=True, prefill_load_scale_ms_per_1k=0.0
+            )
+        )
+        assert router._prefill_load_penalty_ms(500_000) == 0.0
+
+
+@pytest.mark.unit
+class TestPrefillLoadCandidateFields:
+    """Tests for prefill-load fields on FeasibleProviderCandidate."""
+
+    def test_feature_disabled_no_adjustment(self):
+        """When feature is disabled, no prefill adjustment is applied."""
+        adapter = _make_adapter(endpoint_id="test-model:api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=fr, config=RouteWiseConfig(prefill_load_routing_enabled=False)
+        )
+        candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=1000,
+            predicted_output_tokens=500,
+            envelope=None,
+            now=time.time(),
+        )
+        assert len(candidates) == 1
+        assert candidates[0].outstanding_prefill_tokens == 0
+        assert candidates[0].prefill_load_adjusted_ttft_sec is None
+
+    def test_feature_enabled_zero_backlog_no_adjustment(self):
+        """Zero backlog means no penalty even when feature is enabled."""
+        adapter = _make_adapter(endpoint_id="test-model:api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=fr, config=RouteWiseConfig(prefill_load_routing_enabled=True)
+        )
+        candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=1000,
+            predicted_output_tokens=500,
+            envelope=None,
+            now=time.time(),
+        )
+        assert len(candidates) == 1
+        assert candidates[0].outstanding_prefill_tokens == 0
+        assert candidates[0].prefill_load_adjusted_ttft_sec is None
+
+    def test_feature_enabled_high_backlog_adds_penalty(self):
+        """High backlog adds a bounded penalty to adjusted TTFT."""
+        adapter = _make_adapter(endpoint_id="test-model:api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=fr, config=RouteWiseConfig(prefill_load_routing_enabled=True)
+        )
+        # Simulate 200K outstanding prefill tokens
+        router._prefill_load._backlog["test-model:api"] = 200_000
+        candidates, _ = router._build_candidates(
+            "test-model",
+            prompt_tokens=1000,
+            predicted_output_tokens=500,
+            envelope=None,
+            now=time.time(),
+        )
+        assert len(candidates) == 1
+        assert candidates[0].outstanding_prefill_tokens == 200_000
+        # 200K * 1.0 / 1000 = 200ms penalty
+        base_ttft = candidates[0].mean_ttft_sec
+        assert candidates[0].prefill_load_adjusted_ttft_sec == base_ttft + 0.2
+
+
+@pytest.mark.unit
+class TestPrefillLoadRoutingDecision:
+    """Tests for prefill-load-aware routing decisions."""
+
+    def test_prefill_tracker_lock_is_not_held_during_candidate_computation(self, monkeypatch):
+        """Preview selection without a lease must not block tracker readers."""
+        adapter = _make_adapter(endpoint_id="test-model:prefill-lock")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True),
+        )
+        original_build_candidates = router._build_candidates
+        probe_done = threading.Event()
+        probe_acquired: list[bool] = []
+
+        def probe_tracker_lock() -> None:
+            acquired = router._prefill_load._lock.acquire(blocking=False)
+            probe_acquired.append(acquired)
+            if acquired:
+                router._prefill_load._lock.release()
+            probe_done.set()
+
+        def build_candidates(*args: Any, **kwargs: Any):
+            probe = threading.Thread(target=probe_tracker_lock)
+            probe.start()
+            assert probe_done.wait(timeout=1)
+            probe.join()
+            return original_build_candidates(*args, **kwargs)
+
+        monkeypatch.setattr(router, "_build_candidates", build_candidates)
+
+        decision = router._select_decision(
+            "test-model",
+            {"prompt_tokens": 1000, "request_id": "req-prefill-lock"},
+        )
+
+        assert decision is not None
+        assert probe_acquired == [True]
+
+    def test_shared_tracker_serializes_snapshot_selection_and_reservation(self, monkeypatch):
+        """Routers sharing load state cannot select from the same stale snapshot."""
+        adapter = _make_adapter(endpoint_id="test-model:shared-prefill")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        tracker = PrefillLoadTracker()
+        config = RouteWiseConfig(prefill_load_routing_enabled=True)
+        first_router = RouteWiseRouter(
+            route_table=route_table,
+            config=config,
+            prefill_load=tracker,
+        )
+        second_router = RouteWiseRouter(
+            route_table=route_table,
+            config=config,
+            prefill_load=tracker,
+        )
+        context = {
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "params": {},
+        }
+        expected_tokens = first_router._tracked_prefill_tokens(
+            context["messages"], context["params"]
+        )
+        first_build_entered = threading.Event()
+        release_first_build = threading.Event()
+        second_build_entered = threading.Event()
+        original_first_build = first_router._build_candidates
+        original_second_build = second_router._build_candidates
+
+        def first_build(*args: Any, **kwargs: Any):
+            first_build_entered.set()
+            assert release_first_build.wait(timeout=1)
+            return original_first_build(*args, **kwargs)
+
+        def second_build(*args: Any, **kwargs: Any):
+            second_build_entered.set()
+            return original_second_build(*args, **kwargs)
+
+        monkeypatch.setattr(first_router, "_build_candidates", first_build)
+        monkeypatch.setattr(second_router, "_build_candidates", second_build)
+
+        results: dict[str, RoutingDecision] = {}
+        errors: list[BaseException] = []
+
+        def select_first() -> None:
+            try:
+                decision = first_router._select_decision(
+                    "test-model",
+                    {**context, "request_id": "shared-first"},
+                    reserve_prefill=True,
+                )
+                assert decision is not None
+                results["first"] = decision
+            except BaseException as exc:
+                errors.append(exc)
+
+        def select_second() -> None:
+            try:
+                decision = second_router._select_decision(
+                    "test-model",
+                    {**context, "request_id": "shared-second"},
+                    reserve_prefill=True,
+                )
+                assert decision is not None
+                results["second"] = decision
+            except BaseException as exc:
+                errors.append(exc)
+
+        first_thread = threading.Thread(target=select_first)
+        second_thread = threading.Thread(target=select_second)
+        first_thread.start()
+        assert first_build_entered.wait(timeout=1)
+        second_thread.start()
+        second_thread.join(timeout=0.05)
+        assert second_thread.is_alive()
+        assert not second_build_entered.is_set()
+
+        release_first_build.set()
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert errors == []
+        assert set(results) == {"first", "second"}
+        assert results["second"].metadata["candidate_outstanding_prefill_tokens"] == {
+            "test-model:shared-prefill": expected_tokens
+        }
+        assert tracker.backlog("test-model:shared-prefill") == expected_tokens * 2
+
+        results["first"].release()
+        results["second"].release()
+        assert tracker.backlog("test-model:shared-prefill") == 0
+
+    def test_shared_tracker_serializes_checkpoint_backup_selection_and_reservation(
+        self, monkeypatch
+    ):
+        """Checkpoint hedges cannot select from a snapshot before backup reservation."""
+        primary = _make_adapter(endpoint_id="test-model:checkpoint-primary")
+        backup = _make_adapter(endpoint_id="test-model:checkpoint-backup")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(primary, 0.5), (backup, 0.5)])
+        tracker = PrefillLoadTracker()
+        config = RouteWiseConfig(prefill_load_routing_enabled=True)
+        first_router = RouteWiseRouter(
+            route_table=route_table,
+            config=config,
+            prefill_load=tracker,
+        )
+        second_router = RouteWiseRouter(
+            route_table=route_table,
+            config=config,
+            prefill_load=tracker,
+        )
+        context = {
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "params": {},
+        }
+        candidates, _ = first_router._build_candidates(
+            "test-model",
+            prompt_tokens=1000,
+            predicted_output_tokens=1.0,
+            envelope=None,
+            now=time.time(),
+            context=context,
+            prefill_backlog={},
+        )
+        selected = next(candidate for candidate in candidates if candidate.adapter is primary)
+        first_decision = _unreserved_decision(primary)
+        second_decision = _unreserved_decision(primary)
+
+        def select_backup(**kwargs: Any) -> SimpleNamespace:
+            candidate = next(
+                candidate
+                for candidate in kwargs["candidates"]
+                if candidate.endpoint_id == "test-model:checkpoint-backup"
+            )
+            return SimpleNamespace(provider=candidate, success_probability=0.5)
+
+        monkeypatch.setattr(first_router, "_select_hedge_candidate_at_elapsed", select_backup)
+        monkeypatch.setattr(second_router, "_select_hedge_candidate_at_elapsed", select_backup)
+        monkeypatch.setattr(first_router, "_record_hedge_dispatch", lambda **_kwargs: None)
+        monkeypatch.setattr(second_router, "_record_hedge_dispatch", lambda **_kwargs: None)
+
+        first_build_entered = threading.Event()
+        release_first_build = threading.Event()
+        second_build_entered = threading.Event()
+        observed_second_backlog: dict[str, int] = {}
+        original_first_build = first_router._build_candidates
+        original_second_build = second_router._build_candidates
+
+        def first_build(*args: Any, **kwargs: Any):
+            first_build_entered.set()
+            assert release_first_build.wait(timeout=1)
+            return original_first_build(*args, **kwargs)
+
+        def second_build(*args: Any, **kwargs: Any):
+            second_build_entered.set()
+            observed_second_backlog.update(kwargs["prefill_backlog"])
+            return original_second_build(*args, **kwargs)
+
+        monkeypatch.setattr(first_router, "_build_candidates", first_build)
+        monkeypatch.setattr(second_router, "_build_candidates", second_build)
+
+        results: dict[str, Any] = {}
+        errors: list[BaseException] = []
+
+        def select_first() -> None:
+            try:
+                results["first"] = first_router._select_checkpoint_backup(
+                    model_id="test-model",
+                    decision=first_decision,
+                    context=context,
+                    prompt_tokens=1000,
+                    predicted_output_tokens=1.0,
+                    envelope=None,
+                    selected=selected,
+                    checkpoints_sec=(1.0,),
+                    latency_slo_sec=1.0,
+                    elapsed_sec=1.0,
+                    checkpoint_ts=time.time(),
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        def select_second() -> None:
+            try:
+                results["second"] = second_router._select_checkpoint_backup(
+                    model_id="test-model",
+                    decision=second_decision,
+                    context=context,
+                    prompt_tokens=1000,
+                    predicted_output_tokens=1.0,
+                    envelope=None,
+                    selected=selected,
+                    checkpoints_sec=(1.0,),
+                    latency_slo_sec=1.0,
+                    elapsed_sec=1.0,
+                    checkpoint_ts=time.time(),
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        first_thread = threading.Thread(target=select_first)
+        second_thread = threading.Thread(target=select_second)
+        first_thread.start()
+        assert first_build_entered.wait(timeout=1)
+        second_thread.start()
+        second_thread.join(timeout=0.05)
+        assert second_thread.is_alive()
+        assert not second_build_entered.is_set()
+
+        release_first_build.set()
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert errors == []
+        assert results["first"] is not None
+        assert results["second"] is not None
+        expected_tokens = first_router._tracked_prefill_tokens(
+            context["messages"], context["params"]
+        )
+        assert observed_second_backlog["test-model:checkpoint-backup"] == expected_tokens
+
+        results["first"].release()
+        results["second"].release()
+        assert tracker.backlog("test-model:checkpoint-backup") == 0
+
+    def test_primary_lease_is_reserved_before_decision_returns(self):
+        """A serving decision publishes its load reservation atomically."""
+        adapter = _make_adapter(endpoint_id="test-model:primary")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True),
+        )
+        context = {
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "params": {},
+            "request_id": "req-prefill-atomic",
+        }
+        expected_tokens = router._tracked_prefill_tokens(context["messages"], context["params"])
+
+        first = router._select_decision("test-model", context, reserve_prefill=True)
+        assert first is not None
+        assert router._prefill_load.backlog("test-model:primary") == expected_tokens
+
+        # The next selection observes the reservation that belongs to the
+        # first decision, rather than selecting against the stale pre-reserve
+        # snapshot that the old execution path exposed.
+        second = router._select_decision(
+            "test-model",
+            {**context, "request_id": "req-prefill-atomic-2"},
+            reserve_prefill=True,
+        )
+        assert second is not None
+        assert (
+            second.metadata["candidate_outstanding_prefill_tokens"]["test-model:primary"]
+            == expected_tokens
+        )
+
+        first.release()
+        second.release()
+        assert router._prefill_load.backlog("test-model:primary") == 0
+
+    def test_routewise_lease_does_not_consume_unverified_caller_hint(self):
+        """RouteWise charges cold work until verified cache evidence is wired in."""
+        adapter = _make_adapter(endpoint_id="test-model:primary")
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True),
+        )
+        affinity_key = "caller"
+        prior = router._prefill_load.acquire(
+            "test-model:primary",
+            100_000,
+            affinity_key=affinity_key,
+        )
+        router._prefill_load.release(prior, prefill_confirmed=True)
+
+        messages = [{"role": "user", "content": "unrelated" * 1000}]
+        with req_ctx.push(affinity_key=affinity_key):
+            decision = router._select_decision(
+                "test-model",
+                {
+                    "messages": messages,
+                    "params": {},
+                    "request_id": "req-routewise-cold",
+                },
+                reserve_prefill=True,
+            )
+
+        assert decision is not None
+        expected = router._tracked_prefill_tokens(messages, {})
+        assert router._prefill_load.backlog("test-model:primary") == expected
+        decision.release()
+
+    def test_lower_load_preferred_when_otherwise_equivalent(self):
+        """Endpoint with lower prefill load is preferred when cost/latency are equal."""
+        adapter_a = _make_adapter(
+            endpoint_id="test-model:a", prompt_price="1.0", completion_price="1.0"
+        )
+        adapter_b = _make_adapter(
+            endpoint_id="test-model:b", prompt_price="1.0", completion_price="1.0"
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter_a, 0.5), (adapter_b, 0.5)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True, random_seed=42),
+        )
+        # A has 250K backlog, B has 20K
+        router._prefill_load._backlog["test-model:a"] = 250_000
+        router._prefill_load._backlog["test-model:b"] = 20_000
+
+        # Run multiple selections to account for LP sampling
+        selections = {"test-model:a": 0, "test-model:b": 0}
+        for i in range(100):
+            decision = router._select_decision(
+                "test-model", {"prompt_tokens": 1000, "request_id": f"req-{i}"}
+            )
+            selections[decision.adapter.config.endpoint_id] += 1
+
+        # B should be preferred (lower load)
+        assert selections["test-model:b"] > selections["test-model:a"]
+
+    def test_materially_better_high_load_can_still_win(self):
+        """A materially better (lower base TTFT) endpoint can still win despite high load."""
+        # A has low base TTFT but heavy prefill load
+        adapter_a = _make_adapter(
+            endpoint_id="test-model:a", prompt_price="1.0", completion_price="1.0"
+        )
+        # B has high base TTFT but no load
+        adapter_b = _make_adapter(
+            endpoint_id="test-model:b", prompt_price="1.0", completion_price="1.0"
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter_a, 0.5), (adapter_b, 0.5)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True, random_seed=42),
+        )
+        # A has huge backlog (500K = 500ms penalty), B has none
+        router._prefill_load._backlog["test-model:a"] = 500_000
+        router._prefill_load._backlog["test-model:b"] = 0
+        # A's base TTFT is much lower: 100ms vs B's 2000ms
+        # After penalty: A=600ms, B=2000ms -> A still wins
+        now = time.time()
+        router._latency_profiles["test-model:a"].record(now, 100.0)
+        router._latency_profiles["test-model:b"].record(now, 2000.0)
+
+        # A should still win because its base TTFT is much lower
+        selections = {"test-model:a": 0, "test-model:b": 0}
+        for i in range(100):
+            decision = router._select_decision(
+                "test-model", {"prompt_tokens": 1000, "request_id": f"req-{i}"}
+            )
+            selections[decision.adapter.config.endpoint_id] += 1
+
+        # A should still be selected most of the time due to lower base TTFT
+        assert selections["test-model:a"] > selections["test-model:b"]
+
+    def test_equal_load_reduces_to_standard_selection(self):
+        """Equal prefill load should not change selection behavior."""
+        adapter_a = _make_adapter(
+            endpoint_id="test-model:a", prompt_price="1.0", completion_price="1.0"
+        )
+        adapter_b = _make_adapter(
+            endpoint_id="test-model:b", prompt_price="1.0", completion_price="1.0"
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter_a, 0.5), (adapter_b, 0.5)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True, random_seed=42),
+        )
+        # Both have same backlog
+        router._prefill_load._backlog["test-model:a"] = 50_000
+        router._prefill_load._backlog["test-model:b"] = 50_000
+        # Give them distinct latency profiles so the LP has a clear preference
+        now = time.time()
+        router._latency_profiles["test-model:a"].record(now, 200.0)
+        router._latency_profiles["test-model:b"].record(now, 300.0)
+
+        # With equal load, the lower-latency endpoint should be preferred
+        selections = {"test-model:a": 0, "test-model:b": 0}
+        for i in range(100):
+            decision = router._select_decision(
+                "test-model", {"prompt_tokens": 1000, "request_id": f"req-{i}"}
+            )
+            selections[decision.adapter.config.endpoint_id] += 1
+
+        # Lower-latency endpoint should be selected more
+        assert selections["test-model:a"] > selections["test-model:b"]
+        # Both should be routable (no dead-end)
+        assert selections["test-model:a"] > 0
+        # B may get 0 if LP always picks A (deterministic when A is strictly better)
+        # The key invariant is that both are routable, not that both get selections
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision is not None
+
+    def test_all_loaded_still_routable(self):
+        """All endpoints heavily loaded: no dead-end, still routable."""
+        adapter_a = _make_adapter(endpoint_id="test-model:a")
+        adapter_b = _make_adapter(endpoint_id="test-model:b")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter_a, 0.5), (adapter_b, 0.5)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True, random_seed=42),
+        )
+        # Both heavily loaded
+        router._prefill_load._backlog["test-model:a"] = 1_000_000
+        router._prefill_load._backlog["test-model:b"] = 2_000_000
+
+        # Should still route without error
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision is not None
+        assert decision.adapter.config.endpoint_id in ("test-model:a", "test-model:b")
+
+    def test_feature_disabled_exact_old_behavior(self):
+        """When disabled, behavior is exactly the same as before."""
+        adapter_a = _make_adapter(
+            endpoint_id="test-model:a", prompt_price="1.0", completion_price="1.0"
+        )
+        adapter_b = _make_adapter(
+            endpoint_id="test-model:b", prompt_price="1.0", completion_price="1.0"
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter_a, 0.5), (adapter_b, 0.5)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=False, random_seed=42),
+        )
+        # Set backlog but feature is disabled
+        router._prefill_load._backlog["test-model:a"] = 999_999
+        router._prefill_load._backlog["test-model:b"] = 1
+        # Give them distinct latency profiles so the LP has a clear preference
+        now = time.time()
+        router._latency_profiles["test-model:a"].record(now, 200.0)
+        router._latency_profiles["test-model:b"].record(now, 300.0)
+
+        # With feature disabled, prefill load is ignored
+        # Lower-latency endpoint should be preferred
+        selections = {"test-model:a": 0, "test-model:b": 0}
+        for i in range(100):
+            decision = router._select_decision(
+                "test-model", {"prompt_tokens": 1000, "request_id": f"req-{i}"}
+            )
+            selections[decision.adapter.config.endpoint_id] += 1
+
+        # Lower-latency endpoint should be selected more (load ignored)
+        assert selections["test-model:a"] > selections["test-model:b"]
+        assert selections["test-model:a"] > 0
+
+
+@pytest.mark.unit
+class TestPrefillLoadMetadata:
+    """Tests for prefill-load metadata in decision metadata."""
+
+    def test_metadata_includes_prefill_fields(self):
+        """Decision metadata includes prefill-load fields when enabled."""
+        adapter = _make_adapter(endpoint_id="test-model:api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True, random_seed=42),
+        )
+        router._prefill_load._backlog["test-model:api"] = 100_000
+
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.metadata["prefill_load_routing_enabled"] is True
+        assert "test-model:api" in decision.metadata["candidate_outstanding_prefill_tokens"]
+        assert (
+            decision.metadata["candidate_outstanding_prefill_tokens"]["test-model:api"] == 100_000
+        )
+        assert "test-model:api" in decision.metadata["candidate_prefill_load_adjusted_ttft_sec"]
+
+    def test_metadata_disabled_no_prefill_fields(self):
+        """When disabled, prefill fields are empty/minimal."""
+        adapter = _make_adapter(endpoint_id="test-model:api")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=fr,
+            config=RouteWiseConfig(prefill_load_routing_enabled=False, random_seed=42),
+        )
+
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.metadata["prefill_load_routing_enabled"] is False
+        assert decision.metadata["candidate_outstanding_prefill_tokens"] == {}
+        assert decision.metadata["candidate_prefill_load_adjusted_ttft_sec"] == {}
