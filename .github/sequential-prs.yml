@@ -140,8 +140,9 @@ threads:
     units:
       - id: claim-state-machine
         branch: prep/1428-claim-state-machine
-        source_base: 6d37b1224064ff4982daddb1b65edd2c51b5a07e
-        source_tip: d9e0481697df5b86fde5272ab2059aace74b46dd
+        source_ref: origin/prep/1428-claim-state-machine-current
+        source_base: 25383d21dafe0ba4f6baa0b953df43fe6bfff430
+        source_tip: a7c73ca4122c6ec4f3c4fe6fb8a1d70425746259
         title: "feat(storage): isolate hard-delete claim state"
         body: |
           ## Summary

@@ -509,7 +509,12 @@ class Git(CommandRunner):
             validate_changed_paths(expected_paths, actual_paths, unit.branch)
             self.run(["git", "diff", "--cached", "--check"], cwd=candidate)
             self.run(["git", "diff", "HEAD", "--check"], cwd=candidate)
-            self.run(["uv", "run", "mypy", "ops/sequential_prs.py"], cwd=candidate)
+            # The candidate is reconstructed on upstream/dev, while the
+            # sequencer itself is fork-only automation. Validate the
+            # sequencer on its own checkout; do not require it in the
+            # upstream-based candidate worktree.
+            if (candidate / "ops/sequential_prs.py").exists():
+                self.run(["uv", "run", "mypy", "ops/sequential_prs.py"], cwd=candidate)
             for command in unit.validation:
                 self.run(command, cwd=candidate)
             self.run(
