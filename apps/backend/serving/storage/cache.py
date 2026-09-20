@@ -308,6 +308,21 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
 
+    async def begin_hard_delete_user(self, user_id: str) -> str:
+        """Claim a hard-delete in the wrapped store and invalidate caches."""
+        claim_token = await self._store.begin_hard_delete_user(user_id)
+        await self._cache.delete(self._user_key(user_id))
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+        return claim_token
+
+    async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Release a failed pre-fence claim and invalidate user caches."""
+        await self._store.release_hard_delete_user_claim(user_id, claim_token)
+        await self._cache.delete(self._user_key(user_id))
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+
     async def resume_user(
         self,
         user_id: str,
@@ -329,6 +344,7 @@ class CachedOperationalStore(OperationalStore):
         self,
         user_id: str,
         *,
+        claim_token: str,
         admin_ip: str,
         admin_id: str,
         reason: str | None = None,
@@ -336,7 +352,12 @@ class CachedOperationalStore(OperationalStore):
     ) -> dict[str, int]:
         """Delegate then invalidate user + auth caches."""
         counts = await self._store.hard_delete_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            user_id,
+            claim_token=claim_token,
+            admin_ip=admin_ip,
+            admin_id=admin_id,
+            reason=reason,
+            email=email,
         )
         await self._cache.delete(self._user_key(user_id))
         await self._cache.delete_pattern("auth:*")

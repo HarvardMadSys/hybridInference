@@ -20,6 +20,18 @@ class HybridInferenceError(Exception):
     pass
 
 
+class HardDeleteStateChanged(Exception):
+    """The target account's state changed during hard-delete.
+
+    Raised when the erasure-fence status revalidation (issue #1421) detects
+    that a concurrent resume reactivated the account after the router-level
+    soft-deleted check. The hard-delete workflow must abort without purging
+    responses or operationally-linked rows, leaving the account active.
+    """
+
+    pass
+
+
 class UserFacingError(HybridInferenceError):
     """Marker base for exceptions whose message is safe to surface verbatim.
 

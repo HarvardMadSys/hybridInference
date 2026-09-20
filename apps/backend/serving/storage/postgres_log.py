@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
 from serving.storage.base import LogStore, Row
-from serving.storage.log_schema import ensure_api_logs_schema
+from serving.storage.log_schema import (
+    check_erasure_fence,
+    ensure_api_logs_schema,
+    establish_erasure_fence,
+    fence_account_digest,
+    protect_api_logs_insert,
+    validate_or_init_fingerprint,
+)
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
 from serving.storage.utils import (
     agent_name_from_prompt,
@@ -102,15 +109,21 @@ class PostgresLogStore(LogStore):
         pool: asyncpg.Pool,
         *,
         store_full_prompts: bool = True,
+        fence_secret: str | None = None,
     ) -> None:
         """Initialize with an existing asyncpg pool.
 
         Args:
             pool: Shared asyncpg connection pool.
             store_full_prompts: If False, prompt and response fields will be NULL.
+            fence_secret: Server secret used to derive non-reversible
+                erasure-fence digests. Resolved at startup by
+                :func:`serving.storage.log_schema.resolve_fence_secret`,
+                which fails closed if no stable secret is configured.
         """
         self.pool = pool
         self.store_full_prompts = store_full_prompts
+        self.fence_secret = fence_secret
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -120,8 +133,17 @@ class PostgresLogStore(LogStore):
         Delegates to :func:`serving.storage.log_schema.ensure_api_logs_schema`,
         the single source of truth shared with ``DatabaseLogger._create_tables``
         so the two initializers cannot drift.
+
+        Also validates the erasure-fence secret fingerprint (issue #1421),
+        refusing to start if the configured secret no longer matches the
+        pinned fingerprint (which would silently orphan existing tombstones).
         """
         async with self.pool.acquire() as conn:
+            if self.fence_secret:
+                # Validate existing tombstones before any API-log migration
+                # that may defer on a bounded table lock. A mismatched secret
+                # must never reach a usable writer with a fresh digest space.
+                await validate_or_init_fingerprint(conn, secret=self.fence_secret)
             await ensure_api_logs_schema(conn)
 
     async def cleanup(self) -> None:
@@ -276,7 +298,24 @@ class PostgresLogStore(LogStore):
             or _string_or_none(provider)
         )
 
-        async with self.pool.acquire() as conn:
+        _row_user_id = (sanitized_metadata or {}).get("user_id")
+        _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+
+        async with self.pool.acquire() as conn, conn.transaction():
+            # Erasure fence check (issue #1421): if any account this row would
+            # identify has been hard-deleted, do not create an identifying row.
+            if await protect_api_logs_insert(
+                conn,
+                fence_secret=self.fence_secret,
+                user_id=_row_user_id,
+                credential_owner_id=_row_credential_owner,
+            ):
+                logger.info(
+                    "log_request suppressed: erasure fence hit for request %s",
+                    request_id,
+                )
+                return
+
             await conn.execute(
                 """
                 INSERT INTO api_logs (
@@ -1144,6 +1183,23 @@ class PostgresLogStore(LogStore):
         carry a null ``user_id`` on purpose. ``idx_api_logs_credential_owner``
         keeps the second predicate an index lookup rather than turning this
         into a scan of the largest table in the deployment.
+
+        Erasure fence (issue #1421): before the purge, establish a durable
+        tombstone in ``erasure_fence`` so any fire-and-forget log write that
+        started before this transaction — or starts during it — cannot commit
+        an identifying row after the purge. The fence is established
+        *inside the same transaction* as the DELETE, so once this method
+        returns, the invariant holds: no already-running, queued, delayed,
+        or subsequently scheduled log write may create an ``api_logs`` row
+        identifying the deleted account.
+
+        The fence digest is a non-reversible HMAC of the user_id, so the
+        fence row does not itself store the identity being erased.
+
+        The OperationalStore claims the deleted user before this method is
+        called. This LogStore deliberately never queries ``users`` because
+        the stores may use different databases. The durable claim prevents
+        resume while this fence-and-purge transaction is in progress.
         """
         import asyncpg as _asyncpg
 
@@ -1154,6 +1210,18 @@ class PostgresLogStore(LogStore):
                 return 0
 
         async with self.pool.acquire() as conn, conn.transaction():
+            # Acquire the EXCLUSIVE advisory lock. This blocks until all
+            # in-flight shared-lock holders (concurrent log writers and any
+            # resume) commit, then prevents new shared lockers from
+            # crossing the fence.
+            _fence_key = fence_account_digest(user_id, self.fence_secret)
+            # Establish the erasure fence BEFORE the purge.
+            await establish_erasure_fence(conn, fence_key=_fence_key)
+            # The first tombstone is the point at which the derivation secret
+            # becomes durable. If an existing pinned fingerprint disagrees,
+            # abort the transaction and preserve the fail-closed invariant.
+            await validate_or_init_fingerprint(conn, secret=self.fence_secret)
+
             logs_status = await conn.execute(
                 "DELETE FROM api_logs WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1",
                 user_id,
@@ -1181,3 +1249,11 @@ class PostgresLogStore(LogStore):
         if recipients_count is not None:
             counts["email_broadcast_recipients"] = recipients_count
         return counts
+
+    async def account_has_erasure_fence(self, user_id: str) -> bool:
+        """Return True after synchronizing with in-flight fence writers."""
+        if not self.fence_secret:
+            return False
+        _fence_key = fence_account_digest(user_id, self.fence_secret)
+        async with self.pool.acquire() as conn, conn.transaction():
+            return await check_erasure_fence(conn, fence_keys=[_fence_key])

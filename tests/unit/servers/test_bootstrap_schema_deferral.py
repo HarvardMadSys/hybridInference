@@ -19,6 +19,7 @@ from serving.servers.bootstrap import (
     _schedule_deferred_schema_migration,
 )
 from serving.storage.log_schema import SchemaLockUnavailable
+from serving.storage.postgres_operational import RequiredOperationalSchemaUnavailable
 
 
 def test_describe_exc_keeps_the_type_when_the_message_is_empty():
@@ -155,6 +156,18 @@ async def test_operational_non_lock_error_still_fails_startup():
 
     with pytest.raises(ValueError):
         await _initialize_operational_store(_Broken())
+
+
+@pytest.mark.asyncio
+async def test_required_hard_delete_schema_lock_does_not_defer_startup():
+    """Hard-delete operations are not exposed while their claim column is absent."""
+
+    class _Unsafe:
+        async def initialize(self) -> None:
+            raise RequiredOperationalSchemaUnavailable("claim column is locked")
+
+    with pytest.raises(RequiredOperationalSchemaUnavailable):
+        await _initialize_operational_store(_Unsafe())
 
 
 def test_lifespan_routes_operational_init_through_the_guard():

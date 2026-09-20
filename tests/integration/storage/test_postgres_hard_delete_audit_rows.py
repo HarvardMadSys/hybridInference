@@ -54,15 +54,31 @@ async def log_store():
         pytest.skip(f"PostgreSQL not available: {exc}")
         return  # unreachable
 
-    store = PostgresLogStore(pool)
+    store = PostgresLogStore(pool, fence_secret="test-fence-secret")
     await store.initialize()
 
     async def _wipe() -> None:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM api_logs WHERE request_id LIKE 'req-purge-%'")
+            await conn.execute("DELETE FROM erasure_fence")
+            await conn.execute("DELETE FROM erasure_fence_metadata")
+            await conn.execute(
+                "DELETE FROM users WHERE id LIKE 'req-purge-%' OR id LIKE 'u-purge-%'"
+            )
+
+    async def _seed_deleted_user(uid: str) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, email, password_hash, status) "
+                "VALUES ($1, $1 || '@example.com', 'x', 'deleted') "
+                "ON CONFLICT (id) DO UPDATE SET status = 'deleted'",
+                uid,
+            )
 
     await _wipe()
     try:
+        await _seed_deleted_user(_OWNER)
+        await _seed_deleted_user(_BYSTANDER)
         yield store, pool
     finally:
         await _wipe()

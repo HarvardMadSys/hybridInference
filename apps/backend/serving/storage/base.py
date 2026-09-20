@@ -187,6 +187,29 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def begin_hard_delete_user(self, user_id: str) -> str:
+        """Atomically claim a soft-deleted user for hard deletion.
+
+        The durable operational-store marker serializes hard-delete with
+        resume even when the LogStore uses a different database. Repeating
+        the claim for an already-pending deleted user takes ownership with a
+        fresh opaque token so a retry after a process failure can finish the
+        purge without allowing an older attempt to release or complete it.
+        The returned token must be supplied to release or finish the claim.
+        """
+
+    @abstractmethod
+    async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Release a claim installed by a failed pre-fence hard-delete.
+
+        Implementations must clear the marker only while the account remains
+        soft-deleted and claimed by ``claim_token``. Callers use this only
+        after the LogStore confirms that no erasure fence was established, so
+        a failed purge can be retried without clearing another attempt's
+        claim.
+        """
+
+    @abstractmethod
     async def resume_user(
         self,
         user_id: str,
@@ -207,6 +230,7 @@ class OperationalStore(ABC):
         self,
         user_id: str,
         *,
+        claim_token: str,
         admin_ip: str,
         admin_id: str,
         reason: str | None = None,
@@ -1601,7 +1625,26 @@ class LogStore(ABC):
         *user_id*.  Returns ``{table_name: row_count}`` (implementations that
         cannot return per-statement counts may return ``{}``).
 
-        Called by the admin hard-delete endpoint AFTER the OperationalStore
-        wipe completes.  Cross-pool failure semantics are documented at the
-        endpoint.
+        Must establish the erasure fence (issue #1421) **before or atomically
+        with** the destructive log purge, so once this method returns there is
+        a durable fact saying that log rows identifying that account may no
+        longer be created. Implementations should run the fence establishment
+        and the DELETE in a single transaction.
+
+        Called by the admin hard-delete endpoint BEFORE the OperationalStore
+        wipe so that a LogStore failure leaves the user row + audit untouched
+        and the admin can retry. Cross-pool failure semantics are documented
+        at the endpoint.
+        """
+
+    @abstractmethod
+    async def account_has_erasure_fence(self, user_id: str) -> bool:
+        """Return True if an erasure fence exists for *user_id*.
+
+        Used by the admin resume endpoint to refuse reactivation of a
+        hard-deleted (fenced) account. A fenced account cannot be resumed
+        because its erasure fence is permanent: the hard-delete already
+        purged its logs, and the fence prevents new identifying rows from
+        being created. Reactivating it would produce an active account
+        whose logs silently disappear.
         """

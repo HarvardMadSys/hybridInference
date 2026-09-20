@@ -75,6 +75,20 @@ class Settings(BaseSettings):
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 
+    # Erasure fence (issue #1421): dedicated, stable secret used to derive
+    # non-reversible erasure-fence digests. MUST NOT be changed after
+    # hard-delete operations have been performed: changing it invalidates
+    # existing fences, which would allow a previously-erased account's logs
+    # to be written again (a privacy regression). Set this to a long-term
+    # stable value; if unset, API_KEY_SECRET is used as a fallback (with a
+    # startup warning) so single-secret deployments still get fence coverage.
+    erasure_fence_secret: str = ""
+    # Keep hard-delete disabled until every api_logs writer in the deployment
+    # participates in the fence protocol. This is intentionally opt-in for
+    # the release that introduces the application-level fence: an older worker
+    # can still insert directly and bypass an advisory-lock convention.
+    erasure_fence_protocol_ready: bool = False
+
     # JWT (required in production)
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"

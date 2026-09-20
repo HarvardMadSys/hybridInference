@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES
-from serving.exceptions import DuplicateAPIKeyError
+from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.log_schema import (
+    SchemaLockUnavailable,
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
@@ -34,6 +36,17 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = get_logger(__name__)
+
+
+class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
+    """A hard-delete safety column could not be installed at startup.
+
+    Unlike ordinary operational migrations, the hard-delete claim marker is
+    required before the store can be exposed: resume_user and both hard-delete
+    phases select it on every request. A lock timeout therefore must fail
+    startup rather than defer the migration while serving against an unsafe
+    schema.
+    """
 
 
 def _parse_command_tag_count(command_tag: str) -> int:
@@ -98,14 +111,26 @@ def _coerce_user_row(row: Any) -> Row | None:
 class PostgresOperationalStore(OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        """Initialize with a shared asyncpg pool."""
+    def __init__(self, pool: asyncpg.Pool, *, fence_secret: str | None = None) -> None:
+        """Initialize with a shared asyncpg pool.
+
+        Args:
+            pool: Shared asyncpg pool.
+            fence_secret: Retained for constructor compatibility. The
+                LogStore owns erasure-fence schema and tombstone checks;
+                this store owns the operational hard-delete claim.
+        """
         self._pool = pool
+        self.fence_secret = fence_secret
 
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create operational tables/indexes and run idempotent migrations."""
+        """Create operational tables/indexes and run idempotent migrations.
+
+        The users migration includes the durable hard-delete claim marker
+        used to coordinate with the separate LogStore.
+        """
         async with self._pool.acquire() as conn:
             await self._create_tables(conn)
 
@@ -127,6 +152,8 @@ class PostgresOperationalStore(OperationalStore):
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
                                       'pending_approval', 'rejected')),
+                hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE,
+                hard_delete_claim_token TEXT,
                 approval_note TEXT,
                 reviewed_at TIMESTAMPTZ,
                 reviewed_by TEXT,
@@ -143,6 +170,33 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)"
         )
+        # This column is part of the hard-delete state machine. Install it
+        # before any other deferrable operational migration. If the upgrade
+        # cannot acquire the lock, refuse to expose the store rather than
+        # letting bootstrap defer a migration while hard-delete/resume queries
+        # would fail with UndefinedColumnError.
+        try:
+            await apply_column_migrations(
+                conn,
+                "users",
+                [
+                    (
+                        "hard_delete_pending",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE",
+                    ),
+                    (
+                        "hard_delete_claim_token",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS hard_delete_claim_token TEXT",
+                    ),
+                ],
+            )
+        except SchemaLockUnavailable as exc:
+            raise RequiredOperationalSchemaUnavailable(
+                "hard-delete claim columns are required before the operational store "
+                "can serve; refusing deferred startup while its migration is locked"
+            ) from exc
+
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
             "ON users(created_at DESC) WHERE status = 'pending_approval'"
@@ -990,6 +1044,49 @@ class PostgresOperationalStore(OperationalStore):
                 True,
             )
 
+    async def begin_hard_delete_user(self, user_id: str) -> str:
+        """Claim a soft-deleted user before purging rows in another store."""
+        claim_token = secrets.token_urlsafe(32)
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row["status"] != "deleted":
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} is no longer eligible for hard-delete."
+                )
+            # A retry takes ownership with a fresh token. This prevents an
+            # older in-flight attempt from releasing or completing the claim
+            # after a newer attempt has taken over.
+            await conn.execute(
+                "UPDATE users SET hard_delete_pending = TRUE, "
+                "hard_delete_claim_token = $2 WHERE id = $1",
+                user_id,
+                claim_token,
+            )
+        return claim_token
+
+    async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Release a still-unfenced hard-delete claim for a deleted user."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            # The status and claim predicates make this a guarded cleanup:
+            # never clear a claim after another operation has changed the
+            # account state, and never turn an active account into a pending
+            # hard-delete candidate.
+            await conn.execute(
+                """
+                UPDATE users
+                SET hard_delete_pending = FALSE, hard_delete_claim_token = NULL
+                WHERE id = $1
+                  AND status = 'deleted'
+                  AND hard_delete_pending = TRUE
+                  AND hard_delete_claim_token = $2
+                """,
+                user_id,
+                claim_token,
+            )
+
     async def resume_user(
         self,
         user_id: str,
@@ -1003,8 +1100,19 @@ class PostgresOperationalStore(OperationalStore):
 
         API keys remain ``revoked`` — the user re-creates one through the
         normal flow.  All mutations and the audit-log insert are atomic.
+
+        Hard-delete coordination (issue #1421): the admin route checks the
+        LogStore fence, while this transaction refuses a durable pending
+        hard-delete claim. The row lock makes resume and the operational
+        hard-delete claim mutually exclusive.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is not None and row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
             await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
             await conn.execute(
                 "INSERT INTO admin_audit_log "
@@ -1021,6 +1129,7 @@ class PostgresOperationalStore(OperationalStore):
         self,
         user_id: str,
         *,
+        claim_token: str,
         admin_ip: str,
         admin_id: str,
         reason: str | None = None,
@@ -1042,6 +1151,19 @@ class PostgresOperationalStore(OperationalStore):
                 return 0
 
         async with self._pool.acquire() as conn, conn.transaction():
+            user_row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending, hard_delete_claim_token "
+                "FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if (
+                user_row is None
+                or user_row["status"] != "deleted"
+                or not user_row["hard_delete_pending"]
+                or user_row["hard_delete_claim_token"] != claim_token
+            ):
+                raise HardDeleteStateChanged(f"Account {user_id} was not claimed for hard-delete.")
+
             keys_status = await conn.execute(
                 "DELETE FROM api_keys WHERE account_id = $1 OR user_id = $1",
                 user_id,

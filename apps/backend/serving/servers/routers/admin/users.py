@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.config.provider_labels import resolve_display_names
+from serving.config.settings import get_settings
+from serving.exceptions import HardDeleteStateChanged
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
     get_disabled_models_from_preferences,
@@ -64,6 +67,7 @@ from serving.servers.routers.admin.providers import _enumerate_routable_provider
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
+logger = logging.getLogger(__name__)
 
 
 @router.get("/users", response_model=ListUsersResponse)
@@ -937,11 +941,18 @@ async def resume_user(
     payload: ResumeUserRequest,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> ResumeUserResponse:
     """Resume a soft-deleted user — flip status='deleted' → 'active'.
 
     API keys remain ``revoked`` — the user must re-create one through the
     normal flow.  Only soft-deleted users may be resumed.
+
+    Erasure fence (issue #1421): a hard-deleted account has a permanent
+    erasure fence in the LogStore. Resuming such an account is refused
+    because the hard-delete already purged its logs and the fence prevents
+    new identifying rows from being created — reactivating it would produce
+    an active account whose logs silently disappear.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -959,13 +970,27 @@ async def resume_user(
             "Only soft-deleted users can be resumed.",
         )
 
-    await op_store.resume_user(
-        user_id,
-        admin_ip=get_client_ip(request),
-        admin_id=admin_id,
-        reason=payload.reason,
-        email=user_row["email"],
-    )
+    if log_store is not None and await log_store.account_has_erasure_fence(user_id):
+        raise HTTPException(
+            409,
+            "This account has been permanently hard-deleted and cannot "
+            "be resumed. Create a new account instead.",
+        )
+
+    try:
+        await op_store.resume_user(
+            user_id,
+            admin_ip=get_client_ip(request),
+            admin_id=admin_id,
+            reason=payload.reason,
+            email=user_row["email"],
+        )
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "This account has a hard-delete in progress and cannot be "
+            "resumed. Retry after the hard-delete completes or fails.",
+        ) from None
 
     return ResumeUserResponse(
         user_id=user_id,
@@ -993,24 +1018,46 @@ async def hard_delete_user(
     api_logs and email_broadcast_recipients.  A fresh ``hard_delete_user``
     audit row is recorded.
 
-    The operational store and log store live in different pools (and may be
-    different engines), so a true single-transaction guarantee across both
-    is not possible.  We purge LogStore-owned rows FIRST, then run the
-    operational-store wipe.
+    The operational store and log store acquire connections from the pool
+    independently (and may be configured against different databases/engines),
+    so a true single-transaction guarantee across both is not possible.  We
+    purge LogStore-owned rows FIRST, then run the operational-store wipe.
+
+    Erasure fence (issue #1421): ``hard_delete_user_data`` establishes a
+    durable tombstone in ``erasure_fence`` *before* the api_logs DELETE,
+    so once the endpoint returns, no already-running, queued, delayed, or
+    subsequently scheduled log write may create an ``api_logs`` row
+    identifying the deleted account. The fence is a non-reversible HMAC
+    digest of the user_id, so it does not reintroduce the identity being
+    erased.
 
     Failure modes:
     - LogStore wipe fails: operational state and audit log are untouched;
-      the user remains soft-deleted (``status='deleted'``) and the admin can
-      retry the hard-delete.
-    - LogStore wipe succeeds but op_store wipe fails: log rows are gone but
-      the user row + prior audit entries remain — the user is still
-      soft-deleted, so the admin can retry hard-delete (which will re-attempt
-      and succeed since the user is still in ``status='deleted'``).
+      the pre-fence claim is released when this request still owns it, the
+      user remains soft-deleted (``status='deleted'``), and the admin can
+      retry the hard-delete. The fence is NOT established (the whole
+      LogStore transaction is rolled back), so a retry can re-attempt both
+      the fence and the purge. A retry takes ownership with a fresh token,
+      so an older in-flight attempt cannot release or complete the newer
+      claim.
+    - LogStore wipe succeeds but op_store wipe fails: log rows are gone and
+      the fence is established, but the user row + prior audit entries
+      remain — the user is still soft-deleted, so the admin can retry
+      hard-delete (which will re-attempt and succeed since the user is still
+      in ``status='deleted'``). The fence is already established, so the
+      retry's ``INSERT ... ON CONFLICT DO NOTHING`` is a no-op.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
+
+    if not get_settings().erasure_fence_protocol_ready:
+        raise HTTPException(
+            503,
+            "Hard delete is unavailable until every api_logs writer has been "
+            "upgraded to the erasure-fence protocol and rollout readiness is enabled.",
+        )
 
     if not payload.confirm:
         raise HTTPException(400, "confirm=True is required to hard-delete a user")
@@ -1027,27 +1074,73 @@ async def hard_delete_user(
 
     email = user_row["email"]
 
+    try:
+        claim_token = await op_store.begin_hard_delete_user(user_id)
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "Account state changed before hard-delete could begin. "
+            "Retry if the account is still soft-deleted.",
+        ) from None
+
     # Purge LogStore-owned rows FIRST (api_logs + email_broadcast_recipients).
-    # Lives in a separate pool, so this cannot share the operational-store
-    # transaction.  Running this first means if it fails, the user row +
-    # audit are untouched and the admin can retry.
-    if log_store is not None:
-        await log_store.hard_delete_user_data(user_id)
+    # Lives in a separate transaction from the operational store. Running
+    # this first means if it fails, the user row + audit are untouched and
+    # the admin can retry.
+    #
+    # Erasure fence (issue #1421): hard_delete_user_data revalidates that
+    # the account is still soft-deleted *under the exclusive advisory lock*.
+    # If a concurrent resume won first and reactivated the user, it raises
+    # HardDeleteStateChanged. We catch that here and abort the entire
+    # hard-delete workflow — neither response_store nor op_store is touched.
+    fence_established = False
+    try:
+        if log_store is not None:
+            await log_store.hard_delete_user_data(user_id)
+            fence_established = True
 
-    # Purge stored Responses API rows (openai_responses) — owned by neither the
-    # log store nor the operational store, but containing the user's full
-    # conversation JSONB, so it must be wiped here too.
-    if response_store is not None:
-        await response_store.delete_user_responses(user_id)
+        # Purge stored Responses API rows (openai_responses).
+        if response_store is not None:
+            await response_store.delete_user_responses(user_id)
 
-    # Wipe operational rows + write the new hard-delete audit row, atomically.
-    await op_store.hard_delete_user(
-        user_id,
-        admin_ip=get_client_ip(request),
-        admin_id=admin_id,
-        reason=payload.reason,
-        email=email,
-    )
+        # Wipe operational rows + write the new hard-delete audit row,
+        # atomically.
+        await op_store.hard_delete_user(
+            user_id,
+            claim_token=claim_token,
+            admin_ip=get_client_ip(request),
+            admin_id=admin_id,
+            reason=payload.reason,
+            email=email,
+        )
+    except Exception:
+        if claim_token and not fence_established:
+            # A LogStore transaction normally rolls back its fence before
+            # raising. Check explicitly so an ambiguous post-commit failure
+            # cannot clear a claim that protects an already-erased account.
+            if log_store is not None:
+                try:
+                    fence_established = await log_store.account_has_erasure_fence(user_id)
+                except Exception:
+                    # A failed check is fail-closed: retain the claim rather
+                    # than risk allowing resume without knowing fence state.
+                    logger.exception(
+                        "Could not verify erasure fence after hard-delete failure for %s; "
+                        "retaining claim",
+                        user_id,
+                    )
+                    fence_established = True
+            if not fence_established:
+                try:
+                    await op_store.release_hard_delete_user_claim(user_id, claim_token)
+                except Exception:
+                    # Keep the original failure. A retained claim is safe and
+                    # the admin can retry once the operational store recovers.
+                    logger.exception(
+                        "Could not release pre-fence hard-delete claim for %s",
+                        user_id,
+                    )
+        raise
 
     return HardDeleteUserResponse(
         user_id=user_id,
