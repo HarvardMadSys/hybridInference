@@ -102,7 +102,7 @@ extension that reads a simulated account's daily request usage. The fixture's
 without it the original example provider behaves as before. No real provider
 account, cookie, paid key or GPU is involved.
 
-Follow [Quota reporting](../../docs/developer/configuration.md#quota-reporting)
+Follow [Quota reporting](../../docs/developer/distribution-customization.md#quota-reporting)
 for the complete three-terminal walkthrough using
 `config/examples/models.routewise.quota.yaml`. It demonstrates the same source
 feeding the admin quota API and RouteWise, a priced fallback on cold start or

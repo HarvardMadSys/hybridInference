@@ -185,7 +185,7 @@ function prepare(options) {
   if (existsSync(path.join(moduleDir, 'node_modules'))) {
     console.log(
       '[site-ui] the module ships its own node_modules; it is not staged. A module ' +
-        "resolves dependencies from the application's lock (see docs/developer/site-ui.md).",
+        "resolves dependencies from the application's lock (see docs/developer/distribution-customization.md).",
     );
   }
 

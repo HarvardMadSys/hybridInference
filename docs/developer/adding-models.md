@@ -608,7 +608,7 @@ configuration dictionary and returns an adapter. It runs before built-in
 provider defaults, so it must supply any profile or path defaults it needs.
 Duplicate registrations fail; replacing a built-in kind requires
 `register_adapter_factory(kind, factory, override=True)` and is logged.
-See [Backend extensions](configuration.md#backend-extensions) for the startup
+See [Backend extensions](distribution-customization.md#4-backend-extensions) for the startup
 and deployment requirements.
 
 ### Hybrid routing

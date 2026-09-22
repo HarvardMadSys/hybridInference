@@ -157,7 +157,7 @@ describe('ProvidersTab quotas', () => {
     const docsLink = screen.getByRole('link', { name: 'Quota reporting documentation' });
     expect(docsLink).toHaveAttribute(
       'href',
-      'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/configuration.md#quota-reporting',
+      'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/distribution-customization.md#quota-reporting',
     );
     expect(docsLink).toHaveAttribute('target', '_blank');
     expect(docsLink).toHaveAttribute('rel', 'noopener noreferrer');

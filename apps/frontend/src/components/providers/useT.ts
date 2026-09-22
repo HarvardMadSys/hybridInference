@@ -18,7 +18,7 @@ import { translator, type Translate } from '@/lib/i18n/translate';
  * which meant a deployment's sentences were part of the backend contract and a
  * wording change did not change the front-end build's inputs — so the version
  * lock could not tell that a running image was stale. Copy now ships with the
- * image that renders it (see `docs/developer/site-ui-api.md`).
+ * image that renders it (see `docs/developer/distribution-customization.md`).
  *
  * `authMessages` is the contract's typed table, so a module can supply wording
  * only for keys the console declares. It cannot invent a slot, and it cannot

@@ -41,6 +41,16 @@
 /zh_CN/fasrc                           /zh_CN/hpc-model-host             301
 /zh_CN/fasrc.html                      /zh_CN/hpc-model-host             301
 
+# Distribution UI guides consolidated into the customization entry point (#1465)
+/site-ui                               /distribution-customization      301
+/site-ui.html                          /distribution-customization      301
+/zh_CN/site-ui                         /zh_CN/distribution-customization 301
+/zh_CN/site-ui.html                    /zh_CN/distribution-customization 301
+/site-ui-api                           /distribution-customization      301
+/site-ui-api.html                      /distribution-customization      301
+/zh_CN/site-ui-api                     /zh_CN/distribution-customization 301
+/zh_CN/site-ui-api.html                /zh_CN/distribution-customization 301
+
 # --- Language-code guesses ---------------------------------------------
 /zh                                    /zh_CN/                           301
 /zh/*                                  /zh_CN/:splat                     301

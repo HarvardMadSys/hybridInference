@@ -84,8 +84,13 @@ operator's to publish separately.
 That separation is built into the repository: a deployment keeps its identity,
 its configuration-file locations and its feature switches in a *distribution
 overlay* under ``distributions/`` rather than in the code, which is why a fresh
-clone comes up as nobody's gateway but your own. :doc:`configuration` explains
-how those overlays resolve.
+clone comes up as nobody's gateway but your own. :doc:`distribution-customization`
+explains how to configure and extend an overlay.
+
+.. Keep all distribution-facing customization instructions in
+   distribution-customization: capability matrix, manifests/branding, public UI
+   contract, backend extensions and upgrades. Extend that page when adding a
+   customization capability; keep implementation notes under docs/agents/specs.
 
 .. toctree::
    :maxdepth: 2
@@ -103,7 +108,6 @@ how those overlays resolve.
    architecture
    routing
    public-path-table
-   site-ui-api
 
 .. toctree::
    :maxdepth: 2
@@ -115,7 +119,6 @@ how those overlays resolve.
    hpc-model-host
    claude-code-setup
    rag-chat
-   site-ui
 
 .. toctree::
    :maxdepth: 2
