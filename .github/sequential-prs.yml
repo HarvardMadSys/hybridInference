@@ -18,9 +18,9 @@ threads:
     units:
       - id: reviewable-core
         branch: prep/1419-reviewable-core
-        source_ref: origin/prep/1419-reviewable-core-clean
+        source_ref: origin/prep/1419-reviewable-core-clean-v2
         source_base: 4462e6308c475761c71bdbea37439573afaa91cf
-        source_tip: bd00ad67bb9d0aba81ad26e7f3dd67d94170a8c3
+        source_tip: ee9c169e80dc6928193480686e3952becd0bdc09
         title: "fix(routewise): complete prefill reservation lifecycle"
         body: |
           ## Summary
@@ -46,8 +46,9 @@ threads:
           - [uv, run, pytest, -q, tests/unit/routing/test_routewise_hedging.py, tests/unit/routing/test_routewise_router.py]
       - id: prefill-benchmarks
         branch: prep/1419-prefill-benchmarks
+        source_ref: origin/prep/1419-prefill-benchmarks-v2
         source_base: 935c0a9bff9fd921eb306109dc65d263deff3cda
-        source_tip: 6d9e1ff672a035a39be4bb4f0fe1111c005d0e31
+        source_tip: 71197ec33b5abfc146c27f85c0b48f11aadbb9ca
         title: "bench(routewise): validate prefill-load routing"
         body: |
           ## Summary
@@ -140,9 +141,9 @@ threads:
     units:
       - id: claim-state-machine
         branch: prep/1428-claim-state-machine
-        source_ref: origin/prep/1428-claim-state-machine-current
+        source_ref: origin/prep/1428-claim-state-machine-current-v2
         source_base: 25383d21dafe0ba4f6baa0b953df43fe6bfff430
-        source_tip: a7c73ca4122c6ec4f3c4fe6fb8a1d70425746259
+        source_tip: cbc7d3315e2d7439e636fa9f78b3a24c0f3d72c3
         title: "feat(storage): isolate hard-delete claim state"
         body: |
           ## Summary
@@ -166,8 +167,9 @@ threads:
           - [uv, run, pytest, -q, tests/servers/test_admin_users.py, tests/servers/test_bootstrap.py, tests/unit/storage/test_schema_lock_timeout.py, tests/unit/storage/test_login_events.py]
       - id: identity-protection
         branch: prep/1428-identity-protection
+        source_ref: origin/prep/1428-identity-protection-v2
         source_base: d9e0481697df5b86fde5272ab2059aace74b46dd
-        source_tip: 779ab13f6c4e82c48ac92584441ccadf90a01418
+        source_tip: 1d2a94029db52fc72da7bd1ce7dbe356525dea80
         title: "feat(storage): enforce erased identity protection"
         body: |
           ## Summary
