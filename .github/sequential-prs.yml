@@ -46,9 +46,9 @@ threads:
           - [uv, run, pytest, -q, tests/unit/routing/test_routewise_hedging.py, tests/unit/routing/test_routewise_router.py]
       - id: prefill-benchmarks
         branch: prep/1419-prefill-benchmarks
-        source_ref: origin/prep/1419-prefill-benchmarks-v2
-        source_base: 935c0a9bff9fd921eb306109dc65d263deff3cda
-        source_tip: 71197ec33b5abfc146c27f85c0b48f11aadbb9ca
+        source_ref: origin/prep/1419-prefill-benchmarks-v3
+        source_base: ee9c169e80dc6928193480686e3952becd0bdc09
+        source_tip: 74c6c606f10d3e58769dfdf02127af61515f5a94
         title: "bench(routewise): validate prefill-load routing"
         body: |
           ## Summary
@@ -203,8 +203,9 @@ threads:
     units:
       - id: admission-recording
         branch: prep/1430-admission-recording
+        source_ref: origin/prep/1430-admission-recording-v2
         source_base: 391c818471370d1f3f6b42f159def341d4855677
-        source_tip: 3a4b292034a11ec29f50dc9a1c2086af61857624
+        source_tip: cf59dee052bca8bd0f6cb4ef4c6e3b4fdb4668de
         title: "refactor(traffic): keep admission separate from policy"
         body: |
           ## Summary
@@ -228,8 +229,9 @@ threads:
           - [uv, run, pytest, -q, tests/servers/test_compat.py, tests/servers/test_completions.py, tests/servers/test_responses_router.py]
       - id: routing-consumption
         branch: prep/1430-routing-consumption
-        source_base: 3a4b292034a11ec29f50dc9a1c2086af61857624
-        source_tip: 992f96b66eecaa2bc8588d650aaef60dc6e01d0b
+        source_ref: origin/prep/1430-routing-consumption-v2
+        source_base: cf59dee052bca8bd0f6cb4ef4c6e3b4fdb4668de
+        source_tip: 8483a00cdbecca09b5e43bcb6d330e69aca36f3f
         title: "feat(routing): consume traffic scheduling hints"
         body: |
           ## Summary
