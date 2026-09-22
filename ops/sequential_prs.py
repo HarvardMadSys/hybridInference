@@ -392,16 +392,25 @@ class GitHub(CommandRunner):
                 "--repo",
                 self.manifest.upstream_repository,
                 "--head",
-                f"{self.manifest.fork_owner}:{branch}",
+                branch,
                 "--state",
                 "all",
                 "--json",
-                "number,state,mergedAt,headRefName,baseRefName,url,title",
+                "number,state,mergedAt,headRefName,baseRefName,url,title,headRepositoryOwner",
             ]
         )
         if not isinstance(raw, list):
             raise SequencerError(f"head query for {branch} did not return a list")
-        return [pull_request_from_api(item) for item in raw if isinstance(item, Mapping)]
+        matches = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            owner = item.get("headRepositoryOwner")
+            owner_login = owner.get("login") if isinstance(owner, Mapping) else None
+            if owner_login != self.manifest.fork_owner:
+                continue
+            matches.append(pull_request_from_api(item))
+        return matches
 
     def create_pr(self, unit: Unit, manifest: Manifest) -> str:
         result = self.run(

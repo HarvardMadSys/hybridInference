@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ops.sequential_prs import (
+    GitHub,
     Manifest,
     PullRequest,
     Thread,
@@ -203,3 +204,48 @@ def test_case_8_workflow_serializes_publication() -> None:
     assert 'cron: "*/10 * * * *"' in workflow
     assert 'test "${base}" = dev' in workflow
     assert 'test "${state}" = open' not in workflow
+
+
+def test_github_head_query_filters_fork_owner(monkeypatch, tmp_path: Path) -> None:
+    thread = make_thread("1419", 1419, ("prep/1419-a",))
+    manifest = Manifest(
+        "HarvardMadSys/hybridInference",
+        "B-A-M-N",
+        "hybridInference",
+        "dev",
+        "upstream",
+        "origin",
+        (thread,),
+    )
+    github = GitHub(tmp_path, manifest)
+    seen: list[list[str]] = []
+
+    def fake_gh_json(argv):
+        seen.append(list(argv))
+        return [
+            {
+                "number": 2001,
+                "state": "OPEN",
+                "headRefName": "prep/1419-a",
+                "baseRefName": "dev",
+                "url": "https://example/fork",
+                "title": "fork",
+                "headRepositoryOwner": {"login": "B-A-M-N"},
+            },
+            {
+                "number": 2002,
+                "state": "OPEN",
+                "headRefName": "prep/1419-a",
+                "baseRefName": "dev",
+                "url": "https://example/other",
+                "title": "other",
+                "headRepositoryOwner": {"login": "someone-else"},
+            },
+        ]
+
+    monkeypatch.setattr(github, "_gh_json", fake_gh_json)
+
+    matches = github.list_head_prs("prep/1419-a")
+
+    assert [match.number for match in matches] == [2001]
+    assert seen[0][seen[0].index("--head") + 1] == "prep/1419-a"
