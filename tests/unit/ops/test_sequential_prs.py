@@ -201,3 +201,5 @@ def test_case_8_workflow_serializes_publication() -> None:
     assert "group: hybridinference-sequential-prs" in workflow
     assert "cancel-in-progress: false" in workflow
     assert 'cron: "*/10 * * * *"' in workflow
+    assert 'test "${base}" = dev' in workflow
+    assert 'test "${state}" = open' not in workflow

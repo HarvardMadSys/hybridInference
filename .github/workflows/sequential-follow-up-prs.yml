@@ -84,9 +84,7 @@ jobs:
           test "$(gh api "repos/${FORK_REPOSITORY}" --jq .full_name)" = "${FORK_REPOSITORY}"
 
           for pr in 1419 1427 1428 1430; do
-            state=$(gh api "repos/${UPSTREAM_REPOSITORY}/pulls/${pr}" --jq .state)
             base=$(gh api "repos/${UPSTREAM_REPOSITORY}/pulls/${pr}" --jq .base.ref)
-            test "${state}" = open
             test "${base}" = dev
           done
 
