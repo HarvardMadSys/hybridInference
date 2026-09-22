@@ -225,8 +225,8 @@ msgid "required with an external module; must be `1`"
 msgstr "使用外部模块时必填，必须为 `1`"
 
 #: ../developer/site-ui.md:91
-msgid "Passing the whole `frontend/` tree as the context and naming the module with `SITE_UI_SUBDIR=site-ui` is the shape the SSV distribution uses: it keeps one input tree that covers the module *and* the deployment's build tooling, so the version lock describes one thing."
-msgstr "SSV 发行版将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` 指定模块。这样同一输入树覆盖模块 *以及* 部署的构建工具，版本锁便描述同一组输入。"
+msgid "Passing the whole `frontend/` tree as the context and naming the module with `SITE_UI_SUBDIR=site-ui` lets a distribution keep the module *and* its build tooling in one input tree, so the version lock describes the same set of inputs."
+msgstr "将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` 指定模块，可让发行版把模块 *以及* 构建工具放在同一输入树中，使版本锁描述同一组输入。"
 
 #: ../developer/site-ui.md:96
 msgid "An external context that carries no module **fails the build**. Falling back to the neutral UI would publish a site whose home page reverted, and nothing in the build log would say so."

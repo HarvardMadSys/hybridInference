@@ -17,12 +17,12 @@ msgid "The problem this replaces"
 msgstr "要解决的问题"
 
 #: ../developer/site-ui-api.md:5
-msgid "`apps/frontend` used to contain the SSV landing page, the SSV auth shell and their stylesheets, selected at runtime by:"
-msgstr "此前，`apps/frontend` 包含 SSV 首页、SSV 账号页面外壳及其样式表，并在运行时通过以下条件选择："
+msgid "Each distribution should own its public-page design, copy and assets. Keeping those pages in `apps/frontend` would make the shared repository responsible for every distribution's design."
+msgstr "每个发行版应自行维护公开页面的设计、文案和资源。将这些页面放在 `apps/frontend` 中，会让共享仓库承担所有发行版的设计维护工作。"
 
 #: ../developer/site-ui-api.md:14
-msgid "A deployment's *name* was the branch condition. The shared repository had to know which designs existed, and a second distribution would have needed a second branch — in the same file the first one lived in. The neutral public pages sat behind a shared `LayoutChrome` that also read the preset."
-msgstr "部署的 *名称* 成了分支条件。共享仓库必须知道有哪些设计；增加第二个发行版，就需要在同一个文件里增加第二个分支。默认公开页面也由读取该预设的共享 `LayoutChrome` 包裹。"
+msgid "Site UI modules let distributions supply those pages at build time through a common interface. The shared application selects components by their declared capabilities, without branching on deployment names or design presets."
+msgstr "Site UI 模块让发行版在构建时通过通用接口提供这些页面。共享应用根据模块声明的能力选择组件，无需按部署名称或设计预设设置分支。"
 
 #: ../developer/site-ui-api.md:19
 msgid "The seam"

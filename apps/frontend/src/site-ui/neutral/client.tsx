@@ -89,8 +89,8 @@ export function NeutralAuthCard({
  * and `/verify-email` rendered with no header, no `<main>` and no footer while
  * `/` and `/terms` were fine.
  *
- * A module that *does* draw its own account shell — the SSV distribution, which
- * puts a brand panel beside the form — exports a real `AuthFrame` and gets the
+ * A module that draws its own account shell, such as a layout with a brand
+ * panel beside the form, exports a real `AuthFrame` and gets the
  * whole page. The distinction is the declaration, not the styling.
  */
 export const AuthFrame: ((props: AuthFrameProps) => ReactNode) | null = null;

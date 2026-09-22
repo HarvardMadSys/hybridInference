@@ -2,19 +2,13 @@
 
 ## The problem this replaces
 
-`apps/frontend` used to contain the SSV landing page, the SSV auth shell and
-their stylesheets, selected at runtime by:
+Each distribution should own its public-page design, copy and assets. Keeping
+those pages in `apps/frontend` would make the shared repository responsible for
+every distribution's design.
 
-```ts
-if (branding.presentation.preset === 'inference') {
-  // Render the distribution's public UI.
-}
-```
-
-A deployment's *name* was the branch condition. The shared repository had to
-know which designs existed, and a second distribution would have needed a second
-branch — in the same file the first one lived in. The neutral public pages sat
-behind a shared `LayoutChrome` that also read the preset.
+Site UI modules let distributions supply those pages at build time through a
+common interface. The shared application selects components by their declared
+capabilities, without branching on deployment names or design presets.
 
 ## The seam
 

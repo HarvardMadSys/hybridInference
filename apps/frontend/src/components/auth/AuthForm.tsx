@@ -11,20 +11,9 @@ import { DefaultAuthFieldLayout, useAuthAppearance } from '@/site-ui/appearance'
  * account forms without forking the controllers that decide who gets in. They
  * carry no authentication logic: no request, no token, no schema, no redirect.
  *
- * ## What changed, and why it matters
- *
- * This module used to hold two hardcoded class maps — `CLASSIC` and `INFERENCE`
- * — and pick between them with
- *
- * ```ts
- * return branding.presentation.preset === 'inference' ? INFERENCE : CLASSIC;
- * ```
- *
- * That single line is the reason the shared repository owned a distribution's
- * design: the SSV look could not ship without a branch here, and a second
- * distribution would have needed a second branch. The classes now arrive
- * through `useAuthAppearance()`, supplied by whichever UI module the build
- * compiled in (see `src/site-ui/`), and no identifier is compared to anything.
+ * Classes arrive through `useAuthAppearance()`, supplied by the UI module the
+ * build compiled in (see `src/site-ui/`). This keeps distribution-specific
+ * designs in their modules without adding a branch here for each design.
  *
  * Every field is a class string applied to an element whose structure and ARIA
  * contract stay here. Two used to change structure — a boolean for where the

@@ -89,9 +89,8 @@ docker buildx build -f deploy/docker/Dockerfile.frontend \
 | `SITE_UI_API` | unset | required with an external module; must be `1` |
 
 Passing the whole `frontend/` tree as the context and naming the module with
-`SITE_UI_SUBDIR=site-ui` is the shape the SSV distribution uses: it keeps one
-input tree that covers the module *and* the deployment's build tooling, so the
-version lock describes one thing.
+`SITE_UI_SUBDIR=site-ui` lets a distribution keep the module *and* its build
+tooling in one input tree, so the version lock describes the same set of inputs.
 
 An external context that carries no module **fails the build**. Falling back to
 the neutral UI would publish a site whose home page reverted, and nothing in the
