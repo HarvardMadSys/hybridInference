@@ -6,7 +6,9 @@
 their stylesheets, selected at runtime by:
 
 ```ts
-if (branding.presentation.preset === 'inference') { … }
+if (branding.presentation.preset === 'inference') {
+  // Render the distribution's public UI.
+}
 ```
 
 A deployment's *name* was the branch condition. The shared repository had to
@@ -79,8 +81,8 @@ Getting this wrong produces two headers or none. Exactly one layer draws
 
 | Route | Who draws it |
 |---|---|
-| `/` | the landing page, in either implementation |
-| the account routes | the module's `AuthFrame`, which *is* the page |
+| `/` | the module's `Landing` if provided, otherwise the console page and chrome |
+| the account routes | the module's `AuthFrame` if provided, otherwise the console chrome and neutral card |
 | `/terms` | the module's `TermsFrame` if it exports one, else the console chrome |
 | everything else | the console chrome, always |
 
@@ -111,44 +113,41 @@ that is the bug.
 
 ## Testing the seam
 
+The shared repository owns both validation and the image recipe. No distribution
+checkout or distribution-owned composer is required for these checks.
+
 ```bash
 cd apps/frontend
-npm run lint && npm run type-check && npx vitest run        # neutral
-SITE_UI_DIR=tests/fixtures/site-ui-demo SITE_UI_API=1 npm run build
-SITE_UI_BUILD_TEST=1 npx vitest run src/site-ui/distribution-build.test.ts
+npm run lint
+npm run type-check
+npm test
 ```
 
-`resolve.test.ts` covers resolution and every fail-loud path;
-`SiteUiBoundary.test.tsx` covers route matching and the shared primitives;
-`verify-imports.test.ts` covers the import checker. The third command compiles
-the fixture in for real and asserts the produced bundle.
+`resolve.test.ts` covers module selection and invalid declarations;
+`SiteUiBoundary.test.tsx` and `chrome.test.tsx` cover shared primitives and chrome
+ownership; `verify-imports.test.ts` checks the import boundary. The tests in
+`scripts/site-ui/prepare-module.test.ts` exercise staging, asset merging and
+bundle validation.
 
-The last command is the end-to-end one, and it is opt-in because it runs a
-distribution's composer — `frontend/build/build_frontend.py` — which installs,
-type-checks, tests and builds the whole application twice (once with the fixture
-compiled in, once neutral), so it takes a couple of minutes. `SITE_UI_DIR` and
-`SITE_UI_API` must be *unset* in the shell that starts Vitest; the test sets them
-for the child build.
+From the repository root, build the neutral image and the public example through
+the same upstream recipe:
 
-It asserts, against the bundle the composer produced rather than against this
-repository's own idea of it:
+```bash
+docker buildx build -f deploy/docker/Dockerfile.frontend \
+  --load -t local/frontend:neutral .
+docker buildx build -f deploy/docker/Dockerfile.frontend \
+  --build-context site-ui=./distributions/example/frontend/site-ui \
+  --build-arg SITE_UI_API=1 --load -t local/frontend:example .
+docker run --rm --entrypoint cat local/frontend:neutral /app/site-ui-manifest.json
+docker run --rm --entrypoint cat local/frontend:example /app/site-ui-manifest.json
+```
 
-- `provenance.json` names the commit that was built (`core_commit` equals this
-  checkout's `HEAD`; `SITE_UI_BUILD_COMMIT` pins a different revision) and
-  carries a 40-hex `ui_commit` and `inputs_tree`;
-- `standalone/site-ui-manifest.json` says `kind: 'distribution'` with the
-  fixture's id, so the extension really is compiled in;
-- the started bundle serves the fixture's landing page at `/` **without** the
-  console's `<header>` — the assertion that exactly one layer owns the chrome;
-- an unknown path is a 404 that is not the landing page, and `/dashboard` is the
-  console's page with its header and no trace of the fixture;
-- a second, neutral build from a cleared generated state resolves the neutral
-  UI, so a distribution build cannot leak into the next default build.
+The first manifest must report `kind: "neutral"`; the second must report
+`id: "example"`. The **Site UI Containers** CI job builds these two shapes and
+checks the example asset over HTTP. These image builds need Docker and network
+access for dependencies. Serving the full application also needs the gateway's
+runtime `/site-config` endpoint.
 
-It is skipped when the distribution checkout is not next to this one, since the
-composer lives there. When it runs, the checkout it builds in is left untouched:
-the build happens in a detached worktree of this repository at exactly the commit
-under test, which is also what lets it run from a worktree with uncommitted
-changes. It needs no database, no provider credential and no network — only Node,
-npm and Python — and it stops its own server in `afterAll` even when an assertion
-fails.
+For local module staging, development-server selection and returning to the
+neutral UI, follow [Local development](site-ui.md#local-development). Those
+commands use the same resolver as the image build and type checker.

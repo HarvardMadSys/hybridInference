@@ -100,6 +100,7 @@ how those overlays resolve.
    architecture
    routing
    public-path-table
+   site-ui-api
 
 .. toctree::
    :maxdepth: 2
@@ -111,6 +112,7 @@ how those overlays resolve.
    hpc-model-host
    claude-code-setup
    rag-chat
+   site-ui
 
 .. toctree::
    :maxdepth: 2
