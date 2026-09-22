@@ -44,8 +44,7 @@ my-ui/
 | `Landing` | no | Rendered at `/`. Supplying one replaces the console's home page. |
 | `AuthFrame` | no | The frame around `/login`, `/signup`, `/forgot-password`, `/reset-password`, `/verify-email`. |
 | `TermsFrame` | no | Rendered at `/terms` instead of the console's legal text. |
-| `PublicFrame` | no | The module's own layout, for the module's own pages. The host never renders it. |
-| `authAppearance` | no | Field styling for the shared account forms. |
+| `authAppearance` | no | Deprecated class-map compatibility for the shared forms, supported throughout API v1. |
 | `authMessages` | no | The deployment's wording for the account pages. |
 
 **An optional export is a claim, not a gap.** `Landing: null` means "the
@@ -88,9 +87,9 @@ docker buildx build -f deploy/docker/Dockerfile.frontend \
 | `SITE_UI_SUBDIR` | `.` | the module's directory inside the context |
 | `SITE_UI_API` | unset | required with an external module; must be `1` |
 
-Passing the whole `frontend/` tree as the context and naming the module with
-`SITE_UI_SUBDIR=site-ui` lets a distribution keep the module *and* its build
-tooling in one input tree, so the version lock describes the same set of inputs.
+A distribution may pass its whole `frontend/` tree as the context and select
+the module with `SITE_UI_SUBDIR=site-ui`. This keeps the module and its related
+build inputs under one pinned source tree.
 
 An external context that carries no module **fails the build**. Falling back to
 the neutral UI would publish a site whose home page reverted, and nothing in the
@@ -159,7 +158,7 @@ files, and one that mounts nothing still serves a complete site.
 
 The shared account forms render their own markup and default styling. Stable
 semantic hooks provide styles and state; a narrow layout slot provides structural
-variation. The older class map remains a temporary compatibility mechanism.
+variation. The deprecated class map remains supported throughout API v1.
 
 **`data-auth` attributes for styling and state.** Shared form elements expose:
 
@@ -188,15 +187,13 @@ field action after the control and validation; a module may place it beside its
 label. This replaces layout booleans without moving validation or controllers
 into a distribution.
 
-**Transitional `authAppearance` class map.** The existing class-map export is
-retained to let current modules migrate without changing their visual design.
-It is deprecated and is not a frozen v1 styling surface. New styling should use
-scoped `data-auth` and state selectors; class names are module-owned details.
-The semantic-style migration is not complete: the class map and its nested
-`fieldLayout` entry will remain available until the existing consumer has
-migrated and normal, invalid, loading and keyboard states have been compared.
-Removing them requires a documented migration and API revision; callers are
-not expected to track unannounced breaking changes.
+**Deprecated `authAppearance` class map.** The class-map export, including its
+nested `fieldLayout` entry, remains a supported compatibility surface throughout
+API v1. New styling should prefer scoped `data-auth` and state selectors; class
+names are module-owned details. The semantic-style migration is not complete.
+Removing this adapter requires the next API revision, a documented migration and
+comparison of normal, invalid, loading and keyboard states. Deprecation does not
+allow breaking existing v1 modules.
 
 All customization is subject to the same rule: **the module's CSS may only affect
 the pages it owns.** A stylesheet that reaches `body`, `:root` or a bare element
@@ -220,6 +217,7 @@ scope everything under a root class the module sets on its own shell.
 that declares a revision this checkout does not implement, rather than building
 something neither side was written for.
 
-The optional server `locale` is currently consumed by the document root. Server
-metadata exports are reserved and are not applied by the host; module authors
-should not rely on them to change titles or descriptions.
+The optional server `locale` sets the root document's `lang`, including console
+routes; omitting it keeps `en`. Document titles, descriptions and icons come
+from runtime branding. The module API has no metadata override or shared
+public-layout export; modules can organize their own internal layouts freely.

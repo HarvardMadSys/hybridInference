@@ -71,7 +71,6 @@ export type {
   AuthFrameProps,
   AuthMessages,
   LandingPageProps,
-  PublicFrameProps,
   PublicRoute,
   SiteUiClientModule,
   SiteUiModuleDescriptor,

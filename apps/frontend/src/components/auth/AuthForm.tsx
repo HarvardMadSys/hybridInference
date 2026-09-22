@@ -5,49 +5,12 @@ import type { ReactNode } from 'react';
 import { DefaultAuthFieldLayout, useAuthAppearance } from '@/site-ui/appearance';
 
 /**
- * Presentation primitives shared by every account page.
+ * Shared account presentation primitives. Controllers retain requests, schemas,
+ * tokens and redirects. A module can supply scoped semantic CSS, a compatible
+ * class map and a field layout without changing authentication behavior.
  *
- * These were extracted from the pages so that a distribution can restyle the
- * account forms without forking the controllers that decide who gets in. They
- * carry no authentication logic: no request, no token, no schema, no redirect.
- *
- * Classes arrive through `useAuthAppearance()`, supplied by the UI module the
- * build compiled in (see `src/site-ui/`). This keeps distribution-specific
- * designs in their modules without adding a branch here for each design.
- *
- * Every field is a class string applied to an element whose structure and ARIA
- * contract stay here. Two used to change structure — a boolean for where the
- * heading lived and another for where a field's action sat — and both are gone:
- * the frame draws the heading and the cross-link because the page hands it those
- * nodes, and a field's action goes where `AuthField` puts it.
- *
- * State is carried by `data-auth` names and the attributes the application
- * already sets, never inferred from a class name. See
- * `docs/developer/site-ui.md`.
- */
-
-/**
- * The account pages' "form is not ready yet" state.
- *
- * Rendered instead of a form a visitor could not submit: while the session
- * resolves, or while an already signed-in visitor is being redirected away.
- * The look belongs to the active module, which is why the module supplies a
- * `loading` class rather than this file importing a stylesheet.
- */
-/**
- * `data-auth` names, and why they exist.
- *
- * A module restyles these forms from its own stylesheet, and a stylesheet needs
- * a stable selector. Class names are not one: they are the module's own
- * `authAppearance` strings, so a design that renames its classes breaks its own
- * rules, and the shared markup cannot be styled by anything that does not know
- * which module is installed. These attributes are the stable half — part of the
- * interface, added to and never repurposed.
- *
- * State is carried by attributes the application already sets, so a rule never
- * has to infer it from a class name: `aria-invalid` on a control, `disabled` on
- * a button, `aria-busy` while submitting, `data-auth-error` on an error
- * paragraph, `data-auth-tone` on a notice.
+ * `data-auth` hooks are stable selectors; state comes from `aria-invalid`,
+ * `disabled`, `aria-busy`, `data-auth-error` and `data-auth-tone`.
  */
 export const AUTH_DATA = {
   form: 'form',

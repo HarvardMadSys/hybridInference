@@ -64,9 +64,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             {/* The compiled-in Site UI first, so the shared forms inside it can
                 read the active appearance and wording; then the route boundary,
                 which steps aside for the public routes and draws the console
-                chrome — header, constrained main, footer — everywhere else.
-                That pair replaces what used to be `LayoutChrome` reading
-                `branding.presentation.preset` out of the runtime document. */}
+                chrome — header, constrained main, footer — everywhere else. */}
             <SiteUiBoundary>
               <PublicRouteBoundary>{children}</PublicRouteBoundary>
             </SiteUiBoundary>

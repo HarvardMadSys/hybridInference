@@ -11,6 +11,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const require_ = createRequire(import.meta.url);
@@ -234,6 +236,47 @@ describe('Site UI resolution', () => {
     expect(resolution.styles).toBe(join(FIXTURE, 'styles.css'));
   });
 
+  it('accepts the public homepage-only example and defaults its empty server entry', () => {
+    withSharedState(() => {
+      const resolution = resolve.prepareSiteUi(frontendDir, {
+        SITE_UI_DIR: join(
+          frontendDir,
+          '..',
+          '..',
+          'distributions',
+          'example',
+          'frontend',
+          'site-ui',
+        ),
+        SITE_UI_API: '1',
+      });
+      expect(resolution.id).toBe('example');
+      const source = readFileSync(join(BRIDGE, 'server.ts'), 'utf8');
+      const { outputText } = ts.transpileModule(source, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS },
+      });
+      const exports = {};
+      runInNewContext(outputText, { exports, require: () => ({}) });
+      expect(exports).toEqual({ locale: '' });
+    });
+  });
+
+  it('exposes only the consumed server locale, not arbitrary module exports', () => {
+    withSharedState(() => {
+      resolve.prepareSiteUi(frontendDir, { SITE_UI_DIR: FIXTURE, SITE_UI_API: '1' });
+      const source = readFileSync(join(BRIDGE, 'server.ts'), 'utf8');
+      const { outputText } = ts.transpileModule(source, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS },
+      });
+      const exports = {};
+      runInNewContext(outputText, {
+        exports,
+        require: () => ({ locale: 'en-GB', metadata: { title: 'Unused' }, internal: true }),
+      });
+      expect(exports).toEqual({ locale: 'en-GB' });
+    });
+  });
+
   it('resolves a relative SITE_UI_DIR against the repository, not the caller', () => {
     // The relative path is the subject: it must resolve against `frontendDir`
     // rather than against `process.cwd()`. The lock is around the call because
@@ -304,9 +347,7 @@ describe('Site UI resolution', () => {
     it('accepts a module with no account frame, because absence is an answer', () => {
       // The three page-owning frames are optional by design: no `Landing` means
       // the console's landing page is correct, and no `AuthFrame` means the
-      // account pages sit inside the console container. Requiring them forced
-      // every module to answer, and the neutral module's stub answer — a card —
-      // claimed five whole pages and left them without chrome.
+      // account pages sit inside the console container.
       const partial = join(scratch, 'no-auth-frame');
       rmSync(partial, { recursive: true, force: true });
       cpSync(FIXTURE, partial, { recursive: true });
@@ -370,13 +411,13 @@ describe('Site UI resolution', () => {
       'fixtures/site-ui-demo/client',
     );
 
-    // …and `tsc` is pointed straight at the module's own entries, because it
-    // does not resolve a directory specifier to an index file.
+    // TypeScript reads the client directly and the normalized server facade,
+    // so a server entry without locale uses the same default as Webpack.
     expect(tsconfig.compilerOptions.paths['@site-ui/client']).toEqual([
       'tests/fixtures/site-ui-demo/client.tsx',
     ]);
     expect(tsconfig.compilerOptions.paths['@site-ui/server']).toEqual([
-      'tests/fixtures/site-ui-demo/server.ts',
+      'src/site-ui/active/server.ts',
     ]);
 
     // The application's own mappings survive: `paths` replaces rather than

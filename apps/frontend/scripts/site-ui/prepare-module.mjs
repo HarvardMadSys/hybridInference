@@ -1,41 +1,19 @@
 #!/usr/bin/env node
 /**
- * Prepare a Site UI module for the image build, or merge its assets into one.
+ * Build-time Site UI staging and packaging, shared by local and image builds.
+ * Resolution, contract checks and import verification use the same resolver as
+ * the app, type checker and tests.
  *
- * Two jobs, both of which the container recipe needs and neither of which is
- * more than a few lines once the resolver has decided what a module is:
+ * Commands (paths are resolved from the current directory unless noted):
+ *   prepare --app <dir> --context <dir> --subdir <rel> --into <dir> --api <n>
+ *   merge --repo-root <dir> --app <relative-dir>
+ *   manifest --repo-root <dir> --app <relative-dir>
+ *   check --repo-root <dir> --app <relative-dir>
  *
- *   prepare  validate a module and copy it into an isolated directory inside
- *            the application, so the build compiles the module from a path the
- *            application owns rather than from wherever the context mounted it.
- *   merge    copy the module's `public/` into the built application's `public/`
- *            and fail on a collision, because two sources writing one path is
- *            the drift this whole seam exists to prevent.
- *   manifest write the module record into the standalone output, so the image
- *            carries what it compiled in.
- *   check    assert the packaged bundle is complete: the standalone server, the
- *            static output, the module manifest, and no absolute path from the
- *            build host baked into what ships.
- *
- * Why this is a Node file rather than Dockerfile shell. The recipe it replaces
- * was a Python program, and the reviewer's note about not translating it into a
- * few hundred lines of shell is the right instinct: these three steps are the
- * only parts that were ever container-specific. Everything else — resolution,
- * import verification, the generated bridge and tsconfig — is already shared
- * code that the app, the type checker and the test runner call.
- *
- * Usage (all paths absolute; the caller is the Dockerfile or a CI script):
- *
- *   node scripts/site-ui/prepare-module.mjs prepare \
- *     --context <dir> --subdir <rel> --into <dir> [--api <n>]
- *   node scripts/site-ui/prepare-module.mjs assets \
- *     --module <dir> --app <dir> [--module-id <id>]
- *   node scripts/site-ui/prepare-module.mjs check --app <dir>
- *
- * A context directory holding `.built-in-ui` means "no external module": the
- * build is the neutral one, and `prepare` says so and does nothing. That is the
- * default stage, and it is how `docker build` with no extra context stays
- * exactly as compatible as it was.
+ * `prepare` validates and stages the module. A context containing `.built-in-ui`
+ * selects the neutral UI and needs no API argument. `merge` packages public
+ * assets, `manifest` adds the module record and static output, and `check`
+ * validates the standalone bundle.
  */
 
 import { createRequire } from 'node:module';
@@ -239,10 +217,8 @@ function walk(dir, base = dir) {
  * Where `next build` puts the runnable application.
  *
  * The tooling reads and writes here rather than at the application root, because
- * this is what the image copies — `output: 'standalone'` emits its own `public/`
- * and the static chunks inside `.next/`, and the root copies are build inputs
- * that the runtime never sees. Acting on the root would have looked correct and
- * shipped nothing.
+ * this is what the image copies. Next emits the server here; `merge` and
+ * `manifest` add the public assets and static chunks before `check` runs.
  */
 const BUNDLE = path.join('.next', 'standalone');
 
@@ -252,9 +228,8 @@ const BUNDLE = path.join('.next', 'standalone');
  * `--repo-root` is the checkout; `--app` is the application inside it. Both are
  * needed because the two trees being compared live in different places: the
  * application's *own* public files are a source (`apps/frontend/public`), and
- * the bundle's are build output (`apps/frontend/.next/standalone/public`). An
- * earlier version took one path for both, which made every module's own asset
- * look like a collision with itself.
+ * the bundle's are build output (`apps/frontend/.next/standalone/public`).
+ * Collision checks compare module assets against the application's source files.
  */
 function merge(options) {
   const root = path.resolve(required(options, 'repo-root'));
@@ -340,10 +315,8 @@ function manifest(options) {
     fail(`${standalone} is missing; the application must build with output: 'standalone'`);
   }
 
-  // `output: 'standalone'` omits the compiled chunks. The runtime stage used to
-  // copy them separately, which is the same work in a place nothing checks;
-  // doing it here means `check` can assert the finished bundle instead of
-  // asserting a directory that is only complete once Docker has run twice.
+  // `output: 'standalone'` omits compiled chunks. Package them here so `check`
+  // validates the complete bundle before the runtime image copies it.
   const staticSource = path.join(app, '.next', 'static');
   if (!existsSync(staticSource)) fail(`${staticSource} is missing; the build produced no chunks`);
   cpSync(staticSource, path.join(standalone, '.next', 'static'), { recursive: true });
@@ -367,8 +340,7 @@ function check(options) {
 
   // The container is not the build host. A path from the machine that built the
   // image is not a secret, but it describes something a reader cannot use and
-  // it is the fingerprint of a manifest that was not regenerated for the
-  // package — the failure `manifestSource` was fixed for once already.
+  // it can indicate a stale or incorrectly generated package manifest.
   const manifest = JSON.parse(readFileSync(path.join(bundle, 'site-ui-manifest.json'), 'utf8'));
   for (const key of ['id', 'kind']) {
     const value = manifest[key];
@@ -399,10 +371,9 @@ function main(argv) {
       return 0;
     default:
       console.error(
-        'usage: prepare-module.mjs <prepare|assets|check> [options]\n' +
-          '  prepare --context <dir> --subdir <rel> --into <dir> [--api <n>]\n' +
-          '  assets  --module <dir> --app <dir> [--module-id <id>]\n' +
-          '  check   --app <dir>',
+        'usage: prepare-module.mjs <prepare|merge|manifest|check> [options]\n' +
+          '  prepare --app <dir> --context <dir> --subdir <rel> --into <dir> --api <n>\n' +
+          '  merge|manifest|check --repo-root <dir> --app <relative-dir>',
       );
       return 2;
   }

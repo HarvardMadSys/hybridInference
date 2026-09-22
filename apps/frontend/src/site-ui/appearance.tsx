@@ -33,12 +33,7 @@ export const NEUTRAL_AUTH_APPEARANCE: AuthAppearance = {
   labelRow: 'mt-5 flex items-center justify-end',
   input:
     'mt-1.5 w-full rounded-lg border bg-white px-4 py-2.5 text-sm shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-gray-400 border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20',
-  // An invalid control has to look invalid. The console's `InputField` switched
-  // its border and ring on `error`, and this interface had a single `input`
-  // string — so every control kept a grey border and a focused invalid field
-  // announced itself only in the message below it. A layout interface can carry
-  // this as a second string; it cannot carry a conditional, which is why the
-  // pair exists rather than a `inputHasError` boolean.
+  // Match the shared input's invalid border and focus styles.
   inputError:
     'mt-1.5 w-full rounded-lg border bg-white px-4 py-2.5 text-sm shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-red-400 border-red-300 focus:border-red-500 focus:ring-2 focus:ring-red-500/20',
   passwordWrap: 'relative',
@@ -46,10 +41,7 @@ export const NEUTRAL_AUTH_APPEARANCE: AuthAppearance = {
   hint: 'mt-1.5 block text-xs text-gray-500',
   error: 'mt-1.5 block text-xs text-red-600',
   linkButton: 'text-sm font-medium text-blue-600 hover:text-blue-700',
-  // The console's `Button` defaults: `bg-black text-white hover:bg-gray-800
-  // focus:ring-black shadow-sm hover:shadow-md`, at the width this form uses.
-  // It was `bg-blue-600 … hover:bg-blue-700` here, which changed the sign-in
-  // button's colour on every neutral deployment.
+  // Match the shared Button's default appearance at full form width.
   submit:
     'inline-flex h-10 w-full items-center justify-center rounded-md bg-black px-4 text-sm font-medium text-white shadow-sm transition-colors duration-200 hover:bg-gray-800 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-black focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
   notice: 'rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800',

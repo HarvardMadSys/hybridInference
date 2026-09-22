@@ -186,19 +186,12 @@ def test_loader_rejects_a_sponsor_class_the_neutral_css_does_not_compile(
         load_branding_config(path)
 
 
-def test_loader_names_the_retired_layout_keys(tmp_path: Path) -> None:
-    """A document still carrying the withdrawn sections is refused by name.
+def test_loader_names_unsupported_layout_keys(tmp_path: Path) -> None:
+    """Unsupported branding keys fail with an actionable field name.
 
-    `theme`, `presentation` and `assets.hero_image_url` left this contract when
-    the console stopped drawing a public-page layout of its own: which UI a site
-    shows is a build-time decision now, and the model line-up and hero image
-    belong to the module that renders them.
-
-    They are refused rather than ignored for the reason the whole model is
-    strict: this document is served to every visitor, so a key nobody declared
-    is either a typo or something that should not be public, and both are worth
-    stopping for. The message has to name the key, because the person reading it
-    is mid-migration and needs to know which line to delete.
+    Runtime branding does not select public-page layouts. A module supplies its
+    own presentation at build time, and the branding schema rejects fields it
+    does not support instead of silently accepting unused settings.
     """
     data = yaml.safe_load(_EXAMPLE.read_text())
     data["theme"] = {"accent": "#0052D9"}

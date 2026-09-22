@@ -16,7 +16,7 @@
  *
  * ## What a module may and may not do
  *
- * MAY: render the landing page, the public frame around the public routes, the
+ * MAY: render the landing page, its navigation and footer, the
  * frame and field styling of the account pages, the legal text, and the copy
  * those areas display.
  *
@@ -64,7 +64,8 @@ export interface SiteUiModuleDescriptor {
   readonly id: string;
   /**
    * BCP-47 tag this module's copy is written in, or '' when it ships no fixed
-   * language. The public pages set `lang` from it; the console keeps its own.
+   * language. This describes the module's copy; server `locale` controls the
+   * root document's language.
    */
   readonly locale: string;
 }
@@ -132,56 +133,14 @@ export interface TermsFrameProps {
 }
 
 /**
- * The public frame a module renders around its own pages.
- *
- * Exactly one layer owns `<header>`, `<main>` and `<footer>`. A module that
- * renders the frame owns all three; the account pages render their own
- * two-column frame and must not also render this one, because the console's
- * container would then sit inside the design's full-width background.
- */
-export interface PublicFrameProps {
-  /** Which public route is being framed, when the module wants to vary. */
-  route?: PublicRoute;
-  children: React.ReactNode;
-}
-
-/**
- * Auth field styling: one class string per element the shared page renders.
- *
- * Class names are opaque to the host, so a module may use its own stylesheet,
- * and `data-auth` names every element so that a stylesheet does not have to
- * know which module is installed (see `docs/developer/site-ui.md`).
- *
- * **Nothing here changes structure.** Two entries used to: `titleInCard` said
- * whether the frame or the page drew the heading and the cross-link, and
- * `fieldActionInline` said whether a field's action sat beside its label or
- * after the fields. Both were load-bearing — flipping either changed the markup
- * — which is exactly the wrong kind of thing for a *styling* interface to
- * carry: a distribution's layout decision became a shared-repository branch, and
- * two places could render the same link with a boolean deciding which.
- *
- * The frame draws the heading and the cross-link now, whichever frame it is,
- * because the shared page hands it those nodes. Structural variation belongs in
- * a slot that receives nodes, not in a flag that changes who renders them.
- */
-/**
  * How one field arranges the nodes the shared page produces.
  *
- * A module supplies this when its design puts the action somewhere other than
- * after the fields — beside the label, above the control, in a column. It
- * receives **rendered nodes** and returns markup; it does not receive the
- * field's value, its validation, its registration or its submit handler, and it
- * cannot change what any of them do. Every node is rendered exactly once, and
- * the shared component keeps ownership of the markup's ARIA relationships.
+ * A module may place the action beside the label, above the control or in a
+ * separate column. It receives rendered nodes, not field values, validation or
+ * submit handlers. Render every supplied node once, associate the label with
+ * `htmlFor`, and preserve the field and label's `data-auth` hooks.
  *
- * The default arrangement is what the console has always drawn: the label, or a
- * row holding the label and the action when the field has one, then the control,
- * then the hint, then the error.
- *
- * This exists because two designs disagreed about where the "forgot password"
- * link goes, and the disagreement was previously expressed as a boolean that
- * changed *which layer rendered it*. A slot is the honest shape: the shared
- * field still produces the node, and the module says where it sits.
+ * The default layout renders the label, control, hint, error and then action.
  */
 export interface AuthFieldLayoutProps {
   /**
@@ -207,21 +166,18 @@ export interface AuthFieldLayoutProps {
 
 export type AuthFieldLayout = React.ComponentType<AuthFieldLayoutProps>;
 
-/** @deprecated Transitional class-map compatibility; use scoped semantic CSS. */
+/**
+ * @deprecated Supported compatibility surface throughout Site UI API v1.
+ * Prefer scoped `data-auth` and state selectors for new styling. Removing this
+ * class map requires the next API revision and a documented migration.
+ */
 export interface AuthAppearance {
   form: string;
   field: string;
   label: string;
   labelRow: string;
   input: string;
-  /**
-   * The control's classes when the field has an error.
-   *
-   * A second string rather than a flag, because a layout interface can carry a
-   * variant and cannot carry a branch. Without it every control keeps its valid
-   * border while invalid, which is what made the console's red-border behaviour
-   * disappear when these primitives moved.
-   */
+  /** Classes applied to an invalid control instead of `input`. */
   inputError: string;
   passwordWrap: string;
   reveal: string;
@@ -243,8 +199,7 @@ export interface AuthAppearance {
   loading: string;
   loadingWrap: string;
   /**
-   * Where a field's nodes are placed. Absent means the default arrangement,
-   * which is what every module got before this existed.
+   * Where a field's nodes are placed. Absent means the default arrangement.
    */
   fieldLayout?: AuthFieldLayout;
 }
@@ -468,52 +423,18 @@ export type AuthMessageKey = (typeof AUTH_MESSAGE_KEYS)[number];
 export type AuthMessages = Partial<Record<AuthMessageKey, string>>;
 
 /**
- * The client half of a module: React components plus optional appearance and
- * wording.
- *
- * Every key except the three optional ones is required. A module missing one
- * fails `assertSiteUiModule` at build time and the build stops, because the
- * alternative — falling back to the neutral page — publishes a site that is
- * half one design and half another.
- *
- * The three optional ones are the page-owning frames. Each answers the same
- * question for its route: *did the module draw this whole page?* — and the host
- * cannot ask it if the answer is always yes.
+ * Client components, optional form styling and wording. Only the descriptor is
+ * required. A page-owning component replaces the host's chrome for its route;
+ * omitting it (or exporting `null`) preserves the shared page and chrome.
  */
 export interface SiteUiClientModule {
   descriptor: SiteUiModuleDescriptor;
-  /**
-   * Rendered at `/` in place of the console's landing page.
-   *
-   * Optional, and `null` is an answer rather than an omission: the neutral
-   * module declares `null`, meaning "the console's own landing page is the right
-   * page here". Moving that page behind this interface would be churn with no
-   * reader — it is a component tree of its own, with its own tests — so the host
-   * asks a question the answer can legitimately be "no" to.
-   */
+  /** Rendered at `/`, including its header, main region and footer. */
   Landing?: React.ComponentType<LandingPageProps> | null;
   /**
-   * Frame for `/login`, `/signup`, `/forgot-password`, `/reset-password`,
-   * `/verify-email`.
-   *
-   * **Supplying one is a claim about the whole page, chrome included.** A frame
-   * that exists renders the account page *entirely* — its own header, its own
-   * `<main>`, its own footer — so `PublicRouteBoundary` steps out of the way for
-   * these routes exactly as it does for a module's landing page or legal page.
-   * A module that supplies one and draws only a card produces five pages with no
-   * header and no footer; that is not a styling choice the host can correct.
-   *
-   * `null` — which the neutral module declares — means "the console's container
-   * is the page here, and my frame is the card inside it", and the host renders
-   * its own header, `<main>` and footer around the shared form. This is the one
-   * question the boundary could not previously ask, because the field was
-   * required and the answer was therefore always yes: the neutral module's
-   * card-only frame claimed the whole page and the five default account routes
-   * lost their chrome.
-   *
-   * Same shape as `Landing` and `TermsFrame`, and for the same reason: layout
-   * and the decision to own a page travel together, so the host asks who drew
-   * the page rather than reading a deployment's name.
+   * Owns the complete account-page chrome around the shared forms on `/login`,
+   * `/signup`, `/forgot-password`, `/reset-password` and `/verify-email`.
+   * Omitted or `null` keeps the console chrome and default account card.
    */
   AuthFrame?: React.ComponentType<AuthFrameProps> | null;
   /**
@@ -525,47 +446,18 @@ export interface SiteUiClientModule {
    * the answer is always yes to.
    */
   TermsFrame?: React.ComponentType<TermsFrameProps> | null;
-  /**
-   * The module's own layout, for the module's own pages.
-   *
-   * **The host never renders this.** It is here because a module with several
-   * pages of its own needs a shared layout, and having one place the interface
-   * names is better than each module inventing the same file — but nothing in
-   * the host calls it, so it is optional. Requiring it asked every module for a
-   * component nothing would use, and the neutral module answered with a
-   * passthrough that did nothing, which is exactly the kind of export this
-   * interface exists not to demand.
-   */
-  PublicFrame?: React.ComponentType<PublicFrameProps> | null;
-  /** Field styling for the shared account forms. */
+  /** @deprecated Supported in v1; prefer semantic selectors for new styling. */
   authAppearance?: AuthAppearance;
   /** Wording for the account pages. */
   authMessages?: AuthMessages;
 }
 
-/**
- * Static, non-React half of a module, readable on the server.
- *
- * Both fields are optional and the descriptor deliberately does not appear: it
- * lives on the client half, so the two entries cannot disagree about which
- * interface revision is installed. A module that says nothing here gets the
- * console's own document language, title and icons.
- */
+/** Static, non-React values read by the shared root layout. */
 export interface SiteUiServerModule {
   /**
-   * Overrides for the document `<head>` of the public routes. Plain,
-   * serializable values: the host renders them and never executes them.
-   */
-  metadata?: SiteUiMetadata;
-  /**
-   * BCP-47 tag for `<html lang>` on the public routes. Ignored for the console,
-   * which keeps its own language.
+   * BCP-47 tag for the root `<html lang>`, including console routes.
+   * Omitted or empty preserves the shared default (`en`). Titles, descriptions
+   * and icons come from runtime branding and are not part of this module API.
    */
   locale?: string;
-}
-
-export interface SiteUiMetadata {
-  title?: string;
-  description?: string;
-  faviconUrl?: string;
 }

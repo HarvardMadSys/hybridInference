@@ -44,12 +44,8 @@ const ALLOWED_SPECIFIER_RULES = [
   },
   {
     name: 'its own files',
-    // Resolved and checked, not merely recognised. The test used to be "starts
-    // with ./ or ../", which accepts `../../components/providers/AuthProvider` —
-    // a path that reaches the shared application's internals from where a module
-    // is staged (`src/site-ui/external/`), bypassing `@site-ui/host` entirely.
-    // The rule's own name says the import stays inside the module; this is what
-    // makes that true rather than assumed.
+    // Resolve relative imports before accepting them: ../ paths can otherwise
+    // escape the staged module and bypass the host facade.
     test: (specifier, context) => {
       if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false;
       const from = context && context.dir;

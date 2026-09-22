@@ -4,45 +4,14 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * Which layer draws the chrome, on every public route, in each shape a module
- * can have.
- *
- * This file exists because the answer was wrong for every public route at the
- * same time and nothing caught it. `ownsItsChrome` compared the route against
- * the literals `'/'` and `'/terms'` while `publicRouteFor` returns `'landing'`
- * and `'terms'`, so neither branch could match and the console's own landing and
- * terms pages rendered with no header, main or footer. Its own screenshot
- * comparison did not catch it either, because *both* sides of that comparison
- * were the distribution's module — the regression was in the neutral build,
- * which no capture covered.
- *
- * ## What this file got wrong the first time
- *
- * The first version of these assertions mocked the module with a frame of its
- * own making and then asserted that the five account routes should have **no**
- * header or footer. That is the regression written down as an expectation: the
- * neutral module's real frame is a card, and a card is not a page. The test
- * passed while five default pages shipped without chrome, which is worse than no
- * test — it is a test that would have caught the fix and failed it.
- *
- * So the module below is not a stand-in with a convenient shape. It is built by
- * the same two rules the real ones are: the neutral module is described exactly
- * as the host will see it (`authFrame: null`), and a distribution is described
- * as one that supplies a whole-page frame. Both are rendered through the real
- * boundary, and the property asserted is a *count* on every route — one header,
- * one `<main>`, one footer — because "a header exists" passes with two.
+ * Render neutral and custom module shapes through the real boundary. Every
+ * route must contain exactly one header, main and footer, regardless of which
+ * layer owns its chrome.
  */
 
 const pathname = vi.hoisted(() => ({ value: '/' }));
 
-/**
- * The compiled-in module, as `SiteUiBoundary` reads it.
- *
- * Kept mutable rather than fixed so one file can assert both module shapes. The
- * neutral entry is the one that matters: `authFrame: null` is the neutral
- * module's actual declaration, and the whole regression is what happens when
- * that is read as "the page frames itself".
- */
+/** Mutable capabilities let the same tests exercise both module shapes. */
 const module_ = vi.hoisted(() => ({
   value: {
     landing: null as null | (() => React.ReactNode),
@@ -90,7 +59,6 @@ vi.mock('@/site-ui/module', () => ({
     get TermsFrame() {
       return module_.value.termsFrame;
     },
-    PublicFrame: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   },
 }));
 

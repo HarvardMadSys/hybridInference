@@ -167,8 +167,7 @@ const versionedSiteConfigDocumentSchema = z
   // with the branding object below is deliberate. This envelope is what a
   // gateway serves, and a gateway one version ahead of the console is a normal
   // state during a rollout — refusing would take the deployment's identity and
-  // feature gates down over a key this console does not read. Copy used to be
-  // one of those keys; the next one will be too.
+  // feature gates down over a key this console does not read.
   .passthrough();
 
 // The endpoint immediately preceding schema v1 exposed this exact subset.

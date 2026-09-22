@@ -12,9 +12,7 @@ import type { LandingPageProps } from '@site-ui/host';
  *
  * - no `AuthFrame`, so the account pages keep the console's own card and chrome;
  * - no `TermsFrame`, so the legal page keeps the console's;
- * - no `authMessages` and no `authAppearance`, so the shared forms are untouched;
- * - no `metadata`, because nothing about the document head changes;
- * - no `PublicFrame`, which the host never renders anyway.
+ * - no `authMessages` and no `authAppearance`, so the shared forms are untouched.
  *
  * `descriptor` and `Landing` are the entire module, and that is a complete,
  * valid one: every other export is optional because each is an answer to a

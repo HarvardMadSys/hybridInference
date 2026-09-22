@@ -1,14 +1,11 @@
 # Site UI API v1 — the seam that lets a distribution own its public pages
 
-## The problem this replaces
+## Purpose
 
-Each distribution should own its public-page design, copy and assets. Keeping
-those pages in `apps/frontend` would make the shared repository responsible for
-every distribution's design.
-
-Site UI modules let distributions supply those pages at build time through a
-common interface. The shared application selects components by their declared
-capabilities, without branching on deployment names or design presets.
+A distribution may need its own public pages while sharing the console and
+account controllers. Site UI provides that extension point without adding
+product-specific components or runtime switches to the shared application.
+The neutral build keeps the existing pages when no module is selected.
 
 ## The seam
 
@@ -53,20 +50,15 @@ fails the build — a missing entry, a missing export, a wrong API revision, a
 missing `SITE_UI_API`, or an import outside the promised surface. Silently
 publishing another design's home page is worse than a failed build.
 
-### Two findings that cost real debugging time
+### Toolchain constraints
 
-**Next 15.5 and `typescript.tsconfigPath`.** Setting it to any file other than
-`tsconfig.json` makes Next read `paths` from that file and then *skip installing
-its own tsconfig-paths plugin*, so every `@/*` import in the application stops
-resolving. Only the Webpack alias is set in `next.config.js`; `tsconfig.json`
-carries the `@site-ui/*` mappings the bundler never uses.
+Next.js uses Webpack aliases for the generated entries. TypeScript maps the
+client entry directly to the selected module and the server entry to a generated
+facade, which supplies the default locale when the module omits it.
 
-**The import verifier was doing nothing, silently.** It has to tell a real
-import from a code sample — the quickstart pages ship `import OpenAI from
-"openai";` as text — and it got that wrong three ways, including a doc comment
-containing a backtick that opened a template span and hid every import after it.
-Fixed, with the four silent-failure modes pinned in
-`src/site-ui/verify-imports.test.ts`.
+The import verifier distinguishes executable imports from comments and code
+samples inside strings. `src/site-ui/verify-imports.test.ts` covers these cases
+and rejects imports outside the supported facade and framework packages.
 
 ## Chrome ownership
 
@@ -96,7 +88,7 @@ module declares.
 | `verify-imports.js` | keeps a module on the promised import surface |
 | `neutral/` | the default UI, itself written against the contract |
 | `SiteUiBoundary.tsx` | installs the module and renders the route it owns |
-| `PublicRouteBoundary.tsx` | replaces `LayoutChrome` |
+| `PublicRouteBoundary.tsx` | selects chrome from the components the module supplies |
 | `terms-sections.tsx` | the legal text, shared by both frames |
 | `tests/fixtures/site-ui-demo/` | a second, deliberately tiny module |
 
@@ -107,8 +99,8 @@ that is the bug.
 
 ## Testing the seam
 
-The shared repository owns both validation and the image recipe. No distribution
-checkout or distribution-owned composer is required for these checks.
+The shared repository owns validation and the image recipe. These checks use
+the built-in neutral module and the public example.
 
 ```bash
 cd apps/frontend

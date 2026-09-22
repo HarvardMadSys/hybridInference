@@ -333,19 +333,10 @@ describe('example quickstart base', () => {
   });
 });
 
-describe('the retired copy and layout sections', () => {
-  // `content` (the slot dictionary `useT` read) and `branding.theme` (the
-  // console's accent ramp) are gone from this console: a deployment's page copy
-  // ships with the front-end module that renders it, and the accent belongs to
-  // whichever UI is compiled in.
-  //
-  // Two different rules, because the two keys live in different objects.
-  //
-  // `content` was a *top-level* key, and the envelope tolerates a key this
-  // console does not read: a gateway one version ahead is a normal state during
-  // a rollout. `branding.theme` was inside the branding document, which is
-  // strict on both sides — the gateway refuses it before it is ever served.
-  it('ignores a retired top-level key and refuses a retired branding one', () => {
+describe('unknown configuration keys', () => {
+  // The endpoint envelope accepts unknown keys during rolling upgrades, while
+  // the public branding document is strict so unsupported settings fail clearly.
+  it('ignores an unknown top-level key and refuses an unknown branding key', () => {
     const resolved = resolveRuntimeSiteConfig({
       ...runtimeDocument,
       content: { locale: 'zh-CN', strings: { 'landing.hero.subtitle': '面向科研的推理服务' } },
@@ -379,21 +370,12 @@ describe('the retired copy and layout sections', () => {
   });
 });
 
-describe('the retired page-layout section', () => {
-  // `branding.presentation` and `assets.hero_image_url` used to tell the console
-  // which public-page layout to draw and which hero image to put in it. The
-  // console no longer draws any layout: which UI a site shows is decided when
-  // the image is built (see `src/site-ui/`), and the model line-up and the hero
-  // belong to the module that renders them.
-  //
-  // A deployment that still publishes them is refused by name, which is what
-  // makes this a migration rather than a silent no-op: the person reading the
-  // error is mid-upgrade and needs to know which line to delete. Dropping the
-  // keys instead would leave a deployment believing its hero image and its
-  // model line-up were still in use.
-  it('refuses a document that still publishes the retired sections', () => {
+describe('unsupported runtime layout settings', () => {
+  // Public-page layouts and design assets belong to build-time modules.
+  // These keys are not part of the runtime branding schema.
+  it('refuses unsupported presentation and hero-image settings', () => {
     for (const branding of [
-      { ...runtimeBranding, presentation: { preset: 'inference', model_families: [] } },
+      { ...runtimeBranding, presentation: { preset: 'custom', model_families: [] } },
       { ...runtimeBranding, assets: { ...runtimeBranding.assets, hero_image_url: '/a.png' } },
     ]) {
       expect(() => resolveRuntimeSiteConfig({ ...runtimeDocument, branding })).toThrow(

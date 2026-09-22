@@ -18,9 +18,8 @@ import { describe, expect, it } from 'vitest';
  * - an offset computed with `lastIndexOf` lands on a repeated substring — the
  *   `'@site-ui/'` inside `'@site-ui/host'` — which is outside the opening quote
  *   and so looks exactly like a real import;
- * - a doc comment containing a backtick, which is how this very file used to
- *   describe the interface, opens a template span that never closes and hides
- *   every import after it.
+ * - a backtick inside a doc comment must not open a template span that hides
+ *   every executable import after it.
  */
 const require_ = createRequire(import.meta.url);
 const { verifyModuleImports, importSpecifiers } = require_('./verify-imports.js') as {

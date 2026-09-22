@@ -58,17 +58,7 @@ export function NeutralAuthCard({
           <p className="mt-2 text-sm text-gray-600">{subtitle}</p>
         </div>
         {children}
-        {/*
-          The cross-link between sign-in and sign-up, which the shared page
-          always passes and which used to be dropped here.
-
-          It was rendered by the *page* instead, behind an `authAppearance`
-          boolean called `titleInCard` — a true/false that meant "this frame
-          does not draw the heading, so draw the link here". Two places could
-          draw the same link and a boolean decided which, which is the shape
-          that makes a design's layout a shared-repository concern. The frame
-          draws it now, whichever frame that is, and there is no boolean.
-        */}
+        {/* The shared page supplies the account cross-link; the card places it. */}
         {topbar ? (
           <p className="mt-5 text-center text-sm text-gray-600 [&_a]:font-medium [&_a]:text-blue-600 [&_a:hover]:text-blue-700">
             {topbar}
@@ -79,29 +69,8 @@ export function NeutralAuthCard({
   );
 }
 
-/**
- * `null`: the console's container is the page for the account routes.
- *
- * The published reference for this file used to export the card above as
- * `AuthFrame`. Since the field was required, every module had to answer, and
- * answering with a card read as "I own the page" — so `PublicRouteBoundary`
- * stepped aside and `/login`, `/signup`, `/forgot-password`, `/reset-password`
- * and `/verify-email` rendered with no header, no `<main>` and no footer while
- * `/` and `/terms` were fine.
- *
- * A module that draws its own account shell, such as a layout with a brand
- * panel beside the form, exports a real `AuthFrame` and gets the
- * whole page. The distinction is the declaration, not the styling.
- */
+/** The console owns account chrome; the shared form uses NeutralAuthCard. */
 export const AuthFrame: ((props: AuthFrameProps) => ReactNode) | null = null;
-
-/*
- * No `PublicFrame`, and none is needed: the host never renders one, and this
- * module draws no pages of its own beyond the console's. The previous version
- * exported a passthrough "so the module has the shape the interface documents",
- * which is the reasoning that produced an export nothing called and a required
- * field every module had to fill.
- */
 
 /**
  * Present so the module has the shape the interface documents, but never

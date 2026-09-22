@@ -137,20 +137,12 @@ msgid "Rendered at `/terms` instead of the console's legal text."
 msgstr "在 `/terms` 渲染，替代控制台法律条款正文。"
 
 #: ../developer/site-ui.md:0
-msgid "`PublicFrame`"
-msgstr "`PublicFrame`"
-
-#: ../developer/site-ui.md:0
-msgid "The module's own layout, for the module's own pages. The host never renders it."
-msgstr "供模块自身页面使用的布局；宿主不会直接渲染它。"
-
-#: ../developer/site-ui.md:0
 msgid "`authAppearance`"
 msgstr "`authAppearance`"
 
 #: ../developer/site-ui.md:0
-msgid "Field styling for the shared account forms."
-msgstr "共享账号表单的字段样式。"
+msgid "Deprecated class-map compatibility for the shared forms, supported throughout API v1."
+msgstr "共享表单的类名映射兼容接口，已弃用，但在 API v1 生命周期内持续受支持。"
 
 #: ../developer/site-ui.md:0
 msgid "`authMessages`"
@@ -160,19 +152,19 @@ msgstr "`authMessages`"
 msgid "The deployment's wording for the account pages."
 msgstr "部署的账号页面文案。"
 
-#: ../developer/site-ui.md:51
+#: ../developer/site-ui.md:50
 msgid "**An optional export is a claim, not a gap.** `Landing: null` means \"the console's home page is correct here\"; omitting `AuthFrame` means \"the account pages sit inside the console's container\". A module that exports neither is a module that replaced nothing, and that is a legitimate thing to be while it is being written."
 msgstr "**可选导出表达的是意图，不是遗漏。** `Landing: null` 表示“这里使用控制台首页”；不提供 `AuthFrame` 表示“账号页面放在控制台容器中”。两者都不导出的模块没有替换任何页面，这可以是模块开发过程中的合理状态。"
 
-#: ../developer/site-ui.md:57
+#: ../developer/site-ui.md:56
 msgid "**A frame that exists owns the whole page.** `AuthFrame` and `TermsFrame` render their own header, `<main>` and footer, because supplying one is a claim to draw the page. A frame that draws only a card leaves five pages with no chrome — that is not a styling choice the host can correct, so it is the first thing to get right."
 msgstr "**提供外壳就代表负责整张页面。** `AuthFrame` 和 `TermsFrame` 需要绘制自己的页头、`<main>` 与页脚，因为提供它们就意味着接管页面。如果外壳只绘制一张卡片，五个页面就会失去外层框架。宿主无法替模块纠正这种布局选择，因此首先要确保这一点。"
 
-#: ../developer/site-ui.md:63
+#: ../developer/site-ui.md:62
 msgid "3. Building an image with a module"
 msgstr "3\\. 使用模块构建镜像"
 
-#: ../developer/site-ui.md:65
+#: ../developer/site-ui.md:64
 msgid "The official frontend Dockerfile takes the module as a Buildx named context:"
 msgstr "官方前端 Dockerfile 通过 Buildx 命名上下文接收模块："
 
@@ -224,75 +216,75 @@ msgstr "未设置"
 msgid "required with an external module; must be `1`"
 msgstr "使用外部模块时必填，必须为 `1`"
 
-#: ../developer/site-ui.md:91
-msgid "Passing the whole `frontend/` tree as the context and naming the module with `SITE_UI_SUBDIR=site-ui` lets a distribution keep the module *and* its build tooling in one input tree, so the version lock describes the same set of inputs."
-msgstr "将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` 指定模块，可让发行版把模块 *以及* 构建工具放在同一输入树中，使版本锁描述同一组输入。"
+#: ../developer/site-ui.md:90
+msgid "A distribution may pass its whole `frontend/` tree as the context and select the module with `SITE_UI_SUBDIR=site-ui`. This keeps the module and its related build inputs under one pinned source tree."
+msgstr "发行版可以将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` 选择模块。这样，模块及其相关构建输入都包含在同一个固定版本的源码树中。"
 
-#: ../developer/site-ui.md:96
+#: ../developer/site-ui.md:94
 msgid "An external context that carries no module **fails the build**. Falling back to the neutral UI would publish a site whose home page reverted, and nothing in the build log would say so."
 msgstr "外部上下文未包含模块时，**构建会失败**。不能悄悄回退到默认 UI，否则发布的首页会变回控制台页面，构建日志却毫无提示。"
 
-#: ../developer/site-ui.md:100
+#: ../developer/site-ui.md:98
 msgid "Local development"
 msgstr "本地开发"
 
-#: ../developer/site-ui.md:102
+#: ../developer/site-ui.md:100
 msgid "The same staging step runs on a workstation, without Docker. Run a gateway first and set `BACKEND_INTERNAL_URL` to its address if it is not `http://backend:8080`; the existing runtime `/site-config` dependency is unchanged:"
 msgstr "同一暂存步骤也可在工作站运行，无需 Docker。请先启动网关；若地址不是 `http://backend:8080`，则设置 `BACKEND_INTERNAL_URL`。应用对运行时 `/site-config` 的依赖保持不变："
 
-#: ../developer/site-ui.md:116
+#: ../developer/site-ui.md:114
 msgid "`SITE_UI_DIR` and `SITE_UI_API` name the module directly if you would rather not stage a copy:"
 msgstr "如果不想暂存副本，可以用 `SITE_UI_DIR` 和 `SITE_UI_API` 直接指定模块："
 
-#: ../developer/site-ui.md:124
+#: ../developer/site-ui.md:122
 msgid "The variables above apply to that one command; no shell profile is changed. To return to the neutral UI, stop the server and run:"
 msgstr "上述变量仅作用于当前命令，不会修改 shell 配置。若要恢复默认 UI，停止服务器后执行："
 
-#: ../developer/site-ui.md:131
+#: ../developer/site-ui.md:129
 msgid "Local dev serves module assets via `SITE_ASSETS_DIR`; the image recipe packages them automatically."
 msgstr "本地开发通过 `SITE_ASSETS_DIR` 提供模块资源；镜像配方会自动打包这些资源。"
 
-#: ../developer/site-ui.md:134
+#: ../developer/site-ui.md:132
 msgid "The staging environment file is used by the Dockerfile, not automatically read by npm. Leaving a staged directory behind does not select it for later commands."
 msgstr "暂存环境文件由 Dockerfile 使用，npm 不会自动读取。保留暂存目录不会让之后的命令自动选择该模块。"
 
-#: ../developer/site-ui.md:137
+#: ../developer/site-ui.md:135
 msgid "Either way the resolver writes `src/site-ui/active/` and `tsconfig.generated.json`, so the bundler, the type checker and the test runner all read the same decision. Those files are generated; do not edit them."
 msgstr "无论采用哪种方式，解析器都会写出 `src/site-ui/active/` 与 `tsconfig.generated.json`，让打包器、类型检查器和测试工具使用同一选择。这些文件由工具生成，请勿手工编辑。"
 
-#: ../developer/site-ui.md:141
+#: ../developer/site-ui.md:139
 msgid "4. Assets"
 msgstr "4\\. 资源"
 
-#: ../developer/site-ui.md:143
+#: ../developer/site-ui.md:141
 msgid "A module's images live in `public/site-assets/<module-id>/`, and the build merges them into the image. Three rules, all enforced:"
 msgstr "模块图片位于 `public/site-assets/<module-id>/`，构建时会合并进镜像。以下三条规则均由工具强制执行："
 
-#: ../developer/site-ui.md:146
+#: ../developer/site-ui.md:144
 msgid "**Under the module's own id.** An asset elsewhere fails the build. This is what makes \"two modules cannot write the same path, and neither can shadow the application's\" true."
 msgstr "**资源必须位于模块自身 id 下。** 放在其他路径会使构建失败，从而保证不同模块不能写入同一路径，也不能覆盖应用资源。"
 
-#: ../developer/site-ui.md:149
+#: ../developer/site-ui.md:147
 msgid "**Never a collision.** A module asset at a path the application already ships fails the build rather than overwriting it."
 msgstr "**不允许冲突。** 模块资源与应用已有路径冲突时构建失败，不会静默覆盖。"
 
-#: ../developer/site-ui.md:151
+#: ../developer/site-ui.md:149
 msgid "**The route is what serves them.** `/site-assets/*` is a Next route handler, and a route handler shadows static file serving for the whole prefix — so \"the file is in `public/`\" is not evidence that it is reachable. Test the URL."
 msgstr "**资源由路由提供。** `/site-assets/*` 是 Next 路由处理器，会覆盖整个前缀的静态文件服务。因此，“文件位于 `public/`”不能证明它可访问，必须实际请求 URL。"
 
-#: ../developer/site-ui.md:155
+#: ../developer/site-ui.md:153
 msgid "At runtime, `SITE_ASSETS_DIR` is read first and the image's own copy second. A deployment that mounts its branding directory keeps overriding the module's files, and one that mounts nothing still serves a complete site."
 msgstr "运行时先读取 `SITE_ASSETS_DIR`，再回退到镜像内的副本。挂载品牌目录的部署可以继续覆盖模块资源；未挂载目录的部署也有完整站点。"
 
-#: ../developer/site-ui.md:159
+#: ../developer/site-ui.md:157
 msgid "5. Styling the shared forms"
 msgstr "5\\. 共享表单的样式"
 
-#: ../developer/site-ui.md:161
-msgid "The shared account forms render their own markup and default styling. Stable semantic hooks provide styles and state; a narrow layout slot provides structural variation. The older class map remains a temporary compatibility mechanism."
-msgstr "共享账号表单拥有自己的结构和默认样式。稳定的语义属性用于样式与状态；精简的布局槽位支持结构差异。旧的样式类映射暂时保留以兼容现有模块。"
+#: ../developer/site-ui.md:159
+msgid "The shared account forms render their own markup and default styling. Stable semantic hooks provide styles and state; a narrow layout slot provides structural variation. The deprecated class map remains supported throughout API v1."
+msgstr "共享账号表单负责自己的标记结构和默认样式。稳定的语义属性提供样式与状态接口，小范围的布局插槽支持结构差异。已弃用的类名映射在整个 API v1 生命周期内仍受支持。"
 
-#: ../developer/site-ui.md:165
+#: ../developer/site-ui.md:163
 msgid "**`data-auth` attributes for styling and state.** Shared form elements expose:"
 msgstr "**用于样式与状态的 `data-auth` 属性。** 共享表单元素提供："
 
@@ -376,46 +368,46 @@ msgstr "`data-auth=\"loading\"`"
 msgid "the resolving-session region"
 msgstr "会话解析中的区域"
 
-#: ../developer/site-ui.md:179
+#: ../developer/site-ui.md:177
 msgid "State is carried by the attributes the application already sets — `aria-invalid`, `disabled`, `aria-busy`, `data-auth-error` — so a stylesheet never has to infer \"this field is in error\" from a class name. The set is part of the contract: an attribute is added, never repurposed."
 msgstr "状态由应用设置的现有属性表达，包括 `aria-invalid`、`disabled`、`aria-busy` 和 `data-auth-error`。样式表无需根据类名猜测字段是否出错。这组属性属于契约：可以新增，但不能改变已有属性的含义。"
 
-#: ../developer/site-ui.md:184
+#: ../developer/site-ui.md:182
 msgid "**Structural layout.** The optional `fieldLayout` receives the shared control, hint, error and action nodes, and the label's text and `htmlFor` id. It must render every supplied node, associate the label with that id, and preserve the `data-auth=\"field\"` and `data-auth=\"label\"` hooks. The neutral layout places the field action after the control and validation; a module may place it beside its label. This replaces layout booleans without moving validation or controllers into a distribution."
 msgstr "**结构布局。** 可选的 `fieldLayout` 接收共享控件、提示、错误与操作节点，以及标签文本和 `htmlFor` id。它必须渲染所有传入节点，将标签关联到该 id，并保留 `data-auth=\"field\"` 和 `data-auth=\"label\"` 属性。默认布局将字段操作放在控件与验证信息之后；模块可以将其放在标签旁边。这种方式替代布局布尔值，同时让验证与控制器继续留在共享应用中。"
 
-#: ../developer/site-ui.md:192
-msgid "**Transitional `authAppearance` class map.** The existing class-map export is retained to let current modules migrate without changing their visual design. It is deprecated and is not a frozen v1 styling surface. New styling should use scoped `data-auth` and state selectors; class names are module-owned details. The semantic-style migration is not complete: the class map and its nested `fieldLayout` entry will remain available until the existing consumer has migrated and normal, invalid, loading and keyboard states have been compared. Removing them requires a documented migration and API revision; callers are not expected to track unannounced breaking changes."
-msgstr "**过渡期的 `authAppearance` 样式类映射。** 目前保留该导出，以便现有模块在不改变视觉设计的情况下迁移。它已弃用，不是冻结的 v1 样式接口。新样式应使用限定作用域的 `data-auth` 与状态选择器；类名是模块自身的实现细节。语义样式迁移尚未完成：在现有消费者完成迁移，并对照正常、非法输入、加载与键盘操作状态之前，类映射及其嵌套的 `fieldLayout` 入口会继续保留。移除它们需要明确的迁移文档与 API 版本变更，调用方无需跟随未公告的破坏性改动。"
+#: ../developer/site-ui.md:190
+msgid "**Deprecated `authAppearance` class map.** The class-map export, including its nested `fieldLayout` entry, remains a supported compatibility surface throughout API v1. New styling should prefer scoped `data-auth` and state selectors; class names are module-owned details. The semantic-style migration is not complete. Removing this adapter requires the next API revision, a documented migration and comparison of normal, invalid, loading and keyboard states. Deprecation does not allow breaking existing v1 modules."
+msgstr "**已弃用的 `authAppearance` 类名映射。** 此类名映射导出及其嵌套的 `fieldLayout` 入口，在整个 API v1 生命周期内仍是受支持的兼容接口。新样式应优先使用限定作用域的 `data-auth` 和状态选择器；类名是模块自己的实现细节。语义样式迁移尚未完成。移除此适配层必须发布下一版 API、提供迁移文档，并对比正常、无效、加载和键盘操作状态。弃用并不意味着可以破坏现有 v1 模块。"
 
-#: ../developer/site-ui.md:202
+#: ../developer/site-ui.md:198
 msgid "All customization is subject to the same rule: **the module's CSS may only affect the pages it owns.** A stylesheet that reaches `body`, `:root` or a bare element selector will restyle the console too, and no check will catch it for you — scope everything under a root class the module sets on its own shell."
 msgstr "所有定制都遵循同一条规则：**模块 CSS 只能影响模块负责的页面。** 选择 `body`、`:root` 或裸元素的样式会同时改变控制台，目前没有检查器替你拦截。应将所有规则限定在模块外壳设置的根类名之下。"
 
-#: ../developer/site-ui.md:207
+#: ../developer/site-ui.md:203
 msgid "6. Compatibility"
 msgstr "6\\. 兼容性"
 
-#: ../developer/site-ui.md:209
+#: ../developer/site-ui.md:205
 msgid "**Adding a module does not change the console.** The five account pages sit in the console container when no `AuthFrame` is exported, and the shared pages, schemas and session handling are untouched either way."
 msgstr "**添加模块不会改变控制台。** 未导出 `AuthFrame` 时，五个账号页面留在控制台容器中；无论是否提供模块，共享页面、数据结构与会话处理都保持不变。"
 
-#: ../developer/site-ui.md:212
+#: ../developer/site-ui.md:208
 msgid "**Removing an optional export is safe.** A module that stops exporting `Landing` gets the console's home page back."
 msgstr "**移除可选导出是安全的。** 模块停止导出 `Landing` 后，将恢复控制台首页。"
 
-#: ../developer/site-ui.md:214
+#: ../developer/site-ui.md:210
 msgid "**Renaming or removing an export, changing a prop's meaning, or repurposing a `data-auth` value is a breaking change** and belongs behind an API revision bump. So does renaming a key in `authMessages` or changing its interpolation variables."
 msgstr "**重命名或删除导出、改变属性含义，或改变 `data-auth` 值的用途，均属于破坏性变更**，需要提升 API 版本。重命名 `authMessages` 的键或改变其插值变量也一样。"
 
-#: ../developer/site-ui.md:218
+#: ../developer/site-ui.md:214
 msgid "**Adding an optional key or attribute is compatible.**"
 msgstr "**新增可选键或属性是兼容变更。**"
 
-#: ../developer/site-ui.md:220
+#: ../developer/site-ui.md:216
 msgid "`SITE_UI_API` is the version of this document. The resolver refuses a module that declares a revision this checkout does not implement, rather than building something neither side was written for."
 msgstr "`SITE_UI_API` 是本文定义的接口版本。模块声明的版本若不受当前 checkout 支持，解析器会拒绝构建，而不会产生双方都未准备支持的产物。"
 
-#: ../developer/site-ui.md:224
-msgid "The optional server `locale` is currently consumed by the document root. Server metadata exports are reserved and are not applied by the host; module authors should not rely on them to change titles or descriptions."
-msgstr "服务端可选的 `locale` 当前由文档根节点使用。服务端 metadata 导出是预留能力，宿主目前不会应用；模块作者不应依赖它修改标题或描述。"
+#: ../developer/site-ui.md:220
+msgid "The optional server `locale` sets the root document's `lang`, including console routes; omitting it keeps `en`. Document titles, descriptions and icons come from runtime branding. The module API has no metadata override or shared public-layout export; modules can organize their own internal layouts freely."
+msgstr "可选的服务端 `locale` 设置根文档的 `lang`，也适用于控制台路由；省略时保留 `en`。文档标题、描述和图标来自运行时品牌配置。模块 API 不提供元数据覆盖或共享公开布局导出；模块可以自由组织自己的内部布局。"

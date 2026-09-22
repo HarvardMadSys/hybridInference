@@ -65,10 +65,6 @@ export function useTermsFrame(): React.ComponentType<TermsFrameProps> | null {
  *    chrome, so exactly one layer is drawing it.
  * 3. a console route → the children, with the console chrome the route
  *    boundary rendered around them.
- *
- * A module's `PublicFrame` is used by the module's *own* pages and never by the
- * host: wrapping a shared page in it would nest the design's full-width
- * background inside the console container it exists to escape.
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
   const Landing = useLanding();
@@ -87,11 +83,6 @@ export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
  * - no frame → the console's own body, which is its card inside the console
  *   container, because `PublicRouteBoundary` has already decided that this
  *   route keeps the console chrome.
- *
- * The earlier version passed the host's own legal body into the module's frame.
- * That is two layouts in one page: the console's card inside a full-width
- * legal design, in the wrong column, with a duplicated heading and a second set
- * of `#terms-s*` anchors for the browser to choose between.
  *
  * A client component rather than a server one because the choice depends on what
  * the build compiled in, which is a module-scope fact on the client side.

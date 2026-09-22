@@ -7,7 +7,6 @@ import {
   useT,
   type AuthAppearance,
   type AuthFrameProps,
-  type PublicFrameProps,
   type TermsFrameProps,
 } from '@site-ui/host';
 
@@ -56,9 +55,8 @@ export function Landing() {
 /**
  * A frame that shows where the shared form lands without restyling it much.
  *
- * It checks that `titleInCard: false` really does suppress the console's own
- * heading block — if the host ignores the flag, the heading appears twice and
- * the assertion in `SiteUiBoundary.test.tsx` fails.
+ * It renders the shared heading and form nodes in one frame, so boundary tests
+ * can check that the host does not duplicate them.
  */
 export function AuthFrame({
   page,
@@ -85,23 +83,6 @@ export function TermsFrame({ children }: TermsFrameProps) {
   return (
     <div data-fixture="terms-frame">
       <nav data-fixture="terms-toc">Contents</nav>
-      {children}
-    </div>
-  );
-}
-
-/**
- * The module's own layout, which the host never renders.
- *
- * Kept in the fixture because it is part of the documented interface even though
- * nothing in the host calls it, and a fixture that exercises every branch should
- * exercise the ones that only a module uses. The example module in
- * `distributions/example` deliberately does not export one, which is the other
- * half of the same property: an optional export really is optional.
- */
-export function PublicFrame({ route, children }: PublicFrameProps) {
-  return (
-    <div data-fixture="public-frame" data-route={route}>
       {children}
     </div>
   );

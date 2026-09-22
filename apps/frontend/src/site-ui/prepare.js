@@ -12,13 +12,9 @@
  * - `vitest` calls it from `vitest.config.ts`, the same way;
  * - `tsc` cannot call anything, because it only reads a project file.
  *
- * That last one is why this script exists. `npm run type-check` used to point
- * straight at `tsconfig.generated.json`, a file that only exists once something
- * else has loaded a config — so a clean checkout's first `npm run type-check`
- * failed with four "cannot find module" errors, and a checkout whose last build
- * was a *distribution* build failed with different ones, because the generated
- * bridge still pointed at a staging directory the composer had deleted. Both
- * are the same bug: a command depending on another command having run.
+ * `npm run type-check` calls this script before reading the generated project,
+ * so clean checkouts and changed module selections resolve independently of
+ * earlier commands.
  *
  * Run it explicitly, or let one of the configs above run it for you. It is
  * idempotent, so running it twice costs a few milliseconds.

@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
 import { AuthAppearanceProvider } from '@/site-ui/appearance';
 import { NeutralAuthCard } from '@/site-ui/neutral/client';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { publicRouteFor, publicRoutePaths } from '@/site-ui/routes';
-import { PUBLIC_ROUTES } from '@/site-ui/contract';
+import {
+  PUBLIC_ROUTES,
+  type SiteUiClientModule,
+  type SiteUiServerModule,
+} from '@/site-ui/contract';
 
 vi.mock('@/components/providers/useT', () => ({
   useT: () => (key: string, fallback: string) => `${key}=${fallback}`,
@@ -50,6 +54,12 @@ describe('public route matching', () => {
 });
 
 describe('the compiled-in module', () => {
+  it('does not advertise unconsumed layout or metadata capabilities', () => {
+    expectTypeOf<SiteUiClientModule>().not.toHaveProperty('PublicFrame');
+    expectTypeOf<SiteUiServerModule>().not.toHaveProperty('metadata');
+    expect(SITE_UI_CLIENT).not.toHaveProperty('PublicFrame');
+  });
+
   it('is the neutral one in this build, and says so', () => {
     expect(SITE_UI_CLIENT.descriptor.siteUiApi).toBe(1);
     expect(SITE_UI_CLIENT.descriptor.id).toBe('neutral');
@@ -63,21 +73,8 @@ describe('the compiled-in module', () => {
     expect(SITE_UI_CLIENT.Landing).toBeNull();
   });
 
-  it('declines the public frame, which the host never renders', () => {
-    // Optional, and this module does not need one: it draws no pages of its
-    // own beyond the console's, and the host calls `PublicFrame` nowhere. The
-    // previous version exported a passthrough so that a *required* field had a
-    // value, which is how an interface ends up demanding components nothing
-    // uses.
-    expect(SITE_UI_CLIENT.PublicFrame).toBeNull();
-  });
-
   it('declares no account frame, which is what keeps the console chrome', () => {
-    // The regression this pins: `AuthFrame` used to be the neutral module's
-    // card, and because the boundary asked only whether a frame *existed*, the
-    // five default account pages lost their header, `<main>` and footer while
-    // `/` and `/terms` kept theirs. `null` is this module saying the console
-    // container is the page; the card is the body it holds.
+    // No page-owning frame: the console provides chrome around the default card.
     expect(SITE_UI_CLIENT.AuthFrame).toBeNull();
   });
 
