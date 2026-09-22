@@ -1276,6 +1276,7 @@ jobs:
       - changes
       - backend-quality
       - frontend-quality
+      - site-ui-containers
       - docs-build
       - test
       - security
@@ -1303,6 +1304,7 @@ jobs:
             {"changes":${{ toJSON(needs.changes.result) }},
             "backend-quality":${{ toJSON(needs.backend-quality.result) }},
             "frontend-quality":${{ toJSON(needs.frontend-quality.result) }},
+            "site-ui-containers":${{ toJSON(needs.site-ui-containers.result) }},
             "docs-build":${{ toJSON(needs.docs-build.result) }},
             "test":${{ toJSON(needs.test.result) }},
             "security":${{ toJSON(needs.security.result) }},

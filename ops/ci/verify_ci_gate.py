@@ -27,6 +27,7 @@ DOCKER_IMAGES = ("frontend", "backend")
 APP_JOB_CATEGORIES = {
     "backend-quality": "backend",
     "frontend-quality": "frontend",
+    "site-ui-containers": "frontend",
     "test": "python_tests",
     "docs-build": "docs",
 }

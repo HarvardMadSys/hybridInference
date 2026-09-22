@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ops.ci.classify_changes import classify
 from ops.ci.verify_ci_gate import (
@@ -132,10 +134,63 @@ def test_pr_frontend_dockerfile_runs_frontend_python_tests_and_image() -> None:
         _results(
             **{
                 "frontend-quality": "success",
+                "site-ui-containers": "success",
                 "test": "success",
                 "docker-build": "success",
                 "tutorial-e2e": "success",
             }
+        ),
+    )
+
+
+def _workflow_gate_results(results: str) -> str:
+    """Render the workflow's actual result payload, including omitted dependencies."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["ci-gate"]["steps"]
+        if step.get("name") == "Verify exact required CI job results"
+    )
+    values = json.loads(results)
+    return re.sub(
+        r"\$\{\{ toJSON\(needs\.([a-z0-9-]+)\.result\) \}\}",
+        lambda match: json.dumps(values[match.group(1)]),
+        step["env"]["JOB_RESULTS_JSON"],
+    )
+
+
+def test_ci_gate_waits_for_site_ui_container_checks() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    assert "site-ui-containers" in workflow["jobs"]["ci-gate"]["needs"]
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+def test_frontend_pr_rejects_unsuccessful_site_ui_container_check(result: str) -> None:
+    # Exercise the actual workflow payload: a job left out of it was invisible
+    # to the verifier, even when both image compatibility builds failed.
+    results = _workflow_gate_results(
+        _results(
+            **{
+                "frontend-quality": "success",
+                "site-ui-containers": result,
+                "docker-build": "success",
+            }
+        )
+    )
+    with pytest.raises(ValueError, match=f"site-ui-containers: expected success, got {result}"):
+        verify_gate(
+            "pull_request",
+            _classification(frontend=True, matrix=("frontend",)),
+            results,
+        )
+
+
+def test_docs_only_pr_accepts_legitimately_skipped_site_ui_container_check() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(docs=True, security_only=True),
+        _workflow_gate_results(
+            _results(**{"docs-build": "success", "site-ui-containers": "skipped"})
         ),
     )
 
@@ -165,6 +220,7 @@ def test_pr_unrelated_change_rejects_unexpected_tutorial_e2e() -> None:
             _results(
                 **{
                     "frontend-quality": "success",
+                    "site-ui-containers": "success",
                     "docker-build": "success",
                     "tutorial-e2e": "success",
                 }
@@ -196,6 +252,7 @@ def test_pr_full_requires_all_application_jobs_and_images() -> None:
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "site-ui-containers": "success",
                 "docs-build": "success",
                 "test": "success",
                 "docker-build": "success",
@@ -213,6 +270,7 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "site-ui-containers": "success",
                 "docs-build": "success",
                 "test": "success",
             }
@@ -228,6 +286,7 @@ def test_push_runs_tutorial_e2e_only_when_classified() -> None:
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "site-ui-containers": "success",
                 "docs-build": "success",
                 "test": "success",
                 "tutorial-e2e": "success",
@@ -245,6 +304,7 @@ def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) ->
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "site-ui-containers": "success",
                 "docs-build": "success",
                 "test": "success",
                 "docker-build": "success",
@@ -263,6 +323,7 @@ def test_schedule_rejects_partial_docker_plan() -> None:
                 **{
                     "backend-quality": "success",
                     "frontend-quality": "success",
+                    "site-ui-containers": "success",
                     "test": "success",
                     "docker-build": "success",
                 }
