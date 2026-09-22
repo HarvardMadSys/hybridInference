@@ -167,9 +167,9 @@ threads:
           - [uv, run, pytest, -q, tests/servers/test_admin_users.py, tests/servers/test_bootstrap.py, tests/unit/storage/test_schema_lock_timeout.py, tests/unit/storage/test_login_events.py]
       - id: identity-protection
         branch: prep/1428-identity-protection
-        source_ref: origin/prep/1428-identity-protection-v2
+        source_ref: origin/prep/1428-identity-protection-v3
         source_base: d9e0481697df5b86fde5272ab2059aace74b46dd
-        source_tip: 1d2a94029db52fc72da7bd1ce7dbe356525dea80
+        source_tip: f57f99d96ed03f9e1d383fcd1f40d6278b90965d
         title: "feat(storage): enforce erased identity protection"
         body: |
           ## Summary
