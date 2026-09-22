@@ -23,7 +23,22 @@ if TYPE_CHECKING:
 
 
 class _BrandingModel(BaseModel):
-    """Strict base for the versioned public branding contract."""
+    """Strict base for the versioned public branding contract.
+
+    Unknown keys are *refused*, and that is load-bearing rather than tidy. This
+    document is published to every visitor through `GET /site-config`, and its
+    whole safety argument is that it contains nothing that is not meant to be
+    public: a secret that ends up in it by mistake — a `turnstile_secret_key`
+    beside the site key, a provider token in `example:` — is caught here, at
+    load, instead of being served. Ignoring unknown keys would drop such a field
+    silently and leave it one `model_dump` away from the wire.
+
+    A field that leaves this contract therefore has to leave the documents that
+    publish it in the same change. That is a migration, not an outage: the
+    retired sections are removed from this distribution's branding document
+    alongside the models above, and the loader refuses a document that still
+    carries them, loudly, with the key named.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
@@ -41,6 +56,7 @@ SponsorClassName = Annotated[
 _SITE_ASSET_PREFIX = "/site-assets/"
 _SITE_ASSET_EXTENSIONS = {".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_ACCENT_HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
 def _absolute_url_or_empty(value: str, *, schemes: set[str]) -> str:

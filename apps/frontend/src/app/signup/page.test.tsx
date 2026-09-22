@@ -72,6 +72,12 @@ async function submitSignup(response: SignupResponse): Promise<void> {
 }
 
 describe('SignupPage', () => {
+  it('keeps the login link after consent in classic mode', () => {
+    render(<SignupPage />);
+    completeConsentStep();
+    expect(screen.getByRole('link', { name: 'Log In' })).toHaveAttribute('href', '/login');
+  });
+
   afterEach(() => {
     cleanup();
     mockedSignup.mockReset();

@@ -19,6 +19,8 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { useT } from '@/components/providers/useT';
+import type { Translate } from '@/lib/i18n/translate';
 
 // The one client this gateway federates identity to. The server enforces this
 // independently; checking here too means an unknown client gets a plain answer
@@ -38,23 +40,32 @@ interface AuthorizeRequest {
 }
 
 /** Parse and vet the query, returning a request or the reason there is none. */
-function parseRequest(searchParams: URLSearchParams): AuthorizeRequest | string {
+function parseRequest(searchParams: URLSearchParams, t: Translate): AuthorizeRequest | string {
   const clientId = searchParams.get('client_id');
   const redirectUri = searchParams.get('redirect_uri');
   const codeChallenge = searchParams.get('code_challenge');
 
   if (!clientId || !redirectUri || !codeChallenge) {
-    return 'This sign-in link is incomplete. Please start again from the application.';
+    return t(
+      'auth.authorize.incomplete',
+      'This sign-in link is incomplete. Please start again from the application.',
+    );
   }
   const clientLabel = KNOWN_CLIENTS[clientId];
   if (!clientLabel) {
-    return 'This sign-in link is for an application this deployment does not know.';
+    return t(
+      'auth.authorize.unknown_client',
+      'This sign-in link is for an application this deployment does not know.',
+    );
   }
   let redirectHost: string;
   try {
     redirectHost = new URL(redirectUri).host;
   } catch {
-    return 'This sign-in link has an invalid return address. Please start again from the application.';
+    return t(
+      'auth.authorize.invalid_redirect',
+      'This sign-in link has an invalid return address. Please start again from the application.',
+    );
   }
   return {
     clientId,
@@ -67,6 +78,7 @@ function parseRequest(searchParams: URLSearchParams): AuthorizeRequest | string 
 }
 
 function AuthorizeContent() {
+  const t = useT();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -75,8 +87,8 @@ function AuthorizeContent() {
   const [isContinuing, setIsContinuing] = useState(false);
 
   const request = useMemo(
-    () => parseRequest(new URLSearchParams(searchParams.toString())),
-    [searchParams],
+    () => parseRequest(new URLSearchParams(searchParams.toString()), t),
+    [searchParams, t],
   );
   const requestInvalid = typeof request === 'string';
 
@@ -94,7 +106,9 @@ function AuthorizeContent() {
       <div className="mx-auto w-full max-w-md">
         <Card>
           <div className="text-center">
-            <h1 className="text-3xl font-bold tracking-tight text-gray-900">Sign-in failed</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+              {t('auth.authorize.failed_title', 'Sign-in failed')}
+            </h1>
             <p className="mt-4 text-sm text-red-700" role="alert">
               {request}
             </p>
@@ -141,11 +155,13 @@ function AuthorizeContent() {
       <Card>
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-            Continue to {request.clientLabel}
+            {t('auth.authorize.continue_title', 'Continue to')} {request.clientLabel}
           </h1>
           <p className="mt-2 text-sm text-gray-600">
-            Sign in to <span className="font-medium">{request.clientLabel}</span> (
-            {request.redirectHost}) as <span className="font-medium">{state.user?.email}</span>
+            {t('auth.authorize.signin_lead', 'Sign in to')}{' '}
+            <span className="font-medium">{request.clientLabel}</span> ({request.redirectHost}){' '}
+            {t('auth.authorize.signin_as', 'as')}{' '}
+            <span className="font-medium">{state.user?.email}</span>
           </p>
         </div>
 
@@ -160,12 +176,12 @@ function AuthorizeContent() {
           )}
 
           <Button type="button" className="w-full" isLoading={isContinuing} onClick={onContinue}>
-            Continue
+            {t('auth.authorize.continue', 'Continue')}
           </Button>
 
           <div className="text-center text-sm text-gray-600">
             <a className="font-medium text-blue-600 hover:text-blue-700" href="/dashboard">
-              Cancel and return to dashboard
+              {t('auth.authorize.cancel', 'Cancel and return to dashboard')}
             </a>
           </div>
         </div>

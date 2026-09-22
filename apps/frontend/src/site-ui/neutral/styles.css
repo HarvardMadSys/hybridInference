@@ -1,0 +1,8 @@
+/**
+ * Neutral stylesheet for the Site UI seam.
+ *
+ * Empty on purpose, and empty in the same shape a distribution's `styles.css`
+ * has, so both configurations compile through the identical code path. A
+ * distribution replaces this file wholesale with its own CSS; a build with no
+ * extension imports this one and no bytes are emitted.
+ */

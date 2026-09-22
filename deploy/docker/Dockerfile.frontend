@@ -1,18 +1,20 @@
 # ---- Stage 1: dependencies ----
-FROM node:22-alpine AS deps
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS deps
 WORKDIR /app
 COPY apps/frontend/package.json apps/frontend/package-lock.json ./
 RUN npm ci
 
-# ---- Stage 2: build ----
-FROM node:22-alpine AS builder
+# An optional named context replaces this marker-only stage with a module.
+# Without --build-context site-ui=..., the existing neutral build is selected.
+FROM scratch AS site-ui
+COPY deploy/docker/site-ui/.built-in-ui /.built-in-ui
+
+# ---- Stage 3: build ----
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS builder
 WORKDIR /app
-# Public identity values below are empty by default so an image built straight
-# from this Dockerfile names no deployment. The API base is the one exception:
-# an omitted build arg keeps the established standalone-backend default, while
-# an explicitly supplied empty value opts into same-origin Next.js rewrites.
-# A deployment passes its values as build args -- see
-# deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
+
+# Public build settings remain compatible with existing neutral deployments.
+# Explicitly empty NEXT_PUBLIC_API_BASE selects same-origin Next.js rewrites.
 ARG NEXT_PUBLIC_API_BASE=http://localhost:8080
 # Next loads .env files during `next build`, but this explicit process env has
 # higher precedence and pins the server-side rewrite target deterministically.
@@ -80,20 +82,91 @@ ENV NEXT_PUBLIC_TEAM_JSON=$NEXT_PUBLIC_TEAM_JSON
 ENV NEXT_PUBLIC_SPONSORS_JSON=$NEXT_PUBLIC_SPONSORS_JSON
 COPY --from=deps /app/node_modules node_modules
 COPY apps/frontend/ .
-RUN npm run build
 
-# ---- Stage 3: runtime ----
-FROM node:22-alpine
+# Which module, if any. `SITE_UI_SUBDIR` names the module inside the context, so
+# a repository can pass its whole `frontend/` tree and point at `site-ui` rather
+# than arranging a context that contains only the module. `SITE_UI_API` is
+# required with an external module and checked against this checkout's revision
+# by the resolver — an unset value is a build failure, not a fallback.
+ARG SITE_UI_SUBDIR=.
+ARG SITE_UI_API=
+
+# Buildx substitutes the named context at this COPY; only packaged output
+# reaches the runtime image.
+COPY --from=site-ui / /tmp/site-ui-context/
+
+# Stage the module inside the application before building. The application then
+# compiles it from a path it owns, the resolver writes its bridge and tsconfig
+# there, and the mounted context is not read again. It stays in the layer
+# because a `COPY` cannot be undone in place; the runtime stage copies only the
+# standalone tree, so nothing from it ships.
+RUN node scripts/site-ui/prepare-module.mjs prepare \
+      --app /app \
+      --context /tmp/site-ui-context \
+      --subdir "${SITE_UI_SUBDIR}" \
+      --into /app/src/site-ui/external \
+      --api "${SITE_UI_API}"
+
+# The staging step wrote which module it prepared — or an empty value, for the
+# neutral build — and sourcing that file is what carries the decision into the
+# build. An unset value is the neutral UI, which is the behaviour this
+# Dockerfile had before modules existed.
+#
+# `next build` runs the resolver itself (see `next.config.js`), so a module that
+# reached this point and cannot be compiled still fails here rather than
+# producing a neutral image by accident.
+RUN if [ -f .site-ui-build-env ]; then set -a; . ./.site-ui-build-env; set +a; fi; npm run build
+
+# Finish the bundle. `manifest` copies the compiled chunks into the standalone
+# tree and records which module was compiled in — `next build` writes `src/`, and
+# the standalone tree does not include it. `merge` puts the module's own assets
+# where the route handler looks for them, and is where a collision with the
+# application's files becomes a build failure rather than a silent overwrite.
+# `check` then asserts the finished bundle: `output: 'standalone'` omits the
+# chunks, and the runtime stage used to copy them separately, so the bundle was
+# produced in one place and asserted in another.
+#
+# `merge` runs after the build because it reads the module id from the manifest
+# the build wrote — the resolver decides what the module is, and the assets have
+# to land under the id the *build* recorded rather than one a Dockerfile guessed.
+RUN node scripts/site-ui/prepare-module.mjs merge --repo-root . --app . \
+ && node scripts/site-ui/prepare-module.mjs manifest --repo-root . --app . \
+ && node scripts/site-ui/prepare-module.mjs check --repo-root . --app .
+
+# ---- Stage 4: runtime ----
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85
 WORKDIR /app
 
+# `PORT` and `HOSTNAME` are what the standalone server binds. Without them Next
+# listens on `localhost:3000`, which is inside the container's own network
+# namespace — the image starts, logs `Ready`, and answers nothing from outside.
+# They were in this file before the Site UI stages were added and were lost in
+# that edit, which is exactly the kind of regression a composability change
+# causes: the new stages were the subject of the diff and the runtime stage was
+# rewritten around them.
 ENV NODE_ENV=production
 ENV PORT=3001
 ENV HOSTNAME=0.0.0.0
 
-# Copy standalone output (requires output: 'standalone' in next.config.js)
+# Identity declarations used by release tooling alongside source attestations.
+# Labels default to empty strings for a neutral build. Labels alone do not prove
+# which sources were compiled; publication must verify the build's provenance.
+ARG OCI_SOURCE=""
+ARG OCI_REVISION=""
+ARG CORE_REVISION=""
+ARG SITE_UI_API=""
+ARG FRONTEND_INPUTS_TREE=""
+
+LABEL org.opencontainers.image.source="$OCI_SOURCE" \
+      org.opencontainers.image.revision="$OCI_REVISION" \
+      io.hybridinference.core-revision="$CORE_REVISION" \
+      io.hybridinference.site-ui-api="$SITE_UI_API" \
+      io.hybridinference.frontend-inputs-tree="$FRONTEND_INPUTS_TREE"
+
+# One copy, because the builder step above produced one complete tree: the
+# standalone server, the compiled chunks, the application's public files and the
+# module's assets merged into them, and the module record beside the server.
 COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static .next/static
-COPY --from=builder /app/public public
 
 EXPOSE 3001
 

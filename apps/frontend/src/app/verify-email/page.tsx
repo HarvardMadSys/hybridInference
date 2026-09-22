@@ -6,13 +6,17 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { resendVerification, verifyEmail } from '@/lib/api/auth';
 import { getErrorMessage, APIError } from '@/lib/utils/errors';
-import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { InputField } from '@/components/ui/InputField';
+import { useT } from '@/components/providers/useT';
+import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
+import { useAuthAppearance } from '@/site-ui/appearance';
+import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
+import { fill } from '@/lib/utils/interpolate';
 
 export const dynamic = 'force-dynamic';
 
 function VerifyEmailContent(): JSX.Element {
+  const t = useT();
+  const skin = useAuthAppearance();
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<'loading' | 'success' | 'error' | 'already_verified'>(
     'loading',
@@ -31,7 +35,9 @@ function VerifyEmailContent(): JSX.Element {
     try {
       await resendVerification(resendEmail.trim());
       setResendDone(true);
-      toast.success('Verification email sent. Please check your inbox.');
+      toast.success(
+        t('auth.verify.resent_toast', 'Verification email sent. Please check your inbox.'),
+      );
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -44,149 +50,161 @@ function VerifyEmailContent(): JSX.Element {
 
     if (!token) {
       setStatus('error');
-      setMessage('Missing verification token');
+      setMessage(t('auth.verify.missing_token', 'Missing verification token'));
       return;
     }
 
     verifyEmail(token)
       .then((response) => {
         setStatus('success');
-        setMessage(response.message || 'Email verified successfully!');
+        setMessage(
+          response.message || t('auth.verify.success_fallback', 'Email verified successfully!'),
+        );
       })
       .catch((err) => {
         // Check if token was already used (user already verified)
         if (err instanceof APIError && err.code === 'TOKEN_ALREADY_USED') {
           setStatus('already_verified');
-          setMessage('Your email has already been verified. You can login now.');
+          setMessage(
+            t(
+              'auth.verify.already_message',
+              'Your email has already been verified. You can login now.',
+            ),
+          );
         } else {
           setStatus('error');
           setMessage(getErrorMessage(err));
         }
       });
-  }, [searchParams]);
+  }, [searchParams, t]);
+
+  const titles: Record<typeof status, string> = {
+    loading: t('auth.verify.loading_title', 'Verifying Email'),
+    success: t('auth.verify.success_title', 'Email Verified'),
+    already_verified: t('auth.verify.already_title', 'Already Verified'),
+    error: t('auth.verify.error_title', 'Verification Failed'),
+  };
+  const bodies: Record<typeof status, string> = {
+    loading: t('auth.verify.loading_body', 'Please wait while we verify your email address.'),
+    success: t(
+      'auth.verify.success_body',
+      'Your account is now active. You can log in to continue.',
+    ),
+    already_verified: t(
+      'auth.verify.already_body',
+      'Your email is already verified. You can log in to continue.',
+    ),
+    error: t('auth.verify.error_body', 'We were unable to verify your email.'),
+  };
+  const verified = status === 'success' || status === 'already_verified';
 
   return (
-    <div className="mx-auto w-full max-w-md">
-      <Card>
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-            {status === 'loading' && 'Verifying Email'}
-            {status === 'success' && 'Email Verified'}
-            {status === 'already_verified' && 'Already Verified'}
-            {status === 'error' && 'Verification Failed'}
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">
-            {status === 'loading' && 'Please wait while we verify your email address.'}
-            {status === 'success' && 'Your account is now active. You can log in to continue.'}
-            {status === 'already_verified' &&
-              'Your email is already verified. You can log in to continue.'}
-            {status === 'error' && 'We were unable to verify your email.'}
-          </p>
-        </div>
+    <AuthPageFrame
+      page="verify-email"
+      kicker={t('auth.verify.kicker', 'EMAIL VERIFICATION')}
+      title={titles[status]}
+      subtitle={bodies[status]}
+      legal={
+        <>
+          {t('auth.legal.see', 'See')}{' '}
+          <Link href="/terms">{t('chrome.footer.terms', 'Terms')}</Link>
+        </>
+      }
+    >
+      <div className={skin.form} data-auth="form">
+        {status === 'loading' && <AuthLoading />}
 
-        <div className="mt-8 space-y-6">
-          {status === 'loading' && (
-            <div className="flex justify-center">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"></div>
-            </div>
-          )}
+        {status === 'error' && message ? <AuthNotice tone="error">{message}</AuthNotice> : null}
 
-          {status === 'error' && (
-            <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-red-700">
-              {message}
-            </div>
-          )}
+        {verified && message ? <AuthNotice tone="ok">{message}</AuthNotice> : null}
 
-          {(status === 'success' || status === 'already_verified') && (
-            <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-green-700">
-              {message}
-            </div>
-          )}
+        {verified && (
+          <Link href="/login" className={skin.submit} data-auth="submit" prefetch={false}>
+            {t('auth.verify.go_to_login', 'Go to Login')}
+          </Link>
+        )}
 
-          <div className="flex flex-col items-center gap-4">
-            {(status === 'success' || status === 'already_verified') && (
-              <Link href="/login" className="w-full">
-                <Button className="w-full">Go to Login</Button>
-              </Link>
-            )}
+        {status === 'error' &&
+          (resendDone ? (
+            <AuthNotice tone="ok">
+              <p>
+                {fill(
+                  t(
+                    'auth.verify.resent_notice',
+                    'A new verification email is on its way to {email}. Please check your inbox (and spam folder), then follow the link to finish verifying.',
+                  ),
+                  { email: resendEmail.trim() },
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => setResendDone(false)}
+                className={skin.linkButton}
+                data-auth="field-action"
+              >
+                {t('auth.verify.try_another', 'Entered the wrong email? Try another one')}
+              </button>
+            </AuthNotice>
+          ) : (
+            <form onSubmit={handleResend} className={skin.form} data-auth="form">
+              <p className="text-sm">
+                {t(
+                  'auth.verify.resend_prompt',
+                  "Need a new link? Enter your email and we'll send a fresh verification email.",
+                )}
+              </p>
+              <AuthField id="resend-email" label={t('auth.verify.email_label', 'Email')}>
+                <input
+                  id="resend-email"
+                  className={skin.input}
+                  data-auth="control"
+                  type="email"
+                  autoComplete="email"
+                  value={resendEmail}
+                  onChange={(e) => setResendEmail(e.target.value)}
+                  required
+                />
+              </AuthField>
+              <button
+                type="submit"
+                className={skin.submit}
+                data-auth="submit"
+                disabled={isResending}
+                aria-busy={isResending}
+              >
+                {t('auth.verify.resend_button', 'Resend verification email')}
+              </button>
+            </form>
+          ))}
 
-            {status === 'error' &&
-              (resendDone ? (
-                <div className="w-full rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                  <p>
-                    A new verification email is on its way to {resendEmail.trim()}. Please check
-                    your inbox (and spam folder), then follow the link to finish verifying.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setResendDone(false)}
-                    className="mt-2 text-xs font-medium text-green-800 underline hover:text-green-900"
-                  >
-                    Entered the wrong email? Try another one
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={handleResend} className="w-full space-y-3">
-                  <p className="text-sm text-gray-600">
-                    Need a new link? Enter your email and we&apos;ll send a fresh verification
-                    email.
-                  </p>
-                  <InputField
-                    label="Email"
-                    type="email"
-                    autoComplete="email"
-                    value={resendEmail}
-                    onChange={(e) => setResendEmail(e.target.value)}
-                    required
-                  />
-                  <Button type="submit" className="w-full" isLoading={isResending}>
-                    Resend verification email
-                  </Button>
-                </form>
-              ))}
-
-            {status === 'error' && (
-              <div className="flex items-center gap-4">
-                <Link
-                  href="/signup"
-                  className="text-sm font-medium text-blue-600 hover:text-blue-700"
-                >
-                  Sign Up Again
-                </Link>
-                <Link
-                  href="/login"
-                  className="text-sm font-medium text-blue-600 hover:text-blue-700"
-                >
-                  Back to Login
-                </Link>
-              </div>
-            )}
+        {status === 'error' && (
+          <div className="flex items-center justify-center gap-4">
+            <Link
+              href="/signup"
+              className={skin.linkButton}
+              data-auth="field-action"
+              prefetch={false}
+            >
+              {t('auth.verify.signup_again', 'Sign Up Again')}
+            </Link>
+            <Link
+              href="/login"
+              className={skin.linkButton}
+              data-auth="field-action"
+              prefetch={false}
+            >
+              {t('auth.verify.back_to_login', 'Back to Login')}
+            </Link>
           </div>
-        </div>
-      </Card>
-    </div>
+        )}
+      </div>
+    </AuthPageFrame>
   );
 }
 
 export default function VerifyEmailPage(): JSX.Element {
   return (
-    <Suspense
-      fallback={
-        <div className="mx-auto w-full max-w-md">
-          <Card>
-            <div className="text-center">
-              <h1 className="text-3xl font-bold tracking-tight text-gray-900">Verifying Email</h1>
-              <p className="mt-2 text-sm text-gray-600">
-                Please wait while we verify your email address.
-              </p>
-            </div>
-            <div className="mt-8 flex justify-center">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
-            </div>
-          </Card>
-        </div>
-      }
-    >
+    <Suspense fallback={<AuthLoading />}>
       <VerifyEmailContent />
     </Suspense>
   );

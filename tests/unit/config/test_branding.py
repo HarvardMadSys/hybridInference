@@ -184,3 +184,26 @@ def test_loader_rejects_a_sponsor_class_the_neutral_css_does_not_compile(
 
     with pytest.raises(BrandingConfigError, match="class_name"):
         load_branding_config(path)
+
+
+def test_loader_names_the_retired_layout_keys(tmp_path: Path) -> None:
+    """A document still carrying the withdrawn sections is refused by name.
+
+    `theme`, `presentation` and `assets.hero_image_url` left this contract when
+    the console stopped drawing a public-page layout of its own: which UI a site
+    shows is a build-time decision now, and the model line-up and hero image
+    belong to the module that renders them.
+
+    They are refused rather than ignored for the reason the whole model is
+    strict: this document is served to every visitor, so a key nobody declared
+    is either a typo or something that should not be public, and both are worth
+    stopping for. The message has to name the key, because the person reading it
+    is mid-migration and needs to know which line to delete.
+    """
+    data = yaml.safe_load(_EXAMPLE.read_text())
+    data["theme"] = {"accent": "#0052D9"}
+    path = tmp_path / "branding.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(BrandingConfigError, match="theme"):
+        load_branding_config(path)

@@ -12,9 +12,42 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 const AGENT_WEB_INTERNAL_URL = process.env.AGENT_WEB_INTERNAL_URL || '';
 const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNAL_URL || '';
 
+// Which public-site UI this build compiles in, and the generated files that
+// answer it. Resolved here, at config load, because that is the one moment all
+// three toolchains can be pointed at the same decision: Webpack through the
+// alias below, TypeScript through the tsconfig this writes, Vitest through the
+// same alias. A distribution that points SITE_UI_DIR at a module this build
+// cannot use fails right here, before any compilation starts — the failure has
+// to be loud, because the alternative is publishing a site whose home page
+// silently reverted to the console's.
+const { prepareSiteUi, webpackAlias } = require('./src/site-ui/resolve');
+const siteUi = prepareSiteUi(__dirname);
+console.log(
+  `[site-ui] compiling in the ${siteUi.kind} Site UI` +
+    (siteUi.kind === 'distribution' ? ` '${siteUi.id}'` : '') +
+    `, API v${siteUi.api}`,
+);
+
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Point Webpack at the module the resolution chose, and at the generated
+  // tsconfig that describes it. Both are needed: an alias alone leaves `tsc`
+  // checking the neutral UI while the build ships a distribution's, which is
+  // exactly the disagreement this seam exists to prevent.
+  //
+  // `tsconfigPath` is set unconditionally, because the file is generated on
+  // every config load — including for `next dev`, where Next compiles the types
+  // itself. `next.config.js` is plain JS, so this is not type-checked; the
+  // generated project is checked by `npm run type-check`.
+  webpack: (config) => {
+    config.resolve = config.resolve || {};
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      ...webpackAlias(__dirname, siteUi),
+    };
+    return config;
+  },
   // Keep every backend consumer on the exact target compiled into the rewrite
   // manifest. next.config `env` values are inlined during `next build`, so a
   // container-level BACKEND_INTERNAL_URL cannot retarget only server code and

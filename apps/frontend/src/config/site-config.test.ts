@@ -205,6 +205,11 @@ describe('resolveRuntimeSiteConfig', () => {
       }),
     ).toThrow(SiteConfigLoadError);
 
+    // A key the console does not declare is refused, not dropped. This document
+    // is served to every visitor, so an undeclared field is either a typo or
+    // something that should not be public, and the gateway's own model forbids
+    // both — a console that quietly ignored it would only ever hide a
+    // deployment misconfiguration.
     expect(() =>
       resolveRuntimeSiteConfig({
         ...runtimeDocument,
@@ -325,5 +330,75 @@ describe('example quickstart base', () => {
 
     expect(resolved.branding.exampleApiBase).toBe('');
     expect(resolved.branding.exampleHidden).toBe(true);
+  });
+});
+
+describe('the retired copy and layout sections', () => {
+  // `content` (the slot dictionary `useT` read) and `branding.theme` (the
+  // console's accent ramp) are gone from this console: a deployment's page copy
+  // ships with the front-end module that renders it, and the accent belongs to
+  // whichever UI is compiled in.
+  //
+  // Two different rules, because the two keys live in different objects.
+  //
+  // `content` was a *top-level* key, and the envelope tolerates a key this
+  // console does not read: a gateway one version ahead is a normal state during
+  // a rollout. `branding.theme` was inside the branding document, which is
+  // strict on both sides — the gateway refuses it before it is ever served.
+  it('ignores a retired top-level key and refuses a retired branding one', () => {
+    const resolved = resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      content: { locale: 'zh-CN', strings: { 'landing.hero.subtitle': '面向科研的推理服务' } },
+    });
+    expect(resolved.branding.appDescription).toBe(runtimeBranding.app_description);
+    expect(resolved).not.toHaveProperty('content');
+
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          theme: { accent: '#0052D9', accent_dark: '#003CAB', accent_light: '#3B7BFF' },
+        },
+      }),
+    ).toThrow(SiteConfigLoadError);
+  });
+
+  it('still refuses a document that is genuinely malformed elsewhere', () => {
+    // Tolerating a key this console does not read is not the same as accepting
+    // anything: the keys that *are* this endpoint's contract keep their rules.
+    expect(() => resolveRuntimeSiteConfig({ schema_version: 99, distribution: {} })).toThrow(
+      SiteConfigLoadError,
+    );
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, routers: 'fixed' },
+      }),
+    ).toThrow(SiteConfigLoadError);
+  });
+});
+
+describe('the retired page-layout section', () => {
+  // `branding.presentation` and `assets.hero_image_url` used to tell the console
+  // which public-page layout to draw and which hero image to put in it. The
+  // console no longer draws any layout: which UI a site shows is decided when
+  // the image is built (see `src/site-ui/`), and the model line-up and the hero
+  // belong to the module that renders them.
+  //
+  // A deployment that still publishes them is refused by name, which is what
+  // makes this a migration rather than a silent no-op: the person reading the
+  // error is mid-upgrade and needs to know which line to delete. Dropping the
+  // keys instead would leave a deployment believing its hero image and its
+  // model line-up were still in use.
+  it('refuses a document that still publishes the retired sections', () => {
+    for (const branding of [
+      { ...runtimeBranding, presentation: { preset: 'inference', model_families: [] } },
+      { ...runtimeBranding, assets: { ...runtimeBranding.assets, hero_image_url: '/a.png' } },
+    ]) {
+      expect(() => resolveRuntimeSiteConfig({ ...runtimeDocument, branding })).toThrow(
+        SiteConfigLoadError,
+      );
+    }
   });
 });

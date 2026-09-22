@@ -39,6 +39,10 @@ site:
   # terms_document: ./content/terms.md
   # privacy_document: ./content/privacy.md
   branding: ./branding.example.yaml
+  # Interface copy. Separate from `branding:` on purpose: identity changes
+  # rarely and copy changes often, and a deployment can adopt one without the
+  # other. The example overrides no slot, so the console keeps its own English.
+  content: ./content.example.yaml
 
 features:
   routers: [fixed]

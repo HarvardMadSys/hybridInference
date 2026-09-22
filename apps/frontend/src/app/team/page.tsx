@@ -1,11 +1,20 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
+import { fill } from '@/lib/utils/interpolate';
+import { translate } from '@/lib/i18n/translate';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { pageMetadata } from '@/config/site-metadata';
 
 export async function generateMetadata(): Promise<Metadata> {
   const siteConfig = await loadRuntimeSiteConfig();
-  return pageMetadata(siteConfig, 'Team', `The people building ${siteConfig.branding.appName}.`);
+  const t = translate;
+  return pageMetadata(
+    siteConfig,
+    t('meta.team.title', 'Team'),
+    fill(t('meta.team.description', 'The people building {app_name}.'), {
+      app_name: siteConfig.branding.appName,
+    }),
+  );
 }
 
 function initials(name: string): string {
@@ -19,20 +28,28 @@ function initials(name: string): string {
 
 export default async function TeamPage(): Promise<JSX.Element> {
   const { branding } = await loadRuntimeSiteConfig();
+  // The console has one language: `translate` returns the English literal each
+  // call site passes. It exists as a function so a server page reads the same
+  // way as a client one.
+  const t = translate;
   const members = branding.team;
   if (members.length === 0) notFound();
   return (
     <div className="flex w-full flex-col gap-10">
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-white via-gray-50 to-red-50/30 px-6 py-14 text-center shadow-subtle">
-        <p className="text-sm font-semibold uppercase tracking-widest text-crimson">Our team</p>
+        <p className="text-sm font-semibold uppercase tracking-widest text-crimson">
+          {t('team.eyebrow', 'Our team')}
+        </p>
         <h1 className="mx-auto mt-3 max-w-2xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-          The people behind <span className="text-crimson">{branding.appName}</span>
+          {t('team.title_prefix', 'The people behind')}{' '}
+          <span className="text-crimson">{branding.appName}</span>
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-base text-gray-600 sm:text-lg">
-          A small research team building free, open LLM inference
+          {t('team.subtitle', 'A small research team building free, open LLM inference')}
           {branding.orgName && branding.orgUrl ? (
             <>
-              {' at '}
+              {' '}
+              {t('team.subtitle_org_lead', 'at')}{' '}
               <a
                 href={branding.orgUrl}
                 className="text-crimson hover:underline"
@@ -60,13 +77,15 @@ export default async function TeamPage(): Promise<JSX.Element> {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={member.image}
-                  alt={`Photo of ${member.name}`}
+                  alt={fill(t('team.photo_alt', 'Photo of {name}'), { name: member.name })}
                   className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                 />
               ) : (
                 <span
                   role="img"
-                  aria-label={`Placeholder avatar for ${member.name}`}
+                  aria-label={fill(t('team.avatar_label', 'Placeholder avatar for {name}'), {
+                    name: member.name,
+                  })}
                   className="flex h-full w-full items-center justify-center bg-gradient-to-br from-crimson/15 to-crimson/5 text-2xl font-semibold tracking-wide text-crimson"
                 >
                   {initials(member.name)}

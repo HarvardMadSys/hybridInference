@@ -1,9 +1,6 @@
-node_modules
-.next
-out
-build
-dist
-coverage
-*.min.js
-*.min.css
-package-lock.json
+# Generated Site UI resolution output (written by src/site-ui/resolve.js).
+# Formatting a generated file would make `format:check` disagree with the next
+# build, which rewrites it.
+src/site-ui/active
+src/generated
+tsconfig.generated.json

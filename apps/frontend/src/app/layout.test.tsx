@@ -34,8 +34,15 @@ vi.mock('@/components/providers', () => ({
 vi.mock('@/components/ui/ErrorBoundary', () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock('@/components/ui/Header', () => ({ Header: () => <div>header</div> }));
-vi.mock('@/components/ui/SiteFooter', () => ({ SiteFooter: () => <div>footer</div> }));
+// The Site UI boundary and the chrome decision are separate components with
+// their own coverage (`src/site-ui/*.test.tsx`); this file is about what the
+// ROOT layout renders, so both are reduced to their children here.
+vi.mock('@/site-ui/SiteUiBoundary', () => ({
+  SiteUiBoundary: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+vi.mock('@/site-ui/PublicRouteBoundary', () => ({
+  PublicRouteBoundary: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
 
 import RootLayout, { generateMetadata } from './layout';
 

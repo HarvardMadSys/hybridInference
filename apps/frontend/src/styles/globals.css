@@ -4,6 +4,25 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The accent ramp before (and without) a distribution document. The root
+   layout overrides these from the active branding theme; the neutral values
+   here are what keeps a build with no branding rendering unchanged. */
+:root {
+  --brand-accent: 165 28 48;
+  --brand-accent-dark: 139 23 41;
+  --brand-accent-light: 200 50 74;
+}
+
+/* Hero glow. A component class rather than an arbitrary Tailwind value so the
+   accent can come from the CSS variable above. */
+.hero-glow {
+  background-image: radial-gradient(
+    circle at top,
+    rgb(var(--brand-accent, 165 28 48) / 0.06),
+    transparent 55%
+  );
+}
+
 .agent-xterm .xterm {
   height: 100%;
 }

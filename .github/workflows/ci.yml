@@ -230,6 +230,67 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
+  site-ui-containers:
+    name: Site UI Containers
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.frontend == 'true')
+    # A daemon is the point of this job, so it needs a runner that has one.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Two builds of one Dockerfile, which is the compatibility claim this
+      # interface makes: the command that existed before modules still produces
+      # the neutral image, and the named context is what compiles a module in.
+      # Asserted by *building both* rather than by reading the Dockerfile,
+      # because the failure mode is a build that succeeds and quietly ignores
+      # its context.
+      - name: Build the neutral image with no new arguments
+        run: |
+          docker buildx build -f deploy/docker/Dockerfile.frontend \
+            --load -t site-ui-neutral:ci .
+
+      - name: Build the example module through the named context
+        run: |
+          docker buildx build -f deploy/docker/Dockerfile.frontend \
+            --build-context site-ui=./distributions/example/frontend/site-ui \
+            --build-arg SITE_UI_API=1 \
+            --load -t site-ui-example:ci .
+
+      # The image says which module it contains. A neutral image that reported
+      # the example's id — or the reverse — would mean the context was ignored,
+      # which is the one failure both builds can produce while succeeding.
+      - name: Check each image recorded the module it was built with
+        run: |
+          neutral=$(docker run --rm --entrypoint cat site-ui-neutral:ci /app/site-ui-manifest.json)
+          example=$(docker run --rm --entrypoint cat site-ui-example:ci /app/site-ui-manifest.json)
+          echo "neutral: $neutral"
+          echo "example: $example"
+          echo "$neutral" | grep -q '"kind": "neutral"' || {
+            echo "the neutral image did not record the neutral UI" >&2; exit 1; }
+          echo "$example" | grep -q '"id": "example"' || {
+            echo "the example image did not record the example module" >&2; exit 1; }
+
+      # A module's assets have to be reachable at the URL the module names, and
+      # `/site-assets/*` is a route handler that shadows static serving — so
+      # "the file is in public/" is not evidence. This asks the running server.
+      - name: The example's own asset is served by the image
+        run: |
+          docker run -d --name site-ui-example -p 127.0.0.1:13001:3001 site-ui-example:ci
+          for _ in $(seq 1 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:13001/ && break || sleep 1
+          done
+          curl -fsS -o /dev/null -w 'asset %{http_code} %{content_type}\n' \
+            http://127.0.0.1:13001/site-assets/example/mark.svg
+          docker rm -f site-ui-example
+
   docs-build:
     name: Docs Build
     needs: changes

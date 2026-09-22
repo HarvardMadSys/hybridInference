@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
-import { TermsSections } from '@/app/terms/TermsContent';
+import { useT } from '@/components/providers/useT';
+import { useAuthAppearance } from '@/site-ui/appearance';
+import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
+import { fill } from '@/lib/utils/interpolate';
+import { TermsSections } from '@/site-ui/terms-sections';
 
 // Every consent below folds into the backend's single `accepted_tos` flag, so
 // each one is mandatory: there is no column to record a partial answer.
@@ -34,8 +36,9 @@ function ConsentBlock({
   title: string;
   children: React.ReactNode;
 }): JSX.Element {
+  const skin = useAuthAppearance();
   return (
-    <section className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-4">
+    <section className={`rounded-lg border px-4 py-4 ${skin.consentBlock}`}>
       <h2 className="text-sm font-semibold text-gray-900">
         <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-900 text-xs font-medium text-white">
           {step}
@@ -48,6 +51,8 @@ function ConsentBlock({
 }
 
 export function SignupConsentStep({ onContinue }: { onContinue: () => void }): JSX.Element {
+  const t = useT();
+  const skin = useAuthAppearance();
   const branding = useBranding();
   const [consent, setConsent] = useState<ConsentState>(INITIAL_CONSENT);
   // The Terms checkbox stays disabled until the embedded terms have been
@@ -66,163 +71,236 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
     setConsent((current) => ({ ...current, [key]: !current[key] }));
 
   return (
-    <div className="mx-auto w-full max-w-md">
-      <Card>
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-            Before you create an account
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">
-            {branding.appName} is an experimental research service. Please read and confirm each
-            item below.
-          </p>
-        </div>
-
-        <div className="mt-8 space-y-4">
-          <ConsentBlock step={1} title="Age requirement">
-            <p>{branding.appName} is available only to adults age 18 or older.</p>
-            <label className="flex items-start gap-3 font-medium text-gray-900">
-              <input
-                type="checkbox"
-                className={checkboxClassName}
-                checked={consent.age}
-                onChange={toggle('age')}
-              />
-              <span>I confirm that I am at least 18 years old.</span>
-            </label>
-          </ConsentBlock>
-
-          <ConsentBlock step={2} title="Terms of Service">
-            <p>Please read the terms in full. The checkbox unlocks once you reach the end.</p>
-            <div
-              ref={termsRef}
-              role="region"
-              aria-label="Terms of Service"
-              tabIndex={0}
-              className="max-h-56 overflow-y-auto rounded-md border border-gray-200 bg-white px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-              onScroll={(event) => {
-                if (!termsRead && isScrolledToEnd(event.currentTarget)) setTermsRead(true);
-              }}
-            >
-              <TermsSections headingLevel={3} compact />
-            </div>
-            <p className="text-xs text-gray-500">
-              <Link
-                className="font-medium text-blue-600 hover:text-blue-700"
-                href="/terms"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open the full Terms of Service in a new tab
-              </Link>
-            </p>
-            <label
-              className={`flex items-start gap-3 font-medium ${
-                termsRead ? 'text-gray-900' : 'text-gray-400'
-              }`}
-            >
-              <input
-                type="checkbox"
-                className={checkboxClassName}
-                checked={consent.terms}
-                disabled={!termsRead}
-                onChange={toggle('terms')}
-              />
-              <span>I agree to the Terms of Service.</span>
-            </label>
-            {!termsRead && (
-              <p className="text-xs text-gray-500">
-                Scroll to the end of the terms to enable this checkbox.
-              </p>
+    <AuthPageFrame
+      page="signup"
+      kicker={t('auth.consent.kicker', 'BEFORE YOU START')}
+      title={t('auth.consent.title', 'Before you create an account')}
+      subtitle={fill(
+        t(
+          'auth.consent.intro',
+          '{app_name} is an experimental research service. Please read and confirm each item below.',
+        ),
+        { app_name: branding.appName },
+      )}
+      topbar={
+        <>
+          {t('auth.signup.have_account', 'Already have an account?')}{' '}
+          <Link href="/login" prefetch={false}>
+            {t('auth.signup.login_link', 'Log In')}
+          </Link>
+        </>
+      }
+    >
+      <div className={skin.form} data-auth="form">
+        <ConsentBlock step={1} title={t('auth.consent.age_title', 'Age requirement')}>
+          <p>
+            {fill(
+              t('auth.consent.age_body', '{app_name} is available only to adults age 18 or older.'),
+              { app_name: branding.appName },
             )}
-          </ConsentBlock>
+          </p>
+          <label className="flex items-start gap-3 font-medium text-gray-900">
+            <input
+              type="checkbox"
+              className={checkboxClassName}
+              checked={consent.age}
+              onChange={toggle('age')}
+            />
+            <span>
+              {t('auth.consent.age_confirm', 'I confirm that I am at least 18 years old.')}
+            </span>
+          </label>
+        </ConsentBlock>
 
-          <ConsentBlock step={3} title="Research participation">
-            <p>
-              {branding.appName} is operated to study how people and software agents use large
-              language models. If you participate, we may collect and analyze:
-            </p>
-            <ul className="list-disc space-y-0.5 pl-5">
-              <li>prompts sent through {branding.appName};</li>
-              <li>model responses;</li>
-              <li>tool calls and tool outputs;</li>
-              <li>model and provider information;</li>
-              <li>timestamps and request/session information;</li>
-              <li>token counts, latency, routing, and other usage metadata.</li>
-            </ul>
-            <p>
-              These data may be used by the research team to characterize LLM workloads, evaluate
-              serving systems, and publish research results.
-            </p>
-            <p className="font-medium">
-              Do not submit passwords, credentials, confidential information, regulated data, or
-              sensitive personal information.
-            </p>
-            <p>
-              Participation is voluntary. If you do not agree, you cannot use the research service.
-            </p>
-            <label className="flex items-start gap-3 font-medium text-gray-900">
-              <input
-                type="checkbox"
-                className={checkboxClassName}
-                checked={consent.research}
-                onChange={toggle('research')}
-              />
-              <span>
-                I consent to participate in this research and to the collection and analysis of my{' '}
-                {branding.appName} usage data.
-              </span>
-            </label>
-          </ConsentBlock>
-
-          <ConsentBlock step={4} title="Research data sharing">
-            <p>
-              Some data from this study may be included in research publications or released as a
-              research dataset. Released data may include sanitized prompts and responses, tool
-              calls and outputs, timing information, model and framework information, and usage and
-              performance metadata.
-            </p>
-            <p>
-              Before public release, we process the data to remove or redact direct identifiers and
-              detected personally identifiable information. Automated sanitization cannot guarantee
-              removal of every sensitive or identifying detail.
-            </p>
-            <p>
-              Once de-identified data have been publicly released, it may no longer be possible to
-              withdraw or delete those copies.
-            </p>
-            <label className="flex items-start gap-3 font-medium text-gray-900">
-              <input
-                type="checkbox"
-                className={checkboxClassName}
-                checked={consent.sharing}
-                onChange={toggle('sharing')}
-              />
-              <span>
-                I understand and consent to the sharing and possible public release of de-identified
-                research data derived from my {branding.appName} usage.
-              </span>
-            </label>
-          </ConsentBlock>
-        </div>
-
-        <div className="mt-6 space-y-4">
-          <Button type="button" className="w-full" disabled={!allChecked} onClick={onContinue}>
-            Continue
-          </Button>
-          {!allChecked && (
-            <p className="text-center text-xs text-gray-500">
-              All four confirmations are required to continue.
+        <ConsentBlock step={2} title={t('auth.consent.terms_title', 'Terms of Service')}>
+          <p>
+            {t(
+              'auth.consent.terms_body',
+              'Please read the terms in full. The checkbox unlocks once you reach the end.',
+            )}
+          </p>
+          <div
+            ref={termsRef}
+            role="region"
+            aria-label={t('auth.consent.terms_title', 'Terms of Service')}
+            tabIndex={0}
+            className={`max-h-56 overflow-y-auto rounded-md border bg-white px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/40 ${skin.consentBlock}`}
+            onScroll={(event) => {
+              if (!termsRead && isScrolledToEnd(event.currentTarget)) setTermsRead(true);
+            }}
+          >
+            <TermsSections headingLevel={3} compact />
+          </div>
+          <p className="text-xs text-gray-500">
+            <Link
+              className="font-medium text-blue-600 hover:text-blue-700"
+              href="/terms"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('auth.consent.terms_link', 'Open the full Terms of Service in a new tab')}
+            </Link>
+          </p>
+          <label
+            className={`flex items-start gap-3 font-medium ${
+              termsRead ? 'text-gray-900' : 'text-gray-400'
+            }`}
+          >
+            <input
+              type="checkbox"
+              className={checkboxClassName}
+              checked={consent.terms}
+              disabled={!termsRead}
+              onChange={toggle('terms')}
+            />
+            <span>{t('auth.consent.terms_agree', 'I agree to the Terms of Service.')}</span>
+          </label>
+          {!termsRead && (
+            <p className="text-xs text-gray-500">
+              {t(
+                'auth.consent.terms_scroll_hint',
+                'Scroll to the end of the terms to enable this checkbox.',
+              )}
             </p>
           )}
-          <div className="text-center text-sm text-gray-600">
-            Already have an account?{' '}
-            <a className="font-medium text-blue-600 hover:text-blue-700" href="/login">
-              Log In
-            </a>
-          </div>
+        </ConsentBlock>
+
+        <ConsentBlock step={3} title={t('auth.consent.research_title', 'Research participation')}>
+          <p>
+            {fill(
+              t(
+                'auth.consent.research_body',
+                '{app_name} is operated to study how people and software agents use large language models. If you participate, we may collect and analyze:',
+              ),
+              { app_name: branding.appName },
+            )}
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            <li>
+              {fill(t('auth.consent.research_item_1', 'prompts sent through {app_name};'), {
+                app_name: branding.appName,
+              })}
+            </li>
+            <li>{t('auth.consent.research_item_2', 'model responses;')}</li>
+            <li>{t('auth.consent.research_item_3', 'tool calls and tool outputs;')}</li>
+            <li>{t('auth.consent.research_item_4', 'model and provider information;')}</li>
+            <li>
+              {t('auth.consent.research_item_5', 'timestamps and request/session information;')}
+            </li>
+            <li>
+              {t(
+                'auth.consent.research_item_6',
+                'token counts, latency, routing, and other usage metadata.',
+              )}
+            </li>
+          </ul>
+          <p>
+            {t(
+              'auth.consent.research_use',
+              'These data may be used by the research team to characterize LLM workloads, evaluate serving systems, and publish research results.',
+            )}
+          </p>
+          <p className="font-medium">
+            {t(
+              'auth.consent.research_warning',
+              'Do not submit passwords, credentials, confidential information, regulated data, or sensitive personal information.',
+            )}
+          </p>
+          <p>
+            {t(
+              'auth.consent.research_voluntary',
+              'Participation is voluntary. If you do not agree, you cannot use the research service.',
+            )}
+          </p>
+          <label className="flex items-start gap-3 font-medium text-gray-900">
+            <input
+              type="checkbox"
+              className={checkboxClassName}
+              checked={consent.research}
+              onChange={toggle('research')}
+            />
+            <span>
+              {fill(
+                t(
+                  'auth.consent.research_consent',
+                  'I consent to participate in this research and to the collection and analysis of my {app_name} usage data.',
+                ),
+                { app_name: branding.appName },
+              )}
+            </span>
+          </label>
+        </ConsentBlock>
+
+        <ConsentBlock step={4} title={t('auth.consent.sharing_title', 'Research data sharing')}>
+          <p>
+            {t(
+              'auth.consent.sharing_body_1',
+              'Some data from this study may be included in research publications or released as a research dataset. Released data may include sanitized prompts and responses, tool calls and outputs, timing information, model and framework information, and usage and performance metadata.',
+            )}
+          </p>
+          <p>
+            {t(
+              'auth.consent.sharing_body_2',
+              'Before public release, we process the data to remove or redact direct identifiers and detected personally identifiable information. Automated sanitization cannot guarantee removal of every sensitive or identifying detail.',
+            )}
+          </p>
+          <p>
+            {t(
+              'auth.consent.sharing_body_3',
+              'Once de-identified data have been publicly released, it may no longer be possible to withdraw or delete those copies.',
+            )}
+          </p>
+          <label className="flex items-start gap-3 font-medium text-gray-900">
+            <input
+              type="checkbox"
+              className={checkboxClassName}
+              checked={consent.sharing}
+              onChange={toggle('sharing')}
+            />
+            <span>
+              {fill(
+                t(
+                  'auth.consent.sharing_consent',
+                  'I understand and consent to the sharing and possible public release of de-identified research data derived from my {app_name} usage.',
+                ),
+                { app_name: branding.appName },
+              )}
+            </span>
+          </label>
+        </ConsentBlock>
+
+        <div className="mt-6 space-y-4">
+          <button
+            type="button"
+            className={skin.submit}
+            data-auth="submit"
+            disabled={!allChecked}
+            onClick={onContinue}
+          >
+            {t('auth.consent.continue', 'Continue')}
+          </button>
+          {!allChecked && (
+            <p className="text-center text-xs">
+              {t('auth.consent.all_required', 'All four confirmations are required to continue.')}
+            </p>
+          )}
+          {/*
+            The cross-link belongs to the consent step itself, not to the frame,
+            because this step renders before the frame does: `/signup` shows the
+            confirmations first and the form — with its `AuthPageFrame` — only
+            after they are accepted. So there is no frame to carry it, and this
+            is the one place a shared page draws its own.
+          */}
+          {
+            <p className="text-center text-sm">
+              {t('auth.signup.have_account', 'Already have an account?')}{' '}
+              <Link href="/login" prefetch={false}>
+                {t('auth.signup.login_link', 'Log In')}
+              </Link>
+            </p>
+          }
         </div>
-      </Card>
-    </div>
+      </div>
+    </AuthPageFrame>
   );
 }

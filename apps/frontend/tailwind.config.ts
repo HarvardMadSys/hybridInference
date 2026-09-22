@@ -27,10 +27,15 @@ export default {
           bgLight: '#F9FAFB',
           bgDark: '#0B1220',
         },
+        // The accent ramp is a CSS variable so the active distribution's
+        // branding document can re-point it without a second set of
+        // components. The fallback channels are the neutral crimson, and the
+        // space-separated form is what lets opacity modifiers
+        // (`bg-crimson/10`) keep working.
         crimson: {
-          DEFAULT: '#A51C30',
-          dark: '#8B1729',
-          light: '#C8324A',
+          DEFAULT: 'rgb(var(--brand-accent, 165 28 48) / <alpha-value>)',
+          dark: 'rgb(var(--brand-accent-dark, 139 23 41) / <alpha-value>)',
+          light: 'rgb(var(--brand-accent-light, 200 50 74) / <alpha-value>)',
         },
       },
       fontFamily: {

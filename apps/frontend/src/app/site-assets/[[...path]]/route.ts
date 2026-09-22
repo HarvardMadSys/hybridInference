@@ -72,29 +72,73 @@ function requestedPath(request: NextRequest): { relativePath: string; contentTyp
   }
 }
 
-async function assetFile(request: NextRequest): Promise<AssetFile | null> {
-  const configuredRoot = process.env.SITE_ASSETS_DIR?.trim();
-  const requested = requestedPath(request);
-  if (!configuredRoot || !path.isAbsolute(configuredRoot) || !requested) return null;
+/**
+ * Where the assets come from, in order.
+ *
+ * ``SITE_ASSETS_DIR`` is the deployment's own directory and wins when it is set:
+ * an operator who mounts branding files means those, and that is the knob the
+ * distribution documents.
+ *
+ * The fallback is the console's own ``public/site-assets``, which is where the
+ * UI module's design assets are packaged by the front-end build. Without it the
+ * image ships a hero image, model marks and a favicon that nothing can serve —
+ * which is what happened while the deployment's mount was the only source, and
+ * it meant editing the module's hero and rebuilding changed nothing on the page.
+ *
+ * Read from ``process.cwd()`` because the standalone bundle is started from its
+ * own root, and resolved lazily per request so a missing directory is a 404
+ * rather than a failure at import time.
+ */
+function assetRoots(): string[] {
+  const roots: string[] = [];
+  const configured = process.env.SITE_ASSETS_DIR?.trim();
+  if (configured && path.isAbsolute(configured)) roots.push(configured);
+  roots.push(path.join(process.cwd(), 'public', ASSET_PREFIX.slice(1)));
+  return roots;
+}
 
+async function findUnder(
+  root: string,
+  requested: { relativePath: string },
+): Promise<string | null> {
   try {
-    const root = await realpath(configuredRoot);
-    const candidate = await realpath(path.resolve(root, requested.relativePath));
-    if (!containedBy(root, candidate)) return null;
-    if (MIME_TYPES[path.extname(candidate).toLowerCase()] !== requested.contentType) return null;
-
-    const info = await stat(candidate);
-    if (!info.isFile() || info.size > MAX_ASSET_SIZE_BYTES) return null;
-    return {
-      path: candidate,
-      size: info.size,
-      mtime: info.mtime,
-      etag: `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`,
-      contentType: requested.contentType,
-    };
+    const real = await realpath(root);
+    const candidate = await realpath(path.resolve(real, requested.relativePath));
+    if (!containedBy(real, candidate)) return null;
+    return candidate;
   } catch {
     return null;
   }
+}
+
+async function assetFile(request: NextRequest): Promise<AssetFile | null> {
+  const requested = requestedPath(request);
+  if (!requested) return null;
+
+  for (const root of assetRoots()) {
+    const candidate = await findUnder(root, requested);
+    if (candidate === null) continue;
+    // The extension check is repeated against the real path, because a symlink
+    // inside the directory could otherwise point at a file whose type the URL
+    // does not claim.
+    if (MIME_TYPES[path.extname(candidate).toLowerCase()] !== requested.contentType) continue;
+
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile() || info.size > MAX_ASSET_SIZE_BYTES) continue;
+      return {
+        path: candidate,
+        size: info.size,
+        mtime: info.mtime,
+        etag: `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`,
+        contentType: requested.contentType,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 function isNotModified(request: NextRequest, asset: AssetFile): boolean {

@@ -24,7 +24,6 @@ distribution:
 site:
   public_base_url: https://gateway.example.com
   support_email: admin@example.com
-  terms_document: ./content/terms.md
 features:
   routers: [fixed, routewise]
   public_signup: true
@@ -63,7 +62,13 @@ async def test_neutral_fallback_without_manifest(client):
     assert body["distribution"]["id"] == "neutral"
     assert body["site"] == {"public_base_url": "", "support_email": ""}
     assert body["branding"] is None
-    assert set(body) == {"schema_version", "distribution", "site", "features", "branding"}
+    assert set(body) == {
+        "schema_version",
+        "distribution",
+        "site",
+        "features",
+        "branding",
+    }
 
 
 @pytest.mark.asyncio

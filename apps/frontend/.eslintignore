@@ -4,3 +4,9 @@ dist
 build
 coverage
 package-lock.json
+
+# Generated Site UI resolution output. Linting a copy of a distribution's module
+# would report its style violations as this repository's, and the copy is
+# regenerated on every build anyway. The distribution lints its own tree.
+src/site-ui/active
+src/generated

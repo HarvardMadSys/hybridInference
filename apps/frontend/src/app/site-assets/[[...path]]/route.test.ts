@@ -166,3 +166,63 @@ describe('/site-assets runtime files', () => {
     expect(config.status).toBe(404);
   });
 });
+
+describe('/site-assets bundled fallback', () => {
+  // The UI module's design assets are packaged into the image under
+  // `public/site-assets/`, and this route is the only thing that can serve them
+  // — it shadows Next's static handling for the whole prefix. Without the
+  // fallback the image carries files nothing reaches: the deployment's mount
+  // was the only source, so replacing the module's hero and rebuilding changed
+  // nothing on the page.
+  let cwd: string;
+  let bundled: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'hybrid-bundled-assets-'));
+    bundled = path.join(cwd, 'public', 'site-assets', 'demo');
+    await mkdir(bundled, { recursive: true });
+    vi.stubEnv('SITE_ASSETS_DIR', '');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('serves the module asset from the bundle when no deployment directory is set', async () => {
+    const hero = 'hero-bytes';
+    await writeFile(path.join(bundled, 'hero-ring.png'), hero);
+
+    const response = await GET(request('/site-assets/demo/hero-ring.png'));
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(hero);
+    expect(response.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('prefers the deployment directory when it has the file', async () => {
+    // The deployment's copy is the operator's, so it wins — and the bundled
+    // fallback is what serves everything the operator did not supply.
+    await writeFile(path.join(bundled, 'hero-ring.png'), 'bundled');
+    const deployment = await mkdtemp(path.join(tmpdir(), 'hybrid-deploy-assets-'));
+    await writeFile(path.join(deployment, 'hero-ring.png'), 'deployment');
+    vi.stubEnv('SITE_ASSETS_DIR', deployment);
+
+    const fromDeployment = await GET(request('/site-assets/hero-ring.png'));
+    const fromBundle = await GET(request('/site-assets/demo/hero-ring.png'));
+
+    await expect(fromDeployment.text()).resolves.toBe('deployment');
+    await expect(fromBundle.text()).resolves.toBe('bundled');
+    await rm(deployment, { recursive: true, force: true });
+  });
+
+  it('still refuses a non-image extension in the bundled tree', async () => {
+    await writeFile(path.join(bundled, 'site-config.json'), '{"secret":true}');
+
+    const response = await GET(request('/site-assets/demo/site-config.json'));
+
+    expect(response.status).toBe(404);
+  });
+});

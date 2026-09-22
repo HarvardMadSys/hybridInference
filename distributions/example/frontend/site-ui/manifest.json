@@ -1,0 +1,6 @@
+{
+  "id": "example",
+  "site_ui_api": 1,
+  "locale": "en",
+  "note": "The smallest useful Site UI module: it replaces the home page and nothing else. Copy this directory as the starting point for a deployment that wants its own landing page."
+}
