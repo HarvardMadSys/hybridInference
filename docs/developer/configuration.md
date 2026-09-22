@@ -6,6 +6,10 @@ same file. It is the conceptual companion to
 [Adding a New Model](adding-models.md) (the field-by-field model registry reference)
 and [Routing](routing.md) (what the routing engine does with the result).
 
+For a map of what a distribution can change through configuration, a UI module,
+or a source fork, start with the [Distribution customization guide](distribution-customization.md).
+It distinguishes runtime configuration from changes that require a new image.
+
 ## What the gateway reads at startup
 
 | Kind | Holds | Read by |

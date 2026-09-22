@@ -20,6 +20,9 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
+msgid "For a map of what a distribution can change through configuration, a UI module, or a source fork, start with the [Distribution customization guide](distribution-customization.md). It distinguishes runtime configuration from changes that require a new image."
+msgstr "如需了解发行版可以通过配置、UI 模块或源码分支修改哪些能力，请先阅读[发行版定制指南](distribution-customization.md)。该指南区分了运行时配置与需要重新构建镜像的改动。"
+
 #: ../developer/configuration.md:1
 msgid "Configuration"
 msgstr "配置"

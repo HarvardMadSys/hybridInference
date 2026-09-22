@@ -8,6 +8,9 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
+msgid "For the operator-facing capability matrix and upgrade paths, see the [Distribution customization guide](distribution-customization.md). This page describes the public UI interface, not a general extension API for every page."
+msgstr "面向发行版维护者的能力表和升级路径，请参阅[发行版定制指南](distribution-customization.md)。本文说明公开 UI 接口，不提供任意页面的通用扩展 API。"
+
 #: ../developer/site-ui-api.md:1
 msgid "Site UI API v1 — the seam that lets a distribution own its public pages"
 msgstr "Site UI API v1：让发行版拥有自己的公开页面"

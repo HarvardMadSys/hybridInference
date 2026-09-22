@@ -1,0 +1,808 @@
+# Chinese translations for the distribution customization guide.
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: ../developer/distribution-customization.md:1
+msgid "Distribution customization guide"
+msgstr "发行版定制指南"
+
+#: ../developer/distribution-customization.md:3
+msgid ""
+"A distribution can use the standard HybridInference website, apply its own branding and operating"
+" policy, or build its own public pages while sharing the console and authentication logic. Choose"
+" the smallest interface that covers your requirements; each option has a different build and "
+"upgrade cost."
+msgstr "发行版可以使用 HybridInference 的标准网站，配置自己的品牌和运营策略，也可以自行开发公开页面，同时共用控制台和认证逻辑。请选择能够满足需求的最小接口；各方案的构建与升级成本不同。"
+
+#: ../developer/distribution-customization.md:8
+msgid ""
+"This guide describes the supported boundaries. The configuration references and Site UI contract "
+"linked below define the individual fields and interfaces."
+msgstr "本指南说明受支持的定制范围。下文链接的配置参考和 Site UI 接口契约详细定义了各项字段与接口。"
+
+#: ../developer/distribution-customization.md:11
+msgid "Choose a customization level"
+msgstr "选择定制层级"
+
+#: ../developer/distribution-customization.md
+msgid "Approach"
+msgstr "方案"
+
+#: ../developer/distribution-customization.md
+msgid "What you maintain"
+msgstr "你需要维护什么"
+
+#: ../developer/distribution-customization.md
+msgid "What upstream provides"
+msgstr "上游提供什么"
+
+#: ../developer/distribution-customization.md
+msgid "When to choose it"
+msgstr "适用场景"
+
+#: ../developer/distribution-customization.md
+msgid "Standard application"
+msgstr "标准应用"
+
+#: ../developer/distribution-customization.md
+msgid "Deployment configuration, credentials and services"
+msgstr "部署配置、凭据和服务"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Default home, account and terms pages; dashboard, API-key management, Playground, request history"
+" and admin console"
+msgstr "默认首页、账号页和条款页；仪表盘、API 密钥管理、Playground、请求历史和管理控制台"
+
+#: ../developer/distribution-customization.md
+msgid "You want a working gateway and console with the default design"
+msgstr "需要采用默认设计、可正常运行的网关和控制台"
+
+#: ../developer/distribution-customization.md
+msgid "Configuration-only distribution"
+msgstr "仅修改配置的发行版"
+
+#: ../developer/distribution-customization.md
+msgid "A distribution manifest, branding document, assets, models and deployment settings"
+msgstr "发行版清单、品牌文档、资源、模型和部署设置"
+
+#: ../developer/distribution-customization.md
+msgid "The same page layouts and business logic, populated with your supported configuration"
+msgstr "沿用相同的页面布局与业务逻辑，展示受支持的配置内容"
+
+#: ../developer/distribution-customization.md
+msgid "You need your name, links, models and operating policy"
+msgstr "需要自己的名称、链接、模型和运营策略"
+
+#: ../developer/distribution-customization.md
+msgid "Public Site UI module"
+msgstr "公开页面 Site UI 模块"
+
+#: ../developer/distribution-customization.md
+msgid "Configuration plus React components, scoped CSS, copy and assets for supported public pages"
+msgstr "配置，以及受支持公开页面的 React 组件、限定作用域的 CSS、文案和资源"
+
+#: ../developer/distribution-customization.md
+msgid "The console, account controllers, session and official frontend build recipe"
+msgstr "控制台、账号控制器、会话和官方前端构建方案"
+
+#: ../developer/distribution-customization.md
+msgid "You need a distinct website and account-page appearance"
+msgstr "需要独立的网站设计和账号页外观"
+
+#: ../developer/distribution-customization.md
+msgid "Source fork"
+msgstr "源码分支"
+
+#: ../developer/distribution-customization.md
+msgid "Your changes to application source and their ongoing integration"
+msgstr "对应用源码的修改，以及持续与上游合并适配"
+
+#: ../developer/distribution-customization.md
+msgid "The upstream source you choose to merge"
+msgstr "你选择合并的上游源码"
+
+#: ../developer/distribution-customization.md
+msgid "Your requirements exceed the published configuration and module interfaces"
+msgstr "需求超出了已公布的配置和模块接口"
+
+#: ../developer/distribution-customization.md:20
+msgid ""
+"The standard application is a default implementation, not a hosted service. Authentication, "
+"persistence, email, model providers and optional services still need their documented deployment "
+"configuration. The [Router Tutorial](router-tutorial.md) runs a local example from inference "
+"through the Web/Admin Console."
+msgstr ""
+"标准应用是默认实现，并非托管服务。认证、持久化、邮件、模型提供商及可选服务仍需按照各自文档完成部署配置。[路由器教程](router-tutorial.md)提供了从推理到 "
+"Web／管理控制台的本地运行示例。"
+
+#: ../developer/distribution-customization.md:26
+msgid "What a distribution can change"
+msgstr "发行版可以定制什么"
+
+#: ../developer/distribution-customization.md:28
+msgid ""
+"“Runtime configuration” below means configuration read by the running services; it does not mean "
+"every file is watched or that an open browser updates live. See [When changes take effect](#when-"
+"changes-take-effect)."
+msgstr ""
+"下文中的“运行时配置”是指由运行中的服务读取的配置，并不表示每个文件都有变更监听，也不表示已打开的浏览器页面会实时更新。请参阅[变更何时生效](#when-changes-take-"
+"effect)。"
+
+#: ../developer/distribution-customization.md
+msgid "Area"
+msgstr "范围"
+
+#: ../developer/distribution-customization.md
+msgid "Supported customization"
+msgstr "支持的定制"
+
+#: ../developer/distribution-customization.md
+msgid "Interface and limits"
+msgstr "接口与限制"
+
+#: ../developer/distribution-customization.md
+msgid "Compatibility owner"
+msgstr "兼容性维护责任"
+
+#: ../developer/distribution-customization.md
+msgid "Site identity"
+msgstr "站点标识"
+
+#: ../developer/distribution-customization.md
+msgid "Display name, public URL, support email, description, organization name/link/tagline and site host"
+msgstr "显示名称、公开 URL、支持邮箱、描述、组织名称／链接／标语及站点主机名"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Active distribution manifest plus its branding YAML; [Configuration](configuration.md#the-"
+"distribution-manifest)"
+msgstr "已启用的发行版清单及其品牌 YAML；参阅[配置](configuration.md#the-distribution-manifest)"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns the schema and consumers; the distribution owns values"
+msgstr "上游维护数据结构及使用这些配置的代码；发行版维护配置值"
+
+#: ../developer/distribution-customization.md
+msgid "Branding and content"
+msgstr "品牌与内容"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Logo/favicon, docs/status/repository links, extra header links, quickstart API example, "
+"team/sponsors and data-policy notice"
+msgstr "Logo／favicon、文档／状态页／仓库链接、额外页头链接、快速入门 API 示例、团队／赞助商及数据政策提示"
+
+#: ../developer/distribution-customization.md
+msgid "Versioned branding YAML; existing components decide where and how these appear"
+msgstr "带版本的品牌 YAML；由现有组件决定这些内容的展示位置和方式"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns component behavior; the distribution owns content/assets"
+msgstr "上游维护组件行为；发行版维护内容和资源"
+
+#: ../developer/distribution-customization.md
+msgid "Home `/`"
+msgstr "首页 `/`"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Replace the whole page, including navigation and footer; omit the replacement to keep the default"
+" home"
+msgstr "替换整页，包括导航和页脚；不提供替换组件即可保留默认首页"
+
+#: ../developer/distribution-customization.md
+msgid "Site UI `Landing`; [Public pages](site-ui.md)"
+msgstr "Site UI `Landing`；参阅[公开页面](site-ui.md)"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns API v1; the distribution owns its design"
+msgstr "上游维护 API v1；发行版维护自身设计"
+
+#: ../developer/distribution-customization.md
+msgid "Account pages"
+msgstr "账号页面"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Replace the outer layout, headings and supported wording; style shared fields and arrange the "
+"provided field nodes"
+msgstr "替换外层布局、标题和接口开放的文案；设置共享字段的样式并排列提供的字段节点"
+
+#: ../developer/distribution-customization.md
+msgid "Site UI `AuthFrame`, `authMessages` and form hooks; routes listed below"
+msgstr "Site UI `AuthFrame`、`authMessages` 和表单钩子；路由见下文"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns forms and authentication; the distribution owns presentation"
+msgstr "上游维护表单和认证；发行版维护展示"
+
+#: ../developer/distribution-customization.md
+msgid "Terms `/terms`"
+msgstr "条款页 `/terms`"
+
+#: ../developer/distribution-customization.md
+msgid "Supply a page frame and legal text, retaining the required terms/privacy anchors"
+msgstr "提供页面外壳和法律文本，保留必需的条款／隐私锚点"
+
+#: ../developer/distribution-customization.md
+msgid "Site UI `TermsFrame`; [Site UI contract](site-ui-api.md)"
+msgstr "Site UI `TermsFrame`；参阅[Site UI 接口契约](site-ui-api.md)"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns shared links/anchors; the distribution owns its published text"
+msgstr "上游维护共享链接和锚点；发行版维护其发布的文本"
+
+#: ../developer/distribution-customization.md
+msgid "Shared console"
+msgstr "共享控制台"
+
+#: ../developer/distribution-customization.md
+msgid "Apply supported identity, links, assets and feature settings"
+msgstr "应用受支持的站点标识、链接、资源和功能设置"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Dashboard, settings, Playground, admin, `/chat`, `/team` and `/authorize` keep their shared "
+"layouts; Site UI cannot replace them"
+msgstr "仪表盘、设置、Playground、管理后台、`/chat`、`/team` 和 `/authorize` 保留共享布局；Site UI 不能替换这些页面"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns the shared UI; a distribution owns any source-fork changes"
+msgstr "上游维护共享 UI；发行版维护其源码分支中的修改"
+
+#: ../developer/distribution-customization.md
+msgid "Additional pages"
+msgstr "额外页面"
+
+#: ../developer/distribution-customization.md
+msgid "No module route registration in API v1"
+msgstr "API v1 不支持模块注册路由"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"A new path such as `/pricing` needs a shared application change or a separate site; adding a "
+"navigation link does not create a route"
+msgstr "新增 `/pricing` 等路径需要修改共享应用或使用独立站点；添加导航链接不会创建路由"
+
+#: ../developer/distribution-customization.md
+msgid "The implementer owns the additional integration"
+msgstr "实现方维护额外的集成"
+
+#: ../developer/distribution-customization.md
+msgid "Models and routing"
+msgstr "模型与路由"
+
+#: ../developer/distribution-customization.md
+msgid "Models, endpoints, aliases, catalog metadata, credentials, weights and supported strategies"
+msgstr "模型、端点、别名、目录元数据、凭据、权重及受支持的策略"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Registry/routing YAML, environment and supported admin APIs; [Adding models](adding-models.md), "
+"[Routing](routing.md)"
+msgstr "注册表／路由 YAML、环境变量及受支持的管理 API；参阅[添加模型](adding-models.md)、[路由](routing.md)"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns configuration semantics; the distribution owns providers and policy"
+msgstr "上游维护配置语义；发行版维护提供商和策略"
+
+#: ../developer/distribution-customization.md
+msgid "Account and feature policy"
+msgstr "账号与功能策略"
+
+#: ../developer/distribution-customization.md
+msgid "Registration availability, configured RAG access, and supported runtime settings"
+msgstr "是否开放注册、已配置的 RAG 访问及受支持的运行时设置"
+
+#: ../developer/distribution-customization.md
+msgid "Manifest, environment and admin settings, according to each feature's backend rules"
+msgstr "根据各功能的后端规则，使用清单、环境变量和管理设置"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream enforces policy; the distribution selects supported values"
+msgstr "上游执行策略；发行版选择受支持的值"
+
+#: ../developer/distribution-customization.md
+msgid "Backend extensions"
+msgstr "后端扩展"
+
+#: ../developer/distribution-customization.md
+msgid "Trusted deployment-local adapter factories and documented registry extensions"
+msgstr "部署本地的可信适配器工厂，以及文档中定义的注册表扩展"
+
+#: ../developer/distribution-customization.md
+msgid "`BACKEND_EXTENSIONS`; [Backend extensions](configuration.md#backend-extensions)"
+msgstr "`BACKEND_EXTENSIONS`；参阅[后端扩展](configuration.md#backend-extensions)"
+
+#: ../developer/distribution-customization.md
+msgid "Upstream owns documented hooks; the distribution maintains its extension code"
+msgstr "上游维护文档中定义的钩子；发行版维护其扩展代码"
+
+#: ../developer/distribution-customization.md:45
+msgid ""
+"The five account routes are `/login`, `/signup`, `/forgot-password`, `/reset-password` and "
+"`/verify-email`. Their required fields, validation, submission, verification, session handling, "
+"redirects and permission checks remain in the shared application. Changing their appearance does "
+"not add a new login method or change account approval policy."
+msgstr ""
+"五个账号路由是 `/login`、`/signup`、`/forgot-password`、`/reset-password` 和 `/verify-"
+"email`。它们的必填字段、表单校验、提交、身份验证、会话处理、重定向和权限检查仍由共享应用负责。改变页面外观不会增加新的登录方式，也不会改变账号审批策略。"
+
+#: ../developer/distribution-customization.md:51
+msgid ""
+"There is no configuration field for an arbitrary home-page hero and no public interface for "
+"replacing the console's overall theme, sidebar or layout. A module's CSS must be scoped to its "
+"own pages; global selectors that restyle the console are outside the supported customization "
+"boundary."
+msgstr "目前没有用于任意首页主视觉区域的配置字段，也没有替换控制台整体主题、侧边栏或布局的公开接口。模块 CSS 必须限定在自身页面内；使用全局选择器改变控制台样式不在受支持的定制范围内。"
+
+#: ../developer/distribution-customization.md:56
+msgid ""
+"A module can provide its own copy and override the message keys exposed by `authMessages`. "
+"Unspecified keys use the shared defaults. The server `locale` sets the document language; it does"
+" not translate the console. A localized home page therefore does not imply a fully localized "
+"product."
+msgstr ""
+"模块可以提供自己的文案，并覆盖 `authMessages` 开放的消息键。未指定的键使用共享默认值。服务器端的 `locale` "
+"用于设置文档语言，并不会翻译控制台。因此，首页本地化并不意味着整个产品都已本地化。"
+
+#: ../developer/distribution-customization.md:61
+msgid "Configuration is the first option"
+msgstr "优先通过配置实现"
+
+#: ../developer/distribution-customization.md:63
+msgid ""
+"Start with the annotated `config/examples/distribution.example.yaml` and "
+"`config/examples/branding.example.yaml`. Keep deployment-owned files in your distribution "
+"repository or overlay, with credentials in the environment."
+msgstr ""
+"从带注释的 `config/examples/distribution.example.yaml` 和 `config/examples/branding.example.yaml` "
+"开始。将部署自有文件保存在发行版仓库或覆盖层中，凭据放在环境变量里。"
+
+#: ../developer/distribution-customization.md:67
+msgid ""
+"Set the site's name in `distribution.display_name`, and its URL and support address under `site`."
+" Copy the complete branding template and point `site.branding` at it; a display name alone, "
+"without a branding document, does not replace the frontend's default name."
+msgstr ""
+"在 `distribution.display_name` 中设置站点名称，在 `site` 下设置 URL 和支持邮箱地址。复制完整的品牌模板，并通过 `site.branding` "
+"指向它；如果没有品牌文档，仅设置显示名称不会替换前端的默认名称。"
+
+#: ../developer/distribution-customization.md:71
+msgid ""
+"Set `organization`, `links`, `example`, `assets`, `team`, `sponsors` and `data_policy_notice` in "
+"the branding document as required. These are content inputs to the default components, not "
+"arbitrary layout instructions. Extra `links.nav` entries add HTTPS header links; they do not "
+"replace navigation. Team entries appear on `/team`, and sponsor entries on the default home page."
+msgstr ""
+"根据需要在品牌文档中设置 `organization`、`links`、`example`、`assets`、`team`、`sponsors` 和 "
+"`data_policy_notice`。这些是默认组件的内容输入，并非任意布局指令。额外的 `links.nav` 条目会添加 HTTPS 页头链接，不会替换导航。团队条目展示在 "
+"`/team`，赞助商条目展示在默认首页。"
+
+#: ../developer/distribution-customization.md:76
+msgid ""
+"Serve local branding images through the mounted site-assets directory and `/site-assets/*`, or "
+"use permitted public asset URLs. Check the URLs over HTTP."
+msgstr "通过挂载的 site-assets 目录和 `/site-assets/*` 提供本地品牌图片，或使用允许的公开资源 URL。通过 HTTP 检查这些 URL。"
+
+#: ../developer/distribution-customization.md:78
+msgid ""
+"Select model/routing files through the documented resolver, and keep provider credentials in "
+"environment variables referenced by the registry."
+msgstr "按文档中的配置解析规则选择模型／路由文件，并将提供商凭据保存在注册表引用的环境变量中。"
+
+#: ../developer/distribution-customization.md:80
+msgid ""
+"Set `DISTRIBUTION_CONFIG_PATH` and explicitly select `DISTRIBUTION_CONFIG_MODE=active` when ready"
+" to apply the manifest. The default `dark` mode validates and compares it without activating its "
+"settings."
+msgstr ""
+"设置 `DISTRIBUTION_CONFIG_PATH`，准备应用清单时显式选择 `DISTRIBUTION_CONFIG_MODE=active`。默认的 `dark` "
+"模式只校验和比较清单，不启用其中的设置。"
+
+#: ../developer/distribution-customization.md:84
+msgid ""
+"The active backend exposes the permitted public subset through `/site-config`; the frontend uses "
+"it for identity and presentation. A failed or invalid response produces a configuration error "
+"instead of silently rendering a working site with different defaults. See "
+"[Deployment](deployment.md#what-a-change-actually-requires)."
+msgstr ""
+"启用清单后的后端通过 `/site-config` "
+"提供允许公开的配置子集；前端用它设置站点标识和展示。如果响应失败或无效，页面会报配置错误，而不会悄悄使用另一套默认值显示看似正常的站点。请参阅[部署](deployment.md#what-a"
+"-change-actually-requires)。"
+
+#: ../developer/distribution-customization.md:90
+msgid "Some similarly named settings have different jobs:"
+msgstr "一些名称相近的设置承担着不同职责："
+
+#: ../developer/distribution-customization.md
+msgid "Setting"
+msgstr "设置"
+
+#: ../developer/distribution-customization.md
+msgid "Actual effect"
+msgstr "实际效果"
+
+#: ../developer/distribution-customization.md
+msgid "`features.public_signup: false` in an active manifest"
+msgstr "已启用清单中的 `features.public_signup: false`"
+
+#: ../developer/distribution-customization.md
+msgid "Closes both public registration UI and API; runtime `signup_enabled=true` cannot override it"
+msgstr "同时关闭公开注册 UI 和 API；运行时的 `signup_enabled=true` 无法覆盖它"
+
+#: ../developer/distribution-customization.md
+msgid "`features.public_signup: true` or unset/null"
+msgstr "`features.public_signup: true` 或未设置／null"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Defers to the effective runtime/environment signup policy; it does not bypass verification or "
+"approval"
+msgstr "遵循实际生效的运行时／环境注册策略；不会绕过验证或审批"
+
+#: ../developer/distribution-customization.md
+msgid "`features.rag: false` in an active manifest"
+msgstr "已启用清单中的 `features.rag: false`"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Disables the configured RAG UI and backend access; enabling it still requires the RAG service's "
+"configuration"
+msgstr "禁用已配置的 RAG UI 和后端访问；启用时仍需完成 RAG 服务配置"
+
+#: ../developer/distribution-customization.md
+msgid "`features.routers`"
+msgstr "`features.routers`"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Declared/public metadata; it does not select or restrict the model router. Use the model's "
+"`router` and supported admin overrides"
+msgstr "声明性／公开元数据；不会选择或限制模型路由器。请使用模型的 `router` 和受支持的管理覆盖设置"
+
+#: ../developer/distribution-customization.md
+msgid "`AGENT_PUBLIC_URL`, or the internal agent service destinations"
+msgstr "`AGENT_PUBLIC_URL` 或内部 agent 服务目标地址"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Configure the existing agent link/proxy integration; they do not install an agent service or make"
+" `/agents` a Site UI slot"
+msgstr "配置已有的 agent 链接／代理集成；不会安装 agent 服务，也不会将 `/agents` 变成 Site UI 扩展点"
+
+#: ../developer/distribution-customization.md
+msgid "`site.terms_document` / `site.privacy_document`"
+msgstr "`site.terms_document` / `site.privacy_document`"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Accepted manifest fields, but not a loader for the current terms page. Use the Site UI legal-page"
+" interface to publish custom text"
+msgstr "清单接受这些字段，但当前条款页不会据此加载文档。请使用 Site UI 法律条款页接口发布自定义文本"
+
+#: ../developer/distribution-customization.md:101
+msgid ""
+"For exact signup precedence, see [The distribution manifest](configuration.md#the-distribution-"
+"manifest); for RAG, see [Docs RAG Assistant](rag-chat.md); for service paths, see [The public "
+"path table](public-path-table.md). A public branding hint or hidden navigation item is not a "
+"substitute for backend authorization."
+msgstr ""
+"注册策略的确切优先级见[发行版清单](configuration.md#the-distribution-manifest)；RAG 见[文档 RAG 助手](rag-"
+"chat.md)；服务路径见[公开路径表](public-path-table.md)。公开的品牌提示或隐藏导航项不能替代后端授权。"
+
+#: ../developer/distribution-customization.md:107
+msgid ""
+"Model/provider changes made through supported admin APIs take effect on the running gateway and "
+"are persisted in its database. They do not rewrite the YAML; stored overrides are applied on top "
+"of it again at startup. Account for both layers when investigating a configuration difference. "
+"See [Runtime configuration](configuration.md#runtime-configuration-from-the-admin-console)."
+msgstr ""
+"通过受支持的管理 API 修改模型／提供商，会在运行中的网关上生效，并持久化到其数据库。这些修改不会重写 YAML；启动时，已保存的覆盖设置会再次叠加到 YAML "
+"之上。排查配置差异时，应同时检查这两层。请参阅[运行时配置](configuration.md#runtime-configuration-from-the-admin-console)。"
+
+#: ../developer/distribution-customization.md:113
+msgid ""
+"Backend extensions are trusted Python code loaded at startup, not a general UI or authentication "
+"plugin system. Use the documented adapter, setting, provider metadata, agent-access and quota "
+"registration hooks; a new authentication flow or arbitrary business endpoint needs its own "
+"implementation and review."
+msgstr ""
+"后端扩展是在启动时加载的可信 Python 代码，并非通用 UI 或认证插件系统。请使用文档中定义的适配器、设置、提供商元数据、agent "
+"访问和配额注册钩子；新的认证流程或任意业务端点需要单独实现和评审。"
+
+#: ../developer/distribution-customization.md:118
+msgid "When changes take effect"
+msgstr "变更何时生效"
+
+#: ../developer/distribution-customization.md
+msgid "Change"
+msgstr "变更"
+
+#: ../developer/distribution-customization.md
+msgid "Required action"
+msgstr "所需操作"
+
+#: ../developer/distribution-customization.md
+msgid "Frontend image rebuild?"
+msgstr "是否需要重新构建前端镜像？"
+
+#: ../developer/distribution-customization.md
+msgid "Mounted distribution manifest, branding YAML, model/routing files"
+msgstr "挂载的发行版清单、品牌 YAML、模型／路由文件"
+
+#: ../developer/distribution-customization.md
+msgid "Restart the backend to load the changed files; reload the page to check presentation"
+msgstr "重启后端以加载修改后的文件；重新加载页面检查展示"
+
+#: ../developer/distribution-customization.md
+msgid "No"
+msgstr "否"
+
+#: ../developer/distribution-customization.md
+msgid "A mounted site-assets file"
+msgstr "挂载的 site-assets 文件"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Replace it in the overlay; verify the served URL (the response allows five minutes of browser "
+"caching)"
+msgstr "在覆盖层中替换文件；验证实际提供的 URL（响应允许浏览器缓存五分钟）"
+
+#: ../developer/distribution-customization.md
+msgid "Runtime environment, including server-only frontend destinations"
+msgstr "运行时环境变量，包括仅供服务器端使用的前端目标地址"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"Recreate the affected container with the new environment; a plain restart retains the old "
+"container environment"
+msgstr "使用新环境变量重新创建受影响的容器；仅重启会保留容器原有的环境变量"
+
+#: ../developer/distribution-customization.md
+msgid "No, for runtime values"
+msgstr "运行时值不需要"
+
+#: ../developer/distribution-customization.md
+msgid "Supported admin model/provider/routing/settings edit"
+msgstr "受支持的模型／提供商／路由／设置管理修改"
+
+#: ../developer/distribution-customization.md
+msgid "Save through the admin console/API; check the effective value and any feature-specific caching"
+msgstr "通过管理控制台／API 保存；检查实际生效值及该功能的缓存行为"
+
+#: ../developer/distribution-customization.md
+msgid "Site UI components, compiled copy, CSS or packaged assets"
+msgstr "Site UI 组件、编译进镜像的文案、CSS 或打包资源"
+
+#: ../developer/distribution-customization.md
+msgid "Build and deploy a new frontend image containing that module"
+msgstr "构建并部署包含该模块的新前端镜像"
+
+#: ../developer/distribution-customization.md
+msgid "Yes"
+msgstr "是"
+
+#: ../developer/distribution-customization.md
+msgid ""
+"A true build-only `NEXT_PUBLIC_*` value or the backend network target compiled from "
+"`BACKEND_INTERNAL_URL`"
+msgstr "真正仅在构建时生效的 `NEXT_PUBLIC_*` 值，或由 `BACKEND_INTERNAL_URL` 编译确定的后端网络目标地址"
+
+#: ../developer/distribution-customization.md
+msgid "Rebuild and deploy the frontend"
+msgstr "重新构建并部署前端"
+
+#: ../developer/distribution-customization.md
+msgid "Source or extension code"
+msgstr "源码或扩展代码"
+
+#: ../developer/distribution-customization.md
+msgid "Rebuild the affected image, or restart the backend for an already-mounted importable extension"
+msgstr "重新构建受影响的镜像；对于已经挂载且可导入的扩展，重启后端即可"
+
+#: ../developer/distribution-customization.md
+msgid "Depends on where the code is packaged"
+msgstr "取决于代码的打包位置"
+
+#: ../developer/distribution-customization.md:130
+msgid ""
+"Changing `SITE_ASSETS_DIR` itself requires recreating the frontend container. Reusing a standard "
+"frontend image also assumes its compiled backend network target matches your deployment; that "
+"target is separate from site branding. Use runtime branding for identity rather than introducing "
+"new build-time branding variables. The precise Compose commands are in "
+"[Deployment](deployment.md#what-a-change-actually-requires)."
+msgstr ""
+"修改 `SITE_ASSETS_DIR` "
+"本身需要重新创建前端容器。复用标准前端镜像的前提还包括：其编译时确定的后端网络目标地址与你的部署一致；这个目标地址与站点品牌无关。请使用运行时品牌配置设置站点标识，避免引入新的构建时品牌变量。具体"
+" Compose 命令见[部署](deployment.md#what-a-change-actually-requires)。"
+
+#: ../developer/distribution-customization.md:137
+msgid "Three implementation paths"
+msgstr "三条实施路径"
+
+#: ../developer/distribution-customization.md:139
+msgid "1. Keep the standard UI and configure a distribution"
+msgstr "1\\. 保留标准 UI，配置自己的发行版"
+
+#: ../developer/distribution-customization.md:141
+msgid ""
+"Start from the [example distribution](configuration.md#the-example-distribution) and its "
+"tutorial. Replace the teaching provider, local-only credentials and service settings for your "
+"environment."
+msgstr "从[示例发行版](configuration.md#the-example-distribution)及其教程开始。根据你的环境替换教学用提供商、仅供本地使用的凭据和服务设置。"
+
+#: ../developer/distribution-customization.md:144
+msgid ""
+"Create your manifest, branding YAML and model/routing configuration; mount the files and branding"
+" assets in the appropriate services."
+msgstr "创建清单、品牌 YAML 和模型／路由配置；将文件和品牌资源挂载到对应服务中。"
+
+#: ../developer/distribution-customization.md:146
+msgid ""
+"Use the standard frontend image with no Site UI selection. Validate the manifest in dark mode, "
+"activate it, then recreate/restart services as above."
+msgstr "使用标准前端镜像，不选择 Site UI 模块。先在 dark 模式下校验清单，再启用清单，并按上文说明重新创建或重启服务。"
+
+#: ../developer/distribution-customization.md:148
+msgid ""
+"Check `/site-config`, the home and account pages, branding URLs and the authenticated console. "
+"Exercise registration policy and a model request."
+msgstr "检查 `/site-config`、首页和账号页面、品牌 URL，以及登录后的控制台。验证注册策略并发起一次模型请求。"
+
+#: ../developer/distribution-customization.md:151
+msgid "This path needs no React implementation and keeps the upstream page layouts."
+msgstr "这条路径无需编写 React 组件，并保留上游页面布局。"
+
+#: ../developer/distribution-customization.md:153
+msgid "2. Build distinct public pages with Site UI"
+msgstr "2\\. 使用 Site UI 构建独立设计的公开页面"
+
+#: ../developer/distribution-customization.md:155
+msgid ""
+"Complete the configuration path first; a custom module still needs the backend's runtime "
+"configuration and shared services."
+msgstr "先完成配置路径；自定义模块仍需要后端运行时配置和共享服务。"
+
+#: ../developer/distribution-customization.md:157
+msgid ""
+"Follow [Distribution-owned public pages](site-ui.md) to create an API v1 module with its "
+"manifest, required client entry and stylesheet. Export only the page components you want to "
+"replace; omitted components keep defaults."
+msgstr "按照[发行版自有公开页面](site-ui.md)创建 API v1 模块，提供清单、必需的客户端入口和样式表。只导出需要替换的页面组件；未提供的组件继续使用默认实现。"
+
+#: ../developer/distribution-customization.md:160
+msgid ""
+"Import shared capabilities only from `@site-ui/host`, alongside permitted framework and module-"
+"local imports. Preserve shared form nodes, accessibility hooks, terms anchors and account "
+"navigation."
+msgstr "共享能力只能从 `@site-ui/host` 导入，此外可使用允许的框架导入和模块内部导入。保留共享表单节点、无障碍钩子、条款锚点和账号导航。"
+
+#: ../developer/distribution-customization.md:163
+msgid ""
+"Build with the official frontend Dockerfile, the `site-ui` named context and `SITE_UI_API=1`. Pin"
+" the upstream source and module source used for release."
+msgstr "使用官方前端 Dockerfile、`site-ui` 命名上下文和 `SITE_UI_API=1` 构建。锁定发布所用的上游源码和模块源码版本。"
+
+#: ../developer/distribution-customization.md:165
+msgid ""
+"Deploy the resulting frontend with the configured backend. Test every owned route, asset and form"
+" state, and check the shared console for style leakage."
+msgstr "将生成的前端与已配置的后端一起部署。测试模块负责的每个路由、资源和表单状态，并检查模块样式是否影响共享控制台。"
+
+#: ../developer/distribution-customization.md:168
+msgid ""
+"The module is compiled into the same Next.js application; it is not fetched or swapped at "
+"runtime. An absent module selects the standard UI. A selected module with missing required files,"
+" a mismatched API version or unsupported imports fails the build. Module content changes require "
+"a new image; runtime branding values read by the module retain their runtime behavior."
+msgstr ""
+"模块会被编译进同一个 Next.js 应用，不会在运行时获取或替换。未提供模块时使用标准 UI。已选择的模块如果缺少必需文件、API "
+"版本不匹配或包含不受支持的导入，构建会失败。修改模块内容需要新镜像；模块读取的运行时品牌值仍按运行时配置的方式生效。"
+
+#: ../developer/distribution-customization.md:174
+msgid "3. Upgrade an existing source fork"
+msgstr "3\\. 升级已有的源码分支"
+
+#: ../developer/distribution-customization.md:176
+msgid ""
+"Inventory local changes by route and behavior. Separate branding values, public-page "
+"presentation, shared-console changes and backend logic."
+msgstr "按路由和行为盘点本地修改，区分品牌值、公开页面展示、共享控制台修改和后端逻辑。"
+
+#: ../developer/distribution-customization.md:178
+msgid ""
+"Where they fit, move values into runtime configuration and public-page presentation into a Site "
+"UI module. Migration is optional; you can keep the fork, with its ongoing merge and verification "
+"work. A UI module keeps authentication controllers shared."
+msgstr "将适合的配置值迁入运行时配置，将适合的公开页面展示迁入 Site UI 模块。迁移是可选的；你可以保留源码分支，并继续承担合并和验证工作。UI 模块会继续共用认证控制器。"
+
+#: ../developer/distribution-customization.md:182
+msgid ""
+"Identify remaining source changes explicitly. Console redesigns, extra routes and new "
+"authentication behavior do not become supported module features merely by moving files into the "
+"module directory."
+msgstr "明确列出仍需保留的源码修改。重新设计控制台、增加路由或新增认证行为，不会仅因相关文件移入模块目录就成为受支持的模块功能。"
+
+#: ../developer/distribution-customization.md:185
+msgid ""
+"Merge the intended upstream version in an isolated branch, resolve conflicts against your "
+"required behavior, and build the exact frontend/backend pair."
+msgstr "在独立分支中合并目标上游版本，按所需行为解决冲突，并构建待发布的确切前端／后端组合。"
+
+#: ../developer/distribution-customization.md:187
+msgid ""
+"Verify the distribution in staging before promoting it. A successful merge or upstream CI result "
+"alone does not verify a fork's presentation or flows."
+msgstr "在推广发布前，先在 staging 环境验证发行版。仅合并成功或上游 CI 通过，并不能验证源码分支的展示和流程。"
+
+#: ../developer/distribution-customization.md:190
+msgid ""
+"Adopting Site UI can reduce future conflicts; it does not automatically migrate an existing fork "
+"or make arbitrary upstream source paths stable interfaces."
+msgstr "采用 Site UI 可以减少今后的冲突，但不会自动迁移已有源码分支，也不会使任意上游源码路径成为稳定接口。"
+
+#: ../developer/distribution-customization.md:193
+msgid "Upgrade and compatibility checklist"
+msgstr "升级与兼容性检查清单"
+
+#: ../developer/distribution-customization.md:195
+msgid ""
+"Upstream maintains the standard implementation, configuration consumers and published Site UI "
+"contract. Within API v1, optional additions are compatible; removing exports, changing prop "
+"meanings or repurposing semantic hooks requires an API revision and migration. The deprecated "
+"`authAppearance` class map remains supported throughout v1. See [Compatibility](site-"
+"ui.md#6-compatibility)."
+msgstr ""
+"上游维护标准实现、读取配置的代码和已公布的 Site UI 接口契约。在 API v1 内，新增可选能力属于兼容变更；删除导出项、改变属性含义或改变语义钩子的用途，需要修订 API "
+"版本并提供迁移方式。已弃用的 `authAppearance` 类名映射在整个 v1 生命周期内持续受支持。请参阅[兼容性](site-ui.md#6-compatibility)。"
+
+#: ../developer/distribution-customization.md:201
+msgid ""
+"Each distribution maintains its configuration, module, deployment and any fork changes. Before "
+"promotion:"
+msgstr "各发行版维护自己的配置、模块、部署和源码分支修改。推广发布前："
+
+#: ../developer/distribution-customization.md:204
+msgid ""
+"Pin the upstream version and, for custom UI, the module version and produced image digest. Keep "
+"the matching configuration and asset versions recoverable."
+msgstr "锁定上游版本；对于自定义 UI，还应锁定模块版本和生成的镜像摘要。确保可以恢复与之匹配的配置和资源版本。"
+
+#: ../developer/distribution-customization.md:206
+msgid ""
+"Read configuration/API migration notes and validate against the selected version. Unsupported "
+"module API revisions must stop the build."
+msgstr "阅读配置／API 迁移说明，并针对所选版本进行校验。不受支持的模块 API 版本必须使构建终止。"
+
+#: ../developer/distribution-customization.md:208
+msgid ""
+"Inspect the actual image's `/app/site-ui-manifest.json` to confirm the intended standard or "
+"custom build; test packaged and mounted assets over HTTP."
+msgstr "检查实际镜像中的 `/app/site-ui-manifest.json`，确认构建结果使用的是预期的标准 UI 或自定义 UI；通过 HTTP 测试打包资源和挂载资源。"
+
+#: ../developer/distribution-customization.md:210
+msgid ""
+"Check public routes, configured links, narrow/wide layouts, keyboard access, form "
+"validation/loading/errors, login/logout and the registration policy."
+msgstr "检查公开路由、配置的链接、窄屏／宽屏布局、键盘操作、表单校验／加载／错误状态、登录／退出和注册策略。"
+
+#: ../developer/distribution-customization.md:212
+msgid ""
+"Check the authenticated console, user/admin permissions and an inference request against the "
+"deployed candidate, including any local fork behavior."
+msgstr "针对已部署的候选版本检查登录后的控制台、用户／管理员权限，并发起一次推理请求，同时覆盖本地源码分支的行为。"
+
+#: ../developer/distribution-customization.md:214
+msgid ""
+"Promote only the tested image/configuration combination and retain the prior combination for "
+"rollback. Upstream merging a change does not itself define when a distribution upgrades; that is "
+"its release pipeline's responsibility."
+msgstr "只推广经过验证的镜像与配置组合，并保留上一组以便回滚。上游合并变更本身不会决定发行版何时升级；升级时机由发行版的发布流水线负责。"

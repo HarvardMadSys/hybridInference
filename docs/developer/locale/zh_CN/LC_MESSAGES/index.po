@@ -173,6 +173,12 @@ msgstr ""
 msgid "Run your own gateway against real providers"
 msgstr "用真实的 provider 跑起你自己的网关"
 
+msgid "Choose what your distribution can configure or customize"
+msgstr "了解发行版可以配置或定制哪些能力"
+
+msgid ":doc:`distribution-customization`"
+msgstr ""
+
 #: ../developer/index.rst:58
 msgid ":doc:`installation`"
 msgstr ""

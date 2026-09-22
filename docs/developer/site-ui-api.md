@@ -7,6 +7,10 @@ account controllers. Site UI provides that extension point without adding
 product-specific components or runtime switches to the shared application.
 The neutral build keeps the existing pages when no module is selected.
 
+For the operator-facing capability matrix and upgrade paths, see the
+[Distribution customization guide](distribution-customization.md). This page
+describes the public UI interface, not a general extension API for every page.
+
 ## The seam
 
 One Next.js application, one console, one session. A distribution ships a small

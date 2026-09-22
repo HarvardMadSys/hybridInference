@@ -52,6 +52,27 @@ table.docutils tbody tr:hover {
     background-color: #f0f8ff;
 }
 
+/* The customization guide compares prose, rather than single-line model IDs.
+   Keep its columns readable; narrow screens use the theme's table scroller. */
+#distribution-customization-guide table.docutils {
+    min-width: 640px;
+}
+
+#distribution-customization-guide table.docutils th:first-child,
+#distribution-customization-guide table.docutils td:first-child {
+    min-width: 140px;
+}
+
+#distribution-customization-guide table.docutils th,
+#distribution-customization-guide table.docutils td,
+#distribution-customization-guide table.docutils td code {
+    white-space: normal !important;
+}
+
+#distribution-customization-guide table.docutils td code {
+    overflow-wrap: anywhere;
+}
+
 /* Code blocks styling */
 .highlight pre {
     border-radius: 4px;

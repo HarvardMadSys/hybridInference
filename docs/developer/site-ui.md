@@ -6,9 +6,11 @@ The seam is a **build-time UI module**: a small tree of React components that th
 frontend image compiles in, alongside the shared application rather than instead
 of it.
 
-Most deployments need none of this. If your change is branding, feature flags or
-copy in the runtime documents, see [configuration.md](configuration.md) and stop
-here.
+Start with the [Distribution customization guide](distribution-customization.md)
+to choose between runtime configuration, a public UI module and a source fork.
+Branding and existing feature switches need only
+[configuration](configuration.md); the module described here changes public-page
+components and their wording, not the shared console layout.
 
 ## 1. What a module can and cannot change
 

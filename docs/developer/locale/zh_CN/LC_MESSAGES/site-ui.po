@@ -17,8 +17,8 @@ msgid "A deployment can replace the public pages a visitor sees — the landing 
 msgstr "部署可以替换访客看到的公开页面，包括首页、账号页面外壳和法律条款页，无需 fork 控制台。扩展方式是 **构建时 UI 模块**：前端镜像将一小组 React 组件与共享应用一起编译，而不是用它们替换整个共享应用。"
 
 #: ../developer/site-ui.md:9
-msgid "Most deployments need none of this. If your change is branding, feature flags or copy in the runtime documents, see [configuration.md](configuration.md) and stop here."
-msgstr "多数部署无需使用此机制。如果只是修改品牌、功能开关或运行时文档中的文案，请参阅 [configuration.md](configuration.md)。"
+msgid "Start with the [Distribution customization guide](distribution-customization.md) to choose between runtime configuration, a public UI module and a source fork. Branding and existing feature switches need only [configuration](configuration.md); the module described here changes public-page components and their wording, not the shared console layout."
+msgstr "请先阅读[发行版定制指南](distribution-customization.md)，选择运行时配置、公开 UI 模块或源码分支。品牌和已有功能开关只需要修改[配置](configuration.md)；本文介绍的模块用于定制公开页面组件及其文案，共享控制台的布局仍由上游维护。"
 
 #: ../developer/site-ui.md:13
 msgid "1. What a module can and cannot change"

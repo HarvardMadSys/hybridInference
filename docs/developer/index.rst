@@ -56,6 +56,8 @@ Where to start
      - :doc:`router-tutorial`
    * - Run your own gateway against real providers
      - :doc:`installation`
+   * - Choose what your distribution can configure or customize
+     - :doc:`distribution-customization`
    * - Follow a request from HTTP through to an upstream call
      - :doc:`architecture`
    * - Publish a new model id, or wire up a provider the gateway has never
@@ -92,6 +94,7 @@ how those overlays resolve.
    router-tutorial
    installation
    configuration
+   distribution-customization
 
 .. toctree::
    :maxdepth: 2
