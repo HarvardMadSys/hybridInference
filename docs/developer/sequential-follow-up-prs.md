@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Sequential follow-up PR automation
 
 `sequential-follow-up-prs.yml` polls the upstream repository for the merge
