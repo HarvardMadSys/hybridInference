@@ -491,6 +491,29 @@ describe('the container build\u2019s module handling', () => {
     });
   });
 
+  it('runs when invoked through a symlinked path', () => {
+    // Node reports the main module's URL with symlinks resolved and `argv` as
+    // typed. Compared as strings, a script reached through a link (macOS's
+    // `/tmp`, for one) ran nothing and exited 0.
+    const linked = path.join(scratch, 'linked-scripts');
+    symlinkSync(path.dirname(script), linked);
+    let status = 0;
+    let output = '';
+    try {
+      execFileSync('node', [path.join(linked, 'prepare-module.mjs')], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (error) {
+      const failure = error as { status?: number; stdout?: string; stderr?: string };
+      status = failure.status ?? 1;
+      output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`;
+    }
+
+    expect(status).toBe(2);
+    expect(output).toContain('usage: prepare-module.mjs');
+  });
+
   it('refuses a bundle whose module assets sit where Next would serve them first', () => {
     const app = path.join(scratch, 'app');
     const bundle = path.join(app, '.next', 'standalone');

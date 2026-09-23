@@ -30,6 +30,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 /*
  * `console` is the interface here. This file is a build step: its output *is*
@@ -486,7 +487,25 @@ function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Whether this file is the program being run, rather than a module a test
+ * imported.
+ *
+ * Compared by real path. Node reports the main module's URL with symlinks
+ * resolved but `process.argv[1]` as it was typed, so the script reached through
+ * a symlinked directory (macOS's `/tmp` is one) never matched, and every command
+ * exited 0 having done nothing: a staging step that silently did not stage.
+ */
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
   try {
     process.exit(main(process.argv.slice(2)));
   } catch (error) {
