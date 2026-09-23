@@ -1,4 +1,5 @@
 import '../styles/globals.css';
+import '../site-ui/active/styles.css';
 import Script from 'next/script';
 import { Crimson_Text } from 'next/font/google';
 import type { Metadata } from 'next';

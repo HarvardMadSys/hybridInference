@@ -4,5 +4,10 @@
  * Empty, and that is the point of keeping the file: the interface requires a
  * `styles.css` at the module root so that a module which wants CSS has an
  * obvious place to put it, and so the resolver has one path to point at rather
- * than a maybe. This one is loaded and does nothing.
+ * than a maybe.
+ *
+ * The host loads it: the root layout imports the generated stylesheet bridge,
+ * which imports the selected module's `styles.css`. Nothing in the module
+ * imports it. This one adds no rules, because the page uses the application's
+ * utility classes.
  */

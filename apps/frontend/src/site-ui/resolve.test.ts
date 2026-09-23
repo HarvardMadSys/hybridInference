@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
@@ -745,5 +745,54 @@ describe("the build's own checks cover the module's production code, and only th
     expect(await ignored('src/site-ui/external/parts/landing.tsx')).toBe(true);
     expect(await ignored('src/site-ui/active/client.ts')).toBe(true);
     expect(await ignored('src/site-ui/module.tsx')).toBe(false);
+  });
+});
+
+describe("a module's stylesheet reaches every page without the module importing it", () => {
+  // `styles.css` is a required module file and the resolver bridged it, but
+  // nothing imported the bridge: a module's rules reached the page only if its
+  // own code imported the file, which the interface never asked it to do.
+  let box: Sandbox;
+
+  beforeEach(() => {
+    box = sandbox();
+  });
+
+  afterEach(() => {
+    rmSync(box.app, { recursive: true, force: true });
+  });
+
+  it('is loaded by the root layout, after the application stylesheet', () => {
+    const app = join(frontendDir, 'src', 'app');
+    const layout = readFileSync(join(app, 'layout.tsx'), 'utf8');
+    const stylesheets = [...layout.matchAll(/^import\s+['"]([^'"]+\.css)['"];?\s*$/gm)].map(
+      ([, specifier]) =>
+        specifier.startsWith('@/')
+          ? join(frontendDir, 'src', specifier.slice(2))
+          : resolvePath(app, specifier),
+    );
+
+    const application = stylesheets.indexOf(join(frontendDir, 'src', 'styles', 'globals.css'));
+    const bridged = stylesheets.indexOf(
+      join(frontendDir, 'src', 'site-ui', 'active', 'styles.css'),
+    );
+    expect(application).toBeGreaterThanOrEqual(0);
+    // Later in the cascade, so a module rule wins over an application rule of
+    // the same specificity.
+    expect(bridged).toBeGreaterThan(application);
+  });
+
+  it("forwards to the selected module's stylesheet by its file name", () => {
+    const dir = writeModule(join(box.app, 'modules', 'styled'), {
+      'styles.css': '.styled-landing {\n  color: rgb(1, 2, 3);\n}\n',
+    });
+
+    const resolution = resolve.prepareSiteUi(box.app, { SITE_UI_DIR: dir, SITE_UI_API: '1' });
+
+    const bridge = readFileSync(join(box.bridge, 'styles.css'), 'utf8');
+    const target = resolvePath(box.bridge, JSON.parse(/@import ("[^"]+");/.exec(bridge)![1]));
+    expect(target).toBe(resolution.styles);
+    expect(readFileSync(target, 'utf8')).toContain('.styled-landing');
+    expect(readFileSync(resolution.client, 'utf8')).not.toContain('styles.css');
   });
 });

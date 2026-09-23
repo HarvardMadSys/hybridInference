@@ -5,8 +5,8 @@ import type { ReactNode } from 'react';
 // Absolute imports, not the `@/` alias: this file is reached through the
 // generated `@site-ui` stub, and an aliased import inside a module reached by
 // an alias is one more resolution rule the bundler, `tsc` and Vitest would each
-// have to agree on. The stylesheet is imported the same way for the console's
-// default look — a module that ships CSS imports its own.
+// have to agree on. The stylesheet is not imported here: the root layout loads
+// the selected module's `styles.css` through the generated bridge.
 import type {
   AuthAppearance,
   AuthFrameProps,
