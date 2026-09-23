@@ -277,6 +277,10 @@ export interface AuthAppearance {
  * `chat.*` — and stay closed because their keys are not here. Each key listed
  * is one a page actually reads; one that nothing reads would be a promise the
  * host does not keep.
+ *
+ * Page titles and descriptions are not here: they are rendered on the server,
+ * which reads no client dictionary, so they are the server entry's
+ * `metaMessages` (see `META_MESSAGE_KEYS`).
  */
 export const AUTH_MESSAGE_KEYS = [
   'auth.consent.age_body',
@@ -418,16 +422,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.verify.try_another',
   'chrome.footer.privacy',
   'chrome.footer.terms',
-  'meta.team.description',
-  'meta.team.title',
-  'meta.terms.description',
-  'meta.terms.title',
-  'team.avatar_label',
-  'team.eyebrow',
-  'team.photo_alt',
-  'team.subtitle',
-  'team.subtitle_org_lead',
-  'team.title_prefix',
   'terms.header.intro',
   'terms.header.title',
   'terms.s1.body_1',
@@ -541,7 +535,45 @@ export interface SiteUiClientExports {
   authMessages?: AuthMessages;
 }
 
-/** Static, non-React values read by the shared root layout. */
+/**
+ * Title and description keys a module's server entry may word: one pair for
+ * each public route a module can take over, and none for any console page.
+ *
+ * Declared for the same reason as `AUTH_MESSAGE_KEYS`, and enforced the same
+ * way — `@/site-ui/meta` drops every other key, and every value that is not a
+ * string — so `/team` or `/dashboard` keep their English titles whatever a
+ * module's dictionary holds.
+ *
+ * `meta.home.title` is the whole document title, as the site name is on the
+ * console's home page. Every other title is the page's own, and the host adds
+ * the site name after it — "Title | Site" — as it does for the console's pages.
+ * Each value may use `{app_name}`. A key the module does not word keeps the
+ * console's: "Terms of Service" for `/terms`, and the site's own title and
+ * description for the other six.
+ */
+export const META_MESSAGE_KEYS = [
+  'meta.forgot.description',
+  'meta.forgot.title',
+  'meta.home.description',
+  'meta.home.title',
+  'meta.login.description',
+  'meta.login.title',
+  'meta.reset.description',
+  'meta.reset.title',
+  'meta.signup.description',
+  'meta.signup.title',
+  'meta.terms.description',
+  'meta.terms.title',
+  'meta.verify.description',
+  'meta.verify.title',
+] as const;
+
+export type MetaMessageKey = (typeof META_MESSAGE_KEYS)[number];
+
+/** A module's wording for the public routes' titles and descriptions. */
+export type MetaMessages = Partial<Record<MetaMessageKey, string>>;
+
+/** Static, non-React values read by the shared root layout and page metadata. */
 export interface SiteUiServerModule {
   /**
    * BCP-47 tag for `<html lang>` on the routes this module renders: `/` when
@@ -549,8 +581,12 @@ export interface SiteUiServerModule {
    * `AuthFrame`, and `/terms` when it publishes its own legal text. Every other
    * route — the console, and a public route the module does not render — is
    * the console's, in English (`en`). Omitted or empty keeps `en` everywhere.
-   * Titles, descriptions and icons come from runtime branding and are not part
-   * of this module API.
    */
   locale?: string;
+  /**
+   * Titles and descriptions for the public routes, in the module's language:
+   * see `META_MESSAGE_KEYS`. Icons, and every console page's title, come from
+   * runtime branding and the console.
+   */
+  metaMessages?: MetaMessages;
 }

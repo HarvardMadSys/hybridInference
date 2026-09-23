@@ -1,23 +1,11 @@
 import type { Metadata } from 'next';
-import { fill } from '@/lib/utils/interpolate';
-import { translate } from '@/lib/i18n/translate';
-import { loadRuntimeSiteConfig } from '@/config/site-config.server';
-import { pageMetadata } from '@/config/site-metadata';
+import { publicPageMetadata } from '@/site-ui/meta';
 import { TermsPageContent } from '@/site-ui/SiteUiBoundary';
 
-export async function generateMetadata(): Promise<Metadata> {
-  const siteConfig = await loadRuntimeSiteConfig();
-  // The tab title is rendered copy, so it follows the same document as the
-  // page body: `translator` is a pure function, which is what lets a server
-  // component resolve slots without the client hook.
-  const t = translate;
-  return pageMetadata(
-    siteConfig,
-    t('meta.terms.title', 'Terms of Service'),
-    fill(t('meta.terms.description', 'Terms of Service for {app_name}.'), {
-      app_name: siteConfig.branding.appName,
-    }),
-  );
+// The tab title is the page's too: the module's `meta.terms.*` wording when it
+// has some, the console's "Terms of Service" otherwise.
+export function generateMetadata(): Promise<Metadata> {
+  return publicPageMetadata('terms');
 }
 
 export default function TermsPage(): JSX.Element {

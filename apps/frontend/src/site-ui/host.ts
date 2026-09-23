@@ -74,6 +74,7 @@ export type {
   ConsentItem,
   ConsentItems,
   LandingPageProps,
+  MetaMessages,
   PublicRoute,
   SiteUiClientModule,
   SiteUiModuleDescriptor,
