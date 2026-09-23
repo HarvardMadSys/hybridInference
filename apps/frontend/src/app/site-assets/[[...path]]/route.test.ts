@@ -5,6 +5,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PACKAGED_ASSETS } from '../../../../scripts/site-ui/prepare-module.mjs';
 import { GET, HEAD } from './route';
 
 function request(assetPath: string, method = 'GET') {
@@ -167,20 +168,20 @@ describe('/site-assets runtime files', () => {
   });
 });
 
-describe('/site-assets bundled fallback', () => {
-  // The UI module's design assets are packaged into the image under
-  // `public/site-assets/`, and this route is the only thing that can serve them
-  // — it shadows Next's static handling for the whole prefix. Without the
-  // fallback the image carries files nothing reaches: the deployment's mount
-  // was the only source, so replacing the module's hero and rebuilding changed
-  // nothing on the page.
+describe('/site-assets packaged module assets', () => {
+  // The image packages the UI module's design assets beside the standalone
+  // server, and this route serves them after the deployment's directory. They
+  // used to be packaged under `public/site-assets/`, which Next serves before
+  // any route: a deployment's file of the same path could not replace one, and
+  // it went out without this route's headers. The fixtures are built from the
+  // packager's own constant, so the two cannot drift apart.
   let cwd: string;
-  let bundled: string;
+  let packaged: string;
 
   beforeEach(async () => {
-    cwd = await mkdtemp(path.join(tmpdir(), 'hybrid-bundled-assets-'));
-    bundled = path.join(cwd, 'public', 'site-assets', 'demo');
-    await mkdir(bundled, { recursive: true });
+    cwd = await mkdtemp(path.join(tmpdir(), 'hybrid-packaged-assets-'));
+    packaged = path.join(cwd, PACKAGED_ASSETS, 'demo');
+    await mkdir(packaged, { recursive: true });
     vi.stubEnv('SITE_ASSETS_DIR', '');
     vi.spyOn(process, 'cwd').mockReturnValue(cwd);
   });
@@ -193,7 +194,7 @@ describe('/site-assets bundled fallback', () => {
 
   it('serves the module asset from the bundle when no deployment directory is set', async () => {
     const hero = 'hero-bytes';
-    await writeFile(path.join(bundled, 'hero-ring.png'), hero);
+    await writeFile(path.join(packaged, 'hero-ring.png'), hero);
 
     const response = await GET(request('/site-assets/demo/hero-ring.png'));
 
@@ -202,24 +203,47 @@ describe('/site-assets bundled fallback', () => {
     expect(response.headers.get('content-type')).toBe('image/png');
   });
 
-  it('prefers the deployment directory when it has the file', async () => {
-    // The deployment's copy is the operator's, so it wins — and the bundled
-    // fallback is what serves everything the operator did not supply.
-    await writeFile(path.join(bundled, 'hero-ring.png'), 'bundled');
+  it('serves a packaged SVG with the route sandbox and cache policy', async () => {
+    await writeFile(path.join(packaged, 'mark.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+
+    const response = await GET(request('/site-assets/demo/mark.svg'));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    );
+    expect(response.headers.get('cache-control')).toBe('public, max-age=300, must-revalidate');
+  });
+
+  it('lets a deployment file override the packaged file at the same path', async () => {
+    // The operator's copy wins, file by file; the packaged copy still serves
+    // everything the operator did not supply.
+    await writeFile(path.join(packaged, 'hero-ring.png'), 'packaged');
+    await writeFile(path.join(packaged, 'mark.png'), 'packaged mark');
     const deployment = await mkdtemp(path.join(tmpdir(), 'hybrid-deploy-assets-'));
-    await writeFile(path.join(deployment, 'hero-ring.png'), 'deployment');
+    await mkdir(path.join(deployment, 'demo'));
+    await writeFile(path.join(deployment, 'demo', 'hero-ring.png'), 'deployment');
     vi.stubEnv('SITE_ASSETS_DIR', deployment);
 
-    const fromDeployment = await GET(request('/site-assets/hero-ring.png'));
-    const fromBundle = await GET(request('/site-assets/demo/hero-ring.png'));
+    const overridden = await GET(request('/site-assets/demo/hero-ring.png'));
+    const packagedOnly = await GET(request('/site-assets/demo/mark.png'));
 
-    await expect(fromDeployment.text()).resolves.toBe('deployment');
-    await expect(fromBundle.text()).resolves.toBe('bundled');
+    await expect(overridden.text()).resolves.toBe('deployment');
+    await expect(packagedOnly.text()).resolves.toBe('packaged mark');
     await rm(deployment, { recursive: true, force: true });
   });
 
-  it('still refuses a non-image extension in the bundled tree', async () => {
-    await writeFile(path.join(bundled, 'site-config.json'), '{"secret":true}');
+  it('does not read module assets from public/, where Next would serve them first', async () => {
+    await mkdir(path.join(cwd, 'public', 'site-assets', 'demo'), { recursive: true });
+    await writeFile(path.join(cwd, 'public', 'site-assets', 'demo', 'old.png'), 'public copy');
+
+    const response = await GET(request('/site-assets/demo/old.png'));
+
+    expect(response.status).toBe(404);
+  });
+
+  it('still refuses a non-image extension in the packaged tree', async () => {
+    await writeFile(path.join(packaged, 'site-config.json'), '{"secret":true}');
 
     const response = await GET(request('/site-assets/demo/site-config.json'));
 

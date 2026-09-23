@@ -311,18 +311,46 @@ jobs:
           test -n "${port}"
           echo "SITE_UI_PORT=${port}" >> "${GITHUB_ENV}"
 
-      # A module's assets have to be reachable at the URL the module names, and
-      # `/site-assets/*` is a route handler that shadows static serving — so
-      # "the file is in public/" is not evidence. This asks the running server.
-      - name: The example's own asset is served by the image
+      # A module's assets are served by the `/site-assets` route, after the
+      # deployment's own directory. Packaged under `public/` they were served by
+      # Next's static handler instead, which answers before any route: a runtime
+      # file could not override them and the route's headers never applied. So
+      # this asks a real container, created with a runtime directory holding a
+      # replacement for the example's mark, then started.
+      - name: The example's asset is served by the route, runtime copy first
         run: |
-          docker run -d --name "${SITE_UI_RUN}-example" \
+          runtime="${RUNNER_TEMP}/${SITE_UI_RUN}-assets"
+          packaged=distributions/example/frontend/site-ui/public/site-assets/example/mark.svg
+          mkdir -p "${runtime}/example"
+          printf '<svg xmlns="http://www.w3.org/2000/svg"><!-- runtime %s --></svg>\n' \
+            "${SITE_UI_RUN}" >"${runtime}/example/mark.svg"
+          docker create --name "${SITE_UI_RUN}-example" \
+            -e SITE_ASSETS_DIR=/srv/site-assets \
             -p "127.0.0.1:${SITE_UI_PORT}:3001" "${SITE_UI_RUN}-example:ci"
+          docker cp "${runtime}/." "${SITE_UI_RUN}-example:/srv/site-assets"
+          docker start "${SITE_UI_RUN}-example"
+          # Ready when the asset route answers. Not `/`: with no gateway behind
+          # this container every page is a 500, since pages read /site-config.
+          url="http://127.0.0.1:${SITE_UI_PORT}/site-assets/example/mark.svg"
           for _ in $(seq 1 30); do
-            curl -fsS -o /dev/null "http://127.0.0.1:${SITE_UI_PORT}/" && break || sleep 1
+            curl -fsS -o /dev/null "${url}" && break || sleep 1
           done
-          curl -fsS -o /dev/null -w 'asset %{http_code} %{content_type}\n' \
-            "http://127.0.0.1:${SITE_UI_PORT}/site-assets/example/mark.svg"
+
+          # The runtime file wins over the packaged file at the same path.
+          curl -fsS -o "${RUNNER_TEMP}/runtime.svg" "${url}"
+          cmp "${RUNNER_TEMP}/runtime.svg" "${runtime}/example/mark.svg" || {
+            echo "the packaged mark was served instead of the runtime copy" >&2; exit 1; }
+
+          # Without it the packaged file answers, through the route: its bytes,
+          # its SVG sandbox and its cache policy, none of which Next's static
+          # handler would send.
+          docker exec "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
+          curl -fsS -D "${RUNNER_TEMP}/packaged.headers" -o "${RUNNER_TEMP}/packaged.svg" "${url}"
+          cmp "${RUNNER_TEMP}/packaged.svg" "${packaged}"
+          tr -d '\r' <"${RUNNER_TEMP}/packaged.headers" | tee "${RUNNER_TEMP}/packaged.txt"
+          grep -qix "content-security-policy: default-src 'none'; style-src 'unsafe-inline'; sandbox" \
+            "${RUNNER_TEMP}/packaged.txt"
+          grep -qix 'cache-control: public, max-age=300, must-revalidate' "${RUNNER_TEMP}/packaged.txt"
 
       - name: Show the example container's log
         if: failure()

@@ -11,9 +11,9 @@
  *   check --repo-root <dir> --app <relative-dir>
  *
  * `prepare` validates and stages the module. A context containing `.built-in-ui`
- * selects the neutral UI and needs no API argument. `merge` packages public
- * assets, `manifest` adds the module record and static output, and `check`
- * validates the standalone bundle.
+ * selects the neutral UI and needs no API argument. `merge` packages the
+ * application's public files and the module's assets, `manifest` adds the module
+ * record and static output, and `check` validates the standalone bundle.
  */
 
 import { createRequire } from 'node:module';
@@ -294,12 +294,26 @@ function walk(dir, base = dir) {
  *
  * The tooling reads and writes here rather than at the application root, because
  * this is what the image copies. Next emits the server here; `merge` and
- * `manifest` add the public assets and static chunks before `check` runs.
+ * `manifest` add the public files, module assets and static chunks before
+ * `check` runs.
  */
 const BUNDLE = path.join('.next', 'standalone');
 
 /**
- * Merge the module's public tree into the built bundle.
+ * Where the bundle keeps the module's assets: beside the server, not in `public/`.
+ *
+ * Next serves `public/` before any route. Packaged there, a module asset never
+ * reached the `/site-assets` route handler: a file of the same path in the
+ * deployment's `SITE_ASSETS_DIR` could not override it, and it went out with
+ * Next's static headers instead of the route's cache policy, type allowlist and
+ * SVG sandbox. Here only the route serves it, and only after the runtime
+ * directory. The route reads the same name (`PACKAGED_ASSETS_DIR` in
+ * `src/app/site-assets/[[...path]]/route.ts`), and a test pins the two together.
+ */
+export const PACKAGED_ASSETS = 'site-assets';
+
+/**
+ * Package the application's public files and the module's assets into the bundle.
  *
  * `--repo-root` is the checkout; `--app` is the application inside it. Both are
  * needed because the two trees being compared live in different places: the
@@ -328,7 +342,8 @@ function merge(options) {
   // guaranteed to be traced. Package all host assets before adding the module.
   if (existsSync(owned)) cpSync(owned, target, COPY);
 
-  if (!existsSync(source)) {
+  const files = existsSync(source) ? walk(source) : [];
+  if (files.length === 0) {
     console.log('[site-ui] the module ships no public assets');
     return;
   }
@@ -346,8 +361,9 @@ function merge(options) {
   // A module's assets live under `site-assets/<id>/`. The rule is not tidiness:
   // it is what makes "two modules cannot write the same path, and neither can
   // shadow a file the application ships" true, and it is checked here because
-  // this is the only place that knows both trees.
-  const files = walk(source);
+  // this is the only place that knows both trees. An application file at one of
+  // those paths would shadow the module's from the other side: Next serves
+  // `public/` before the route that serves module assets.
   const expected = path.join('site-assets', moduleId);
   const collisions = [];
   for (const relative of files) {
@@ -368,8 +384,11 @@ function merge(options) {
     );
   }
 
-  cpSync(source, target, COPY);
-  console.log(`[site-ui] merged ${files.length} '${moduleId}' asset(s) into public/`);
+  cpSync(path.join(source, 'site-assets'), path.join(bundle, PACKAGED_ASSETS), COPY);
+  console.log(
+    `[site-ui] packaged ${files.length} '${moduleId}' asset(s) in ${PACKAGED_ASSETS}/, ` +
+      'served by the /site-assets route after SITE_ASSETS_DIR',
+  );
 }
 
 /**
@@ -400,7 +419,7 @@ function manifest(options) {
   const record = JSON.parse(readFileSync(source, 'utf8'));
   cpSync(source, path.join(standalone, 'site-ui-manifest.json'));
   console.log(
-    `[site-ui] bundle carries module '${record.id}' (${record.kind}), its chunks and its public files`,
+    `[site-ui] bundle carries module '${record.id}' (${record.kind}), its chunks and its assets`,
   );
 }
 
@@ -423,6 +442,18 @@ function check(options) {
     if (typeof value === 'string' && (value.includes('/') || value.includes('\\'))) {
       fail(`the module manifest's ${key} is ${JSON.stringify(value)}, which is a path`);
     }
+  }
+
+  // The module's own namespace under `public/` is served by Next before the
+  // asset route, so anything there would bypass the route's headers and a
+  // runtime override. `merge` packages module assets elsewhere; this holds it to
+  // that, whichever step put a file there.
+  const shadowing = path.join('public', 'site-assets', String(manifest.id));
+  if (existsSync(path.join(bundle, shadowing))) {
+    fail(
+      `the bundle ships ${shadowing}/, which Next serves before the /site-assets route; ` +
+        `module assets belong in ${PACKAGED_ASSETS}/`,
+    );
   }
 
   console.log(

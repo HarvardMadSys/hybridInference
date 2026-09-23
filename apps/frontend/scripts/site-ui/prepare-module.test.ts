@@ -25,6 +25,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { PACKAGED_ASSETS } from './prepare-module.mjs';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontend = path.resolve(here, '..', '..');
 const script = path.join(frontend, 'scripts', 'site-ui', 'prepare-module.mjs');
@@ -408,16 +410,19 @@ describe('the container build\u2019s module handling', () => {
       return app;
     }
 
-    it('merges the module\u2019s own assets under its own id', () => {
+    it('packages the module\u2019s own assets under its own id, outside public/', () => {
+      // Next serves `public/` before any route. Packaged there, a module asset
+      // bypassed the `/site-assets` route: a deployment's file of the same path
+      // could not override it, and it lost the route's headers.
       const app = scaffold({ 'site-assets/example/mark.svg': '<svg/>' });
 
       const result = run('merge', '--repo-root', scratch, '--app', path.relative(scratch, app));
 
       expect(result.status).toBe(0);
       expect(result.output).toContain("1 'example' asset(s)");
-      expect(
-        existsSync(path.join(app, '.next/standalone/public/site-assets/example/mark.svg')),
-      ).toBe(true);
+      const bundle = path.join(app, '.next', 'standalone');
+      expect(existsSync(path.join(bundle, PACKAGED_ASSETS, 'example', 'mark.svg'))).toBe(true);
+      expect(existsSync(path.join(bundle, 'public', 'site-assets'))).toBe(false);
     });
 
     it('packages a symlinked asset as the link it is', () => {
@@ -440,7 +445,7 @@ describe('the container build\u2019s module handling', () => {
 
       expect(result.status, result.output).toBe(0);
       expect(
-        readlinkSync(path.join(app, '.next/standalone/public/site-assets/example/logo.svg')),
+        readlinkSync(path.join(app, '.next', 'standalone', PACKAGED_ASSETS, 'example', 'logo.svg')),
       ).toBe('mark.svg');
     });
 
@@ -484,6 +489,24 @@ describe('the container build\u2019s module handling', () => {
       expect(result.status).toBe(0);
       expect(result.output).toContain('no public assets');
     });
+  });
+
+  it('refuses a bundle whose module assets sit where Next would serve them first', () => {
+    const app = path.join(scratch, 'app');
+    const bundle = path.join(app, '.next', 'standalone');
+    mkdirSync(path.join(bundle, '.next', 'static'), { recursive: true });
+    mkdirSync(path.join(bundle, 'public', 'site-assets', 'example'), { recursive: true });
+    writeFileSync(path.join(bundle, 'public', 'site-assets', 'example', 'mark.svg'), '<svg/>');
+    writeFileSync(path.join(bundle, 'server.js'), '');
+    writeFileSync(
+      path.join(bundle, 'site-ui-manifest.json'),
+      JSON.stringify({ id: 'example', kind: 'distribution', site_ui_api: 1 }),
+    );
+
+    const result = run('check', '--repo-root', scratch, '--app', path.relative(scratch, app));
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('public/site-assets/example');
   });
 
   it('refuses a bundle that is missing its compiled chunks', () => {

@@ -122,9 +122,12 @@ RUN if [ -f .site-ui-build-env ]; then set -a; . ./.site-ui-build-env; set +a; f
 
 # Finish the bundle. `manifest` copies the compiled chunks into the standalone
 # tree and records which module was compiled in — `next build` writes `src/`, and
-# the standalone tree does not include it. `merge` puts the module's own assets
-# where the route handler looks for them, and is where a collision with the
-# application's files becomes a build failure rather than a silent overwrite.
+# the standalone tree does not include it. `merge` copies the application's
+# public files and packages the module's own assets in `site-assets/` beside the
+# server — not in `public/`, which Next serves before any route — so only the
+# `/site-assets` route serves them, after a deployment's `SITE_ASSETS_DIR`. It is
+# also where a collision with the application's files becomes a build failure
+# rather than a silent overwrite.
 # `check` then asserts the finished bundle: `output: 'standalone'` omits the
 # chunks, and the runtime stage used to copy them separately, so the bundle was
 # produced in one place and asserted in another.
@@ -167,8 +170,8 @@ LABEL org.opencontainers.image.source="$OCI_SOURCE" \
       io.hybridinference.frontend-inputs-tree="$FRONTEND_INPUTS_TREE"
 
 # One copy, because the builder step above produced one complete tree: the
-# standalone server, the compiled chunks, the application's public files and the
-# module's assets merged into them, and the module record beside the server.
+# standalone server, the compiled chunks, the application's public files, the
+# module's packaged assets and the module record beside the server.
 COPY --from=builder /app/.next/standalone ./
 
 EXPOSE 3001

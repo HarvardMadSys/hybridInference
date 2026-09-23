@@ -7,6 +7,17 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 const ASSET_PREFIX = '/site-assets';
 const CACHE_CONTROL = 'public, max-age=300, must-revalidate';
+
+/**
+ * Where the image packages the UI module's assets: beside the standalone
+ * server, written by `prepare-module.mjs merge` (`PACKAGED_ASSETS` there; the
+ * route tests build their fixtures from that constant, which pins the two).
+ *
+ * Deliberately not `public/`. Next serves `public/` before any route, so an
+ * asset packaged there never reached this handler — a deployment's copy of the
+ * same path could not override it, and it went out without the headers below.
+ */
+const PACKAGED_ASSETS_DIR = 'site-assets';
 const MAX_ASSET_SIZE_BYTES = 20 * 1024 * 1024;
 
 // This public route is intentionally limited to the branding image formats it
@@ -76,14 +87,14 @@ function requestedPath(request: NextRequest): { relativePath: string; contentTyp
  * Where the assets come from, in order.
  *
  * ``SITE_ASSETS_DIR`` is the deployment's own directory and wins when it is set:
- * an operator who mounts branding files means those, and that is the knob the
- * distribution documents.
+ * an operator who mounts branding files means those, file by file, and that is
+ * the knob the distribution documents.
  *
- * The fallback is the console's own ``public/site-assets``, which is where the
- * UI module's design assets are packaged by the front-end build. Without it the
- * image ships a hero image, model marks and a favicon that nothing can serve —
- * which is what happened while the deployment's mount was the only source, and
- * it meant editing the module's hero and rebuilding changed nothing on the page.
+ * The fallback is the image's packaged copy of the UI module's design assets
+ * (``PACKAGED_ASSETS_DIR``). Without it the image ships a hero image, model
+ * marks and a favicon that nothing can serve — which is what happened while the
+ * deployment's mount was the only source, and it meant editing the module's hero
+ * and rebuilding changed nothing on the page.
  *
  * Read from ``process.cwd()`` because the standalone bundle is started from its
  * own root, and resolved lazily per request so a missing directory is a 404
@@ -93,7 +104,7 @@ function assetRoots(): string[] {
   const roots: string[] = [];
   const configured = process.env.SITE_ASSETS_DIR?.trim();
   if (configured && path.isAbsolute(configured)) roots.push(configured);
-  roots.push(path.join(process.cwd(), 'public', ASSET_PREFIX.slice(1)));
+  roots.push(path.join(process.cwd(), PACKAGED_ASSETS_DIR));
   return roots;
 }
 
