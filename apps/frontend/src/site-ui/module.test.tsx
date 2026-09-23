@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { forwardRef, memo } from 'react';
+import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AUTH_MESSAGE_KEYS, type AuthFieldLayoutProps } from './contract';
@@ -45,7 +48,6 @@ const descriptor = { siteUiApi: 1, id: 'stand-in', locale: '' };
  * a Vitest mock throws instead, so the stand-in spells the absences out.
  */
 const ABSENT = {
-  default: undefined,
   Landing: undefined,
   AuthFrame: undefined,
   TermsFrame: undefined,
@@ -228,4 +230,115 @@ describe('a module\u2019s wording', () => {
 
     expect(AUTH_MESSAGE_KEYS.filter((key) => !read.has(key))).toEqual([]);
   });
+});
+
+describe('a module\u2019s component exports', () => {
+  function Frame({ children }: { children?: React.ReactNode }) {
+    return <div>{children}</div>;
+  }
+
+  it('fail as the module loads when one is not a component', async () => {
+    // What the type check stops at build time, stopped again at runtime for a
+    // value the compiler could not see: an `any`, or a cast in the module.
+    await expect(compileIn({ Landing: 42 })).rejects.toThrow(
+      "The Site UI module 'stand-in' exports Landing as a number. Landing must be a React component, or null to keep the host's default.",
+    );
+    // An element is not a component either: it is what a component returns.
+    await expect(compileIn({ AuthFrame: <Frame /> })).rejects.toThrow(
+      /exports AuthFrame as an object/,
+    );
+    await expect(compileIn({ fieldLayout: 'beside-label' })).rejects.toThrow(
+      /exports fieldLayout as a string/,
+    );
+  });
+
+  it('accept a function, a memo or forwardRef component, and null', async () => {
+    const Memoized = memo(Frame);
+    const Forwarded = forwardRef<HTMLDivElement, { children?: React.ReactNode }>(
+      ({ children }, ref) => <div ref={ref}>{children}</div>,
+    );
+    Forwarded.displayName = 'Forwarded';
+    const { SITE_UI_CLIENT } = await compileIn({
+      Landing: Frame,
+      AuthFrame: Memoized,
+      TermsFrame: Forwarded,
+      fieldLayout: null,
+    });
+
+    expect(SITE_UI_CLIENT.Landing).toBe(Frame);
+    expect(SITE_UI_CLIENT.AuthFrame).toBe(Memoized);
+    expect(SITE_UI_CLIENT.TermsFrame).toBe(Forwarded);
+    expect(SITE_UI_CLIENT.fieldLayout).toBeUndefined();
+  });
+
+  it('are read from named exports only', async () => {
+    // A default export is not part of the contract: a module that put its
+    // landing page there has supplied no landing page.
+    const { SITE_UI_CLIENT } = await compileIn({ default: { Landing: Frame } });
+
+    expect(SITE_UI_CLIENT.Landing).toBeNull();
+  });
+});
+
+/**
+ * The compile-time half, run the way the build runs it: `module.tsx` checked
+ * against a module the build selected. The program is built in-process with
+ * `@site-ui/client` pointed at each candidate, so nothing the rest of the suite
+ * reads — the generated bridge, `tsconfig.generated.json` — is rewritten.
+ */
+describe('the client module type check', () => {
+  const frontend = join(__dirname, '..', '..');
+  const hostModule = join(__dirname, 'module.tsx');
+
+  function typeCheckAgainst(client: string): string[] {
+    const config = ts.getParsedCommandLineOfConfigFile(
+      join(frontend, 'tsconfig.json'),
+      {},
+      { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => undefined },
+    );
+    if (!config) throw new Error('tsconfig.json could not be read');
+    const program = ts.createProgram([hostModule], {
+      ...config.options,
+      noEmit: true,
+      incremental: false,
+      paths: { ...config.options.paths, '@site-ui/client': [client] },
+    });
+    return ts
+      .getPreEmitDiagnostics(program)
+      .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+  }
+
+  it('fails on a module whose export does not match the contract', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'site-ui-type-check-'));
+    try {
+      writeFileSync(
+        join(dir, 'client.tsx'),
+        "export const descriptor = { siteUiApi: 1, id: 'wrong', locale: '' } as const;\n" +
+          'export const Landing = 42;\n',
+      );
+
+      const errors = typeCheckAgainst(join(dir, 'client.tsx'));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/is not assignable to type 'SiteUiClientModule'/);
+      expect(errors[0]).toMatch(/Types of property 'Landing' are incompatible/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it.each([
+    ['the neutral module', join(frontend, 'src', 'site-ui', 'neutral', 'client.tsx')],
+    ['the test fixture module', join(frontend, 'tests', 'fixtures', 'site-ui-demo', 'client.tsx')],
+    [
+      'the example module',
+      join(frontend, '..', '..', 'distributions', 'example', 'frontend', 'site-ui', 'client.tsx'),
+    ],
+  ])(
+    'passes on %s',
+    (_name, client) => {
+      expect(typeCheckAgainst(client)).toEqual([]);
+    },
+    60_000,
+  );
 });

@@ -2,8 +2,6 @@
 
 import {
   AUTH_MESSAGE_KEYS,
-  type AuthAppearance,
-  type AuthFieldLayout,
   type AuthMessageKey,
   type AuthMessages,
   type SiteUiClientModule,
@@ -11,48 +9,67 @@ import {
 import * as activeModule from '@site-ui/client';
 
 /**
- * Normalize the compiled-in module once. The descriptor is required; Landing,
- * AuthFrame, TermsFrame, fieldLayout, authAppearance and authMessages are
- * optional. Named exports take precedence over properties on an optional
- * default object.
+ * The compiled-in module, normalized once for the host. The descriptor is
+ * required; Landing, AuthFrame, TermsFrame, fieldLayout, authAppearance and
+ * authMessages are optional named exports. A default export is not part of the
+ * contract and is not read.
  */
 
-interface ModuleLike {
-  descriptor?: SiteUiClientModule['descriptor'];
-  Landing?: SiteUiClientModule['Landing'] | null;
-  AuthFrame?: SiteUiClientModule['AuthFrame'];
-  TermsFrame?: SiteUiClientModule['TermsFrame'];
-  fieldLayout?: AuthFieldLayout;
-  authAppearance?: AuthAppearance;
-  authMessages?: AuthMessages;
-  default?: ModuleLike;
-}
+/**
+ * The module's exports, checked against the client contract.
+ *
+ * An annotation, not a cast. `@site-ui/client` is whichever module the build
+ * selected, so this line is where TypeScript compares that module's exports
+ * with `SiteUiClientModule`: a `Landing` that is a number, a frame that takes
+ * the wrong props or a descriptor missing a field fails `npm run type-check`
+ * and `next build` here, naming the export. A cast through `unknown` compiled
+ * all of those and left them to crash at runtime.
+ */
+const exported: SiteUiClientModule = activeModule;
 
-const raw = activeModule as unknown as ModuleLike;
+/** The exports the host renders as components. */
+type ComponentExport = 'Landing' | 'AuthFrame' | 'TermsFrame' | 'fieldLayout';
 
-// A default export wins only for the keys it actually provides, so a module may
-// put some pieces on the namespace and the rest in a default object without one
-// silently masking the other.
-const fallback = raw.default ?? {};
+/** React's markers for `memo`, `forwardRef` and `lazy` components, which are objects. */
+const EXOTIC_COMPONENTS: ReadonlySet<unknown> = new Set([
+  Symbol.for('react.memo'),
+  Symbol.for('react.forward_ref'),
+  Symbol.for('react.lazy'),
+]);
 
-function pick<K extends keyof ModuleLike>(key: K): ModuleLike[K] {
-  const named = raw[key];
-  if (named !== undefined && named !== null) return named;
-  return fallback[key];
+function isComponent(value: unknown): boolean {
+  if (typeof value === 'function') return true;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    EXOTIC_COMPONENTS.has((value as { $$typeof?: unknown }).$$typeof)
+  );
 }
 
 /**
- * Like `pick`, but keeps `null` as an answer.
+ * One component export, or `null` when the module does not supply it.
  *
- * The distinction this preserves is the whole reason `Landing` is optional: a
- * module that provides no landing page is saying "the host's page is correct",
- * while a module that provides one is replacing it. Collapsing the two here
- * would make an absent `Landing` render nothing at all.
+ * `null` is a meaningful answer, not a missing one: a module without a
+ * `Landing` is saying "the host's page is right for this route", and the host
+ * then keeps its own page and chrome.
+ *
+ * The type check above is what normally stops a wrong export, at build time.
+ * This is the runtime half, for what the compiler cannot see — an `any`, a cast
+ * inside the module — and it fails as the module loads, naming the module and
+ * the export, rather than leaving React to fail later on whichever page first
+ * renders it.
  */
-function pickNullable<K extends keyof ModuleLike>(key: K): ModuleLike[K] {
-  if (key in raw) return raw[key];
-  if (fallback && key in fallback) return fallback[key];
-  return undefined;
+function component<K extends ComponentExport>(key: K): NonNullable<SiteUiClientModule[K]> | null {
+  const value = exported[key];
+  if (value === undefined || value === null) return null;
+  if (!isComponent(value)) {
+    const found = typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+    throw new Error(
+      `The Site UI module '${String(exported.descriptor?.id)}' exports ${key} as ${found}. ` +
+        `${key} must be a React component, or null to keep the host's default.`,
+    );
+  }
+  return value as NonNullable<SiteUiClientModule[K]>;
 }
 
 const DECLARED_MESSAGE_KEYS: ReadonlySet<string> = new Set(AUTH_MESSAGE_KEYS);
@@ -82,17 +99,13 @@ function declaredMessages(messages: AuthMessages | undefined): AuthMessages | un
   return declared;
 }
 
-export const SITE_UI_DESCRIPTOR = pick('descriptor');
-
 export const SITE_UI_CLIENT: SiteUiClientModule = {
-  descriptor: pick('descriptor') ?? { siteUiApi: 1, id: 'unknown', locale: '' },
-  // `null` is a meaningful answer, not a missing one: it means "the host's own
-  // page is the right page for this route".
-  Landing: pickNullable('Landing') ?? null,
+  descriptor: exported.descriptor,
+  Landing: component('Landing'),
   // Missing page-owning components preserve the host's chrome.
-  AuthFrame: pickNullable('AuthFrame') ?? null,
-  TermsFrame: pickNullable('TermsFrame') ?? null,
-  fieldLayout: pick('fieldLayout'),
-  authAppearance: pick('authAppearance'),
-  authMessages: declaredMessages(pick('authMessages')),
+  AuthFrame: component('AuthFrame'),
+  TermsFrame: component('TermsFrame'),
+  fieldLayout: component('fieldLayout') ?? undefined,
+  authAppearance: exported.authAppearance,
+  authMessages: declaredMessages(exported.authMessages),
 };
