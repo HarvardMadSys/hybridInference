@@ -1,6 +1,8 @@
 # Generated Site UI resolution output (written by src/site-ui/resolve.js).
 # Formatting a generated file would make `format:check` disagree with the next
-# build, which rewrites it.
+# build, which rewrites it. The staged copy of an external module is formatted
+# by the distribution that owns it.
 src/site-ui/active
+src/site-ui/external
 src/generated
 tsconfig.generated.json

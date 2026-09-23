@@ -436,6 +436,9 @@ function manifestSource(resolution) {
  * `include` is repeated rather than inherited: in a TypeScript config it
  * replaces the base value instead of adding to it, and dropping `.next/types`
  * would silently stop checking whether the pages Next generates still match.
+ *
+ * This is also the project `next build` type-checks with (`typescript.tsconfigPath`
+ * in `next.config.js`), so what it covers is what gates an image.
  */
 function tsconfigSource(frontendDir, baseTsconfig, resolution) {
   // `paths` entries resolve against `baseUrl`, which is the frontend directory
@@ -461,13 +464,33 @@ function tsconfigSource(frontendDir, baseTsconfig, resolution) {
     '@site-ui/host': [path.posix.join('src', 'site-ui', 'host')],
   };
 
+  // A module's production code is type-checked through the import graph, not
+  // through `include`: the path mappings above reach its entries, and whatever
+  // they import comes with them. Its directory is kept out of the globs so its
+  // own tests, test-runner configuration and tooling — which import packages
+  // this application does not install, and which the import checks exempt
+  // because they are not compiled into the image — are left to the distribution
+  // that runs them. The base project already excludes the staging directory; a
+  // module selected elsewhere inside the application is excluded here, unless
+  // it is so broad that it contains the application's own sources.
+  const exclude = [...(baseTsconfig.exclude ?? [])];
+  if (resolution.kind === 'distribution') {
+    const moduleDir = relative(resolution.moduleDir);
+    const source = path.relative(resolution.moduleDir, path.join(frontendDir, 'src'));
+    const containsApplication = source === '' || !source.startsWith('..');
+    const insideApplication =
+      moduleDir !== '' && !moduleDir.startsWith('..') && !path.isAbsolute(moduleDir);
+    if (insideApplication && !containsApplication && !exclude.includes(moduleDir)) {
+      exclude.push(moduleDir);
+    }
+  }
+
   return `${JSON.stringify(
     {
       extends: './tsconfig.json',
       compilerOptions: { baseUrl: '.', paths },
       include: baseTsconfig.include,
-      // Ignore legacy staging copies that are not the selected module.
-      exclude: [...baseTsconfig.exclude, '.distribution-ui', '.distribution-ui/tests'],
+      exclude,
     },
     null,
     2,

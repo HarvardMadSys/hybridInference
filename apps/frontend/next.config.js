@@ -55,6 +55,16 @@ const nextConfig = {
   env: {
     BUILT_BACKEND_INTERNAL_URL: BACKEND_INTERNAL_URL,
   },
+  // Type-check the build with the generated project (`siteUi.tsconfigPath`,
+  // written by the resolver above), the one that maps `@site-ui/*` to the
+  // module this build compiles. Without this key `next build` read
+  // `tsconfig.json`, whose globs took in every file of a staged module — its
+  // tests and test-runner configuration too, which import packages this
+  // application does not install. Next joins the value to the project
+  // directory, so it is the relative name.
+  typescript: {
+    tsconfigPath: 'tsconfig.generated.json',
+  },
   // Next strips a trailing slash by redirecting; pgAdmin (Flask) adds one back
   // the same way. Left on, the two bounce a request between them forever the
   // first time anyone opens /pgadmin/browser/ — so the normalization is turned

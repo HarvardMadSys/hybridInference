@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   utimesSync,
@@ -616,5 +617,133 @@ describe('an entry names exactly one file', () => {
     });
 
     expect(resolve.prepareSiteUi(box.app, select(dir)).kind).toBe('distribution');
+  });
+});
+
+describe("the build's own checks cover the module's production code, and only that", () => {
+  // `next build` type-checks and lints before it emits anything, so what those
+  // two checks read is what gates an image. They read too much: `tsconfig.json`
+  // globbed every file of a staged module, its Playwright configuration
+  // included, and ESLint linted the staged copy with this repository's rules.
+  let box: Sandbox;
+
+  beforeEach(() => {
+    box = sandbox();
+  });
+
+  afterEach(() => {
+    rmSync(box.app, { recursive: true, force: true });
+  });
+
+  const select = (dir: string) => ({ SITE_UI_DIR: dir, SITE_UI_API: '1' });
+
+  /** The module's tests and tooling: they import packages the host never installs. */
+  const tooling = {
+    'playwright.config.ts':
+      "import { defineConfig } from '@playwright/test';\nexport default defineConfig({});\n",
+    'tests/landing.spec.ts':
+      "import { expect, test } from '@playwright/test';\ntest('landing', () => expect(1).toBe(1));\n",
+    '__tests__/client.test.tsx':
+      "import { render } from '@testing-library/preact';\nexport const rendered = render;\n",
+  };
+
+  /** Every file a TypeScript program built from the generated project reads. */
+  function checkedProject() {
+    const parsed = ts.getParsedCommandLineOfConfigFile(box.tsconfig, undefined, {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
+        throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+      },
+    })!;
+    const program = ts.createProgram(parsed.fileNames, { ...parsed.options, noEmit: true });
+    const real = (file: string) => realpathSync(file);
+    return {
+      files: program.getSourceFiles().map((file) => real(file.fileName)),
+      errorsIn: (file: string) =>
+        ts
+          .getPreEmitDiagnostics(program)
+          .filter((diagnostic) => diagnostic.file && real(diagnostic.file.fileName) === real(file))
+          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')),
+    };
+  }
+
+  it("reaches a staged module's code through its entries and leaves its tooling out", () => {
+    const staged = writeModule(join(box.app, 'src', 'site-ui', 'external'), {
+      ...tooling,
+      'client.tsx':
+        "import { tagline } from './parts/tagline';\n" +
+        "export const descriptor = { siteUiApi: 1, id: 'minimal', locale: 'en' } as const;\n" +
+        'export function Landing() {\n  return tagline;\n}\n',
+      'parts/tagline.ts': "export const tagline: string = 'Hello';\n",
+    });
+    resolve.prepareSiteUi(box.app, select(staged));
+
+    const { files } = checkedProject();
+
+    expect(files).toContain(realpathSync(join(staged, 'client.tsx')));
+    expect(files).toContain(realpathSync(join(staged, 'parts', 'tagline.ts')));
+    for (const file of Object.keys(tooling)) {
+      expect(files, file).not.toContain(realpathSync(join(staged, file)));
+    }
+  });
+
+  it("still reports a type error in the module's production code", () => {
+    const staged = writeModule(join(box.app, 'src', 'site-ui', 'external'), {
+      ...tooling,
+      'client.tsx':
+        "export const descriptor = { siteUiApi: 1, id: 'minimal', locale: 'en' } as const;\n" +
+        "export const width: number = 'wide';\n",
+    });
+    resolve.prepareSiteUi(box.app, select(staged));
+
+    expect(checkedProject().errorsIn(join(staged, 'client.tsx'))).toEqual([
+      "Type 'string' is not assignable to type 'number'.",
+    ]);
+  });
+
+  it.each([
+    ['the neutral UI', () => ({}), []],
+    ['a staged module', () => select(writeModule(join(box.app, 'src', 'site-ui', 'external'))), []],
+    [
+      'a module elsewhere in the application',
+      () => select(box.fixture),
+      ['tests/fixtures/site-ui-demo'],
+    ],
+    ['a module outside the application', () => select(EXAMPLE), []],
+  ])('keeps %s out of the globs only where the base project does not', (_label, env, added) => {
+    const base = JSON.parse(readFileSync(join(box.app, 'tsconfig.json'), 'utf8'));
+    expect(base.exclude).toContain('src/site-ui/external');
+
+    resolve.prepareSiteUi(box.app, env());
+
+    const generated = JSON.parse(readFileSync(box.tsconfig, 'utf8'));
+    expect(generated.exclude).toEqual([...base.exclude, ...added]);
+  });
+
+  it('type-checks `next build` with the generated project', () => {
+    const config = require_(join(frontendDir, 'next.config.js')) as {
+      typescript?: { tsconfigPath?: string };
+    };
+    // Relative, because Next joins it to the project directory — and joined
+    // that way it has to name the file the resolver writes.
+    const tsconfigPath = config.typescript?.tsconfigPath ?? '';
+    expect(tsconfigPath).not.toMatch(/^\//);
+    expect(join(frontendDir, tsconfigPath)).toBe(
+      resolve.resolveSiteUi(frontendDir, {}).tsconfigPath,
+    );
+  });
+
+  it('lints neither the staged module nor the generated bridge', async () => {
+    // Through ESLint's own ignore handling, which is what `next build` uses.
+    const { ESLint } = require_('eslint') as {
+      ESLint: new (options: { cwd: string }) => { isPathIgnored(file: string): Promise<boolean> };
+    };
+    const eslint = new ESLint({ cwd: frontendDir });
+    const ignored = (file: string) => eslint.isPathIgnored(join(frontendDir, file));
+
+    expect(await ignored('src/site-ui/external/client.tsx')).toBe(true);
+    expect(await ignored('src/site-ui/external/parts/landing.tsx')).toBe(true);
+    expect(await ignored('src/site-ui/active/client.ts')).toBe(true);
+    expect(await ignored('src/site-ui/module.tsx')).toBe(false);
   });
 });
