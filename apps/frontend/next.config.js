@@ -46,6 +46,13 @@ const nextConfig = {
       ...(config.resolve.alias || {}),
       ...webpackAlias(__dirname, siteUi),
     };
+    // Hold a distribution's module to the imports the interface promises where
+    // the bundler resolves them — client, server and edge alike — using the
+    // module directory and facade alias this config already resolved. The
+    // source check in `prepareSiteUi` reports what it can see earlier; this is
+    // the one that sees every request. See src/site-ui/containment.js.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('./src/site-ui/containment').installSiteUiContainment(config, __dirname, siteUi);
     return config;
   },
   // Keep every backend consumer on the exact target compiled into the rewrite
