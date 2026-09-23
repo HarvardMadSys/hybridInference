@@ -11,20 +11,32 @@ import { DefaultAuthFieldLayout, useAuthAppearance } from '@/site-ui/appearance'
  *
  * `data-auth` hooks are stable selectors; state comes from `aria-invalid`,
  * `disabled`, `aria-busy`, `data-auth-error` and `data-auth-tone`.
+ *
+ * Every value here is rendered by the default account pages, and nothing else
+ * is: a hook listed without an element is a selector a module would write
+ * against nothing (`account-pages.test.tsx` checks both directions).
  */
 export const AUTH_DATA = {
+  /** The body of an account page: its form, or the box its result sits in. */
   form: 'form',
+  /** One field's wrapper, drawn by its layout. */
   field: 'field',
   label: 'label',
+  /** An input or textarea, whatever its type. */
   control: 'control',
-  passwordControl: 'password-control',
-  reveal: 'reveal',
   hint: 'hint',
   error: 'error',
   notice: 'notice',
+  /** The page's primary button, or the link standing in for it. */
   submit: 'submit',
+  /** Wraps a field's own action, such as the forgot-password link. */
   fieldAction: 'field-action',
+  /** The row of alternative links under a form, such as sign up or log in. */
   secondaryActions: 'secondary-actions',
+  /** One sign-up confirmation: its checkbox and the sentence it confirms. */
+  consent: 'consent',
+  /** One numbered section of the sign-up confirmations. */
+  consentSection: 'consent-section',
   loading: 'loading',
 } as const;
 

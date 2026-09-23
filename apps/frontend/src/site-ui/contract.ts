@@ -184,8 +184,6 @@ export interface AuthAppearance {
   input: string;
   /** Classes applied to an invalid control instead of `input`. */
   inputError: string;
-  passwordWrap: string;
-  reveal: string;
   hint: string;
   error: string;
   linkButton: string;

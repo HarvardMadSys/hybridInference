@@ -102,13 +102,9 @@ function LoginContent() {
     return <AuthLoading />;
   }
 
+  // The field wraps its action in the `field-action` hook itself.
   const forgotLink = (
-    <Link
-      href="/forgot-password"
-      className={skin.linkButton}
-      data-auth="field-action"
-      prefetch={false}
-    >
+    <Link href="/forgot-password" className={skin.linkButton} prefetch={false}>
       {t('auth.login.forgot_password', 'Forgot password?')}
     </Link>
   );
@@ -158,7 +154,6 @@ function LoginContent() {
               <button
                 type="button"
                 className={skin.linkButton}
-                data-auth="field-action"
                 onClick={handleResend}
                 disabled={isResending}
               >

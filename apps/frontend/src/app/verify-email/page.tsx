@@ -140,7 +140,6 @@ function VerifyEmailContent(): JSX.Element {
                 type="button"
                 onClick={() => setResendDone(false)}
                 className={skin.linkButton}
-                data-auth="field-action"
               >
                 {t('auth.verify.try_another', 'Entered the wrong email? Try another one')}
               </button>
@@ -178,21 +177,11 @@ function VerifyEmailContent(): JSX.Element {
           ))}
 
         {status === 'error' && (
-          <div className="flex items-center justify-center gap-4">
-            <Link
-              href="/signup"
-              className={skin.linkButton}
-              data-auth="field-action"
-              prefetch={false}
-            >
+          <div className="flex items-center justify-center gap-4" data-auth="secondary-actions">
+            <Link href="/signup" className={skin.linkButton} prefetch={false}>
               {t('auth.verify.signup_again', 'Sign Up Again')}
             </Link>
-            <Link
-              href="/login"
-              className={skin.linkButton}
-              data-auth="field-action"
-              prefetch={false}
-            >
+            <Link href="/login" className={skin.linkButton} prefetch={false}>
               {t('auth.verify.back_to_login', 'Back to Login')}
             </Link>
           </div>

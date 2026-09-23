@@ -36,8 +36,6 @@ export const NEUTRAL_AUTH_APPEARANCE: AuthAppearance = {
   // Match the shared input's invalid border and focus styles.
   inputError:
     'mt-1.5 w-full rounded-lg border bg-white px-4 py-2.5 text-sm shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-red-400 border-red-300 focus:border-red-500 focus:ring-2 focus:ring-red-500/20',
-  passwordWrap: 'relative',
-  reveal: 'absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 hover:text-gray-700',
   hint: 'mt-1.5 block text-xs text-gray-500',
   error: 'mt-1.5 block text-xs text-red-600',
   linkButton: 'text-sm font-medium text-blue-600 hover:text-blue-700',

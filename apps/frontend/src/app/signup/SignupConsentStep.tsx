@@ -38,7 +38,10 @@ function ConsentBlock({
 }): JSX.Element {
   const skin = useAuthAppearance();
   return (
-    <section className={`rounded-lg border px-4 py-4 ${skin.consentBlock}`}>
+    <section
+      className={`rounded-lg border px-4 py-4 ${skin.consentBlock}`}
+      data-auth="consent-section"
+    >
       <h2 className="text-sm font-semibold text-gray-900">
         <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-900 text-xs font-medium text-white">
           {step}
@@ -103,7 +106,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
               { app_name: branding.appName },
             )}
           </p>
-          <label className="flex items-start gap-3 font-medium text-gray-900">
+          <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
             <input
               type="checkbox"
               className={checkboxClassName}
@@ -149,6 +152,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
             className={`flex items-start gap-3 font-medium ${
               termsRead ? 'text-gray-900' : 'text-gray-400'
             }`}
+            data-auth="consent"
           >
             <input
               type="checkbox"
@@ -216,7 +220,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
               'Participation is voluntary. If you do not agree, you cannot use the research service.',
             )}
           </p>
-          <label className="flex items-start gap-3 font-medium text-gray-900">
+          <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
             <input
               type="checkbox"
               className={checkboxClassName}
@@ -254,7 +258,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
               'Once de-identified data have been publicly released, it may no longer be possible to withdraw or delete those copies.',
             )}
           </p>
-          <label className="flex items-start gap-3 font-medium text-gray-900">
+          <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
             <input
               type="checkbox"
               className={checkboxClassName}

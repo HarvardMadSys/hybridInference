@@ -105,8 +105,6 @@ export const authAppearance: AuthAppearance = {
   labelRow: 'fixture-label-row',
   input: 'fixture-input',
   inputError: 'fixture-input-invalid',
-  passwordWrap: 'fixture-password',
-  reveal: 'fixture-reveal',
   hint: 'fixture-hint',
   error: 'fixture-error',
   linkButton: 'fixture-link',

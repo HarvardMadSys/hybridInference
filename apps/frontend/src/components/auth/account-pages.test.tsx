@@ -46,6 +46,7 @@ vi.mock('next/script', () => ({
 }));
 
 import { verifyEmail } from '@/lib/api/auth';
+import { AUTH_DATA } from '@/components/auth/AuthForm';
 import { AuthAppearanceProvider, NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
 import type { AuthFieldLayoutProps } from '@/site-ui/contract';
 import ForgotPasswordPage from '@/app/forgot-password/page';
@@ -222,6 +223,24 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** Assert what each control announces; retried until a submit's messages land. */
+function expectControls(controls: Expectation[]): void {
+  for (const { label, description, invalid } of controls) {
+    const control = screen.getByLabelText(label);
+    if (description) {
+      expect(control, label).toHaveAccessibleDescription(description);
+    } else {
+      expect(control, label).not.toHaveAccessibleDescription();
+      expect(control, label).not.toHaveAttribute('aria-describedby');
+    }
+    if (invalid) {
+      expect(control, label).toHaveAttribute('aria-invalid', 'true');
+    } else {
+      expect(control, label).not.toHaveAttribute('aria-invalid');
+    }
+  }
+}
+
 describe.each(LAYOUTS)('every account control, under %s', (_name, fieldLayout) => {
   const wrap = (page: React.ReactElement) =>
     fieldLayout ? (
@@ -237,22 +256,65 @@ describe.each(LAYOUTS)('every account control, under %s', (_name, fieldLayout) =
     async ({ submit, controls }) => {
       await submit(wrap);
 
-      await waitFor(() => {
-        for (const { label, description, invalid } of controls) {
-          const control = screen.getByLabelText(label);
-          if (description) {
-            expect(control, label).toHaveAccessibleDescription(description);
-          } else {
-            expect(control, label).not.toHaveAccessibleDescription();
-            expect(control, label).not.toHaveAttribute('aria-describedby');
-          }
-          if (invalid) {
-            expect(control, label).toHaveAttribute('aria-invalid', 'true');
-          } else {
-            expect(control, label).not.toHaveAttribute('aria-invalid');
-          }
-        }
-      });
+      await waitFor(() => expectControls(controls));
     },
   );
+});
+
+/**
+ * The `data-auth` hooks the default pages render, against the ones `AUTH_DATA`
+ * promises — in both directions. A promised hook that no page renders is a
+ * selector a module's stylesheet would be written against nothing; a rendered
+ * hook nobody promised is one a module could come to depend on without the
+ * contract knowing it exists.
+ */
+describe('the data-auth hooks', () => {
+  /** Every state of the default pages that renders a hook the others do not. */
+  const STATES: Array<[string, () => Promise<void>]> = [
+    ...SCENARIOS.map(({ page, submit, controls }): [string, () => Promise<void>] => [
+      `${page}, after a failed submit`,
+      async () => {
+        await submit((element) => element);
+        await waitFor(() => expectControls(controls));
+      },
+    ]),
+    [
+      '/signup, at the confirmations',
+      async () => {
+        render(<SignupPage />);
+      },
+    ],
+    [
+      '/verify-email, while the link is checked',
+      async () => {
+        vi.mocked(verifyEmail).mockReturnValueOnce(new Promise(() => undefined));
+        navigation.query = new URLSearchParams({ token: 'pending' });
+        render(<VerifyEmailPage />);
+      },
+    ],
+  ];
+
+  it('are exactly the ones AUTH_DATA promises', async () => {
+    const rendered = new Set<string>();
+    for (const [, enter] of STATES) {
+      navigation.query = new URLSearchParams();
+      await enter();
+      for (const element of document.querySelectorAll('[data-auth]')) {
+        rendered.add(element.getAttribute('data-auth') ?? '');
+      }
+      cleanup();
+    }
+
+    expect([...rendered].sort()).toEqual(Object.values(AUTH_DATA).sort());
+  });
+
+  it('marks a field\u2019s action once, around the action itself', () => {
+    // The field wraps whatever action it is given; a page that also marked its
+    // own link nested one hook inside another.
+    render(<LoginPage />);
+
+    const actions = document.querySelectorAll('[data-auth="field-action"]');
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toContainElement(screen.getByRole('link', { name: 'Forgot password?' }));
+  });
 });
