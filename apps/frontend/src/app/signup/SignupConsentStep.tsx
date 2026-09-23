@@ -161,6 +161,11 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
             <p>
               Participation is voluntary. If you do not agree, you cannot use the research service.
             </p>
+            <p>
+              {branding.contactEmail
+                ? `If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team at ${branding.contactEmail}.`
+                : 'If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team through the operator of this deployment.'}
+            </p>
             <label className="flex items-start gap-3 font-medium text-gray-900">
               <input
                 type="checkbox"
@@ -186,6 +191,10 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
               Before public release, we process the data to remove or redact direct identifiers and
               detected personally identifiable information. Automated sanitization cannot guarantee
               removal of every sensitive or identifying detail.
+            </p>
+            <p>
+              Your sanitized information may be used in future research studies or shared with other
+              researchers for future studies without asking for your informed consent again.
             </p>
             <p>
               Once de-identified data have been publicly released, it may no longer be possible to
