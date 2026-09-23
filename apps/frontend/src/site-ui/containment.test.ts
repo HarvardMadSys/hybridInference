@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 /**
  * The bundler guard, run through the bundler.
@@ -192,6 +192,11 @@ function compile(
 function moduleWith(clientSource: string, files: Record<string, string> = {}) {
   return { 'client.js': `${clientSource}\nexport const descriptor = {};\n`, ...files };
 }
+
+// Every case runs one or two real webpack compilations. Alone they take a
+// second or two; with the whole suite competing for the CPU they can take
+// longer than the default five seconds, which is a timing failure, not a finding.
+vi.setConfig({ testTimeout: 60_000 });
 
 describe('a request from the module is judged by the file it resolves to', () => {
   // [case, module files, what the error must name, compile target]
