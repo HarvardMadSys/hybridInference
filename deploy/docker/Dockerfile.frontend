@@ -87,7 +87,10 @@ COPY apps/frontend/ .
 # a repository can pass its whole `frontend/` tree and point at `site-ui` rather
 # than arranging a context that contains only the module. `SITE_UI_API` is
 # required with an external module and checked against this checkout's revision
-# by the resolver — an unset value is a build failure, not a fallback.
+# by the resolver — an unset value is a build failure, not a fallback. Either one
+# given without `--build-context site-ui=...` is refused as well: the neutral UI
+# is what a build with no module settings produces, not a stand-in for a module
+# whose context went missing.
 ARG SITE_UI_SUBDIR=.
 ARG SITE_UI_API=
 

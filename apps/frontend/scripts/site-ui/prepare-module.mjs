@@ -137,18 +137,75 @@ function containedDirectory(root, candidate, label) {
   return realCandidate;
 }
 
+/** `candidate` is `root` or somewhere below it. Both are absolute. */
+function isWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
+/** The real path of `target`, through its nearest existing ancestor if it does not exist yet. */
+function realPath(target) {
+  const missing = [];
+  let existing = target;
+  while (!existsSync(existing) && path.dirname(existing) !== existing) {
+    missing.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  return path.join(existsSync(existing) ? realpathSync(existing) : existing, ...missing);
+}
+
 /** Prepare: validate an external module and stage it inside the application. */
 function prepare(options) {
   const context = path.resolve(required(options, 'context'));
   const subdir = options.subdir ?? '';
   const into = path.resolve(required(options, 'into'));
+  const api = options.api ?? process.env.SITE_UI_API ?? '';
 
   // The application root, which is where the staging environment is written and
   // where `next build` will read it from. Passed rather than derived from
   // `--into`, whose depth is a layout detail this script should not know.
   const app = path.resolve(required(options, 'app'));
 
+  // `--into` is emptied before the module is copied into it, so it has to be a
+  // directory of its own. `--context my-ui --into my-ui` deleted the module's
+  // source; an `--into` holding the application would delete that. Compared by
+  // real path, so a symlinked or differently spelled route to the same place
+  // is the same place.
+  const realInto = realPath(into);
+  const realContext = realPath(context);
+  if (isWithin(realContext, realInto) || isWithin(realInto, realContext)) {
+    fail(
+      `--into ${into} overlaps --context ${context}. Staging empties --into before copying ` +
+        "the module into it, so it has to be a separate directory outside the module's source.",
+    );
+  }
+  if (isWithin(realInto, realPath(app))) {
+    fail(
+      `--into ${into} is or contains --app ${app}. Staging empties --into, which would delete ` +
+        'the application; stage into a directory inside it, such as src/site-ui/external.',
+    );
+  }
+
   if (existsSync(path.join(context, BUILT_IN_MARKER))) {
+    // Module settings with no module are a mistake, not a request for the
+    // neutral UI. An image build given `SITE_UI_API` or `SITE_UI_SUBDIR` but not
+    // `--build-context site-ui=...` arrives here with the marker, and used to
+    // produce a neutral image that nothing flagged.
+    const settings = [
+      ...(String(api).trim() === '' ? [] : [`--api ${api}`]),
+      ...(path.resolve(context, subdir || '.') === context ? [] : [`--subdir ${subdir}`]),
+    ];
+    if (settings.length > 0) {
+      fail(
+        `a module was requested (${settings.join(', ')}), but the context holds no module, ` +
+          'only the built-in marker. In an image build that is SITE_UI_API or SITE_UI_SUBDIR ' +
+          'without --build-context site-ui=<module directory>. Pass the context, or drop the ' +
+          'module settings to build the neutral UI.',
+      );
+    }
     rmSync(path.join(app, STAGING_ENV), { force: true });
     console.log("[site-ui] no external module: compiling the application's own UI");
     return;
@@ -167,7 +224,6 @@ function prepare(options) {
   const { resolveSiteUi, assertModulePresent, assertSiteUiEntries, assertModuleImports } = require_(
     '../../src/site-ui/resolve.js',
   );
-  const api = options.api ?? process.env.SITE_UI_API;
   if (!api) fail('--api or SITE_UI_API is required for an external module');
   try {
     // Resolved for its errors, not its value: this is where a module missing an

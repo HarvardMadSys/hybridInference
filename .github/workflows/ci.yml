@@ -257,6 +257,24 @@ jobs:
           docker buildx build -f deploy/docker/Dockerfile.frontend \
             --load -t site-ui-neutral:ci .
 
+      # The other half of that claim: module settings without the module's
+      # context are a mistake, and building the neutral UI in its place is the
+      # silent failure. Checked on the refusal's message, so a build that fails
+      # for an unrelated reason cannot pass for this one.
+      - name: Refuse module settings without a module context
+        run: |
+          log="${RUNNER_TEMP}/site-ui-no-context.log"
+          if docker buildx build -f deploy/docker/Dockerfile.frontend --progress=plain \
+            --build-arg SITE_UI_API=1 --build-arg SITE_UI_SUBDIR=site-ui . >"${log}" 2>&1; then
+            echo "SITE_UI_API without a site-ui context built an image" >&2
+            exit 1
+          fi
+          grep -q 'the context holds no module' "${log}" || {
+            tail -n 40 "${log}" >&2
+            echo "the build failed, but not because the module context was missing" >&2
+            exit 1
+          }
+
       - name: Build the example module through the named context
         run: |
           docker buildx build -f deploy/docker/Dockerfile.frontend \

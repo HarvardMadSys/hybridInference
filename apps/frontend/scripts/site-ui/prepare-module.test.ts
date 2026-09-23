@@ -97,6 +97,119 @@ describe('the container build\u2019s module handling', () => {
     expect(existsSync(path.join(scratch, '.site-ui-build-env'))).toBe(false);
   });
 
+  describe('module settings with no module', () => {
+    // An image build given SITE_UI_API or SITE_UI_SUBDIR but not
+    // `--build-context site-ui=...` reaches staging with the built-in marker.
+    // It used to build the neutral UI, and nothing said the module was missing.
+    let context: string;
+
+    beforeEach(() => {
+      context = path.join(scratch, 'context');
+      mkdirSync(context);
+      writeFileSync(path.join(context, '.built-in-ui'), 'neutral\n');
+    });
+
+    it.each([
+      ['an API revision', ['--subdir', '.', '--api', '1']],
+      ['a module subdirectory', ['--subdir', 'site-ui', '--api', '']],
+    ])('refuses %s instead of building the neutral UI', (_label, settings) => {
+      const into = path.join(scratch, 'staged');
+
+      const result = run(
+        'prepare',
+        '--app',
+        scratch,
+        '--context',
+        context,
+        '--into',
+        into,
+        ...settings,
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain('the context holds no module');
+      expect(result.output).toContain('--build-context site-ui=');
+      expect(existsSync(path.join(scratch, '.site-ui-build-env'))).toBe(false);
+    });
+
+    it('still builds the neutral UI from the defaults a plain image build passes', () => {
+      // The Dockerfile's ARG defaults: `SITE_UI_SUBDIR=.` and an empty `SITE_UI_API`.
+      const result = run(
+        'prepare',
+        '--app',
+        scratch,
+        '--context',
+        context,
+        '--subdir',
+        '.',
+        '--into',
+        path.join(scratch, 'staged'),
+        '--api',
+        '',
+      );
+
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain('no external module');
+    });
+  });
+
+  describe('what staging may empty', () => {
+    // `--into` is deleted before the module is copied into it:
+    // `--context my-ui --into my-ui` emptied the module's own source.
+    it.each([
+      ['is', (module: string) => module],
+      ['is inside', (module: string) => path.join(module, 'staged')],
+      ['contains', (module: string) => path.dirname(module)],
+    ])('refuses an --into that %s the context, and leaves the module alone', (_label, intoFor) => {
+      const module_ = path.join(scratch, 'work', 'my-ui');
+      cpSync(exampleModule, module_, { recursive: true });
+
+      const result = run(
+        'prepare',
+        '--app',
+        scratch,
+        '--context',
+        module_,
+        '--subdir',
+        '.',
+        '--into',
+        intoFor(module_),
+        '--api',
+        '1',
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain('overlaps --context');
+      expect(readFileSync(path.join(module_, 'client.tsx'), 'utf8')).toBe(
+        readFileSync(path.join(exampleModule, 'client.tsx'), 'utf8'),
+      );
+    });
+
+    it('refuses an --into that is the application', () => {
+      const app = path.join(scratch, 'app');
+      mkdirSync(app);
+      writeFileSync(path.join(app, 'package.json'), '{}');
+
+      const result = run(
+        'prepare',
+        '--app',
+        app,
+        '--context',
+        exampleModule,
+        '--subdir',
+        '.',
+        '--into',
+        app,
+        '--api',
+        '1',
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.output).toContain('is or contains --app');
+      expect(existsSync(path.join(app, 'package.json'))).toBe(true);
+    });
+  });
+
   it('stages an external module and records which one', () => {
     const into = path.join(scratch, 'src', 'site-ui', 'external');
 
