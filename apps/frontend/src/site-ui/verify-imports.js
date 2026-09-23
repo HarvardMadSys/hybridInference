@@ -10,14 +10,40 @@
  * that file moves, and the breakage lands on the distribution's release rather
  * than on the change that caused it.
  *
- * Run from `prepareSiteUi`, so a forbidden import fails the build rather than
- * being discovered in review — or not.
+ * Run from `prepareSiteUi`, so a forbidden import fails the build before
+ * anything is compiled, with every problem listed at once rather than one per
+ * build. This is the early half of the check. The bundler guard in
+ * `containment.js` holds the same rule at the point where each request becomes
+ * a file, and it is what makes the rule hold: a reader of source cannot see a
+ * request the bundler assembles for itself. So this file may miss things the
+ * guard catches, but it must never reject a module the guard — and the
+ * interface — would accept.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require('node:fs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require('node:path');
+
+/**
+ * The framework specifiers the interface names: `react`, `react/*`,
+ * `react-dom`, `next` and `next/*`.
+ *
+ * A subpath must stay a subpath. `next/../../src/site-ui/routes` starts with
+ * `next/` and resolves into the application, so a `.` or `..` segment — or an
+ * empty one, or a Windows separator — is not a subpath of anything.
+ */
+function isFrameworkSpecifier(specifier) {
+  if (specifier === 'react-dom') return true;
+  const [pathPart] = specifier.split(/[?#]/);
+  const segments = pathPart.split('/');
+  if (segments[0] !== 'react' && segments[0] !== 'next') return false;
+  return !segments.some(
+    (segment, index) =>
+      (index > 0 && (segment === '' || segment === '.' || segment === '..')) ||
+      segment.includes('\\'),
+  );
+}
 
 /**
  * Module specifiers a distribution's UI may use.
@@ -34,12 +60,7 @@ const ALLOWED_SPECIFIER_RULES = [
   },
   {
     name: 'the framework and its own dependencies',
-    test: (specifier) =>
-      specifier === 'react' ||
-      specifier.startsWith('react/') ||
-      specifier === 'react-dom' ||
-      specifier === 'next' ||
-      specifier.startsWith('next/'),
+    test: (specifier) => isFrameworkSpecifier(specifier),
     why: 'A module renders React components inside a Next.js application.',
   },
   {
@@ -47,14 +68,23 @@ const ALLOWED_SPECIFIER_RULES = [
     // Resolve relative imports before accepting them: ../ paths can otherwise
     // escape the staged module and bypass the host facade.
     test: (specifier, context) => {
-      if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false;
+      if (!isRelative(specifier)) return false;
       const from = context && context.dir;
       if (!from || !context.root) return true; // No context: the caller allowed it.
-      return relativeImportIsInside(context.root, path.resolve(from, specifier));
+      return relativeImportIsInside(context.root, path.resolve(from, stripQuery(specifier)));
     },
     why: 'Relative imports stay inside the module.',
   },
 ];
+
+function isRelative(specifier) {
+  return specifier === '.' || specifier.startsWith('./') || specifier.startsWith('../');
+}
+
+/** A request's path, without the query or fragment a loader would receive. */
+function stripQuery(specifier) {
+  return specifier.split(/[?#]/)[0];
+}
 
 /** Check the resolved file, including TypeScript extensions and directory entries. */
 function isInside(root, candidate) {
@@ -62,191 +92,350 @@ function isInside(root, candidate) {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-function relativeImportIsInside(root, candidate) {
-  if (!isInside(root, candidate)) return false;
-  const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.css'];
-  const candidates = extensions.map((extension) => candidate + extension);
-  candidates.push(
-    ...extensions.slice(1).map((extension) => path.join(candidate, `index${extension}`)),
+/**
+ * Inside the module, and not inside a dependency tree the module carries.
+ *
+ * A module's dependencies come from the application's lock; a `node_modules`
+ * below it is never staged, and importing from one is importing a package.
+ */
+function isOwn(root, candidate) {
+  return (
+    isInside(root, candidate) &&
+    !path.relative(root, candidate).split(path.sep).includes('node_modules')
   );
-  for (const file of candidates) {
-    try {
-      if (fs.statSync(file).isFile()) return isInside(fs.realpathSync(root), fs.realpathSync(file));
-    } catch {
-      /* A missing candidate may resolve with another extension. */
-    }
+}
+
+/** Extensions a request may omit, in any order the bundler or `tsc` tries them. */
+const RESOLVED_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.json', '.css'];
+
+/**
+ * Every existing file a relative request could resolve to.
+ *
+ * All of them, not the first: the bundler and this check try extensions in
+ * different orders, and `./x` naming both an inside `x.ts` and an outside
+ * `x.js` symlink must be judged by the one that escapes.
+ */
+function candidateFiles(candidate) {
+  return [
+    candidate,
+    ...RESOLVED_EXTENSIONS.map((extension) => candidate + extension),
+    ...RESOLVED_EXTENSIONS.map((extension) => path.join(candidate, `index${extension}`)),
+  ].filter(isFile);
+}
+
+function isFile(candidate) {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false; // A missing candidate may resolve with another extension.
   }
+}
+
+function relativeImportIsInside(root, candidate) {
+  const realRoot = fs.realpathSync(root);
+  if (!isOwn(root, candidate)) return false;
+  const files = candidateFiles(candidate);
+  if (files.length > 0) return files.every((file) => isOwn(realRoot, fs.realpathSync(file)));
   // The compiler diagnoses missing files; existing ancestor links still must
   // stay inside the module (including unresolved files below linked folders).
   let parent = candidate;
   while (!fs.existsSync(parent) && parent !== path.dirname(parent)) parent = path.dirname(parent);
-  return isInside(fs.realpathSync(root), fs.realpathSync(parent));
+  return isOwn(realRoot, fs.realpathSync(parent));
 }
 
-/** Extensions to walk. A module is TypeScript and CSS in practice. */
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+/** Extensions to read. A module is TypeScript and CSS in practice. */
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
+const STYLE_EXTENSIONS = new Set(['.css']);
 
-/** Directories never worth walking. */
+/** Directories never worth reading for source: dependencies and build output. */
 const SKIP_DIRECTORIES = new Set(['node_modules', '.next', 'dist', 'build', 'coverage']);
 
 /**
- * Paths that are not compiled into the image, and are therefore not bound by
- * the interface's import rules.
+ * Names the staging step never copies into the application, at any depth.
+ *
+ * The same set as `NEVER_STAGED` in `scripts/site-ui/prepare-module.mjs`, and
+ * it has to be: a symlink the staging step *does* copy is a file the image can
+ * serve, so it is checked wherever it sits. `coverage` is deliberately absent —
+ * staging copies it, so a `coverage -> /elsewhere` link would ship.
+ */
+const NEVER_STAGED = new Set(['node_modules', '.next', 'dist', 'build']);
+
+/**
+ * Paths that are not compiled into the image unless production code imports
+ * them, and are therefore not bound by the interface's import rules.
  *
  * A module's own tests and its test-runner configuration are built by the
  * distribution's tooling, not by this application's bundler: they legitimately
  * import a test framework, a DOM environment and Node built-ins. Checking them
  * here would reject every module that has tests at all, and the alternative —
  * telling module authors not to write tests — is worse.
+ *
+ * The exemption is for files the entries do not reach. A test helper that
+ * `client.tsx` imports is compiled like any other file, and is checked like one.
  */
 const TEST_PATH =
   /(^|\/)(tests?|__tests__|__mocks__)\/|(^|\/)(vitest|jest|playwright)\.config\.[cm]?[jt]s$/;
 
 /**
- * One lexical scan over a source file, classifying it into code, strings and
- * comments.
- *
- * Hand-written rather than a regex, and this is the reason: a doc comment
- * containing a backtick — ``Note the import: `@site-ui/host` `` — would open a
- * template-literal span that never closes, and every real import after it would
- * then look like it was inside a string. The check would report nothing and
- * look like it had passed. Anything that silently passes is worse than anything
- * that fails, so the scan has to understand comments.
- *
- * Returns the code with comments blanked out, plus the ranges the strings
- * occupied. Templates are treated as strings: an interpolated expression inside
- * one is rare enough here, and a `require()` inside it that this misses is
- * caught by the missing-dependency at build time.
+ * The files the bundler may start from: every extension either the resolver or
+ * webpack could pick for an entry, since the two try them in different orders.
  */
-function scan(source) {
-  const spans = [];
-  let code = '';
-  let index = 0;
+const ENTRY_FILES = [
+  ...['client', 'server'].flatMap((name) =>
+    ['.tsx', '.ts', '.jsx', '.js', '.mjs'].map((extension) => name + extension),
+  ),
+  'styles.css',
+  'styles.css.css',
+];
 
-  const blank = (text) => '\u0000'.repeat(text.length);
-
-  while (index < source.length) {
-    const character = source[index];
-    const next = source[index + 1];
-
-    if (character === '/' && next === '/') {
-      const end = source.indexOf('\n', index);
-      const stop = end === -1 ? source.length : end;
-      code += blank(source.slice(index, stop));
-      index = stop;
-      continue;
-    }
-
-    if (character === '/' && next === '*') {
-      const end = source.indexOf('*/', index + 2);
-      const stop = end === -1 ? source.length : end + 2;
-      code += blank(source.slice(index, stop));
-      index = stop;
-      continue;
-    }
-
-    if (character === "'" || character === '"' || character === '`') {
-      const start = index;
-      index += 1;
-      while (index < source.length) {
-        if (source[index] === '\\') {
-          index += 2;
-          continue;
-        }
-        if (source[index] === character) {
-          index += 1;
-          break;
-        }
-        index += 1;
-      }
-      spans.push([start, index]);
-      code += source.slice(start, index);
-      continue;
-    }
-
-    code += character;
-    index += 1;
+function scriptKind(ts, fileName) {
+  switch (path.extname(fileName)) {
+    case '.ts':
+    case '.mts':
+    case '.cts':
+      return ts.ScriptKind.TS;
+    case '.tsx':
+      return ts.ScriptKind.TSX;
+    default:
+      // Next compiles JSX in `.js` files as well, so JavaScript is read as JSX.
+      return ts.ScriptKind.JSX;
   }
-
-  return { code, spans };
 }
 
 /**
- * Whether an offset falls inside a string that is *not* the specifier's own.
+ * The static text a request expression starts with, and whether it continues.
  *
- * The innermost enclosing span is what decides, and that detail is load-bearing
- * in both directions:
- *
- * - `import { x } from '@/a';` — the specifier sits inside exactly one span,
- *   the quotes `from` is followed by, so it is code;
- * - `const s = 'import x from "@/a";';` — it sits inside two, and the innermost
- *   is the inner double-quoted one, so it is a code sample.
- *
- * "Inside any span" would call the first case documentation and the check would
- * silently pass on every real import; "inside no span" would call the second
- * case a dependency. Neither is a mistake that shows up as a failure, which is
- * why this is spelled out rather than left to the obvious reading.
+ * `'./x'` is a whole request. `` `./locales/${lang}` `` and `'./locales/' + lang`
+ * are the bundler's computed imports: it compiles every file under the static
+ * prefix's directory, so that directory is what gets checked.
  */
-function isInsideString(spans, offset) {
-  let innermost = null;
-  for (const span of spans) {
-    if (offset <= span[0] || offset >= span[1]) continue;
-    if (innermost === null || span[0] > innermost[0]) innermost = span;
+function requestText(ts, node) {
+  if (!node) return null;
+  node = unwrap(ts, node);
+  if (ts.isStringLiteralLike(node)) return { text: node.text, computed: false };
+  if (ts.isTemplateExpression(node)) return { text: node.head.text, computed: true };
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = requestText(ts, node.left);
+    return left && { text: left.text, computed: true };
   }
-  if (innermost === null) return false;
+  return null;
+}
 
-  // The specifier's own quotes open immediately before it, so a span starting
-  // one character earlier *is* those quotes.
-  return innermost[0] !== offset - 1;
+/** The directory a computed request ranges over: its prefix up to the last `/`. */
+function computedDirectory(prefix) {
+  const slash = prefix.lastIndexOf('/');
+  if (slash === -1) return prefix.startsWith('.') ? '.' : null;
+  return prefix.slice(0, slash + 1);
+}
+
+/**
+ * The expression under any TypeScript-only wrapping.
+ *
+ * The compiler strips `as`, `satisfies`, `!` and parentheses before the bundler
+ * reads the file, so `(import.meta as Meta).webpackContext(…)` is, to the
+ * bundler, `import.meta.webpackContext(…)`.
+ */
+function unwrap(ts, node) {
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isTypeAssertionExpression(node)
+  ) {
+    node = node.expression;
+  }
+  return node;
+}
+
+function isImportMeta(ts, node) {
+  node = unwrap(ts, node);
+  return ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword;
+}
+
+function isRequire(ts, node) {
+  node = unwrap(ts, node);
+  return ts.isIdentifier(node) && node.text === 'require';
+}
+
+/** `require.context`, `import.meta.webpackContext`: a directory, not a file. */
+function contextCall(ts, callee) {
+  callee = unwrap(ts, callee);
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  const name = callee.name.text;
+  if (name === 'context') return isRequire(ts, callee.expression);
+  return name === 'webpackContext' && isImportMeta(ts, callee.expression);
+}
+
+/** `import()`, `require()`, `require.resolve()`, `require.resolveWeak()`. */
+function fileCall(ts, callee) {
+  callee = unwrap(ts, callee);
+  if (callee.kind === ts.SyntaxKind.ImportKeyword) return true;
+  if (isRequire(ts, callee)) return true;
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    isRequire(ts, callee.expression) &&
+    (callee.name.text === 'resolve' || callee.name.text === 'resolveWeak')
+  );
+}
+
+/** `new URL(request, import.meta.url)`: an asset (or worker) the bundler emits. */
+function isUrlOfThisFile(ts, node) {
+  const callee = unwrap(ts, node.expression);
+  if (!ts.isIdentifier(callee) || callee.text !== 'URL') return false;
+  const base = node.arguments && node.arguments[1] && unwrap(ts, node.arguments[1]);
+  return (
+    base !== undefined &&
+    ts.isPropertyAccessExpression(base) &&
+    base.name.text === 'url' &&
+    isImportMeta(ts, base.expression)
+  );
+}
+
+/**
+ * Every request one script makes, found by parsing it.
+ *
+ * A parser rather than patterns, because each pattern this file used to hold
+ * had a way past it — a comment between `import(` and the string, a template
+ * literal, a string-named import, an apostrophe in JSX text opening a "string"
+ * that ran over the next import, `require.context`, `new URL`. TypeScript is
+ * already a locked build dependency (`resolve.js` reads the descriptor with it),
+ * it reads JSX and type syntax, and it never throws: a file it cannot make full
+ * sense of still yields the requests it can see, and the bundler judges the
+ * rest.
+ *
+ * Returns `{ specifier, directory, url }`: `directory` for a computed import or
+ * a context, `url` for `new URL(…, import.meta.url)`, which webpack resolves
+ * relative to the file even without a `./`.
+ */
+function scriptRequests(source, fileName = 'module.tsx') {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ts = require('typescript');
+  const file = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    scriptKind(ts, fileName),
+  );
+  const found = [];
+  const push = (specifier, flags = {}) => {
+    if (specifier) found.push({ specifier, directory: false, url: false, ...flags });
+  };
+  const pushRequest = (node, flags) => {
+    const request = requestText(ts, node);
+    if (!request) return;
+    if (!request.computed) return push(request.text, flags);
+    push(computedDirectory(request.text), { ...flags, directory: true });
+  };
+
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      push(node.moduleSpecifier.text);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      pushRequest(node.moduleReference.expression);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      push(node.argument.literal.text);
+    } else if (ts.isCallExpression(node)) {
+      if (contextCall(ts, node.expression)) {
+        const request = requestText(ts, node.arguments[0]);
+        if (request) push(request.text, { directory: true });
+      } else if (fileCall(ts, node.expression)) {
+        pushRequest(node.arguments[0]);
+      }
+    } else if (ts.isNewExpression(node) && isUrlOfThisFile(ts, node)) {
+      pushRequest(node.arguments[0], { url: true });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/**
+ * Every request one stylesheet makes: `@import`, `url()`, and the CSS Modules
+ * `composes … from` and `@value … from`.
+ *
+ * A URL the build leaves for the browser — root-relative, `data:`, `https:`,
+ * a bare `#fragment` — is not a request for the bundler and is skipped, the
+ * same way Next's css-loader skips it.
+ */
+function styleRequests(source) {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
+  const quoted = String.raw`(?:"([^"]*)"|'([^']*)')`;
+  const bare = String.raw`([^)'"\s][^)\s]*)`;
+  const patterns = [
+    new RegExp(String.raw`@import\s+(?:url\(\s*(?:${quoted}|${bare})\s*\)|${quoted})`, 'gi'),
+    new RegExp(String.raw`\burl\(\s*(?:${quoted}|${bare})\s*\)`, 'gi'),
+    new RegExp(String.raw`\bcomposes\s*:[^;{}]*?\bfrom\s+${quoted}`, 'gi'),
+    new RegExp(String.raw`@value\s[^;{}]*?\bfrom\s+${quoted}`, 'gi'),
+  ];
+  const found = new Set();
+  for (const pattern of patterns) {
+    for (const match of code.matchAll(pattern)) {
+      const target = match.slice(1).find((group) => group !== undefined);
+      if (!target || /^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(target)) continue;
+      found.add(target);
+    }
+  }
+  return [...found].map((specifier) => ({ specifier, directory: false, url: false, style: true }));
 }
 
 /**
  * Every import/export specifier in one source file.
  *
- * Regex, not a parser: this runs in plain Node from a Next config, where no
- * TypeScript parser is guaranteed to be loadable, and the shapes being matched
- * are stable. A specifier written in a form this misses is a specifier the
- * bundler sees and this check does not, so the patterns are deliberately broad
- * and allow newlines between the keywords and the string.
+ * Kept for callers that want the list rather than a verdict; `fileName` picks
+ * the dialect.
  */
-function importSpecifiers(source) {
-  const { code, spans } = scan(source);
-  const found = [];
-  const patterns = [
-    // `import ... from 'x'`, `export ... from 'x'`
-    /\b(?:import|export)\s[^;'"]*?\bfrom\s*['"]([^'"]+)['"]/g,
-    // bare `import 'x'` (a stylesheet, usually)
-    /\bimport\s*['"]([^'"]+)['"]/g,
-    // `require('x')` and dynamic `import('x')`
-    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-  ];
-
-  for (const pattern of patterns) {
-    for (const match of code.matchAll(pattern)) {
-      const specifier = match[1];
-      // Where the specifier starts, not where the whole match does: the match
-      // may begin at the `from`, and for a *nested* sample the text before the
-      // specifier is outside the string while the specifier itself is inside.
-      //
-      // `indexOf`, not `lastIndexOf`: a specifier can repeat inside its own
-      // match — `'@site-ui/host'` contains `'@site-ui/'` — and `lastIndexOf`
-      // lands on the repetition, which is *outside* the opening quote and so
-      // looks exactly like a real import.
-      const start = match.index + match[0].indexOf(specifier);
-      // A specifier inside a longer string is documentation, not code. The
-      // quickstart pages ship lines like `import OpenAI from "openai";` to show
-      // a reader what to type, and treating one as a real dependency would
-      // force a module to obfuscate its own examples.
-      if (isInsideString(spans, start)) continue;
-      found.push(specifier);
-    }
-  }
-  return found;
+function importSpecifiers(source, fileName = 'module.tsx') {
+  const requests = STYLE_EXTENSIONS.has(path.extname(fileName))
+    ? styleRequests(source)
+    : scriptRequests(source, fileName);
+  return requests.map((request) => request.specifier);
 }
 
-function* walk(directory, seen = new Set()) {
-  const real = fs.realpathSync(directory);
+/**
+ * How a request should be read.
+ *
+ * A stylesheet request is relative unless it cannot be: css-loader tries
+ * `./x` before `x`, and a leading `~` is its old spelling for a package. A
+ * `new URL` request is relative to the file with or without `./`.
+ */
+function normalize(request, dir) {
+  const { specifier } = request;
+  if (request.style) {
+    if (specifier.startsWith('~')) return specifier.slice(1);
+    if (isRelative(specifier)) return specifier;
+    const relative = `./${specifier}`;
+    return candidateFiles(path.resolve(dir, stripQuery(relative))).length > 0
+      ? relative
+      : specifier;
+  }
+  if (request.url && !isRelative(specifier) && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(specifier)) {
+    return `./${specifier}`;
+  }
+  return specifier;
+}
+
+/** Every file below a directory, skipping dependency trees and build output. */
+function* walk(directory, extensions, seen = new Set()) {
+  let real;
+  try {
+    real = fs.realpathSync(directory);
+  } catch {
+    return;
+  }
   if (seen.has(real)) return;
   seen.add(real);
   let entries;
@@ -259,12 +448,14 @@ function* walk(directory, seen = new Set()) {
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRECTORIES.has(entry.name)) continue;
-      yield* walk(full, seen);
-    } else if (entry.isFile() && SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
+      yield* walk(full, extensions, seen);
+    } else if (entry.isFile() && extensions.has(path.extname(entry.name))) {
       yield full;
     }
   }
 }
+
+const READABLE_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, ...STYLE_EXTENSIONS]);
 
 /**
  * Check one module directory.
@@ -279,7 +470,7 @@ function verifyModuleImports(moduleDir) {
 
   function checkLinks(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (SKIP_DIRECTORIES.has(entry.name)) continue;
+      if (NEVER_STAGED.has(entry.name)) continue;
       const full = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) {
         try {
@@ -293,32 +484,91 @@ function verifyModuleImports(moduleDir) {
   }
   checkLinks(root);
 
-  for (const file of walk(root)) {
-    const relative = path.relative(root, file).split(path.sep).join('/');
-    if (TEST_PATH.test(relative)) continue;
+  const relativeName = (file) => path.relative(root, file).split(path.sep).join('/');
+  const requestsOf = new Map();
+  const requestsIn = (file) => {
+    if (!requestsOf.has(file)) {
+      let source;
+      try {
+        source = fs.readFileSync(file, 'utf8');
+      } catch {
+        source = '';
+      }
+      requestsOf.set(
+        file,
+        STYLE_EXTENSIONS.has(path.extname(file))
+          ? styleRequests(source)
+          : scriptRequests(source, file),
+      );
+    }
+    return requestsOf.get(file);
+  };
 
-    const source = fs.readFileSync(file, 'utf8');
-    for (const specifier of importSpecifiers(source)) {
-      const context = { root, dir: path.dirname(file) };
+  // What the entries reach, followed through the module's own files: a file
+  // production code imports is compiled into the image whatever its path says.
+  const reached = new Set();
+  const pending = ENTRY_FILES.map((name) => path.join(root, name)).filter(isFile);
+  const reach = (file) => {
+    const real = fs.realpathSync(file);
+    if (!isOwn(root, real) || !READABLE_EXTENSIONS.has(path.extname(real))) return;
+    if (!reached.has(real)) pending.push(real);
+  };
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (reached.has(file)) continue;
+    reached.add(file);
+    for (const request of requestsIn(file)) {
+      const specifier = normalize(request, path.dirname(file));
+      if (!isRelative(specifier)) continue;
+      const target = path.resolve(path.dirname(file), stripQuery(specifier));
+      if (request.directory) {
+        for (const each of walk(target, READABLE_EXTENSIONS)) reach(each);
+      } else {
+        for (const each of candidateFiles(target)) reach(each);
+      }
+    }
+  }
+
+  const checked = new Set(reached);
+  for (const file of walk(root, READABLE_EXTENSIONS)) {
+    const real = fs.realpathSync(file);
+    if (!TEST_PATH.test(relativeName(real))) checked.add(real);
+  }
+
+  for (const file of [...checked].sort()) {
+    const relative = relativeName(file);
+    const context = { root, dir: path.dirname(file) };
+    for (const request of requestsIn(file)) {
+      const specifier = normalize(request, context.dir);
       if (ALLOWED_SPECIFIER_RULES.some((rule) => rule.test(specifier, context))) continue;
 
       // `@/...` gets its own message: it is the mistake people actually make,
       // and "use @site-ui/host instead" is the fix.
-      const escapes = specifier.startsWith('./') || specifier.startsWith('../');
       const hint = specifier.startsWith('@/')
         ? ' `@/...` paths are internals of the shared application and may move at any time; ' +
           're-export what you need through @site-ui/host.'
-        : escapes
+        : isRelative(specifier)
           ? ' The path resolves outside this module. A relative import has to stay inside ' +
             'the module it is written in; anything from the shared application comes ' +
             'through @site-ui/host.'
-          : ` Allowed: ${ALLOWED_SPECIFIER_RULES.map((rule) => rule.name).join(', ')}.`;
-
-      problems.push(`${relative}: imports '${specifier}'.${hint}`);
+          : specifier.includes('!')
+            ? ' Inline loaders are not part of the interface; the application decides how ' +
+              'a file is compiled.'
+            : ` Allowed: ${ALLOWED_SPECIFIER_RULES.map((rule) => rule.name).join(', ')}.`;
+      const verb = request.directory ? 'computes an import from' : 'imports';
+      const problem = `${relative}: ${verb} '${request.specifier}'.${hint}`;
+      if (!problems.includes(problem)) problems.push(problem);
     }
   }
 
   return problems;
 }
 
-module.exports = { verifyModuleImports, importSpecifiers, ALLOWED_SPECIFIER_RULES, TEST_PATH };
+module.exports = {
+  verifyModuleImports,
+  importSpecifiers,
+  isFrameworkSpecifier,
+  ALLOWED_SPECIFIER_RULES,
+  NEVER_STAGED,
+  TEST_PATH,
+};
