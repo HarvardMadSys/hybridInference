@@ -15,6 +15,7 @@ from ops.ci.classify_changes import classify
 from ops.ci.verify_ci_gate import (
     BOOLEAN_OUTPUTS,
     REQUIRED_JOBS,
+    ClassificationOutputs,
     parse_classification,
     verify_gate,
 )
@@ -47,6 +48,8 @@ def _results(**overrides: str) -> str:
         ["apps/backend/routing/routers.py"],
         ["apps/backend/serving/config/settings.py"],
         [".dockerignore"],
+        ["distributions/example/frontend/site-ui/client.tsx"],
+        ["deploy/docker/site-ui/.built-in-ui"],
         ["unknown/file.txt"],
     ],
 )
@@ -127,6 +130,7 @@ def test_pr_frontend_dockerfile_runs_frontend_python_tests_and_image() -> None:
         "pull_request",
         _classification(
             frontend=True,
+            site_ui=True,
             python_tests=True,
             tutorial_e2e=True,
             matrix=("frontend",),
@@ -180,9 +184,73 @@ def test_frontend_pr_rejects_unsuccessful_site_ui_container_check(result: str) -
     with pytest.raises(ValueError, match=f"site-ui-containers: expected success, got {result}"):
         verify_gate(
             "pull_request",
-            _classification(frontend=True, matrix=("frontend",)),
+            _classification(frontend=True, site_ui=True, matrix=("frontend",)),
             results,
         )
+
+
+def _pr_results_for(outputs: ClassificationOutputs) -> dict[str, str]:
+    """The job results a pull request with these outputs produces when all goes well."""
+    flags = outputs.booleans
+
+    def ran(selected: bool) -> str:
+        return "success" if flags["full"] or selected else "skipped"
+
+    return {
+        "changes": "success",
+        "security": "success",
+        "backend-quality": ran(flags["backend"]),
+        "frontend-quality": ran(flags["frontend"]),
+        "site-ui-containers": ran(flags["site_ui"]),
+        "test": ran(flags["python_tests"]),
+        "docs-build": ran(flags["docs"]),
+        "docker-build": "success" if outputs.docker_matrix else "skipped",
+        "tutorial-e2e": ran(flags["tutorial_e2e"]),
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "distributions/example/frontend/site-ui/client.tsx",
+        "distributions/example/README.md",
+        ".dockerignore",
+        "deploy/docker/site-ui/.built-in-ui",
+        "apps/frontend/scripts/site-ui/prepare-module.mjs",
+    ],
+)
+def test_pr_site_ui_inputs_cannot_skip_the_container_checks(path: str) -> None:
+    # From the classifier's real output through the gate. Each path is an input
+    # of the Site UI builds. The example and `.dockerignore` are not frontend
+    # source, and a PR touching only one of them skipped the job and still
+    # passed the gate; the others are pinned so a narrower rule cannot drop them.
+    classification = json.dumps(classify([path]).as_workflow_outputs())
+    outputs = parse_classification(classification)
+    assert outputs.booleans["site_ui"] is True
+
+    expected = _pr_results_for(outputs)
+    verify_gate("pull_request", classification, json.dumps(expected))
+
+    expected["site-ui-containers"] = "skipped"
+    with pytest.raises(ValueError, match="site-ui-containers: expected success, got skipped"):
+        verify_gate("pull_request", classification, json.dumps(expected))
+
+
+def test_example_module_pr_also_requires_frontend_quality() -> None:
+    # The frontend's own tests stage and resolve the example module.
+    classification = json.dumps(
+        classify(["distributions/example/frontend/site-ui/client.tsx"]).as_workflow_outputs()
+    )
+    expected = _pr_results_for(parse_classification(classification))
+    expected["frontend-quality"] = "skipped"
+
+    with pytest.raises(ValueError, match="frontend-quality: expected success, got skipped"):
+        verify_gate("pull_request", classification, json.dumps(expected))
+
+
+def test_frontend_classification_must_select_the_site_ui_checks() -> None:
+    with pytest.raises(ValueError, match="frontend changes must enable site_ui"):
+        parse_classification(_classification(frontend=True, matrix=("frontend",)))
 
 
 def test_docs_only_pr_accepts_legitimately_skipped_site_ui_container_check() -> None:
@@ -216,7 +284,7 @@ def test_pr_unrelated_change_rejects_unexpected_tutorial_e2e() -> None:
     with pytest.raises(ValueError, match="tutorial-e2e"):
         verify_gate(
             "pull_request",
-            _classification(frontend=True, matrix=("frontend",)),
+            _classification(frontend=True, site_ui=True, matrix=("frontend",)),
             _results(
                 **{
                     "frontend-quality": "success",
@@ -265,7 +333,7 @@ def test_pr_full_requires_all_application_jobs_and_images() -> None:
 def test_push_requires_all_app_jobs_and_skips_docker() -> None:
     verify_gate(
         "push",
-        _classification(frontend=True, matrix=("frontend",)),
+        _classification(frontend=True, site_ui=True, matrix=("frontend",)),
         _results(
             **{
                 "backend-quality": "success",
@@ -281,7 +349,7 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
 def test_push_runs_tutorial_e2e_only_when_classified() -> None:
     verify_gate(
         "push",
-        _classification(frontend=True, tutorial_e2e=True, matrix=("frontend",)),
+        _classification(frontend=True, site_ui=True, tutorial_e2e=True, matrix=("frontend",)),
         _results(
             **{
                 "backend-quality": "success",
@@ -318,7 +386,7 @@ def test_schedule_rejects_partial_docker_plan() -> None:
     with pytest.raises(ValueError, match="full three-image"):
         verify_gate(
             "schedule",
-            _classification(frontend=True, matrix=("frontend",)),
+            _classification(frontend=True, site_ui=True, matrix=("frontend",)),
             _results(
                 **{
                     "backend-quality": "success",

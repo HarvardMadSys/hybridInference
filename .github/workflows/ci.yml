@@ -47,6 +47,7 @@ jobs:
       python_tests: ${{ steps.validate.outputs.python_tests }}
       docs: ${{ steps.validate.outputs.docs }}
       tutorial_e2e: ${{ steps.validate.outputs.tutorial_e2e }}
+      site_ui: ${{ steps.validate.outputs.site_ui }}
       security_only: ${{ steps.validate.outputs.security_only }}
       full: ${{ steps.validate.outputs.full }}
       docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
@@ -85,6 +86,7 @@ jobs:
             "python_tests":${{ toJSON(steps.classify.outputs.python_tests) }},
             "docs":${{ toJSON(steps.classify.outputs.docs) }},
             "tutorial_e2e":${{ toJSON(steps.classify.outputs.tutorial_e2e) }},
+            "site_ui":${{ toJSON(steps.classify.outputs.site_ui) }},
             "security_only":${{ toJSON(steps.classify.outputs.security_only) }},
             "full":${{ toJSON(steps.classify.outputs.full) }},
             "docker_matrix":${{ toJSON(steps.classify.outputs.docker_matrix) }}}
@@ -233,14 +235,21 @@ jobs:
   site-ui-containers:
     name: Site UI Containers
     needs: changes
+    # `site_ui`, not `frontend`: the example module, `.dockerignore` and the
+    # built-in marker are inputs of these builds without being frontend source.
     if: >-
       always() &&
       (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
-      needs.changes.outputs.frontend == 'true')
+      needs.changes.outputs.site_ui == 'true')
     # A daemon is the point of this job, so it needs a runner that has one.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    env:
+      # Image tags and container names belong to one run: on a self-hosted
+      # runner a second run of this job can overlap this one, and a fixed name
+      # left behind by a failed run blocked every run after it.
+      SITE_UI_RUN: site-ui-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -255,7 +264,7 @@ jobs:
       - name: Build the neutral image with no new arguments
         run: |
           docker buildx build -f deploy/docker/Dockerfile.frontend \
-            --load -t site-ui-neutral:ci .
+            --load -t "${SITE_UI_RUN}-neutral:ci" .
 
       # The other half of that claim: module settings without the module's
       # context are a mistake, and building the neutral UI in its place is the
@@ -280,15 +289,15 @@ jobs:
           docker buildx build -f deploy/docker/Dockerfile.frontend \
             --build-context site-ui=./distributions/example/frontend/site-ui \
             --build-arg SITE_UI_API=1 \
-            --load -t site-ui-example:ci .
+            --load -t "${SITE_UI_RUN}-example:ci" .
 
       # The image says which module it contains. A neutral image that reported
       # the example's id — or the reverse — would mean the context was ignored,
       # which is the one failure both builds can produce while succeeding.
       - name: Check each image recorded the module it was built with
         run: |
-          neutral=$(docker run --rm --entrypoint cat site-ui-neutral:ci /app/site-ui-manifest.json)
-          example=$(docker run --rm --entrypoint cat site-ui-example:ci /app/site-ui-manifest.json)
+          neutral=$(docker run --rm --entrypoint cat "${SITE_UI_RUN}-neutral:ci" /app/site-ui-manifest.json)
+          example=$(docker run --rm --entrypoint cat "${SITE_UI_RUN}-example:ci" /app/site-ui-manifest.json)
           echo "neutral: $neutral"
           echo "example: $example"
           echo "$neutral" | grep -q '"kind": "neutral"' || {
@@ -296,18 +305,36 @@ jobs:
           echo "$example" | grep -q '"id": "example"' || {
             echo "the example image did not record the example module" >&2; exit 1; }
 
+      - name: Select the example container's port
+        run: |
+          port="$(python3 -c 'import socket; sock = socket.socket(); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()')"
+          test -n "${port}"
+          echo "SITE_UI_PORT=${port}" >> "${GITHUB_ENV}"
+
       # A module's assets have to be reachable at the URL the module names, and
       # `/site-assets/*` is a route handler that shadows static serving — so
       # "the file is in public/" is not evidence. This asks the running server.
       - name: The example's own asset is served by the image
         run: |
-          docker run -d --name site-ui-example -p 127.0.0.1:13001:3001 site-ui-example:ci
+          docker run -d --name "${SITE_UI_RUN}-example" \
+            -p "127.0.0.1:${SITE_UI_PORT}:3001" "${SITE_UI_RUN}-example:ci"
           for _ in $(seq 1 30); do
-            curl -fsS -o /dev/null http://127.0.0.1:13001/ && break || sleep 1
+            curl -fsS -o /dev/null "http://127.0.0.1:${SITE_UI_PORT}/" && break || sleep 1
           done
           curl -fsS -o /dev/null -w 'asset %{http_code} %{content_type}\n' \
-            http://127.0.0.1:13001/site-assets/example/mark.svg
-          docker rm -f site-ui-example
+            "http://127.0.0.1:${SITE_UI_PORT}/site-assets/example/mark.svg"
+
+      - name: Show the example container's log
+        if: failure()
+        run: docker logs "${SITE_UI_RUN}-example" || true
+
+      # Whatever happened above: a container or image left behind by a failed
+      # step is otherwise kept forever by a self-hosted runner.
+      - name: Remove this run's Site UI containers and images
+        if: always()
+        run: |
+          docker rm -f "${SITE_UI_RUN}-example" >/dev/null 2>&1 || true
+          docker image rm "${SITE_UI_RUN}-neutral:ci" "${SITE_UI_RUN}-example:ci" >/dev/null 2>&1 || true
 
   docs-build:
     name: Docs Build
@@ -1315,6 +1342,7 @@ jobs:
             "python_tests":${{ toJSON(needs.changes.outputs.python_tests) }},
             "docs":${{ toJSON(needs.changes.outputs.docs) }},
             "tutorial_e2e":${{ toJSON(needs.changes.outputs.tutorial_e2e) }},
+            "site_ui":${{ toJSON(needs.changes.outputs.site_ui) }},
             "security_only":${{ toJSON(needs.changes.outputs.security_only) }},
             "full":${{ toJSON(needs.changes.outputs.full) }},
             "docker_matrix":${{ toJSON(needs.changes.outputs.docker_matrix) }}}
