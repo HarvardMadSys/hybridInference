@@ -14,6 +14,7 @@ import {
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
+import { SITE_UI_CLIENT } from '@/site-ui/module';
 
 /** The console's own landing page, unchanged for deployments that keep it. */
 function ClassicLanding(): JSX.Element {
@@ -56,14 +57,19 @@ function ClassicLanding(): JSX.Element {
 }
 
 /**
- * The console's own landing page.
+ * The home page: the compiled-in module's `Landing` when it has one, the
+ * console's own landing page otherwise.
  *
- * A distribution that ships its own replaces this one at build time, through
- * the Site UI interface: `SiteUiBoundary` renders the module's `Landing` for
- * `/` and this component is never reached. There is no runtime flag here — the
- * decision was made when the image was built, which is the difference between
- * this and the `presentation.preset` branch it replaces.
+ * There is no runtime flag here — the decision was made when the image was
+ * built, which is the difference between this and the `presentation.preset`
+ * branch it replaces.
+ *
+ * Rendered here, in the page, rather than by the root layout in place of the
+ * page: a module's landing page that throws is then caught by the route's
+ * error boundary (`app/error.tsx`), which the root layout sits above, and the
+ * rest of the site keeps working.
  */
 export function HomeContent(): JSX.Element {
-  return <ClassicLanding />;
+  const Landing = SITE_UI_CLIENT.Landing;
+  return Landing ? <Landing /> : <ClassicLanding />;
 }

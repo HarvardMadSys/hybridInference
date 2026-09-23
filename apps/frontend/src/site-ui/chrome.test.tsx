@@ -210,7 +210,7 @@ describe('chrome ownership when a module draws whole pages', () => {
       useFullPageModule();
       // `/` and `/terms` are the routes where the *module* draws the page and the
       // shared tree contributes nothing, so the child is the module's own page —
-      // which is what `SiteUiBoundary` renders instead of `children`.
+      // which is what the home and terms pages render.
       const child =
         route === '/' ? <ModuleLanding /> : route === '/terms' ? <ModuleTerms /> : <AccountBody />;
       renderAt(route, child);
@@ -284,11 +284,11 @@ function ConsoleBody() {
 }
 
 /**
- * The module's own landing page, as `SiteUiBoundary` renders it.
+ * The module's own landing page, as the home page renders it.
  *
- * The host renders `Landing` in place of `children`, so a test of chrome
- * ownership on `/` has to put that component in the tree or it is measuring an
- * empty page.
+ * The home page renders `Landing` in place of the console's, so a test of
+ * chrome ownership on `/` has to put that component in the tree or it is
+ * measuring an empty page.
  */
 function ModuleLanding() {
   const Landing = SITE_UI_CLIENT.Landing;

@@ -72,7 +72,7 @@ export const AuthFrame: ((props: AuthFrameProps) => ReactNode) | null = null;
  *
  * The console's landing page is a component tree of its own with its own tests,
  * and moving it behind this interface would be churn with no reader. The host
- * treats `Landing === null` as "keep the console's page" — see `useLanding()`.
+ * treats `Landing === null` as "keep the console's page" — see `HomeContent`.
  */
 export const Landing: ((props: LandingPageProps) => ReactNode) | null = null;
 

@@ -13,7 +13,7 @@ import { isAuthRoute, publicRouteFor, type PublicRoute } from '@/site-ui/routes'
  * it.
  *
  * The single route lookup in the public tree. The chrome, the document
- * language and the landing slot all read this, so there is one answer per
+ * language and the error page all read this, so there is one answer per
  * render and no chance of two of them disagreeing about where the visitor is.
  *
  * `null` is not an error: `/dashboard`, `/chat`, `/team`, `/authorize`,
@@ -22,20 +22,6 @@ import { isAuthRoute, publicRouteFor, type PublicRoute } from '@/site-ui/routes'
 export function usePublicRoute() {
   const pathname = usePathname();
   return publicRouteFor(pathname ?? '/');
-}
-
-/**
- * The module's landing page for `/`, or `null` when the console's own landing
- * page should render instead.
- *
- * Kept a separate question from "is this a public route" because replacing the
- * landing page is a decision the module makes by exporting one — the neutral
- * module deliberately does not, and the console's page then stays exactly where
- * it was, with its own tests.
- */
-export function useLanding(): (typeof SITE_UI_CLIENT)['Landing'] {
-  const route = usePublicRoute();
-  return route === 'landing' ? (SITE_UI_CLIENT.Landing ?? null) : null;
 }
 
 /**
@@ -71,24 +57,16 @@ export function useModuleRendersRoute(): boolean {
 }
 
 /**
- * Installs the compiled-in module and renders the route it owns.
+ * Installs the compiled-in module's styling and field layout around the pages.
  *
- * Three outcomes, in order:
- *
- * 1. `/` and the module exports a `Landing` → render it, and nothing else. The
- *    landing page is a whole page: it brings its own header, main and footer.
- * 2. a public route → the children, which are the shared pages. Each account
- *    page draws its own frame through `AuthPageFrame` — or, when the module has
- *    no frame, sits directly in the console container; `/terms` draws its own
- *    through `TermsFrame`. The route boundary has already decided who owns the
- *    chrome, so exactly one layer is drawing it.
- * 3. a console route → the children, with the console chrome the route
- *    boundary rendered around them.
+ * It renders no module component itself. Each page renders the module's part
+ * of it — the home page its `Landing`, an account page its `AuthFrame`,
+ * `/terms` its legal text — because a component rendered here, in the root
+ * layout, is above every route's error boundary: a module that threw would
+ * take the whole application down with it rather than one page.
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
-  const Landing = useLanding();
-
-  return <SiteUiProvider>{Landing ? <Landing /> : children}</SiteUiProvider>;
+  return <SiteUiProvider>{children}</SiteUiProvider>;
 }
 
 /**

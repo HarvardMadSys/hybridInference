@@ -21,6 +21,16 @@ export function PublicRouteBoundary({ children }: { children: React.ReactNode })
     return <>{children}</>;
   }
 
+  return <ConsoleChrome>{children}</ConsoleChrome>;
+}
+
+/**
+ * The console's header, constrained main and footer, around a page.
+ *
+ * Exported for the one other place that draws it: the error page of a route
+ * whose chrome the module owns, where the module is what failed.
+ */
+export function ConsoleChrome({ children }: { children: React.ReactNode }) {
   return (
     <>
       <Header />
