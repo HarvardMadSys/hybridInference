@@ -75,8 +75,12 @@ export const STAGING_ENV = path.join('.site-ui-build-env');
  * and it appeared the first time a real distribution's tree was built this way.
  *
  * The build outputs are excluded for the plainer reason: they are not inputs.
+ *
+ * The set itself lives in the import check, which has to agree with it: a
+ * symlink this step copies is a file the image can serve, so the check follows
+ * links wherever staging does.
  */
-const NEVER_STAGED = new Set(['node_modules', '.next', 'dist', 'build']);
+const { NEVER_STAGED } = require_('../../src/site-ui/verify-imports');
 
 /**
  * How every copy here treats a symlink: as the link it is, target verbatim.

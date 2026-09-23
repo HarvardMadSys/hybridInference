@@ -14,7 +14,8 @@
  * Import from here, from `react`, from `next/*`, and from your own relative
  * paths. Do not deep-import `@/app/...`, `@/components/...`, `@/config/...` or
  * `@/lib/...`: those are internals of the shared console, they may move at any
- * time, and `src/site-ui/verify-imports.js` fails the build when one appears.
+ * time. `src/site-ui/verify-imports.js` rejects one while the module is staged,
+ * and `src/site-ui/containment.js` fails any build that resolves one.
  *
  * ## What a module gets, and what it does not
  *

@@ -153,10 +153,11 @@ const SKIP_DIRECTORIES = new Set(['node_modules', '.next', 'dist', 'build', 'cov
 /**
  * Names the staging step never copies into the application, at any depth.
  *
- * The same set as `NEVER_STAGED` in `scripts/site-ui/prepare-module.mjs`, and
- * it has to be: a symlink the staging step *does* copy is a file the image can
- * serve, so it is checked wherever it sits. `coverage` is deliberately absent —
- * staging copies it, so a `coverage -> /elsewhere` link would ship.
+ * `scripts/site-ui/prepare-module.mjs` imports this set rather than keeping
+ * its own, because the two have to agree: a symlink the staging step *does*
+ * copy is a file the image can serve, so it is checked wherever it sits.
+ * `coverage` is deliberately absent — staging copies it, so a
+ * `coverage -> /elsewhere` link would ship.
  */
 const NEVER_STAGED = new Set(['node_modules', '.next', 'dist', 'build']);
 

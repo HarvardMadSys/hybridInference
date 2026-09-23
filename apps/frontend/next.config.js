@@ -20,13 +20,13 @@ const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNA
 // cannot use fails right here, before any compilation starts — the failure has
 // to be loud, because the alternative is publishing a site whose home page
 // silently reverted to the console's.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { prepareSiteUi, webpackAlias } = require('./src/site-ui/resolve');
 const siteUi = prepareSiteUi(__dirname);
-console.log(
-  `[site-ui] compiling in the ${siteUi.kind} Site UI` +
-    (siteUi.kind === 'distribution' ? ` '${siteUi.id}'` : '') +
-    `, API v${siteUi.api}`,
-);
+const siteUiName = siteUi.kind === 'distribution' ? ` '${siteUi.id}'` : '';
+// One line in the build log naming what this image compiles in.
+// eslint-disable-next-line no-console
+console.log(`[site-ui] compiling in the ${siteUi.kind} Site UI${siteUiName}, API v${siteUi.api}`);
 
 const nextConfig = {
   reactStrictMode: true,
