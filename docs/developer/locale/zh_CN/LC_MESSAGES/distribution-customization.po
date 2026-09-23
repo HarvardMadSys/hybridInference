@@ -97,20 +97,32 @@ msgid ""
 msgstr "`/login`、`/signup`、`/forgot-password`、`/reset-password`、`/verify-email` 的外观和接口支持的文案"
 
 #: ../developer/distribution-customization.md
-msgid "Module `client.tsx` → `AuthFrame` / `authMessages`, plus `styles.css` and shared form hooks"
-msgstr "模块的 `client.tsx` → `AuthFrame` / `authMessages`，配合 `styles.css` 和共享表单钩子"
+msgid ""
+"Module `client.tsx` → `AuthFrame` / `fieldLayout` / `authMessages`, plus `styles.css` and shared "
+"form hooks"
+msgstr "模块的 `client.tsx` → `AuthFrame` / `fieldLayout` / `authMessages`，配合 `styles.css` 和共享表单钩子"
 
 #: ../developer/distribution-customization.md
 msgid "Build a frontend image with the module; authentication controllers stay shared"
 msgstr "构建包含模块的前端镜像；认证控制器仍共用"
 
 #: ../developer/distribution-customization.md
-msgid "Legal text and frame at `/terms`"
-msgstr "`/terms` 的法律文本和页面外壳"
+msgid "Legal text at `/terms` and the confirmations sign-up asks for"
+msgstr "`/terms` 的法律文本和注册时要求的确认项"
 
 #: ../developer/distribution-customization.md
-msgid "Module `client.tsx` → `TermsFrame`, preserving required terms/privacy anchors"
-msgstr "模块的 `client.tsx` → `TermsFrame`，保留必需的条款／隐私锚点"
+msgid ""
+"Module `client.tsx` → `TermsFrame`, `TermsContent` and `consentItems` together, preserving "
+"required terms/privacy anchors"
+msgstr "模块的 `client.tsx` → 同时提供 `TermsFrame`、`TermsContent` 和 `consentItems`，保留必需的条款／隐私锚点"
+
+#: ../developer/distribution-customization.md
+msgid "Titles and descriptions of the public pages, and their document language"
+msgstr "公开页面的标题、描述及其文档语言"
+
+#: ../developer/distribution-customization.md
+msgid "Module `server.ts` → `metaMessages` and `locale`"
+msgstr "模块的 `server.ts` → `metaMessages` 和 `locale`"
 
 #: ../developer/distribution-customization.md
 msgid "Existing console identity and feature settings"
@@ -192,21 +204,21 @@ msgstr "上游或明确自行维护的源码分支中的应用源码，例如 `a
 msgid "Rebuild affected application images; these are outside Site UI API v1"
 msgstr "重新构建受影响的应用镜像；这些不属于 Site UI API v1"
 
-#: ../developer/distribution-customization.md:36
+#: ../developer/distribution-customization.md:37
 msgid ""
 "There is no configuration field for an arbitrary home-page hero and no public interface for "
 "replacing the console's overall theme, sidebar or layout. Adding a navigation link does not "
-"register a route. A localized home page does not imply a fully localized console; module wording "
-"and document language are covered under [Your public pages](#your-public-pages)."
+"register a route. A localized home page does not imply a fully localized console; module wording,"
+" page titles and document language are covered under [Your public pages](#your-public-pages)."
 msgstr ""
-"目前没有用于任意首页主视觉区域的配置字段，也没有替换控制台整体主题、侧边栏或布局的公开接口。添加导航链接不会注册路由。首页本地化并不意味着整个控制台都已本地化；模块文案与文档语言的说明见[自有公开页面"
+"目前没有用于任意首页主视觉区域的配置字段，也没有替换控制台整体主题、侧边栏或布局的公开接口。添加导航链接不会注册路由。首页本地化并不意味着整个控制台都已本地化；模块文案、页面标题与文档语言的说明见[自有公开页面"
 "](#your-public-pages)。"
 
-#: ../developer/distribution-customization.md:42
+#: ../developer/distribution-customization.md:43
 msgid "2. Configuration-only customization"
 msgstr "2\\. 只改配置"
 
-#: ../developer/distribution-customization.md:44
+#: ../developer/distribution-customization.md:45
 msgid ""
 "Start with the annotated `config/examples/distribution.example.yaml` and "
 "`config/examples/branding.example.yaml`. Keep deployment-owned files in your distribution "
@@ -219,11 +231,11 @@ msgstr ""
 "开始。将部署自有文件保存在发行版仓库或覆盖层中，凭据放在环境变量里。使用标准前端镜像，不选择 Site UI "
 "模块，即可保留默认页面布局。复用该镜像的前提是其编译时确定的后端网络目标地址与你的部署一致；请参阅[变更何时生效](#when-changes-take-effect)。"
 
-#: ../developer/distribution-customization.md:51
+#: ../developer/distribution-customization.md:52
 msgid "Where your files live"
 msgstr "文件放在哪里"
 
-#: ../developer/distribution-customization.md:53
+#: ../developer/distribution-customization.md:54
 msgid ""
 "A real deployment's configuration lives in a **distribution overlay**: one directory under "
 "`distributions/` holding that deployment's manifest, config files, Compose/env inputs, and "
@@ -232,7 +244,7 @@ msgstr ""
 "真实部署的配置放在 **distribution overlay** 里：`distributions/` 下的一个目录，装着该部署的 manifest、配置文件、Compose/env "
 "输入和品牌信息。"
 
-#: ../developer/distribution-customization.md:68
+#: ../developer/distribution-customization.md:69
 msgid ""
 "The split exists so the source tree and the container image stay neutral. Model IDs, upstream "
 "base URLs, ports, site identity and branding are properties of one deployment, not of the "
@@ -244,17 +256,17 @@ msgstr ""
 "overlay，镜像就可以只构建一次，再把某个部署的 overlay 挂载进去（`deploy/docker/docker-compose.yml` 以只读方式挂载 "
 "overlay，而不是把它打包进镜像）。这也意味着，从本仓库克隆下来的代码不会带上任何人的主机地址。"
 
-#: ../developer/distribution-customization.md:75
+#: ../developer/distribution-customization.md:76
 msgid ""
 "For config-path precedence and admin overrides, see [Configuration](configuration.md#how-a"
 "-gateway-finds-its-config)."
 msgstr "配置路径的优先级和管理覆盖设置见[配置](configuration.md#how-a-gateway-finds-its-config)。"
 
-#: ../developer/distribution-customization.md:78
+#: ../developer/distribution-customization.md:79
 msgid "The distribution manifest"
 msgstr "distribution manifest"
 
-#: ../developer/distribution-customization.md:80
+#: ../developer/distribution-customization.md:81
 msgid ""
 "A manifest is one versioned YAML document that names a deployment and tells the gateway where its"
 " config files are. `config/examples/distribution.example.yaml` is the annotated reference. Both "
@@ -264,7 +276,7 @@ msgstr ""
 "manifest 是一份带版本号的 YAML 文档，它给部署命名，并告诉网关这个部署的配置文件在哪里。`config/examples/distribution.example.yaml` "
 "是带注释的参考。下方和该文件中的示例在激活后都会关闭公开注册；如果部署应该接受公开注册 API 创建的新账号，请把 `public_signup` 改为 `true` 或 null："
 
-#: ../developer/distribution-customization.md:112
+#: ../developer/distribution-customization.md:113
 msgid ""
 "`schema_version` must be `1`. `distribution.id` identifies the distribution; `display_name` is "
 "its public name, and `release` records its version. `deployment.target` records an operator label"
@@ -273,7 +285,7 @@ msgstr ""
 "`schema_version` 必须为 `1`。`distribution.id` 标识发行版，`display_name` 是公开名称，`release` "
 "记录版本。`deployment.target` 记录 `local` 或 `staging` 等运维标签；它不会选择主机、构建镜像或部署服务。"
 
-#: ../developer/distribution-customization.md:117
+#: ../developer/distribution-customization.md:118
 msgid ""
 "`paths.models`, `paths.routing` and `paths.alerts` select gateway configuration files. Relative "
 "paths are resolved from the manifest directory; explicit gateway environment overrides still take"
@@ -283,11 +295,11 @@ msgstr ""
 "`paths.models`、`paths.routing` 和 `paths.alerts` 用于选择网关配置文件。相对路径从清单所在目录解析；显式设置的网关环境变量仍有更高优先级。清单接受 "
 "`paths.mcp` 和法律文档字段，但存在下文所述限制。"
 
-#: ../developer/distribution-customization.md:122
+#: ../developer/distribution-customization.md:123
 msgid "Point the gateway at it with two environment variables:"
 msgstr "用两个环境变量把网关指向它："
 
-#: ../developer/distribution-customization.md:129
+#: ../developer/distribution-customization.md:130
 msgid ""
 "With an active manifest, `features.public_signup: false` disables both the signup UI and `POST "
 "/auth/signup` (HTTP 403, without creating an account). Neither `SIGNUP_ENABLED=true` nor a "
@@ -299,7 +311,7 @@ msgstr ""
 "403，不创建账号）。`SIGNUP_ENABLED=true` 和运行时的 `signup_enabled=true` 覆盖值都不能重新开启注册。要开放公开注册，请将 manifest "
 "中该字段改为 `true` 或留空/null，重启后端，并确保最终生效的 `signup_enabled` 设置已开启。"
 
-#: ../developer/distribution-customization.md:136
+#: ../developer/distribution-customization.md:137
 msgid ""
 "The admin API rejects attempts to set `signup_enabled=true` while the active manifest disables "
 "signup (HTTP 400, without saving the setting). Manifest root and `features` fields reject unknown"
@@ -309,7 +321,7 @@ msgstr ""
 "active manifest 关闭注册时，管理员 API 会拒绝设置 `signup_enabled=true`（返回 HTTP 400，不保存设置）。manifest 根节点和 "
 "`features` 会拒绝未知字段，包括 `public-signup`、`publicSignup`，以及写在 manifest 根节点的 `public_signup`。"
 
-#: ../developer/distribution-customization.md:141
+#: ../developer/distribution-customization.md:142
 msgid ""
 "When the manifest allows signup, the runtime `signup_enabled` setting takes precedence over "
 "`SIGNUP_ENABLED` (default `true`). The same rule applies with no manifest or in dark mode; dark-"
@@ -321,7 +333,7 @@ msgstr ""
 "模式时也遵循同一规则；dark 模式下的功能字段不影响实际行为。`GET /site-config` 在 `features.public_signup` "
 "中返回最终布尔值，使控制台与后端策略一致。邮箱验证、按域名审批和配额仍是独立检查，允许注册不会绕过它们。"
 
-#: ../developer/distribution-customization.md:149
+#: ../developer/distribution-customization.md:150
 msgid ""
 "If a runtime signup-setting read fails or exceeds one second, the gateway temporarily disables "
 "public signup. A valid `/site-config` response still returns HTTP 200 with its identity and "
@@ -331,7 +343,7 @@ msgstr ""
 "如果运行时注册设置读取失败或超过一秒，网关会暂时关闭公开注册。有效的 `/site-config` 响应仍返回 HTTP 200，保留站点身份和品牌，并返回 `public_signup: "
 "false`；注册返回 HTTP 403，不创建账号。系统不会回退到可能重新开放注册的环境变量值。"
 
-#: ../developer/distribution-customization.md:156
+#: ../developer/distribution-customization.md:157
 msgid ""
 "Because `/site-config` is unauthenticated and read while rendering every console page, the "
 "gateway does not repeat a failing read for every request. Callers that arrive together while the "
@@ -344,17 +356,17 @@ msgstr ""
 "无需鉴权，且每次渲染控制台页面都会读取它，网关不会为每个请求重复一次失败的读取。缓存尚未预热时并发到达的调用方共享同一次存储往返，失败的读取会复用五秒，因此一次故障只在每个窗口内产生一次超时，而不是每个请求各产生一次。恢复无需重启：该窗口会自行过期，通过管理员"
 " API 写入 `signup_enabled` 也会立即清除它。"
 
-#: ../developer/distribution-customization.md:164
+#: ../developer/distribution-customization.md:165
 msgid "Dark mode is the default, and that is deliberate"
 msgstr "默认是 dark 模式，这是有意为之"
 
-#: ../developer/distribution-customization.md:166
+#: ../developer/distribution-customization.md:167
 msgid ""
 "`DISTRIBUTION_CONFIG_MODE` defaults to `dark`. In dark mode the manifest is loaded and validated,"
 " and the resolver logs what it *would* change, but current resolution stays effective:"
 msgstr "`DISTRIBUTION_CONFIG_MODE` 默认为 `dark`。dark 模式下，manifest 会被加载并校验，解析器把它*本来会*改动的内容记进日志，但当前的解析结果仍然有效："
 
-#: ../developer/distribution-customization.md:176
+#: ../developer/distribution-customization.md:177
 msgid ""
 "Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you get a warning "
 "telling you the mode defaulted to `dark`. Config-path resolution treats an unrecognised mode as "
@@ -370,7 +382,7 @@ msgstr ""
 "`/site-config` 报告配置不可用（HTTP 503），并让已鉴权的 `/v1/rag/status` 和 `/v1/rag/chat` 请求返回 HTTP "
 "503。只有未设置模式时才默认使用 `dark`，Compose 中也是如此。启用 manifest 时，应先运行 dark 模式、检查比较日志，再设置为 `active`。"
 
-#: ../developer/distribution-customization.md:186
+#: ../developer/distribution-customization.md:187
 msgid ""
 "Mode warnings are logged once per distinct value per process. When diagnosing RAG configuration "
 "errors, check the startup logs and the backend's effective `DISTRIBUTION_CONFIG_MODE` and "
@@ -381,7 +393,7 @@ msgstr ""
 "每个进程对每个不同的模式值只记录一次警告。排查 RAG 配置错误时，请检查启动日志及后端实际使用的 `DISTRIBUTION_CONFIG_MODE` 和 "
 "`DISTRIBUTION_CONFIG_PATH`，不要期待每次请求都重复警告。修正取值后重启后端。功能限制详见[文档 RAG 助手](rag-chat.md)。"
 
-#: ../developer/distribution-customization.md:192
+#: ../developer/distribution-customization.md:193
 msgid ""
 "Failure behaviour differs by mode, on purpose. In dark mode a manifest that will not load is "
 "logged and skipped. In active mode the manifest *is* where the paths come from, so a manifest "
@@ -391,7 +403,7 @@ msgstr ""
 "失败行为按模式区分，这是刻意的。dark 模式下，加载不了的 manifest 只被记录并跳过。active 模式下，路径*正是*从 manifest 来的，所以加载不了的 "
 "manifest——overlay 挂载丢了、YAML 写错了——会拒绝启动，而不是悄悄用另一份注册表对外服务。"
 
-#: ../developer/distribution-customization.md:197
+#: ../developer/distribution-customization.md:198
 msgid ""
 "The manifest root and `features` are closed schemas: unknown keys are rejected, including "
 "misspelled feature names or feature flags placed at the root. This changes the earlier behavior "
@@ -404,7 +416,7 @@ msgstr ""
 "部署前，请用新后端代码校验实际 overlay；仓库内的示例 manifest 不能替代对私有 overlay 的校验。请修正拼写，并将运维人员自定义的元数据保存在独立文件中。将 "
 "`DISTRIBUTION_CONFIG_PATH` 设为部署中的 manifest 路径后运行："
 
-#: ../developer/distribution-customization.md:216
+#: ../developer/distribution-customization.md:217
 msgid ""
 "This is not exhaustive typo detection: `paths`, `site`, `distribution`, and `deployment` still "
 "ignore unknown section keys for compatibility. In particular, check `paths.models` and the "
@@ -415,7 +427,7 @@ msgstr ""
 "这不是完整的拼写错误检测：为了兼容，`paths`、`site`、`distribution` 和 `deployment` 仍会忽略各节内的未知键。启用 overlay 前，尤其要检查 "
 "`paths.models` 和解析后的模型注册表日志；未知的路径键会被当作未配置路径处理，从而可能选择旧默认值。收紧这些节的校验属于另一项兼容性变更。"
 
-#: ../developer/distribution-customization.md:223
+#: ../developer/distribution-customization.md:224
 msgid ""
 "If an invalid active manifest reaches the HTTP handlers, signup remains closed and `/site-config`"
 " returns HTTP 503 without exposing file paths or parser errors. It cannot return a valid identity"
@@ -424,11 +436,11 @@ msgstr ""
 "如果 HTTP 处理函数遇到无效的 active manifest，注册保持关闭，`/site-config` 返回 HTTP 503，不暴露文件路径或解析错误。在 manifest "
 "修复前，接口无法返回有效的站点身份。"
 
-#: ../developer/distribution-customization.md:227
+#: ../developer/distribution-customization.md:228
 msgid "Identity, and what the manifest must not contain"
 msgstr "站点标识，以及 manifest 里不能放什么"
 
-#: ../developer/distribution-customization.md:229
+#: ../developer/distribution-customization.md:230
 msgid ""
 "`site:` and `features:` are served as a public subset by `GET /site-config`, and "
 "`distribution.display_name` / `site:` feed backend-rendered content (transactional emails, "
@@ -444,17 +456,17 @@ msgstr ""
 "，`/site-config` 返回一份中立文档，站点标识回退到 `SITE_NAME` / `SITE_PUBLIC_BASE_URL` / `SITE_DOCS_URL` / "
 "`SITE_SUPPORT_EMAIL`，或者回退到中立的默认值。"
 
-#: ../developer/distribution-customization.md:237
+#: ../developer/distribution-customization.md:238
 msgid ""
 "Manifests must not contain secrets. Credentials stay in the environment, and `schema_version: 1` "
 "deliberately does not interpolate environment variables into manifest values."
 msgstr "manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 有意不把环境变量插值进 manifest 的取值。"
 
-#: ../developer/distribution-customization.md:241
+#: ../developer/distribution-customization.md:242
 msgid "Runtime branding"
 msgstr "运行时品牌配置"
 
-#: ../developer/distribution-customization.md:243
+#: ../developer/distribution-customization.md:244
 msgid ""
 "Copy the complete `config/examples/branding.example.yaml`, set its public values, and point "
 "`site.branding` at it. The path is relative to the manifest's directory. Set the site's name in "
@@ -584,7 +596,7 @@ msgstr "`sponsors`"
 msgid "Default-home sponsor images: `name`, `alt`, `src`, `class_name`, `width`, `height`"
 msgstr "默认首页的赞助商图片：`name`、`alt`、`src`、`class_name`、`width`、`height`"
 
-#: ../developer/distribution-customization.md:266
+#: ../developer/distribution-customization.md:267
 msgid ""
 "Use the template and the schema in `serving/config/branding.py` for permitted values. Branding "
 "rejects unknown keys; required fields cannot simply be omitted. For optional content, use the "
@@ -595,7 +607,7 @@ msgstr ""
 "允许的值见模板和 `serving/config/branding.py` 中的数据结构定义。品牌配置会拒绝未知键；不能直接省略必填字段。对于可选内容，请使用文档规定的空字符串／空列表。赞助商的"
 " `class_name` 接受数据结构定义中支持的图片尺寸类名，不接受任意 CSS。品牌字段不提供全局配色、字体或页面布局。自定义页面组件自行决定渲染哪些运行时品牌值。"
 
-#: ../developer/distribution-customization.md:273
+#: ../developer/distribution-customization.md:274
 msgid ""
 "Serve local branding images through the mounted site-assets directory and `/site-assets/*`, or "
 "use permitted public asset URLs. Check the URLs over HTTP. A failed or invalid `/site-config` "
@@ -605,23 +617,23 @@ msgstr ""
 "通过挂载的 site-assets 目录和 `/site-assets/*` 提供本地品牌图片，或使用允许的公开资源 URL。通过 HTTP 检查这些 URL。如果 `/site-config`"
 " 响应失败或无效，页面会报配置错误，而不会悄悄使用另一套默认值显示看似正常的站点。"
 
-#: ../developer/distribution-customization.md:278
+#: ../developer/distribution-customization.md:279
 msgid "Feature settings and their limits"
 msgstr "功能设置及其限制"
 
-#: ../developer/distribution-customization.md:280
+#: ../developer/distribution-customization.md:281
 msgid ""
 "`features.rag: false` in an active manifest disables the RAG UI and backend access. Allowing RAG "
 "still requires the service's configuration; see [Docs RAG Assistant](rag-chat.md)."
 msgstr "已启用清单中的 `features.rag: false` 会禁用 RAG UI 和后端访问。允许 RAG 仍需完成服务配置；请参阅[文档 RAG 助手](rag-chat.md)。"
 
-#: ../developer/distribution-customization.md:283
+#: ../developer/distribution-customization.md:284
 msgid ""
 "`features.routers` is declared/public metadata. It does not select or restrict the model router; "
 "use the model's `router` and supported admin overrides in [Routing](routing.md)."
 msgstr "`features.routers` 是声明性／公开元数据，不会选择或限制模型路由器；请使用模型的 `router` 和[路由](routing.md)中受支持的管理覆盖设置。"
 
-#: ../developer/distribution-customization.md:286
+#: ../developer/distribution-customization.md:287
 msgid ""
 "`AGENT_PUBLIC_URL`, or the internal agent service destinations, configure the existing agent "
 "link/proxy integration. They do not install an agent service. See [The public path table](public-"
@@ -630,7 +642,7 @@ msgstr ""
 "`AGENT_PUBLIC_URL` 或内部 agent 服务目标地址用于配置已有的 agent 链接／代理集成，不会安装 agent 服务。请参阅[公开路径表](public-path-"
 "table.md)。"
 
-#: ../developer/distribution-customization.md:289
+#: ../developer/distribution-customization.md:290
 msgid ""
 "`site.terms_document` and `site.privacy_document` are accepted manifest fields, but they do not "
 "load text into the current terms page. Use the legal-page interface in [Your public pages](#your-"
@@ -639,19 +651,19 @@ msgstr ""
 "清单接受 `site.terms_document` 和 `site.privacy_document` 字段，但当前条款页不会据此加载文本。请使用[自有公开页面](#your-public-"
 "pages)中的法律条款页接口发布自定义文本。"
 
-#: ../developer/distribution-customization.md:292
+#: ../developer/distribution-customization.md:293
 msgid ""
 "`paths.mcp` is accepted by the resolver, but no component consumes it at this revision. It does "
 "not enable a service."
 msgstr "配置解析器接受 `paths.mcp`，但当前版本没有组件使用它。它不会启用服务。"
 
-#: ../developer/distribution-customization.md:295
+#: ../developer/distribution-customization.md:296
 msgid ""
 "A public branding hint or hidden navigation item is not a substitute for backend authorization. "
 "The registration rules above remain effective with a custom UI module."
 msgstr "公开的品牌提示或隐藏导航项不能替代后端授权。使用自定义 UI 模块时，上述注册规则仍然生效。"
 
-#: ../developer/distribution-customization.md:299
+#: ../developer/distribution-customization.md:300
 msgid ""
 "Model/provider changes made through supported admin APIs take effect on the running gateway and "
 "are persisted in its database. They do not rewrite the YAML; stored overrides are applied on top "
@@ -661,18 +673,18 @@ msgstr ""
 "通过受支持的管理 API 修改模型／提供商，会在运行中的网关上生效，并持久化到其数据库。这些修改不会重写 YAML；启动时，已保存的覆盖设置会再次叠加到 YAML "
 "之上。排查配置差异时，应同时检查这两层。请参阅[运行时配置](configuration.md#runtime-configuration-from-the-admin-console)。"
 
-#: ../developer/distribution-customization.md:305
+#: ../developer/distribution-customization.md:306
 msgid "When changes take effect"
 msgstr "变更何时生效"
 
-#: ../developer/distribution-customization.md:307
+#: ../developer/distribution-customization.md:308
 msgid ""
 "Restart the backend after changing mounted manifest, branding, model/routing or alert files. "
 "Reload the page to check presentation; the backend serves the branding snapshot loaded at "
 "startup."
 msgstr "修改挂载的清单、品牌、模型／路由或告警文件后重启后端。重新加载页面检查展示；后端提供的是启动时加载的品牌配置快照。"
 
-#: ../developer/distribution-customization.md:310
+#: ../developer/distribution-customization.md:311
 msgid ""
 "Replace mounted site-assets files without rebuilding an image. The route allows five minutes of "
 "browser caching, so verify the served URL and account for browser/proxy caches. Changing "
@@ -681,19 +693,19 @@ msgstr ""
 "替换挂载的 site-assets 文件无需重新构建镜像。该路由允许浏览器缓存五分钟，因此请验证实际提供的 URL，并考虑浏览器／代理缓存。修改 `SITE_ASSETS_DIR` "
 "本身需要重新创建前端容器。"
 
-#: ../developer/distribution-customization.md:314
+#: ../developer/distribution-customization.md:315
 msgid ""
 "Recreate the affected container after changing runtime environment values. A plain container "
 "restart retains its old environment. Server-only agent destinations are runtime values."
 msgstr "修改运行时环境变量后重新创建受影响的容器。仅重启容器会保留原有环境变量。仅供服务器端使用的 agent 目标地址属于运行时值。"
 
-#: ../developer/distribution-customization.md:317
+#: ../developer/distribution-customization.md:318
 msgid ""
 "Use the admin console/API for supported live edits, and check effective values and any feature-"
 "specific caching."
 msgstr "通过管理控制台／API 执行受支持的在线修改，并检查实际生效值及该功能的缓存行为。"
 
-#: ../developer/distribution-customization.md:319
+#: ../developer/distribution-customization.md:320
 msgid ""
 "Rebuild the frontend after changing true build-only `NEXT_PUBLIC_*` values or the backend network"
 " target compiled from `BACKEND_INTERNAL_URL`. These differ from runtime branding and are not "
@@ -702,7 +714,7 @@ msgstr ""
 "修改真正仅在构建时生效的 `NEXT_PUBLIC_*` 值，或由 `BACKEND_INTERNAL_URL` "
 "编译确定的后端网络目标地址后，需要重新构建前端。这些与运行时品牌配置不同，不会随后端重启而改变。"
 
-#: ../developer/distribution-customization.md:323
+#: ../developer/distribution-customization.md:324
 msgid ""
 "Use runtime branding for identity rather than introducing new build-time branding variables. The "
 "precise Compose commands are in [Deployment](deployment.md#what-a-change-actually-requires). "
@@ -711,11 +723,11 @@ msgstr ""
 "请使用运行时品牌配置设置站点标识，避免引入新的构建时品牌变量。具体 Compose 命令见[部署](deployment.md#what-a-change-actually-"
 "requires)。配置或资源如果打包进镜像而非挂载，变更后需要重新构建受影响的镜像。"
 
-#: ../developer/distribution-customization.md:328
+#: ../developer/distribution-customization.md:329
 msgid "The example distribution"
 msgstr "示例 distribution"
 
-#: ../developer/distribution-customization.md:330
+#: ../developer/distribution-customization.md:331
 msgid ""
 "`distributions/example/` is a complete, runnable overlay kept in the repository as a teaching "
 "artifact: a manifest, a one-model registry pointing at a bundled fake provider that needs no "
@@ -725,45 +737,45 @@ msgstr ""
 "`distributions/example/` 是一个完整、可运行的 overlay，作为教学用的样例留在仓库里：一份 manifest、一份只含单个模型的注册表（指向随仓库自带、无需凭据的假"
 " provider）、Compose overlay，以及冒烟脚本。可以配合[快速开始](router-tutorial.md)走一遍："
 
-#: ../developer/distribution-customization.md:340
+#: ../developer/distribution-customization.md:341
 msgid ""
 "It carries a marker file, `EXAMPLE_OVERLAY`, whose presence keeps it out of automatic discovery. "
 "The Makefile picks a distribution like this:"
 msgstr "它带着一个标记文件 `EXAMPLE_OVERLAY`，只要这个文件在，它就不会被自动发现选中。Makefile 挑选 distribution 的规则是这样的："
 
-#: ../developer/distribution-customization.md:343
+#: ../developer/distribution-customization.md:344
 msgid ""
 "Overlays are discovered from `distributions/*/deploy/*.env`, minus any directory containing "
 "`EXAMPLE_OVERLAY`."
 msgstr "overlay 从 `distributions/*/deploy/*.env` 发现，并排除任何含有 `EXAMPLE_OVERLAY` 的目录。"
 
-#: ../developer/distribution-customization.md:345
+#: ../developer/distribution-customization.md:346
 msgid ""
 "Exactly one candidate: it is selected automatically, and `make` prints which identity it is "
 "compiling in."
 msgstr "恰好只有一个候选：自动选中它，`make` 会打印它正在按哪一个站点标识编译。"
 
-#: ../developer/distribution-customization.md:347
+#: ../developer/distribution-customization.md:348
 msgid "Several candidates: `make` fails and asks you to name one."
 msgstr "有多个候选：`make` 失败，并要求你指定其中一个。"
 
-#: ../developer/distribution-customization.md:348
+#: ../developer/distribution-customization.md:349
 msgid ""
 "None (the state of a fresh clone of this repository): no overlay is selected, and the stack is "
 "neutral."
 msgstr "一个都没有（刚克隆本仓库时就是这个状态）：不选任何 overlay，整套服务保持中立。"
 
-#: ../developer/distribution-customization.md:351
+#: ../developer/distribution-customization.md:352
 msgid ""
 "`DISTRIBUTION=<name>` selects one by name — including the example, which is only ever selected "
 "explicitly. `DISTRIBUTION=none` opts out."
 msgstr "`DISTRIBUTION=<name>` 按名字选择——示例也在其中，而它只可能被显式选中。`DISTRIBUTION=none` 表示不选。"
 
-#: ../developer/distribution-customization.md:356
+#: ../developer/distribution-customization.md:357
 msgid "3. Your public pages"
 msgstr "3\\. 自己的公开页面"
 
-#: ../developer/distribution-customization.md:358
+#: ../developer/distribution-customization.md:359
 msgid ""
 "A deployment can replace the public pages a visitor sees — the landing page, the frame around the"
 " account pages, the legal page — without forking the console. The seam is a **build-time UI "
@@ -773,13 +785,13 @@ msgstr ""
 "部署可以替换访客看到的公开页面，包括首页、账号页面外壳和法律条款页，无需 fork 控制台。扩展方式是 **构建时 UI 模块**：前端镜像将一小组 React "
 "组件与共享应用一起编译，而不是用它们替换整个共享应用。"
 
-#: ../developer/distribution-customization.md:364
+#: ../developer/distribution-customization.md:365
 msgid ""
 "One Next.js application, one console, one session. A distribution ships a small UI module; the "
 "build compiles it in."
 msgstr "一个 Next.js 应用、一个控制台、一套会话。发行版提供一个小型 UI 模块，由构建过程编译进应用。"
 
-#: ../developer/distribution-customization.md:374
+#: ../developer/distribution-customization.md:375
 msgid ""
 "Here `C` is the upstream source commit and `U` is the distribution's UI source commit. Pin both "
 "when building a release. The module is not fetched or swapped at runtime; component, stylesheet "
@@ -789,7 +801,7 @@ msgstr ""
 "这里的 `C` 是上游源码提交，`U` 是发行版的 UI "
 "源码提交。构建发布版本时需同时锁定两者。模块不会在运行时获取或替换；组件、样式表和编译进镜像的文案变更需要新的前端镜像。模块读取的运行时品牌配置仍按运行时配置的方式生效。"
 
-#: ../developer/distribution-customization.md:379
+#: ../developer/distribution-customization.md:380
 msgid "What a module can and cannot change"
 msgstr "模块可以修改什么"
 
@@ -810,20 +822,22 @@ msgid "dashboard, chat, admin, team and authorize pages, and the `/agents` proxy
 msgstr "仪表盘、chat、admin、team 和 authorize 页面，以及 `/agents` 代理集成"
 
 #: ../developer/distribution-customization.md
-msgid "the frame around the account pages"
-msgstr "账号页面外壳"
+msgid "the frame around the account pages, and where each field's parts go"
+msgstr "账号页面外壳，以及每个字段各部分的位置"
 
 #: ../developer/distribution-customization.md
 msgid "the account forms, their fields, validation and submit calls"
 msgstr "账号表单、字段、验证与提交请求"
 
 #: ../developer/distribution-customization.md
-msgid "the legal page, if it ships its own text"
-msgstr "模块自带正文的法律条款页"
+msgid "the legal text and the sign-up confirmations, if it ships its own"
+msgstr "模块自带的法律文本和注册确认项"
 
 #: ../developer/distribution-customization.md
-msgid "the terms anchors the footer and the sign-up step link to"
-msgstr "页脚与注册步骤引用的条款锚点"
+msgid ""
+"the consent step, the one `accepted_tos` flag sign-up records, and the terms anchors the account "
+"pages link to"
+msgstr "注册同意步骤、注册时记录的唯一 `accepted_tos` 标志，以及账号页面引用的条款锚点"
 
 #: ../developer/distribution-customization.md
 msgid "its own wording for the account pages"
@@ -834,6 +848,14 @@ msgid "the schemas, error codes, session handling and redirect rules"
 msgstr "数据结构、错误码、会话处理与重定向规则"
 
 #: ../developer/distribution-customization.md
+msgid "the public pages' titles, and the language of the pages it renders"
+msgstr "公开页面的标题，以及模块所渲染页面的语言"
+
+#: ../developer/distribution-customization.md
+msgid "every console page's title and language"
+msgstr "所有控制台页面的标题和语言"
+
+#: ../developer/distribution-customization.md
 msgid "its own stylesheet and design assets"
 msgstr "自有样式表与设计资源"
 
@@ -841,14 +863,14 @@ msgstr "自有样式表与设计资源"
 msgid "the runtime branding document and `/site-config`"
 msgstr "运行时品牌文档与 `/site-config`"
 
-#: ../developer/distribution-customization.md:389
+#: ../developer/distribution-customization.md:391
 msgid ""
 "A module cannot change who gets in: the account pages' business logic, the registration gate, the"
 " email-verification requirement and the permission rules are all in the shared application and "
 "are not part of this interface."
 msgstr "模块不能改变访问资格：账号页面的业务逻辑、注册开关、邮箱验证要求和权限规则都属于共享应用，不在此接口范围内。"
 
-#: ../developer/distribution-customization.md:393
+#: ../developer/distribution-customization.md:395
 msgid ""
 "The shared application also keeps the session store, proxy rules, and `AuthField` / `AuthNotice` "
 "/ `AuthLoading` accessibility behavior. A module cannot register a route or take over an unlisted"
@@ -858,16 +880,7 @@ msgstr ""
 "共享应用还保留会话存储、代理规则，以及 `AuthField` / `AuthNotice` / `AuthLoading` 的无障碍行为。模块不能注册路由或接管未列出的页面。新增 "
 "`/pricing` 等路径、重新设计控制台或增加认证方式，都需要在此接口范围之外修改应用。"
 
-#: ../developer/distribution-customization.md:399
-msgid ""
-"A module may import `@site-ui/host`, `react`, `react/*`, `react-dom`, `next`, `next/*` and its "
-"own files. Relative imports must stay inside the module. Anything else — in particular `@/...` — "
-"fails the build."
-msgstr ""
-"模块可以导入 `@site-ui/host`、`react`、`react/*`、`react-dom`、`next`、`next/*` 及自身文件。相对导入必须限定在模块内部。其他导入，尤其是"
-" `@/...`，会使构建失败。"
-
-#: ../developer/distribution-customization.md:403
+#: ../developer/distribution-customization.md:401
 msgid ""
 "The host facade exposes public site configuration, resolved branding, session state and the "
 "supported presentation types/helpers. Session state lets a page choose a sign-in or console link;"
@@ -879,24 +892,100 @@ msgstr ""
 "TypeScript 接口位于 `apps/frontend/src/site-ui/contract.ts`，受支持的导入位于 `apps/frontend/src/site-"
 "ui/host.ts`。"
 
+#: ../developer/distribution-customization.md:408
+msgid "What a module may import"
+msgstr "模块可以导入什么"
+
 #: ../developer/distribution-customization.md:410
+msgid ""
+"A module may import `@site-ui/host`, `react`, `react/*`, `react-dom`, `next`, `next/*` and its "
+"own files. Relative imports must stay inside the module. Anything else — in particular `@/...` — "
+"fails the build."
+msgstr ""
+"模块可以导入 `@site-ui/host`、`react`、`react/*`、`react-dom`、`next`、`next/*` 及自身文件。相对导入必须限定在模块内部。其他导入，尤其是"
+" `@/...`，会使构建失败。"
+
+#: ../developer/distribution-customization.md:414
+msgid ""
+"The build holds a module to that list where webpack resolves each of its requests, in every "
+"compilation Next.js runs, and judges a request by the real path it resolves to rather than by how"
+" it is spelled. These fail as well:"
+msgstr "构建在 webpack 解析模块每个请求的环节执行这份清单，覆盖 Next.js 运行的每一次编译；判断请求时依据它最终解析到的真实路径，而不是它的写法。以下情况同样会使构建失败："
+
+#: ../developer/distribution-customization.md:418
+msgid "a relative path or a symlink that leads out of the module;"
+msgstr "指向模块之外的相对路径或符号链接；"
+
+#: ../developer/distribution-customization.md:419
+msgid "a framework subpath that walks back out, such as `next/../../src/site-ui/routes`;"
+msgstr "借助上级目录跳出框架包的子路径，例如 `next/../../src/site-ui/routes`；"
+
+#: ../developer/distribution-customization.md:420
+msgid "a stylesheet `@import` or `url()` that leaves the module;"
+msgstr "指向模块之外的样式表 `@import` 或 `url()`；"
+
+#: ../developer/distribution-customization.md:421
+msgid ""
+"a computed import — `require.context`, `import.meta.webpackContext` or an `import()` of a "
+"template literal — over a directory outside the module;"
+msgstr "作用于模块外目录的计算式导入，包括 `require.context`、`import.meta.webpackContext` 或以模板字符串调用的 `import()`；"
+
+#: ../developer/distribution-customization.md:423
+msgid "a `data:` or `file:` URI, or a Node.js built-in;"
+msgstr "`data:` 或 `file:` URI，以及 Node.js 内置模块；"
+
+#: ../developer/distribution-customization.md:424
+msgid "an inline loader other than Next.js's own, such as `!!raw-loader!./notes.txt`;"
+msgstr "Next.js 自带 loader 以外的内联 loader，例如 `!!raw-loader!./notes.txt`；"
+
+#: ../developer/distribution-customization.md:425
+msgid ""
+"anything in a `node_modules` directory inside the module. A module's dependencies come from the "
+"application's lockfile, and staging does not copy that directory."
+msgstr "模块内部 `node_modules` 目录中的任何内容。模块的依赖来自应用的锁文件，暂存步骤也不会复制该目录。"
+
+#: ../developer/distribution-customization.md:429
+msgid ""
+"The build also admits the helpers Next.js's compiler adds to a module's code, `@swc/helpers` and "
+"`styled-jsx`, resolved from Next.js itself. A module does not import them by name."
+msgstr "构建还允许 Next.js 编译器注入到模块代码中的辅助库 `@swc/helpers` 和 `styled-jsx`，它们从 Next.js 自身解析。模块不会按名称导入它们。"
+
+#: ../developer/distribution-customization.md:433
+msgid ""
+"A source check reports what it can see earlier: when a module is staged, and before every build, "
+"type check and test run. It parses scripts with the TypeScript parser, reads stylesheets, and "
+"lists every problem at once. Files under `test/`, `tests/`, `__tests__/` or `__mocks__/`, and "
+"`vitest`, `jest` or `playwright` configuration files, are exempt unless production code imports "
+"them; a test helper that `client.tsx` imports is checked like any other file. Every symlink the "
+"staging step would copy must resolve inside the module."
+msgstr ""
+"源码检查会更早报告它能发现的问题：在暂存模块时，以及每次构建、类型检查和测试运行之前。它用 TypeScript "
+"解析器解析脚本，读取样式表，并一次列出所有问题。`test/`、`tests/`、`__tests__/` 或 `__mocks__/` 下的文件，以及 `vitest`、`jest` 或 "
+"`playwright` 配置文件，只要生产代码没有导入它们，就不受检查；被 `client.tsx` "
+"导入的测试辅助文件会像其他文件一样接受检查。暂存步骤会复制的每个符号链接都必须解析到模块内部。"
+
+#: ../developer/distribution-customization.md:441
 msgid "A module is a directory"
 msgstr "模块是一个目录"
 
-#: ../developer/distribution-customization.md:422
+#: ../developer/distribution-customization.md:453
 msgid ""
-"Import the stylesheet from the client entry so it reaches the application bundle; declaring a "
-"`styles.css` file alone does not load it:"
-msgstr "请从客户端入口导入样式表，使其进入应用构建产物；仅声明一个 `styles.css` 文件不会加载它："
+"The host loads `styles.css`: the root layout imports it through the generated bridge on every "
+"page, after the application's own stylesheet, so a module rule wins over an application rule of "
+"the same specificity. A module does not import it."
+msgstr "`styles.css` 由宿主加载：根布局在每个页面上通过生成的桥接文件导入它，并排在应用自身样式表之后，因此优先级相同时，模块规则会覆盖应用规则。模块不必自行导入它。"
 
-#: ../developer/distribution-customization.md:429
+#: ../developer/distribution-customization.md:458
 #, python-brace-format
 msgid ""
-"`server.ts` must exist even when no locale is needed; it may contain only `export {};`. Only its "
-"`locale` export is optional."
-msgstr "即使无需设置语言，`server.ts` 也必须存在；它可以仅包含 `export {};`。只有其中的 `locale` 导出是可选的。"
+"`server.ts` must exist, and may contain only `export {};`. Its two exports, `locale` and "
+"`metaMessages`, are optional; see [Document language and page titles](#document-language-and-"
+"page-titles)."
+msgstr ""
+"`server.ts` 必须存在，可以仅包含 `export {};`。它的两个导出 `locale` 和 `metaMessages` 都是可选的；参见[文档语言与页面标题"
+"](#document-language-and-page-titles)。"
 
-#: ../developer/distribution-customization.md:432
+#: ../developer/distribution-customization.md:462
 msgid "`client.tsx` exports:"
 msgstr "`client.tsx` 的导出项："
 
@@ -948,12 +1037,43 @@ msgid "The frame around `/login`, `/signup`, `/forgot-password`, `/reset-passwor
 msgstr "`/login`、`/signup`、`/forgot-password`、`/reset-password`、`/verify-email` 的外壳。"
 
 #: ../developer/distribution-customization.md
+msgid "`fieldLayout`"
+msgstr "`fieldLayout`"
+
+#: ../developer/distribution-customization.md
+msgid "Where each account field's label, control, hint, error and action go."
+msgstr "每个账号字段的标签、控件、提示、错误和操作放在哪里。"
+
+#: ../developer/distribution-customization.md
 msgid "`TermsFrame`"
 msgstr "`TermsFrame`"
 
 #: ../developer/distribution-customization.md
-msgid "Rendered at `/terms` instead of the console's legal text."
-msgstr "在 `/terms` 渲染，替代控制台法律条款正文。"
+msgid "all three or none"
+msgstr "三者全部提供或都不提供"
+
+#: ../developer/distribution-customization.md
+msgid "The page around the module's legal text at `/terms`."
+msgstr "`/terms` 上包裹模块法律文本的页面外壳。"
+
+#: ../developer/distribution-customization.md
+msgid "`TermsContent`"
+msgstr "`TermsContent`"
+
+#: ../developer/distribution-customization.md
+msgid "The module's legal text, at `/terms` and in the sign-up consent step."
+msgstr "模块的法律文本，用于 `/terms` 和注册同意步骤。"
+
+#: ../developer/distribution-customization.md
+msgid "`consentItems`"
+msgstr "`consentItems`"
+
+#: ../developer/distribution-customization.md
+#, python-brace-format
+msgid ""
+"What the sign-up consent step asks a visitor to confirm: a non-empty list of `{ id, label, "
+"description? }`."
+msgstr "注册同意步骤要求访客确认的内容：一个非空的 `{ id, label, description? }` 列表。"
 
 #: ../developer/distribution-customization.md
 msgid "`authAppearance`"
@@ -971,7 +1091,42 @@ msgstr "`authMessages`"
 msgid "The deployment's wording for the account pages."
 msgstr "部署的账号页面文案。"
 
-#: ../developer/distribution-customization.md:443
+#: ../developer/distribution-customization.md:476
+msgid ""
+"The host reads named exports only. A client entry with a default export fails the build, and so "
+"does a second file for the same entry — `client.tsx` beside `client.js`, say — because the "
+"bundler, the type checker and the test runner complete the name in different orders. The server "
+"entry may keep a default export; the host does not read it."
+msgstr ""
+"宿主只读取具名导出。客户端入口带有默认导出会使构建失败；同一入口存在第二个文件（例如 `client.tsx` 旁边还有 "
+"`client.js`）也会失败，因为打包器、类型检查器和测试工具补全文件扩展名的顺序各不相同。服务端入口可以保留默认导出，宿主不会读取它。"
+
+#: ../developer/distribution-customization.md:482
+msgid ""
+"`npm run type-check` and `next build` check the exports against the contract in `contract.ts`: "
+"`client.tsx` against `SiteUiClientModule`, `server.ts` against `SiteUiServerModule`. An export of"
+" the wrong type fails, naming the export, and so do a partial legal set and an empty "
+"`consentItems`. As the module loads, the host checks again for what a cast or an `any` hides from"
+" the compiler: a component export that is not a component, a partial legal set, and "
+"`consentItems` that is empty, repeats an id, or has an item without an id or a label. Any of them"
+" stops the module from loading."
+msgstr ""
+"`npm run type-check` 和 `next build` 会按照 `contract.ts` 中的契约检查导出：`client.tsx` 对照 "
+"`SiteUiClientModule`，`server.ts` 对照 `SiteUiServerModule`。类型错误的导出会导致检查失败，错误信息会指明该导出；不完整的法律条款组和空的 "
+"`consentItems` 同样会失败。模块加载时，宿主会再次检查类型断言或 `any` 对编译器隐藏的问题：不是组件的组件导出、不完整的法律条款组，以及为空、id 重复或有条目缺少 id 或"
+" label 的 `consentItems`。其中任何一项都会使模块无法加载。"
+
+#: ../developer/distribution-customization.md:491
+msgid ""
+"**`next build` does not load the module.** Every page renders on demand, so the build evaluates "
+"no client module. A mistake only the load-time check can see builds cleanly and fails on the "
+"first request; from then on every page answers HTTP 500. Smoke-test each image before releasing "
+"it: start it with its gateway and request `/`, the five account pages and `/terms`."
+msgstr ""
+"**`next build` 不会加载模块。** 每个页面都按需渲染，因此构建过程不会执行任何客户端模块。只有加载时检查才能发现的错误可以顺利通过构建，却会在第一次请求时失败；此后每个页面都返回"
+" HTTP 500。发布每个镜像前都要做冒烟测试：连同网关一起启动它，并请求 `/`、五个账号页面和 `/terms`。"
+
+#: ../developer/distribution-customization.md:497
 msgid ""
 "**An optional export is a claim, not a gap.** `Landing: null` means \"the console's home page is "
 "correct here\"; omitting `AuthFrame` means \"the account pages sit inside the console's "
@@ -981,7 +1136,7 @@ msgstr ""
 "**可选导出表达的是意图，不是遗漏。** `Landing: null` 表示“这里使用控制台首页”；不提供 `AuthFrame` "
 "表示“账号页面放在控制台容器中”。两者都不导出的模块没有替换任何页面，这可以是模块开发过程中的合理状态。"
 
-#: ../developer/distribution-customization.md:449
+#: ../developer/distribution-customization.md:503
 msgid ""
 "**A frame that exists owns the whole page.** `AuthFrame` and `TermsFrame` render their own "
 "header, `<main>` and footer, because supplying one is a claim to draw the page. A frame that "
@@ -991,7 +1146,7 @@ msgstr ""
 "**提供外壳就代表负责整张页面。** `AuthFrame` 和 `TermsFrame` 需要绘制自己的页头、`<main>` "
 "与页脚，因为提供它们就意味着接管页面。如果外壳只绘制一张卡片，五个页面就会失去外层框架。宿主无法替模块纠正这种布局选择，因此首先要确保这一点。"
 
-#: ../developer/distribution-customization.md:455
+#: ../developer/distribution-customization.md:509
 msgid ""
 "`AuthFrame` must render the supplied shared form `children` and preserve any provided `topbar` "
 "and `legal` nodes. Its headings and page identifier let one frame serve the five account routes. "
@@ -1000,30 +1155,101 @@ msgstr ""
 "`AuthFrame` 必须渲染提供的共享表单 `children`，并保留任何传入的 `topbar` 和 `legal` "
 "节点。标题和页面标识让同一个外壳能够服务五个账号路由。它负责完整的外层页面，因此宿主不会再在它外面添加页头或页脚。"
 
-#: ../developer/distribution-customization.md:460
+#: ../developer/distribution-customization.md:514
 msgid ""
-"`TermsFrame` supplies its own legal text; the host passes `null` as its children. Preserve the "
-"`terms-s` section-anchor contract, particularly `/terms#terms-s5` for privacy links from the "
-"footer and signup consent. Setting manifest file paths does not substitute a legal document here."
+"**The legal set is one decision.** A module that publishes its own terms exports `TermsFrame`, "
+"`TermsContent` and `consentItems` together; one that exports none of them keeps the console's "
+"terms and its four confirmations. The host renders `TermsContent` in both places a visitor meets "
+"the terms: at `/terms`, as the `children` of `TermsFrame`, and in the sign-up consent step, where"
+" the module's `consentItems` replace the console's confirmations. The text a visitor accepts is "
+"the text the site publishes."
 msgstr ""
-"`TermsFrame` 提供自己的法律文本；宿主传入的 children 为 `null`。请保留 `terms-s` 章节锚点契约，尤其是页脚和注册同意项中的隐私链接所使用的 "
+"**法律条款组是一个整体决定。** 发布自有条款的模块要同时导出 `TermsFrame`、`TermsContent` 和 "
+"`consentItems`；三者都不导出的模块沿用控制台的条款及其四个确认项。宿主会在访客看到条款的两个地方渲染 `TermsContent`：在 `/terms` 上作为 "
+"`TermsFrame` 的 `children`；在注册同意步骤中，由模块的 `consentItems` 替换控制台的确认项。访客接受的文本就是站点发布的文本。"
+
+#: ../developer/distribution-customization.md:522
+msgid ""
+"`TermsContent` renders the legal body only — its sections and any preamble such as a date; the "
+"page heading is the frame's. It receives `headingLevel` 2 and `compact` false at `/terms`, and "
+"`headingLevel` 3 and `compact` true in the consent step's scrolling box. `TermsFrame` draws the "
+"page around it and must render its `children`. At `/terms`, give each section its `terms-s` "
+"anchor: the account pages link privacy to `/terms#terms-s5`. Setting manifest file paths does not"
+" substitute a legal document here."
+msgstr ""
+"`TermsContent` 只渲染法律正文，即各章节以及日期之类的前言；页面标题由外壳负责。在 `/terms` 上，它收到的 `headingLevel` 为 2、`compact` 为 "
+"false；在注册同意步骤的滚动框中，`headingLevel` 为 3、`compact` 为 true。`TermsFrame` 负责绘制包裹它的页面，并且必须渲染其 "
+"`children`。在 `/terms` 上，请为每个章节设置 `terms-s` 锚点：账号页面的隐私链接指向 "
 "`/terms#terms-s5`。设置清单中的文件路径不能替代这里的法律文档。"
 
-#: ../developer/distribution-customization.md:465
+#: ../developer/distribution-customization.md:530
 msgid ""
-"`authMessages` accepts the declared message keys and plain strings; it changes wording, not "
-"validation or the required field set. Missing keys retain the shared defaults. Preserve each "
-"message's interpolation variables. A module may localize its own pages and supported keys, but "
-"this does not translate every console page."
+"Declare `consentItems` with the `ConsentItems` type, and give each item a unique `id`. A plain "
+"`ConsentItem[]` fails the type check, because it does not promise at least one item. Every item "
+"unlocks once the visitor has read the terms to the end, and Continue waits for all of them. The "
+"backend records a single `accepted_tos` flag, which the sign-up request sends only after every "
+"item has been checked."
 msgstr ""
-"`authMessages` "
-"接受已声明的消息键和纯文本字符串；它修改文案，不改变校验规则或必填字段集合。缺失的键继续使用共享默认值。请保留每条消息的插值变量。模块可以本地化自己的页面和受支持的消息键，但这不会翻译所有控制台页面。"
+"请用 `ConsentItems` 类型声明 `consentItems`，并为每个条目设置唯一的 `id`。普通的 `ConsentItem[]` "
+"无法通过类型检查，因为它不能保证至少有一个条目。访客把条款读到末尾后，每个条目才会解锁；Continue 按钮要等所有条目都勾选后才可用。后端只记录一个 `accepted_tos` "
+"标志，注册请求只有在每个条目都勾选之后才会发送它。"
 
-#: ../developer/distribution-customization.md:471
+#: ../developer/distribution-customization.md:537
+msgid ""
+"`authMessages` changes wording, not validation or the required field set. The host keeps only the"
+" keys `AUTH_MESSAGE_KEYS` declares, with string values, and drops everything else before a page "
+"reads it, so wording for a console page — `auth.authorize.*` for `/authorize`, `chat.*` for "
+"`/chat` — has no effect. Missing keys retain the shared defaults. Preserve each message's "
+"interpolation variables. A module may localize its own pages and supported keys, but this does "
+"not translate every console page."
+msgstr ""
+"`authMessages` 修改文案，不改变校验规则或必填字段集合。宿主只保留 `AUTH_MESSAGE_KEYS` "
+"声明的键及其字符串值，并在页面读取之前丢弃其余内容，因此针对控制台页面的文案（`/authorize` 的 `auth.authorize.*`、`/chat` 的 "
+"`chat.*`）不会生效。缺失的键继续使用共享默认值。请保留每条消息的插值变量。模块可以本地化自己的页面和受支持的消息键，但这不会翻译所有控制台页面。"
+
+#: ../developer/distribution-customization.md:545
+msgid "Document language and page titles"
+msgstr "文档语言与页面标题"
+
+#: ../developer/distribution-customization.md:547
+msgid ""
+"The server entry's optional `locale` sets `<html lang>` on the routes the module renders: `/` "
+"when it exports `Landing`, the five account pages when it exports `AuthFrame`, and `/terms` when "
+"it exports the legal set. Every other route — the console, and a public route whose export the "
+"module leaves out — is the console's, in `en`. An empty or omitted `locale` keeps `en` "
+"everywhere. The attribute follows client-side navigation as well as the first response."
+msgstr ""
+"服务端入口中可选的 `locale` 设置模块所渲染路由的 `<html lang>`：导出 `Landing` 时为 `/`，导出 `AuthFrame` 时为五个账号页面，导出法律条款组时为"
+" `/terms`。其余路由（控制台，以及模块未提供相应导出的公开路由）都属于控制台，使用 `en`。`locale` 为空或省略时，所有路由都保持 "
+"`en`。该属性既体现在首次响应中，也会随客户端导航更新。"
+
+#: ../developer/distribution-customization.md:554
+#, python-brace-format
+msgid ""
+"The optional `metaMessages` words the titles and descriptions of the seven public routes. Its "
+"keys are `meta.<page>.title` and `meta.<page>.description`, where `<page>` is `home`, `login`, "
+"`signup`, `forgot`, `reset`, `verify` or `terms`; `META_MESSAGE_KEYS` in `contract.ts` lists "
+"them. The host filters it the way it filters `authMessages`, dropping undeclared keys and values "
+"that are not strings. `meta.home.title` is the whole document title; every other title is shown "
+"as `<title> | <site name>`, as on the console's own pages. Each value may use `{app_name}`."
+msgstr ""
+"可选的 `metaMessages` 为七个公开路由提供标题和描述文案。它的键是 `meta.<page>.title` 和 `meta.<page>.description`，其中 "
+"`<page>` 为 `home`、`login`、`signup`、`forgot`、`reset`、`verify` 或 `terms`；`contract.ts` 中的 "
+"`META_MESSAGE_KEYS` 列出了全部键。宿主会像过滤 `authMessages` 一样过滤它，丢弃未声明的键和非字符串值。`meta.home.title` "
+"是完整的文档标题；其他标题显示为 `<title> | <site name>`，与控制台自身页面一致。每个值都可以使用 `{app_name}`。"
+
+#: ../developer/distribution-customization.md:563
+msgid ""
+"A page the module does not word keeps its default: the site's title and description, or \"Terms "
+"of Service\" for `/terms`. Titles do not depend on which routes the module renders. Console pages"
+" keep their English titles, and icons come from runtime branding."
+msgstr "模块未提供文案的页面保留默认值：站点自身的标题和描述，`/terms` 则为“Terms of Service”。标题与模块渲染哪些路由无关。控制台页面保留英文标题，图标来自运行时品牌配置。"
+
+#: ../developer/distribution-customization.md:568
 msgid "Building an image with a module"
 msgstr "使用模块构建镜像"
 
-#: ../developer/distribution-customization.md:473
+#: ../developer/distribution-customization.md:570
 msgid "The official frontend Dockerfile takes the module as a Buildx named context:"
 msgstr "官方前端 Dockerfile 通过 Buildx 命名上下文接收模块："
 
@@ -1075,24 +1301,33 @@ msgstr "未设置"
 msgid "required with an external module; must be `1`"
 msgstr "使用外部模块时必填，必须为 `1`"
 
-#: ../developer/distribution-customization.md:499
+#: ../developer/distribution-customization.md:596
 msgid ""
 "A distribution may pass its whole `frontend/` tree as the context and select the module with "
 "`SITE_UI_SUBDIR=site-ui`. This keeps the module and its related build inputs under one pinned "
 "source tree."
 msgstr "发行版可以将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` 选择模块。这样，模块及其相关构建输入都包含在同一个固定版本的源码树中。"
 
-#: ../developer/distribution-customization.md:503
+#: ../developer/distribution-customization.md:600
 msgid ""
 "An external context that carries no module **fails the build**. Falling back to the neutral UI "
 "would publish a site whose home page reverted, and nothing in the build log would say so."
 msgstr "外部上下文未包含模块时，**构建会失败**。不能悄悄回退到默认 UI，否则发布的首页会变回控制台页面，构建日志却毫无提示。"
 
-#: ../developer/distribution-customization.md:507
+#: ../developer/distribution-customization.md:604
+msgid ""
+"The reverse fails too. `SITE_UI_API`, or a `SITE_UI_SUBDIR` other than `.`, given without "
+"`--build-context site-ui=...` stops the build with a message that names the missing context, "
+"rather than building the neutral UI in the module's place."
+msgstr ""
+"反过来也会失败：没有提供 `--build-context site-ui=...`，却设置了 `SITE_UI_API` 或不等于 `.` 的 "
+"`SITE_UI_SUBDIR`，构建会停止并报错指出缺少的上下文，而不是用默认 UI 顶替模块。"
+
+#: ../developer/distribution-customization.md:609
 msgid "Local development"
 msgstr "本地开发"
 
-#: ../developer/distribution-customization.md:509
+#: ../developer/distribution-customization.md:611
 msgid ""
 "The same staging step runs on a workstation, without Docker. Run a gateway first and set "
 "`BACKEND_INTERNAL_URL` to its address if it is not `http://backend:8080`; the existing runtime "
@@ -1101,29 +1336,44 @@ msgstr ""
 "同一暂存步骤也可在工作站运行，无需 Docker。请先启动网关；若地址不是 `http://backend:8080`，则设置 `BACKEND_INTERNAL_URL`。应用对运行时 "
 "`/site-config` 的依赖保持不变："
 
-#: ../developer/distribution-customization.md:523
+#: ../developer/distribution-customization.md:625
+msgid ""
+"Staging empties `--into` before it copies the module in, so `--into` must be a directory of its "
+"own: it may not overlap `--context`, and may not be or contain `--app`."
+msgstr "暂存步骤会先清空 `--into` 再复制模块，因此 `--into` 必须是一个独立目录：不能与 `--context` 重叠，也不能等于或包含 `--app`。"
+
+#: ../developer/distribution-customization.md:629
 msgid "`SITE_UI_DIR` and `SITE_UI_API` name the module directly if you would rather not stage a copy:"
 msgstr "如果不想暂存副本，可以用 `SITE_UI_DIR` 和 `SITE_UI_API` 直接指定模块："
 
-#: ../developer/distribution-customization.md:531
+#: ../developer/distribution-customization.md:637
+msgid ""
+"A relative `SITE_UI_DIR` resolves against `apps/frontend`, whichever directory the command runs "
+"from. Tailwind scans the selected module's directory as well as `src/`, so a utility class that "
+"only a module outside `src/` uses is still generated."
+msgstr ""
+"相对路径形式的 `SITE_UI_DIR` 总是相对于 `apps/frontend` 解析，与命令在哪个目录运行无关。Tailwind 除了扫描 `src/`，还会扫描所选模块的目录，因此只被"
+" `src/` 之外的模块使用的工具类也会生成。"
+
+#: ../developer/distribution-customization.md:642
 msgid ""
 "The variables above apply to that one command; no shell profile is changed. To return to the "
 "neutral UI, stop the server and run:"
 msgstr "上述变量仅作用于当前命令，不会修改 shell 配置。若要恢复默认 UI，停止服务器后执行："
 
-#: ../developer/distribution-customization.md:538
+#: ../developer/distribution-customization.md:649
 msgid ""
 "Local dev serves module assets via `SITE_ASSETS_DIR`; the image recipe packages them "
 "automatically."
 msgstr "本地开发通过 `SITE_ASSETS_DIR` 提供模块资源；镜像配方会自动打包这些资源。"
 
-#: ../developer/distribution-customization.md:541
+#: ../developer/distribution-customization.md:652
 msgid ""
 "The staging environment file is used by the Dockerfile, not automatically read by npm. Leaving a "
 "staged directory behind does not select it for later commands."
 msgstr "暂存环境文件由 Dockerfile 使用，npm 不会自动读取。保留暂存目录不会让之后的命令自动选择该模块。"
 
-#: ../developer/distribution-customization.md:544
+#: ../developer/distribution-customization.md:655
 msgid ""
 "Either way the resolver writes `src/site-ui/active/` and `tsconfig.generated.json`, so the "
 "bundler, the type checker and the test runner all read the same decision. Those files are "
@@ -1132,54 +1382,86 @@ msgstr ""
 "无论采用哪种方式，解析器都会写出 `src/site-ui/active/` 与 "
 "`tsconfig.generated.json`，让打包器、类型检查器和测试工具使用同一选择。这些文件由工具生成，请勿手工编辑。"
 
-#: ../developer/distribution-customization.md:548
+#: ../developer/distribution-customization.md:659
+msgid ""
+"`npm run type-check` and `next build` both type-check against `tsconfig.generated.json`. It "
+"reaches a module's production code through the entries' imports and leaves the module's directory"
+" out of its file globs, and the application does not lint a module at all. A module's tests and "
+"tooling are for the distribution's own repository to check. A declaration file that nothing "
+"imports, such as one holding an ambient `declare module`, is outside that import graph too: "
+"reference it from an entry with `/// <reference path=\"./types.d.ts\" />`."
+msgstr ""
+"`npm run type-check` 和 `next build` 都使用 `tsconfig.generated.json` "
+"做类型检查。它通过入口的导入关系覆盖模块的生产代码，并把模块目录排除在文件匹配范围之外；应用也完全不会对模块执行 "
+"lint。模块的测试和工具链应由发行版自己的仓库负责检查。没有被任何文件导入的声明文件（例如包含环境声明 `declare module` 的文件）同样不在该导入图中：请在入口中用 `/// "
+"<reference path=\"./types.d.ts\" />` 引用它。"
+
+#: ../developer/distribution-customization.md:667
 msgid "Assets"
 msgstr "资源"
 
-#: ../developer/distribution-customization.md:550
+#: ../developer/distribution-customization.md:669
 msgid ""
-"A module's images live in `public/site-assets/<module-id>/`, and the build merges them into the "
-"image. Three rules, all enforced:"
-msgstr "模块图片位于 `public/site-assets/<module-id>/`，构建时会合并进镜像。以下三条规则均由工具强制执行："
+"A module's images live in `public/site-assets/<module-id>/`. The image build packages them in "
+"`site-assets/<module-id>/` beside the standalone server rather than in `public/`: Next.js serves "
+"`public/` before any route, and a file there would bypass the `/site-assets` route. Three rules, "
+"all enforced:"
+msgstr ""
+"模块图片位于 `public/site-assets/<module-id>/`。镜像构建会把它们打包到独立服务器旁边的 `site-assets/<module-id>/`，而不是 "
+"`public/`：Next.js 会在任何路由之前先提供 `public/` 中的文件，放在那里的文件会绕过 `/site-assets` 路由。以下三条规则均由工具强制执行："
 
-#: ../developer/distribution-customization.md:553
+#: ../developer/distribution-customization.md:674
 msgid ""
 "**Under the module's own id.** An asset elsewhere fails the build. This is what makes \"two "
 "modules cannot write the same path, and neither can shadow the application's\" true."
 msgstr "**资源必须位于模块自身 id 下。** 放在其他路径会使构建失败，从而保证不同模块不能写入同一路径，也不能覆盖应用资源。"
 
-#: ../developer/distribution-customization.md:556
+#: ../developer/distribution-customization.md:677
 msgid ""
 "**Never a collision.** A module asset at a path the application already ships fails the build "
 "rather than overwriting it."
 msgstr "**不允许冲突。** 模块资源与应用已有路径冲突时构建失败，不会静默覆盖。"
 
-#: ../developer/distribution-customization.md:558
+#: ../developer/distribution-customization.md:679
 msgid ""
-"**The route is what serves them.** `/site-assets/*` is a Next route handler, and a route handler "
-"shadows static file serving for the whole prefix — so \"the file is in `public/`\" is not "
-"evidence that it is reachable. Test the URL."
-msgstr "**资源由路由提供。** `/site-assets/*` 是 Next 路由处理器，会覆盖整个前缀的静态文件服务。因此，“文件位于 `public/`”不能证明它可访问，必须实际请求 URL。"
+"**The route is what serves them.** `/site-assets/*` serves image files only — AVIF, GIF, ICO, "
+"JPEG, PNG, SVG and WebP, up to 20 MB — with a five-minute revalidating cache policy and "
+"`nosniff`, and sandboxes an SVG with a `Content-Security-Policy` header. A bundle with anything "
+"under `public/site-assets/<module-id>/` fails the build. Test the URL, not the file."
+msgstr ""
+"**资源由路由提供。** `/site-assets/*` 只提供图片文件（AVIF、GIF、ICO、JPEG、PNG、SVG 和 WebP，最大 20 MB），附带五分钟的重新验证缓存策略和 "
+"`nosniff`，并通过 `Content-Security-Policy` 头把 SVG 放进沙箱。构建产物的 `public/site-assets/<module-id>/` "
+"下只要有任何内容，构建就会失败。请测试 URL，而不是只看文件是否存在。"
 
-#: ../developer/distribution-customization.md:562
+#: ../developer/distribution-customization.md:685
 msgid ""
 "At runtime, `SITE_ASSETS_DIR` is read first and the image's own copy second. A deployment that "
 "mounts its branding directory keeps overriding the module's files, and one that mounts nothing "
 "still serves a complete site."
 msgstr "运行时先读取 `SITE_ASSETS_DIR`，再回退到镜像内的副本。挂载品牌目录的部署可以继续覆盖模块资源；未挂载目录的部署也有完整站点。"
 
-#: ../developer/distribution-customization.md:566
+#: ../developer/distribution-customization.md:689
+msgid ""
+"The override works file by file, and `SITE_ASSETS_DIR` must be an absolute path. The build copies"
+" a relative symlink as the link it is, with its target unchanged, so a link that stays inside the"
+" module keeps working in the image. The route does not serve a link whose target is outside its "
+"directory."
+msgstr ""
+"覆盖按文件逐个生效，且 `SITE_ASSETS_DIR` "
+"必须是绝对路径。构建会把相对符号链接原样复制为链接，目标保持不变，因此留在模块内部的链接在镜像中仍然有效。目标位于所在目录之外的链接，路由不会提供。"
+
+#: ../developer/distribution-customization.md:694
 msgid "Styling the shared forms"
 msgstr "共享表单样式"
 
-#: ../developer/distribution-customization.md:568
+#: ../developer/distribution-customization.md:696
 msgid ""
 "The shared account forms render their own markup and default styling. Stable semantic hooks "
-"provide styles and state; a narrow layout slot provides structural variation. The deprecated "
+"provide styles and state; the `fieldLayout` export provides structural variation. The deprecated "
 "class map remains supported throughout API v1."
-msgstr "共享账号表单负责自己的标记结构和默认样式。稳定的语义属性提供样式与状态接口，小范围的布局插槽支持结构差异。已弃用的类名映射在整个 API v1 生命周期内仍受支持。"
+msgstr "共享账号表单负责自己的标记结构和默认样式。稳定的语义属性提供样式与状态接口，`fieldLayout` 导出支持结构差异。已弃用的类名映射在整个 API v1 生命周期内仍受支持。"
 
-#: ../developer/distribution-customization.md:572
+#: ../developer/distribution-customization.md:701
 msgid "**`data-auth` attributes for styling and state.** Shared form elements expose:"
 msgstr "**用于样式与状态的 `data-auth` 属性。** 共享表单元素提供："
 
@@ -1196,8 +1478,8 @@ msgid "`data-auth=\"form\"`"
 msgstr "`data-auth=\"form\"`"
 
 #: ../developer/distribution-customization.md
-msgid "the `<form>`"
-msgstr "`<form>` 元素"
+msgid "the body of an account page: its `<form>`, or the box a result or the sign-up consent step sits in"
+msgstr "账号页面的主体：其 `<form>` 元素，或承载结果、注册同意步骤的容器"
 
 #: ../developer/distribution-customization.md
 msgid "`data-auth=\"field\"`"
@@ -1208,20 +1490,12 @@ msgid "each field's wrapper"
 msgstr "每个字段的外层元素"
 
 #: ../developer/distribution-customization.md
-msgid "`data-auth=\"label\"` / `\"control\"` / `\"password-control\"`"
-msgstr "`data-auth=\"label\"` / `\"control\"` / `\"password-control\"`"
+msgid "`data-auth=\"label\"` / `\"control\"`"
+msgstr "`data-auth=\"label\"` / `\"control\"`"
 
 #: ../developer/distribution-customization.md
-msgid "label and inputs"
-msgstr "标签与输入框"
-
-#: ../developer/distribution-customization.md
-msgid "`data-auth=\"reveal\"`"
-msgstr "`data-auth=\"reveal\"`"
-
-#: ../developer/distribution-customization.md
-msgid "the show-password button"
-msgstr "显示密码按钮"
+msgid "the label, and each input or textarea"
+msgstr "标签，以及每个输入框或文本域"
 
 #: ../developer/distribution-customization.md
 msgid "`data-auth=\"hint\"` / `\"error\"`"
@@ -1236,24 +1510,48 @@ msgid "`data-auth=\"notice\"`"
 msgstr "`data-auth=\"notice\"`"
 
 #: ../developer/distribution-customization.md
-msgid "an error or success notice"
-msgstr "错误或成功提示"
+msgid "an info, error or success notice; a button inside one is `[data-auth=\"notice\"] button`"
+msgstr "信息、错误或成功提示；提示内的按钮可用 `[data-auth=\"notice\"] button` 选中"
 
 #: ../developer/distribution-customization.md
-msgid "`data-auth=\"submit\"` / `\"field-action\"` / `\"secondary-actions\"`"
-msgstr "`data-auth=\"submit\"` / `\"field-action\"` / `\"secondary-actions\"`"
+msgid "`data-auth=\"submit\"`"
+msgstr "`data-auth=\"submit\"`"
 
 #: ../developer/distribution-customization.md
-msgid "the buttons and links"
-msgstr "按钮与链接"
+msgid "the page's primary button, or the link that stands in for it"
+msgstr "页面的主按钮，或代替主按钮的链接"
 
 #: ../developer/distribution-customization.md
-msgid "`data-auth=\"consent\"` / `\"consent-section\"`"
-msgstr "`data-auth=\"consent\"` / `\"consent-section\"`"
+msgid "`data-auth=\"field-action\"`"
+msgstr "`data-auth=\"field-action\"`"
 
 #: ../developer/distribution-customization.md
-msgid "the sign-up confirmations"
-msgstr "注册确认项"
+msgid "the wrapper around a field's own action, such as the forgot-password link"
+msgstr "字段自身操作（如忘记密码链接）的外层元素"
+
+#: ../developer/distribution-customization.md
+msgid "`data-auth=\"secondary-actions\"`"
+msgstr "`data-auth=\"secondary-actions\"`"
+
+#: ../developer/distribution-customization.md
+msgid "the row of alternative links on `/verify-email`"
+msgstr "`/verify-email` 上的备选链接行"
+
+#: ../developer/distribution-customization.md
+msgid "`data-auth=\"consent\"`"
+msgstr "`data-auth=\"consent\"`"
+
+#: ../developer/distribution-customization.md
+msgid "each sign-up confirmation: the label holding its checkbox and sentence"
+msgstr "每个注册确认项：包含复选框及其说明文字的标签"
+
+#: ../developer/distribution-customization.md
+msgid "`data-auth=\"consent-section\"`"
+msgstr "`data-auth=\"consent-section\"`"
+
+#: ../developer/distribution-customization.md
+msgid "each section of the sign-up consent step"
+msgstr "注册同意步骤中的每个分区"
 
 #: ../developer/distribution-customization.md
 msgid "`data-auth=\"loading\"`"
@@ -1263,42 +1561,55 @@ msgstr "`data-auth=\"loading\"`"
 msgid "the resolving-session region"
 msgstr "会话解析中的区域"
 
-#: ../developer/distribution-customization.md:586
+#: ../developer/distribution-customization.md:717
 msgid ""
 "State is carried by the attributes the application already sets — `aria-invalid`, `disabled`, "
-"`aria-busy`, `data-auth-error` — so a stylesheet never has to infer \"this field is in error\" "
-"from a class name. The set is part of the contract: an attribute is added, never repurposed."
+"`aria-busy`, `data-auth-error`, `data-auth-tone` — so a stylesheet never has to infer \"this "
+"field is in error\" from a class name. The set is part of the contract: an attribute is added, "
+"never repurposed."
 msgstr ""
-"状态由应用设置的现有属性表达，包括 `aria-invalid`、`disabled`、`aria-busy` 和 `data-auth-"
-"error`。样式表无需根据类名猜测字段是否出错。这组属性属于契约：可以新增，但不能改变已有属性的含义。"
+"状态由应用设置的现有属性表达，包括 `aria-invalid`、`disabled`、`aria-busy`、`data-auth-error` 和 `data-auth-"
+"tone`。样式表无需根据类名猜测字段是否出错。这组属性属于契约：可以新增，但不能改变已有属性的含义。"
 
-#: ../developer/distribution-customization.md:591
+#: ../developer/distribution-customization.md:722
 msgid ""
-"**Structural layout.** The optional `fieldLayout` receives the shared control, hint, error and "
+"The host describes each control itself. Before a `fieldLayout` sees the control, `AuthField` "
+"gives it `aria-describedby` naming the field's hint (`<id>-hint`) and error (`<id>-error`), kept "
+"alongside any value the page set, and `aria-invalid=\"true\"` while the error shows."
+msgstr ""
+"控件的描述关联由宿主自己设置。在 `fieldLayout` 拿到控件之前，`AuthField` 会为它设置 `aria-"
+"describedby`，指向字段的提示（`<id>-hint`）和错误（`<id>-error`），并保留页面原本设置的值；错误显示期间还会设置 `aria-"
+"invalid=\"true\"`。"
+
+#: ../developer/distribution-customization.md:727
+msgid ""
+"**Field layout.** The optional `fieldLayout` export receives the shared control, hint, error and "
 "action nodes, and the label's text and `htmlFor` id. It must render every supplied node, "
 "associate the label with that id, and preserve the `data-auth=\"field\"` and `data-"
-"auth=\"label\"` hooks. The neutral layout places the field action after the control and "
-"validation; a module may place it beside its label. This replaces layout booleans without moving "
-"validation or controllers into a distribution."
+"auth=\"label\"` hooks. The control arrives already described, so the relationship survives any "
+"arrangement that renders every node. The neutral layout places the field action after the control"
+" and validation; a module may place it beside its label. `fieldLayout` is a supported export in "
+"its own right, not part of the deprecated class map."
 msgstr ""
-"**结构布局。** 可选的 `fieldLayout` 接收共享控件、提示、错误与操作节点，以及标签文本和 `htmlFor` id。它必须渲染所有传入节点，将标签关联到该 id，并保留 "
+"**字段布局。** 可选的 `fieldLayout` 导出接收共享控件、提示、错误与操作节点，以及标签文本和 `htmlFor` id。它必须渲染所有传入节点，将标签关联到该 id，并保留 "
 "`data-auth=\"field\"` 和 `data-auth=\"label\"` "
-"属性。默认布局将字段操作放在控件与验证信息之后；模块可以将其放在标签旁边。这种方式替代布局布尔值，同时让验证与控制器继续留在共享应用中。"
+"属性。控件传入时已经带有描述关联，因此只要每个节点都被渲染，无论如何排列，这种关联都会保留。默认布局将字段操作放在控件与验证信息之后；模块可以将其放在标签旁边。`fieldLayout` "
+"本身就是受支持的独立导出，不属于已弃用的类名映射。"
 
-#: ../developer/distribution-customization.md:599
+#: ../developer/distribution-customization.md:736
 msgid ""
-"**Deprecated `authAppearance` class map.** The class-map export, including its nested "
-"`fieldLayout` entry, remains a supported compatibility surface throughout API v1. New styling "
-"should prefer scoped `data-auth` and state selectors; class names are module-owned details. The "
-"semantic-style migration is not complete. Removing this adapter requires the next API revision, a"
-" documented migration and comparison of normal, invalid, loading and keyboard states. Deprecation"
-" does not allow breaking existing v1 modules."
+"**Deprecated `authAppearance` class map.** The class-map export remains a supported compatibility"
+" surface throughout API v1; it holds class names only. New styling should prefer scoped `data-"
+"auth` and state selectors; class names are module-owned details. The semantic-style migration is "
+"not complete. Removing this adapter requires the next API revision, a documented migration and "
+"comparison of normal, invalid, loading and keyboard states. Deprecation does not allow breaking "
+"existing v1 modules."
 msgstr ""
-"**已弃用的 `authAppearance` 类名映射。** 此类名映射导出及其嵌套的 `fieldLayout` 入口，在整个 API v1 "
-"生命周期内仍是受支持的兼容接口。新样式应优先使用限定作用域的 `data-auth` 和状态选择器；类名是模块自己的实现细节。语义样式迁移尚未完成。移除此适配层必须发布下一版 "
-"API、提供迁移文档，并对比正常、无效、加载和键盘操作状态。弃用并不意味着可以破坏现有 v1 模块。"
+"**已弃用的 `authAppearance` 类名映射。** 此类名映射导出在整个 API v1 生命周期内仍是受支持的兼容接口，只包含类名。新样式应优先使用限定作用域的 `data-"
+"auth` 和状态选择器；类名是模块自己的实现细节。语义样式迁移尚未完成。移除此适配层必须发布下一版 API、提供迁移文档，并对比正常、无效、加载和键盘操作状态。弃用并不意味着可以破坏现有 v1"
+" 模块。"
 
-#: ../developer/distribution-customization.md:607
+#: ../developer/distribution-customization.md:744
 msgid ""
 "All customization is subject to the same rule: **the module's CSS may only affect the pages it "
 "owns.** A stylesheet that reaches `body`, `:root` or a bare element selector will restyle the "
@@ -1308,95 +1619,157 @@ msgstr ""
 "所有定制都遵循同一条规则：**模块 CSS 只能影响模块负责的页面。** 选择 `body`、`:root` "
 "或裸元素的样式会同时改变控制台，目前没有检查器替你拦截。应将所有规则限定在模块外壳设置的根类名之下。"
 
-#: ../developer/distribution-customization.md:612
+#: ../developer/distribution-customization.md:749
+msgid "When a module component fails"
+msgstr "模块组件出错时"
+
+#: ../developer/distribution-customization.md:751
+msgid ""
+"A module component that throws — `Landing`, `AuthFrame`, `fieldLayout`, `TermsFrame` or "
+"`TermsContent` — takes down its own page and nothing else. Each renders inside its page, and the "
+"application's route error page (`app/error.tsx`) replaces that page with a neutral message and a "
+"Try again button. On a route whose chrome the module draws, the message comes with the console's "
+"header and footer. It never falls back to the console's terms or confirmations when the module's "
+"fail to render. A console page's own render error is shown the same way, inside the console "
+"chrome."
+msgstr ""
+"抛出异常的模块组件（`Landing`、`AuthFrame`、`fieldLayout`、`TermsFrame` 或 "
+"`TermsContent`）只会影响它自己所在的页面。每个组件都在各自页面内渲染，应用的路由错误页（`app/error.tsx`）会用一条中性的提示信息和一个 Try again "
+"按钮替换该页面。如果该路由的外层框架由模块绘制，提示信息会带上控制台的页头和页脚。模块的条款或确认项渲染失败时，错误页绝不会改用控制台的条款或确认项。控制台页面自身的渲染错误也以同样方式显示在控制台外层框架内。"
+
+#: ../developer/distribution-customization.md:760
+msgid ""
+"React renders no error boundary on the server, so the first response for a failing page is still "
+"an error: HTTP 500, or HTTP 200 with a loading state on the account pages that render inside "
+"`<Suspense>` (`/login`, `/reset-password` and `/verify-email`). The browser then renders the page"
+" again and shows the message. A status code alone does not show that a page works."
+msgstr ""
+"React 在服务器端不会渲染错误边界，因此出错页面的首次响应仍然是错误：HTTP 500；对于在 `<Suspense>` 内渲染的账号页面（`/login`、`/reset-"
+"password` 和 `/verify-email`），则是带加载状态的 HTTP 200。随后浏览器会重新渲染页面并显示提示信息。仅凭状态码无法证明页面正常。"
+
+#: ../developer/distribution-customization.md:766
+msgid ""
+"A module that fails its load-time check is different: the root layout loads the module, so every "
+"page fails with it."
+msgstr "未通过加载时检查的模块则不同：根布局会加载模块，因此每个页面都会随之失败。"
+
+#: ../developer/distribution-customization.md:769
 msgid "Compatibility"
 msgstr "兼容性"
 
-#: ../developer/distribution-customization.md:614
+#: ../developer/distribution-customization.md:771
 msgid ""
 "**Adding a module does not change the console.** The five account pages sit in the console "
 "container when no `AuthFrame` is exported, and the shared pages, schemas and session handling are"
 " untouched either way."
 msgstr "**添加模块不会改变控制台。** 未导出 `AuthFrame` 时，五个账号页面留在控制台容器中；无论是否提供模块，共享页面、数据结构与会话处理都保持不变。"
 
-#: ../developer/distribution-customization.md:617
+#: ../developer/distribution-customization.md:774
 msgid ""
 "**Removing an optional export is safe.** A module that stops exporting `Landing` gets the "
 "console's home page back."
 msgstr "**移除可选导出是安全的。** 模块停止导出 `Landing` 后，将恢复控制台首页。"
 
-#: ../developer/distribution-customization.md:619
+#: ../developer/distribution-customization.md:776
+msgid ""
+"**The legal set is removed whole.** Dropping all three exports brings back the console's terms "
+"and confirmations; dropping one of them fails the type check."
+msgstr "**法律条款组只能整体移除。** 同时去掉三个导出会恢复控制台的条款和确认项；只去掉其中一个会导致类型检查失败。"
+
+#: ../developer/distribution-customization.md:778
 msgid ""
 "**Renaming or removing an export, changing a prop's meaning, or repurposing a `data-auth` value "
 "is a breaking change** and belongs behind an API revision bump. So does renaming a key in "
-"`authMessages` or changing its interpolation variables."
-msgstr "**重命名或删除导出、改变属性含义，或改变 `data-auth` 值的用途，均属于破坏性变更**，需要提升 API 版本。重命名 `authMessages` 的键或改变其插值变量也一样。"
+"`authMessages` or `metaMessages`, or changing its interpolation variables."
+msgstr ""
+"**重命名或删除导出、改变属性含义，或改变 `data-auth` 值的用途，均属于破坏性变更**，需要提升 API 版本。重命名 `authMessages` 或 `metaMessages`"
+" 中的键，或改变其插值变量，也一样。"
 
-#: ../developer/distribution-customization.md:623
+#: ../developer/distribution-customization.md:782
 msgid "**Adding an optional key or attribute is compatible.**"
 msgstr "**新增可选键或属性是兼容变更。**"
 
-#: ../developer/distribution-customization.md:625
+#: ../developer/distribution-customization.md:784
 msgid ""
 "`SITE_UI_API` selects the Site UI interface revision. The resolver refuses a module that declares"
 " a revision this checkout does not implement, rather than building something neither side was "
 "written for."
 msgstr "`SITE_UI_API` 用于选择 Site UI 接口版本。如果模块声明的版本不是当前源码支持的版本，解析器会拒绝构建，避免产出双方都不支持的组合。"
 
-#: ../developer/distribution-customization.md:629
+#: ../developer/distribution-customization.md:788
 msgid ""
-"The optional server `locale` sets the root document's `lang`, including console routes; omitting "
-"it keeps `en`. Document titles, descriptions and icons come from runtime branding. The module API"
-" has no metadata override or shared public-layout export; modules can organize their own internal"
-" layouts freely."
-msgstr ""
-"可选的服务端 `locale` 设置根文档的 `lang`，也适用于控制台路由；省略时保留 `en`。文档标题、描述和图标来自运行时品牌配置。模块 API "
-"不提供元数据覆盖或共享公开布局导出；模块可以自由组织自己的内部布局。"
+"The module API has no shared public-layout export; a module organizes its own internal layouts "
+"freely."
+msgstr "模块 API 不提供共享公开布局导出；模块可以自由组织自己的内部布局。"
 
-#: ../developer/distribution-customization.md:634
+#: ../developer/distribution-customization.md:791
 msgid "Testing a module"
 msgstr "测试模块"
 
-#: ../developer/distribution-customization.md:636
+#: ../developer/distribution-customization.md:793
 msgid ""
 "The shared repository owns validation and the image recipe. These checks use the built-in neutral"
 " module and the public example."
 msgstr "共享仓库负责校验和镜像构建配方。这些检查使用内置中立模块和公开示例。"
 
-#: ../developer/distribution-customization.md:646
+#: ../developer/distribution-customization.md:803
 msgid ""
 "When checking your own module, pass the same module selection variables used for local "
 "development. Exercise normal, invalid, loading and keyboard states of the shared forms, every "
 "public page your module supplies, and the console to check for style leakage."
 msgstr "检查自己的模块时，传入与本地开发相同的模块选择变量。测试共享表单的正常、无效、加载和键盘操作状态，以及模块提供的每个公开页面，并检查控制台是否受到模块样式影响。"
 
-#: ../developer/distribution-customization.md:651
+#: ../developer/distribution-customization.md:808
+msgid ""
+"Then smoke-test the built image: start it with a gateway, since every page reads `/site-config`, "
+"and request `/`, the five account pages and `/terms`. `next build` does not load the module, so "
+"this is the first point at which its load-time check runs."
+msgstr ""
+"然后对构建出的镜像做冒烟测试：由于每个页面都会读取 `/site-config`，请连同网关一起启动它，并请求 `/`、五个账号页面和 `/terms`。`next build` "
+"不会加载模块，因此这是模块加载时检查第一次运行的时机。"
+
+#: ../developer/distribution-customization.md:813
 msgid ""
 "From the repository root, build the neutral image and the public example through the same "
 "upstream recipe:"
 msgstr "在仓库根目录使用同一份上游配方构建默认镜像与公开示例："
 
-#: ../developer/distribution-customization.md:664
+#: ../developer/distribution-customization.md:826
 msgid ""
-"The first manifest must report `kind: \"neutral\"`; the second must report `id: \"example\"`. The"
-" **Site UI Containers** CI job builds these two shapes and checks the example asset over HTTP. "
+"The first manifest must report `kind: \"neutral\"`; the second must report `id: \"example\"`. "
 "These image builds need Docker and network access for dependencies. Serving the full application "
 "also needs the gateway's runtime `/site-config` endpoint."
 msgstr ""
-"第一个清单必须报告 `kind: \"neutral\"`，第二个必须报告 `id: \"example\"`。**Site UI Containers** CI 任务会构建这两种镜像，并通过 "
-"HTTP 检查示例资源。这些构建需要 Docker 以及下载依赖的网络连接。完整应用运行时还需要网关提供 `/site-config` 端点。"
+"第一个清单必须报告 `kind: \"neutral\"`，第二个必须报告 `id: \"example\"`。这些构建需要 Docker 以及下载依赖的网络连接。完整应用运行时还需要网关提供 "
+"`/site-config` 端点。"
 
-#: ../developer/distribution-customization.md:670
+#: ../developer/distribution-customization.md:831
+msgid ""
+"The **Site UI Containers** CI job builds these two shapes and checks their manifests. It also "
+"requires a build given `SITE_UI_API` and `SITE_UI_SUBDIR` but no `site-ui` context to fail. It "
+"then starts the example image with a `SITE_ASSETS_DIR` that holds a replacement for the example's"
+" mark. The replacement must be served, and once it is removed the packaged mark must come back "
+"through the route, with its SVG sandbox and cache policy. The job runs whenever the CI change "
+"classifier sets `site_ui` — for a change to any frontend input, `.dockerignore`, `deploy/docker"
+"/site-ui/` or `distributions/example/` — and the CI gate then requires it to pass."
+msgstr ""
+"**Site UI Containers** CI 任务会构建这两种镜像并检查它们的清单。它还要求：设置了 `SITE_UI_API` 和 `SITE_UI_SUBDIR` 却没有 `site-"
+"ui` 上下文的构建必须失败。随后它启动示例镜像，并在 `SITE_ASSETS_DIR` "
+"中放一个替换示例标志图的文件。该替换文件必须被提供；删除它之后，打包的标志图必须重新通过路由提供，并带有 SVG 沙箱和缓存策略。只要 CI 变更分类器设置了 "
+"`site_ui`（即任何前端输入、`.dockerignore`、`deploy/docker/site-ui/` 或 `distributions/example/` "
+"发生变更），该任务就会运行，CI 门禁也会要求它通过。"
+
+#: ../developer/distribution-customization.md:841
 msgid ""
 "Build and test the distribution's own image and assets as well. An upstream example passing does "
 "not validate a privately maintained module."
 msgstr "还需构建并测试发行版自己的镜像和资源。上游示例通过，并不能验证私有维护的模块。"
 
-#: ../developer/distribution-customization.md:675
+#: ../developer/distribution-customization.md:846
 msgid "4. Backend extensions"
 msgstr "4\\. 后端扩展"
 
-#: ../developer/distribution-customization.md:677
+#: ../developer/distribution-customization.md:848
 msgid ""
 "`BACKEND_EXTENSIONS` is an optional comma-delimited list of trusted, local Python module names. "
 "It is empty by default. Each module must expose a synchronous `register()` function that takes no"
@@ -1407,7 +1780,7 @@ msgstr ""
 "`BACKEND_EXTENSIONS` 是可选的、以逗号分隔的受信任本地 Python 模块名列表，默认值为空。每个模块必须提供同步、无参数的 `register()` 函数。网关加载 "
 "dotenv 后、构造运行时路由或使用相关注册表前，在每个进程中导入并注册每个模块一次。导入或注册失败会中止启动；网关不会悄悄换用其他适配器。"
 
-#: ../developer/distribution-customization.md:684
+#: ../developer/distribution-customization.md:855
 msgid ""
 "Extensions register factories through `serving.servers.registry.register_adapter_factory(kind, "
 "factory, *, override=False)`. A factory receives a configuration dictionary and returns an "
@@ -1422,7 +1795,7 @@ msgstr ""
 "`override=True`，且会记录日志。注册的 kind 也会成为保留的 provider 标签。启动时的 `register()` 函数可在使用方运行前，填充现有的运行时设置和 "
 "provider 元数据字典；必须修改这些共享字典，而不能替换它们。"
 
-#: ../developer/distribution-customization.md:694
+#: ../developer/distribution-customization.md:865
 msgid ""
 "The deployment must make these modules importable, for example through its read-only overlay "
 "mount. This executes trusted server code, not user-supplied configuration: do not derive module "
@@ -1436,11 +1809,11 @@ msgstr ""
 "挂载提供模块。这里执行的是受信任的服务端代码，不是用户提交的配置：不要从请求推导模块名，也不要允许管理表单选择模块。加载器不会获取远程模块，也不会逐请求加载代码。请在启动阶段导入全部扩展代码，避免之后的延迟导入或代码热重载，并在修改挂载的扩展后重启后端。最小工厂示例见[部署本地适配器"
 "](adding-models.md#deployment-local-adapters)。"
 
-#: ../developer/distribution-customization.md:703
+#: ../developer/distribution-customization.md:874
 msgid "Cloud Agent access"
 msgstr "云端 Agent 访问权限"
 
-#: ../developer/distribution-customization.md:705
+#: ../developer/distribution-customization.md:876
 msgid ""
 "The gateway keeps its fixed role hierarchy and resolves current account state. The deployment "
 "owns the rule for who can use or administer its Cloud Agent. A trusted extension registers one "
@@ -1453,7 +1826,7 @@ msgstr ""
 "`serving.agent_access.register_agent_access_policy(policy)` 注册一个同步回调。网关先确认用户存在且状态为 "
 "`active`，再向回调传入仅包含 `user_id` 和 `role` 的只读映射。回调不会收到用户资料、凭据或数据库连接。"
 
-#: ../developer/distribution-customization.md:713
+#: ../developer/distribution-customization.md:884
 msgid ""
 "The callback returns a `list[str]` or `tuple[str, ...]` of explicit permissions: `agent.use` "
 "permits Agent use, and `agent.admin` permits Agent administration. Administration requires both "
@@ -1465,7 +1838,7 @@ msgstr ""
 "Agent。管理操作需要同时具备这两项权限。未知、重复或非字符串权限均无效，框架不会强制转换取值。注册第二个策略会报错。没有注册策略时，所有角色都无权访问 "
 "Agent。网关不规定特定部署的角色与权限映射规则。"
 
-#: ../developer/distribution-customization.md:720
+#: ../developer/distribution-customization.md:891
 #, python-brace-format
 msgid ""
 "The standalone Agent reads `GET /internal/users/{user_id}/agent-access` using the existing "
@@ -1485,7 +1858,7 @@ msgstr ""
 "并评估策略，不缓存权限判定结果。账户读取保留现有的用户缓存语义：`CachedOperationalStore` 将用户行缓存 60 "
 "秒，通过该包装层修改账户会使对应缓存项失效。直接修改数据库或由其他进程写入的变更，可能要等到缓存项过期后才会被读取到。"
 
-#: ../developer/distribution-customization.md:732
+#: ../developer/distribution-customization.md:903
 #, python-brace-format
 msgid ""
 "Unknown or inactive accounts receive HTTP 403 with error type `subject_unavailable`, before the "
@@ -1500,11 +1873,11 @@ msgstr ""
 " ...}}` 响应结构。Dispatch 鉴权失败和内部 API 未配置时，仍分别返回现有的 401 和 404 响应。旧 user-status 和 model-catalog "
 "端点保留原有契约。"
 
-#: ../developer/distribution-customization.md:740
+#: ../developer/distribution-customization.md:911
 msgid "Quota reporting"
 msgstr "配额报告"
 
-#: ../developer/distribution-customization.md:742
+#: ../developer/distribution-customization.md:913
 msgid ""
 "The gateway keeps quota reporting and quota-aware routing independent of the service that "
 "measures usage. The public framework supplies the Providers tab's result rows, disabled-key "
@@ -1516,7 +1889,7 @@ msgstr ""
 "网关将配额报告和配额感知路由与用量计量服务解耦。公共框架提供 Providers 标签页的结果行、禁用密钥卡片、密钥发现和 `gather_all`，以及 RouteWise "
 "的配额快照。默认不启用任何配额来源。受信任的后端扩展负责接入已授权的用量 API 或运营者自己的计量服务；框架不要求特定供应商、网页登录或 cookie。"
 
-#: ../developer/distribution-customization.md:750
+#: ../developer/distribution-customization.md:921
 msgid ""
 "An extension's `register()` calls `serving.admin.provider_quotas.register_quota_fetcher(provider,"
 " display_name, fetch)`; `fetch` is awaited as `fetch(operational_store, services)` and returns "
@@ -1531,7 +1904,7 @@ msgstr ""
 "`ProviderQuotaResult`，并将失败转换成结果而不是抛出异常。管理端点会提供存储和服务对象；RouteWise 目前传入 `(None, "
 "None)`，因此抓取器也必须能在没有这些对象的情况下工作。注册发生在启动阶段，而不是仅导入模块时。抓取器查询用量，不负责发送用户推理请求，也不改变路由的推理协议。"
 
-#: ../developer/distribution-customization.md:760
+#: ../developer/distribution-customization.md:931
 msgid ""
 "Each result contains `ProviderQuotaUsage` rows with `label`, `used`, `limit`, `unit` and an "
 "optional timezone-aware `reset_at`. The deployment's provider identifier links the source to its "
@@ -1544,7 +1917,7 @@ msgstr ""
 "provider 标识将来源关联到路由，并不是写死的供应商枚举。`quota_source.provider`、`usage_label` 和 `unit` "
 "必须与返回的结果及用量行精确匹配。报告该配额池共享账户及窗口的用量，独立账户应使用不同的来源。不要把不相关密钥的用量相加，也不要把查询失败表示成零用量。"
 
-#: ../developer/distribution-customization.md:768
+#: ../developer/distribution-customization.md:939
 msgid ""
 "The UI can display percentages, currencies and other units, but RouteWise's quota admission "
 "consumes one **request** at a time and requires a compatible count-based source. A percentage "
@@ -1557,11 +1930,11 @@ msgstr ""
 "的配额准入每次消耗一次**请求**，要求兼容的计数型来源。只有百分比不足以表示可用请求数。来源负责窗口边界和重置时间；`quota.limit` "
 "用于核对来源报告的上限，不能替代实际测量。没有成功快照的来源保持未就绪状态。刷新失败不会凭空产生新的余额；已有的池保留上一次成功快照及本地增量。"
 
-#: ../developer/distribution-customization.md:776
+#: ../developer/distribution-customization.md:947
 msgid "Run a local quota source"
 msgstr "运行本地配额来源"
 
-#: ../developer/distribution-customization.md:778
+#: ../developer/distribution-customization.md:949
 msgid ""
 "The complete [example extension](../../distributions/example/quota_extension.py) reads `/usage` "
 "from the bundled fake provider. Its in-memory daily counter is only a teaching fixture, resets on"
@@ -1572,17 +1945,17 @@ msgstr ""
 "`/usage`。它的内存每日计数器仅用于教学，在进程重启或 UTC 午夜时重置，不能用于生产计费。它不使用真实账户或凭据，只有通过 `BACKEND_EXTENSIONS` "
 "显式选择后才会加载。"
 
-#: ../developer/distribution-customization.md:784
+#: ../developer/distribution-customization.md:955
 msgid ""
 "After the developer setup, run these commands from the repository root in three terminals. First,"
 " start a simulated quota provider:"
 msgstr "完成开发环境设置后，在三个终端中从仓库根目录执行这些命令。首先启动模拟配额供应商："
 
-#: ../developer/distribution-customization.md:792
+#: ../developer/distribution-customization.md:963
 msgid "Then start a slower, priced fallback (its prices in the example are fictional):"
 msgstr "然后启动较慢的按量计价备用路由（示例中的价格是假设值）："
 
-#: ../developer/distribution-customization.md:799
+#: ../developer/distribution-customization.md:970
 msgid ""
 "Finally start the gateway with the opt-in [quota "
 "registry](../../config/examples/models.routewise.quota.yaml). Name the demo token once so the "
@@ -1591,7 +1964,7 @@ msgstr ""
 "最后使用需要显式选择的[配额注册表](../../config/examples/models.routewise.quota.yaml)启动网关。先把演示用的 token "
 "命名一次，下面调用管理接口时复用它："
 
-#: ../developer/distribution-customization.md:817
+#: ../developer/distribution-customization.md:988
 msgid ""
 "These settings disable dotenv loading and user authentication and use a public demo-only admin "
 "token and JWT signing secret: keep the listener on loopback and never use them for a real "
@@ -1601,13 +1974,13 @@ msgstr ""
 "这些设置关闭 dotenv 加载和用户认证，并使用公开的演示专用管理令牌和 JWT "
 "签名密钥：监听地址必须保持为回环地址，绝不能用于真实部署。即使使用演示令牌认证，管理端点也需要签名密钥。读取与控制台相同的结果："
 
-#: ../developer/distribution-customization.md:828
+#: ../developer/distribution-customization.md:999
 msgid ""
 "Send several requests to calibrate the cost envelope and allow the first five-second "
 "probe/snapshot cycle to finish:"
 msgstr "发送几次请求以校准成本包络，并等待首个五秒探测及快照刷新周期完成："
 
-#: ../developer/distribution-customization.md:837
+#: ../developer/distribution-customization.md:1008
 msgid ""
 "The response identifies the selected fixture. Initial requests use the fallback until the quota "
 "route has both a usage snapshot and cost-envelope evidence. Accepted chat requests, including "
@@ -1620,7 +1993,7 @@ msgstr ""
 "查询不会。要模拟额度耗尽，只需使用 `--quota-limit 100 --quota-used 100` 重启配额模拟服务；下一次快照刷新后，请求继续由备用路由服务。完成后使用 Ctrl+C"
 " 停止各个本地进程。"
 
-#: ../developer/distribution-customization.md:845
+#: ../developer/distribution-customization.md:1016
 msgid ""
 "To see the card in the authenticated Web/Admin Console, configure this same extension and "
 "registry on a local full-stack demo backend, then open **Providers → Quotas**. Use a quota "
@@ -1634,7 +2007,7 @@ msgstr ""
 "tutorial.md)介绍了完整演示及其认证。没有返回结果时，Quotas 标签页仍然显示，并链接回这里；Overview、Keys、Availability 和 Performance "
 "功能相互独立。"
 
-#: ../developer/distribution-customization.md:853
+#: ../developer/distribution-customization.md:1024
 msgid ""
 "For your own integration, copy the extension and replace its local HTTP query and mapping with "
 "your authorized data source. Preserve the result contract, bound network requests with a timeout,"
@@ -1645,11 +2018,11 @@ msgstr ""
 "接入自己的服务时，请复制扩展，将本地 HTTP "
 "查询及字段映射替换为已授权的数据来源。保留结果契约，为网络请求设置超时，明确处理失败，并确保响应和日志不包含凭据。供应商的授权要求及服务条款仍然适用；扩展仅划分软件边界，并不能免除这些要求。"
 
-#: ../developer/distribution-customization.md:859
+#: ../developer/distribution-customization.md:1030
 msgid "5. Upgrade checklist"
 msgstr "5\\. 升级检查清单"
 
-#: ../developer/distribution-customization.md:861
+#: ../developer/distribution-customization.md:1032
 msgid ""
 "Upstream maintains the standard implementation, configuration consumers and published Site UI "
 "contract. Each distribution maintains its configuration, module, deployment and any fork changes."
@@ -1657,83 +2030,83 @@ msgid ""
 "release pipeline's responsibility."
 msgstr "上游维护标准实现、读取配置的代码和已公布的 Site UI 接口契约。各发行版维护自己的配置、模块、部署和源码分支修改。上游合并变更本身不会决定发行版何时升级；升级时机由发行版的发布流水线负责。"
 
-#: ../developer/distribution-customization.md:867
+#: ../developer/distribution-customization.md:1038
 msgid "An existing source fork"
 msgstr "已有源码分支"
 
-#: ../developer/distribution-customization.md:869
+#: ../developer/distribution-customization.md:1040
 msgid ""
 "Inventory local changes by route and behavior. Separate branding values, public-page "
 "presentation, shared-console changes and backend logic."
 msgstr "按路由和行为盘点本地修改，区分品牌值、公开页面展示、共享控制台修改和后端逻辑。"
 
-#: ../developer/distribution-customization.md:871
+#: ../developer/distribution-customization.md:1042
 msgid ""
 "Where they fit, move values into runtime configuration and public-page presentation into a Site "
 "UI module. Migration is optional; you can keep the fork, with its ongoing merge and verification "
 "work. A UI module keeps authentication controllers shared."
 msgstr "将适合的配置值迁入运行时配置，将适合的公开页面展示迁入 Site UI 模块。迁移是可选的；你可以保留源码分支，并继续承担合并和验证工作。UI 模块会继续共用认证控制器。"
 
-#: ../developer/distribution-customization.md:875
+#: ../developer/distribution-customization.md:1046
 msgid ""
 "Identify remaining source changes explicitly. Console redesigns, extra routes and new "
 "authentication behavior do not become supported module features merely by moving files into the "
 "module directory."
 msgstr "明确列出仍需保留的源码修改。重新设计控制台、增加路由或新增认证行为，不会仅因相关文件移入模块目录就成为受支持的模块功能。"
 
-#: ../developer/distribution-customization.md:878
+#: ../developer/distribution-customization.md:1049
 msgid ""
 "Merge the intended upstream version in an isolated branch, resolve conflicts against your "
 "required behavior, and build the exact frontend/backend pair."
 msgstr "在独立分支中合并目标上游版本，按所需行为解决冲突，并构建待发布的确切前端／后端组合。"
 
-#: ../developer/distribution-customization.md:880
+#: ../developer/distribution-customization.md:1051
 msgid ""
 "Verify the distribution in staging before promoting it. A successful merge or upstream CI result "
 "alone does not verify a fork's presentation or flows."
 msgstr "在推广发布前，先在 staging 环境验证发行版。仅合并成功或上游 CI 通过，并不能验证源码分支的展示和流程。"
 
-#: ../developer/distribution-customization.md:883
+#: ../developer/distribution-customization.md:1054
 msgid ""
 "Adopting Site UI can reduce future conflicts; it does not automatically migrate an existing fork "
 "or make arbitrary upstream source paths stable interfaces."
 msgstr "采用 Site UI 可以减少今后的冲突，但不会自动迁移已有源码分支，也不会使任意上游源码路径成为稳定接口。"
 
-#: ../developer/distribution-customization.md:886
+#: ../developer/distribution-customization.md:1057
 msgid "Before promotion"
 msgstr "推广发布前"
 
-#: ../developer/distribution-customization.md:888
+#: ../developer/distribution-customization.md:1059
 msgid ""
 "Pin the upstream version and, for custom UI, the module version and produced image digest. Keep "
 "the matching configuration and asset versions recoverable."
 msgstr "锁定上游版本；对于自定义 UI，还应锁定模块版本和生成的镜像摘要。确保可以恢复与之匹配的配置和资源版本。"
 
-#: ../developer/distribution-customization.md:890
+#: ../developer/distribution-customization.md:1061
 msgid ""
 "Read configuration/API migration notes and validate against the selected version. Unsupported "
 "module API revisions must stop the build."
 msgstr "阅读配置／API 迁移说明，并针对所选版本进行校验。不受支持的模块 API 版本必须使构建终止。"
 
-#: ../developer/distribution-customization.md:892
+#: ../developer/distribution-customization.md:1063
 msgid ""
 "Inspect the actual image's `/app/site-ui-manifest.json` to confirm the intended standard or "
 "custom build; test packaged and mounted assets over HTTP."
 msgstr "检查实际镜像中的 `/app/site-ui-manifest.json`，确认构建结果使用的是预期的标准 UI 或自定义 UI；通过 HTTP 测试打包资源和挂载资源。"
 
-#: ../developer/distribution-customization.md:894
+#: ../developer/distribution-customization.md:1065
 msgid ""
 "Check public routes, configured links, narrow/wide layouts, keyboard access, form "
 "validation/loading/errors, login/logout and the registration policy."
 msgstr "检查公开路由、配置的链接、窄屏／宽屏布局、键盘操作、表单校验／加载／错误状态、登录／退出和注册策略。"
 
-#: ../developer/distribution-customization.md:896
+#: ../developer/distribution-customization.md:1067
 msgid ""
 "Check the authenticated console, user/admin permissions and an inference request against the "
 "deployed candidate, including any local fork behavior."
 msgstr "针对已部署的候选版本检查登录后的控制台、用户／管理员权限，并发起一次推理请求，同时覆盖本地源码分支的行为。"
 
-#: ../developer/distribution-customization.md:898
+#: ../developer/distribution-customization.md:1069
 msgid ""
 "Promote only the tested image/configuration combination and retain the prior combination for "
 "rollback."
