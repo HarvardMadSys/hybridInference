@@ -6,6 +6,8 @@ import {
   useSiteConfig,
   useT,
   type AuthAppearance,
+  type AuthFieldLayout,
+  type AuthFieldLayoutProps,
   type AuthFrameProps,
   type TermsFrameProps,
 } from '@site-ui/host';
@@ -96,6 +98,38 @@ export function TermsFrame({ children }: TermsFrameProps) {
 export const authMessages = {
   'auth.login.title': 'Sign in to the demonstration',
 } as const;
+
+/**
+ * The action beside the label rather than under the messages: the structural
+ * change a stylesheet cannot make, which is why it is an export of its own.
+ */
+function FieldWithActionBesideLabel({
+  htmlFor,
+  label,
+  labelClassName,
+  rowClassName,
+  control,
+  hint,
+  error,
+  action,
+  className,
+}: AuthFieldLayoutProps) {
+  return (
+    <div className={className} data-auth="field">
+      <div className={rowClassName}>
+        <label className={labelClassName} data-auth="label" htmlFor={htmlFor}>
+          {label}
+        </label>
+        {action}
+      </div>
+      {control}
+      {hint}
+      {error}
+    </div>
+  );
+}
+
+export const fieldLayout: AuthFieldLayout = FieldWithActionBesideLabel;
 
 /** Class strings, to show the appearance is applied rather than inferred. */
 export const authAppearance: AuthAppearance = {

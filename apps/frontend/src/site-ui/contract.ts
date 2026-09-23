@@ -133,7 +133,8 @@ export interface TermsFrameProps {
 }
 
 /**
- * How one field arranges the nodes the shared page produces.
+ * How one field arranges the nodes the shared page produces — the module's
+ * `fieldLayout` export.
  *
  * A module may place the action beside the label, above the control or in a
  * separate column. It receives rendered nodes, not field values, validation or
@@ -175,6 +176,9 @@ export type AuthFieldLayout = React.ComponentType<AuthFieldLayoutProps>;
  * @deprecated Supported compatibility surface throughout Site UI API v1.
  * Prefer scoped `data-auth` and state selectors for new styling. Removing this
  * class map requires the next API revision and a documented migration.
+ *
+ * Class names only. Structure is not styling, so where a field's nodes go is
+ * the separate, supported `fieldLayout` export rather than an entry here.
  */
 export interface AuthAppearance {
   form: string;
@@ -201,10 +205,6 @@ export interface AuthAppearance {
    */
   loading: string;
   loadingWrap: string;
-  /**
-   * Where a field's nodes are placed. Absent means the default arrangement.
-   */
-  fieldLayout?: AuthFieldLayout;
 }
 
 /**
@@ -449,6 +449,15 @@ export interface SiteUiClientModule {
    * the answer is always yes to.
    */
   TermsFrame?: React.ComponentType<TermsFrameProps> | null;
+  /**
+   * Where each account field's label, control, hint, error and action go.
+   *
+   * Omitted means the default arrangement. A stylesheet can restyle a field
+   * but not reorder it — putting the action beside the label is a change of
+   * structure — so this is its own capability rather than part of the
+   * deprecated class map, and it stays supported when that map is retired.
+   */
+  fieldLayout?: AuthFieldLayout;
   /** @deprecated Supported in v1; prefer semantic selectors for new styling. */
   authAppearance?: AuthAppearance;
   /** Wording for the account pages. */

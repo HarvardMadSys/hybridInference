@@ -3,7 +3,12 @@
 import { createContext, useContext } from 'react';
 
 import { useT } from '@/components/providers/useT';
-import { AuthAppearanceProvider, NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
+import {
+  AuthAppearanceProvider,
+  AuthFieldLayoutProvider,
+  DefaultAuthFieldLayout,
+  NEUTRAL_AUTH_APPEARANCE,
+} from '@/site-ui/appearance';
 import type { AuthAppearance } from '@/site-ui/contract';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 
@@ -43,8 +48,8 @@ const NEUTRAL_SITE_UI: SiteUiContextValue = {
 };
 
 /**
- * Installs the active module's auth appearance and its wording for the shared
- * account pages.
+ * Installs the active module's auth appearance, its field layout and its
+ * wording for the shared account pages.
  *
  * `children` is whatever the route boundary decided to render; this component
  * makes no routing decision of its own, so the two concerns stay separable in a
@@ -53,6 +58,7 @@ const NEUTRAL_SITE_UI: SiteUiContextValue = {
 export function SiteUiProvider({ children }: { children: React.ReactNode }) {
   const translate = useT();
   const appearance = SITE_UI_CLIENT.authAppearance ?? NEUTRAL_AUTH_APPEARANCE;
+  const fieldLayout = SITE_UI_CLIENT.fieldLayout ?? DefaultAuthFieldLayout;
   const messages = SITE_UI_CLIENT.authMessages;
 
   /**
@@ -72,7 +78,9 @@ export function SiteUiProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SiteUiContext.Provider value={value}>
-      <AuthAppearanceProvider value={appearance}>{children}</AuthAppearanceProvider>
+      <AuthAppearanceProvider value={appearance}>
+        <AuthFieldLayoutProvider value={fieldLayout}>{children}</AuthFieldLayoutProvider>
+      </AuthAppearanceProvider>
     </SiteUiContext.Provider>
   );
 }

@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
-import { AuthAppearanceProvider } from '@/site-ui/appearance';
+import { AuthAppearanceProvider, NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
 import { NeutralAuthCard } from '@/site-ui/neutral/client';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { publicRouteFor, publicRoutePaths } from '@/site-ui/routes';
@@ -78,6 +78,14 @@ describe('the compiled-in module', () => {
     expect(SITE_UI_CLIENT.AuthFrame).toBeNull();
   });
 
+  it('leaves the class map and the field arrangement to the host', () => {
+    // The console's look is the host's default, applied whenever a module
+    // supplies neither; the neutral module does not restate it, and so does not
+    // use the deprecated class map at all.
+    expect(SITE_UI_CLIENT.authAppearance).toBeUndefined();
+    expect(SITE_UI_CLIENT.fieldLayout).toBeUndefined();
+  });
+
   it('supplies no legal frame, because it publishes no legal text', () => {
     // `TermsFrame` is optional and its absence is a statement: the console's
     // terms page is the one this deployment shows, so the console keeps its own
@@ -127,7 +135,7 @@ describe('the shared account primitives', () => {
   afterEach(cleanup);
 
   const fixtureAppearance = {
-    ...SITE_UI_CLIENT.authAppearance!,
+    ...NEUTRAL_AUTH_APPEARANCE,
     field: 'fixture-field',
     label: 'fixture-label',
     input: 'fixture-input',

@@ -2,7 +2,7 @@
 
 import { Children, cloneElement, Fragment, isValidElement, type ReactNode } from 'react';
 
-import { DefaultAuthFieldLayout, useAuthAppearance } from '@/site-ui/appearance';
+import { useAuthAppearance, useAuthFieldLayout } from '@/site-ui/appearance';
 
 /**
  * Shared account presentation primitives. Controllers retain requests, schemas,
@@ -120,7 +120,7 @@ export function AuthField({
   children: ReactNode;
 }) {
   const appearance = useAuthAppearance();
-  const Layout = appearance.fieldLayout ?? DefaultAuthFieldLayout;
+  const Layout = useAuthFieldLayout();
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
 

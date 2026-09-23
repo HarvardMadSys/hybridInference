@@ -1,12 +1,13 @@
 'use client';
 
-import type { AuthAppearance, AuthMessages, SiteUiClientModule } from './contract';
+import type { AuthAppearance, AuthFieldLayout, AuthMessages, SiteUiClientModule } from './contract';
 import * as activeModule from '@site-ui/client';
 
 /**
  * Normalize the compiled-in module once. The descriptor is required; Landing,
- * AuthFrame, TermsFrame, authAppearance and authMessages are optional. Named
- * exports take precedence over properties on an optional default object.
+ * AuthFrame, TermsFrame, fieldLayout, authAppearance and authMessages are
+ * optional. Named exports take precedence over properties on an optional
+ * default object.
  */
 
 interface ModuleLike {
@@ -14,6 +15,7 @@ interface ModuleLike {
   Landing?: SiteUiClientModule['Landing'] | null;
   AuthFrame?: SiteUiClientModule['AuthFrame'];
   TermsFrame?: SiteUiClientModule['TermsFrame'];
+  fieldLayout?: AuthFieldLayout;
   authAppearance?: AuthAppearance;
   authMessages?: AuthMessages;
   default?: ModuleLike;
@@ -56,6 +58,7 @@ export const SITE_UI_CLIENT: SiteUiClientModule = {
   // Missing page-owning components preserve the host's chrome.
   AuthFrame: pickNullable('AuthFrame') ?? null,
   TermsFrame: pickNullable('TermsFrame') ?? null,
+  fieldLayout: pick('fieldLayout'),
   authAppearance: pick('authAppearance'),
   authMessages: pick('authMessages'),
 };

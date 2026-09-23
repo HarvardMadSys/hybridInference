@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from 'react';
 
-import type { AuthAppearance, AuthFieldLayoutProps } from './contract';
+import type { AuthAppearance, AuthFieldLayout, AuthFieldLayoutProps } from './contract';
 
 /**
  * The field styling the shared account forms apply.
@@ -81,4 +81,19 @@ export function DefaultAuthFieldLayout({
 
 export function useAuthAppearance(): AuthAppearance {
   return useContext(AuthAppearanceContext) ?? NEUTRAL_AUTH_APPEARANCE;
+}
+
+/**
+ * Where each field's nodes go: the module's `fieldLayout`, installed by
+ * `SiteUiProvider`, beside the class map rather than inside it.
+ *
+ * Context for the same reason as the appearance, and total for the same reason
+ * too: a field rendered with no provider above it gets the default arrangement.
+ */
+const AuthFieldLayoutContext = createContext<AuthFieldLayout | null>(null);
+
+export const AuthFieldLayoutProvider = AuthFieldLayoutContext.Provider;
+
+export function useAuthFieldLayout(): AuthFieldLayout {
+  return useContext(AuthFieldLayoutContext) ?? DefaultAuthFieldLayout;
 }

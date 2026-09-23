@@ -29,9 +29,8 @@ vi.mock('@/site-ui/appearance', async () => {
   const actual =
     await vi.importActual<typeof import('@/site-ui/appearance')>('@/site-ui/appearance');
   return {
-    DefaultAuthFieldLayout: actual.DefaultAuthFieldLayout,
+    useAuthFieldLayout: () => layout.value ?? actual.DefaultAuthFieldLayout,
     useAuthAppearance: () => ({
-      fieldLayout: layout.value,
       form: 'f',
       field: 'field',
       label: 'label',

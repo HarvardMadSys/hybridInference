@@ -47,7 +47,7 @@ vi.mock('next/script', () => ({
 
 import { verifyEmail } from '@/lib/api/auth';
 import { AUTH_DATA } from '@/components/auth/AuthForm';
-import { AuthAppearanceProvider, NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
+import { AuthFieldLayoutProvider } from '@/site-ui/appearance';
 import type { AuthFieldLayoutProps } from '@/site-ui/contract';
 import ForgotPasswordPage from '@/app/forgot-password/page';
 import LoginPage from '@/app/login/page';
@@ -244,9 +244,7 @@ function expectControls(controls: Expectation[]): void {
 describe.each(LAYOUTS)('every account control, under %s', (_name, fieldLayout) => {
   const wrap = (page: React.ReactElement) =>
     fieldLayout ? (
-      <AuthAppearanceProvider value={{ ...NEUTRAL_AUTH_APPEARANCE, fieldLayout }}>
-        {page}
-      </AuthAppearanceProvider>
+      <AuthFieldLayoutProvider value={fieldLayout}>{page}</AuthFieldLayoutProvider>
     ) : (
       page
     );

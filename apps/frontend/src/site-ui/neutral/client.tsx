@@ -7,13 +7,7 @@ import type { ReactNode } from 'react';
 // an alias is one more resolution rule the bundler, `tsc` and Vitest would each
 // have to agree on. The stylesheet is not imported here: the root layout loads
 // the selected module's `styles.css` through the generated bridge.
-import type {
-  AuthAppearance,
-  AuthFrameProps,
-  LandingPageProps,
-  SiteUiModuleDescriptor,
-} from '../contract';
-import { NEUTRAL_AUTH_APPEARANCE } from '../appearance';
+import type { AuthFrameProps, LandingPageProps, SiteUiModuleDescriptor } from '../contract';
 import { Card } from '../../components/ui/Card';
 
 /**
@@ -82,5 +76,7 @@ export const AuthFrame: ((props: AuthFrameProps) => ReactNode) | null = null;
  */
 export const Landing: ((props: LandingPageProps) => ReactNode) | null = null;
 
-/** The console's field styling, unchanged, supplied through the seam. */
-export const authAppearance: AuthAppearance = NEUTRAL_AUTH_APPEARANCE;
+// No `authAppearance` and no `fieldLayout`: the host's own class map and default
+// field arrangement *are* the console's look, and the host applies them whenever
+// a module supplies neither. Re-exporting them would only restate those defaults,
+// and put the neutral module on the deprecated class-map surface.
