@@ -60,13 +60,14 @@ const ABSENT = {
 async function compileIn(exports: Record<string, unknown>) {
   vi.resetModules();
   vi.doMock('@site-ui/client', () => ({ ...ABSENT, descriptor, ...exports }));
-  // Imported together, after the reset, so the provider and the field share one
-  // copy of the contexts they communicate through.
-  const [{ SITE_UI_CLIENT }, { SiteUiProvider }, { AuthField }] = await Promise.all([
-    import('./module'),
-    import('./SiteUiCore'),
-    import('@/components/auth/AuthForm'),
-  ]);
+  // Imported after the reset, so the provider and the field share one copy of
+  // the contexts they communicate through. One at a time, and the module first:
+  // when it refuses to load, nothing else may still be importing in the
+  // background, or that import finishes during the next test and leaves this
+  // test's stand-in in the registry the next test reads.
+  const { SITE_UI_CLIENT } = await import('./module');
+  const { SiteUiProvider } = await import('./SiteUiCore');
+  const { AuthField } = await import('@/components/auth/AuthForm');
   return { SITE_UI_CLIENT, SiteUiProvider, AuthField };
 }
 
