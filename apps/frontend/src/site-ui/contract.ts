@@ -215,6 +215,13 @@ export interface AuthAppearance {
  * semantics stay in the shared schemas. A key absent from a module's
  * dictionary falls back to the shared English default, which is what keeps a
  * partially translated deployment usable.
+ *
+ * The list is enforced, not advisory: `module.tsx` drops every other key from
+ * a module's dictionary before any page reads it. Console pages translate
+ * through the same `t()` — `/authorize` with `auth.authorize.*`, `/chat` with
+ * `chat.*` — and stay closed because their keys are not here. Each key listed
+ * is one a page actually reads; one that nothing reads would be a promise the
+ * host does not keep.
  */
 export const AUTH_MESSAGE_KEYS = [
   'auth.consent.age_body',
@@ -282,7 +289,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.reset.login_link',
   'auth.reset.new_password_hint',
   'auth.reset.new_password_label',
-  'auth.reset.password_label',
   'auth.reset.remember',
   'auth.reset.submit',
   'auth.reset.submitting',
@@ -290,10 +296,7 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.reset.success_body',
   'auth.reset.success_kicker',
   'auth.reset.success_title',
-  'auth.reset.success_toast',
   'auth.reset.title',
-  'auth.shell.back_home',
-  'auth.shell.brand_aria',
   'auth.signup.back_to_login',
   'auth.signup.captcha_required',
   'auth.signup.confirm_password_label',
@@ -307,7 +310,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.signup.kicker_result',
   'auth.signup.kicker_unavailable',
   'auth.signup.login_link',
-  'auth.signup.nickname_label',
   'auth.signup.password_hint',
   'auth.signup.password_label',
   'auth.signup.pending_title',
@@ -317,7 +319,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.signup.submitting',
   'auth.signup.subtitle',
   'auth.signup.success_title',
-  'auth.signup.success_toast',
   'auth.signup.title',
   'auth.signup.unavailable_body',
   'auth.signup.unavailable_title',
@@ -346,7 +347,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.verify.email_label',
   'auth.verify.error_body',
   'auth.verify.error_title',
-  'auth.verify.failure_title',
   'auth.verify.go_to_login',
   'auth.verify.kicker',
   'auth.verify.loading_body',
@@ -354,32 +354,25 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.verify.missing_token',
   'auth.verify.resend_button',
   'auth.verify.resend_prompt',
-  'auth.verify.resending',
   'auth.verify.resent_notice',
   'auth.verify.resent_toast',
   'auth.verify.signup_again',
-  'auth.verify.subtitle',
   'auth.verify.success_body',
   'auth.verify.success_fallback',
   'auth.verify.success_title',
-  'auth.verify.title',
   'auth.verify.try_another',
   'chrome.footer.privacy',
   'chrome.footer.terms',
-  'landing',
-  'login',
   'meta.team.description',
   'meta.team.title',
   'meta.terms.description',
   'meta.terms.title',
-  'signup',
   'team.avatar_label',
   'team.eyebrow',
   'team.photo_alt',
   'team.subtitle',
   'team.subtitle_org_lead',
   'team.title_prefix',
-  'terms',
   'terms.header.intro',
   'terms.header.title',
   'terms.s1.body_1',

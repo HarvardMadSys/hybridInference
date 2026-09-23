@@ -1,6 +1,13 @@
 'use client';
 
-import type { AuthAppearance, AuthFieldLayout, AuthMessages, SiteUiClientModule } from './contract';
+import {
+  AUTH_MESSAGE_KEYS,
+  type AuthAppearance,
+  type AuthFieldLayout,
+  type AuthMessageKey,
+  type AuthMessages,
+  type SiteUiClientModule,
+} from './contract';
 import * as activeModule from '@site-ui/client';
 
 /**
@@ -48,6 +55,33 @@ function pickNullable<K extends keyof ModuleLike>(key: K): ModuleLike[K] {
   return undefined;
 }
 
+const DECLARED_MESSAGE_KEYS: ReadonlySet<string> = new Set(AUTH_MESSAGE_KEYS);
+
+/**
+ * The module's wording, cut down to the keys `AUTH_MESSAGE_KEYS` declares.
+ *
+ * The type limits a module to those keys only as far as TypeScript looks: a
+ * dictionary with one declared key type-checks with any others beside it, and
+ * the translator answers whatever slot it is asked. Console pages translate
+ * through the same `t()`, so `chat.title` in a module's dictionary would reword
+ * `/chat` — a page the contract keeps closed. Filtered here, once, every
+ * consumer sees only declared keys, and only string values: the contract
+ * localizes sentences, not markup.
+ *
+ * The result has no prototype, so a slot named like an `Object` method finds
+ * nothing rather than a function.
+ */
+function declaredMessages(messages: AuthMessages | undefined): AuthMessages | undefined {
+  if (!messages) return undefined;
+  const declared: AuthMessages = Object.create(null);
+  for (const [key, value] of Object.entries(messages)) {
+    if (DECLARED_MESSAGE_KEYS.has(key) && typeof value === 'string') {
+      declared[key as AuthMessageKey] = value;
+    }
+  }
+  return declared;
+}
+
 export const SITE_UI_DESCRIPTOR = pick('descriptor');
 
 export const SITE_UI_CLIENT: SiteUiClientModule = {
@@ -60,5 +94,5 @@ export const SITE_UI_CLIENT: SiteUiClientModule = {
   TermsFrame: pickNullable('TermsFrame') ?? null,
   fieldLayout: pick('fieldLayout'),
   authAppearance: pick('authAppearance'),
-  authMessages: pick('authMessages'),
+  authMessages: declaredMessages(pick('authMessages')),
 };

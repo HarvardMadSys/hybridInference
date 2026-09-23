@@ -20,10 +20,13 @@ import { translator, type Translate } from '@/lib/i18n/translate';
  * lock could not tell that a running image was stale. Copy now ships with the
  * image that renders it (see `docs/developer/distribution-customization.md`).
  *
- * `authMessages` is the contract's typed table, so a module can supply wording
- * only for keys the console declares. It cannot invent a slot, and it cannot
- * change a validation rule, because the rules pass their own message through
- * this function rather than being read from it.
+ * `SITE_UI_CLIENT.authMessages` holds only the keys the contract declares —
+ * `module.tsx` drops the rest — so a module can supply wording only for those.
+ * It cannot invent a slot or reach a console page's copy, and it cannot change
+ * a validation rule, because the rules pass their own message through this
+ * function rather than being read from it. A declared key set to `''` resolves
+ * to the empty string: that is a module removing a sentence on purpose, not a
+ * missing translation.
  */
 export function useT(): Translate {
   const messages = SITE_UI_CLIENT.authMessages;
