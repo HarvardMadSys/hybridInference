@@ -97,6 +97,8 @@ class SiteUiConfigError extends Error {
  * working directory: the same value has to name the same module whether it
  * reaches the resolver from `npm run build`, from Vitest or from a script run
  * elsewhere in the checkout.
+ *
+ * @returns {{ kind: 'neutral' } | { kind: 'distribution', root: string, api: number }}
  */
 function readSiteUiRequest(frontendDir, env) {
   const rawDir = (env[SITE_UI_DIR_ENV] || '').trim();

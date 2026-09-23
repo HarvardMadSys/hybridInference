@@ -1,7 +1,21 @@
 import type { Config } from 'tailwindcss';
+import { resolveSiteUi } from './src/site-ui/resolve.js';
+
+// The selected Site UI module's own sources, wherever it lives. A staged module
+// sits under `src/` and is already covered, but a module compiled from its own
+// directory (`SITE_UI_DIR` pointing outside `src/`) is not, and the utilities
+// only it uses would be dropped from the stylesheet while its markup still
+// named them. Resolved by the same resolver as the build, from the same
+// environment, so the two cannot select different modules.
+const siteUi = resolveSiteUi(__dirname);
+const siteUiDir = siteUi.moduleDir.split('\\').join('/');
 
 export default {
-  content: ['./src/**/*.{ts,tsx}'],
+  content: [
+    './src/**/*.{ts,tsx}',
+    `${siteUiDir}/**/*.{ts,tsx,js,jsx}`,
+    `!${siteUiDir}/**/node_modules/**`,
+  ],
   // Sponsor sizing arrives in /site-config at runtime. The branding schema
   // restricts class_name to this finite vocabulary; safelisting the same set
   // ensures a white-label build contains every allowed utility and variant.
