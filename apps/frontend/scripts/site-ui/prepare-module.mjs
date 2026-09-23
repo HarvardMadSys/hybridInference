@@ -77,6 +77,20 @@ export const STAGING_ENV = path.join('.site-ui-build-env');
  */
 const NEVER_STAGED = new Set(['node_modules', '.next', 'dist', 'build']);
 
+/**
+ * How every copy here treats a symlink: as the link it is, target verbatim.
+ *
+ * Kept a link rather than dereferenced, so a module cannot smuggle a file from
+ * outside the context into a copy after the containment check has passed. Kept
+ * *verbatim* because `cpSync` otherwise rewrites a relative link into an
+ * absolute path into the source tree: `logo.svg -> mark.svg` was staged as a
+ * link into the build context, so a link that stayed inside the module became
+ * one that leaves it, and the build refused the staged copy of a module the
+ * staging step had just accepted. In the image the same rewrite would point
+ * into a builder path that does not exist at runtime.
+ */
+const COPY = { recursive: true, dereference: false, verbatimSymlinks: true };
+
 export class SiteUiBuildError extends Error {}
 
 function fail(message) {
@@ -169,12 +183,8 @@ function prepare(options) {
 
   rmSync(into, { recursive: true, force: true });
   mkdirSync(into, { recursive: true });
-  // `dereference: false` keeps a symlink a symlink, so a module cannot smuggle
-  // a file from outside the context into the staged copy after the containment
-  // check above has passed.
   cpSync(moduleDir, into, {
-    recursive: true,
-    dereference: false,
+    ...COPY,
     filter: (source) => !NEVER_STAGED.has(path.basename(source)),
   });
 
@@ -191,8 +201,18 @@ function prepare(options) {
 
   // Re-resolve against the staged copy: the module's own relative imports now
   // resolve inside the application, and this is the resolution the build will
-  // actually use.
+  // actually use. It is checked the way `next build` will check it, because a
+  // copy can change what a check sees — staging once rewrote relative symlinks
+  // — and a refusal belongs here, next to the copy, rather than minutes later
+  // inside the build.
   const staged = resolveSiteUi(into, { SITE_UI_DIR: into, SITE_UI_API: String(api) });
+  try {
+    assertModulePresent(staged);
+    assertSiteUiEntries(staged);
+    assertModuleImports(staged);
+  } catch (error) {
+    fail(`the staged copy of ${moduleDir} at ${into} is not usable:\n${error.message}`);
+  }
   writeFileSync(
     path.join(app, STAGING_ENV),
     `SITE_UI_DIR='${into.replaceAll("'", "'\\''")}'\nSITE_UI_API=${staged.api}\n`,
@@ -250,7 +270,7 @@ function merge(options) {
 
   // Next traces files read by server code, but arbitrary public assets are not
   // guaranteed to be traced. Package all host assets before adding the module.
-  if (existsSync(owned)) cpSync(owned, target, { recursive: true });
+  if (existsSync(owned)) cpSync(owned, target, COPY);
 
   if (!existsSync(source)) {
     console.log('[site-ui] the module ships no public assets');
@@ -292,7 +312,7 @@ function merge(options) {
     );
   }
 
-  cpSync(source, target, { recursive: true });
+  cpSync(source, target, COPY);
   console.log(`[site-ui] merged ${files.length} '${moduleId}' asset(s) into public/`);
 }
 
@@ -319,7 +339,7 @@ function manifest(options) {
   // validates the complete bundle before the runtime image copies it.
   const staticSource = path.join(app, '.next', 'static');
   if (!existsSync(staticSource)) fail(`${staticSource} is missing; the build produced no chunks`);
-  cpSync(staticSource, path.join(standalone, '.next', 'static'), { recursive: true });
+  cpSync(staticSource, path.join(standalone, '.next', 'static'), COPY);
 
   const record = JSON.parse(readFileSync(source, 'utf8'));
   cpSync(source, path.join(standalone, 'site-ui-manifest.json'));

@@ -14,9 +14,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +37,9 @@ const exampleModule = path.resolve(
   'frontend',
   'site-ui',
 );
+const { verifyModuleImports } = createRequire(import.meta.url)(
+  path.join(frontend, 'src', 'site-ui', 'verify-imports.js'),
+) as { verifyModuleImports: (dir: string) => string[] };
 
 /** Run the tool, returning its status and output rather than throwing. */
 function run(...args: string[]): { status: number; output: string } {
@@ -117,6 +123,42 @@ describe('the container build\u2019s module handling', () => {
     expect(readFileSync(path.join(scratch, '.site-ui-build-env'), 'utf8')).toContain(
       `SITE_UI_DIR='${into}'`,
     );
+  });
+
+  it("keeps a module's relative symlinks relative, so its staged copy passes the build's checks", () => {
+    // `cpSync` rewrote `logo.svg -> mark.svg` into an absolute link to the
+    // *source* tree, which the import check then read as leaving the module:
+    // the module passed staging and failed `next build`.
+    const context = path.join(scratch, 'context');
+    cpSync(exampleModule, context, { recursive: true });
+    symlinkSync('mark.svg', path.join(context, 'public', 'site-assets', 'example', 'logo.svg'));
+    mkdirSync(path.join(context, 'parts'));
+    writeFileSync(path.join(context, 'parts', 'real.ts'), "export const tagline = 'Hello';\n");
+    symlinkSync('real.ts', path.join(context, 'parts', 'linked.ts'));
+    const app = path.join(scratch, 'app');
+    const into = path.join(app, 'src', 'site-ui', 'external');
+
+    const result = run(
+      'prepare',
+      '--app',
+      app,
+      '--context',
+      context,
+      '--subdir',
+      '.',
+      '--into',
+      into,
+      '--api',
+      '1',
+    );
+
+    expect(result.status, result.output).toBe(0);
+    expect(readlinkSync(path.join(into, 'public', 'site-assets', 'example', 'logo.svg'))).toBe(
+      'mark.svg',
+    );
+    expect(readlinkSync(path.join(into, 'parts', 'linked.ts'))).toBe('real.ts');
+    // The check `next build` runs against the staged copy.
+    expect(verifyModuleImports(into)).toEqual([]);
   });
 
   it('requires an explicit API for external modules before staging', () => {
@@ -263,6 +305,30 @@ describe('the container build\u2019s module handling', () => {
       expect(
         existsSync(path.join(app, '.next/standalone/public/site-assets/example/mark.svg')),
       ).toBe(true);
+    });
+
+    it('packages a symlinked asset as the link it is', () => {
+      const app = scaffold({ 'site-assets/example/mark.svg': '<svg/>' });
+      symlinkSync(
+        'mark.svg',
+        path.join(
+          app,
+          'src',
+          'site-ui',
+          'external',
+          'public',
+          'site-assets',
+          'example',
+          'logo.svg',
+        ),
+      );
+
+      const result = run('merge', '--repo-root', scratch, '--app', path.relative(scratch, app));
+
+      expect(result.status, result.output).toBe(0);
+      expect(
+        readlinkSync(path.join(app, '.next/standalone/public/site-assets/example/logo.svg')),
+      ).toBe('mark.svg');
     });
 
     it('refuses an asset outside the module\u2019s own id', () => {
