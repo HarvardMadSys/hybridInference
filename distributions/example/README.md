@@ -175,6 +175,7 @@ distributions/example/
 │   ├── docker-compose.yml
 │   └── docker-compose.demo.yml
 ├── fixtures/fake-openai-provider/
+├── frontend/site-ui/
 ├── quota_extension.py
 ├── smoke.py
 └── full_smoke.py
@@ -185,3 +186,9 @@ distribution discovery does not select it. It is not an auth/full-stack mode
 flag. A real project should copy the distribution shape, remove the teaching
 marker and fake provider, replace every local-only credential and identity,
 and add its own deployment controls.
+
+`frontend/site-ui/` is the smallest useful Site UI module: it replaces the home
+page and nothing else. `make demo` does not use it; the Stage 2 frontend is the
+standard image. The **Site UI Containers** CI job compiles it, and
+[Your public pages](../../docs/developer/distribution-customization.md#your-public-pages)
+shows how to build it into a frontend image yourself.
