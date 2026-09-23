@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
@@ -104,6 +105,27 @@ function generatedState(box: Sandbox) {
     manifest: read(box.manifest),
     tsconfig: read(box.tsconfig),
   };
+}
+
+/**
+ * A minimal valid module in `dir`, with any file replaced, added or (`null`)
+ * left out.
+ */
+function writeModule(dir: string, files: Record<string, string | null> = {}): string {
+  const base: Record<string, string | null> = {
+    'manifest.json': JSON.stringify({ id: 'minimal', site_ui_api: 1, locale: 'en' }),
+    'client.tsx':
+      "export const descriptor = { siteUiApi: 1, id: 'minimal', locale: 'en' } as const;\n" +
+      'export function Landing() {\n  return null;\n}\n',
+    'server.ts': 'export {};\n',
+    'styles.css': '',
+  };
+  for (const [name, text] of Object.entries({ ...base, ...files })) {
+    if (text === null) continue;
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  }
+  return dir;
 }
 
 describe('a module declares its identity once', () => {
@@ -486,5 +508,113 @@ describe('Site UI resolution', () => {
       { cwd: frontendDir, encoding: 'utf8' },
     ).trim();
     expect(tracked).toBe('');
+  });
+});
+
+describe('an entry names exactly one file', () => {
+  // The bridge forwards to an extensionless `<module>/client`, and webpack,
+  // Vite and TypeScript each complete that name in a different order. With
+  // `client.tsx` and `client.js` side by side, the checks and the type checker
+  // read the first while webpack bundled the second: the image shipped a file
+  // nothing had looked at.
+  let box: Sandbox;
+
+  beforeEach(() => {
+    box = sandbox();
+  });
+
+  afterEach(() => {
+    rmSync(box.app, { recursive: true, force: true });
+  });
+
+  const select = (dir: string) => ({ SITE_UI_DIR: dir, SITE_UI_API: '1' });
+
+  it.each([
+    ['client', 'client.js'],
+    ['client', 'client.ts'],
+    ['client', 'client.mjs'],
+    ['server', 'server.js'],
+    ['server', 'server.d.ts'],
+  ])('refuses a %s entry that also exists as %s', (entry, extra) => {
+    const dir = writeModule(join(box.app, 'modules', 'ambiguous'), {
+      [extra]: 'export const descriptor = {};\n',
+    });
+
+    expect(() => resolve.prepareSiteUi(box.app, select(dir))).toThrow(
+      new RegExp(`more than one ${entry} entry: .*${extra.replace('.', '\\.')}`),
+    );
+    // Refused before anything is generated for it.
+    expect(existsSync(box.tsconfig)).toBe(false);
+  });
+
+  it('reads, checks, bridges and type-checks the same file, whatever its extension', () => {
+    const dir = writeModule(join(box.app, 'modules', 'javascript'), {
+      'manifest.json': JSON.stringify({ id: 'javascript', site_ui_api: 1, locale: 'en' }),
+      'client.tsx': null,
+      'client.jsx':
+        "export const descriptor = { siteUiApi: 1, id: 'javascript', locale: 'en' };\n" +
+        'export function Landing() {\n  return <main />;\n}\n',
+      'server.ts': null,
+      'server.js': "export const locale = 'en';\n",
+    });
+
+    const resolution = resolve.prepareSiteUi(box.app, select(dir));
+    const client = join(dir, 'client.jsx');
+
+    // The checks and the descriptor reader: the id came from this file.
+    expect(resolution.client).toBe(client);
+    expect(resolution.server).toBe(join(dir, 'server.js'));
+    expect(resolution.id).toBe('javascript');
+    // TypeScript.
+    const tsconfig = JSON.parse(readFileSync(box.tsconfig, 'utf8'));
+    expect(tsconfig.compilerOptions.paths['@site-ui/client']).toEqual([relative(box.app, client)]);
+    // Webpack and Vitest: the alias names the bridge, and the one name the
+    // bridge forwards to is completed by exactly one file.
+    expect(resolve.webpackAlias(box.app, resolution)['@site-ui/client']).toBe(
+      join(box.bridge, 'client'),
+    );
+    const bridge = readFileSync(join(box.bridge, 'client.ts'), 'utf8');
+    const target = join(box.bridge, JSON.parse(/export \* from ("[^"]+")/.exec(bridge)![1]));
+    expect(
+      readdirSync(dirname(target)).filter((file) => file.startsWith(`${basename(target)}.`)),
+    ).toEqual(['client.jsx']);
+  });
+
+  it.each([
+    ['a default function', 'export default function Landing() {\n  return null;\n}\n'],
+    ['a default object', 'const Landing = () => null;\nexport default { Landing };\n'],
+    [
+      'a renamed default',
+      'function Landing() {\n  return null;\n}\nexport { Landing as default };\n',
+    ],
+    ['a forwarded default', "export { default } from './parts/landing';\n"],
+  ])('refuses a client entry with %s', (_label, body) => {
+    const dir = writeModule(join(box.app, 'modules', 'default-export'), {
+      'client.tsx': `export const descriptor = { siteUiApi: 1, id: 'minimal', locale: 'en' } as const;\n${body}`,
+      'parts/landing.tsx': 'export default function Landing() {\n  return null;\n}\n',
+    });
+
+    expect(() => resolve.prepareSiteUi(box.app, select(dir))).toThrow(/has a default export/);
+  });
+
+  it('reads the syntax, so a default export in a comment or a string is not one', () => {
+    const dir = writeModule(join(box.app, 'modules', 'mentions-default'), {
+      'client.tsx':
+        "export const descriptor = { siteUiApi: 1, id: 'minimal', locale: 'en' } as const;\n" +
+        '/*\nexport default Landing\n*/\n' +
+        "export const sample = 'export default Landing;';\n",
+    });
+
+    expect(resolve.prepareSiteUi(box.app, select(dir)).id).toBe('minimal');
+  });
+
+  it('leaves the server entry free to have a default export', () => {
+    // The server bridge reads `locale` off the namespace and ignores the rest,
+    // so a default there is harmless — the fixture has one.
+    const dir = writeModule(join(box.app, 'modules', 'server-default'), {
+      'server.ts': "export const locale = 'en';\nexport default { locale };\n",
+    });
+
+    expect(resolve.prepareSiteUi(box.app, select(dir)).kind).toBe('distribution');
   });
 });

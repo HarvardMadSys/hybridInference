@@ -44,6 +44,21 @@ const CLIENT_ENTRY = 'client';
 const SERVER_ENTRY = 'server';
 const STYLES_ENTRY = 'styles.css';
 
+/** The files an entry may be. One list, read by every check and generator here. */
+const ENTRY_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js'];
+
+/**
+ * Every extension a toolchain tries for an extensionless entry specifier.
+ *
+ * The bridge forwards to `<module>/client`, and each toolchain completes that
+ * name in its own order: Next's webpack tries `.js` first, Vite `.mjs` and then
+ * `.ts` before `.tsx`, TypeScript `.ts`, `.tsx` and `.d.ts` before JavaScript.
+ * Two files behind one entry name are therefore two answers to "which file is
+ * the module", and the bundle could ship one while the checks read the other.
+ * Only one may exist.
+ */
+const RESOLVED_EXTENSIONS = [...ENTRY_EXTENSIONS, '.mjs', '.mts', '.d.ts', '.json', '.wasm'];
+
 /** Generated artefacts, all inside the frontend directory and all gitignored. */
 const GENERATED_DIR = path.posix.join('src', 'generated', 'distribution-ui');
 const NEUTRAL_DIR = path.posix.join('src', 'site-ui', 'neutral');
@@ -121,12 +136,22 @@ function readSiteUiRequest(frontendDir, env) {
     const exists =
       name === 'styles'
         ? isFile(base) || isFile(`${base}.css`)
-        : isFile(`${base}.tsx`) || isFile(`${base}.ts`) || isFile(`${base}.jsx`);
+        : ENTRY_EXTENSIONS.some((extension) => isFile(`${base}${extension}`));
     if (!exists) {
       throw new SiteUiConfigError(
         `${SITE_UI_DIR_ENV} points at ${absolute}, which has no ${CLIENT_ENTRY}/${SERVER_ENTRY}/` +
           `${STYLES_ENTRY} set: the ${name} entry is missing. Expected ` +
           `${CLIENT_ENTRY}.tsx, ${SERVER_ENTRY}.ts and ${STYLES_ENTRY}.`,
+      );
+    }
+    if (name === 'styles') continue;
+    const found = RESOLVED_EXTENSIONS.map((extension) => `${base}${extension}`).filter(isFile);
+    if (found.length > 1) {
+      throw new SiteUiConfigError(
+        `${SITE_UI_DIR_ENV} points at ${absolute}, which has more than one ${name} entry: ` +
+          `${found.map((file) => path.basename(file)).join(', ')}. Keep exactly one. The ` +
+          'bundler, the type checker and the test runner each complete the entry name in a ' +
+          'different order, so they would not agree which file is the module.',
       );
     }
   }
@@ -173,13 +198,17 @@ function resolveSiteUi(frontendDir, env = process.env) {
     };
   }
 
+  // One path for the client entry, chosen here and handed to everything that
+  // reads it: the descriptor reader, the export checks, the bridge and the
+  // TypeScript project.
+  const client = resolveEntry(request.root, CLIENT_ENTRY);
   return {
     kind: 'distribution',
-    id: descriptorId(request.root) ?? path.basename(request.root),
+    id: descriptorId(client) ?? path.basename(request.root),
     api: request.api,
     root: request.root,
     moduleDir: request.root,
-    client: resolveEntry(request.root, CLIENT_ENTRY),
+    client,
     server: resolveEntry(request.root, SERVER_ENTRY),
     styles: resolveStyles(request.root),
     stub: path.join(frontendDir, STUB_FILE),
@@ -188,13 +217,12 @@ function resolveSiteUi(frontendDir, env = process.env) {
   };
 }
 
-/** Read a literal descriptor without executing a module's client code. */
-function readDescriptor(moduleDir) {
+/** Read a literal descriptor from a client entry without executing it. */
+function readDescriptor(entry) {
   // TypeScript is already a locked build dependency. Its parser supports type
   // annotations, `as const` and `satisfies` without mistaking comments for code.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const ts = require('typescript');
-  const entry = resolveEntry(moduleDir, CLIENT_ENTRY);
   const source = ts.createSourceFile(
     entry,
     fs.readFileSync(entry, 'utf8'),
@@ -236,9 +264,9 @@ function readDescriptor(moduleDir) {
   );
 }
 
-function descriptorId(moduleDir) {
+function descriptorId(entry) {
   try {
-    return readDescriptor(moduleDir).id;
+    return readDescriptor(entry).id;
   } catch {
     // Missing/invalid entries receive actionable errors in assertSiteUiEntries.
     return undefined;
@@ -246,14 +274,53 @@ function descriptorId(moduleDir) {
 }
 
 /**
+ * Whether a source file has a default export, read from its syntax.
+ *
+ * The host consumes the client entry as a namespace of named exports, and the
+ * generated bridge's `export *` does not forward `default` at all. A module that
+ * put its components on a default export would compile, and then render the
+ * console's pages as though it had supplied nothing.
+ */
+function hasDefaultExport(entry, text) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ts = require('typescript');
+  const source = ts.createSourceFile(entry, text, ts.ScriptTarget.Latest, true);
+  return source.statements.some((statement) => {
+    // `export default <expression>` and `export = <expression>`.
+    if (ts.isExportAssignment(statement)) return true;
+    // `export default function …`, `export default class …` and the like.
+    const modifiers = (ts.canHaveModifiers(statement) && ts.getModifiers(statement)) || [];
+    const kinds = modifiers.map((modifier) => modifier.kind);
+    if (
+      kinds.includes(ts.SyntaxKind.ExportKeyword) &&
+      kinds.includes(ts.SyntaxKind.DefaultKeyword)
+    ) {
+      return true;
+    }
+    // `export { Landing as default }`, `export { default } from …`, `export * as default from …`.
+    if (!ts.isExportDeclaration(statement) || statement.isTypeOnly || !statement.exportClause) {
+      return false;
+    }
+    if (ts.isNamespaceExport(statement.exportClause)) {
+      return statement.exportClause.name.text === 'default';
+    }
+    return statement.exportClause.elements.some(
+      (element) => !element.isTypeOnly && element.name.text === 'default',
+    );
+  });
+}
+
+/**
  * The real file behind an entry name.
  *
  * `require.resolve` is deliberately not used: it does not resolve TypeScript
  * extensions, and a module written in `.tsx` would then fail to be found by a
- * check whose whole purpose is to find it.
+ * check whose whole purpose is to find it. `readSiteUiRequest` has already
+ * refused a module with more than one candidate, so the first match here is the
+ * only one.
  */
 function resolveEntry(root, name) {
-  for (const extension of ['.tsx', '.ts', '.jsx', '.js']) {
+  for (const extension of ENTRY_EXTENSIONS) {
     const candidate = path.join(root, `${name}${extension}`);
     if (isFile(candidate)) return candidate;
   }
@@ -590,6 +657,13 @@ function assertSiteUiEntries(resolution) {
 
   checkExports(clientSource, resolution.client, 'client', REQUIRED_CLIENT_EXPORTS, problems);
   checkExports(serverSource, resolution.server, 'server', REQUIRED_SERVER_EXPORTS, problems);
+  if (hasDefaultExport(resolution.client, clientSource)) {
+    problems.push(
+      `${resolution.client} has a default export. The host reads a client entry's named ` +
+        'exports only, so whatever the default carries would never render. Export ' +
+        '`descriptor`, `Landing` and the rest by name.',
+    );
+  }
   checkManifestAgrees(resolution, problems);
 
   if (problems.length > 0) {
@@ -619,7 +693,7 @@ function checkManifestAgrees(resolution, problems) {
   let descriptor;
   try {
     document = JSON.parse(fs.readFileSync(path.join(resolution.root, 'manifest.json'), 'utf8'));
-    descriptor = readDescriptor(resolution.root);
+    descriptor = readDescriptor(resolution.client);
   } catch (error) {
     problems.push(`manifest.json and descriptor could not be validated: ${error.message}`);
     return;
