@@ -180,7 +180,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
     assert response.status_code == 200
     assert response.json()["strategy"] == "routewise"
     op_store.upsert_weight_override.assert_awaited_once_with(
-        "public-model", "public-model:remote", 4.5, "127.0.0.1"
+        "public-model", "public-model:remote", 4.5, "admin-token"
     )
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.5}
@@ -311,5 +311,5 @@ async def test_put_route_weight_supports_slash_model_and_endpoint_ids(admin_clie
 
     assert response.status_code == 200
     op_store.upsert_weight_override.assert_awaited_with(
-        "provider/model", "provider/model:remote", 5.0, "127.0.0.1"
+        "provider/model", "provider/model:remote", 5.0, "admin-token"
     )

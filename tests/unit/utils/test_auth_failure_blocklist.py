@@ -273,7 +273,7 @@ async def test_authenticate_rejects_a_blocked_ip_with_429(monkeypatch, clock):
 
     monkeypatch.setattr(auth_mod, "log_rejection", _noop_log_rejection)
 
-    ip = "198.51.100.5"
+    ip = "8.8.8.5"
     await record_auth_failure(ip)
     await record_auth_failure(ip)  # second failure trips the block
 
@@ -480,7 +480,7 @@ async def test_clearing_restores_access_at_the_auth_layer(monkeypatch, clock):
 
     monkeypatch.setattr(auth_mod, "log_rejection", _noop_log_rejection)
 
-    ip = "198.51.100.9"
+    ip = "8.8.8.9"
     await record_auth_failure(ip)
     await record_auth_failure(ip)
 

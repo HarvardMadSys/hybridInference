@@ -214,14 +214,15 @@ class TestRequestLogMiddleware:
     ):
         """Request logs carry both trusted client IP and socket peer IP."""
         monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+        monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1/32")
 
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(
                 app_with_middleware,
                 "/v1/chat/completions",
                 headers={
-                    "x-forwarded-for": "203.0.113.8",
-                    "x-real-ip": "203.0.113.8",
+                    "x-forwarded-for": "8.8.8.8",
+                    "x-real-ip": "8.8.8.8",
                     "user-agent": "pytest-client",
                     "origin": "https://gateway.example.com",
                 },
@@ -230,11 +231,11 @@ class TestRequestLogMiddleware:
         records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records
         record = records[-1]
-        assert record.remote_ip == "203.0.113.8"
+        assert record.remote_ip == "8.8.8.8"
         assert record.peer_ip
         assert record.ip_source == "x-forwarded-for"
-        assert record.x_forwarded_for == "203.0.113.8"
-        assert record.x_real_ip == "203.0.113.8"
+        assert record.x_forwarded_for == "8.8.8.8"
+        assert record.x_real_ip == "8.8.8.8"
         assert record.user_agent == "pytest-client"
         assert record.origin == "https://gateway.example.com"
 
@@ -254,29 +255,30 @@ class TestRequestLogMiddleware:
 
         monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
         monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+        monkeypatch.setenv("TRUSTED_CLOUDFLARE_NETWORKS", "127.0.0.1/32")
 
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(
                 app_with_middleware,
                 "/v1/chat/completions",
                 headers={
-                    "cf-connecting-ip": "2001:db8:abcd:1234::5",
-                    "x-forwarded-for": "1.2.3.4, 2001:db8:abcd:1234::5",
+                    "cf-connecting-ip": "2606:4700:4700::1111",
+                    "x-forwarded-for": "1.2.3.4, 2606:4700:4700::1111",
                 },
             )
 
         records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records
         record = records[-1]
-        assert record.remote_ip == "2001:db8:abcd:1234::5"
+        assert record.remote_ip == "2606:4700:4700::1111"
         assert record.ip_source == "cf-connecting-ip"
 
         payload = json.loads(JsonFormatter().format(record))
-        assert payload["cf_connecting_ip"] == "2001:db8:abcd:1234::5"
-        assert payload["remote_ip"] == "2001:db8:abcd:1234::5"
+        assert payload["cf_connecting_ip"] == "2606:4700:4700::1111"
+        assert payload["remote_ip"] == "2606:4700:4700::1111"
         assert payload["ip_source"] == "cf-connecting-ip"
         # The spoofable header is retained so an attempt stays visible.
-        assert payload["x_forwarded_for"] == "1.2.3.4, 2001:db8:abcd:1234::5"
+        assert payload["x_forwarded_for"] == "1.2.3.4, 2606:4700:4700::1111"
 
     @pytest.mark.asyncio
     async def test_unauthorized_path_is_silent_at_info(self, app_with_middleware, caplog):

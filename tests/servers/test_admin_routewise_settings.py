@@ -537,7 +537,7 @@ async def test_patch_routewise_setting_validates_and_persists(admin_client):
         "routewise_budget_alpha",
         "0.4",
         "float",
-        "127.0.0.1",
+        "admin-token",
     )
     assert response.json()["value"] == 0.4
 
@@ -562,7 +562,7 @@ async def test_global_patch_is_successful_when_immediate_live_apply_fails(
         "routewise_budget_alpha",
         "0.4",
         "float",
-        "127.0.0.1",
+        "admin-token",
     )
 
 

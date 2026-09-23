@@ -117,7 +117,7 @@ async def test_patch_model_visibility_sets_override(admin_client):
 
     assert response.status_code == 200
     op_store.set_model_visibility_override.assert_awaited_once_with(
-        "public-model", "admin", "127.0.0.1"
+        "public-model", "admin", "admin-token"
     )
 
 
@@ -133,7 +133,7 @@ async def test_patch_model_visibility_supports_slash_model_ids(admin_client):
 
     assert response.status_code == 200
     op_store.set_model_visibility_override.assert_awaited_once_with(
-        "provider/model", "admin", "127.0.0.1"
+        "provider/model", "admin", "admin-token"
     )
 
 

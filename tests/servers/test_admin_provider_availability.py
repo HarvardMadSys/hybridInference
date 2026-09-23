@@ -122,7 +122,7 @@ async def test_disable_provider_persists_and_updates_resolver(admin_client):
     assert body["provider"] == "openrouter"
     assert body["disabled"] is True
     assert body["affected_model_count"] == 2
-    op_store.set_provider_disabled.assert_awaited_once_with("openrouter", "127.0.0.1")
+    op_store.set_provider_disabled.assert_awaited_once_with("openrouter", "admin-token")
     assert resolver.is_disabled("openrouter")
 
 

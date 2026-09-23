@@ -707,7 +707,7 @@ async def test_patch_provider_route_strategy_updates_model_router(admin_client):
         "model_router_strategy:on-demand-only",
         "fixed",
         "string",
-        "127.0.0.1",
+        "admin-token",
     )
 
 
@@ -1384,7 +1384,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         "minimax/minimax-m2.5",
         8000,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
 
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
@@ -1492,7 +1492,7 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
         "MiniMaxAI/MiniMax-M2.5-TEE",
         8000,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     retargeted_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert retargeted_adapter.config.provider == "chutes"
@@ -1555,7 +1555,7 @@ async def test_put_provider_route_persists_effective_quota_when_payload_omits_li
         "minimax/minimax-m2.5",
         5000,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
 
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
@@ -1626,7 +1626,7 @@ async def test_put_provider_route_updates_concurrency_limit_for_concurrency_over
         "minimax/minimax-m2.5",
         None,
         3,
-        "127.0.0.1",
+        "admin-token",
     )
 
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
@@ -1691,7 +1691,7 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
         "minimax/minimax-m2.5",
         5000,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
 
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
@@ -1962,7 +1962,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         None,
         2.5,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 
@@ -2017,7 +2017,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
         None,
         2.0,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 
@@ -2177,7 +2177,7 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
         2,
         1.0,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 
@@ -2272,7 +2272,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
         4,
         1.0,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_not_awaited()
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
@@ -2514,7 +2514,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
         None,
         1.25,
         RUNTIME_PRICING,
-        "127.0.0.1",
+        "admin-token",
     )
     op_store.set_setting.assert_has_awaits(
         [
@@ -2522,13 +2522,13 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
                 "model_router_strategy:deepseek-v4-flash",
                 "fixed",
                 "string",
-                "127.0.0.1",
+                "admin-token",
             ),
             call(
                 "model_required_role:deepseek-v4-flash",
                 "admin",
                 "string",
-                "127.0.0.1",
+                "admin-token",
             ),
         ]
     )
@@ -2648,7 +2648,7 @@ async def test_post_provider_route_model_creates_openrouter_concurrency_model(ad
         2,
         1.0,
         RUNTIME_PRICING,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 
@@ -2788,7 +2788,7 @@ async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(
         None,
         0.75,
         RUNTIME_PRICING,
-        "127.0.0.1",
+        "admin-token",
     )
     runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
     assert runtime_adapter.config.pricing == RUNTIME_PRICING
@@ -2826,13 +2826,13 @@ async def test_post_provider_route_model_accepts_explicit_required_role(admin_cl
                 "model_router_strategy:deepseek-v4-flash",
                 "fixed",
                 "string",
-                "127.0.0.1",
+                "admin-token",
             ),
             call(
                 "model_required_role:deepseek-v4-flash",
                 "free",
                 "string",
-                "127.0.0.1",
+                "admin-token",
             ),
         ]
     )
@@ -3644,7 +3644,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
         None,
         1.0,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 
@@ -3706,7 +3706,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
         None,
         1.0,
         None,
-        "127.0.0.1",
+        "admin-token",
     )
     verify_mock.assert_awaited_once()
 

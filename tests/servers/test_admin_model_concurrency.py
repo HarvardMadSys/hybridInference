@@ -107,7 +107,7 @@ async def test_patch_model_concurrency_sets_exemption(admin_client):
 
     assert response.status_code == 200
     assert response.json()["exempt"] is True
-    op_store.set_model_concurrency_exemption.assert_awaited_once_with("public-model", "127.0.0.1")
+    op_store.set_model_concurrency_exemption.assert_awaited_once_with("public-model", "admin-token")
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,9 @@ async def test_patch_model_concurrency_supports_slash_model_ids(admin_client):
     )
 
     assert response.status_code == 200
-    op_store.set_model_concurrency_exemption.assert_awaited_once_with("provider/model", "127.0.0.1")
+    op_store.set_model_concurrency_exemption.assert_awaited_once_with(
+        "provider/model", "admin-token"
+    )
 
 
 @pytest.mark.asyncio
@@ -230,7 +232,7 @@ async def test_patch_embedding_model_concurrency_sets_exemption(admin_client):
 
     assert response.status_code == 200
     assert response.json()["exempt"] is True
-    op_store.set_model_concurrency_exemption.assert_awaited_once_with("bge-m3", "127.0.0.1")
+    op_store.set_model_concurrency_exemption.assert_awaited_once_with("bge-m3", "admin-token")
 
 
 @pytest.mark.asyncio

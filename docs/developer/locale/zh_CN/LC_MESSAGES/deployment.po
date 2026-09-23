@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-13 15:27-0400\n"
+"POT-Creation-Date: 2026-09-20 09:28-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -196,7 +196,9 @@ msgid ""
 "`127.0.0.1:3001`, for instance — never had them, and a deployment that "
 "retires its proxy loses them silently, because nothing fails when they go"
 " missing:"
-msgstr "有三件事通常依赖主机上的反向代理来做，而这套服务栈内部并没有实现。直接访问已发布端口的部署——比如隧道守护进程连到 `127.0.0.1:3001`——从来就没有这些防护；而撤掉代理的部署会悄无声息地失去它们，因为它们缺失时不会有任何报错："
+msgstr ""
+"有三件事通常依赖主机上的反向代理来做，而这套服务栈内部并没有实现。直接访问已发布端口的部署——比如隧道守护进程连到 "
+"`127.0.0.1:3001`——从来就没有这些防护；而撤掉代理的部署会悄无声息地失去它们，因为它们缺失时不会有任何报错："
 
 #: ../developer/deployment.md
 msgid "Not implemented"
@@ -216,7 +218,9 @@ msgid ""
 "Refuse requests carrying a `Next-Action` header (`if ($http_next_action) "
 "{ return 403; }`), so console server actions cannot be invoked from "
 "outside the console"
-msgstr "拒绝带 `Next-Action` 头的请求（`if ($http_next_action) { return 403; }`），使控制台的 server action 无法从控制台之外被调用"
+msgstr ""
+"拒绝带 `Next-Action` 头的请求（`if ($http_next_action) { return 403; }`），使控制台的 "
+"server action 无法从控制台之外被调用"
 
 #: ../developer/deployment.md
 msgid "Request body cap on `/v1/`"
@@ -241,29 +245,33 @@ msgstr "覆盖客户端自带的转发链，使只有代理自己插入的跳数
 #: ../developer/deployment.md:75
 msgid ""
 "The third is worth separating from what the gateway *does* do: it reads "
-"forwarded headers, gated on `TRUST_PROXY_HEADERS` / "
-"`TRUST_CLOUDFLARE_HEADERS`, but it never rewrites them. With no rewriting"
-" hop in front, the leftmost `X-Forwarded-For` entry is whatever the "
-"caller sent — which is why `CF-Connecting-IP` is preferred when "
-"Cloudflare is the immediate proxy. See [Trusted proxies and client IPs"
-"](trusted-proxies-and-client-ips.md)."
-msgstr "第三条要和网关*确实*会做的事区分开：网关会读取转发头（受 `TRUST_PROXY_HEADERS` / `TRUST_CLOUDFLARE_HEADERS` 控制），但从不重写它们。前面没有做重写的一跳时，`X-Forwarded-For` 最左边的条目就是调用方发来的任意值——这也是 Cloudflare 作为直接代理时更应采用 `CF-Connecting-IP` 的原因。参见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"
+"forwarded headers, gated on the relevant trust flag **and** an explicitly"
+" configured CIDR list (`TRUSTED_PROXIES` or "
+"`TRUSTED_CLOUDFLARE_NETWORKS`), but it never rewrites them. Enabling a "
+"flag without authorizing the immediate peer therefore remains fail-"
+"closed. With no rewriting hop in front, the leftmost `X-Forwarded-For` "
+"entry is whatever the caller sent — which is why `CF-Connecting-IP` is "
+"preferred when Cloudflare is the immediate proxy. See [Trusted proxies "
+"and client IPs](trusted-proxies-and-client-ips.md)."
+msgstr ""
+"第三条需要与网关*确实*会做的事区分开：网关会读取转发头，但前提是启用了相应的信任开关**并且**显式配置了 "
+"CIDR 列表（`TRUSTED_PROXIES` 或 `TRUSTED_CLOUDFLARE_NETWORKS`），但从不重写这些头。未授权直接对端时启用开关仍然会安全失败。前面没有重写转发链的一跳时，最左侧的 `X-Forwarded-For` 条目就是调用方发送的任意值——这也是 Cloudflare 作为直接代理时优先采用 `CF-Connecting-IP` 的原因。参见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"
 
-#: ../developer/deployment.md:82
+#: ../developer/deployment.md:84
 msgid ""
 "This is recorded as a known gap, not a regression: whether to reimplement"
 " any of it in the application is an open decision."
 msgstr "这里记录为已知缺口，而非回归问题：是否要在应用层重新实现其中任何一条，仍是一个待定决策。"
 
-#: ../developer/deployment.md:85
+#: ../developer/deployment.md:87
 msgid "Everyday operations"
 msgstr "日常运维"
 
-#: ../developer/deployment.md:87
+#: ../developer/deployment.md:89
 msgid "All from the repository root:"
 msgstr "以下命令都在仓库根目录执行："
 
-#: ../developer/deployment.md:101
+#: ../developer/deployment.md:103
 msgid ""
 "`make up` and `make build` first run the `docker-volumes` target, which "
 "creates the external volume `hybridinference_postgres_data` when it is "
@@ -272,7 +280,7 @@ msgstr ""
 "`make up` 和 `make build` 会先执行 `docker-volumes` 目标，在外部卷 "
 "`hybridinference_postgres_data` 不存在时创建它。"
 
-#: ../developer/deployment.md:104
+#: ../developer/deployment.md:106
 msgid ""
 "To start an optional profile, pass it on the `make` command line — a "
 "variable set there is exported into the environment of the recipe, and a "
@@ -281,7 +289,7 @@ msgstr ""
 "要启动某个可选 profile，就在 `make` 命令行上传入——在那里设置的变量会导出到 recipe 的环境中，而在 Compose 里 "
 "shell 变量的优先级高于任何 `--env-file`："
 
-#: ../developer/deployment.md:112
+#: ../developer/deployment.md:114
 msgid ""
 "`COMPOSE_PROFILES` is a comma-separated list, so `admin,oncall` starts "
 "both. It can also be set in `.env` (as `.env.example` notes), but the "
@@ -291,11 +299,11 @@ msgstr ""
 "`COMPOSE_PROFILES` 是逗号分隔的列表，所以 `admin,oncall` 会把两个都启动。它也可以写在 `.env` "
 "里（`.env.example` 有说明），但想确定哪些 profile 真的生效时，优先用命令行这种写法。"
 
-#: ../developer/deployment.md:116
+#: ../developer/deployment.md:118
 msgid "What a change actually requires"
 msgstr "一次改动到底需要做什么"
 
-#: ../developer/deployment.md:118
+#: ../developer/deployment.md:120
 msgid ""
 "Three different answers, and picking the wrong one looks like the change "
 "not taking effect:"
@@ -375,7 +383,7 @@ msgstr "后端或前端的源码"
 msgid "`make build`, or `make build s=<service>`"
 msgstr "`make build`，或 `make build s=<service>`"
 
-#: ../developer/deployment.md:131
+#: ../developer/deployment.md:133
 msgid ""
 "Canonical console identity comes from the active distribution's versioned"
 " branding YAML through `/site-config`, and `/agents` gets its two "
@@ -388,7 +396,7 @@ msgstr ""
 "的两个目标地址来自仅服务端可见的运行时环境。这两类修改都不需要重建前端镜像。修改前端运行时环境后用 `make up` 重新创建 "
 "frontend；修改后端加载的品牌文档后重启 backend。"
 
-#: ../developer/deployment.md:138
+#: ../developer/deployment.md:140
 msgid ""
 "The console requires a valid `/site-config` response before rendering "
 "normal pages. A failed HTTP request, a three-second timeout, or invalid "
@@ -401,7 +409,7 @@ msgstr ""
 "控制台只有收到有效的 `/site-config` 响应才会渲染正常页面。HTTP 请求失败、超过三秒的超时或无效的 "
 "JSON/配置格式会显示可重试的配置错误，而不会悄悄启用构建时的默认功能。请检查前端日志和后端连通性，恢复后重试页面。有效的中性默认配置和旧版配置仍受支持；部署者不必为了启动示例部署而添加自定义设置。"
 
-#: ../developer/deployment.md:146
+#: ../developer/deployment.md:148
 msgid ""
 "The Compose file still exposes the old branding variables as build "
 "arguments for source compatibility. The Dockerfile also retains the two "
@@ -420,15 +428,15 @@ msgstr ""
 "s=frontend`。运行时 handler 与旧版构建期 rewrites 的区别见[公网路径表](public-path-"
 "table.md)。"
 
-#: ../developer/deployment.md:156
+#: ../developer/deployment.md:158
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/deployment.md:158
+#: ../developer/deployment.md:160
 msgid "Environment"
 msgstr "环境变量"
 
-#: ../developer/deployment.md:160
+#: ../developer/deployment.md:162
 msgid ""
 "Everything is in `.env` at the repository root; `.env.example` is the "
 "annotated list. Compose is invoked with `--env-file .env` and the backend"
@@ -440,11 +448,11 @@ msgstr ""
 "调用，backend 服务同时把它作为 `env_file` 加载。Compose "
 "自身要求的变量，以及不该留空的那两个密钥，见[安装](installation.md#quick-start-with-docker)。"
 
-#: ../developer/deployment.md:166
+#: ../developer/deployment.md:168
 msgid "Config file resolution"
 msgstr "配置文件的解析顺序"
 
-#: ../developer/deployment.md:168
+#: ../developer/deployment.md:170
 msgid ""
 "There is no `config/models.yaml` or `config/routing.yaml` in this "
 "repository. `resolve_config_path` "
@@ -462,11 +470,11 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_MODE` 为什么默认是 `dark`）见[安装](installation.md#where-the-"
 "config-files-live)。"
 
-#: ../developer/deployment.md:176
+#: ../developer/deployment.md:178
 msgid "Note that the Compose file passes these through explicitly:"
 msgstr "注意，Compose 文件是显式把它们透传进去的："
 
-#: ../developer/deployment.md:184
+#: ../developer/deployment.md:186
 msgid ""
 "An `--env-file` alone does not put a variable into a container's "
 "environment; these lines are what carry it in. Losing one silently swaps "
@@ -476,11 +484,11 @@ msgstr ""
 "光有 `--env-file` "
 "并不能把变量放进容器的环境里；真正把它带进去的是这几行。少了一行，就会悄无声息地把一个部署的路由映射或告警阈值换成默认值——这正是测试要把它们钉住的原因。"
 
-#: ../developer/deployment.md:188
+#: ../developer/deployment.md:190
 msgid "Local inference servers"
 msgstr "本地推理服务器"
 
-#: ../developer/deployment.md:190
+#: ../developer/deployment.md:192
 msgid ""
 "The backend container reaches servers on the host through "
 "`host.docker.internal`, which the Compose file wires with `extra_hosts: "
@@ -490,7 +498,7 @@ msgstr ""
 "backend 容器通过 `host.docker.internal` 访问宿主机上的服务器，Compose 文件用 `extra_hosts: "
 "host.docker.internal:host-gateway` 把它接好。要在模型注册表里显式写上这个地址："
 
-#: ../developer/deployment.md:201
+#: ../developer/deployment.md:203
 msgid ""
 "For a backend running directly on the host, use `localhost` instead. The "
 "gateway never rewrites provider URLs. See [Adding a New Local Model](add-"
@@ -499,11 +507,11 @@ msgstr ""
 "如果 backend 直接跑在宿主机上，就改用 `localhost`。网关从不改写 provider 的 URL。见[添加新的本地模型"
 "](add-local-model.md)。"
 
-#: ../developer/deployment.md:205
+#: ../developer/deployment.md:207
 msgid "Health checks"
 msgstr "健康检查"
 
-#: ../developer/deployment.md:224
+#: ../developer/deployment.md:226
 msgid ""
 "`routes_configured` counts published route entries — one per model id in "
 "the active registry, plus one per alias. It is whatever *your* registry "
@@ -512,7 +520,7 @@ msgstr ""
 "`routes_configured` 统计的是已发布的路由条目——生效的注册表里每个模型 id "
 "一条，每个别名再加一条。它完全取决于*你自己的*注册表定义了什么。"
 
-#: ../developer/deployment.md:226
+#: ../developer/deployment.md:228
 msgid ""
 "`database_configured` distinguishes \"this deployment asked for no "
 "database\" from \"the database is down\": with `DB_ENABLED=false` it is "
@@ -524,7 +532,7 @@ msgstr ""
 "`false`，状态仍然是 `healthy`；而配置了数据库、启动时却连不上时，`/health` 返回 **503**，并带上 "
 "`\"reason\": \"database_unavailable_at_startup\"`。"
 
-#: ../developer/deployment.md:231
+#: ../developer/deployment.md:233
 msgid ""
 "`status` becomes `degraded` — still HTTP 200 — when one configured store "
 "is down but the other is serving. That shape is deliberate: the container"
@@ -535,7 +543,7 @@ msgstr ""
 "200。这个形态是有意设计的：容器的 `HEALTHCHECK` 用的是 `curl -f /health`，若对部分降级返回 "
 "503，就会把仍在正常响应请求的 backend 拆掉。"
 
-#: ../developer/deployment.md:236
+#: ../developer/deployment.md:238
 msgid ""
 "Use `/health/ready` for a strict readiness probe: it applies AND-logic "
 "across configured stores and returns 503 unless every one of them is up. "
@@ -544,11 +552,11 @@ msgstr ""
 "要做严格的就绪探针，请用 `/health/ready`：它对已配置的各个存储取与逻辑，只要有一个没起来就返回 "
 "503。`/health/deep` 还会额外报告每个端点的健康状况。"
 
-#: ../developer/deployment.md:240
+#: ../developer/deployment.md:242
 msgid "Marking monitor traffic"
 msgstr "给监控流量打标记"
 
-#: ../developer/deployment.md:242
+#: ../developer/deployment.md:244
 msgid ""
 "A monitor that drives real inference — hitting `/v1/chat/completions` on "
 "a schedule to measure a backend end to end, rather than just polling "
@@ -566,7 +574,7 @@ msgstr ""
 "`api_logs`（它的拒绝也不进拒绝日志），不记录路由观测，并且响应会带一个 `X-Provider` "
 "头指明是哪个后端应答的，方便监控确认自己命中的是哪条路由。"
 
-#: ../developer/deployment.md:251
+#: ../developer/deployment.md:253
 msgid ""
 "The marker is honoured **only from an authenticated internal- or admin-"
 "role API key** — never a free/pro key, an agent-sandbox grant, or, "
@@ -582,7 +590,7 @@ msgstr ""
 " "
 "角色，但那和「持有一个可验证的监控身份」不是一回事）。来自其他任何调用方时，这个头会被忽略，请求照普通流量记录。需要在无鉴权情况下做探测的部署，应该用一个显式机制——一个共享密钥、一个来源白名单——而不是这个头。"
 
-#: ../developer/deployment.md:259
+#: ../developer/deployment.md:261
 msgid ""
 "The marker is about noise, not access. It cannot keep a monitor's own "
 "auth failures from tripping the repeated-auth-failure blocklist, because "
@@ -593,7 +601,7 @@ msgstr ""
 "这个标记管的是噪声，不是访问权限。它没法让监控自身的认证失败不去触发重复认证失败黑名单，因为那个判断发生在读取所带密钥之前——见[监控或服务账号突然开始收到"
 " 429](#a-monitor-or-service-account-is-suddenly-getting-429s)。"
 
-#: ../developer/deployment.md:265
+#: ../developer/deployment.md:267
 msgid ""
 "The one thing the marker never touches is billing: cost and quota are "
 "incremented unconditionally on every surface, for trusted and untrusted "
@@ -607,17 +615,17 @@ msgstr ""
 " `api_logs` 里——好在请求看板里看到监控的真实延迟和花费——打开 `log_synthetic_probes` "
 "这个运行时设置即可；路由观测和 `X-Provider` 的行为不变。"
 
-#: ../developer/deployment.md:272
+#: ../developer/deployment.md:274
 msgid "Alerting"
 msgstr "告警"
 
-#: ../developer/deployment.md:274
+#: ../developer/deployment.md:276
 msgid ""
 "The backend has an in-process alert engine that posts to a Slack webhook."
 " It is off unless you turn it on:"
 msgstr "后端内置了一个进程内告警引擎，会向 Slack webhook 推送。不显式打开就是关闭的："
 
-#: ../developer/deployment.md:282
+#: ../developer/deployment.md:284
 msgid ""
 "If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
 "`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths."
@@ -625,7 +633,7 @@ msgstr ""
 "`SLACK_ALERTS_WEBHOOK_URL` 为空时会回退到 `SLACK_WEBHOOK_URL`，所以一个 webhook "
 "可以同时服务两条代码路径。"
 
-#: ../developer/deployment.md:285
+#: ../developer/deployment.md:287
 msgid ""
 "Rules and thresholds are a deployment's own; this repository ships no "
 "alerts file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and "
@@ -636,13 +644,13 @@ msgstr ""
 "指向你自己的文件；或者不设置它，那就使用内置阈值。规则类型和求值逻辑在 "
 "`apps/backend/serving/observability/`。"
 
-#: ../developer/deployment.md:290
+#: ../developer/deployment.md:292
 msgid ""
 "Two auth rules are worth knowing apart, because their defaults differ on "
 "purpose:"
 msgstr "有两条认证相关的规则值得分清，因为它们的默认值是有意不同的："
 
-#: ../developer/deployment.md:293
+#: ../developer/deployment.md:295
 msgid ""
 "`rules.auth_failure_spike` is **off**. Bad keys are internet background "
 "noise, and a count of them names nothing to act on. The `auth_failure` "
@@ -652,7 +660,7 @@ msgstr ""
 "默认**关闭**。错误密钥属于互联网背景噪声，把它们数出来并指不出任何可操作的东西。无论这条规则开不开，`auth_failure` "
 "日志记录都照常输出。"
 
-#: ../developer/deployment.md:296
+#: ../developer/deployment.md:298
 msgid ""
 "`rules.auth_ip_blocked` is **on**. This one fires when the blocklist "
 "starts *refusing* a source — a discrete decision at a much higher "
@@ -662,11 +670,11 @@ msgstr ""
 "`rules.auth_ip_blocked` "
 "默认**开启**。它在黑名单开始*拒绝*某个来源时触发——那是一个在高得多的阈值上做出、并且点名到具体地址的离散判断。之所以默认开启，是因为被拒的来源有时正是本部署自己的调用方；见下面的排查条目。"
 
-#: ../developer/deployment.md:301
+#: ../developer/deployment.md:303
 msgid "What an auth alert tells you"
 msgstr "认证告警里有什么"
 
-#: ../developer/deployment.md:303
+#: ../developer/deployment.md:305
 msgid ""
 "An auth-failure card names the sources and, where it can, the accounts "
 "behind them — the addresses they came from, how many distinct ones, the "
@@ -677,11 +685,11 @@ msgid ""
 " from a tally kept across the incident."
 msgstr "认证失败告警会指出这些来源，并在力所能及时指出它们背后的账户——它们来自哪些地址、有多少个不同的地址、所出示密钥的开头字符、每次失败的原因，以及正在被访问的路径。恢复告警给出的是刚刚结束的这次事件的同一幅图景，而不只是规则的名字：尖峰恢复时，它当初越过阈值的那个时间窗口已经空了，所以这些数字只能来自一份贯穿整个事件的累计统计。"
 
-#: ../developer/deployment.md:310
+#: ../developer/deployment.md:312
 msgid "Two of those lines are worth reading carefully:"
 msgstr "其中有两行值得仔细读："
 
-#: ../developer/deployment.md:312
+#: ../developer/deployment.md:314
 msgid ""
 "**Known accounts.** Most auth failures are anonymous by construction — "
 "nobody was authenticated, which is the failure. A named account means a "
@@ -702,7 +710,7 @@ msgstr ""
 "`AUTH_FAILURE_IDENTIFY_CALLER=false` "
 "即可分文不花，代价是失去这一行。把出现账户读作证据，把没有账户读作*未知*，而绝不要读作流量来自外部的证明：这个查询恰恰会在你正在排查的那场洪泛里被丢弃，并且在超时、查询失败或该设置被关闭时都不会给出任何结果。"
 
-#: ../developer/deployment.md:324
+#: ../developer/deployment.md:326
 msgid ""
 "**Arrived via peers.** Present only when the reported addresses did not "
 "come off the socket. They are then only as trustworthy as the proxy that "
@@ -713,7 +721,7 @@ msgstr ""
 "**通过对端到达**。只有当报告出来的地址并非取自套接字时才会出现。这时它们的可信度只等同于设置它们的那层代理，而伪造 `X-Forwarded-"
 "For` 正是一个来源把自己的失败分散到封禁名单各个分桶里的办法。这一行给出它们真正到达时所用的套接字地址。"
 
-#: ../developer/deployment.md:330
+#: ../developer/deployment.md:332
 msgid ""
 "Counts marked `(capped)` are floors, not totals: a source rotating "
 "addresses faster than the tally tracks them stops being counted rather "
@@ -723,11 +731,11 @@ msgstr ""
 "标记为 `(capped)` "
 "的计数是下限而不是总数：一个来源轮换地址的速度快过统计所能跟踪的上限时，它就不再被计入，而不是被允许把统计无限撑大。不要用一个带上限标记的数字去估量事件的规模。"
 
-#: ../developer/deployment.md:334
+#: ../developer/deployment.md:336
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:336
+#: ../developer/deployment.md:338
 msgid ""
 "PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
 "volume `hybridinference_postgres_data`. A psql shell:"
@@ -735,15 +743,15 @@ msgstr ""
 "PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
 "`hybridinference_postgres_data` 中。开一个 psql shell："
 
-#: ../developer/deployment.md:343
+#: ../developer/deployment.md:345
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
-#: ../developer/deployment.md:345
+#: ../developer/deployment.md:347
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
-#: ../developer/deployment.md:351
+#: ../developer/deployment.md:353
 msgid ""
 "pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
 "an SSH tunnel to that port is enough to reach it. The console can also "
@@ -756,7 +764,7 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` 按 admin "
 "会话把关；该文件在任何非预期情况下都拒绝，包括连不上后端的时候。"
 
-#: ../developer/deployment.md:357
+#: ../developer/deployment.md:359
 msgid ""
 "One thing to get right: whether pgAdmin *also* asks for its own login is "
 "set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
@@ -768,15 +776,15 @@ msgstr ""
 "决定，而两处的默认值并不一致。Compose 服务回退到 `False`，也就是完全不需要登录就能用 pgAdmin；`.env.example`"
 " 建议 `True`，也就是在控制台这道关卡之后再开启 pgAdmin 自己的登录。两者之中 `True` 更安全。"
 
-#: ../developer/deployment.md:363
+#: ../developer/deployment.md:365
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:365
+#: ../developer/deployment.md:367
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:372
+#: ../developer/deployment.md:374
 #, python-brace-format
 msgid ""
 "`required variable DB_NAME is missing a value: DB_NAME must be set in "
@@ -790,23 +798,23 @@ msgstr ""
 "`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
 "文件自己写的文案，也是这一行里最好 grep 的部分。"
 
-#: ../developer/deployment.md:377
+#: ../developer/deployment.md:379
 msgid ""
 "Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT`."
 msgstr "端口已被占用——覆盖 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
 
-#: ../developer/deployment.md:378
+#: ../developer/deployment.md:380
 msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
 
-#: ../developer/deployment.md:380
+#: ../developer/deployment.md:382
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:382
+#: ../developer/deployment.md:384
 msgid ""
 "`Too many authentication failures from this IP. Temporarily blocked.` is "
 "the gateway's own abuse defense, not a provider error and not a quota. "
@@ -819,7 +827,7 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_THRESHOLD` 次认证失败（默认是一天 200 次）之后，就会被拒绝 "
 "`AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
 
-#: ../developer/deployment.md:388
+#: ../developer/deployment.md:390
 msgid ""
 "The awkward case is a caller you own — a status monitor, a CI job, a "
 "service account — whose key was rotated, revoked, or never reached its "
@@ -830,21 +838,21 @@ msgstr ""
 "麻烦的情形是你自己的调用方——状态监控、CI "
 "任务、服务账号——它的密钥被轮换了、被吊销了，或者根本没进到它的运行环境里。它按计划不断重试，越过阈值，然后就在*密钥检查之前*被拒绝，这带来两个值得记住的后果："
 
-#: ../developer/deployment.md:393
+#: ../developer/deployment.md:395
 msgid ""
 "**Repairing the credential does not lift the block.** The blocklist is "
 "consulted before the presented key is read, so a corrected key gets the "
 "same 429 until the deadline passes."
 msgstr "**修好凭据并不会解除封禁**。黑名单的判断发生在读取所带密钥之前，所以在期限走完之前，正确的密钥拿到的还是同一个 429。"
 
-#: ../developer/deployment.md:396
+#: ../developer/deployment.md:398
 msgid ""
 "**The 429 hides the original error.** Whatever the caller reports after "
 "the block is in place says nothing about whether the underlying 401/403 "
 "was fixed."
 msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
 
-#: ../developer/deployment.md:399
+#: ../developer/deployment.md:401
 msgid ""
 "Which caller is it? Turn on the `log_rejected_requests` admin setting and"
 " the refusals land in Recent Requests as `ip_blocked` rows. Each row "
@@ -860,11 +868,11 @@ msgstr ""
 " Recent Requests "
 "里。每一行都会给出调用方所带密钥背后的账号——包括已被吊销或已过期的密钥，卡住的监控带的正是这种——并在用户旁边标出该凭据的状态（`revoked`、`expired`、`user_suspended`）。没有用户的那一行是没能查出来，而不是证明对方是陌生人：可能这套部署从来没签发过那个密钥，也可能这次身份查询被丢弃了——它跑在很紧的预算上，而封禁正在挡住的那种洪水，恰恰最先让它放弃。"
 
-#: ../developer/deployment.md:409
+#: ../developer/deployment.md:411
 msgid "To recover, first fix the credential, then clear the block:"
 msgstr "要恢复，先修好凭据，再解除封禁："
 
-#: ../developer/deployment.md:424
+#: ../developer/deployment.md:426
 msgid ""
 "`cleared: false` means there was nothing to lift — it lapsed, or that "
 "bucket was never blocked. Clearing grants no immunity: a caller still "
@@ -877,7 +885,7 @@ msgstr ""
 "表示没有什么可解除的——封禁已经到期，或者那个分桶从来没被封过。解除不授予任何豁免：仍然带着错误密钥的调用方，越过阈值后会再次被封。对于根本就不该被封的来源，应该把它列进"
 " `AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
 
-#: ../developer/deployment.md:430
+#: ../developer/deployment.md:432
 msgid ""
 "The blocklist is per-process, in-memory state. On the single-process "
 "default both endpoints are exact, and a restart also clears every block. "
@@ -887,15 +895,15 @@ msgstr ""
 "黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 "
 "worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
 
-#: ../developer/deployment.md:435
+#: ../developer/deployment.md:437
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:437
+#: ../developer/deployment.md:439
 msgid "**Stop and start, keeping data:**"
 msgstr "**停止再启动，保留数据：**"
 
-#: ../developer/deployment.md:443
+#: ../developer/deployment.md:445
 msgid ""
 "**Destroy the database and start clean.** `docker compose down -v` does "
 "*not* do this. `postgres_data` is declared `external: true` in "
@@ -907,7 +915,7 @@ msgstr ""
 "`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
 "从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，于是 `make up` 又回到完全相同的数据上。要按名字删除它："
 
-#: ../developer/deployment.md:456
+#: ../developer/deployment.md:458
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key and "
 "request log with it. Take a `pg_dump` first if any of it matters."
@@ -915,7 +923,7 @@ msgstr ""
 "`docker volume rm` 不可逆，会连同每一个账户、每一把 API key 和所有请求日志一起带走。只要其中还有任何东西重要，先做一次"
 " `pg_dump`。"
 
-#: ../developer/deployment.md:460
+#: ../developer/deployment.md:462
 msgid ""
 "pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call "
 "relay's (`hybridinference_codex_oncall_data`) are ordinary local volumes,"
@@ -930,7 +938,7 @@ msgstr ""
 "down`，这里没有任何命令会替你加上 `-v`——你得自己跑 `docker compose --profile admin --profile"
 " oncall down -v`，或者像上面那样按名字删卷。"
 
-#: ../developer/deployment.md:467
+#: ../developer/deployment.md:469
 msgid "Rebuilding after code changes"
 msgstr "改动代码后重新构建"
 

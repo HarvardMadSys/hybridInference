@@ -28,7 +28,7 @@ async def test_verify_admin_token_success(monkeypatch, mock_request):
         request=mock_request,
         authorization="Bearer test-admin",
     )
-    assert result == "127.0.0.1"
+    assert result == "unknown"
 
 
 @pytest.mark.asyncio

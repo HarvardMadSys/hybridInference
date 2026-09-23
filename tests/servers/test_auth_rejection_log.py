@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -176,6 +177,8 @@ def blocked_localhost(monkeypatch):
     The blocklist is per-process module state, so it is wiped either side.
     """
     from serving.config.settings import settings
+
+    monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
     from serving.utils.auth_failure_blocklist import (
         record_auth_failure,
         reset_auth_failure_block_state,
@@ -186,6 +189,11 @@ def blocked_localhost(monkeypatch):
     monkeypatch.setattr(settings, "auth_failure_block_threshold", 1)
     monkeypatch.setattr(settings, "auth_failure_block_window_sec", 100)
     monkeypatch.setattr(settings, "auth_failure_block_duration_sec", 1000)
+    monkeypatch.setattr(
+        settings,
+        "trusted_direct_client_parsed",
+        (ipaddress.ip_network("127.0.0.1/32"),),
+    )
     yield record_auth_failure
     reset_auth_failure_block_state()
 

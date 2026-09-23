@@ -195,7 +195,10 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 | `BASE_URL` | this gateway's own public origin, used to build the absolute links in signup and password-reset emails. Set it: the server does not interpret `X-Forwarded-*`, so a blank value derives `http://…` from the request even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `LOG_LEVEL`, `LOG_FORMAT` | logging verbosity and `json`/text output |
 | `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
-| `TRUST_PROXY_HEADERS` | whether `X-Forwarded-For` / `X-Real-IP` are believed |
+| `TRUST_PROXY_HEADERS` | enables `X-Forwarded-For` / `X-Real-IP` processing only for peers in `TRUSTED_PROXIES` |
+| `TRUSTED_PROXIES` | comma-separated proxy CIDRs whose forwarding assertions may be trusted; required when `TRUST_PROXY_HEADERS=1` |
+| `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for direct client peers; does not authorize forwarding headers |
+| `TRUST_CLOUDFLARE_HEADERS` / `TRUSTED_CLOUDFLARE_NETWORKS` | separately opt into Cloudflare assertions and authorize the immediate Cloudflare-facing peer CIDRs |
 
 ### Provider credentials
 

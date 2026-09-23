@@ -73,11 +73,13 @@ nothing fails when they go missing:
 | `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
 
 The third is worth separating from what the gateway *does* do: it reads
-forwarded headers, gated on `TRUST_PROXY_HEADERS` / `TRUST_CLOUDFLARE_HEADERS`,
-but it never rewrites them. With no rewriting hop in front, the leftmost
-`X-Forwarded-For` entry is whatever the caller sent — which is why
-`CF-Connecting-IP` is preferred when Cloudflare is the immediate proxy. See
-[Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
+forwarded headers, gated on the relevant trust flag **and** an explicitly
+configured CIDR list (`TRUSTED_PROXIES` or
+`TRUSTED_CLOUDFLARE_NETWORKS`), but it never rewrites them. Enabling a flag
+without authorizing the immediate peer therefore remains fail-closed. With no
+rewriting hop in front, the leftmost `X-Forwarded-For` entry is whatever the
+caller sent — which is why `CF-Connecting-IP` is preferred when Cloudflare is
+the immediate proxy. See [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
 
 This is recorded as a known gap, not a regression: whether to reimplement any
 of it in the application is an open decision.
