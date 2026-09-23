@@ -83,8 +83,10 @@ export default function SignupPage() {
         password: data.password,
         user_name: data.userName.trim(),
         use_case: combinedUseCase || undefined,
-        // The account form is only reachable after every consent on the
-        // preceding step was checked, and the backend stores one flag.
+        // The account form is only reachable after every confirmation on the
+        // preceding step was checked — the console's four, or the module's
+        // `consentItems` when it publishes its own terms — and the backend
+        // stores one flag for all of them.
         accepted_tos: true,
         turnstileToken: turnstileTokenRef.current ?? undefined,
       });

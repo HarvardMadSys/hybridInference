@@ -71,11 +71,14 @@ export type {
   AuthFieldLayoutProps,
   AuthFrameProps,
   AuthMessages,
+  ConsentItem,
+  ConsentItems,
   LandingPageProps,
   PublicRoute,
   SiteUiClientModule,
   SiteUiModuleDescriptor,
   SiteUiServerModule,
+  TermsContentProps,
   TermsFrameProps,
 } from '@/site-ui/contract';
 

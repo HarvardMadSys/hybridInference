@@ -9,11 +9,12 @@ import { TermsSections } from '@/site-ui/terms-sections';
 /**
  * The console's own terms page body: a card inside the console container.
  *
- * This is the *default*. A distribution changes the chrome through the Site UI
- * interface rather than by editing this file — `PublicRouteBoundary` renders the
- * deployment's `TermsFrame` around the same text when one is installed, and the
- * console's legal chrome otherwise. The words themselves live in
- * `@/site-ui/terms-sections`, so the two frames cannot drift apart.
+ * This is the *default*, and not the Site UI export of the same name. A
+ * distribution that publishes its own legal text does it through the interface
+ * rather than by editing this file: its `TermsFrame` and `TermsContent` replace
+ * this card, and the console's sign-up step shows that `TermsContent` too. The
+ * console's words live in `@/site-ui/terms-sections`, which this card and the
+ * console's sign-up step share, so those two cannot drift apart either.
  */
 export function TermsContent(): JSX.Element {
   const branding = useBranding();

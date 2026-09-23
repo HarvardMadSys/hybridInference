@@ -1,19 +1,48 @@
 'use client';
 
+import type { ComponentType } from 'react';
+
 import {
   AUTH_MESSAGE_KEYS,
+  type AuthAppearance,
+  type AuthFieldLayout,
+  type AuthFrameProps,
   type AuthMessageKey,
   type AuthMessages,
+  type ConsentItem,
+  type ConsentItems,
+  type LandingPageProps,
+  type ModuleLegalText,
   type SiteUiClientModule,
+  type SiteUiModuleDescriptor,
 } from './contract';
 import * as activeModule from '@site-ui/client';
 
 /**
  * The compiled-in module, normalized once for the host. The descriptor is
- * required; Landing, AuthFrame, TermsFrame, fieldLayout, authAppearance and
- * authMessages are optional named exports. A default export is not part of the
- * contract and is not read.
+ * required; Landing, AuthFrame, fieldLayout, authAppearance, authMessages and
+ * the legal set — TermsFrame, TermsContent and consentItems — are optional
+ * named exports. A default export is not part of the contract and is not read.
  */
+
+/**
+ * The module as the host reads it: every optional export resolved, once, to a
+ * value or to "the host's own".
+ *
+ * The legal exports are one field because they are one decision — the
+ * contract accepts all three or none — so a caller asks one question and cannot
+ * find a frame without the text it frames.
+ */
+export interface ActiveSiteUi {
+  readonly descriptor: SiteUiModuleDescriptor;
+  readonly Landing: ComponentType<LandingPageProps> | null;
+  readonly AuthFrame: ComponentType<AuthFrameProps> | null;
+  /** The module's own legal text, or `null` when the console's is published. */
+  readonly legalText: ModuleLegalText | null;
+  readonly fieldLayout: AuthFieldLayout | undefined;
+  readonly authAppearance: AuthAppearance | undefined;
+  readonly authMessages: AuthMessages | undefined;
+}
 
 /**
  * The module's exports, checked against the client contract.
@@ -28,7 +57,10 @@ import * as activeModule from '@site-ui/client';
 const exported: SiteUiClientModule = activeModule;
 
 /** The exports the host renders as components. */
-type ComponentExport = 'Landing' | 'AuthFrame' | 'TermsFrame' | 'fieldLayout';
+type ComponentExport = 'Landing' | 'AuthFrame' | 'TermsFrame' | 'TermsContent' | 'fieldLayout';
+
+/** The module's name in an error, so a failed build points at the right module. */
+const MODULE_NAME = `The Site UI module '${String(exported.descriptor?.id)}'`;
 
 /** React's markers for `memo`, `forwardRef` and `lazy` components, which are objects. */
 const EXOTIC_COMPONENTS: ReadonlySet<unknown> = new Set([
@@ -63,13 +95,100 @@ function component<K extends ComponentExport>(key: K): NonNullable<SiteUiClientM
   const value = exported[key];
   if (value === undefined || value === null) return null;
   if (!isComponent(value)) {
-    const found = typeof value === 'object' ? 'an object' : `a ${typeof value}`;
     throw new Error(
-      `The Site UI module '${String(exported.descriptor?.id)}' exports ${key} as ${found}. ` +
+      `${MODULE_NAME} exports ${key} as ${describe(value)}. ` +
         `${key} must be a React component, or null to keep the host's default.`,
     );
   }
   return value as NonNullable<SiteUiClientModule[K]>;
+}
+
+function describe(value: unknown): string {
+  if (Array.isArray(value)) return 'an array';
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+}
+
+/** The legal set, in the order a message names them. */
+const LEGAL_TEXT_EXPORTS = ['TermsFrame', 'TermsContent', 'consentItems'] as const;
+
+/**
+ * The module's legal text, or `null` when it publishes none and the console's
+ * terms and confirmations stand.
+ *
+ * All three exports or none. The union type stops a partial set, and an empty
+ * list, in the type check `next build` runs. This stops what the compiler
+ * cannot see, when the module loads — the first request, since every route is
+ * rendered on demand and the build renders none — and before any page renders,
+ * because a partial set is not something a page can recover from: `/terms`
+ * would publish one text while the sign-up step asked visitors to accept
+ * another.
+ */
+function legalText(): ModuleLegalText | null {
+  const supplied = {
+    TermsFrame: component('TermsFrame'),
+    TermsContent: component('TermsContent'),
+    consentItems: exported.consentItems ?? null,
+  };
+  const present = LEGAL_TEXT_EXPORTS.filter((key) => supplied[key] !== null);
+  if (present.length === 0) return null;
+
+  const { TermsFrame, TermsContent, consentItems } = supplied;
+  if (TermsFrame === null || TermsContent === null || consentItems === null) {
+    const missing = LEGAL_TEXT_EXPORTS.filter((key) => supplied[key] === null);
+    throw new Error(
+      `${MODULE_NAME} exports ${list(present)} without ${list(missing)}. A module that ` +
+        'publishes its own legal text exports TermsFrame, TermsContent and consentItems ' +
+        'together, so that /terms and the sign-up consent step show the same text.',
+    );
+  }
+  return { TermsFrame, TermsContent, consentItems: checkedConsentItems(consentItems) };
+}
+
+function list(names: readonly string[]): string {
+  return names.length > 1
+    ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+    : names[0];
+}
+
+/**
+ * The confirmations, checked and copied.
+ *
+ * Checked because the sign-up request records acceptance once every listed
+ * confirmation is checked: an empty list would record it for a visitor who
+ * confirmed nothing, and two items with one id would share a checkbox. Copied,
+ * with only the fields the contract declares, and frozen, so nothing that holds
+ * the module can change what the step asks after it has loaded.
+ */
+function checkedConsentItems(value: unknown): ConsentItems {
+  const problem = (detail: string) => new Error(`${MODULE_NAME} exports consentItems ${detail}.`);
+  if (!Array.isArray(value)) {
+    throw problem(`as ${describe(value)}; it must be an array of { id, label } confirmations`);
+  }
+  if (value.length === 0) {
+    throw problem(
+      'as an empty list. The sign-up step records acceptance of the terms once every ' +
+        'confirmation is checked, so it needs at least one',
+    );
+  }
+
+  const ids = new Set<string>();
+  const items = value.map((item: unknown, index): ConsentItem => {
+    const { id, label, description } = (item ?? {}) as Record<string, unknown>;
+    if (typeof id !== 'string' || id.trim() === '') {
+      throw problem(`with no id at position ${index}; each needs a non-empty string id`);
+    }
+    if (ids.has(id)) throw problem(`with the id '${id}' twice; ids must be unique`);
+    ids.add(id);
+    if (typeof label !== 'string' || label.trim() === '') {
+      throw problem(`with no label for '${id}'; each needs the sentence the visitor confirms`);
+    }
+    if (description !== undefined && typeof description !== 'string') {
+      throw problem(`with a description for '${id}' that is not a string`);
+    }
+    return Object.freeze(description === undefined ? { id, label } : { id, label, description });
+  });
+  const [first, ...rest] = items;
+  return Object.freeze([first, ...rest]);
 }
 
 const DECLARED_MESSAGE_KEYS: ReadonlySet<string> = new Set(AUTH_MESSAGE_KEYS);
@@ -99,12 +218,12 @@ function declaredMessages(messages: AuthMessages | undefined): AuthMessages | un
   return declared;
 }
 
-export const SITE_UI_CLIENT: SiteUiClientModule = {
+export const SITE_UI_CLIENT: ActiveSiteUi = {
   descriptor: exported.descriptor,
   Landing: component('Landing'),
   // Missing page-owning components preserve the host's chrome.
   AuthFrame: component('AuthFrame'),
-  TermsFrame: component('TermsFrame'),
+  legalText: legalText(),
   fieldLayout: component('fieldLayout') ?? undefined,
   authAppearance: exported.authAppearance,
   authMessages: declaredMessages(exported.authMessages),

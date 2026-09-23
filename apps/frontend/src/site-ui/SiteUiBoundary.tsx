@@ -48,7 +48,7 @@ export function useLanding(): (typeof SITE_UI_CLIENT)['Landing'] {
  */
 export function useTermsFrame(): React.ComponentType<TermsFrameProps> | null {
   const route = usePublicRoute();
-  return route === 'terms' ? (SITE_UI_CLIENT.TermsFrame ?? null) : null;
+  return route === 'terms' ? (SITE_UI_CLIENT.legalText?.TermsFrame ?? null) : null;
 }
 
 /**
@@ -75,12 +75,13 @@ export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
 /**
  * The legal page, in whichever shape the compiled-in module wants.
  *
- * Two cases, and the module's frame receives **no children**:
+ * Two cases:
  *
- * - a module supplies a `TermsFrame` → it renders the whole legal page,
- *   including the text. A layout and its copy travel together, so the host has
- *   nothing to hand over; the frame is the page.
- * - no frame → the console's own body, which is its card inside the console
+ * - the module publishes its own legal text → its `TermsFrame` draws the page
+ *   around its `TermsContent`, which the host renders and hands in as the
+ *   frame's children. The consent step renders the same `TermsContent`, so the
+ *   text published here is the text a visitor accepts at sign-up.
+ * - it does not → the console's own body, which is its card inside the console
  *   container, because `PublicRouteBoundary` has already decided that this
  *   route keeps the console chrome.
  *
@@ -88,9 +89,14 @@ export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
  * the build compiled in, which is a module-scope fact on the client side.
  */
 export function TermsPageContent() {
-  const Frame = useTermsFrame();
-  if (!Frame) return <ConsoleTerms />;
-  return <Frame>{null}</Frame>;
+  const legal = SITE_UI_CLIENT.legalText;
+  if (!legal) return <ConsoleTerms />;
+  const { TermsFrame: Frame, TermsContent: Content } = legal;
+  return (
+    <Frame>
+      <Content headingLevel={2} compact={false} />
+    </Frame>
+  );
 }
 
 /**

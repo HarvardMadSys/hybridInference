@@ -58,8 +58,16 @@ vi.mock('@/site-ui/module', () => ({
     get AuthFrame() {
       return module_.value.authFrame;
     },
-    get TermsFrame() {
-      return module_.value.termsFrame;
+    // A frame comes with the text it frames and the confirmations about it.
+    get legalText() {
+      const frame = module_.value.termsFrame;
+      return frame
+        ? {
+            TermsFrame: frame,
+            TermsContent: () => <p>MODULE TERMS</p>,
+            consentItems: [{ id: 'terms', label: 'I accept the module terms.' }],
+          }
+        : null;
     },
   },
 }));
@@ -115,10 +123,10 @@ function useFullPageModule() {
       <footer data-testid="module-footer" />
     </div>
   );
-  module_.value.termsFrame = () => (
+  module_.value.termsFrame = ({ children }) => (
     <div data-testid="module-page">
       <header data-testid="module-header" />
-      <main data-testid="module-main" />
+      <main data-testid="module-main">{children}</main>
       <footer data-testid="module-footer" />
     </div>
   );
@@ -287,10 +295,16 @@ function ModuleLanding() {
   return Landing ? <Landing /> : <p>NO LANDING</p>;
 }
 
-/** The module's legal page: the frame receives no children. */
+/** The module's legal page: its frame around its own text. */
 function ModuleTerms() {
-  const Frame = SITE_UI_CLIENT.TermsFrame;
-  return Frame ? <Frame>{null}</Frame> : <p>NO TERMS FRAME</p>;
+  const legal = SITE_UI_CLIENT.legalText;
+  if (!legal) return <p>NO TERMS FRAME</p>;
+  const { TermsFrame: Frame, TermsContent: Content } = legal;
+  return (
+    <Frame>
+      <Content headingLevel={2} compact={false} />
+    </Frame>
+  );
 }
 
 /** What a shared account page renders into the frame: the page's own form. */

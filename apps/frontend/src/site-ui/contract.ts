@@ -117,20 +117,75 @@ export interface AuthFrameProps {
 export const TERMS_SECTION_ANCHOR = 'terms-s';
 
 /**
- * Legal-page chrome, for a module that ships its own legal text.
+ * Legal-page chrome around the module's own legal text — the module's
+ * `TermsFrame`.
+ *
+ * The frame draws the page: its header, contents list and footer. It does not
+ * bring the text. The host renders the module's `TermsContent` and passes it
+ * in as `children`, so the text published at `/terms` is the same component the
+ * sign-up consent step shows — and a frame that drew a body of its own would
+ * publish one text while visitors accept another.
  *
  * Optional, and its absence is a statement rather than an omission: a module
- * that does not export `TermsFrame` is saying "the console's terms page is the
- * one this deployment publishes", and the console then keeps its own container.
- *
- * The two cannot be mixed. A frame is chrome *around* a body, so a module that
- * draws a full-width legal header while the console supplies a card inside it
- * renders one layout inside another. The distribution's text and the
- * distribution's frame travel together, which is also why they are one module.
+ * that does not export it is saying "the console's terms page is the one this
+ * deployment publishes", and the console then keeps its own container and text.
  */
 export interface TermsFrameProps {
+  /** The module's `TermsContent`, rendered by the host. Always render it. */
   children: React.ReactNode;
 }
+
+/**
+ * The module's legal text — its `TermsContent` — in either of the two places
+ * it appears.
+ *
+ * One component in both places is what makes the text a visitor accepts at
+ * sign-up the text the site publishes:
+ *
+ * - `/terms`, inside the module's `TermsFrame`: `headingLevel` 2, under the
+ *   frame's page heading, and `compact` false;
+ * - the sign-up consent step, inside a scrolling box under that step's own
+ *   section heading: `headingLevel` 3 and `compact` true.
+ *
+ * Render the legal body only: the sections and any preamble such as a date.
+ * The page heading is the frame's. On `/terms` (`compact` false), give each
+ * section its `TERMS_SECTION_ANCHOR` id — the console links privacy to
+ * `/terms#terms-s5`.
+ */
+export interface TermsContentProps {
+  /** The level of each section heading: 2 on `/terms`, 3 in the consent step. */
+  readonly headingLevel: 2 | 3;
+  /** True in the consent step's scrolling box: smaller type, tighter spacing. */
+  readonly compact: boolean;
+}
+
+/**
+ * One confirmation a visitor must give before creating an account.
+ *
+ * Plain strings, like the rest of the module's wording: the step renders each
+ * one as a checkbox with its label, so a module decides what is confirmed and
+ * the shared page decides how a confirmation is collected.
+ */
+export interface ConsentItem {
+  /** Unique within the list. Identifies the checkbox; never shown. */
+  readonly id: string;
+  /** The sentence the visitor confirms, beside the checkbox. */
+  readonly label: string;
+  /** More detail, shown under the label and read with the checkbox. */
+  readonly description?: string;
+}
+
+/**
+ * The module's `consentItems`: every confirmation the sign-up consent step
+ * requires, in order. The step lets the visitor continue only once all of them
+ * are checked.
+ *
+ * At least one, in the type: the sign-up request records acceptance of the
+ * terms once every item is checked, so an empty list would record it for a
+ * visitor who confirmed nothing. Declare the export with this type — a plain
+ * `ConsentItem[]` does not say it is non-empty.
+ */
+export type ConsentItems = readonly [ConsentItem, ...ConsentItem[]];
 
 /**
  * How one field arranges the nodes the shared page produces — the module's
@@ -422,8 +477,46 @@ export type AuthMessages = Partial<Record<AuthMessageKey, string>>;
  * Client components, optional form styling and wording. Only the descriptor is
  * required. A page-owning component replaces the host's chrome for its route;
  * omitting it (or exporting `null`) preserves the shared page and chrome.
+ *
+ * The legal exports come as a set: see `ConsoleLegalText` and
+ * `ModuleLegalText`.
  */
-export interface SiteUiClientModule {
+export type SiteUiClientModule = SiteUiClientExports & (ConsoleLegalText | ModuleLegalText);
+
+/**
+ * A module that publishes no legal text of its own. `/terms` shows the
+ * console's terms in the console's container, and the sign-up consent step
+ * shows the same terms with the console's four confirmations.
+ */
+export interface ConsoleLegalText {
+  TermsFrame?: null;
+  TermsContent?: null;
+  consentItems?: null;
+}
+
+/**
+ * A module that publishes its own legal text: all three exports, together.
+ *
+ * They are one decision. The text is what `/terms` publishes and what the
+ * sign-up step asks a visitor to accept, and the confirmations are about that
+ * text — so a frame without the module's text, or the text without the
+ * confirmations that go with it, would show a visitor one thing and ask them to
+ * accept another. A module that exports some but not all of them fails the type
+ * check that `next build` runs; one that gets past it — through an `any` or a
+ * cast — is refused when the host loads it, which is on the first request, not
+ * during the build.
+ */
+export interface ModuleLegalText {
+  /** Chrome for `/terms`, around the module's `TermsContent`. */
+  TermsFrame: React.ComponentType<TermsFrameProps>;
+  /** The legal text: inside `TermsFrame` at `/terms`, and in the consent step. */
+  TermsContent: React.ComponentType<TermsContentProps>;
+  /** What the sign-up consent step asks a visitor to confirm. */
+  consentItems: ConsentItems;
+}
+
+/** The exports that do not depend on whether the module publishes legal text. */
+export interface SiteUiClientExports {
   descriptor: SiteUiModuleDescriptor;
   /** Rendered at `/`, including its header, main region and footer. */
   Landing?: React.ComponentType<LandingPageProps> | null;
@@ -433,15 +526,6 @@ export interface SiteUiClientModule {
    * Omitted or `null` keeps the console chrome and default account card.
    */
   AuthFrame?: React.ComponentType<AuthFrameProps> | null;
-  /**
-   * Frame for `/terms`, when the module publishes its own legal text.
-   *
-   * Absent means the console's terms page is the one this deployment shows.
-   * Required *iff* the module also ships that text: the boundary asks whether a
-   * frame exists to decide who draws the header, and it cannot ask a question
-   * the answer is always yes to.
-   */
-  TermsFrame?: React.ComponentType<TermsFrameProps> | null;
   /**
    * Where each account field's label, control, hint, error and action go.
    *

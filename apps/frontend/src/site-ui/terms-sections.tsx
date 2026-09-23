@@ -9,8 +9,9 @@ import { fill } from '@/lib/utils/interpolate';
  *
  * This is the **console's** legal text: English, the sentences the console
  * ships. A distribution that publishes its own terms owns that text in its own
- * module, together with the frame it renders in — a layout and its copy travel
- * together, which is why this component is not handed to a module's frame.
+ * module's `TermsContent`, which the host renders at `/terms` and in the sign-up
+ * step in place of this one — so this component is never handed to a module's
+ * frame, and never shown beside a module's confirmations.
  *
  * The one thing the two must agree on is the anchor prefix, and that is why
  * `TERMS_SECTION_ANCHOR` lives in the contract: the console's footer, the

@@ -51,6 +51,8 @@ const ABSENT = {
   Landing: undefined,
   AuthFrame: undefined,
   TermsFrame: undefined,
+  TermsContent: undefined,
+  consentItems: undefined,
   fieldLayout: undefined,
   authAppearance: undefined,
   authMessages: undefined,
@@ -61,10 +63,12 @@ async function compileIn(exports: Record<string, unknown>) {
   vi.resetModules();
   vi.doMock('@site-ui/client', () => ({ ...ABSENT, descriptor, ...exports }));
   // Imported after the reset, so the provider and the field share one copy of
-  // the contexts they communicate through. One at a time, and the module first:
-  // when it refuses to load, nothing else may still be importing in the
-  // background, or that import finishes during the next test and leaves this
-  // test's stand-in in the registry the next test reads.
+  // the contexts they communicate through — and one at a time, the host first.
+  // Concurrent imports of a module that reaches the mock can each be handed a
+  // different copy; and when the host refuses the module, an import started
+  // beside it would still be loading after this test ends, and could put a
+  // copy of the host compiled against the *next* test's module in the
+  // registry.
   const { SITE_UI_CLIENT } = await import('./module');
   const { SiteUiProvider } = await import('./SiteUiCore');
   const { AuthField } = await import('@/components/auth/AuthForm');
@@ -263,12 +267,15 @@ describe('a module\u2019s component exports', () => {
       Landing: Frame,
       AuthFrame: Memoized,
       TermsFrame: Forwarded,
+      TermsContent: Frame,
+      consentItems: [{ id: 'terms', label: 'I accept the terms.' }],
       fieldLayout: null,
     });
 
     expect(SITE_UI_CLIENT.Landing).toBe(Frame);
     expect(SITE_UI_CLIENT.AuthFrame).toBe(Memoized);
-    expect(SITE_UI_CLIENT.TermsFrame).toBe(Forwarded);
+    expect(SITE_UI_CLIENT.legalText?.TermsFrame).toBe(Forwarded);
+    expect(SITE_UI_CLIENT.legalText?.TermsContent).toBe(Frame);
     expect(SITE_UI_CLIENT.fieldLayout).toBeUndefined();
   });
 
@@ -278,6 +285,73 @@ describe('a module\u2019s component exports', () => {
     const { SITE_UI_CLIENT } = await compileIn({ default: { Landing: Frame } });
 
     expect(SITE_UI_CLIENT.Landing).toBeNull();
+  });
+});
+
+describe('a module\u2019s legal text', () => {
+  function Frame({ children }: { children?: React.ReactNode }) {
+    return <div>{children}</div>;
+  }
+  const ITEMS = [{ id: 'terms', label: 'I accept the terms.' }];
+
+  it('is refused as the module loads when TermsFrame comes without the text and confirmations', async () => {
+    // A frame whose text the consent step does not show is exactly the
+    // mismatch the set exists to prevent: /terms would publish one text while
+    // the sign-up step asked visitors to accept another.
+    await expect(compileIn({ TermsFrame: Frame })).rejects.toThrow(
+      "The Site UI module 'stand-in' exports TermsFrame without TermsContent and consentItems. " +
+        'A module that publishes its own legal text exports TermsFrame, TermsContent and ' +
+        'consentItems together, so that /terms and the sign-up consent step show the same text.',
+    );
+  });
+
+  it('is refused without the frame, or without the confirmations', async () => {
+    await expect(compileIn({ TermsContent: Frame, consentItems: ITEMS })).rejects.toThrow(
+      /exports TermsContent and consentItems without TermsFrame\./,
+    );
+    await expect(compileIn({ TermsFrame: Frame, TermsContent: Frame })).rejects.toThrow(
+      /exports TermsFrame and TermsContent without consentItems\./,
+    );
+  });
+
+  it.each([
+    ['not a list', { terms: true }, /exports consentItems as an object/],
+    ['an empty list', [], /exports consentItems as an empty list/],
+    ['an item without an id', [{ label: 'I accept.' }], /with no id at position 0/],
+    ['a repeated id', [ITEMS[0], ITEMS[0]], /with the id 'terms' twice/],
+    ['an item without a label', [{ id: 'terms', label: ' ' }], /with no label for 'terms'/],
+    [
+      'a description that is not text',
+      [{ id: 'terms', label: 'I accept.', description: 42 }],
+      /with a description for 'terms' that is not a string/,
+    ],
+  ])('refuses confirmations that are %s', async (_case, consentItems, message) => {
+    await expect(
+      compileIn({ TermsFrame: Frame, TermsContent: Frame, consentItems }),
+    ).rejects.toThrow(message);
+  });
+
+  it('keeps a frozen copy of the confirmations, with the declared fields only', async () => {
+    const { SITE_UI_CLIENT } = await compileIn({
+      TermsFrame: Frame,
+      TermsContent: Frame,
+      consentItems: [
+        { id: 'terms', label: 'I accept the terms.', description: 'Read them first.', html: '<b>' },
+      ],
+    });
+
+    const items = SITE_UI_CLIENT.legalText?.consentItems;
+    expect(items).toEqual([
+      { id: 'terms', label: 'I accept the terms.', description: 'Read them first.' },
+    ]);
+    expect(Object.isFrozen(items)).toBe(true);
+    expect(Object.isFrozen(items?.[0])).toBe(true);
+  });
+
+  it('is null when the module exports none of the three, or null for each', async () => {
+    expect((await compileIn({})).SITE_UI_CLIENT.legalText).toBeNull();
+    const nulls = { TermsFrame: null, TermsContent: null, consentItems: null };
+    expect((await compileIn(nulls)).SITE_UI_CLIENT.legalText).toBeNull();
   });
 });
 
@@ -323,6 +397,48 @@ describe('the client module type check', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatch(/is not assignable to type 'SiteUiClientModule'/);
       expect(errors[0]).toMatch(/Types of property 'Landing' are incompatible/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('fails on a module that exports TermsFrame without its text and confirmations', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'site-ui-type-check-'));
+    try {
+      writeFileSync(
+        join(dir, 'client.tsx'),
+        "export const descriptor = { siteUiApi: 1, id: 'frame-only', locale: '' } as const;\n" +
+          'export const TermsFrame = (_props: { children?: unknown }) => null;\n',
+      );
+
+      const errors = typeCheckAgainst(join(dir, 'client.tsx'));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/is not assignable to type 'SiteUiClientModule'/);
+      expect(errors[0]).toMatch(/TermsContent, consentItems/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('fails on a module whose legal set asks for no confirmation', () => {
+    // The load-time guard refuses an empty list too, but the build renders no
+    // page, so only the type can stop it before an image is published.
+    const dir = mkdtempSync(join(tmpdir(), 'site-ui-type-check-'));
+    try {
+      writeFileSync(
+        join(dir, 'client.tsx'),
+        "export const descriptor = { siteUiApi: 1, id: 'no-items', locale: '' } as const;\n" +
+          'export const TermsFrame = (_props: { children?: unknown }) => null;\n' +
+          'export const TermsContent = (_props: { headingLevel: 2 | 3 }) => null;\n' +
+          'export const consentItems = [] as const;\n',
+      );
+
+      const errors = typeCheckAgainst(join(dir, 'client.tsx'));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/Types of property 'consentItems' are incompatible/);
+      expect(errors[0]).toMatch(/Source has 0 element\(s\) but target requires 1/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

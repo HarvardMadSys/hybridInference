@@ -2,6 +2,7 @@
 
 import {
   fill,
+  TERMS_SECTION_ANCHOR,
   useSession,
   useSiteConfig,
   useT,
@@ -9,6 +10,8 @@ import {
   type AuthFieldLayout,
   type AuthFieldLayoutProps,
   type AuthFrameProps,
+  type ConsentItems,
+  type TermsContentProps,
   type TermsFrameProps,
 } from '@site-ui/host';
 
@@ -81,14 +84,65 @@ export function AuthFrame({
   );
 }
 
+/**
+ * The legal page's chrome. It brings no text: `children` is the module's own
+ * `TermsContent`, which the host renders here and in the sign-up consent step.
+ */
 export function TermsFrame({ children }: TermsFrameProps) {
   return (
     <div data-fixture="terms-frame">
+      <h1>Demonstration terms</h1>
       <nav data-fixture="terms-toc">Contents</nav>
       {children}
     </div>
   );
 }
+
+/** Two sections, numbered so the privacy one is where the console links it. */
+const TERMS_SECTIONS = [
+  {
+    number: 1,
+    title: 'Using the demonstration',
+    body: 'The demonstration is provided to show the Site UI seam, and nothing else.',
+  },
+  {
+    number: 5,
+    title: 'Demonstration privacy',
+    body: 'The demonstration keeps the requests it receives for as long as it runs.',
+  },
+];
+
+/**
+ * The module's legal text, the same in both places it appears: under the
+ * frame at `/terms` and in the consent step's scrolling box, where it is
+ * compact and takes the section anchors off.
+ */
+export function TermsContent({ headingLevel, compact }: TermsContentProps) {
+  const Heading = headingLevel === 3 ? 'h3' : 'h2';
+  return (
+    <div data-fixture="terms-content" data-compact={compact ? 'true' : 'false'}>
+      {TERMS_SECTIONS.map((section) => (
+        <section
+          key={section.number}
+          id={compact ? undefined : `${TERMS_SECTION_ANCHOR}${section.number}`}
+        >
+          <Heading>{section.title}</Heading>
+          <p>{section.body}</p>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** What the demonstration asks a visitor to confirm, about the text above. */
+export const consentItems: ConsentItems = [
+  { id: 'demo-terms', label: 'I accept the demonstration terms.' },
+  {
+    id: 'demo-retention',
+    label: 'I understand that the demonstration keeps my requests.',
+    description: 'They are kept for as long as the demonstration runs.',
+  },
+];
 
 /**
  * Wording the module owns, so the host's fallback chain can be checked in both

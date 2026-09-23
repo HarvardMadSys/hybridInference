@@ -86,13 +86,13 @@ describe('the compiled-in module', () => {
     expect(SITE_UI_CLIENT.fieldLayout).toBeUndefined();
   });
 
-  it('supplies no legal frame, because it publishes no legal text', () => {
-    // `TermsFrame` is optional and its absence is a statement: the console's
-    // terms page is the one this deployment shows, so the console keeps its own
-    // container. A module that draws a full-width legal header must also ship
-    // the text that goes in it, and the neutral module ships neither — it
-    // renders the console's card.
-    expect(SITE_UI_CLIENT.TermsFrame).toBeNull();
+  it('publishes no legal text, which keeps the console’s terms and confirmations', () => {
+    // The legal exports are optional and their absence is a statement: the
+    // console's terms page is the one this deployment shows, so the console
+    // keeps its own container, text and sign-up confirmations. A module that
+    // draws a legal frame must also ship the text that goes in it and what a
+    // visitor confirms about it, and the neutral module ships none of the three.
+    expect(SITE_UI_CLIENT.legalText).toBeNull();
   });
 });
 
