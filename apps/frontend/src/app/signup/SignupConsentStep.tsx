@@ -82,6 +82,10 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
         ),
         { app_name: branding.appName },
       )}
+      // The step renders inside `AuthPageFrame` like the form after it, so the
+      // cross-link is the frame's to place: the default card puts it after the
+      // confirmations, a module frame wherever its design does. The step draws
+      // no copy of its own, or the default card shows two.
       topbar={
         <>
           {t('auth.signup.have_account', 'Already have an account?')}{' '}
@@ -284,21 +288,6 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
               {t('auth.consent.all_required', 'All four confirmations are required to continue.')}
             </p>
           )}
-          {/*
-            The cross-link belongs to the consent step itself, not to the frame,
-            because this step renders before the frame does: `/signup` shows the
-            confirmations first and the form — with its `AuthPageFrame` — only
-            after they are accepted. So there is no frame to carry it, and this
-            is the one place a shared page draws its own.
-          */}
-          {
-            <p className="text-center text-sm">
-              {t('auth.signup.have_account', 'Already have an account?')}{' '}
-              <Link href="/login" prefetch={false}>
-                {t('auth.signup.login_link', 'Log In')}
-              </Link>
-            </p>
-          }
         </div>
       </div>
     </AuthPageFrame>

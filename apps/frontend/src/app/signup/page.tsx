@@ -264,7 +264,8 @@ export default function SignupPage() {
               'auth.signup.discovery_placeholder',
               'Friend/classmate, search engine, social media, course link, etc.',
             )}
-            className={`${skin.input} auth-textarea`}
+            className={`${errors.discoverySource?.message ? skin.inputError : skin.input} auth-textarea`}
+            data-auth="control"
             {...register('discoverySource')}
           />
         </AuthField>
@@ -283,7 +284,8 @@ export default function SignupPage() {
               'auth.signup.use_case_placeholder',
               'Tell us briefly what you plan to use the service for (research project, course, app prototype, etc.).',
             )}
-            className={`${skin.input} auth-textarea`}
+            className={`${errors.useCase?.message ? skin.inputError : skin.input} auth-textarea`}
+            data-auth="control"
             {...register('useCase')}
           />
         </AuthField>

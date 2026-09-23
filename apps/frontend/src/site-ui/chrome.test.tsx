@@ -15,7 +15,9 @@ const pathname = vi.hoisted(() => ({ value: '/' }));
 const module_ = vi.hoisted(() => ({
   value: {
     landing: null as null | (() => React.ReactNode),
-    authFrame: null as null | ((props: { children: React.ReactNode }) => React.ReactNode),
+    authFrame: null as
+      | null
+      | ((props: { topbar?: React.ReactNode; children: React.ReactNode }) => React.ReactNode),
     termsFrame: null as null | ((props: { children: React.ReactNode }) => React.ReactNode),
   },
 }));
@@ -70,6 +72,7 @@ vi.mock('@/components/ui/SiteFooter', () => ({
 }));
 
 import { SITE_UI_CLIENT } from '@/site-ui/module';
+import { SignupConsentStep } from '@/app/signup/SignupConsentStep';
 
 import { PublicRouteBoundary } from './PublicRouteBoundary';
 import { AuthPageFrame } from './SiteUiBoundary';
@@ -116,6 +119,18 @@ function useFullPageModule() {
     <div data-testid="module-page">
       <header data-testid="module-header" />
       <main data-testid="module-main" />
+      <footer data-testid="module-footer" />
+    </div>
+  );
+}
+
+/** The same distribution, with an account frame that places the cross-link. */
+function useCrossLinkingModule() {
+  useFullPageModule();
+  module_.value.authFrame = ({ topbar, children }) => (
+    <div data-testid="module-page">
+      <header data-testid="module-header">{topbar}</header>
+      <main data-testid="module-main">{children}</main>
       <footer data-testid="module-footer" />
     </div>
   );
@@ -235,6 +250,18 @@ describe('the account pages inside both module shapes', () => {
     expect(within(page).getByText('FORM')).toBeInTheDocument();
     // And the console's own `<main>` is gone, so the form is not nested in two.
     expect(screen.queryByTestId('console-header')).toBeNull();
+  });
+
+  it.each([
+    ['the console card', useNeutralModule],
+    ['a module frame', useCrossLinkingModule],
+  ])('gives the sign-up consent step one link back to sign-in inside %s', (_shape, install) => {
+    // The step hands its cross-link to the frame like every account page. A
+    // step that also drew its own showed two, whichever frame placed the first.
+    install();
+    renderAt('/signup', <SignupConsentStep onContinue={() => undefined} />);
+
+    expect(screen.getAllByRole('link', { name: /Log In/ })).toHaveLength(1);
   });
 });
 
