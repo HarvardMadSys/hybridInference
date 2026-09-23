@@ -6,6 +6,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,49 +15,10 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const require_ = createRequire(import.meta.url);
 
-/**
- * A lock around the shared generated state.
- *
- * This file resolves modules, and resolving *writes*: `src/site-ui/active/` and
- * `tsconfig.generated.json` are regenerated on every call. Those are shared with
- * every other test file in the run, and Vitest runs files in parallel — so a
- * file that imports `@/site-ui/module` while this one is mid-write can read
- * either the old module or the new one. That is the mechanism behind a test here
- * failing intermittently and passing on re-run, and it is a property of the
- * global the resolver legitimately owns, not a bad assertion.
- *
- * The lock is a file in the OS temp directory, so it serialises across workers
- * and across processes. It is deliberately coarse: the alternative is giving the
- * resolver a per-run output directory, which is a change to production code to
- * serve a test.
- */
-const LOCK = join(tmpdir(), 'site-ui-resolve.lock');
-
-function withSharedState<T>(body: () => T): T {
-  const deadline = Date.now() + 30_000;
-  let held = false;
-  while (!held) {
-    try {
-      writeFileSync(LOCK, String(process.pid), { flag: 'wx' });
-      held = true;
-    } catch {
-      if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for ${LOCK}; remove it if a run was killed`);
-      }
-      // Busy-wait: the critical sections here are milliseconds of file writes.
-      execFileSync('sleep', ['0.05']);
-    }
-  }
-  try {
-    return body();
-  } finally {
-    rmSync(LOCK, { force: true });
-  }
-}
 const frontendDir = join(__dirname, '..', '..');
 
 type Resolution = {
@@ -86,20 +49,60 @@ const resolve = require_(join(frontendDir, 'src', 'site-ui', 'resolve.js')) as {
   }) => void;
 };
 
-const BRIDGE = join(frontendDir, 'src', 'site-ui', 'active');
-const GENERATED = join(frontendDir, 'src', 'generated', 'distribution-ui');
-const TSCONFIG = join(frontendDir, 'tsconfig.generated.json');
 const FIXTURE = join(frontendDir, 'tests', 'fixtures', 'site-ui-demo');
+const EXAMPLE = join(frontendDir, '..', '..', 'distributions', 'example', 'frontend', 'site-ui');
+
+/**
+ * A private copy of what the resolver reads from `apps/frontend`.
+ *
+ * Resolving *writes*: `src/site-ui/active/`, the build manifest and
+ * `tsconfig.generated.json` are regenerated on every call. In the real tree
+ * those files are shared with every other test file in the run —
+ * `SiteUiBoundary.test.tsx` loads the compiled-in module through the bridge —
+ * and Vitest runs files in parallel, so a test here that selected the fixture
+ * could change which module another file imported. That was why tests in both
+ * files failed intermittently. Each test here resolves against its own copy and
+ * never writes the shared state.
+ *
+ * The copy holds only what resolution reads, at the paths it has in the
+ * application: the base TypeScript project, the neutral module and the fixture.
+ */
+type Sandbox = {
+  /** The stand-in for `apps/frontend`. */
+  app: string;
+  /** The fixture module, copied to `tests/fixtures/site-ui-demo` inside it. */
+  fixture: string;
+  bridge: string;
+  manifest: string;
+  tsconfig: string;
+};
+
+function sandbox(): Sandbox {
+  const app = mkdtempSync(join(tmpdir(), 'site-ui-frontend-'));
+  cpSync(join(frontendDir, 'tsconfig.json'), join(app, 'tsconfig.json'));
+  cpSync(join(frontendDir, 'src', 'site-ui', 'neutral'), join(app, 'src', 'site-ui', 'neutral'), {
+    recursive: true,
+  });
+  const fixture = join(app, 'tests', 'fixtures', 'site-ui-demo');
+  cpSync(FIXTURE, fixture, { recursive: true });
+  return {
+    app,
+    fixture,
+    bridge: join(app, 'src', 'site-ui', 'active'),
+    manifest: join(app, 'src', 'generated', 'distribution-ui', 'manifest.json'),
+    tsconfig: join(app, 'tsconfig.generated.json'),
+  };
+}
 
 /** Read the generated files as a set, so a stale leftover is visible. */
-function generatedState() {
+function generatedState(box: Sandbox) {
   const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8') : null);
   return {
-    client: read(join(BRIDGE, 'client.ts')),
-    server: read(join(BRIDGE, 'server.ts')),
-    styles: read(join(BRIDGE, 'styles.css')),
-    manifest: read(join(GENERATED, 'manifest.json')),
-    tsconfig: read(TSCONFIG),
+    client: read(join(box.bridge, 'client.ts')),
+    server: read(join(box.bridge, 'server.ts')),
+    styles: read(join(box.bridge, 'styles.css')),
+    manifest: read(box.manifest),
+    tsconfig: read(box.tsconfig),
   };
 }
 
@@ -192,6 +195,7 @@ describe('a module declares its identity once', () => {
 
 describe('Site UI resolution', () => {
   let scratch: string;
+  let box: Sandbox;
 
   beforeAll(() => {
     scratch = mkdtempSync(join(tmpdir(), 'site-ui-'));
@@ -199,18 +203,23 @@ describe('Site UI resolution', () => {
 
   afterAll(() => {
     rmSync(scratch, { recursive: true, force: true });
-    // Leave the tree in its default configuration: the rest of the suite, and
-    // the next `next build`, must see the neutral module.
-    withSharedState(() => resolve.generateSiteUi(frontendDir, {}));
+  });
+
+  beforeEach(() => {
+    box = sandbox();
+  });
+
+  afterEach(() => {
+    rmSync(box.app, { recursive: true, force: true });
   });
 
   it('compiles the neutral UI when nothing is configured', () => {
-    const resolution = resolve.prepareSiteUi(frontendDir, {});
+    const resolution = resolve.prepareSiteUi(box.app, {});
 
     expect(resolution.kind).toBe('neutral');
     expect(resolution.id).toBe('neutral');
     expect(resolution.api).toBe(1);
-    expect(resolution.moduleDir).toBe(join(frontendDir, 'src', 'site-ui', 'neutral'));
+    expect(resolution.moduleDir).toBe(join(box.app, 'src', 'site-ui', 'neutral'));
   });
 
   it('treats an empty or whitespace SITE_UI_DIR as no extension at all', () => {
@@ -218,76 +227,62 @@ describe('Site UI resolution', () => {
     // request would make every unconfigured build fail, which is the opposite
     // of the rule that an *absent* extension means the neutral UI.
     for (const value of ['', '   ', '\t']) {
-      const resolution = resolve.prepareSiteUi(frontendDir, { SITE_UI_DIR: value });
+      const resolution = resolve.prepareSiteUi(box.app, { SITE_UI_DIR: value });
       expect(resolution.kind).toBe('neutral');
     }
   });
 
   it('compiles an external module when one is configured', () => {
-    const resolution = resolve.prepareSiteUi(frontendDir, {
-      SITE_UI_DIR: FIXTURE,
+    const resolution = resolve.prepareSiteUi(box.app, {
+      SITE_UI_DIR: box.fixture,
       SITE_UI_API: '1',
     });
 
     expect(resolution.kind).toBe('distribution');
     expect(resolution.id).toBe('site-ui-demo');
-    expect(resolution.client).toBe(join(FIXTURE, 'client.tsx'));
-    expect(resolution.server).toBe(join(FIXTURE, 'server.ts'));
-    expect(resolution.styles).toBe(join(FIXTURE, 'styles.css'));
+    expect(resolution.client).toBe(join(box.fixture, 'client.tsx'));
+    expect(resolution.server).toBe(join(box.fixture, 'server.ts'));
+    expect(resolution.styles).toBe(join(box.fixture, 'styles.css'));
   });
 
   it('accepts the public homepage-only example and defaults its empty server entry', () => {
-    withSharedState(() => {
-      const resolution = resolve.prepareSiteUi(frontendDir, {
-        SITE_UI_DIR: join(
-          frontendDir,
-          '..',
-          '..',
-          'distributions',
-          'example',
-          'frontend',
-          'site-ui',
-        ),
-        SITE_UI_API: '1',
-      });
-      expect(resolution.id).toBe('example');
-      const source = readFileSync(join(BRIDGE, 'server.ts'), 'utf8');
-      const { outputText } = ts.transpileModule(source, {
-        compilerOptions: { module: ts.ModuleKind.CommonJS },
-      });
-      const exports = {};
-      runInNewContext(outputText, { exports, require: () => ({}) });
-      expect(exports).toEqual({ locale: '' });
+    const resolution = resolve.prepareSiteUi(box.app, { SITE_UI_DIR: EXAMPLE, SITE_UI_API: '1' });
+    expect(resolution.id).toBe('example');
+    const source = readFileSync(join(box.bridge, 'server.ts'), 'utf8');
+    const { outputText } = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS },
     });
+    const exports = {};
+    runInNewContext(outputText, { exports, require: () => ({}) });
+    expect(exports).toEqual({ locale: '' });
   });
 
   it('exposes only the consumed server locale, not arbitrary module exports', () => {
-    withSharedState(() => {
-      resolve.prepareSiteUi(frontendDir, { SITE_UI_DIR: FIXTURE, SITE_UI_API: '1' });
-      const source = readFileSync(join(BRIDGE, 'server.ts'), 'utf8');
-      const { outputText } = ts.transpileModule(source, {
-        compilerOptions: { module: ts.ModuleKind.CommonJS },
-      });
-      const exports = {};
-      runInNewContext(outputText, {
-        exports,
-        require: () => ({ locale: 'en-GB', metadata: { title: 'Unused' }, internal: true }),
-      });
-      expect(exports).toEqual({ locale: 'en-GB' });
+    resolve.prepareSiteUi(box.app, { SITE_UI_DIR: box.fixture, SITE_UI_API: '1' });
+    const source = readFileSync(join(box.bridge, 'server.ts'), 'utf8');
+    const { outputText } = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS },
     });
+    const exports = {};
+    runInNewContext(outputText, {
+      exports,
+      require: () => ({ locale: 'en-GB', metadata: { title: 'Unused' }, internal: true }),
+    });
+    expect(exports).toEqual({ locale: 'en-GB' });
   });
 
-  it('resolves a relative SITE_UI_DIR against the repository, not the caller', () => {
-    // The relative path is the subject: it must resolve against `frontendDir`
-    // rather than against `process.cwd()`. The lock is around the call because
-    // resolving also *writes* the shared generated state.
-    const resolution = withSharedState(() =>
-      resolve.prepareSiteUi(frontendDir, {
-        SITE_UI_DIR: 'tests/fixtures/site-ui-demo',
-        SITE_UI_API: '1',
-      }),
-    );
-    expect(resolution.moduleDir).toBe(FIXTURE);
+  it('resolves a relative SITE_UI_DIR against the application, not the caller', () => {
+    // The relative path is the subject: it must resolve against the frontend
+    // directory the resolver is given rather than against `process.cwd()`. The
+    // two differ here — this file runs from the real `apps/frontend`, which has
+    // a fixture at the same relative path — so resolving against the working
+    // directory would select the wrong copy rather than fail.
+    const resolution = resolve.prepareSiteUi(box.app, {
+      SITE_UI_DIR: 'tests/fixtures/site-ui-demo',
+      SITE_UI_API: '1',
+    });
+    expect(process.cwd()).not.toBe(box.app);
+    expect(resolution.moduleDir).toBe(box.fixture);
   });
 
   describe('a configured extension that cannot be used fails the build', () => {
@@ -295,22 +290,28 @@ describe('Site UI resolution', () => {
     // UI would publish a site whose home page and sign-in frame are the wrong
     // design, and nothing in the build log would say so.
     const expectFailure = (env: Record<string, string>, pattern: RegExp) => {
-      // Resolving writes the generated state even when it then throws, so these
-      // go through the lock too.
-      expect(() => withSharedState(() => resolve.prepareSiteUi(frontendDir, env))).toThrow(pattern);
+      expect(() => resolve.prepareSiteUi(box.app, env)).toThrow(pattern);
+    };
+
+    /** A copy of the fixture, for a test that breaks it. */
+    const copyFixture = (name: string) => {
+      const copy = join(scratch, name);
+      rmSync(copy, { recursive: true, force: true });
+      cpSync(FIXTURE, copy, { recursive: true });
+      return copy;
     };
 
     it('rejects a missing API revision', () => {
-      expectFailure({ SITE_UI_DIR: FIXTURE }, /SITE_UI_API/);
+      expectFailure({ SITE_UI_DIR: box.fixture }, /SITE_UI_API/);
     });
 
     it('rejects a non-integer API revision', () => {
-      expectFailure({ SITE_UI_DIR: FIXTURE, SITE_UI_API: 'one' }, /must be an integer/);
+      expectFailure({ SITE_UI_DIR: box.fixture, SITE_UI_API: 'one' }, /must be an integer/);
     });
 
     it('rejects a module written for another interface revision', () => {
       expectFailure(
-        { SITE_UI_DIR: FIXTURE, SITE_UI_API: '2' },
+        { SITE_UI_DIR: box.fixture, SITE_UI_API: '2' },
         /implements Site UI API v1.*declares v2/s,
       );
     });
@@ -323,18 +324,14 @@ describe('Site UI resolution', () => {
     });
 
     it('rejects a directory that is missing the server entry', () => {
-      const incomplete = join(scratch, 'incomplete');
-      rmSync(incomplete, { recursive: true, force: true });
-      cpSync(FIXTURE, incomplete, { recursive: true });
+      const incomplete = copyFixture('incomplete');
       rmSync(join(incomplete, 'server.ts'));
 
       expectFailure({ SITE_UI_DIR: incomplete, SITE_UI_API: '1' }, /server entry is missing/);
     });
 
     it('rejects a module that is missing a required export', () => {
-      const partial = join(scratch, 'partial');
-      rmSync(partial, { recursive: true, force: true });
-      cpSync(FIXTURE, partial, { recursive: true });
+      const partial = copyFixture('partial');
       const client = join(partial, 'client.tsx');
       writeFileSync(
         client,
@@ -348,31 +345,23 @@ describe('Site UI resolution', () => {
       // The three page-owning frames are optional by design: no `Landing` means
       // the console's landing page is correct, and no `AuthFrame` means the
       // account pages sit inside the console container.
-      const partial = join(scratch, 'no-auth-frame');
-      rmSync(partial, { recursive: true, force: true });
-      cpSync(FIXTURE, partial, { recursive: true });
+      const partial = copyFixture('no-auth-frame');
       const client = join(partial, 'client.tsx');
       writeFileSync(
         client,
         readFileSync(client, 'utf8').replace('export function AuthFrame', 'function AuthFrame'),
       );
 
-      const resolution = resolve.prepareSiteUi(frontendDir, {
+      const resolution = resolve.prepareSiteUi(box.app, {
         SITE_UI_DIR: partial,
         SITE_UI_API: '1',
       });
       expect(resolution.kind).toBe('distribution');
       expect(resolution.id).toBe('site-ui-demo');
-
-      // Leave the shared tree on the neutral bridge: this test generates one,
-      // and every later test reads the generated state.
-      withSharedState(() => resolve.generateSiteUi(frontendDir, {}));
     });
 
     it('rejects a module that imports an internal of the shared application', () => {
-      const deep = join(scratch, 'deep-import');
-      rmSync(deep, { recursive: true, force: true });
-      cpSync(FIXTURE, deep, { recursive: true });
+      const deep = copyFixture('deep-import');
       const client = join(deep, 'client.tsx');
       writeFileSync(
         client,
@@ -386,9 +375,7 @@ describe('Site UI resolution', () => {
     });
 
     it('rejects a module that depends on a package the host does not provide', () => {
-      const dep = join(scratch, 'third-party');
-      rmSync(dep, { recursive: true, force: true });
-      cpSync(FIXTURE, dep, { recursive: true });
+      const dep = copyFixture('third-party');
       const client = join(dep, 'client.tsx');
       writeFileSync(client, `import { clsx } from 'clsx';\n${readFileSync(client, 'utf8')}`);
 
@@ -397,17 +384,17 @@ describe('Site UI resolution', () => {
   });
 
   it('points the bundler, TypeScript and Vitest at the same module', () => {
-    const resolution = resolve.prepareSiteUi(frontendDir, {
-      SITE_UI_DIR: FIXTURE,
+    const resolution = resolve.prepareSiteUi(box.app, {
+      SITE_UI_DIR: box.fixture,
       SITE_UI_API: '1',
     });
-    const alias = resolve.webpackAlias(frontendDir, resolution);
-    const tsconfig = JSON.parse(readFileSync(TSCONFIG, 'utf8'));
+    const alias = resolve.webpackAlias(box.app, resolution);
+    const tsconfig = JSON.parse(readFileSync(box.tsconfig, 'utf8'));
 
     // The bundler resolves the bare specifiers to the bridge, the bridge
     // forwards to the module…
-    expect(alias['@site-ui/client']).toBe(join(BRIDGE, 'client'));
-    expect(readFileSync(join(BRIDGE, 'client.ts'), 'utf8')).toContain(
+    expect(alias['@site-ui/client']).toBe(join(box.bridge, 'client'));
+    expect(readFileSync(join(box.bridge, 'client.ts'), 'utf8')).toContain(
       'fixtures/site-ui-demo/client',
     );
 
@@ -427,8 +414,8 @@ describe('Site UI resolution', () => {
   });
 
   it('records what the build compiled in, without any secret', () => {
-    const resolution = resolve.prepareSiteUi(frontendDir, {
-      SITE_UI_DIR: FIXTURE,
+    const resolution = resolve.prepareSiteUi(box.app, {
+      SITE_UI_DIR: box.fixture,
       SITE_UI_API: '1',
     });
     const manifest = JSON.parse(readFileSync(resolution.manifestPath, 'utf8'));
@@ -450,12 +437,12 @@ describe('Site UI resolution', () => {
     // module: a cached bridge, a stale tsconfig or a stylesheet that was
     // imported once and never removed. Any of those publishes one
     // distribution's design from another distribution's build.
-    resolve.prepareSiteUi(frontendDir, { SITE_UI_DIR: FIXTURE, SITE_UI_API: '1' });
-    const withModule = generatedState();
+    resolve.prepareSiteUi(box.app, { SITE_UI_DIR: box.fixture, SITE_UI_API: '1' });
+    const withModule = generatedState(box);
     expect(withModule.client).toContain('site-ui-demo');
 
-    resolve.prepareSiteUi(frontendDir, {});
-    const neutral = generatedState();
+    resolve.prepareSiteUi(box.app, {});
+    const neutral = generatedState(box);
 
     for (const [name, contents] of Object.entries(neutral)) {
       expect(contents, `${name} should have been rewritten`).not.toBeNull();
@@ -468,13 +455,27 @@ describe('Site UI resolution', () => {
     expect(JSON.parse(neutral.manifest!).kind).toBe('neutral');
   });
 
-  it('is idempotent, so a second build is not a spurious change', () => {
-    withSharedState(() => {
-      resolve.generateSiteUi(frontendDir, { SITE_UI_DIR: FIXTURE, SITE_UI_API: '1' });
-      const first = generatedState();
-      resolve.generateSiteUi(frontendDir, { SITE_UI_DIR: FIXTURE, SITE_UI_API: '1' });
-      expect(generatedState()).toEqual(first);
-    });
+  it('is idempotent, and a repeat resolution rewrites nothing', () => {
+    // Byte-identical output is what keeps a second build from being a change.
+    // Not rewriting it at all is what keeps a concurrent reader — another test
+    // file, or `next dev` watching the bridge — from ever seeing it truncated.
+    resolve.generateSiteUi(box.app, { SITE_UI_DIR: box.fixture, SITE_UI_API: '1' });
+    const first = generatedState(box);
+    const files = [
+      join(box.bridge, 'client.ts'),
+      join(box.bridge, 'server.ts'),
+      join(box.bridge, 'styles.css'),
+      box.manifest,
+      box.tsconfig,
+    ];
+    // Backdated, so a rewrite within the same clock tick cannot look like none.
+    const past = new Date('2020-01-01T00:00:00Z');
+    for (const file of files) utimesSync(file, past, past);
+
+    resolve.generateSiteUi(box.app, { SITE_UI_DIR: box.fixture, SITE_UI_API: '1' });
+
+    expect(generatedState(box)).toEqual(first);
+    for (const file of files) expect(statSync(file).mtimeMs, file).toBe(past.getTime());
   });
 
   it('generates files that are ignored by git', () => {

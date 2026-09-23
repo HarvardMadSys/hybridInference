@@ -77,8 +77,13 @@ class SiteUiConfigError extends Error {
  * `env.SITE_UI_DIR` set to whitespace or to the empty string is *not* a
  * request — shells and CI systems hand those out for unset variables all the
  * time — so it is treated as absent.
+ *
+ * A relative `SITE_UI_DIR` is resolved against `frontendDir`, not against the
+ * working directory: the same value has to name the same module whether it
+ * reaches the resolver from `npm run build`, from Vitest or from a script run
+ * elsewhere in the checkout.
  */
-function readSiteUiRequest(env) {
+function readSiteUiRequest(frontendDir, env) {
   const rawDir = (env[SITE_UI_DIR_ENV] || '').trim();
   if (rawDir === '') return { kind: 'neutral' };
 
@@ -105,7 +110,7 @@ function readSiteUiRequest(env) {
     );
   }
 
-  const absolute = path.resolve(rawDir);
+  const absolute = path.resolve(frontendDir, rawDir);
   const entries = {
     client: path.join(absolute, CLIENT_ENTRY),
     server: path.join(absolute, SERVER_ENTRY),
@@ -149,7 +154,7 @@ function resolveSiteUi(frontendDir, env = process.env) {
   // `frontendDir` would silently produce specifiers that resolve against the
   // stub's own directory instead of the project root.
   frontendDir = path.resolve(frontendDir);
-  const request = readSiteUiRequest(env);
+  const request = readSiteUiRequest(frontendDir, env);
 
   if (request.kind === 'neutral') {
     const neutral = path.join(frontendDir, NEUTRAL_DIR);
@@ -429,7 +434,21 @@ function generateSiteUi(frontendDir, env = process.env) {
   return resolution;
 }
 
+/**
+ * Write a generated file, or leave it alone when it already says this.
+ *
+ * Every `next`, Vitest and type-check command resolves on startup, and the
+ * generated files are read by processes running at the same time: Vitest runs
+ * test files in parallel, and `next dev` watches them. Rewriting identical bytes
+ * truncates the file first, which a concurrent reader can observe as an empty
+ * module; skipping the write makes a repeat resolution touch nothing.
+ */
 function write(file, contents) {
+  try {
+    if (fs.readFileSync(file, 'utf8') === contents) return;
+  } catch {
+    // Missing or unreadable: written below.
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, contents);
 }
