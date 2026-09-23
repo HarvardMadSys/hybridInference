@@ -140,6 +140,11 @@ export interface TermsFrameProps {
  * submit handlers. Render every supplied node once, associate the label with
  * `htmlFor`, and preserve the field and label's `data-auth` hooks.
  *
+ * The control arrives already described: its `aria-describedby` names the hint
+ * and error nodes by id, and it carries `aria-invalid` while the error shows.
+ * The host sets both before the layout runs, so the relationship survives any
+ * arrangement — provided each supplied node is rendered.
+ *
  * The default layout renders the label, control, hint, error and then action.
  */
 export interface AuthFieldLayoutProps {
