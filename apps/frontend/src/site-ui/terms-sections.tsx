@@ -14,10 +14,9 @@ import { fill } from '@/lib/utils/interpolate';
  * frame, and never shown beside a module's confirmations.
  *
  * The one thing the two must agree on is the anchor prefix, and that is why
- * `TERMS_SECTION_ANCHOR` lives in the contract: the console's footer, the
- * account pages and the sign-up consent step all link to `/terms#terms-s5`, so
- * a module that invented its own prefix would leave every one of those links
- * pointing at nothing.
+ * `TERMS_SECTION_ANCHOR` lives in the contract: the login and sign-up pages
+ * link privacy to `/terms#terms-s5`, so a module that invented its own prefix
+ * would leave those links pointing at nothing.
  *
  * A client component, because the table of contents is a `<details>` the reader
  * opens and the sign-up step embeds these sections live.

@@ -181,7 +181,9 @@ services:
       AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL-}
       # Absolute path inside this container to a dedicated, read-only branding
       # image directory. Deployment overlays that use it also bind-mount that
-      # directory; unset means `/site-assets/*` answers 404.
+      # directory. A file there wins over one of the same path packaged with the
+      # image's UI module; unset, `/site-assets/*` serves only the packaged
+      # assets, which the neutral image has none of.
       SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
       - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}:3001"

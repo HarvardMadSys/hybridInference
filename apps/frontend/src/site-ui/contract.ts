@@ -109,10 +109,9 @@ export interface AuthFrameProps {
 /**
  * Section anchor prefix the legal text uses.
  *
- * `#terms-s5` is the privacy target the console's footer, the account pages and
- * the sign-up consent step all link to, so the anchor is part of the interface
- * rather than a detail of one frame: a module that invented its own prefix
- * would leave every one of those links pointing at nothing.
+ * `#terms-s5` is the privacy target the login and sign-up pages link to, so the
+ * anchor is part of the interface rather than a detail of one frame: a module
+ * that invented its own prefix would leave those links pointing at nothing.
  */
 export const TERMS_SECTION_ANCHOR = 'terms-s';
 
@@ -149,8 +148,8 @@ export interface TermsFrameProps {
  *
  * Render the legal body only: the sections and any preamble such as a date.
  * The page heading is the frame's. On `/terms` (`compact` false), give each
- * section its `TERMS_SECTION_ANCHOR` id — the console links privacy to
- * `/terms#terms-s5`.
+ * section its `TERMS_SECTION_ANCHOR` id — the login and sign-up pages link
+ * privacy to `/terms#terms-s5`.
  */
 export interface TermsContentProps {
   /** The level of each section heading: 2 on `/terms`, 3 in the consent step. */

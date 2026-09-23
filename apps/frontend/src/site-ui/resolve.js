@@ -64,12 +64,13 @@ const GENERATED_DIR = path.posix.join('src', 'generated', 'distribution-ui');
 const NEUTRAL_DIR = path.posix.join('src', 'site-ui', 'neutral');
 
 /**
- * The one specifier the application imports, and the bridge that satisfies it.
+ * The specifiers the application imports, and the bridge that satisfies them.
  *
- * `@site-ui` always resolves to this directory — in `tsconfig.json`, in the
- * bundler alias and in Vitest — and the generated `index.ts` inside it decides
- * what that means. Keeping one stable specifier is what lets the three
- * toolchains share a single answer without three copies of a path.
+ * `@site-ui/client` and `@site-ui/server` always resolve to generated files in
+ * this directory — in the generated tsconfig, in the bundler alias and in
+ * Vitest — and those files decide what the specifiers mean. Keeping stable
+ * specifiers is what lets the three toolchains share a single answer without
+ * three copies of a path.
  */
 const BRIDGE_DIR = path.posix.join('src', 'site-ui', 'active');
 const STUB_FILE = path.posix.join(BRIDGE_DIR, 'client.ts');
@@ -337,10 +338,11 @@ function resolveStyles(root) {
 /**
  * The bundler alias for both specifiers.
  *
- * `@site-ui` is what client components use; `@site-ui-server` is what server
- * code uses. They resolve to the same generated module — the difference is
- * which export the importer takes — but keeping two names lets a mistaken
- * import in the wrong environment read as a mistake.
+ * `@site-ui/client` is what client components use; `@site-ui/server` is what
+ * server code uses. They resolve to two generated files: the client bridge
+ * re-exports the module's component tree, the server bridge only its plain
+ * values. Two names keep a server import from dragging in the components, and
+ * let a mistaken import in the wrong environment read as a mistake.
  */
 function webpackAlias(frontendDir, resolution) {
   const bridge = path.dirname(resolution.stub);
@@ -362,7 +364,8 @@ function vitestAlias(frontendDir, resolution) {
 }
 
 /**
- * The re-export stubs the `@site-ui` and `@site-ui-server` specifiers point at.
+ * The re-export stubs the `@site-ui/client` and `@site-ui/server` specifiers
+ * point at.
  *
  * They are generated, never hand-edited, and gitignored: they are a view of the
  * resolution, not source files. Two specifiers rather than one because the
@@ -455,11 +458,11 @@ function manifestSource(resolution) {
 function tsconfigSource(frontendDir, baseTsconfig, resolution) {
   // `paths` entries resolve against `baseUrl`, which is the frontend directory
   // (`.`) in both projects, so every target is relative to it. That matters
-  // more than it looks: `tsc` resolves `@site-ui` to a *directory*, and a bare
-  // absolute path there is not a valid `paths` value.
+  // more than it looks: a bare absolute path is not a valid `paths` value.
   // The app's own mappings are repeated here because `paths` replaces rather
-  // than merges: an extension that declared only `@site-ui` would silently drop
-  // `@/*` and every import in the application would stop resolving.
+  // than merges: an extension that declared only the `@site-ui/*` entries would
+  // silently drop `@/*`, and every import in the application would stop
+  // resolving.
   // Concrete files, not the bridge directory. `tsc` does not resolve a folder
   // specifier to `index.ts` the way Webpack does, and a `paths` entry pointing
   // at a directory would leave the type checker unable to see the module the
