@@ -4,17 +4,16 @@ import { usePathname } from 'next/navigation';
 
 import { TermsContent as ConsoleTerms } from '@/app/terms/TermsContent';
 import { NeutralAuthCard } from '@/site-ui/neutral/body';
-import type { AuthFrameProps, TermsFrameProps } from '@/site-ui/contract';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { SiteUiProvider } from '@/site-ui/SiteUiCore';
-import { publicRouteFor, type PublicRoute } from '@/site-ui/routes';
+import { isAuthRoute, publicRouteFor, type PublicRoute } from '@/site-ui/routes';
 
 /**
  * Which route the current pathname is, or `null` when the shared console owns
  * it.
  *
- * The single route lookup in the public tree. `PublicRouteBoundary`, the
- * landing slot and the terms frame all read this, so there is one answer per
+ * The single route lookup in the public tree. The chrome, the document
+ * language and the landing slot all read this, so there is one answer per
  * render and no chance of two of them disagreeing about where the visitor is.
  *
  * `null` is not an error: `/dashboard`, `/chat`, `/team`, `/authorize`,
@@ -40,15 +39,35 @@ export function useLanding(): (typeof SITE_UI_CLIENT)['Landing'] {
 }
 
 /**
- * The module's legal frame for `/terms`, or `null` for the console's own.
+ * Whether the compiled-in module renders this route, rather than the console.
  *
- * Tested by identity rather than by module id, which is what lets the route
- * boundary ask "does this route already have a header?" without knowing which
- * deployment is running.
+ * The module renders a public route when it exports the component for it, and
+ * nothing else: `/` through `Landing`, the five account pages through
+ * `AuthFrame`, `/terms` through its legal text. Every other path, and a public
+ * route whose export is absent, is the console's.
+ *
+ * Two things follow the answer, and both read it here so they cannot disagree:
+ * who draws the chrome (`PublicRouteBoundary`) and which language the document
+ * is in (`SiteDocument`). Tested by identity rather than by module id, so the
+ * answer does not depend on knowing which deployment is running.
  */
-export function useTermsFrame(): React.ComponentType<TermsFrameProps> | null {
-  const route = usePublicRoute();
-  return route === 'terms' ? (SITE_UI_CLIENT.legalText?.TermsFrame ?? null) : null;
+export function moduleRendersRoute(route: PublicRoute | null): boolean {
+  if (route === null) return false;
+  // `/` is owned by whoever drew the page. A module's landing page is a whole
+  // page; the console's is a body inside the console container.
+  if (route === 'landing') return SITE_UI_CLIENT.Landing !== null;
+  // Same question, same reason: a module's legal frame brings its own header,
+  // contents list and footer, while the console's body expects the container.
+  if (route === 'terms') return SITE_UI_CLIENT.legalText !== null;
+  // And again for the account routes: a module whose `AuthFrame` draws a whole
+  // page owns these routes, and one without a frame does not. The neutral
+  // module is the second kind.
+  return isAuthRoute(route) && SITE_UI_CLIENT.AuthFrame !== null;
+}
+
+/** `moduleRendersRoute` for the current pathname. */
+export function useModuleRendersRoute(): boolean {
+  return moduleRendersRoute(usePublicRoute());
 }
 
 /**
@@ -100,35 +119,6 @@ export function TermsPageContent() {
 }
 
 /**
- * The module's account frame, or `null` when the console container is the page.
- *
- * The same question `PublicRouteBoundary` asks before it decides to step aside,
- * asked through the same single route lookup, so the two cannot disagree about
- * who is drawing the header. `null` is an answer, not a failure to load: see the
- * contract's `AuthFrame`.
- *
- * Route-aware because the boundary is — it decides once, for a pathname, and
- * this reads the same decision back. `AuthPageFrame` deliberately does *not*
- * call this: an account page already knows it is one, and routing its frame
- * through `usePathname` would make every page that renders a form depend on a
- * navigation mock to be testable.
- */
-export function useAuthFrame(): React.ComponentType<AuthFrameProps> | null {
-  const route = usePublicRoute();
-  if (route === null || !ACCOUNT_ROUTES.has(route)) return null;
-  return SITE_UI_CLIENT.AuthFrame ?? null;
-}
-
-/** The routes `AuthPageFrame` frames, as route keys rather than paths. */
-const ACCOUNT_ROUTES = new Set<PublicRoute>([
-  'login',
-  'signup',
-  'forgot-password',
-  'reset-password',
-  'verify-email',
-]);
-
-/**
  * Frame for one account page: the module's `AuthFrame` around the shared form,
  * or the console's default card inside the console container.
  *
@@ -167,9 +157,9 @@ export function AuthPageFrame({
   legal?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  // Straight from the module rather than through `useAuthFrame`: `undefined` and
-  // `null` both mean "no frame", and a page that renders a form should not need
-  // the router to answer that.
+  // Straight from the module rather than through the route: an account page
+  // already knows it is one, and a page that renders a form should not need the
+  // router to answer whether it has a frame.
   const Frame = SITE_UI_CLIENT.AuthFrame ?? null;
   if (!Frame) {
     return (

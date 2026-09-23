@@ -7,6 +7,7 @@ import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { PublicRouteBoundary } from '@/site-ui/PublicRouteBoundary';
 import { SiteUiBoundary } from '@/site-ui/SiteUiBoundary';
+import { SiteDocument } from '@/site-ui/SiteDocument';
 import { locale as publicLocale } from '@site-ui/server';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { rootMetadata } from '@/config/site-metadata';
@@ -28,14 +29,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const siteConfig = await loadRuntimeSiteConfig();
   const { branding } = siteConfig;
 
-  // The document language comes from the server half of the compiled-in Site
-  // UI. This is a server module of plain serializable values on purpose: the
-  // client half is a component tree, and reading a property off it here would
-  // pull hooks and `usePathname` into a module that has no request. Empty means
-  // "this UI declares no fixed language" and the console's own language wins.
+  // The document language follows whoever renders the route: the module's
+  // server `locale` on the routes the module renders, the console's English on
+  // every other. Only the client half of the module knows which routes those
+  // are, so `SiteDocument` — a client component, rendered here on the server
+  // too — decides, and decides again on each client-side navigation.
 
   return (
-    <html lang={publicLocale || 'en'} className={`h-full ${crimsonText.variable}`}>
+    <SiteDocument moduleLocale={publicLocale} className={`h-full ${crimsonText.variable}`}>
       <head>
         {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
             the empty string as a text node. A text node inside <head> is invalid
@@ -92,6 +93,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </Providers>
         </ErrorBoundary>
       </body>
-    </html>
+    </SiteDocument>
   );
 }

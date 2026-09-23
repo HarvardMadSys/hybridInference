@@ -64,8 +64,8 @@ export interface SiteUiModuleDescriptor {
   readonly id: string;
   /**
    * BCP-47 tag this module's copy is written in, or '' when it ships no fixed
-   * language. This describes the module's copy; server `locale` controls the
-   * root document's language.
+   * language. This describes the module's copy; server `locale` sets the
+   * document language of the routes the module renders.
    */
   readonly locale: string;
 }
@@ -544,9 +544,13 @@ export interface SiteUiClientExports {
 /** Static, non-React values read by the shared root layout. */
 export interface SiteUiServerModule {
   /**
-   * BCP-47 tag for the root `<html lang>`, including console routes.
-   * Omitted or empty preserves the shared default (`en`). Titles, descriptions
-   * and icons come from runtime branding and are not part of this module API.
+   * BCP-47 tag for `<html lang>` on the routes this module renders: `/` when
+   * it exports a `Landing`, the five account pages when it exports an
+   * `AuthFrame`, and `/terms` when it publishes its own legal text. Every other
+   * route — the console, and a public route the module does not render — is
+   * the console's, in English (`en`). Omitted or empty keeps `en` everywhere.
+   * Titles, descriptions and icons come from runtime branding and are not part
+   * of this module API.
    */
   locale?: string;
 }
