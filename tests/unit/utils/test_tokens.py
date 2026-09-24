@@ -2,10 +2,13 @@
 
 Focus on multimodal content handling: image/audio blocks must contribute a
 small flat estimate rather than having their (often large, base64) payloads run
-through the text tokenizer.
+through the text tokenizer. Also pins encoding cost to linear time on inputs
+the pre-tokenizer cannot split.
 """
 
 from __future__ import annotations
+
+import time
 
 import pytest
 import tiktoken
@@ -246,3 +249,33 @@ class TestNoTiktokenFallback:
     def test_special_token_text_is_fine_in_the_fallback_too(self, no_encoding):
         assert estimate_text_tokens("<|endoftext|>") > 0
         assert tokenize_text("<|endoftext|>")
+
+
+class TestUnsplittableRunsEncodeInLinearTime:
+    """Runs the pre-tokenizer cannot split must not cost quadratic time.
+
+    One character repeated, or letters/CJK with no space or punctuation, form a
+    single pre-token, and tiktoken before 0.13 merged such a piece in quadratic
+    time: 64K "。" took ~7 s and 256K ~2 min. Estimation runs synchronously on
+    request paths, several of them on the event loop, so one such input froze
+    every other request and stream. 0.13 fixed the merge, and these keep the
+    lock on a version that has the fix.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "。" * 128_000,
+            "a" * 128_000,
+            " " * 128_000,
+            "".join(chr(0x4E00 + (i * 7919) % 20_000) for i in range(128_000)),
+        ],
+        ids=["punctuation-run", "letter-run", "whitespace-run", "cjk-without-punctuation"],
+    )
+    def test_estimate_stays_fast(self, text):
+        start = time.perf_counter()
+        assert estimate_text_tokens(text) > 0
+        assert tokenize_text(text)
+        elapsed = time.perf_counter() - start
+        # Tens of ms on tiktoken 0.13+; 7-60 s on 0.12. The bound leaves slow CI room.
+        assert elapsed < 2.0, f"encoding took {elapsed:.1f}s; is tiktoken older than 0.13?"
