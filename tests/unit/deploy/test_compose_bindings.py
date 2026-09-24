@@ -75,13 +75,16 @@ def test_host_ports_default_to_loopback_and_allow_explicit_frontend_binding(
     """Unset/blank hosts stay local; explicit hosts preserve operator intent."""
     services = _render(tmp_path, docker_cli, host)["services"]
     for name, expected in {
-        "frontend": (expected_host, "3001", 3001),
-        "backend": ("127.0.0.1", "8080", 8080),
-        "postgres": ("127.0.0.1", "5432", 5432),
+        "frontend": [(expected_host, "3001", 3001)],
+        # The API, and the agent entry beside it: loopback both, whatever the
+        # console's host (serving/servers/agent_entry.py).
+        "backend": [("127.0.0.1", "8080", 8080), ("127.0.0.1", "8090", 8090)],
+        "postgres": [("127.0.0.1", "5432", 5432)],
     }.items():
-        (port,) = services[name]["ports"]
-        assert (port["host_ip"], port["published"], port["target"]) == expected
+        ports = services[name]["ports"]
+        assert [(p["host_ip"], p["published"], p["target"]) for p in ports] == expected
     assert services["frontend"]["environment"]["PORT"] == "3001"
+    assert services["backend"]["environment"]["GATEWAY_AGENT_ENTRY_PORT"] == "8090"
 
 
 @pytest.mark.parametrize("host", [None, "0.0.0.0"])
@@ -91,9 +94,9 @@ def test_example_keeps_its_local_ports_and_accepts_a_host_override(
     """The Stage 2 example's env file and overlays retain their port choices."""
     services = _render(tmp_path, docker_cli, host, example=True)["services"]
     for name, expected in {
-        "frontend": (host or "127.0.0.1", "13001", 3001),
-        "backend": ("127.0.0.1", "18080", 8080),
-        "postgres": ("127.0.0.1", "15432", 5432),
+        "frontend": [(host or "127.0.0.1", "13001", 3001)],
+        "backend": [("127.0.0.1", "18080", 8080), ("127.0.0.1", "8090", 8090)],
+        "postgres": [("127.0.0.1", "15432", 5432)],
     }.items():
-        (port,) = services[name]["ports"]
-        assert (port["host_ip"], port["published"], port["target"]) == expected
+        ports = services[name]["ports"]
+        assert [(p["host_ip"], p["published"], p["target"]) for p in ports] == expected

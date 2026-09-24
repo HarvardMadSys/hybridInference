@@ -95,8 +95,13 @@ before forwarding it will break Server-Sent Events.
 dependency on every inference endpoint. It resolves, in order:
 
 - **Agent grant tokens** — a separate credential namespace, checked first.
-  A grant may only be used on inference paths; anything else gets `403
-  insufficient_scope`.
+  A grant is honoured only on the agent entry, a second listener in the same
+  process (`serving/servers/agent_entry.py`, `GATEWAY_AGENT_ENTRY_PORT`) that
+  the Cloud Agent's relay reaches; the listener, not a header or a source
+  address, marks its requests. Everywhere else a grant gets `403
+  agent_job_auth`, because a sandbox reaches the public internet and a grant
+  can leave it. On the agent entry a grant may only be used on inference
+  paths; anything else gets `403 insufficient_scope`.
 - **Auth disabled** — when `USER_AUTH_ENABLED` is falsy the caller is treated as
   an anonymous admin. The setting is fail-closed: auth is on unless explicitly
   turned off.

@@ -29,6 +29,7 @@ from serving.observability.rejection_log import (
     rejection_logging_enabled,
     release_cached_body,
 )
+from serving.servers import agent_entry
 from serving.servers.deps import (
     auth_database_detail,
     get_db_logger,
@@ -569,14 +570,31 @@ async def verify_api_key(
     instead of to itself; see :func:`_resolve_effective_identity`. The presented
     key is still what is authenticated and rate-limited at the transport layer.
     """
-    # Agent-sandbox capability tokens (issue #1041) are a distinct credential
-    # namespace (``ajt.`` vs ``hyi-``) resolved against the job fence rather
-    # than the api_keys table, so the sandbox never needs a second credential
-    # and revocation is automatic. Checked before the auth-disabled shortcut:
-    # a job's budget and cost attribution are cost controls, not authn, and
+    # Agent inference grants (issue #1041) are a distinct credential namespace
+    # (``agr.`` vs ``hyi-``) resolved against the grant store rather than the
+    # api_keys table, so the sandbox never needs a second credential and
+    # revocation is automatic. Checked before the auth-disabled shortcut: a
+    # grant's scope and cost attribution are cost controls, not authn, and
     # must hold in every deployment. Ordinary keys pay one prefix comparison.
     presented_key = _extract_api_key(authorization, x_api_key)
     if grants.looks_like_grant_token(presented_key):
+        # A sandbox reaches the public internet, so a grant can leave it. It is
+        # honoured only on the agent entry, the separate listener the Cloud
+        # Agent's relay reaches (serving/servers/agent_entry.py); here, a grant
+        # is refused whichever header carries it and whatever path it asks for.
+        if not agent_entry.is_agent_entry(request):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "type": "agent_job_auth",
+                        "message": (
+                            "Inference grants are accepted only on the agent entry, "
+                            "not on this API."
+                        ),
+                    }
+                },
+            )
         # An agent token buys inference and nothing else. This dependency is
         # shared with the owner-facing control plane (/v1/agent/jobs), so
         # resolving one here as its owner's normal context would let a sandbox

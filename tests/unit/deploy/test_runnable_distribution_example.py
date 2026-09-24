@@ -126,7 +126,8 @@ def test_example_compose_resolves_public_paths_and_forwards_upstream_env() -> No
         "${EXAMPLE_PROVIDER_CONTAINER_NAME:-hybridinference-example-provider}"
     )
     assert base["services"]["backend"]["ports"] == [
-        "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080"
+        "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080",
+        "${AGENT_ENTRY_HOST:-127.0.0.1}:${AGENT_ENTRY_PORT:-8090}:8090",
     ]
     assert base["services"]["backend"]["env_file"] == "${BACKEND_ENV_FILE:-../../.env}"
     fake_build = override["services"]["example-provider"]["build"]

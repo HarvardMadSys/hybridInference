@@ -38,6 +38,12 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
+      # The agent entry: the one listener on which a Cloud Agent inference
+      # grant is honoured (serving/servers/agent_entry.py); the API on 8080
+      # refuses every grant. Fixed in the container like 8080 is, and
+      # published below on loopback, where the Cloud Agent's SSH relay
+      # forwards to it. No public edge may route here.
+      GATEWAY_AGENT_ENTRY_PORT: "8090"
       # Fail closed: the compose default does NOT trust forwarding headers.
       # Proxy-header processing is inert without a non-empty TRUSTED_PROXIES /
       # TRUSTED_CLOUDFLARE_NETWORKS authorizing the socket peer; set both in
@@ -112,6 +118,7 @@ services:
       - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
     ports:
       - "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080"
+      - "${AGENT_ENTRY_HOST:-127.0.0.1}:${AGENT_ENTRY_PORT:-8090}:8090"
     depends_on:
       postgres:
         condition: service_healthy

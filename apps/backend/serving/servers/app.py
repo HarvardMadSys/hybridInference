@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import get_settings, settings
 from ..utils.logging import attach_quiet_access_filter
-from . import bootstrap
+from . import agent_entry, bootstrap
 from .deps import database_enabled
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
@@ -64,11 +64,19 @@ async def lifespan(app: FastAPI):
     if not startup_settings.admin_token:
         _sec_logger.warning("admin_token is empty — legacy admin-token access is disabled")
 
+    # Read before anything opens, so a malformed port stops startup here.
+    entry_address = agent_entry.configured_address()
+
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
+    entry: agent_entry.AgentEntry | None = None
     try:
+        if entry_address is not None:
+            entry = await agent_entry.start(app, *entry_address)
         yield
     finally:
+        if entry is not None:
+            await entry.stop()
         await bootstrap.shutdown(services)
 
 
