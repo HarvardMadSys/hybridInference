@@ -2358,10 +2358,11 @@ class RouteWiseRouter:
                 context.get("messages") if isinstance(context, dict) else None,
                 request_params if isinstance(request_params, dict) else None,
             )
-            backup_lease = self._prefill_load.acquire(
-                backup.endpoint_id,
-                tracked_tokens,
-            )
+            with self._prefill_load.routing_transaction():
+                backup_lease = self._prefill_load.acquire(
+                    backup.endpoint_id,
+                    tracked_tokens,
+                )
 
         def _confirm_backup_prefill() -> None:
             self._prefill_load.release(backup_lease, prefill_confirmed=True)
@@ -2629,11 +2630,11 @@ class RouteWiseRouter:
             trace.request_id = str(request_id)
 
         with self._route_commit_lock:
-            # Request-derived preprocessing stays outside the shared tracker
-            # transaction. Once a primary prefill lease is requested, however,
-            # the tracker must remain held from its backlog snapshot through
-            # selection and reservation. Otherwise two router instances that
-            # share one tracker can select from the same stale load view.
+            # The routing lock serializes load snapshot -> selection ->
+            # reservation across selectors so concurrent decisions cannot
+            # commit from the same stale load view. The tracker state lock
+            # remains independent, allowing release and cache/accounting
+            # updates while candidate construction and LP solving run.
             prompt_tokens = self._prompt_tokens_from_context(context)
             prediction = self._predict_output(model_id, prompt_tokens, context)
             pool = self._routewise_pool(model_id)
@@ -2641,24 +2642,32 @@ class RouteWiseRouter:
                 self.envelope.snapshot(pool) if model_id in self._quota_bearing_models else None
             )
             now = time.time()
-            tracker_transaction = (
-                self._prefill_load.routing_transaction()
-                if reserve_prefill
-                else contextlib.nullcontext()
+            if reserve_prefill and self.config.prefill_load_routing_enabled:
+                with self._prefill_load.routing_transaction():
+                    prefill_backlog = self._prefill_backlog_snapshot(model_id)
+                    return self._select_decision_locked(
+                        model_id,
+                        context,
+                        trace,
+                        prompt_tokens=prompt_tokens,
+                        prediction=prediction,
+                        envelope=envelope,
+                        now=now,
+                        prefill_backlog=prefill_backlog,
+                        reserve_prefill=reserve_prefill,
+                    )
+            prefill_backlog = self._prefill_backlog_snapshot(model_id)
+            return self._select_decision_locked(
+                model_id,
+                context,
+                trace,
+                prompt_tokens=prompt_tokens,
+                prediction=prediction,
+                envelope=envelope,
+                now=now,
+                prefill_backlog=prefill_backlog,
+                reserve_prefill=reserve_prefill,
             )
-            with tracker_transaction:
-                prefill_backlog = self._prefill_backlog_snapshot(model_id)
-                return self._select_decision_locked(
-                    model_id,
-                    context,
-                    trace,
-                    prompt_tokens=prompt_tokens,
-                    prediction=prediction,
-                    envelope=envelope,
-                    now=now,
-                    prefill_backlog=prefill_backlog,
-                    reserve_prefill=reserve_prefill,
-                )
 
     def _select_decision_locked(
         self,
