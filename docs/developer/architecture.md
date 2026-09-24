@@ -407,7 +407,7 @@ errors in a shape the router understands. Adapters live in
 | `gemini.py` | `GeminiAdapter` | The Gemini API |
 
 `_make_adapter` first checks the factory table populated by explicitly enabled
-[backend extensions](configuration.md#backend-extensions). Without a registered
+[backend extensions](distribution-customization.md#4-backend-extensions). Without a registered
 factory, it maps a route's `kind:` onto a built-in adapter and pre-seeds
 provider-specific configuration — a usage profile, a non-standard chat path, or
 whether it is safe to send `stream_options: {include_usage: true}`. An extension

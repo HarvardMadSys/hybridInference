@@ -29,6 +29,7 @@ CATEGORIES = (
     "python_tests",
     "docs",
     "tutorial_e2e",
+    "site_ui",
     "security_only",
     "full",
 )
@@ -92,11 +93,24 @@ TUTORIAL_E2E_FILES = frozenset(
         "docs/developer/router-tutorial.md",
     }
 )
+# The frontend image COPYs the built-in marker from here: the context an image
+# build uses when no Site UI module is passed.
+SITE_UI_CONTEXT_PREFIX = "deploy/docker/site-ui/"
 TUTORIAL_E2E_PREFIXES = (
     BACKEND_EXAMPLE_PREFIX,
+    SITE_UI_CONTEXT_PREFIX,
     "apps/backend/",
     "apps/frontend/",
 )
+# The Site UI container checks build the frontend image twice -- neutral, and
+# with the example's module through the named context -- and run it. Their
+# inputs go beyond the frontend tree: `.dockerignore` decides what of that tree
+# reaches the build at all, and the example module is what the second build
+# compiles. The frontend category selects them too (see `classify`).
+SITE_UI_FILES = frozenset({".dockerignore"})
+# The part of the example that is frontend source: the frontend's own tests
+# stage and resolve this module, so it selects the frontend checks as well.
+EXAMPLE_FRONTEND_PREFIX = f"{BACKEND_EXAMPLE_PREFIX}frontend/"
 DOCKER_SHARED_FILES = frozenset(
     {
         ".dockerignore",
@@ -131,6 +145,7 @@ class Classification:
     python_tests: bool = False
     docs: bool = False
     tutorial_e2e: bool = False
+    site_ui: bool = False
     security_only: bool = False
     full: bool = False
     reason: str = ""
@@ -214,6 +229,15 @@ def classify(files: Sequence[str] | None) -> Classification:
     def hit(category: str, path: str) -> None:
         matched.setdefault(category, []).append(path)
 
+    def frontend(path: str) -> None:
+        # Every frontend input is also a Site UI container input: the job
+        # builds the frontend image, with and without a module.
+        result.frontend = True
+        result.site_ui = True
+        result.docker_images.add("frontend")
+        hit("frontend", path)
+        hit("site_ui", path)
+
     for path in normalized:
         # The E2E contract is orthogonal to the ordinary application buckets.
         # Record it before branches that `continue`, including full triggers
@@ -228,7 +252,9 @@ def classify(files: Sequence[str] | None) -> Classification:
             hit("full", path)
             continue
         # Runnable examples are backend image inputs and CI acceptance inputs,
-        # including their Markdown instructions.
+        # including their Markdown instructions. The example also carries the
+        # public Site UI module the container checks compile, and that module
+        # is frontend source the frontend's tests read.
         if path.startswith(BACKEND_EXAMPLE_PREFIX) or path in BACKEND_TUTORIAL_FILES:
             result.backend = True
             result.python_tests = True
@@ -236,6 +262,11 @@ def classify(files: Sequence[str] | None) -> Classification:
             if path.startswith(SPHINX_SOURCE_PREFIX):
                 result.docs = True
             hit("backend", path)
+            if path.startswith(BACKEND_EXAMPLE_PREFIX):
+                result.site_ui = True
+                hit("site_ui", path)
+            if path.startswith(EXAMPLE_FRONTEND_PREFIX):
+                frontend(path)
             continue
         # 2. Documentation never triggers application checks, but the Sphinx
         #    source tree gates the docs build.
@@ -248,10 +279,8 @@ def classify(files: Sequence[str] | None) -> Classification:
             continue
         # 3. Narrow buckets (a path may hit more than one, e.g. frontend+docs).
         recognized = False
-        if path.startswith(FRONTEND_PREFIX):
-            result.frontend = True
-            result.docker_images.add("frontend")
-            hit("frontend", path)
+        if path.startswith(FRONTEND_PREFIX) or path.startswith(SITE_UI_CONTEXT_PREFIX):
+            frontend(path)
             recognized = True
         if path.startswith(BACKEND_SOURCE_PREFIX) or path.startswith(BACKEND_TEST_PREFIX):
             result.backend = True
@@ -266,15 +295,18 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.python_tests = True
             hit("docker_shared", path)
             recognized = True
+        if path in SITE_UI_FILES:
+            result.site_ui = True
+            hit("site_ui", path)
         if image := DOCKER_IMAGE_FILES.get(path):
-            result.docker_images.add(image)
             result.python_tests = True
-            hit(image, path)
             recognized = True
             if image == "frontend":
-                result.frontend = True
+                frontend(path)
             else:
+                result.docker_images.add(image)
                 result.backend = True
+                hit(image, path)
         # 4. Unknown path -> conservative full run.
         if not recognized:
             result.full = True
@@ -288,6 +320,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         or result.docker_shared
         or result.python_tests
         or result.tutorial_e2e
+        or result.site_ui
     )
     # `docs` is deliberately absent from `narrow`: it gates the docs build, not
     # an application check, so a docs-only change stays security_only.

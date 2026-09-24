@@ -1,49 +1,64 @@
 'use client';
 
-import { Suspense, useState, useEffect } from 'react';
+import { Suspense, useMemo, useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { createAuthSchemas } from '@/lib/schemas/auth';
 import { resetPassword } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { Button } from '@/components/ui/Button';
-import { InputField } from '@/components/ui/InputField';
-import { Card } from '@/components/ui/Card';
+import Link from 'next/link';
+import { useT } from '@/components/providers/useT';
+import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
+import { useAuthAppearance } from '@/site-ui/appearance';
+import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 
 export const dynamic = 'force-dynamic';
 
-const resetPasswordSchema = z
-  .object({
-    password: z
-      .string()
-      .min(8, 'Password must be at least 8 characters')
-      .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
-      .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
-      .regex(/[0-9]/, 'Password must contain at least one number'),
-    confirmPassword: z.string(),
-  })
-  .refine((data) => data.password === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword'],
-  });
+/**
+ * The unrefined shape names the form type. The runtime schema below is the
+ * same shape with the shared password rules and the match check attached, so
+ * the type stays as literal as the old module-level `z.infer` was. The
+ * underscore marks it as type-level only: the value is never read.
+ */
+const _resetPasswordShape = {
+  password: z.string(),
+  confirmPassword: z.string(),
+};
 
-type ResetPasswordFormData = z.infer<typeof resetPasswordSchema>;
+type ResetPasswordFormData = z.infer<z.ZodObject<typeof _resetPasswordShape>>;
 
 function ResetPasswordContent() {
+  const t = useT();
+  const skin = useAuthAppearance();
   const searchParams = useSearchParams();
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  // The shared password rules and match check, rebuilt per translator so the
+  // messages resolve through the same slots the signup form uses.
+  const resetPasswordSchema = useMemo(() => {
+    const { passwordSchema } = createAuthSchemas(t);
+    return z
+      .object({
+        password: passwordSchema,
+        confirmPassword: z.string(),
+      })
+      .refine((data) => data.password === data.confirmPassword, {
+        message: t('auth.validation.passwords_differ', 'Passwords do not match'),
+        path: ['confirmPassword'],
+      });
+  }, [t]);
 
   useEffect(() => {
     const tokenParam = searchParams.get('token');
     setToken(tokenParam);
     if (!tokenParam) {
-      setError('Invalid or missing reset token');
+      setError(t('auth.reset.invalid_token', 'Invalid or missing reset token'));
     }
-  }, [searchParams]);
+  }, [searchParams, t]);
 
   const {
     register,
@@ -55,7 +70,7 @@ function ResetPasswordContent() {
 
   const onSubmit = async (data: ResetPasswordFormData) => {
     if (!token) {
-      setError('Invalid or missing reset token');
+      setError(t('auth.reset.invalid_token', 'Invalid or missing reset token'));
       return;
     }
 
@@ -74,104 +89,95 @@ function ResetPasswordContent() {
 
   if (success) {
     return (
-      <div className="mx-auto w-full max-w-md">
-        <Card className="border-green-100">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-            <svg
-              className="h-6 w-6 text-green-600"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900">Password Reset Successful!</h1>
-          <p className="mt-3 text-base text-gray-600">
-            Your password has been reset successfully. You can now log in with your new password.
-          </p>
-          <div className="mt-6">
-            <a
-              href="/login"
-              className="inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              Go to Login
-            </a>
-          </div>
-        </Card>
-      </div>
+      <AuthPageFrame
+        page="reset-password"
+        kicker={t('auth.reset.success_kicker', 'ALL SET')}
+        title={t('auth.reset.success_title', 'Password Reset Successful!')}
+        subtitle={t(
+          'auth.reset.success_body',
+          'Your password has been reset successfully. You can now log in with your new password.',
+        )}
+      >
+        <div className={skin.form} data-auth="form">
+          <Link href="/login" className={skin.submit} data-auth="submit" prefetch={false}>
+            {t('auth.reset.go_to_login', 'Go to Login')}
+          </Link>
+        </div>
+      </AuthPageFrame>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-md">
-      <Card>
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Reset Password</h1>
-          <p className="mt-2 text-sm text-gray-600">Enter your new password below</p>
-        </div>
+    <AuthPageFrame
+      page="reset-password"
+      kicker={t('auth.reset.kicker', 'CHOOSE A NEW PASSWORD')}
+      title={t('auth.reset.title', 'Reset Password')}
+      subtitle={t('auth.reset.subtitle', 'Enter your new password below')}
+      topbar={
+        <>
+          {t('auth.reset.remember', 'Remember your password?')}{' '}
+          <Link href="/login" prefetch={false}>
+            {t('auth.reset.login_link', 'Log In')}
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
+        {error && <AuthNotice tone="error">{error}</AuthNotice>}
 
-        <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-5">
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
-              {error}
-            </div>
+        <AuthField
+          id="password"
+          label={t('auth.reset.new_password_label', 'New Password')}
+          hint={t(
+            'auth.reset.new_password_hint',
+            'At least 8 characters with uppercase, lowercase, and numbers',
           )}
-
-          <InputField
-            label="New Password"
+          error={errors.password?.message}
+        >
+          <input
+            id="password"
+            className={errors.password?.message ? skin.inputError : skin.input}
+            data-auth="control"
             type="password"
-            hint="At least 8 characters with uppercase, lowercase, and numbers"
             autoComplete="new-password"
-            error={errors.password?.message}
             {...register('password')}
           />
+        </AuthField>
 
-          <InputField
-            label="Confirm New Password"
+        <AuthField
+          id="confirmPassword"
+          label={t('auth.reset.confirm_password_label', 'Confirm New Password')}
+          error={errors.confirmPassword?.message}
+        >
+          <input
+            id="confirmPassword"
+            className={errors.confirmPassword?.message ? skin.inputError : skin.input}
+            data-auth="control"
             type="password"
             autoComplete="new-password"
-            error={errors.confirmPassword?.message}
             {...register('confirmPassword')}
           />
+        </AuthField>
 
-          <Button type="submit" className="w-full" isLoading={isLoading} disabled={!token}>
-            Reset Password
-          </Button>
-
-          <div className="text-center text-sm text-gray-600">
-            Remember your password?{' '}
-            <a className="font-medium text-blue-600 hover:text-blue-700" href="/login">
-              Log In
-            </a>
-          </div>
-        </form>
-      </Card>
-    </div>
+        <button
+          type="submit"
+          className={skin.submit}
+          data-auth="submit"
+          disabled={isLoading || !token}
+          aria-busy={isLoading}
+        >
+          {isLoading
+            ? t('auth.reset.submitting', 'Resetting…')
+            : t('auth.reset.submit', 'Reset Password')}
+        </button>
+      </form>
+    </AuthPageFrame>
   );
 }
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="mx-auto w-full max-w-md">
-          <Card>
-            <div className="text-center">
-              <h1 className="text-3xl font-bold tracking-tight text-gray-900">Reset Password</h1>
-              <p className="mt-2 text-sm text-gray-600">
-                Loading reset form. Please wait a moment.
-              </p>
-            </div>
-          </Card>
-        </div>
-      }
-    >
+    <Suspense fallback={<AuthLoading />}>
       <ResetPasswordContent />
     </Suspense>
   );

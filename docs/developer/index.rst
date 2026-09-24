@@ -56,6 +56,8 @@ Where to start
      - :doc:`router-tutorial`
    * - Run your own gateway against real providers
      - :doc:`installation`
+   * - Choose what your distribution can configure or customize
+     - :doc:`distribution-customization`
    * - Follow a request from HTTP through to an upstream call
      - :doc:`architecture`
    * - Publish a new model id, or wire up a provider the gateway has never
@@ -82,8 +84,13 @@ operator's to publish separately.
 That separation is built into the repository: a deployment keeps its identity,
 its configuration-file locations and its feature switches in a *distribution
 overlay* under ``distributions/`` rather than in the code, which is why a fresh
-clone comes up as nobody's gateway but your own. :doc:`configuration` explains
-how those overlays resolve.
+clone comes up as nobody's gateway but your own. :doc:`distribution-customization`
+explains how to configure and extend an overlay.
+
+.. Keep all distribution-facing customization instructions in
+   distribution-customization: capability matrix, manifests/branding, public UI
+   contract, backend extensions and upgrades. Extend that page when adding a
+   customization capability; keep implementation notes under docs/agents/specs.
 
 .. toctree::
    :maxdepth: 2
@@ -92,6 +99,7 @@ how those overlays resolve.
    router-tutorial
    installation
    configuration
+   distribution-customization
 
 .. toctree::
    :maxdepth: 2

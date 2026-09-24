@@ -23,7 +23,19 @@ if TYPE_CHECKING:
 
 
 class _BrandingModel(BaseModel):
-    """Strict base for the versioned public branding contract."""
+    """Strict base for the versioned public branding contract.
+
+    Unknown keys are *refused*, and that is load-bearing rather than tidy. This
+    document is published to every visitor through `GET /site-config`, and its
+    whole safety argument is that it contains nothing that is not meant to be
+    public: a secret that ends up in it by mistake — a `turnstile_secret_key`
+    beside the site key, a provider token in `example:` — is caught here, at
+    load, instead of being served. Ignoring unknown keys would drop such a field
+    silently and leave it one `model_dump` away from the wire.
+
+    Removing a field requires migrating the documents that publish it. The
+    loader rejects unsupported keys instead of silently ignoring them.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 

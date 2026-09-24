@@ -15,6 +15,11 @@ __pycache__
 # Frontend build artifacts
 apps/frontend/node_modules
 apps/frontend/.next
+apps/frontend/.site-ui-build-env
+apps/frontend/src/site-ui/external
+apps/frontend/src/site-ui/active
+apps/frontend/src/generated
+apps/frontend/tsconfig.generated.json
 
 # Data & logs (never bake into images)
 var/

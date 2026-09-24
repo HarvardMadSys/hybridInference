@@ -1,5 +1,5 @@
 # Opt-in local quota example. Nothing here calls a real supplier.
-# See docs/developer/configuration.md#quota-reporting for startup commands.
+# See docs/developer/distribution-customization.md#quota-reporting for startup commands.
 # The example extension queries the fixture's /usage endpoint independently
 # of inference; matching `provider`, `usage_label`, and `unit` joins the two.
 models:

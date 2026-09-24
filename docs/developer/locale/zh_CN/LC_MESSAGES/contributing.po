@@ -644,6 +644,17 @@ msgid "prettier, eslint, `tsc --noEmit`, vitest, `npm audit`"
 msgstr ""
 
 #: ../developer/contributing.md
+msgid "Site UI Containers"
+msgstr "Site UI Containers"
+
+#: ../developer/contributing.md
+msgid ""
+"builds the frontend image with no module and with the example's Site UI "
+"module, requires a module build that lacks its context to fail, and "
+"checks how the running example serves its assets"
+msgstr "分别构建不带模块和带示例 Site UI 模块的前端镜像，要求缺少上下文的模块构建必须失败，并检查运行中的示例如何提供它的资源"
+
+#: ../developer/contributing.md
 msgid "Docs Build"
 msgstr ""
 

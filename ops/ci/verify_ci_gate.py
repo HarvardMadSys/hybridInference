@@ -20,6 +20,7 @@ BOOLEAN_OUTPUTS = (
     "python_tests",
     "docs",
     "tutorial_e2e",
+    "site_ui",
     "security_only",
     "full",
 )
@@ -27,6 +28,7 @@ DOCKER_IMAGES = ("frontend", "backend")
 APP_JOB_CATEGORIES = {
     "backend-quality": "backend",
     "frontend-quality": "frontend",
+    "site-ui-containers": "site_ui",
     "test": "python_tests",
     "docs-build": "docs",
 }
@@ -121,6 +123,12 @@ def parse_classification(payload: str) -> ClassificationOutputs:
         "python_tests"
     ]:
         raise ValueError("Python-consumed inputs must enable python_tests")
+
+    # Every frontend input is an input of the image the Site UI container checks
+    # build, so a frontend change that skipped them would ship a module path no
+    # job had compiled.
+    if booleans["frontend"] and not booleans["site_ui"]:
+        raise ValueError("frontend changes must enable site_ui")
 
     if booleans["full"] or booleans["docker_shared"]:
         if matrix != list(DOCKER_IMAGES):

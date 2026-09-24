@@ -1,0 +1,24 @@
+/*
+ * The fixture's stylesheet.
+ *
+ * Two things are being shown here. First, that a module's CSS is loaded at all
+ * — the generated bridge imports this file, so a rule in it reaches the page.
+ * Second, that it is *scoped*: every selector is nested under the module's own
+ * root class, so nothing in it can reach a console page. A module that styled
+ * `body` or `:root` would be restyling the whole application, including pages
+ * it does not own.
+ */
+.site-ui-demo {
+  --site-ui-demo-accent: #0b5fff;
+}
+
+.site-ui-demo .fixture-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.site-ui-demo .fixture-submit {
+  background: var(--site-ui-demo-accent);
+  color: #fff;
+}

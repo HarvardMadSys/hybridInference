@@ -184,3 +184,19 @@ def test_loader_rejects_a_sponsor_class_the_neutral_css_does_not_compile(
 
     with pytest.raises(BrandingConfigError, match="class_name"):
         load_branding_config(path)
+
+
+def test_loader_names_unsupported_layout_keys(tmp_path: Path) -> None:
+    """Unsupported branding keys fail with an actionable field name.
+
+    Runtime branding does not select public-page layouts. A module supplies its
+    own presentation at build time, and the branding schema rejects fields it
+    does not support instead of silently accepting unused settings.
+    """
+    data = yaml.safe_load(_EXAMPLE.read_text())
+    data["theme"] = {"accent": "#0052D9"}
+    path = tmp_path / "branding.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(BrandingConfigError, match="theme"):
+        load_branding_config(path)

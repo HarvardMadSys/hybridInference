@@ -7,6 +7,8 @@ import { Markdown } from '@/components/ui/Markdown';
 import { streamRagChat, type RagSource } from '@/lib/api/chat';
 import { APIError } from '@/lib/utils/errors';
 import { useBranding, useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useT } from '@/components/providers/useT';
+import { fill } from '@/lib/utils/interpolate';
 
 interface UiMessage {
   role: 'user' | 'assistant';
@@ -31,10 +33,13 @@ function updateLast(messages: UiMessage[], patch: Partial<UiMessage>): UiMessage
 }
 
 function SourceChips({ sources, docsUrl }: { sources: RagSource[]; docsUrl: string }) {
+  const t = useT();
   if (!sources.length) return null;
   return (
     <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
-      <span className="text-xs font-medium text-gray-400">Sources</span>
+      <span className="text-xs font-medium text-gray-400">
+        {t('chat.sources_label', 'Sources')}
+      </span>
       {sources.map((s) => (
         <a
           key={s.id}
@@ -52,12 +57,15 @@ function SourceChips({ sources, docsUrl }: { sources: RagSource[]; docsUrl: stri
 }
 
 function ChatView() {
+  const t = useT();
   const runtimeBranding = useBranding();
   const exampleQuestions = [
-    'How do I get an API key?',
-    'Which models can I use for coding?',
-    `How do I set up Cursor with ${runtimeBranding.appName}?`,
-    'What request headers does the API accept?',
+    t('chat.example_1', 'How do I get an API key?'),
+    t('chat.example_2', 'Which models can I use for coding?'),
+    fill(t('chat.example_3', 'How do I set up Cursor with {app_name}?'), {
+      app_name: runtimeBranding.appName,
+    }),
+    t('chat.example_4', 'What request headers does the API accept?'),
   ];
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
@@ -108,8 +116,8 @@ function ChatView() {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
           const message =
             err instanceof APIError
-              ? err.message || 'Something went wrong. Please try again.'
-              : 'Something went wrong. Please try again.';
+              ? err.message || t('chat.error_generic', 'Something went wrong. Please try again.')
+              : t('chat.error_generic', 'Something went wrong. Please try again.');
           setError(message);
           if (!acc) {
             setMessages((prev) => prev.slice(0, -1)); // drop empty assistant bubble
@@ -121,7 +129,7 @@ function ChatView() {
         abortRef.current = null;
       }
     },
-    [isStreaming, messages],
+    [isStreaming, messages, t],
   );
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
@@ -131,9 +139,12 @@ function ChatView() {
   return (
     <div className="flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col">
       <div className="mb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Docs Assistant</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t('chat.title', 'Docs Assistant')}</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Ask anything about {runtimeBranding.appName}. Answers are grounded in the{' '}
+          {fill(t('chat.subtitle_lead', 'Ask anything about {app_name}.'), {
+            app_name: runtimeBranding.appName,
+          })}{' '}
+          {t('chat.subtitle_grounded', 'Answers are grounded in the')}{' '}
           {runtimeBranding.docsUrl ? (
             <a
               href={runtimeBranding.docsUrl}
@@ -141,10 +152,10 @@ function ChatView() {
               rel="noopener noreferrer"
               className="text-crimson hover:underline"
             >
-              official documentation
+              {t('chat.official_docs', 'official documentation')}
             </a>
           ) : (
-            'official documentation'
+            t('chat.official_docs', 'official documentation')
           )}
           .
         </p>
@@ -156,7 +167,9 @@ function ChatView() {
       >
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-            <p className="text-sm text-gray-500">Try one of these to get started:</p>
+            <p className="text-sm text-gray-500">
+              {t('chat.empty_hint', 'Try one of these to get started:')}
+            </p>
             <div className="flex max-w-md flex-wrap justify-center gap-2">
               {exampleQuestions.map((q) => (
                 <button
@@ -185,7 +198,7 @@ function ChatView() {
                 ) : m.content ? (
                   <Markdown text={m.content} />
                 ) : m.streaming ? (
-                  <span className="text-gray-400">Thinking…</span>
+                  <span className="text-gray-400">{t('chat.thinking', 'Thinking…')}</span>
                 ) : null}
                 {m.role === 'assistant' && m.sources && (
                   <SourceChips sources={m.sources} docsUrl={runtimeBranding.docsUrl} />
@@ -218,17 +231,19 @@ function ChatView() {
               send(input);
             }
           }}
-          placeholder={`Ask a question about ${runtimeBranding.appName}…`}
+          placeholder={fill(t('chat.input_placeholder', 'Ask a question about {app_name}…'), {
+            app_name: runtimeBranding.appName,
+          })}
           rows={1}
           className="max-h-40 min-h-[2.75rem] flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black"
         />
         {isStreaming ? (
           <Button type="button" variant="secondary" onClick={stop}>
-            Stop
+            {t('chat.stop', 'Stop')}
           </Button>
         ) : (
           <Button type="submit" disabled={!input.trim()}>
-            Send
+            {t('chat.send', 'Send')}
           </Button>
         )}
       </form>
@@ -237,6 +252,7 @@ function ChatView() {
 }
 
 export default function ChatPage() {
+  const t = useT();
   const { features } = useSiteConfig();
   return (
     <ProtectedRoute>
@@ -244,7 +260,10 @@ export default function ChatPage() {
         <ChatView />
       ) : (
         <div className="mx-auto w-full max-w-xl rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-600 shadow-sm">
-          The documentation assistant is not enabled for this distribution.
+          {t(
+            'chat.unavailable',
+            'The documentation assistant is not enabled for this distribution.',
+          )}
         </div>
       )}
     </ProtectedRoute>

@@ -1,0 +1,6 @@
+{
+  "id": "site-ui-demo",
+  "site_ui_api": 1,
+  "locale": "en-GB",
+  "note": "Fixture for the Site UI API v1 seam. Not a template and not a second design: it is the smallest module that satisfies the interface, and it exists so the host can be tested against something it has never seen."
+}

@@ -1,11 +1,14 @@
 import '../styles/globals.css';
+import '../site-ui/active/styles.css';
 import Script from 'next/script';
 import { Crimson_Text } from 'next/font/google';
 import type { Metadata } from 'next';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
-import { Header } from '@/components/ui/Header';
-import { SiteFooter } from '@/components/ui/SiteFooter';
+import { PublicRouteBoundary } from '@/site-ui/PublicRouteBoundary';
+import { SiteUiBoundary } from '@/site-ui/SiteUiBoundary';
+import { SiteDocument } from '@/site-ui/SiteDocument';
+import { locale as publicLocale } from '@site-ui/server';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { rootMetadata } from '@/config/site-metadata';
 
@@ -26,8 +29,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const siteConfig = await loadRuntimeSiteConfig();
   const { branding } = siteConfig;
 
+  // The document language follows whoever renders the route: the module's
+  // server `locale` on the routes the module renders, the console's English on
+  // every other. Only the client half of the module knows which routes those
+  // are, so `SiteDocument` — a client component, rendered here on the server
+  // too — decides, and decides again on each client-side navigation.
+
   return (
-    <html lang="en" className={`h-full ${crimsonText.variable}`}>
+    <SiteDocument moduleLocale={publicLocale} className={`h-full ${crimsonText.variable}`}>
       <head>
         {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
             the empty string as a text node. A text node inside <head> is invalid
@@ -54,11 +63,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       >
         <ErrorBoundary>
           <Providers initialSiteConfig={siteConfig}>
-            <Header />
-            <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">
-              {children}
-            </main>
-            <SiteFooter />
+            {/* The compiled-in Site UI first, so the shared forms inside it can
+                read the active appearance and wording; then the route boundary,
+                which steps aside for the public routes and draws the console
+                chrome — header, constrained main, footer — everywhere else. */}
+            <SiteUiBoundary>
+              <PublicRouteBoundary>{children}</PublicRouteBoundary>
+            </SiteUiBoundary>
             {branding.statcounterProjectId ? (
               <noscript>
                 <div className="statcounter">
@@ -82,6 +93,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </Providers>
         </ErrorBoundary>
       </body>
-    </html>
+    </SiteDocument>
   );
 }

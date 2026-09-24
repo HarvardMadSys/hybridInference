@@ -20,9 +20,12 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@site-ui/client": ["./src/site-ui/active/client"],
+      "@site-ui/server": ["./src/site-ui/active/server"],
+      "@site-ui/host": ["./src/site-ui/host"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "src/generated", "src/site-ui/external"]
 }

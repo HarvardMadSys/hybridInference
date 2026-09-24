@@ -257,6 +257,7 @@ alertmanager-0.28.1.linux-amd64/
 # Dependencies
 node_modules/
 **/node_modules/
+**/node_modules
 jspm_packages/
 
 # Next.js build output
@@ -264,6 +265,21 @@ jspm_packages/
 out/
 **/.next/
 **/out/
+
+# Site UI resolution output (written by apps/frontend/src/site-ui/resolve.js).
+#
+# A *view* of which UI the build compiled in, regenerated on every `next`
+# command and every Vitest run. Not sources: committing them would pin one
+# distribution's module path into the shared repository, and the next default
+# build would read the previous distribution's configuration.
+apps/frontend/src/generated/
+apps/frontend/src/site-ui/active/
+apps/frontend/tsconfig.generated.json
+# The staged copy of an external module. The container build writes it and
+# removes the source context immediately afterwards; a local build writes it
+# from a directory on the developer's machine. Either way it is a copy of
+# somebody else's tree, never this repository's source.
+apps/frontend/src/site-ui/external/
 
 # Production build
 build/
@@ -354,3 +370,8 @@ storybook-static/
 .kilo/workspaces
 api_log*.jsonl
 api_log*.jsonl.zst
+
+# Written by `prepare-module.mjs prepare` so the in-container build can source
+# the module selection. It is generated per build and carries absolute paths
+# from whichever machine produced it, so it is never committed.
+apps/frontend/.site-ui-build-env

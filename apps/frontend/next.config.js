@@ -12,15 +12,65 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 const AGENT_WEB_INTERNAL_URL = process.env.AGENT_WEB_INTERNAL_URL || '';
 const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNAL_URL || '';
 
+// Which public-site UI this build compiles in, and the generated files that
+// answer it. Resolved here, at config load, because that is the one moment all
+// three toolchains can be pointed at the same decision: Webpack through the
+// alias below, TypeScript through the tsconfig this writes, Vitest through the
+// same alias. A distribution that points SITE_UI_DIR at a module this build
+// cannot use fails right here, before any compilation starts — the failure has
+// to be loud, because the alternative is publishing a site whose home page
+// silently reverted to the console's.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { prepareSiteUi, webpackAlias } = require('./src/site-ui/resolve');
+const siteUi = prepareSiteUi(__dirname);
+const siteUiName = siteUi.kind === 'distribution' ? ` '${siteUi.id}'` : '';
+// One line in the build log naming what this image compiles in.
+// eslint-disable-next-line no-console
+console.log(`[site-ui] compiling in the ${siteUi.kind} Site UI${siteUiName}, API v${siteUi.api}`);
+
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Point Webpack at the module the resolution chose, and at the generated
+  // tsconfig that describes it. Both are needed: an alias alone leaves `tsc`
+  // checking the neutral UI while the build ships a distribution's, which is
+  // exactly the disagreement this seam exists to prevent.
+  //
+  // `tsconfigPath` is set unconditionally, because the file is generated on
+  // every config load — including for `next dev`, where Next compiles the types
+  // itself. `next.config.js` is plain JS, so this is not type-checked; the
+  // generated project is checked by `npm run type-check`.
+  webpack: (config) => {
+    config.resolve = config.resolve || {};
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      ...webpackAlias(__dirname, siteUi),
+    };
+    // Hold a distribution's module to the imports the interface promises where
+    // the bundler resolves them — client, server and edge alike — using the
+    // module directory and facade alias this config already resolved. The
+    // source check in `prepareSiteUi` reports what it can see earlier; this is
+    // the one that sees every request. See src/site-ui/containment.js.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('./src/site-ui/containment').installSiteUiContainment(config, __dirname, siteUi);
+    return config;
+  },
   // Keep every backend consumer on the exact target compiled into the rewrite
   // manifest. next.config `env` values are inlined during `next build`, so a
   // container-level BACKEND_INTERNAL_URL cannot retarget only server code and
   // leave /v1, /auth, and the other rewrites pointing somewhere else.
   env: {
     BUILT_BACKEND_INTERNAL_URL: BACKEND_INTERNAL_URL,
+  },
+  // Type-check the build with the generated project (`siteUi.tsconfigPath`,
+  // written by the resolver above), the one that maps `@site-ui/*` to the
+  // module this build compiles. Without this key `next build` read
+  // `tsconfig.json`, whose globs took in every file of a staged module — its
+  // tests and test-runner configuration too, which import packages this
+  // application does not install. Next joins the value to the project
+  // directory, so it is the relative name.
+  typescript: {
+    tsconfigPath: 'tsconfig.generated.json',
   },
   // Next strips a trailing slash by redirecting; pgAdmin (Flask) adds one back
   // the same way. Left on, the two bounce a request between them forever the

@@ -10,13 +10,18 @@ export function rootMetadata(siteConfig: RuntimeSiteConfig): Metadata {
   };
 }
 
+/** A page's document title: the page's own, then the site's name. */
+export function pageTitle(siteConfig: RuntimeSiteConfig, title: string): string {
+  return `${title} | ${siteConfig.branding.appName}`;
+}
+
 export function pageMetadata(
   siteConfig: RuntimeSiteConfig,
-  pageTitle: string,
+  title: string,
   description: string,
 ): Metadata {
   return {
-    title: `${pageTitle} | ${siteConfig.branding.appName}`,
+    title: pageTitle(siteConfig, title),
     description,
   };
 }

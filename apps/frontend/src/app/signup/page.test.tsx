@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('next/script', () => ({
@@ -14,6 +14,7 @@ vi.mock('@/lib/api/auth', () => ({
 import { signup, type SignupResponse } from '@/lib/api/auth';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
+import { NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
 import SignupPage from './page';
 
 const mockedSignup = vi.mocked(signup);
@@ -72,6 +73,12 @@ async function submitSignup(response: SignupResponse): Promise<void> {
 }
 
 describe('SignupPage', () => {
+  it('keeps the login link after consent in classic mode', () => {
+    render(<SignupPage />);
+    completeConsentStep();
+    expect(screen.getByRole('link', { name: 'Log In' })).toHaveAttribute('href', '/login');
+  });
+
   afterEach(() => {
     cleanup();
     mockedSignup.mockReset();
@@ -86,6 +93,17 @@ describe('SignupPage', () => {
       }
       expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Sign Up' })).not.toBeInTheDocument();
+    });
+
+    it('links back to sign-in exactly once', () => {
+      // The step hands the cross-link to its frame, and the default card places
+      // it after the confirmations. A second copy in the step's own body is
+      // what made the card show two.
+      render(<SignupPage />);
+
+      const links = screen.getAllByRole('link', { name: 'Log In' });
+      expect(links).toHaveLength(1);
+      expect(links[0]).toHaveAttribute('href', '/login');
     });
 
     it('links to the full /terms page in a new tab', () => {
@@ -223,6 +241,29 @@ describe('SignupPage', () => {
         'data-sitekey',
         'runtime-turnstile-key',
       );
+    });
+
+    it('styles and marks an invalid textarea the way it does an invalid input', async () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      // Past the textarea's `maxLength`, which limits typing but not the schema.
+      fireEvent.change(screen.getByLabelText('How did you find us?'), {
+        target: { value: 'x'.repeat(501) },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Sign Up' }));
+
+      const discovery = screen.getByLabelText('How did you find us?');
+      await waitFor(() =>
+        expect(discovery).toHaveClass(...NEUTRAL_AUTH_APPEARANCE.inputError.split(' ')),
+      );
+      expect(discovery).toHaveAttribute('data-auth', 'control');
+
+      // The other textarea is valid and keeps the ordinary look, and the same
+      // hook a stylesheet selects every other control by.
+      const useCase = screen.getByLabelText('Use case');
+      expect(useCase).toHaveClass(...NEUTRAL_AUTH_APPEARANCE.input.split(' '));
+      expect(useCase).not.toHaveClass('border-red-300');
+      expect(useCase).toHaveAttribute('data-auth', 'control');
     });
 
     it('sends accepted_tos: true once the consent step has been completed', async () => {

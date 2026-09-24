@@ -81,7 +81,7 @@ class DistributionInfo(_ManifestModel):
 
 
 class DistributionSite(_ManifestModel):
-    """Site identity and paths to distribution-owned public content."""
+    """Site identity and the path to the distribution-owned branding document."""
 
     public_base_url: str = ""
     support_email: str = ""
@@ -144,7 +144,7 @@ class DistributionConfigError(Exception):
 
 
 def load_distribution_config(path: Path) -> DistributionConfig:
-    """Load and validate a manifest and its declared branding document.
+    """Load and validate a manifest and its declared public documents.
 
     Relative ``paths:`` and ``site.branding`` values resolve against the
     manifest directory.
