@@ -115,11 +115,18 @@ const runtimeBrandingSchema = z
       .object({
         logo_url: assetUrlSchema,
         favicon_url: assetUrlSchema,
+        // Optional: the backend omits it (`exclude_none`) for documents that
+        // never named a hero image.
       })
       .strict(),
     team: z.array(teamMemberSchema),
     sponsors: z.array(sponsorSchema),
   })
+  // Strict, like the gateway's own branding model: this object is handed around
+  // the application and rendered, so a key nobody declared is a mistake worth
+  // reporting. It is also the same rule on both sides of the wire — the
+  // gateway refuses such a document before it is ever served, so a console that
+  // quietly dropped the key would only ever hide a deployment misconfiguration.
   .strict();
 
 const distributionSchema = z
@@ -156,7 +163,12 @@ const versionedSiteConfigDocumentSchema = z
     // already baked into the transition image.
     branding: z.unknown().nullable(),
   })
-  .strict();
+  // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
+  // with the branding object below is deliberate. This envelope is what a
+  // gateway serves, and a gateway one version ahead of the console is a normal
+  // state during a rollout — refusing would take the deployment's identity and
+  // feature gates down over a key this console does not read.
+  .passthrough();
 
 // The endpoint immediately preceding schema v1 exposed this exact subset.
 // Accept it during rolling upgrades and paired rollbacks so a neutral console

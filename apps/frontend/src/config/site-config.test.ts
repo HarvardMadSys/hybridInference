@@ -205,6 +205,11 @@ describe('resolveRuntimeSiteConfig', () => {
       }),
     ).toThrow(SiteConfigLoadError);
 
+    // A key the console does not declare is refused, not dropped. This document
+    // is served to every visitor, so an undeclared field is either a typo or
+    // something that should not be public, and the gateway's own model forbids
+    // both — a console that quietly ignored it would only ever hide a
+    // deployment misconfiguration.
     expect(() =>
       resolveRuntimeSiteConfig({
         ...runtimeDocument,
@@ -325,5 +330,57 @@ describe('example quickstart base', () => {
 
     expect(resolved.branding.exampleApiBase).toBe('');
     expect(resolved.branding.exampleHidden).toBe(true);
+  });
+});
+
+describe('unknown configuration keys', () => {
+  // The endpoint envelope accepts unknown keys during rolling upgrades, while
+  // the public branding document is strict so unsupported settings fail clearly.
+  it('ignores an unknown top-level key and refuses an unknown branding key', () => {
+    const resolved = resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      content: { locale: 'zh-CN', strings: { 'landing.hero.subtitle': '面向科研的推理服务' } },
+    });
+    expect(resolved.branding.appDescription).toBe(runtimeBranding.app_description);
+    expect(resolved).not.toHaveProperty('content');
+
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          theme: { accent: '#0052D9', accent_dark: '#003CAB', accent_light: '#3B7BFF' },
+        },
+      }),
+    ).toThrow(SiteConfigLoadError);
+  });
+
+  it('still refuses a document that is genuinely malformed elsewhere', () => {
+    // Tolerating a key this console does not read is not the same as accepting
+    // anything: the keys that *are* this endpoint's contract keep their rules.
+    expect(() => resolveRuntimeSiteConfig({ schema_version: 99, distribution: {} })).toThrow(
+      SiteConfigLoadError,
+    );
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, routers: 'fixed' },
+      }),
+    ).toThrow(SiteConfigLoadError);
+  });
+});
+
+describe('unsupported runtime layout settings', () => {
+  // Public-page layouts and design assets belong to build-time modules.
+  // These keys are not part of the runtime branding schema.
+  it('refuses unsupported presentation and hero-image settings', () => {
+    for (const branding of [
+      { ...runtimeBranding, presentation: { preset: 'custom', model_families: [] } },
+      { ...runtimeBranding, assets: { ...runtimeBranding.assets, hero_image_url: '/a.png' } },
+    ]) {
+      expect(() => resolveRuntimeSiteConfig({ ...runtimeDocument, branding })).toThrow(
+        SiteConfigLoadError,
+      );
+    }
   });
 });

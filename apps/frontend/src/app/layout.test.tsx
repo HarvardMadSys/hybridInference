@@ -34,8 +34,32 @@ vi.mock('@/components/providers', () => ({
 vi.mock('@/components/ui/ErrorBoundary', () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock('@/components/ui/Header', () => ({ Header: () => <div>header</div> }));
-vi.mock('@/components/ui/SiteFooter', () => ({ SiteFooter: () => <div>footer</div> }));
+// The Site UI boundary and the chrome decision are separate components with
+// their own coverage (`src/site-ui/*.test.tsx`); this file is about what the
+// ROOT layout renders, so both are reduced to their children here.
+vi.mock('@/site-ui/SiteUiBoundary', () => ({
+  SiteUiBoundary: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+vi.mock('@/site-ui/PublicRouteBoundary', () => ({
+  PublicRouteBoundary: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+// The document language is `SiteDocument`'s decision, with its own tests; here
+// it is the element, showing what the layout handed it.
+vi.mock('@/site-ui/SiteDocument', () => ({
+  SiteDocument: ({
+    moduleLocale,
+    className,
+    children,
+  }: {
+    moduleLocale: string;
+    className?: string;
+    children: React.ReactNode;
+  }) => (
+    <html data-module-locale={moduleLocale} className={className}>
+      {children}
+    </html>
+  ),
+}));
 
 import RootLayout, { generateMetadata } from './layout';
 
@@ -75,6 +99,9 @@ describe('RootLayout runtime identity', () => {
 
     const html = renderToStaticMarkup(await RootLayout({ children: <p>page</p> }));
     expect(html).toContain('data-initial-app-name="Runtime Console"');
+    // The document element gets the server module's locale to decide with; the
+    // neutral module declares none.
+    expect(html).toContain('<html data-module-locale="" class="h-full runtime-font">');
   });
 
   it('renders analytics only when the runtime document enables it', async () => {

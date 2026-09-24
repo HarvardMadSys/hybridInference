@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSignupSchema, loginSchema, passwordSchema, signupSchema } from './auth';
+import { translate } from '@/lib/i18n/translate';
+import {
+  createAuthSchemas,
+  createSignupSchema,
+  loginSchema,
+  passwordSchema,
+  signupSchema,
+} from './auth';
 
 describe('auth schemas', () => {
   it('accepts a strong password', () => {
@@ -111,5 +118,46 @@ describe('auth schemas', () => {
         password: 'anything-present',
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('auth schema distribution messages', () => {
+  it('resolves validation messages through the supplied translator', () => {
+    // Validation messages are interface copy: a distribution translates them
+    // through the same slots as the page around them.
+    const {
+      createSignupSchema: runtimeSignup,
+      emailSchema,
+      passwordSchema,
+    } = createAuthSchemas((slot, fallback) =>
+      slot.startsWith('auth.validation.') ? `<${slot}>` : fallback,
+    );
+
+    expect(emailSchema.safeParse('not-an-email').error?.issues[0]?.message).toBe(
+      '<auth.validation.email_invalid>',
+    );
+    expect(passwordSchema.safeParse('short').error?.issues[0]?.message).toBe(
+      '<auth.validation.password_min>',
+    );
+    expect(
+      runtimeSignup()
+        .safeParse({
+          email: 'user@example.org',
+          password: 'SecurePass123',
+          confirmPassword: 'DifferentPass123',
+          userName: 'Example User',
+        })
+        .error?.flatten().fieldErrors.confirmPassword,
+    ).toEqual(['<auth.validation.passwords_differ>']);
+  });
+
+  it('keeps today’s English for a deployment that fills no slot', () => {
+    // The module-level exports are exactly this call, so a regression in the
+    // default path would silently reword every deployment's form errors.
+    const { emailSchema } = createAuthSchemas(translate);
+
+    expect(emailSchema.safeParse('not-an-email').error?.issues[0]?.message).toBe(
+      'Please enter a valid email address',
+    );
   });
 });

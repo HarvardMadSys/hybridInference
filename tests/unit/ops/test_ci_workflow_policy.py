@@ -231,6 +231,47 @@ def test_python_tests_signal_controls_only_the_pytest_job() -> None:
     assert "needs.changes.outputs.backend == 'true'" in jobs["backend-quality"]["if"]
 
 
+def test_site_ui_signal_reaches_the_container_job_and_the_gate() -> None:
+    workflow = _workflow("ci.yml")
+    jobs = workflow["jobs"]
+    changes = jobs["changes"]
+    validate = next(step for step in changes["steps"] if step.get("id") == "validate")
+    gate = next(
+        step
+        for step in jobs["ci-gate"]["steps"]
+        if step.get("name") == "Verify exact required CI job results"
+    )
+
+    assert changes["outputs"]["site_ui"] == "${{ steps.validate.outputs.site_ui }}"
+    assert '"site_ui":' in validate["env"]["CLASSIFICATION_JSON"]
+    assert '"site_ui":' in gate["env"]["CLASSIFICATION_JSON"]
+    assert "needs.changes.outputs.site_ui == 'true'" in jobs["site-ui-containers"]["if"]
+
+
+def test_site_ui_container_job_cannot_strand_containers() -> None:
+    """Per-run names and ports, and a teardown that runs whatever failed.
+
+    On a self-hosted runner a fixed container name left by a failed run made
+    every later run fail at `docker run --name`, and the removal ran only when
+    every step before it had passed.
+    """
+    job = _workflow("ci.yml")["jobs"]["site-ui-containers"]
+    steps = job["steps"]
+    by_name = {step.get("name"): step for step in steps}
+    runs = "\n".join(str(step.get("run", "")) for step in steps)
+
+    assert job["env"]["SITE_UI_RUN"] == "site-ui-${{ github.run_id }}-${{ github.run_attempt }}"
+    assert '--name "${SITE_UI_RUN}-example"' in runs
+    assert "13001" not in runs
+    assert '"127.0.0.1:${SITE_UI_PORT}:3001"' in runs
+
+    teardown = by_name["Remove this run's Site UI containers and images"]
+    assert teardown["if"] == "always()"
+    assert 'docker rm -f "${SITE_UI_RUN}-example"' in teardown["run"]
+    assert '"${SITE_UI_RUN}-neutral:ci" "${SITE_UI_RUN}-example:ci"' in teardown["run"]
+    assert steps[-1] is teardown
+
+
 def test_w5c_retired_services_and_ci_wiring_are_absent() -> None:
     jobs = _workflow("ci.yml")["jobs"]
     retired_paths = (

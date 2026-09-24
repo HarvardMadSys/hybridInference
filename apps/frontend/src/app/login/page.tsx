@@ -1,20 +1,27 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import toast from 'react-hot-toast';
-import { loginSchema, LoginFormData } from '@/lib/schemas/auth';
+import { createAuthSchemas, LoginFormData } from '@/lib/schemas/auth';
 import { useAuth } from '@/components/providers';
 import { resendVerification } from '@/lib/api/auth';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { internalPathOr } from '@/lib/utils/navigation';
-import { Button } from '@/components/ui/Button';
-import { InputField } from '@/components/ui/InputField';
-import { Card } from '@/components/ui/Card';
+import { useT } from '@/components/providers/useT';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { fill } from '@/lib/utils/interpolate';
+import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
+import { useAuthAppearance } from '@/site-ui/appearance';
+import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 
 function LoginContent() {
+  const t = useT();
+  const skin = useAuthAppearance();
+  const { features } = useSiteConfig();
   const router = useRouter();
   const searchParams = useSearchParams();
   // Where to land after login. Internal paths only — /authorize round-trips
@@ -29,6 +36,9 @@ function LoginContent() {
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
   const [resendDone, setResendDone] = useState(false);
+  // Validation copy is interface copy too, so the schemas are rebuilt whenever
+  // the resolved translator changes; `t` is stable per content document.
+  const { loginSchema } = useMemo(() => createAuthSchemas(t), [t]);
 
   const {
     register,
@@ -52,7 +62,7 @@ function LoginContent() {
 
     try {
       await login(data.email, data.password);
-      toast.success('Login successful!');
+      toast.success(t('auth.login.success_toast', 'Login successful!'));
       router.push(nextPath);
     } catch (err) {
       // For a suspended account, prefer the admin-authored message (when set)
@@ -78,7 +88,9 @@ function LoginContent() {
     try {
       await resendVerification(unverifiedEmail);
       setResendDone(true);
-      toast.success('Verification email sent. Please check your inbox.');
+      toast.success(
+        t('auth.login.resent_toast', 'Verification email sent. Please check your inbox.'),
+      );
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -87,100 +99,119 @@ function LoginContent() {
   };
 
   if (state.loading || state.isAuthenticated) {
-    return (
-      <div className="flex w-full items-center justify-center">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"></div>
-      </div>
-    );
+    return <AuthLoading />;
   }
 
+  // The field wraps its action in the `field-action` hook itself.
+  const forgotLink = (
+    <Link href="/forgot-password" className={skin.linkButton} prefetch={false}>
+      {t('auth.login.forgot_password', 'Forgot password?')}
+    </Link>
+  );
+
   return (
-    <div className="mx-auto w-full max-w-md">
-      <Card>
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Log In</h1>
-          <p className="mt-2 text-sm text-gray-600">Welcome back, please log in with your email</p>
-        </div>
+    <AuthPageFrame
+      page="login"
+      kicker={t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN')}
+      title={t('auth.login.title', 'Log In')}
+      subtitle={t('auth.login.subtitle', 'Welcome back, please log in with your email')}
+      topbar={
+        features.publicSignup ? (
+          <>
+            {t('auth.login.no_account', "Don't have an account?")}{' '}
+            <Link href="/signup" prefetch={false}>
+              {t('auth.login.signup_link', 'Sign Up')}
+            </Link>
+          </>
+        ) : undefined
+      }
+      legal={
+        <>
+          {t('auth.legal.see', 'See')}{' '}
+          <Link href="/terms">{t('chrome.footer.terms', 'Terms')}</Link>
+          {' · '}
+          <Link href="/terms#terms-s5">{t('chrome.footer.privacy', 'Privacy')}</Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
+        {error && <AuthNotice tone="error">{error}</AuthNotice>}
 
-        <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-5">
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
-              {error}
-            </div>
-          )}
+        {unverifiedEmail &&
+          (resendDone ? (
+            <AuthNotice tone="ok">
+              {fill(
+                t(
+                  'auth.login.resent_notice',
+                  'A new verification email is on its way to {email}. Please check your inbox (and spam folder).',
+                ),
+                { email: unverifiedEmail },
+              )}
+            </AuthNotice>
+          ) : (
+            <AuthNotice>
+              <p>{t('auth.login.resend_prompt', "Didn't get the verification email?")}</p>
+              <button
+                type="button"
+                className={skin.linkButton}
+                onClick={handleResend}
+                disabled={isResending}
+              >
+                {t('auth.login.resend_button', 'Resend verification email')}
+              </button>
+            </AuthNotice>
+          ))}
 
-          {unverifiedEmail &&
-            (resendDone ? (
-              <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                A new verification email is on its way to {unverifiedEmail}. Please check your inbox
-                (and spam folder).
-              </div>
-            ) : (
-              <div className="rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                <p>Didn&apos;t get the verification email?</p>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="mt-2"
-                  isLoading={isResending}
-                  onClick={handleResend}
-                >
-                  Resend verification email
-                </Button>
-              </div>
-            ))}
-
-          <InputField
-            label="Email"
+        <AuthField
+          id="email"
+          label={t('auth.login.email_label', 'Email')}
+          error={errors.email?.message}
+        >
+          <input
+            id="email"
+            className={errors.email?.message ? skin.inputError : skin.input}
+            data-auth="control"
             type="email"
             autoComplete="email"
-            error={errors.email?.message}
             {...register('email')}
           />
+        </AuthField>
 
-          <InputField
-            label="Password"
+        <AuthField
+          id="password"
+          label={t('auth.login.password_label', 'Password')}
+          error={errors.password?.message}
+          // The action belongs to the field, and where it sits is the
+          // module's `fieldLayout`. Nothing here decides that.
+          action={forgotLink}
+        >
+          <input
+            id="password"
+            className={errors.password?.message ? skin.inputError : skin.input}
+            data-auth="control"
             type="password"
             autoComplete="current-password"
-            error={errors.password?.message}
             {...register('password')}
           />
+        </AuthField>
 
-          <div className="flex items-center justify-end">
-            <a
-              href="/forgot-password"
-              className="text-sm font-medium text-blue-600 hover:text-blue-700"
-            >
-              Forgot password?
-            </a>
-          </div>
-
-          <Button type="submit" className="w-full" isLoading={isLoading}>
-            Log In
-          </Button>
-
-          <div className="text-center text-sm text-gray-600">
-            Don&apos;t have an account?{' '}
-            <a className="font-medium text-blue-600 hover:text-blue-700" href="/signup">
-              Sign Up
-            </a>
-          </div>
-        </form>
-      </Card>
-    </div>
+        <button
+          type="submit"
+          className={skin.submit}
+          data-auth="submit"
+          disabled={isLoading}
+          aria-busy={isLoading}
+        >
+          {isLoading ? t('auth.login.submitting', 'Logging in…') : t('auth.login.submit', 'Log In')}
+        </button>
+      </form>
+    </AuthPageFrame>
   );
 }
 
 export default function LoginPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex w-full items-center justify-center">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"></div>
-        </div>
-      }
-    >
+    <Suspense fallback={<AuthLoading />}>
       <LoginContent />
     </Suspense>
   );

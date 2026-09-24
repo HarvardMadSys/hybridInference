@@ -413,6 +413,7 @@ request touched and then runs only the relevant jobs:
 |---|---|
 | Backend Quality | `ruff format --check`, `ruff check --no-fix`, `pydocstyle` |
 | Frontend Quality | prettier, eslint, `tsc --noEmit`, vitest, `npm audit` |
+| Site UI Containers | builds the frontend image with no module and with the example's Site UI module, requires a module build that lacks its context to fail, and checks how the running example serves its assets |
 | Docs Build | `sphinx-build -W --keep-going` |
 | `test` | pytest across four shards with a PostgreSQL service, `-m "not external"` — so the `dbtest` tier does run in CI even though it is excluded from `make test` |
 | Security Scan | `gitleaks detect` over the tree, then `pip-audit` against the exported production requirements |

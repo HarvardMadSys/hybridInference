@@ -47,6 +47,7 @@ jobs:
       python_tests: ${{ steps.validate.outputs.python_tests }}
       docs: ${{ steps.validate.outputs.docs }}
       tutorial_e2e: ${{ steps.validate.outputs.tutorial_e2e }}
+      site_ui: ${{ steps.validate.outputs.site_ui }}
       security_only: ${{ steps.validate.outputs.security_only }}
       full: ${{ steps.validate.outputs.full }}
       docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
@@ -85,6 +86,7 @@ jobs:
             "python_tests":${{ toJSON(steps.classify.outputs.python_tests) }},
             "docs":${{ toJSON(steps.classify.outputs.docs) }},
             "tutorial_e2e":${{ toJSON(steps.classify.outputs.tutorial_e2e) }},
+            "site_ui":${{ toJSON(steps.classify.outputs.site_ui) }},
             "security_only":${{ toJSON(steps.classify.outputs.security_only) }},
             "full":${{ toJSON(steps.classify.outputs.full) }},
             "docker_matrix":${{ toJSON(steps.classify.outputs.docker_matrix) }}}
@@ -229,6 +231,138 @@ jobs:
       # does not suppress formatting, lint, type-check, and test results.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  site-ui-containers:
+    name: Site UI Containers
+    needs: changes
+    # `site_ui`, not `frontend`: the example module, `.dockerignore` and the
+    # built-in marker are inputs of these builds without being frontend source.
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.site_ui == 'true')
+    # A daemon is the point of this job, so it needs a runner that has one.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    env:
+      # Image tags and container names belong to one run: on a self-hosted
+      # runner a second run of this job can overlap this one, and a fixed name
+      # left behind by a failed run blocked every run after it.
+      SITE_UI_RUN: site-ui-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Two builds of one Dockerfile, which is the compatibility claim this
+      # interface makes: the command that existed before modules still produces
+      # the neutral image, and the named context is what compiles a module in.
+      # Asserted by *building both* rather than by reading the Dockerfile,
+      # because the failure mode is a build that succeeds and quietly ignores
+      # its context.
+      - name: Build the neutral image with no new arguments
+        run: |
+          docker buildx build -f deploy/docker/Dockerfile.frontend \
+            --load -t "${SITE_UI_RUN}-neutral:ci" .
+
+      # The other half of that claim: module settings without the module's
+      # context are a mistake, and building the neutral UI in its place is the
+      # silent failure. Checked on the refusal's message, so a build that fails
+      # for an unrelated reason cannot pass for this one.
+      - name: Refuse module settings without a module context
+        run: |
+          log="${RUNNER_TEMP}/site-ui-no-context.log"
+          if docker buildx build -f deploy/docker/Dockerfile.frontend --progress=plain \
+            --build-arg SITE_UI_API=1 --build-arg SITE_UI_SUBDIR=site-ui . >"${log}" 2>&1; then
+            echo "SITE_UI_API without a site-ui context built an image" >&2
+            exit 1
+          fi
+          grep -q 'the context holds no module' "${log}" || {
+            tail -n 40 "${log}" >&2
+            echo "the build failed, but not because the module context was missing" >&2
+            exit 1
+          }
+
+      - name: Build the example module through the named context
+        run: |
+          docker buildx build -f deploy/docker/Dockerfile.frontend \
+            --build-context site-ui=./distributions/example/frontend/site-ui \
+            --build-arg SITE_UI_API=1 \
+            --load -t "${SITE_UI_RUN}-example:ci" .
+
+      # The image says which module it contains. A neutral image that reported
+      # the example's id — or the reverse — would mean the context was ignored,
+      # which is the one failure both builds can produce while succeeding.
+      - name: Check each image recorded the module it was built with
+        run: |
+          neutral=$(docker run --rm --entrypoint cat "${SITE_UI_RUN}-neutral:ci" /app/site-ui-manifest.json)
+          example=$(docker run --rm --entrypoint cat "${SITE_UI_RUN}-example:ci" /app/site-ui-manifest.json)
+          echo "neutral: $neutral"
+          echo "example: $example"
+          echo "$neutral" | grep -q '"kind": "neutral"' || {
+            echo "the neutral image did not record the neutral UI" >&2; exit 1; }
+          echo "$example" | grep -q '"id": "example"' || {
+            echo "the example image did not record the example module" >&2; exit 1; }
+
+      - name: Select the example container's port
+        run: |
+          port="$(python3 -c 'import socket; sock = socket.socket(); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()')"
+          test -n "${port}"
+          echo "SITE_UI_PORT=${port}" >> "${GITHUB_ENV}"
+
+      # A module's assets are served by the `/site-assets` route, after the
+      # deployment's own directory. Packaged under `public/` they were served by
+      # Next's static handler instead, which answers before any route: a runtime
+      # file could not override them and the route's headers never applied. So
+      # this asks a real container, created with a runtime directory holding a
+      # replacement for the example's mark, then started.
+      - name: The example's asset is served by the route, runtime copy first
+        run: |
+          runtime="${RUNNER_TEMP}/${SITE_UI_RUN}-assets"
+          packaged=distributions/example/frontend/site-ui/public/site-assets/example/mark.svg
+          mkdir -p "${runtime}/example"
+          printf '<svg xmlns="http://www.w3.org/2000/svg"><!-- runtime %s --></svg>\n' \
+            "${SITE_UI_RUN}" >"${runtime}/example/mark.svg"
+          docker create --name "${SITE_UI_RUN}-example" \
+            -e SITE_ASSETS_DIR=/srv/site-assets \
+            -p "127.0.0.1:${SITE_UI_PORT}:3001" "${SITE_UI_RUN}-example:ci"
+          docker cp "${runtime}/." "${SITE_UI_RUN}-example:/srv/site-assets"
+          docker start "${SITE_UI_RUN}-example"
+          # Ready when the asset route answers. Not `/`: with no gateway behind
+          # this container every page is a 500, since pages read /site-config.
+          url="http://127.0.0.1:${SITE_UI_PORT}/site-assets/example/mark.svg"
+          for _ in $(seq 1 30); do
+            curl -fsS -o /dev/null "${url}" && break || sleep 1
+          done
+
+          # The runtime file wins over the packaged file at the same path.
+          curl -fsS -o "${RUNNER_TEMP}/runtime.svg" "${url}"
+          cmp "${RUNNER_TEMP}/runtime.svg" "${runtime}/example/mark.svg" || {
+            echo "the packaged mark was served instead of the runtime copy" >&2; exit 1; }
+
+          # Without it the packaged file answers, through the route: its bytes,
+          # its SVG sandbox and its cache policy, none of which Next's static
+          # handler would send.
+          docker exec "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
+          curl -fsS -D "${RUNNER_TEMP}/packaged.headers" -o "${RUNNER_TEMP}/packaged.svg" "${url}"
+          cmp "${RUNNER_TEMP}/packaged.svg" "${packaged}"
+          tr -d '\r' <"${RUNNER_TEMP}/packaged.headers" | tee "${RUNNER_TEMP}/packaged.txt"
+          grep -qix "content-security-policy: default-src 'none'; style-src 'unsafe-inline'; sandbox" \
+            "${RUNNER_TEMP}/packaged.txt"
+          grep -qix 'cache-control: public, max-age=300, must-revalidate' "${RUNNER_TEMP}/packaged.txt"
+
+      - name: Show the example container's log
+        if: failure()
+        run: docker logs "${SITE_UI_RUN}-example" || true
+
+      # Whatever happened above: a container or image left behind by a failed
+      # step is otherwise kept forever by a self-hosted runner.
+      - name: Remove this run's Site UI containers and images
+        if: always()
+        run: |
+          docker rm -f "${SITE_UI_RUN}-example" >/dev/null 2>&1 || true
+          docker image rm "${SITE_UI_RUN}-neutral:ci" "${SITE_UI_RUN}-example:ci" >/dev/null 2>&1 || true
 
   docs-build:
     name: Docs Build
@@ -1215,6 +1349,7 @@ jobs:
       - changes
       - backend-quality
       - frontend-quality
+      - site-ui-containers
       - docs-build
       - test
       - security
@@ -1235,6 +1370,7 @@ jobs:
             "python_tests":${{ toJSON(needs.changes.outputs.python_tests) }},
             "docs":${{ toJSON(needs.changes.outputs.docs) }},
             "tutorial_e2e":${{ toJSON(needs.changes.outputs.tutorial_e2e) }},
+            "site_ui":${{ toJSON(needs.changes.outputs.site_ui) }},
             "security_only":${{ toJSON(needs.changes.outputs.security_only) }},
             "full":${{ toJSON(needs.changes.outputs.full) }},
             "docker_matrix":${{ toJSON(needs.changes.outputs.docker_matrix) }}}
@@ -1242,6 +1378,7 @@ jobs:
             {"changes":${{ toJSON(needs.changes.result) }},
             "backend-quality":${{ toJSON(needs.backend-quality.result) }},
             "frontend-quality":${{ toJSON(needs.frontend-quality.result) }},
+            "site-ui-containers":${{ toJSON(needs.site-ui-containers.result) }},
             "docs-build":${{ toJSON(needs.docs-build.result) }},
             "test":${{ toJSON(needs.test.result) }},
             "security":${{ toJSON(needs.security.result) }},

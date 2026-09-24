@@ -5,6 +5,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PACKAGED_ASSETS } from '../../../../scripts/site-ui/prepare-module.mjs';
 import { GET, HEAD } from './route';
 
 function request(assetPath: string, method = 'GET') {
@@ -164,5 +165,88 @@ describe('/site-assets runtime files', () => {
 
     expect(dotfile.status).toBe(404);
     expect(config.status).toBe(404);
+  });
+});
+
+describe('/site-assets packaged module assets', () => {
+  // The image packages the UI module's design assets beside the standalone
+  // server, and this route serves them after the deployment's directory. They
+  // used to be packaged under `public/site-assets/`, which Next serves before
+  // any route: a deployment's file of the same path could not replace one, and
+  // it went out without this route's headers. The fixtures are built from the
+  // packager's own constant, so the two cannot drift apart.
+  let cwd: string;
+  let packaged: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'hybrid-packaged-assets-'));
+    packaged = path.join(cwd, PACKAGED_ASSETS, 'demo');
+    await mkdir(packaged, { recursive: true });
+    vi.stubEnv('SITE_ASSETS_DIR', '');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('serves the module asset from the bundle when no deployment directory is set', async () => {
+    const hero = 'hero-bytes';
+    await writeFile(path.join(packaged, 'hero-ring.png'), hero);
+
+    const response = await GET(request('/site-assets/demo/hero-ring.png'));
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(hero);
+    expect(response.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('serves a packaged SVG with the route sandbox and cache policy', async () => {
+    await writeFile(path.join(packaged, 'mark.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+
+    const response = await GET(request('/site-assets/demo/mark.svg'));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    );
+    expect(response.headers.get('cache-control')).toBe('public, max-age=300, must-revalidate');
+  });
+
+  it('lets a deployment file override the packaged file at the same path', async () => {
+    // The operator's copy wins, file by file; the packaged copy still serves
+    // everything the operator did not supply.
+    await writeFile(path.join(packaged, 'hero-ring.png'), 'packaged');
+    await writeFile(path.join(packaged, 'mark.png'), 'packaged mark');
+    const deployment = await mkdtemp(path.join(tmpdir(), 'hybrid-deploy-assets-'));
+    await mkdir(path.join(deployment, 'demo'));
+    await writeFile(path.join(deployment, 'demo', 'hero-ring.png'), 'deployment');
+    vi.stubEnv('SITE_ASSETS_DIR', deployment);
+
+    const overridden = await GET(request('/site-assets/demo/hero-ring.png'));
+    const packagedOnly = await GET(request('/site-assets/demo/mark.png'));
+
+    await expect(overridden.text()).resolves.toBe('deployment');
+    await expect(packagedOnly.text()).resolves.toBe('packaged mark');
+    await rm(deployment, { recursive: true, force: true });
+  });
+
+  it('does not read module assets from public/, where Next would serve them first', async () => {
+    await mkdir(path.join(cwd, 'public', 'site-assets', 'demo'), { recursive: true });
+    await writeFile(path.join(cwd, 'public', 'site-assets', 'demo', 'old.png'), 'public copy');
+
+    const response = await GET(request('/site-assets/demo/old.png'));
+
+    expect(response.status).toBe(404);
+  });
+
+  it('still refuses a non-image extension in the packaged tree', async () => {
+    await writeFile(path.join(packaged, 'site-config.json'), '{"secret":true}');
+
+    const response = await GET(request('/site-assets/demo/site-config.json'));
+
+    expect(response.status).toBe(404);
   });
 });

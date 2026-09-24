@@ -267,7 +267,7 @@ function ProviderCard({
 function QuotasSection() {
   // Deployment docs may describe an operator's service, not backend extensions.
   const quotaDocsUrl =
-    'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/configuration.md#quota-reporting';
+    'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/distribution-customization.md#quota-reporting';
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
   const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
   const [togglingProvider, setTogglingProvider] = useState<string | null>(null);

@@ -864,7 +864,7 @@ calls those fetchers itself through `ProviderQuotaSnapshotStore`
 poller's cache, and resolves them through the registry the Providers tab uses:
 the gateway enables no fetchers by default, and a backend extension registers one per
 provider with `register_quota_fetcher` (see
-[Quota reporting](configuration.md#quota-reporting)). `usage_label` is
+[Quota reporting](distribution-customization.md#quota-reporting)). `usage_label` is
 the fetcher's own label string, not an operator-chosen name.
 
 The route's `kind:` chooses its inference protocol; its `provider:` identifies

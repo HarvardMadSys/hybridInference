@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import LoginPage from './page';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 
 let authState = {
   loading: false,
@@ -73,5 +75,44 @@ describe('the ?next= round-trip', () => {
     render(<LoginPage />);
 
     expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+  });
+});
+
+describe('signup navigation', () => {
+  it('offers exactly one signup entry', () => {
+    // One, not two. The frame is chosen by the Site UI (see
+    // `src/site-ui/`), and both the console's card and a module's frame are
+    // handed `topbar`; a frame that also rendered its own copy would make this
+    // two links, which is the regression this pins.
+    authState.isAuthenticated = false;
+    render(
+      <SiteConfigProvider
+        initialConfig={{
+          ...buildTimeSiteConfig,
+          branding: { ...buildTimeSiteConfig.branding },
+        }}
+      >
+        <LoginPage />
+      </SiteConfigProvider>,
+    );
+    expect(screen.getAllByRole('link', { name: 'Sign Up' })).toHaveLength(1);
+  });
+
+  it('does not advertise signup when registration is closed', () => {
+    authState.isAuthenticated = false;
+    render(
+      <SiteConfigProvider
+        initialConfig={{
+          ...buildTimeSiteConfig,
+          branding: {
+            ...buildTimeSiteConfig.branding,
+          },
+          features: { ...buildTimeSiteConfig.features, publicSignup: false },
+        }}
+      >
+        <LoginPage />
+      </SiteConfigProvider>,
+    );
+    expect(screen.queryByRole('link', { name: 'Sign Up' })).not.toBeInTheDocument();
   });
 });

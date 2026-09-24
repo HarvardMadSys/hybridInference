@@ -202,7 +202,7 @@ models:
       # The other two resource types RouteWise prices. Both are route-level
       # because they describe a resource contract, not an algorithm setting.
       # For a runnable quota example (no account needed), follow
-      # docs/developer/configuration.md#quota-reporting and use
+      # docs/developer/distribution-customization.md#quota-reporting and use
       # config/examples/models.routewise.quota.yaml.
       #
       # A prepaid subscription, drawn down until the window resets.

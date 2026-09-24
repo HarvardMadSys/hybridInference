@@ -4,3 +4,12 @@ dist
 build
 coverage
 package-lock.json
+
+# Generated Site UI resolution output, and the staged copy of an external
+# module. Linting a distribution's module would report its style violations as
+# this repository's; the distribution lints its own tree. `next build` lints
+# `src/` with these rules, so a staging directory missing here failed a module's
+# image build on a style rule the module never agreed to.
+src/site-ui/active
+src/site-ui/external
+src/generated

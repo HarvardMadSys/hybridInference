@@ -5,7 +5,12 @@ import { login as loginApi, logout as logoutApi } from '@/lib/api/auth';
 import { AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
 
-interface User {
+/**
+ * Exported because the host facade re-exports them: a distribution's UI reads
+ * `useAuth().state` to choose between "Log in" and "Console", and a module
+ * author should not have to redeclare the shape to type a prop.
+ */
+export interface AuthUser {
   id: string;
   email: string;
   user_name?: string | null;
@@ -13,10 +18,10 @@ interface User {
   is_admin: boolean;
 }
 
-interface AuthState {
+export interface AuthState {
   isAuthenticated: boolean;
   loading: boolean;
-  user: User | null;
+  user: AuthUser | null;
 }
 
 interface AuthContextValue {

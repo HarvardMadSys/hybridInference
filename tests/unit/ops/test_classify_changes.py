@@ -25,7 +25,7 @@ def _true_categories(result: Classification) -> set[str]:
 
 def test_frontend_only_change() -> None:
     result = classify(["apps/frontend/src/app/page.tsx"])
-    assert _true_categories(result) == {"frontend", "tutorial_e2e"}
+    assert _true_categories(result) == {"frontend", "site_ui", "tutorial_e2e"}
     assert result.docker_matrix() == ["frontend"]
 
 
@@ -50,9 +50,50 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     ],
 )
 def test_runnable_example_changes_run_both_smoke_layers(path: str) -> None:
+    # The example also carries the module the Site UI container checks compile,
+    # so any change to it runs those checks as well.
     result = classify([path])
-    assert _true_categories(result) == {"backend", "python_tests", "tutorial_e2e"}
+    assert _true_categories(result) == {"backend", "python_tests", "site_ui", "tutorial_e2e"}
     assert result.docker_matrix() == ["backend"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "distributions/example/frontend/site-ui/client.tsx",
+        "distributions/example/frontend/site-ui/styles.css",
+        "distributions/example/frontend/site-ui/public/site-assets/example/mark.svg",
+        "distributions/example/frontend/site-ui/README.md",
+    ],
+)
+def test_example_site_ui_module_runs_the_frontend_and_container_checks(path: str) -> None:
+    # The only job that compiles this module is Site UI Containers, and the
+    # frontend's own tests stage and resolve it. Classified as backend-only, a
+    # broken example module merged without either running.
+    result = classify([path])
+    assert _true_categories(result) == {
+        "backend",
+        "frontend",
+        "python_tests",
+        "site_ui",
+        "tutorial_e2e",
+    }
+    assert result.docker_matrix() == ["frontend", "backend"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "deploy/docker/site-ui/.built-in-ui",
+        "apps/frontend/scripts/site-ui/prepare-module.mjs",
+        "apps/frontend/scripts/site-ui/prepare-module.test.ts",
+    ],
+)
+def test_site_ui_build_inputs_run_the_container_checks(path: str) -> None:
+    result = classify([path])
+    assert _true_categories(result) == {"frontend", "site_ui", "tutorial_e2e"}
+    assert result.docker_matrix() == ["frontend"]
+    assert result.full is False
 
 
 def test_shared_serving_change_triggers_backend() -> None:
@@ -65,11 +106,20 @@ def test_shared_serving_change_triggers_backend() -> None:
     assert result.docker_matrix() == ["backend"]
 
 
-def test_docker_shared_change() -> None:
-    for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
-        result = classify([path])
-        assert _true_categories(result) == {"docker_shared", "python_tests", "tutorial_e2e"}
-        assert result.docker_matrix() == ["frontend", "backend"]
+@pytest.mark.parametrize(
+    ("path", "site_ui"),
+    [
+        # `.dockerignore` decides what of the frontend tree reaches the Site UI
+        # builds; Compose is not an input of them.
+        (".dockerignore", True),
+        ("deploy/docker/docker-compose.yml", False),
+    ],
+)
+def test_docker_shared_change(path: str, site_ui: bool) -> None:
+    result = classify([path])
+    expected = {"docker_shared", "python_tests", "tutorial_e2e"}
+    assert _true_categories(result) == (expected | {"site_ui"} if site_ui else expected)
+    assert result.docker_matrix() == ["frontend", "backend"]
 
 
 @pytest.mark.parametrize(
@@ -84,6 +134,8 @@ def test_image_specific_dockerfile_change(path: str, category: str, matrix: list
     expected = {category, "python_tests"}
     if category in {"frontend", "backend"}:
         expected.add("tutorial_e2e")
+    if category == "frontend":
+        expected.add("site_ui")
     assert _true_categories(result) == expected
     assert result.docker_matrix() == matrix
 
@@ -185,7 +237,7 @@ def test_router_tutorial_reruns_the_contract_it_documents() -> None:
 def test_tutorial_frontend_surfaces_select_e2e(path: str) -> None:
     result = classify([path])
 
-    assert _true_categories(result) == {"frontend", "tutorial_e2e"}
+    assert _true_categories(result) == {"frontend", "site_ui", "tutorial_e2e"}
     assert result.docker_matrix() == ["frontend"]
 
 
@@ -226,7 +278,7 @@ def test_whole_application_trees_select_tutorial_e2e() -> None:
 
 def test_docs_build_does_not_suppress_application_categories() -> None:
     result = classify(["docs/developer/routing.md", "apps/frontend/src/app/page.tsx"])
-    assert _true_categories(result) == {"docs", "frontend", "tutorial_e2e"}
+    assert _true_categories(result) == {"docs", "frontend", "site_ui", "tutorial_e2e"}
     assert result.docker_matrix() == ["frontend"]
 
 
@@ -273,6 +325,7 @@ def test_mixed_images_use_stable_matrix_order() -> None:
 def test_path_normalization_strips_leading_dot_slash() -> None:
     assert _true_categories(classify(["./apps/frontend/src/x.ts"])) == {
         "frontend",
+        "site_ui",
         "tutorial_e2e",
     }
 
@@ -307,6 +360,7 @@ def test_cli_writes_outputs_and_json(tmp_path: Path) -> None:
         line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if line
     )
     assert written["frontend"] == "true"
+    assert written["site_ui"] == "true"
     assert written["docs"] == "false"
     assert written["security_only"] == "false"
     assert written["docker_matrix"] == '["frontend"]'
@@ -347,7 +401,7 @@ def test_compute_changed_files_push_range(tmp_path: Path) -> None:
 
     files = compute_changed_files(tmp_path, "push", None, None, before, head)
     assert files == ["apps/frontend/page.tsx"]
-    assert _true_categories(classify(files)) == {"frontend", "tutorial_e2e"}
+    assert _true_categories(classify(files)) == {"frontend", "site_ui", "tutorial_e2e"}
 
 
 def test_compute_changed_files_zero_base_returns_none(tmp_path: Path) -> None:
