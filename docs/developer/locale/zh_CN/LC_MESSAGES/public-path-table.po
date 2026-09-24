@@ -445,6 +445,28 @@ msgstr ""
 "依赖，因此在构造上就是已鉴权的。"
 
 #: ../developer/public-path-table.md:127
+msgid "The agent entry is not a public path"
+msgstr "agent 入口不是公开路径"
+
+#: ../developer/public-path-table.md:129
+msgid ""
+"The gateway process also listens on the agent entry "
+"(`GATEWAY_AGENT_ENTRY_PORT`, 8090 in the Compose file): the one listener "
+"on which a Cloud Agent inference grant is honoured, while the API behind "
+"this table refuses every grant. Nothing in this table forwards to it, and"
+" nothing may. The console's rewrites name the API's port, and an edge "
+"routed to the agent entry would reopen, for every leaked grant, the door "
+"this listener exists to close. The Cloud Agent's relay reaches it over "
+"SSH, on the gateway host's loopback."
+msgstr ""
+"网关进程还监听 agent 入口（`GATEWAY_AGENT_ENTRY_PORT`，Compose 文件中为 "
+"8090）：这是唯一接受 Cloud Agent 推理 grant 的监听端口，而本表背后的 API "
+"拒绝所有 grant。本表中没有任何条目转发到它，也不允许有。控制台的 rewrite "
+"指向 API 的端口；把某个边缘入口路由到 agent 入口，就等于为每个泄露的 grant "
+"重新打开这个监听端口本来要关上的门。Cloud Agent 的中继通过 SSH 在网关主机的"
+"回环地址上访问它。"
+
+#: ../developer/public-path-table.md:127
 msgid "Why `/pgadmin` is a route handler and not a rewrite"
 msgstr "为什么 `/pgadmin` 是 route handler 而不是 rewrite"
 

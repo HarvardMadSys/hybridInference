@@ -29,7 +29,9 @@ from serving.servers import agent_entry, app as app_module, auth as auth_module
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store
 
-GRANT = "agr.eyJnIjoiZ3JfMSJ9.c2lnbmF0dXJl"
+# A grant token only by its prefix: the gateway recognises one by `agr.`, and a
+# realistic payload would read as a committed credential to the secret scans.
+GRANT = "agr.fixture.grant"
 GRANT_CONTEXT = {
     "user_id": "owner-1",
     "role": "pro",
