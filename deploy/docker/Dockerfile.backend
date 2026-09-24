@@ -31,7 +31,9 @@ COPY config/ config/
 # config/ will be overridden by a read-only volume mount at runtime,
 # but we copy a default so the image can run standalone for testing.
 
-EXPOSE 8080
+# 8090 is the agent entry, served by the same process when GATEWAY_AGENT_ENTRY_PORT
+# names it (serving/servers/agent_entry.py).
+EXPOSE 8080 8090
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1

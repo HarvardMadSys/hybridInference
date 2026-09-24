@@ -124,6 +124,16 @@ one exception granted a whole sub-prefix, because every route on that router
 carries a dispatch-token dependency at the router level and so is authorized by
 construction.
 
+## The agent entry is not a public path
+
+The gateway process also listens on the agent entry (`GATEWAY_AGENT_ENTRY_PORT`,
+8090 in the Compose file): the one listener on which a Cloud Agent inference
+grant is honoured, while the API behind this table refuses every grant. Nothing
+in this table forwards to it, and nothing may. The console's rewrites name the
+API's port, and an edge routed to the agent entry would reopen, for every
+leaked grant, the door this listener exists to close. The Cloud Agent's relay
+reaches it over SSH, on the gateway host's loopback.
+
 ## Why `/pgadmin` is a route handler and not a rewrite
 
 `/pgadmin` is the interesting case, and the reason this page exists.
