@@ -282,6 +282,20 @@ function ConsoleConfirmations({
 }): JSX.Element {
   const t = useT();
   const branding = useBranding();
+  // The contact sentence names an address only when the deployment declared
+  // one; both wordings stay whole sentences so a translation can reorder them.
+  const researchContact = branding.contactEmail
+    ? fill(
+        t(
+          'auth.consent.research_contact',
+          'If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team at {contact_email}.',
+        ),
+        { contact_email: branding.contactEmail },
+      )
+    : t(
+        'auth.consent.research_contact_fallback',
+        'If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team through the operator of this deployment.',
+      );
   return (
     <>
       <ConsentBlock step={1} title={t('auth.consent.age_title', 'Age requirement')}>
@@ -377,6 +391,7 @@ function ConsoleConfirmations({
             'Participation is voluntary. If you do not agree, you cannot use the research service.',
           )}
         </p>
+        <p>{researchContact}</p>
         <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
           <input type="checkbox" className={checkboxClassName} {...confirm('research')} />
           <span>
@@ -402,6 +417,12 @@ function ConsoleConfirmations({
           {t(
             'auth.consent.sharing_body_2',
             'Before public release, we process the data to remove or redact direct identifiers and detected personally identifiable information. Automated sanitization cannot guarantee removal of every sensitive or identifying detail.',
+          )}
+        </p>
+        <p>
+          {t(
+            'auth.consent.sharing_future_use',
+            'Your sanitized information may be used in future research studies or shared with other researchers for future studies without asking for your informed consent again.',
           )}
         </p>
         <p>
