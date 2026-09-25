@@ -117,7 +117,7 @@ async def _seed_user_with_key(
 
     await store.create_key(
         key_hash=f"hash-{user_id}",
-        key_prefix=f"sk-{user_id[:6]}",
+        key_prefix=f"sk-{user_id}",
         user_id=user_id,
         account_id=user_id,
         quota_daily_cost_usd=quota,
@@ -208,3 +208,54 @@ async def test_create_key_persists_encrypted_column(
             "u-free-enc",
         )
     assert stored == ciphertext
+
+
+async def test_initialize_migrates_legacy_encrypted_column(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """Missing encrypted-key storage is added without reconstructing old keys."""
+    store = postgres_op_store
+    async with store._pool.acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'api_keys' AND column_name = 'api_key_encrypted'"
+            ")"
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id) "
+            "VALUES ('hash-legacy-enc', 'sk-legacy-enc', 'u-free-legacy-enc', "
+            "'u-free-legacy-enc')"
+        )
+        await conn.execute("ALTER TABLE api_keys DROP COLUMN api_key_encrypted")
+
+    await store.initialize()
+    await store.initialize()
+
+    async with store._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT api_key_encrypted FROM api_keys WHERE key_hash = 'hash-legacy-enc'"
+            )
+            is None
+        )
+
+    await store.create_user(
+        user_id="u-free-new-enc",
+        email="new-enc@example.com",
+        password_hash="x",
+    )
+    await store.create_key(
+        key_hash="hash-new-enc",
+        key_prefix="sk-new-enc",
+        user_id="u-free-new-enc",
+        account_id="u-free-new-enc",
+        api_key_encrypted="gAAAAA-new-ciphertext",
+    )
+    async with store._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT api_key_encrypted FROM api_keys WHERE key_hash = 'hash-new-enc'"
+            )
+            == "gAAAAA-new-ciphertext"
+        )
