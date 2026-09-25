@@ -16,7 +16,7 @@ import pytest_asyncio
 
 from serving.servers.routers.admin.analytics import _GROWTH_SERIES_SQL
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
 @pytest.fixture(scope="session")

@@ -21,7 +21,7 @@ from serving.storage.postgres_operational import PostgresOperationalStore
 if TYPE_CHECKING:
     import asyncpg
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
 @pytest.fixture(scope="session")
@@ -38,6 +38,7 @@ async def _truncate_tables(pool: asyncpg.pool.Pool) -> None:
             exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
             if exists:
                 await conn.execute(f"TRUNCATE TABLE {table}")
+        await conn.execute("DELETE FROM users WHERE id = 'integration-user'")
 
 
 @pytest_asyncio.fixture
@@ -483,9 +484,10 @@ async def test_postgres_log_store_accepts_routewise_metadata_with_nonfinite_valu
 
     assert row is not None
     assert row["user_id"] == "integration-user"
-    assert row["metadata"]["routewise"]["selected_provider_type"] == "on_demand"
-    assert row["metadata"]["routewise"]["gain_c"] is None
-    assert row["metadata"]["routewise"]["gain_q"] is None
+    metadata = json.loads(row["metadata"])
+    assert metadata["routewise"]["selected_provider_type"] == "on_demand"
+    assert metadata["routewise"]["gain_c"] is None
+    assert metadata["routewise"]["gain_q"] is None
 
 
 @pytest.mark.asyncio
@@ -515,6 +517,7 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
         },
         pricing={"prompt": "0.15", "completion": "1.25"},
         request_payload={"threshold": float("inf")},
+        store_full_content=True,
     )
 
     assert db_logger.pool is not None
@@ -529,13 +532,14 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
 
     assert row is not None
     assert row["user_id"] == "integration-user"
-    assert row["metadata"]["routewise"]["selected_provider_type"] == "on_demand"
-    assert row["metadata"]["routewise"]["gain_c"] is None
-    assert row["metadata"]["routewise"]["gain_q"] is None
+    metadata = json.loads(row["metadata"])
+    assert metadata["routewise"]["selected_provider_type"] == "on_demand"
+    assert metadata["routewise"]["gain_c"] is None
+    assert metadata["routewise"]["gain_q"] is None
     assert row["response"] is not None
     assert '"score": null' in row["response"]
-    assert row["request_payload"]["threshold"] is None
-    assert row["tools"][0]["score"] is None
+    assert json.loads(row["request_payload"])["threshold"] is None
+    assert json.loads(row["tools"])[0]["score"] is None
 
 
 @pytest.mark.asyncio
@@ -550,6 +554,16 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
     user_id = "integration-user"
 
     async with db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, password_hash, status, email_verified)
+            VALUES ($1, $2, $3, 'active', TRUE)
+            ON CONFLICT (id) DO UPDATE SET status = 'active', email_verified = TRUE
+            """,
+            user_id,
+            "integration-user@example.com",
+            "test-password-hash",
+        )
         await conn.execute(
             """
             INSERT INTO api_keys (

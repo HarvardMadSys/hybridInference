@@ -472,7 +472,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, db]
 
     services:
       postgres:
@@ -585,8 +585,68 @@ jobs:
             echo "| ${CI_RUNNER_NAME} | ${CI_RUNNER_ARCH} | ${runner_hostname} | ${visible_cpus} | ${pytest_workers} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Prepare PostgreSQL test databases
+        env:
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          TEST_DB_NAME: hybridinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import asyncio
+          import os
+          import re
+
+          import asyncpg
+
+          from serving.storage.database import DatabaseLogger
+          from serving.storage.postgres_operational import PostgresOperationalStore
+          from serving.storage.responses_store import ResponseStore
+
+
+          async def main() -> None:
+              base_name = os.environ["TEST_DB_NAME"]
+              if not re.fullmatch(r"[A-Za-z0-9_]+", base_name):
+                  raise RuntimeError(f"unsafe test database name: {base_name!r}")
+
+              connection = {
+                  "host": os.environ["TEST_DB_HOST"],
+                  "port": int(os.environ["TEST_DB_PORT"]),
+                  "user": os.environ["TEST_DB_USER"],
+                  "password": os.environ["TEST_DB_PASSWORD"],
+              }
+              logger = DatabaseLogger(
+                  {**connection, "database": base_name}, store_full_prompts=False
+              )
+              await logger.initialize()
+              assert logger.pool is not None
+              await PostgresOperationalStore(logger.pool).initialize()
+              await ResponseStore(logger.pool).initialize()
+              await logger.cleanup()
+
+              admin = await asyncpg.connect(**connection, database="postgres")
+              try:
+                  for index in range(int(os.environ["PYTEST_WORKERS"])):
+                      worker_name = f"{base_name}_gw{index}"
+                      exists = await admin.fetchval(
+                          "SELECT 1 FROM pg_database WHERE datname = $1", worker_name
+                      )
+                      if not exists:
+                          await admin.execute(
+                              f'CREATE DATABASE "{worker_name}" TEMPLATE "{base_name}"'
+                          )
+              finally:
+                  await admin.close()
+
+
+          asyncio.run(main())
+          PY
+
       - name: Prepare pytest shard
         id: pytest-shard
+        if: matrix.shard != 'db'
         env:
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARDS: "4"
@@ -605,18 +665,94 @@ jobs:
             echo "No tests selected for this shard"
           fi
 
+      - name: Run erasure-fence race tests against PostgreSQL
+        if: matrix.shard == 1
+        env:
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          TEST_DB_NAME: hybridinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import asyncio
+          import os
+
+          import asyncpg
+
+
+          async def main() -> None:
+              connection = await asyncpg.connect(
+                  host=os.environ["TEST_DB_HOST"],
+                  port=int(os.environ["TEST_DB_PORT"]),
+                  database=os.environ["TEST_DB_NAME"],
+                  user=os.environ["TEST_DB_USER"],
+                  password=os.environ["TEST_DB_PASSWORD"],
+              )
+              try:
+                  await connection.execute("SELECT 1")
+              finally:
+                  await connection.close()
+
+
+          asyncio.run(main())
+          PY
+          uv run pytest -q -m dbtest tests/integration/storage/test_erasure_fence_races.py
+
+      - name: Run isolated PostgreSQL integration tests
+        if: matrix.shard == 'db'
+        env:
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          TEST_DB_NAME: hybridinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
+          TEST_PG_DSN: postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/hybridinference_test_db
+          PG_TEST_DSN: postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/hybridinference_test_db
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/pytest-database.log"
+          uv run pytest -q -m "not external and dbtest" 2>&1 | tee "${log_file}"
+          bash ops/ci/check_pytest_skips.sh \
+            'SKIPPED.*(PostgreSQL|database .*does not exist|TEST_PG_DSN|PG_TEST_DSN)' \
+            "${log_file}"
+
+      - name: Verify PostgreSQL skip guard fails closed
+        if: matrix.shard == 'db'
+        run: |
+          set -euo pipefail
+          probe_log="${RUNNER_TEMP}/pytest-skip-guard-probe.log"
+          printf '%s\n' 'SKIPPED test_probe: PostgreSQL database does not exist' > "${probe_log}"
+          if bash ops/ci/check_pytest_skips.sh \
+            'SKIPPED.*(PostgreSQL|database .*does not exist|TEST_PG_DSN|PG_TEST_DSN)' \
+            "${probe_log}"; then
+            echo "::error::The PostgreSQL skip guard accepted a synthetic skip"
+            exit 1
+          else
+            scan_rc=$?
+            test "${scan_rc}" -eq 1
+          fi
+
       - name: Run tests (PR/manual, sharded, no coverage)
-        if: github.event_name != 'push' && steps.pytest-shard.outputs.has_tests == 'true'
+        if: >-
+          matrix.shard != 'db' && github.event_name != 'push' &&
+          steps.pytest-shard.outputs.has_tests == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          # Database configuration for auth tests
+          # Database configuration for auth and integration tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
           DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          TEST_DB_NAME: hybridinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
           # Auth system configuration
           JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
           JWT_ALGORITHM: HS256
@@ -630,21 +766,33 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
         run: |
+          set -euo pipefail
           mapfile -t pytest_files < "${{ steps.pytest-shard.outputs.file }}"
-          uv run pytest -n "${PYTEST_WORKERS}" --dist=loadfile -v -m "not external" "${pytest_files[@]}"
+          log_file="${RUNNER_TEMP}/pytest-shard-${{ matrix.shard }}.log"
+          uv run pytest -n "${PYTEST_WORKERS}" --dist=loadfile -v -m "not external and not dbtest" "${pytest_files[@]}" 2>&1 | tee "${log_file}"
+          bash ops/ci/check_pytest_skips.sh \
+            'SKIPPED.*(PostgreSQL .*not available|database .*does not exist|TEST_PG_DSN|PG_TEST_DSN)' \
+            "${log_file}"
 
       - name: Run tests (push, coverage shard)
-        if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
+        if: >-
+          matrix.shard != 'db' && github.event_name == 'push' &&
+          steps.pytest-shard.outputs.has_tests == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          # Database configuration for auth tests
+          # Database configuration for auth and integration tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
           DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          TEST_DB_NAME: hybridinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
           # Auth system configuration
           JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
           JWT_ALGORITHM: HS256
@@ -660,7 +808,9 @@ jobs:
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_FILE_DURATIONS_OUTPUT: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
         run: |
+          set -euo pipefail
           mapfile -t pytest_files < "${{ steps.pytest-shard.outputs.file }}"
+          log_file="${RUNNER_TEMP}/pytest-shard-${{ matrix.shard }}.log"
           uv run pytest \
             -p ops.ci.pytest_file_durations \
             -n "${PYTEST_WORKERS}" \
@@ -669,8 +819,11 @@ jobs:
             --cov-report=term-missing \
             --cov-report="xml:coverage-${PYTEST_SHARD}.xml" \
             -v \
-            -m "not external" \
-            "${pytest_files[@]}"
+            -m "not external and not dbtest" \
+            "${pytest_files[@]}" 2>&1 | tee "${log_file}"
+          bash ops/ci/check_pytest_skips.sh \
+            'SKIPPED.*(PostgreSQL .*not available|database .*does not exist|TEST_PG_DSN|PG_TEST_DSN)' \
+            "${log_file}"
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'

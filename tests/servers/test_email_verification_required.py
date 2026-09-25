@@ -7,6 +7,7 @@ Run with: make test-db
 """
 
 import os
+import time
 
 import pytest
 
@@ -18,10 +19,32 @@ pytestmark = pytest.mark.dbtest
 def email_verification_flag(monkeypatch):
     """Temporarily set SIGNUP_REQUIRE_EMAIL_VERIFICATION for a test."""
 
-    def _setter(enabled: bool) -> None:
-        monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1" if enabled else "0")
+    from serving.config.runtime_settings import get_runtime_settings_instance
+    from serving.config.settings import get_settings
 
-    return _setter
+    runtime_settings = None
+    previous_runtime_cache = None
+    setting_key = "signup_require_email_verification"
+
+    def _setter(enabled: bool) -> None:
+        nonlocal previous_runtime_cache, runtime_settings
+        monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1" if enabled else "0")
+        get_settings.cache_clear()
+        try:
+            runtime_settings = get_runtime_settings_instance()
+        except RuntimeError:
+            runtime_settings = None
+        if runtime_settings is not None:
+            if previous_runtime_cache is None:
+                previous_runtime_cache = runtime_settings._cache.get(setting_key)
+            runtime_settings._cache[setting_key] = (time.monotonic(), enabled)
+
+    yield _setter
+    if runtime_settings is not None:
+        if previous_runtime_cache is None:
+            runtime_settings._cache.pop(setting_key, None)
+        else:
+            runtime_settings._cache[setting_key] = previous_runtime_cache
 
 
 async def set_email_verified(op_store, user_id: str, verified: bool) -> None:

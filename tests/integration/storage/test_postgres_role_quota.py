@@ -117,7 +117,9 @@ async def _seed_user_with_key(
 
     await store.create_key(
         key_hash=f"hash-{user_id}",
-        key_prefix=f"sk-{user_id[:6]}",
+        # The first six characters are shared by every ``u-pro-*``/``u-free-*``
+        # fixture, but production enforces unique key prefixes.
+        key_prefix=f"sk-{user_id}",
         user_id=user_id,
         account_id=user_id,
         quota_daily_cost_usd=quota,
