@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     # entry so probing varied passwords cannot bypass the limit.
     login_rate_limit_per_15min: int = 5
     login_rate_limit_per_hour_per_ip: int = 20
+    # When enabled, public signup fails closed if the gateway cannot establish
+    # trustworthy client provenance. The default preserves availability for
+    # deployments that intentionally operate behind an unresolved relay; those
+    # deployments still receive an unresolved-provenance warning signal.
+    signup_require_resolved_client_ip: bool = False
+    # Coarse process-local budgets for callers whose client provenance is
+    # unresolved. These are intentionally global traffic guards, not client
+    # identities: they shed abuse without attributing one proxy's failures to
+    # every user behind it.
+    unresolved_signup_rate_limit_per_hour: int = 5
+    unresolved_signup_rate_limit_per_day: int = 10
+    unresolved_login_rate_limit_per_hour: int = 20
     # Auto-block a source IP at the API-key auth layer after repeated auth
     # failures. Once an IP (IPv6 bucketed to /64) reaches
     # auth_failure_block_threshold failures within auth_failure_block_window_sec,
@@ -134,6 +146,9 @@ class Settings(BaseSettings):
     auth_failure_block_threshold: int = 200
     auth_failure_block_window_sec: int = 86400
     auth_failure_block_duration_sec: int = 86400
+    unresolved_auth_failure_block_threshold: int = 200
+    unresolved_auth_failure_block_window_sec: int = 60
+    unresolved_auth_failure_block_duration_sec: int = 60
     # Comma-separated IPs or CIDR ranges (e.g. "140.247.173.97,128.103.0.0/16")
     # that are exempt from auth-failure blocking: their failures are never
     # counted and an existing block never applies to them. For trusted shared

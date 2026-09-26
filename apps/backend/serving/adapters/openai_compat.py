@@ -333,20 +333,22 @@ def _caller_role() -> str | None:
     return role if isinstance(role, str) and role else None
 
 
-def _pool_affinity_key() -> str:
+def _pool_affinity_key() -> str | None:
     """Return the caller identity the key pool binds an upstream key to.
 
     Prefers ``affinity_key`` — the per-caller value every request surface
-    publishes (the API-key hash when authenticated, an IP bucket otherwise) —
-    and falls back to ``auth_key_hash`` for any producer that still writes only
-    that. ``_anon`` is the last resort for internal traffic with no caller
-    identity at all (health probes, warmups, the admin playground); sharing one
-    binding is correct there, since there is no caller to keep sticky.
+    publishes (the API-key hash when authenticated, an IP bucket otherwise).
+    An explicit ``None`` means the producer knows caller provenance is
+    unresolved and requests non-sticky pool selection. Missing context retains
+    the ``auth_key_hash`` fallback, with ``_anon`` as the last resort for
+    internal traffic such as health probes and warmups.
     """
     from serving.utils import context as req_ctx
 
     ctx = req_ctx.get()
-    return ctx.get("affinity_key") or ctx.get("auth_key_hash") or "_anon"
+    if "affinity_key" in ctx:
+        return ctx["affinity_key"]
+    return ctx.get("auth_key_hash") or "_anon"
 
 
 def _key_pool_provider_label(config: Any) -> str:
