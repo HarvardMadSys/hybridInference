@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -53,6 +54,26 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+
+class HardDeleteClaimProvenance(str, Enum):
+    """How a hard-delete claim was obtained by the current operation."""
+
+    NEW = "new"
+    RECOVERED = "recovered"
+
+
+@dataclass(frozen=True)
+class HardDeleteClaim:
+    """Durable claim token plus its ownership provenance."""
+
+    token: str
+    provenance: HardDeleteClaimProvenance
+
+    @property
+    def newly_acquired(self) -> bool:
+        """Whether this request owns a fresh, releasable pre-fence claim."""
+        return self.provenance is HardDeleteClaimProvenance.NEW
 
 
 # ---------------------------------------------------------------------------
@@ -187,16 +208,35 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def begin_hard_delete_user(self, user_id: str) -> str:
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        allow_existing_fence: bool = False,
+        recover_stale_claim: bool = False,
+    ) -> HardDeleteClaim:
         """Atomically claim a soft-deleted user for hard deletion.
 
         The durable operational-store marker serializes hard-delete with
         resume even when the LogStore uses a different database. Repeating
-        the claim for an already-pending deleted user takes ownership with a
-        fresh opaque token so a retry after a process failure can finish the
-        purge without allowing an older attempt to release or complete it.
-        The returned token must be supplied to release or finish the claim.
+        the claim for an already-pending deleted user is rejected so a
+        concurrent attempt cannot take ownership from the active operation.
+        Once the caller has independently verified that the LogStore fence is
+        already durable, ``allow_existing_fence`` permits a retry to take over
+        a claim only after it is past the recovery grace period. The takeover
+        replaces and renews the claim token atomically; a live token is never
+        shared by concurrent destructive operations. An active claim remains
+        owned by its current worker and is rejected. ``recover_stale_claim``
+        is an explicit operator takeover for a claim left by a process that
+        exited before the fence transaction; it also requires the grace period.
+        The returned claim token must be supplied to release or finish the
+        claim. Its provenance tells callers whether this request may release
+        it after a pre-fence failure.
         """
+
+    @abstractmethod
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew and validate ownership before the next destructive stage."""
 
     @abstractmethod
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:

@@ -12,13 +12,21 @@ CacheBackend.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import math
 import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from .base import (
+    HardDeleteClaim,
+    HardDeleteClaimProvenance,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -161,6 +169,7 @@ class CachedOperationalStore(OperationalStore):
     def __init__(self, store: OperationalStore, cache: CacheBackend) -> None:
         self._store = store
         self._cache = cache
+        self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
 
     # -- cache key helpers ---------------------------------------------------
 
@@ -308,13 +317,75 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
-        """Claim a hard-delete in the wrapped store and invalidate caches."""
-        claim_token = await self._store.begin_hard_delete_user(user_id)
-        await self._cache.delete(self._user_key(user_id))
-        await self._cache.delete_pattern("auth:*")
-        await self._cache.delete_pattern("auth_light:*")
-        return claim_token
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        allow_existing_fence: bool = False,
+        recover_stale_claim: bool = False,
+    ) -> HardDeleteClaim:
+        """Claim a hard-delete and invalidate caches.
+
+        A caller may take over an abandoned existing claim only after
+        independently proving that the LogStore fence is already durable.
+        The durable store atomically replaces the stale token before returning
+        the recovered claim.
+        """
+        claim_task = asyncio.create_task(
+            self._store.begin_hard_delete_user(
+                user_id,
+                allow_existing_fence=allow_existing_fence,
+                recover_stale_claim=recover_stale_claim,
+            )
+        )
+
+        def _release_completed_claim(task: asyncio.Task[HardDeleteClaim]) -> None:
+            if task.cancelled():
+                return
+            try:
+                completed_claim = task.result()
+            except BaseException:
+                return
+            cleanup_task = asyncio.create_task(self._release_claim_safely(user_id, completed_claim))
+            self._background_cleanup_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(self._background_cleanup_tasks.discard)
+
+        try:
+            # Shield the durable claim from cancellation while we obtain its
+            # token. If the caller is cancelled at this boundary, the done
+            # callback releases it only when this request obtained a fresh
+            # pre-fence claim.
+            claim = await asyncio.shield(claim_task)
+        except BaseException:
+            claim_task.add_done_callback(_release_completed_claim)
+            raise
+
+        try:
+            await self._cache.delete(self._user_key(user_id))
+            await self._cache.delete_pattern("auth:*")
+            await self._cache.delete_pattern("auth_light:*")
+        except BaseException:
+            # A claim obtained from a durable fence or stale recovery remains
+            # fail-closed; only a new pre-fence claim may be released here.
+            await self._release_claim_safely(user_id, claim)
+            raise
+        return claim
+
+    async def _release_claim_safely(self, user_id: str, claim: HardDeleteClaim) -> None:
+        """Release a claim after a cancelled/failed claim wrapper operation."""
+        if claim.provenance is not HardDeleteClaimProvenance.NEW:
+            return
+        try:
+            await asyncio.shield(self._store.release_hard_delete_user_claim(user_id, claim.token))
+        except BaseException:
+            # Cleanup must not replace the original cancellation or cache
+            # failure. A retained claim remains fail-closed and is recoverable
+            # through the explicit stale-claim path.
+            return
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew and validate a hard-delete claim in the wrapped store."""
+        await self._store.renew_hard_delete_user_claim(user_id, claim_token)
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -13,8 +14,11 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.exceptions import HardDeleteStateChanged
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import users as admin_users
+from serving.storage.base import HardDeleteClaim, HardDeleteClaimProvenance
 
 # ---------------------------------------------------------------------------
 # Helpers / Fixtures
@@ -32,7 +36,10 @@ def mock_stores():
     op_store.reject_user = AsyncMock()
     op_store.delete_user = AsyncMock()
     op_store.resume_user = AsyncMock()
-    op_store.begin_hard_delete_user = AsyncMock(return_value="claim-token")
+    op_store.begin_hard_delete_user = AsyncMock(
+        return_value=HardDeleteClaim("claim-token", HardDeleteClaimProvenance.NEW)
+    )
+    op_store.renew_hard_delete_user_claim = AsyncMock()
     op_store.release_hard_delete_user_claim = AsyncMock()
     op_store.hard_delete_user = AsyncMock(return_value={})
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
@@ -187,6 +194,55 @@ async def test_user_filter_providers_requires_admin(admin_client):
     client, _op_store, _log_store, _log = admin_client
     response = await client.get("/admin/users/providers")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_hard_delete_claim_after_stale_status_read(admin_client):
+    """A claim acquired after the route's status read prevents approval."""
+    client, op_store, _log_store, mock_log_action = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="pending_approval")
+    op_store.approve_user.side_effect = HardDeleteStateChanged(
+        "account has a hard-delete in progress"
+    )
+
+    response = await client.post(
+        "/admin/users/u1/approve",
+        headers=AUTH,
+        json={"note": "approved"},
+    )
+
+    assert response.status_code == 409
+    op_store.approve_user.assert_awaited_once()
+    approve_call = op_store.approve_user.await_args
+    assert approve_call.args == ("u1",)
+    assert approve_call.kwargs["admin_id"]
+    assert approve_call.kwargs["note"] == "approved"
+    mock_log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reject_rejects_hard_delete_claim_after_stale_status_read(admin_client):
+    """A claim acquired after the route's status read prevents rejection."""
+    client, op_store, _log_store, mock_log_action = admin_client
+    user_row = _user_row(status="pending_approval")
+    op_store.get_user_by_id.return_value = user_row
+    op_store.reject_user.side_effect = HardDeleteStateChanged(
+        "account has a hard-delete in progress"
+    )
+    response = await client.post(
+        "/admin/users/u1/reject",
+        headers=AUTH,
+        json={"reason": "test"},
+    )
+
+    assert response.status_code == 409
+    op_store.reject_user.assert_awaited_once()
+    reject_call = op_store.reject_user.await_args
+    assert reject_call.args == ("u1",)
+    assert reject_call.kwargs["admin_id"]
+    assert reject_call.kwargs["reason"] == "test"
+    mock_log_action.assert_not_awaited()
+    assert user_row["status"] == "pending_approval"
 
 
 @pytest.mark.asyncio
@@ -549,6 +605,23 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
     # Schema validation rejects 'deleted' (pattern only allows active|suspended)
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_status_change_during_hard_delete(admin_client):
+    """A status update racing hard-delete is rejected by the operational store."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.update_user_fields.side_effect = HardDeleteStateChanged("hard-delete in progress")
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"status": "suspended"},
+    )
+
+    assert response.status_code == 409
+    op_store.update_user_fields.assert_awaited_once_with("u1", status="suspended")
 
 
 @pytest.mark.asyncio
@@ -1263,6 +1336,26 @@ async def test_hard_delete_user_requires_soft_delete(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_hard_delete_requires_fence_protocol_rollout_ready(admin_client, monkeypatch):
+    """Mixed-version deployments cannot expose the advisory-lock delete path."""
+    client, op_store, _log_store, _log = admin_client
+    monkeypatch.setenv("ERASURE_FENCE_PROTOCOL_READY", "false")
+
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 503
+    assert "every api_logs writer" in response.json()["detail"]
+    op_store.begin_hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hard_delete_user_rejects_suspended(admin_client):
     """Hard delete on suspended user returns 409 — must soft-delete first."""
     client, op_store, _log_store, _log = admin_client
@@ -1339,6 +1432,177 @@ async def test_hard_delete_user_requires_auth(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_hard_delete_stops_before_next_stage_when_claim_is_superseded(admin_client):
+    """A recovered worker cannot continue after its claim generation changes."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    op_store.renew_hard_delete_user_claim.side_effect = [
+        None,
+        HardDeleteStateChanged("claim superseded"),
+    ]
+    log_store.hard_delete_user_data.return_value = {"api_logs": 1}
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 409
+    assert log_store.hard_delete_user_data.await_count == 1
+    response_store = client._transport.app.state.services.responses_store
+    response_store.delete_user_responses.assert_not_awaited()
+    op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_renews_claim_during_long_stage(admin_client, monkeypatch):
+    """A slow stage remains owned and rejects a concurrent stale recovery."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    claim = HardDeleteClaim("claim-token", HardDeleteClaimProvenance.NEW)
+    begin_calls = 0
+    renew_calls = 0
+    stage_started = asyncio.Event()
+    heartbeat_seen = asyncio.Event()
+    release_stage = asyncio.Event()
+
+    async def begin_claim(_user_id, **_kwargs):
+        nonlocal begin_calls
+        begin_calls += 1
+        if begin_calls == 1:
+            return claim
+        assert renew_calls >= 2
+        raise HardDeleteStateChanged("claim is still active")
+
+    async def renew_claim(_user_id, _claim_token):
+        nonlocal renew_calls
+        renew_calls += 1
+        if renew_calls >= 2:
+            heartbeat_seen.set()
+
+    async def slow_log_wipe(_user_id):
+        stage_started.set()
+        await release_stage.wait()
+        return {"api_logs": 1}
+
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.001)
+    op_store.begin_hard_delete_user.side_effect = begin_claim
+    op_store.renew_hard_delete_user_claim.side_effect = renew_claim
+    log_store.hard_delete_user_data.side_effect = slow_log_wipe
+
+    first_request = asyncio.create_task(
+        client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True},
+        )
+    )
+    try:
+        await asyncio.wait_for(stage_started.wait(), timeout=5)
+        await asyncio.wait_for(heartbeat_seen.wait(), timeout=5)
+
+        recovery = await client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True, "recover_stale_claim": True},
+        )
+        assert recovery.status_code == 409
+        assert log_store.hard_delete_user_data.await_count == 1
+    finally:
+        release_stage.set()
+
+    response = await first_request
+    assert response.status_code == 200
+    assert renew_calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_cancels_stage_after_stale_recovery(admin_client, monkeypatch):
+    """A recovered claim cancels the superseded worker's active stage."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    owner_claim = HardDeleteClaim("owner-token", HardDeleteClaimProvenance.NEW)
+    recovered_claim = HardDeleteClaim("recovered-token", HardDeleteClaimProvenance.RECOVERED)
+    begin_calls = 0
+    stage_started = asyncio.Event()
+    recovery_attempted = asyncio.Event()
+    stage_cancelled = asyncio.Event()
+
+    async def begin_claim(_user_id, **kwargs):
+        nonlocal begin_calls
+        begin_calls += 1
+        if begin_calls == 1:
+            return owner_claim
+        if begin_calls == 2:
+            raise HardDeleteStateChanged("owner claim expired")
+        assert kwargs == {"recover_stale_claim": True}
+        recovery_attempted.set()
+        return recovered_claim
+
+    async def renew_claim(_user_id, claim_token):
+        if claim_token == owner_claim.token:
+            if not recovery_attempted.is_set():
+                return
+            raise HardDeleteStateChanged("owner claim was recovered")
+        raise HardDeleteStateChanged("recovered worker stopped before its stage")
+
+    async def slow_log_wipe(_user_id):
+        stage_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stage_cancelled.set()
+            raise
+
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.001)
+    op_store.begin_hard_delete_user.side_effect = begin_claim
+    op_store.renew_hard_delete_user_claim.side_effect = renew_claim
+    log_store.hard_delete_user_data.side_effect = slow_log_wipe
+
+    owner_request = asyncio.create_task(
+        client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True},
+        )
+    )
+    owner_response = None
+    try:
+        await asyncio.wait_for(stage_started.wait(), timeout=5)
+        recovery = await client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True, "recover_stale_claim": True},
+        )
+        assert recovery.status_code == 409
+        await asyncio.wait_for(stage_cancelled.wait(), timeout=5)
+        owner_response = await owner_request
+    finally:
+        if not owner_request.done():
+            owner_request.cancel()
+
+    assert owner_response is not None
+    assert owner_response.status_code == 409
+    assert log_store.hard_delete_user_data.await_count == 1
+    op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hard_delete_user_wipes_data(admin_client):
     """soft-deleted user can be hard-deleted; store + log_store are both invoked."""
     client, op_store, log_store, _log = admin_client
@@ -1409,6 +1673,30 @@ async def test_hard_delete_user_wipes_data(admin_client):
     assert claim_idx < log_idx < op_store_idx, (
         f"log_store_hard_delete_data must run before op_store_hard_delete, got {call_names}"
     )
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_requires_log_store(admin_client):
+    """No permanent deletion occurs when the erasure-fence store is absent."""
+    client, op_store, _log_store, _log = admin_client
+    client._transport.app.state.services.log_store = None
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 503
+    op_store.begin_hard_delete_user.assert_not_awaited()
+    op_store.hard_delete_user.assert_not_awaited()
+    response_store = client._transport.app.state.services.responses_store
+    response_store.delete_user_responses.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1493,6 +1781,117 @@ async def test_hard_delete_keeps_claim_when_fence_exists_after_failure(admin_cli
         )
 
     op_store.release_hard_delete_user_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_rejects_concurrent_post_fence_claim(admin_client):
+    """A concurrent post-fence request cannot reuse the live claim token."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    from serving.exceptions import HardDeleteStateChanged
+
+    op_store.begin_hard_delete_user.side_effect = [
+        HardDeleteStateChanged("already pending"),
+        HardDeleteStateChanged("already pending"),
+    ]
+    log_store.account_has_erasure_fence.return_value = True
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 409
+    assert op_store.begin_hard_delete_user.await_args_list[0].args == ("u1",)
+    assert op_store.begin_hard_delete_user.await_args_list[1].kwargs == {
+        "allow_existing_fence": True
+    }
+    log_store.hard_delete_user_data.assert_not_awaited()
+    op_store.hard_delete_user.assert_not_awaited()
+    op_store.release_hard_delete_user_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_does_not_release_recovered_claim_on_failure(admin_client):
+    """A failed recovered retry never releases the durable safety claim."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    op_store.begin_hard_delete_user.side_effect = [
+        HardDeleteStateChanged("already pending"),
+        HardDeleteClaim("claim-token", HardDeleteClaimProvenance.RECOVERED),
+    ]
+    log_store.account_has_erasure_fence.return_value = True
+    log_store.hard_delete_user_data.side_effect = RuntimeError("retry failed")
+
+    with pytest.raises(RuntimeError, match="retry failed"):
+        await client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True},
+        )
+
+    op_store.release_hard_delete_user_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_releases_claim_when_cancelled_before_fence(admin_client):
+    """Cancellation after claim admission still releases a pre-fence claim."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    log_store.hard_delete_user_data.side_effect = asyncio.CancelledError()
+    log_store.account_has_erasure_fence.return_value = False
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True},
+        )
+
+    log_store.account_has_erasure_fence.assert_awaited_once_with("u1")
+    op_store.release_hard_delete_user_claim.assert_awaited_once_with("u1", "claim-token")
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_can_explicitly_recover_stale_claim(admin_client):
+    """An explicitly requested stale takeover is passed to the store."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    from serving.exceptions import HardDeleteStateChanged
+
+    op_store.begin_hard_delete_user.side_effect = [
+        HardDeleteStateChanged("already pending"),
+        HardDeleteClaim("recovered-token", HardDeleteClaimProvenance.RECOVERED),
+    ]
+    log_store.account_has_erasure_fence.return_value = False
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True, "recover_stale_claim": True},
+    )
+
+    assert response.status_code == 200
+    assert op_store.begin_hard_delete_user.await_args_list[1].kwargs == {
+        "recover_stale_claim": True,
+    }
 
 
 @pytest.mark.asyncio

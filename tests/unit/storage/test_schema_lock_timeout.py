@@ -20,7 +20,7 @@ The invariants below are what keep that from recurring:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,16 @@ from serving.storage.log_schema import (
     protect_api_logs_insert,
     validate_or_init_fingerprint,
 )
+
+
+class _ClosablePool:
+    """Minimal pool double that records whether initialization cleaned it up."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.parametrize(
@@ -214,6 +224,29 @@ async def test_secret_mismatch_fails_closed_without_delete_recovery():
     assert conn.transaction_states
     assert all(conn.transaction_states)
     assert conn._transaction_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_database_logger_closes_pool_and_propagates_secret_mismatch():
+    """A fatal fence mismatch must not degrade into a logger-less service."""
+    from serving.storage.database import DatabaseLogger
+
+    pool = _ClosablePool()
+    logger = DatabaseLogger({}, fence_secret="rotated")
+    mismatch = ErasureFenceUnavailable("restore the original secret")
+
+    with (
+        patch(
+            "serving.storage.database.asyncpg.create_pool",
+            new=AsyncMock(return_value=pool),
+        ),
+        patch.object(logger, "_create_tables", new=AsyncMock(side_effect=mismatch)),
+        pytest.raises(ErasureFenceUnavailable, match="restore the original"),
+    ):
+        await logger.initialize()
+
+    assert pool.closed is True
+    assert logger.pool is None
 
 
 @pytest.mark.asyncio
