@@ -317,7 +317,9 @@ def test_registry_keeps_the_shared_router_when_no_route_is_cloud() -> None:
 
 
 @pytest.mark.unit
-def test_policy_splits_global_weights_between_local_and_cloud() -> None:
+def test_policy_splits_global_weights_between_local_and_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The global weighted draw is split by domain and carries its target."""
     import random
 
@@ -331,7 +333,10 @@ def test_policy_splits_global_weights_between_local_and_cloud() -> None:
         cloud_scope={_CLOUD_ENDPOINT},
     )
 
-    random.seed(7)
+    # Keep unrelated tests or background work from consuming the process-wide
+    # RNG between draws.  The assertion is about the configured weights, not
+    # about shared random-module state.
+    monkeypatch.setattr("routing.routers.random", random.Random(7))
     decisions = [policy.select_backend(_MODEL_ID, _MESSAGES) for _ in range(50)]
 
     assert {decision.backend for decision in decisions} == {"local", "cloud"}
