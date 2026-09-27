@@ -61,6 +61,12 @@ still queued at that deadline leaves exactly as a timed-out one does and raises
 :class:`UpstreamQueueWaitExpired`. The deadline can only shorten the wait: one
 further out than ``acquire_timeout`` changes nothing.
 
+**A dispatch may be watched.** The same router times how long an engine takes to
+start answering (``routing.engine_stall``), and that clock must not run while the
+request is still here. A dispatch's watch (``req_ctx.UPSTREAM_DISPATCH_WATCH``)
+is told when the request starts waiting for a slot and when it gets one --
+including at once, and from an exempt local endpoint.
+
 Counters are plain ints under the asyncio single-thread invariant, exactly as
 ``servers/concurrency._UserSlot`` documents: every mutation below happens in a
 block with no ``await`` in it, so it is atomic with respect to other tasks on
@@ -156,6 +162,29 @@ def is_local_endpoint(base_url: str | None) -> bool:
         # remote so a malformed route is limited rather than exempted.
         return False
     return host in _LOCAL_HOSTS
+
+
+def _tell_dispatch_watch(*, queued: bool) -> None:
+    """Report to the dispatch's first-token watch, if the router gave it one.
+
+    ``queued`` means the request is about to wait for a slot; otherwise it holds
+    one and is about to be sent. A failing watch is logged and ignored: the
+    watch only refines routing, and must never cost a request its slot.
+    """
+    watch = req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH)
+    if watch is None:
+        return
+    try:
+        if queued:
+            watch.on_queued()
+        else:
+            watch.on_sent()
+    except Exception:
+        logger.error(
+            "upstream_dispatch_watch_failed",
+            exc_info=True,
+            extra={"event": "upstream_dispatch_watch_failed", "queued": queued},
+        )
 
 
 @dataclass
@@ -463,6 +492,7 @@ class UpstreamConcurrencyLimiter:
             UpstreamSaturated: No slot came free within the acquire timeout.
         """
         if not self._enabled or is_local_endpoint(base_url):
+            _tell_dispatch_watch(queued=False)
             return _INERT_SLOT
 
         loop = asyncio.get_running_loop()
@@ -471,6 +501,7 @@ class UpstreamConcurrencyLimiter:
 
         if bucket.has_free_slot():
             bucket.take_slot()
+            _tell_dispatch_watch(queued=False)
             return UpstreamSlot(bucket)
 
         wait, deadline_bound = self._queue_wait()
@@ -481,6 +512,7 @@ class UpstreamConcurrencyLimiter:
             # take a place in line from nobody, so leave straight away.
             raise self._queue_wait_expired(bucket)
 
+        _tell_dispatch_watch(queued=True)
         waiter: asyncio.Future[None] = loop.create_future()
         bucket.waiters.append(waiter)
         try:
@@ -511,6 +543,7 @@ class UpstreamConcurrencyLimiter:
             bucket.abandon(waiter)
             raise
         # Woken: ``wake_waiters`` already reserved the slot in our name.
+        _tell_dispatch_watch(queued=False)
         return UpstreamSlot(bucket)
 
     def _queue_wait(self) -> tuple[float, bool]:

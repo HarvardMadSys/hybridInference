@@ -162,6 +162,36 @@ describe('OffloadRoutePanel', () => {
     expect(screen.getByText('The route no longer exists')).toBeInTheDocument();
   });
 
+  it('names the routes that are stalled right now', () => {
+    renderPanel({
+      offload: {
+        ...storedOffload,
+        stalled_endpoints: [primary.endpoint_id, 'glm-4.7:gone-api'],
+      },
+    });
+
+    // Known routes by their label; an endpoint no longer on the route by its id.
+    expect(screen.getByTestId('offload-stalled-routes')).toHaveTextContent(
+      'Stalled now: primary (glm-4.7:primary-api), glm-4.7:gone-api.',
+    );
+  });
+
+  it('shows no stall notice when nothing is stalled or the policy is not in force', () => {
+    renderPanel({ offload: { ...storedOffload, stalled_endpoints: [] } });
+    expect(screen.queryByTestId('offload-stalled-routes')).not.toBeInTheDocument();
+    cleanup();
+
+    renderPanel({
+      offload: {
+        ...storedOffload,
+        active: false,
+        inactive_reason: 'The route no longer exists',
+        stalled_endpoints: [primary.endpoint_id],
+      },
+    });
+    expect(screen.queryByTestId('offload-stalled-routes')).not.toBeInTheDocument();
+  });
+
   it('says when nothing queues because the limiter is off', () => {
     renderPanel({ queue: { enabled: false, maxWaitSeconds: 30 } });
 

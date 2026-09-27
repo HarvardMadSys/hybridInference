@@ -50,6 +50,15 @@ UPSTREAM_PRIORITY = "upstream_priority"
 # entry in REQUEST_SCOPED_KEYS.
 UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
 
+# req_ctx key holding the dispatch's first-token watch
+# (``routing.engine_stall.FirstTokenWatch``), or ``None``. FixedRouter pushes it
+# around each streaming attempt it watches for an engine stall, and ``None``
+# around every other attempt. ``upstream_limiter`` tells it when the request
+# starts waiting for an outbound slot and when it gets one, so the engine's
+# first-token wait starts when the request actually leaves the gateway. Only
+# ever pushed, like the deadline above.
+UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.

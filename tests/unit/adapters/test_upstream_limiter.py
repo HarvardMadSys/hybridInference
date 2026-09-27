@@ -311,6 +311,105 @@ async def test_a_waiter_granted_before_its_deadline_keeps_the_slot():
     granted.release(status_code=200)
 
 
+# ---------------------------------------------------------- dispatch watches
+
+
+class _Watch:
+    """Records what the limiter tells a dispatch's first-token watch."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.events: list[str] = []
+        self.fail = fail
+
+    def on_queued(self) -> None:
+        self.events.append("queued")
+        if self.fail:
+            raise RuntimeError("broken watch")
+
+    def on_sent(self) -> None:
+        self.events.append("sent")
+        if self.fail:
+            raise RuntimeError("broken watch")
+
+
+@contextmanager
+def _watched(watch: _Watch):
+    with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_WATCH: watch}):
+        yield
+
+
+async def test_a_watch_hears_that_a_free_slot_sends_the_request_at_once():
+    limiter = _limiter()
+    watch = _Watch()
+
+    with _watched(watch):
+        slot = await _acquire(limiter)
+
+    assert watch.events == ["sent"]
+    slot.release(status_code=200)
+
+
+async def test_a_watch_hears_that_an_exempt_request_goes_straight_out():
+    """A local engine is never queued here, so its wait starts at once."""
+    watch = _Watch()
+
+    with _watched(watch):
+        await _limiter().acquire(PROVIDER, KEY_A, base_url=LOCAL)
+    with _watched(watch):
+        await _limiter(enabled=False).acquire(PROVIDER, KEY_A, base_url=REMOTE)
+
+    assert watch.events == ["sent", "sent"]
+
+
+async def test_a_watch_hears_the_wait_and_then_the_slot():
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    held = await _acquire(limiter)
+    watch = _Watch()
+
+    async def watched():
+        with _watched(watch):
+            return await _acquire(limiter)
+
+    waiting = asyncio.ensure_future(watched())
+    await asyncio.sleep(0)
+    assert watch.events == ["queued"]
+    held.release(status_code=200)
+    (await waiting).release(status_code=200)
+
+    assert watch.events == ["queued", "sent"]
+
+
+async def test_a_watch_hears_no_slot_when_the_wait_runs_out():
+    limiter = _limiter(initial_limit=1, acquire_timeout=0.02)
+    await _acquire(limiter)
+    watch = _Watch()
+
+    with _watched(watch), pytest.raises(UpstreamSaturated):
+        await _acquire(limiter)
+
+    assert watch.events == ["queued"]
+
+
+async def test_a_broken_watch_never_costs_the_request_its_slot(caplog):
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    held = await _acquire(limiter)
+    watch = _Watch(fail=True)
+
+    async def watched():
+        with _watched(watch):
+            return await _acquire(limiter)
+
+    waiting = asyncio.ensure_future(watched())
+    await asyncio.sleep(0)
+    held.release(status_code=200)
+    granted = await waiting
+
+    assert granted.held
+    assert watch.events == ["queued", "sent"]
+    assert [r for r in caplog.records if r.getMessage() == "upstream_dispatch_watch_failed"]
+    granted.release(status_code=200)
+
+
 # ----------------------------------------------------------------------- AIMD
 
 

@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -27,11 +27,13 @@ from routing.backends import LeafBackend
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
+from routing.engine_stall import EngineStallTracker, EngineWaitExpired, FirstTokenWatch
 from routing.offload import (
+    OFFLOAD_ENGINE_STALLED,
     OFFLOAD_LAST_RESORT,
     FallbackOrder,
     OffloadPolicy,
-    ended_in_gateway_queue,
+    offload_reason_for,
 )
 from routing.prefill_load import (
     PrefillLoadTracker,
@@ -474,6 +476,23 @@ def _skips_for_context_window(
     return True
 
 
+class _PrimaryOffload(NamedTuple):
+    """How one request's primary attempt relates to its model's offload route.
+
+    Attributes:
+        reason: ``_routing["offload"]`` for a primary that *is* the offload route.
+        deadline: The outbound-queue deadline for a primary that could still be
+            offloaded, as ``req_ctx.UPSTREAM_QUEUE_DEADLINE`` carries it.
+        policy: The model's offload policy when the request has an offload route
+            in range, which is also when its attempts are watched for engine
+            stalls (``routing.engine_stall``).
+    """
+
+    reason: str | None = None
+    deadline: float | None = None
+    policy: OffloadPolicy | None = None
+
+
 # ============================================================================
 # FixedRouter
 # ============================================================================
@@ -553,6 +572,10 @@ class FixedRouter:
         # counts, which lets one mega-prefill monopolize a replica while its
         # siblings idle; this is the signal that lets selection see that.
         self._prefill_load = PrefillLoadTracker()
+        # Endpoints stalled on requests they accepted but did not start
+        # (``routing.engine_stall``). Consulted only for models with an offload
+        # route, which is where a stalled request has somewhere else to go.
+        self._engine_stalls = EngineStallTracker()
         # Divergence set last announced by ``log_route_weight_divergence``.
         # None (not an empty set) means "never reported", which is what lets a
         # gateway with no overrides boot silently.
@@ -562,6 +585,11 @@ class FixedRouter:
     def prefill_load(self) -> PrefillLoadTracker:
         """Return the per-endpoint in-flight prefill tracker."""
         return self._prefill_load
+
+    @property
+    def engine_stalls(self) -> EngineStallTracker:
+        """Return the per-endpoint engine-stall tracker."""
+        return self._engine_stalls
 
     @property
     def endpoint_health_registry(self) -> EndpointHealthRegistry:
@@ -605,12 +633,13 @@ class FixedRouter:
         # A failing endpoint has most likely lost its prefix cache (restart,
         # OOM, a container replaced under the same id), so the hints describing
         # it stop being evidence. See PrefillLoadTracker.forget_endpoint.
-        # A request that ended in this gateway's own outbound queue is the
-        # exception: the endpoint was never asked and its cache is untouched.
-        # With an offload route that is a routine event under load, and wiping
-        # the hints on each one would blind prefill-aware selection exactly when
-        # the endpoint is busiest.
-        if exc is None or not ended_in_gateway_queue(exc):
+        # A request that ended waiting -- in this gateway's own outbound queue,
+        # or at an engine that had not started it -- is the exception: nothing
+        # failed and the endpoint's cache is untouched. With an offload route
+        # that is a routine event under load, and wiping the hints on each one
+        # would blind prefill-aware selection exactly when the endpoint is
+        # busiest.
+        if exc is None or offload_reason_for(exc) is None:
             self._prefill_load.forget_endpoint(endpoint_id)
         self._health_registry.record_failure(
             endpoint_id,
@@ -762,14 +791,17 @@ class FixedRouter:
         allow_fallback: bool,
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
-    ) -> tuple[str | None, float | None]:
+    ) -> _PrimaryOffload:
         """Return how a request's primary attempt relates to its offload route.
 
-        The first element is :data:`OFFLOAD_LAST_RESORT` when selection had only
-        the offload route left, so the response can say why it served. The
-        second is the queue deadline for a primary that could still be offloaded.
-        A caller that owns the candidate order (``allow_fallback`` off) gets
-        none: this router will not walk on to the offload route on its behalf.
+        ``reason`` is set when selection had only the offload route left:
+        :data:`OFFLOAD_ENGINE_STALLED` when the model's other routes are
+        stalled, :data:`OFFLOAD_LAST_RESORT` otherwise, so the response can say
+        why it served. ``deadline`` is the queue deadline for a primary that
+        could still be offloaded, and ``policy`` the one its stream is watched
+        under. A caller that owns the candidate order (``allow_fallback`` off)
+        gets neither: this router will not walk on to the offload route on its
+        behalf.
 
         Never raises. It runs between admission and the attempt, where the
         caller holds a dispatch claim and a prefill lease it has not yet
@@ -784,19 +816,51 @@ class FixedRouter:
                 required_modalities=required_modalities,
             )
             if target is None:
-                return None, None
+                return _PrimaryOffload()
             offload, policy = target
             if offload is primary:
-                return OFFLOAD_LAST_RESORT, None
+                stalled = self._other_routes_stalled(
+                    model_id,
+                    offload,
+                    endpoint_scope=endpoint_scope,
+                    required_modalities=required_modalities,
+                )
+                return _PrimaryOffload(
+                    reason=OFFLOAD_ENGINE_STALLED if stalled else OFFLOAD_LAST_RESORT
+                )
             if not allow_fallback:
-                return None, None
-            return None, self._queue_deadline(offload, policy)
+                return _PrimaryOffload()
+            return _PrimaryOffload(deadline=self._queue_deadline(offload, policy), policy=policy)
         except Exception:
             logger.error(
                 f"Offload resolution failed for model {model_id}; routing without it",
                 exc_info=True,
             )
-            return None, None
+            return _PrimaryOffload()
+
+    def _other_routes_stalled(
+        self,
+        model_id: str,
+        offload: BaseAdapter,
+        *,
+        endpoint_scope: frozenset[str] | None,
+        required_modalities: frozenset[str] | None,
+    ) -> bool:
+        """Return whether any route in the request's range besides ``offload`` is stalled."""
+        route = self.routes.get(model_id)
+        if route is None:
+            return False
+        return any(
+            weight > 0
+            and adapter is not offload
+            and self._engine_stalls.is_stalled(endpoint_id_for_adapter(adapter))
+            for adapter, weight in self._dispatch_range(
+                model_id,
+                route,
+                endpoint_scope=endpoint_scope,
+                required_modalities=required_modalities,
+            )
+        )
 
     def _fallback_order(
         self,
@@ -851,6 +915,116 @@ class FixedRouter:
                 ),
             },
         )
+
+    # -- engine stalls (see routing.engine_stall) ---------------------------
+
+    def _admits_new(self, adapter: BaseAdapter, *, probe: bool) -> bool:
+        """Return whether a new request may go to ``adapter``'s endpoint (see ``admits``)."""
+        return self._engine_stalls.admits(endpoint_id_for_adapter(adapter), probe=probe)
+
+    def _hold_back_for_offload(
+        self,
+        allowed: list[tuple[BaseAdapter, float]],
+        offload: BaseAdapter,
+        *,
+        streaming: bool,
+    ) -> list[tuple[BaseAdapter, float]]:
+        """Return what selection may draw from, given the model's offload route.
+
+        The offload route is drawn only when it is the last candidate standing.
+        A route stalled on this model's earlier requests comes after it: a new
+        request would only join the queue that stalled it, unless it is a
+        streaming probe the stall tracker admits. A stalled route still takes
+        the request when neither an ordinary route nor the offload route is
+        admissible -- a slow answer beats none.
+        """
+        ordinary = [(adapter, weight) for adapter, weight in allowed if adapter is not offload]
+        if not ordinary:
+            return allowed
+        ready = [
+            (adapter, weight)
+            for adapter, weight in ordinary
+            if self._admits_new(adapter, probe=streaming)
+        ]
+        if ready:
+            return ready
+        reserved = [(adapter, weight) for adapter, weight in allowed if adapter is offload]
+        return reserved or ordinary
+
+    def _defers_stalled(self, order: FallbackOrder, adapter: BaseAdapter, *, probe: bool) -> bool:
+        """Return whether the fallback walk should pass over a stalled candidate for now.
+
+        The candidate moves to the end of the order, after the offload route, so
+        it is tried only when nothing else serves.
+        """
+        if self._admits_new(adapter, probe=probe):
+            return False
+        return order.defer(adapter)
+
+    def _watch_for(
+        self,
+        model_id: str,
+        adapter: BaseAdapter,
+        policy: OffloadPolicy | None,
+        deadline: float | None,
+    ) -> FirstTokenWatch | None:
+        """Return the first-token watch for one streaming attempt, or None.
+
+        A model with an offload route in range has every streaming attempt on
+        its other routes tracked, so the stall tracker knows what is still
+        waiting on each engine and a first token from any of them ends a stall.
+        Only an attempt that could still be offloaded -- the same condition as
+        its queue ``deadline`` -- gets a first-token deadline too: with nowhere
+        left to go, the request waits as long as the engine needs.
+
+        Created in the same synchronous step as the attempt's admission, before
+        anything is yielded, so a probe the tracker admitted is pending before
+        any other request can be admitted as one.
+        """
+        if policy is None:
+            return None
+        return FirstTokenWatch(
+            self._engine_stalls,
+            endpoint_id_for_adapter(adapter),
+            model_id=model_id,
+            wait_seconds=policy.wait_seconds if deadline is not None else None,
+        )
+
+    @staticmethod
+    async def _await_first_token(stream: AsyncIterator[Any], watch: FirstTokenWatch) -> list[Any]:
+        """Return what an attempt streams up to and including its first token.
+
+        Everything before the first token -- a role-only delta, an empty
+        keep-alive -- is held back rather than yielded. Once a chunk reaches the
+        client the stream is committed to this attempt and can no longer move to
+        the offload route; the held chunks go out with the first token instead.
+        A stream that ends before any token is returned whole.
+
+        Raises:
+            EngineWaitExpired: The watch's deadline passed first. The attempt's
+                stream has been unwound by then, which closes its connection and
+                aborts the request at the engine.
+        """
+        held: list[Any] = []
+        watch.start()
+        try:
+            while True:
+                try:
+                    chunk = await stream.__anext__()
+                except StopAsyncIteration:
+                    break
+                held.append(chunk)
+                if has_non_empty_content(chunk):
+                    break
+        except asyncio.CancelledError:
+            if not watch.owns_cancellation():
+                raise
+            watch.record_expiry()
+            raise EngineWaitExpired(watch.endpoint_id, float(watch.wait_seconds or 0.0)) from None
+        finally:
+            watch.stop()
+        watch.record_answer()
+        return held
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability, circuit state and exclusions.
@@ -1289,7 +1463,10 @@ class FixedRouter:
 
         A model's offload route (``routing.offload``) is moved to the end of the
         list: it takes no ordinary traffic, so a surface taking the first usable
-        entry reaches it only when nothing ahead of it can serve.
+        entry reaches it only when nothing ahead of it can serve. A route stalled
+        on this model's earlier requests (``routing.engine_stall``) goes after
+        it: such a surface sends one request and cannot watch it, so it never
+        probes a stalled engine while the offload route can take the request.
         """
         route = self.routes.get(model_id)
         if not route or not route.published or not route.adapters:
@@ -1308,9 +1485,13 @@ class FixedRouter:
         if target is None:
             return eligible
         offload = target[0]
-        return [entry for entry in eligible if entry[0] is not offload] + [
-            entry for entry in eligible if entry[0] is offload
-        ]
+        ordinary = [entry for entry in eligible if entry[0] is not offload]
+        ready = [entry for entry in ordinary if self._admits_new(entry[0], probe=False)]
+        return (
+            ready
+            + [entry for entry in eligible if entry[0] is offload]
+            + [entry for entry in ordinary if not self._admits_new(entry[0], probe=False)]
+        )
 
     def select_adapter(
         self,
@@ -1412,6 +1593,7 @@ class FixedRouter:
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
         require_target: bool = False,
+        streaming: bool = False,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -1443,6 +1625,9 @@ class FixedRouter:
                 admissible raises :class:`TargetUnavailableError` instead of
                 being replaced by the ordinary draw, so a caller that planned one
                 candidate per attempt is told which candidate it lost.
+            streaming: Whether the request streams. Only a streaming request can
+                be watched for its first token, so only one may probe an endpoint
+                that is stalled (``routing.engine_stall``).
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -1513,11 +1698,7 @@ class FixedRouter:
         # pin left on the offload route by an earlier last-resort pick.
         target = self._offload_target(model_id, route, snapshot)
         if target is not None:
-            ordinary = [
-                (adapter, weight) for adapter, weight in allowed if adapter is not target[0]
-            ]
-            if ordinary:
-                allowed = ordinary
+            allowed = self._hold_back_for_offload(allowed, target[0], streaming=streaming)
 
         affinity_key: str | None = None
         if AFFINITY_ENABLED:
@@ -1688,6 +1869,7 @@ class FixedRouter:
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
         require_target: bool = False,
+        streaming: bool = False,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -1752,6 +1934,7 @@ class FixedRouter:
                 preferred_endpoint_id=preferred_endpoint_id,
                 endpoint_scope=endpoint_scope,
                 require_target=require_target,
+                streaming=streaming,
             )
             if preferred is not None:
                 preferred_endpoint = endpoint_id_for_adapter(preferred)
@@ -1777,6 +1960,7 @@ class FixedRouter:
                 prefill_tokens=prefill_tokens,
                 exclude=exclude,
                 endpoint_scope=endpoint_scope,
+                streaming=streaming,
             )
             if adapter is None:
                 return None, None
@@ -1960,7 +2144,7 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
-        primary_offload, primary_deadline = self._primary_offload(
+        primary_plan = self._primary_offload(
             model_id,
             primary,
             pin_provider=pin_provider,
@@ -1970,6 +2154,8 @@ class FixedRouter:
         )
         try:
             endpoint_id = endpoint_id_for_adapter(primary)
+            if primary_plan.reason is not None:
+                self._log_offload(model_id, primary, primary_plan.reason, primary_plan.policy, ())
             with req_ctx.push(
                 model=model_id,
                 provider=execution.config.provider,
@@ -1977,7 +2163,9 @@ class FixedRouter:
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                         endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
-                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_deadline,
+                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
+                    # A response that arrives whole has no first token to watch.
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: None,
                 },
             ):
                 self._ensure_health(endpoint_id)
@@ -1999,8 +2187,8 @@ class FixedRouter:
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
             resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
-            if primary_offload is not None:
-                resp["_routing"].setdefault("offload", primary_offload)
+            if primary_plan.reason is not None:
+                resp["_routing"].setdefault("offload", primary_plan.reason)
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
@@ -2059,6 +2247,14 @@ class FixedRouter:
                 # prompt is no more use to an offload than to any fallback.
                 if _skips_for_context_window(model_id, adapter, refused_window):
                     continue
+                # A route stalled on this model's earlier requests waits until
+                # nothing else -- the offload route included -- has served.
+                if (
+                    offload_policy is not None
+                    and offload_reason is None
+                    and self._defers_stalled(order, adapter, probe=False)
+                ):
+                    continue
                 endpoint_id = endpoint_id_for_adapter(adapter)
                 # Resolved before the claim so a binding this router cannot honor
                 # costs no admission slot.
@@ -2096,6 +2292,7 @@ class FixedRouter:
                                     refused_window=refused_window,
                                 )
                             ),
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: None,
                         },
                     ):
                         self._ensure_health(endpoint_id)
@@ -2208,6 +2405,7 @@ class FixedRouter:
                     preferred_endpoint_id=preferred_endpoint_id,
                     endpoint_scope=endpoint_scope,
                     require_target=require_target,
+                    streaming=True,
                 )
                 if primary is not None:
                     lease = self._prefill_load.acquire(
@@ -2233,7 +2431,7 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
-        primary_offload, primary_deadline = self._primary_offload(
+        primary_plan = self._primary_offload(
             model_id,
             primary,
             pin_provider=pin_provider,
@@ -2242,8 +2440,16 @@ class FixedRouter:
             required_modalities=required_modalities,
         )
         chunks_yielded = False
+        primary_watch: FirstTokenWatch | None = None
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
+            if primary_plan.reason is not None:
+                self._log_offload(model_id, primary, primary_plan.reason, primary_plan.policy, ())
+            # In the step that admitted the primary, before anything is yielded
+            # (see ``_watch_for``).
+            primary_watch = self._watch_for(
+                model_id, primary, primary_plan.policy, primary_plan.deadline
+            )
             with req_ctx.push(
                 model=model_id,
                 provider=execution.config.provider,
@@ -2251,7 +2457,8 @@ class FixedRouter:
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                         primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
-                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_deadline,
+                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
                 },
             ):
                 # Emit synthetic _routing chunk so completions.py can recover
@@ -2264,8 +2471,20 @@ class FixedRouter:
                 # Charged before the first yield so the lease brackets the whole
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
-                yield routing_chunk(execution, offload=primary_offload)
-                async for chunk in leaf.stream_chat_completion(messages, **params):
+                yield routing_chunk(execution, offload=primary_plan.reason)
+                stream = aiter(leaf.stream_chat_completion(messages, **params))
+                if primary_watch is not None:
+                    held = await self._await_first_token(stream, primary_watch)
+                    if held and has_non_empty_content(held[-1]):
+                        # The loop below's first-token bookkeeping, for a
+                        # first token that arrived while it was being awaited.
+                        first = False
+                        self._on_success(primary_endpoint_id)
+                        self._prefill_load.release(lease, prefill_confirmed=True)
+                    for chunk in held:
+                        yield chunk
+                        chunks_yielded = True
+                async for chunk in stream:
                     if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
@@ -2284,6 +2503,8 @@ class FixedRouter:
             # Primary is done either way; release before the fallback attempts
             # so its backlog does not shadow it for the rest of this request.
             self._prefill_load.release(lease)
+            if primary_watch is not None:
+                primary_watch.close()
             self._on_failure(
                 endpoint_id_for_adapter(primary),
                 reason="stream_exception",
@@ -2355,6 +2576,14 @@ class FixedRouter:
                 adapter, offload_reason = candidate
                 if _skips_for_context_window(model_id, adapter, refused_window):
                     continue
+                # Same deferral as the non-streaming loop, except that a stream
+                # can probe a stalled route with nothing of ours still on it.
+                if (
+                    offload_policy is not None
+                    and offload_reason is None
+                    and self._defers_stalled(order, adapter, probe=True)
+                ):
+                    continue
                 adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                 # Resolved before the claim, for the same reason as the
                 # non-streaming loop: an unusable binding costs no probe slot.
@@ -2373,7 +2602,23 @@ class FixedRouter:
                     self._log_offload(
                         model_id, adapter, offload_reason, offload_policy, failed_attempts
                     )
+                fallback_watch: FirstTokenWatch | None = None
                 try:
+                    # The offload attempt queues normally and is not watched:
+                    # there is nowhere left to send it.
+                    queue_deadline = (
+                        None
+                        if offload_reason is not None
+                        else self._queue_deadline(
+                            order.offload_pending,
+                            offload_policy,
+                            refused_window=refused_window,
+                        )
+                    )
+                    if offload_reason is None:
+                        fallback_watch = self._watch_for(
+                            model_id, adapter, offload_policy, queue_deadline
+                        )
                     with req_ctx.push(
                         model=model_id,
                         provider=execution.config.provider,
@@ -2385,17 +2630,8 @@ class FixedRouter:
                                 fingerprint,
                                 messages,
                             ),
-                            # The offload attempt queues normally: there is
-                            # nowhere left to send it.
-                            req_ctx.UPSTREAM_QUEUE_DEADLINE: (
-                                None
-                                if offload_reason is not None
-                                else self._queue_deadline(
-                                    order.offload_pending,
-                                    offload_policy,
-                                    refused_window=refused_window,
-                                )
-                            ),
+                            req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
                         },
                     ):
                         yield routing_chunk(
@@ -2412,7 +2648,17 @@ class FixedRouter:
                             fingerprint=fingerprint,
                             anchor=anchor,
                         )
-                        async for chunk in leaf.stream_chat_completion(messages, **params):
+                        stream = aiter(leaf.stream_chat_completion(messages, **params))
+                        if fallback_watch is not None:
+                            held = await self._await_first_token(stream, fallback_watch)
+                            if held and has_non_empty_content(held[-1]):
+                                first = False
+                                self._on_success(adapter_endpoint_id)
+                                self._prefill_load.release(lease, prefill_confirmed=True)
+                            for chunk in held:
+                                yield chunk
+                                chunks_yielded = True
+                        async for chunk in stream:
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
@@ -2439,6 +2685,8 @@ class FixedRouter:
                     order.record_failure(fallback_error)
                     continue
                 finally:
+                    if fallback_watch is not None:
+                        fallback_watch.close()
                     # Covers the attempt that never reached a first token.
                     self._prefill_load.release(lease)
                     # Per attempt, not once at the end: the loop overwrites
@@ -2454,6 +2702,10 @@ class FixedRouter:
             # mid-stream and would otherwise strand the lease forever, making
             # the endpoint look permanently busy to every later request.
             self._prefill_load.release(lease)
+            # Likewise for the primary's place in the stall tracker: a pending
+            # attempt left behind would read as a queue on that engine forever.
+            if primary_watch is not None:
+                primary_watch.close()
             # Same unwind, same reason, for the probe: GeneratorExit and
             # CancelledError miss the ``except Exception`` above, and a stream
             # that yields nothing but keep-alives never records a success, so

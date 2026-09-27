@@ -208,7 +208,8 @@ this order:
    routes whose circuit is open or already carrying a half-open probe. If
    nothing survives, `AllCircuitsOpenError`
    names the endpoints it considered. A model's offload route is held back
-   here too, unless it is the only route left (see
+   here too, unless it is the only route left, and a route stalled on the
+   model's earlier requests comes after it (see
    [Queue-wait offload](#queue-wait-offload)).
 5. **Session affinity.** A live pin for this caller and model wins, unless the
    pinned endpoint is backlogged (see [Session affinity](#session-affinity)).
@@ -226,7 +227,8 @@ claim for (open, or already carrying a probe). The first one that succeeds
 answers the request. If every route fails, the *primary*
 error is re-raised, with the whole attempt list attached. A model's offload
 route is not in that order: it comes next after an attempt that waited out its
-queue budget, and last otherwise (see [Queue-wait offload](#queue-wait-offload)).
+queue budget or its engine's first token, and last otherwise, and a stalled
+route is tried only after it (see [Queue-wait offload](#queue-wait-offload)).
 
 Two deliberate exceptions:
 
@@ -458,18 +460,60 @@ gateway: giving up its place in line releases nothing upstream, cannot
 duplicate a generation, and is not charged to the endpoint's circuit breaker or
 its prefix-cache hints.
 
-A response served by the offload route carries `_routing.offload` —
-`queue_wait` or `last_resort` — beside the usual `fallback` and
-`failed_attempts`, and the request log's metadata keeps it, streamed or not.
-Every dispatch to an offload route also logs a `route_offload` line.
+### Engine waits and stalled engines
+
+The gateway cannot see an inference engine's own queue. A vLLM or SGLang server
+accepts every request and queues what it cannot schedule yet, and a request
+waiting there looks, from outside, like one that is merely slow — until the
+engine sends its first token. For a model with an offload route, `FixedRouter`
+therefore watches every streaming attempt on the model's other routes for that
+token (`apps/backend/routing/engine_stall.py`):
+
+- **First-token wait.** An attempt whose engine sends no token within the same
+  wait is cancelled — closing the stream aborts the request at the engine — and
+  the request goes to the offload route next. The wait starts when the request
+  leaves the gateway, so time spent in its outbound queue is bounded by the
+  queue wait instead, and a local server, which never queues there, gets the
+  whole of it. Anything the engine sends before its first token, such as a
+  role-only delta, is held back until the token arrives, so a client never sees
+  the attempt that was abandoned.
+- **Stalled engines.** The endpoint is then *stalled*. New requests go to the
+  model's other routes, or straight to the offload route when every other route
+  is stalled, instead of joining a queue already known to be long. The stall
+  ends when a request already on the engine sends a token. When none of this
+  worker's requests is left there, the endpoint takes one streaming request as a
+  probe: its first token ends the stall, and a probe that waits too long is
+  offloaded like any other attempt.
+- **Only as a last resort.** A stalled route still takes a request when nothing
+  else can, the offload route included. An engine wait is not charged to the
+  circuit breaker: the stall already keeps new requests away and ends as soon as
+  the engine answers, where an open circuit would hold the endpoint out for a
+  cooldown.
+
+Only streaming requests are watched: a non-streaming response arrives whole, so
+there is no first token to wait for. Non-streaming requests still go around a
+stalled engine, but never probe one. The first-token wait includes the engine's
+prefill, so a model serving very long prompts needs a wait above the time it
+takes to start answering them. Stalls are kept per worker process, like circuit
+state. `GET /admin/routing/offload-routes` reports each model's stalled routes
+as `stalled_endpoints`, the console marks them **Stalled**, and each stall and
+recovery logs an `engine_stalled` or `engine_recovered` line.
+
+A response served by the offload route carries `_routing.offload` beside the
+usual `fallback` and `failed_attempts`: `queue_wait` or `engine_wait` after an
+attempt that waited too long, `engine_stalled` when every other route was
+stalled, and `last_resort` otherwise. The request log's metadata keeps it,
+streamed or not, and every dispatch to an offload route also logs a
+`route_offload` line.
 
 What does not offload:
 
-- **An endpoint the gateway does not queue for.** Only the limiter queues, and
-  it exempts local inference servers (a host in `registry._LOCAL_HOSTS`), which
-  schedule their own work. Nothing queues at all while
-  `UPSTREAM_CONCURRENCY_ENABLED=false`. The offload route still serves as the
-  last resort in both cases.
+- **A non-streaming request the gateway does not queue.** Only the limiter
+  queues, and it exempts local inference servers (a host in
+  `registry._LOCAL_HOSTS`), which schedule their own work. Nothing queues at all
+  while `UPSTREAM_CONCURRENCY_ENABLED=false`. A streaming request there is still
+  offloaded when its engine sends no first token in time, and the offload route
+  still serves as the last resort.
 - **A pinned request.** `X-Route-Pin` names one endpoint and never falls back,
   so it never offloads either. Nor does an attempt whose caller owns the
   candidate order (`allow_fallback` off, as the hybrid composition plans them),
@@ -480,16 +524,17 @@ What does not offload:
   configured `context_length` is no wider, the offload route included. No later
   attempt leaves its queue for an offload route that would be passed over.
 - **`/v1/messages`.** It picks one adapter itself and has no fallback. It keeps
-  the offload route out of that pick unless nothing else is eligible, but does
-  not offload on a queue wait. `/v1/chat/completions` and the surfaces built on
-  it — `/v1/responses`, `/v1/completions` and the admin playground — do.
+  the offload route out of that pick unless nothing else is eligible, and a
+  stalled route after it, but does not offload on a wait. `/v1/chat/completions`
+  and the surfaces built on it — `/v1/responses`, `/v1/completions` and the
+  admin playground — do.
 - **RouteWise.** A `routewise` model plans its own candidates and ignores offload
   routes, as does a `fixed` model with `hybrid_composition: true`. The admin API
   refuses to set an offload route on either, and refuses to switch a model that
   has one to `routewise`.
 
 The wait must be positive and at most the acquire timeout, since a longer wait
-would end at the timeout anyway. The offload route needs an effective weight
+in the gateway's queue would end at the timeout anyway. The offload route needs an effective weight
 above `0`: a weight override of `0` or a disabled provider turns the offload
 off, and `GET /admin/routing/offload-routes` then reports the policy with
 `active: false` and an `inactive_reason`. The route is named by its route id, which survives an admin
