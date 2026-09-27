@@ -1964,7 +1964,7 @@ export async function clearRouteWeight(modelId: string, endpointId: string): Pro
   return jsonOrThrow<RouteWeight>(resp);
 }
 
-/** One model's queue-offload route: a reserved route for requests left queued too long. */
+/** One model's queue-offload route: a reserved route for requests left waiting too long. */
 export interface OffloadRoute {
   model_id: string;
   route_id: string;
@@ -1972,6 +1972,12 @@ export interface OffloadRoute {
   endpoint_id: string | null;
   active: boolean;
   inactive_reason: string | null;
+  /**
+   * The model's other routes that are stalled right now, as endpoint ids: a request there got no
+   * first token within the wait, and new requests go around them until one does. One gateway
+   * worker's view, like circuit state. Absent from gateways that predate engine-stall tracking.
+   */
+  stalled_endpoints?: string[];
   updated_at: string | null;
   updated_by: string | null;
 }
@@ -1979,7 +1985,7 @@ export interface OffloadRoute {
 export interface ListOffloadRoutesResponse {
   /** False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues, so nothing waits. */
   queue_enabled: boolean;
-  /** The outbound queue's acquire timeout; the longest wait a route may be given. */
+  /** The outbound queue's acquire timeout: the longest a request waits in that queue. */
   max_wait_seconds: number;
   offload_routes: OffloadRoute[];
 }

@@ -826,8 +826,10 @@ msgid "`site_settings`"
 msgstr ""
 
 #: ../developer/configuration.md
-msgid "Reserve a route for requests left waiting in the outbound queue"
-msgstr "为在出站队列中等待过久的请求预留一条路由"
+msgid ""
+"Reserve a route for requests left waiting in the outbound queue or at a "
+"stalled engine"
+msgstr "为在出站队列中或在停滞的引擎上等待过久的请求预留一条路由"
 
 #: ../developer/configuration.md
 msgid "**Queue offload**"

@@ -135,18 +135,29 @@ describe('OffloadRoutePanel', () => {
     expect(onChange).toHaveBeenCalledWith(MODEL, null);
   });
 
-  it('rejects a wait past the queue timeout or at zero before sending it', () => {
+  it('rejects a wait at zero before sending it', () => {
     renderPanel({ offload: storedOffload });
-    const wait = screen.getByLabelText('Offload wait seconds');
 
-    fireEvent.change(wait, { target: { value: '31' } });
-    expect(screen.getByRole('alert')).toHaveTextContent('Must be ≤ 30.');
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
-
-    fireEvent.change(wait, { target: { value: '0' } });
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '0' } });
     expect(screen.getByRole('alert')).toHaveTextContent('Must be greater than 0.');
     expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
     expect(setOffloadRoute).not.toHaveBeenCalled();
+  });
+
+  it('accepts a wait past the queue timeout, for an engine slow to start', async () => {
+    vi.mocked(setOffloadRoute).mockResolvedValue({
+      model_id: MODEL,
+      offload: { ...storedOffload, wait_seconds: 90 },
+    });
+    renderPanel({ offload: storedOffload });
+
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '90' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+
+    await waitFor(() => {
+      expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 90);
+    });
   });
 
   it('explains why a stored route is not in force', () => {
@@ -160,6 +171,36 @@ describe('OffloadRoutePanel', () => {
 
     expect(screen.getByTestId('offload-route-status')).toHaveTextContent('Inactive');
     expect(screen.getByText('The route no longer exists')).toBeInTheDocument();
+  });
+
+  it('names the routes that are stalled right now', () => {
+    renderPanel({
+      offload: {
+        ...storedOffload,
+        stalled_endpoints: [primary.endpoint_id, 'glm-4.7:gone-api'],
+      },
+    });
+
+    // Known routes by their label; an endpoint no longer on the route by its id.
+    expect(screen.getByTestId('offload-stalled-routes')).toHaveTextContent(
+      'Stalled now: primary (glm-4.7:primary-api), glm-4.7:gone-api.',
+    );
+  });
+
+  it('shows no stall notice when nothing is stalled or the policy is not in force', () => {
+    renderPanel({ offload: { ...storedOffload, stalled_endpoints: [] } });
+    expect(screen.queryByTestId('offload-stalled-routes')).not.toBeInTheDocument();
+    cleanup();
+
+    renderPanel({
+      offload: {
+        ...storedOffload,
+        active: false,
+        inactive_reason: 'The route no longer exists',
+        stalled_endpoints: [primary.endpoint_id],
+      },
+    });
+    expect(screen.queryByTestId('offload-stalled-routes')).not.toBeInTheDocument();
   });
 
   it('says when nothing queues because the limiter is off', () => {

@@ -266,7 +266,7 @@ async def test_put_for_an_unknown_route_is_400(offload_client):
     op_store.set_setting.assert_not_awaited()
 
 
-@pytest.mark.parametrize("wait", [0, -1, 30.5])
+@pytest.mark.parametrize("wait", [0, -1])
 async def test_put_rejects_a_wait_routing_could_not_honor(offload_client, wait):
     client, op_store, *_ = offload_client
 
@@ -276,12 +276,15 @@ async def test_put_rejects_a_wait_routing_could_not_honor(offload_client, wait):
     op_store.set_setting.assert_not_awaited()
 
 
-async def test_put_accepts_a_wait_equal_to_the_acquire_timeout(offload_client):
-    client, *_ = offload_client
+async def test_put_accepts_a_wait_past_the_acquire_timeout(offload_client):
+    """The queue still ends its wait at 30s; the rest bounds the engine's first token."""
+    client, _op_store, _router, _registry, resolver, _audit = offload_client
 
-    response = await _set(client, wait=30.0)
+    response = await _set(client, wait=90.0)
 
     assert response.status_code == 200
+    assert response.json()["offload"]["wait_seconds"] == 90.0
+    assert resolver.get_offload_policy(MODEL).wait_seconds == 90.0
 
 
 async def test_put_on_a_routewise_model_is_refused(offload_client):
@@ -429,6 +432,30 @@ async def test_a_route_whose_provider_is_disabled_is_inactive(offload_client):
     response = await client.get(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
 
     assert response.json()["offload"]["active"] is False
+
+
+async def test_stalled_routes_are_reported_with_the_policy(offload_client):
+    client, _op_store, router, _registry, resolver, _audit = offload_client
+    resolver.set_policy(MODEL, OffloadPolicy(RESERVED_ROUTE_ID, 2.0))
+    tracker = router.engine_stalls
+    for endpoint_id in (SIBLING, RESERVED_ENDPOINT, "other-model:primary-api"):
+        tracker.expired(endpoint_id, tracker.begin(endpoint_id), model_id=MODEL, wait_seconds=2.0)
+
+    one = await client.get(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
+    listed = await client.get("/admin/routing/offload-routes", headers=AUTH)
+
+    # The model's own ordinary routes only: not the offload route, not another model's.
+    assert one.json()["offload"]["stalled_endpoints"] == [SIBLING]
+    assert listed.json()["offload_routes"][0]["stalled_endpoints"] == [SIBLING]
+
+
+async def test_no_stalled_routes_by_default(offload_client):
+    client, _op_store, _router, _registry, resolver, _audit = offload_client
+    resolver.set_policy(MODEL, OffloadPolicy(RESERVED_ROUTE_ID, 2.0))
+
+    response = await client.get(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
+
+    assert response.json()["offload"]["stalled_endpoints"] == []
 
 
 # ------------------------------------------- interplay with provider routes

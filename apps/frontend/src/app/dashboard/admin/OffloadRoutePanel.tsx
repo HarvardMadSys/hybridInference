@@ -30,10 +30,12 @@ interface OffloadRoutePanelProps {
   onChange: (modelId: string, offload: OffloadRoute | null) => void;
 }
 
-function validateWait(raw: string, maxWaitSeconds: number | null) {
+// No upper bound: the gateway's queue ends a wait at its own acquire timeout either
+// way, and a longer wait gives an engine longer to send its first token.
+function validateWait(raw: string) {
   const validated = validateNumericSettingInput(raw, {
     min: null,
-    max: maxWaitSeconds,
+    max: null,
     integer: false,
   });
   if (validated.ok && validated.value <= 0) {
@@ -65,7 +67,7 @@ export function OffloadRoutePanel({
   }, [modelId, offload]);
 
   const maxWaitSeconds = queue?.maxWaitSeconds ?? null;
-  const validatedWait = validateWait(draftWait, maxWaitSeconds);
+  const validatedWait = validateWait(draftWait);
   const storedRouteMissing =
     offload !== null && !routes.some((route) => route.route_id === offload.route_id);
   const hasOtherRoute = routes.length >= 2;
@@ -78,6 +80,10 @@ export function OffloadRoutePanel({
     editable && hasOtherRoute && draftRouteId !== '' && validatedWait.ok && dirty && !saving;
 
   const status = offload === null ? null : offload.active ? 'Active' : 'Inactive';
+  const stalledLabels = (offload?.stalled_endpoints ?? []).map((endpointId) => {
+    const route = routes.find((candidate) => candidate.endpoint_id === endpointId);
+    return route ? routeLabel(route) : endpointId;
+  });
 
   const onSave = async () => {
     if (!validatedWait.ok || !draftRouteId) return;
@@ -116,9 +122,10 @@ export function OffloadRoutePanel({
           <h3 className="text-[14px] font-semibold text-gray-900">Queue offload</h3>
           <p className="mt-1 text-[12px] leading-5 text-gray-500">
             Reserve one route for requests the others cannot take. When a request has waited this
-            long for an outbound slot on its route, it is sent to the offload route instead. The
-            offload route gets no ordinary traffic, and it is also the last resort when every other
-            route fails.
+            long for an outbound slot on its route, or a streaming request has waited this long for
+            its engine&apos;s first token, it is sent to the offload route instead, and that engine
+            gets no new requests until it answers again. The offload route gets no ordinary traffic,
+            and it is also the last resort when every other route fails.
           </p>
         </div>
         {status && (
@@ -147,10 +154,22 @@ export function OffloadRoutePanel({
         </div>
       )}
 
+      {offload?.active && stalledLabels.length > 0 && (
+        <div
+          className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+          data-testid="offload-stalled-routes"
+        >
+          Stalled now: {stalledLabels.join(', ')}. New requests go around{' '}
+          {stalledLabels.length === 1 ? 'it' : 'them'} until a request already there gets its first
+          token.
+        </div>
+      )}
+
       {queue && !queue.enabled && (
         <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
           The outbound limiter is disabled (UPSTREAM_CONCURRENCY_ENABLED=false), so no request waits
-          in a queue. The offload route is only used as a last resort.
+          in the gateway&apos;s queue. Streaming requests are still offloaded when their engine
+          sends no first token in time, and the offload route is the last resort.
         </div>
       )}
 
@@ -192,7 +211,6 @@ export function OffloadRoutePanel({
                 aria-label="Offload wait seconds"
                 type="number"
                 min={0}
-                max={maxWaitSeconds ?? undefined}
                 step={0.5}
                 value={draftWait}
                 onChange={(event) => setDraftWait(event.target.value)}
@@ -231,10 +249,11 @@ export function OffloadRoutePanel({
       {editable && (
         <p className="mt-2 text-[11px] leading-5 text-gray-400">
           {maxWaitSeconds !== null
-            ? `At most ${maxWaitSeconds}s, the outbound queue's acquire timeout: a request that waits that long is offloaded anyway. `
+            ? `The outbound queue gives up at ${maxWaitSeconds}s, its acquire timeout, and offloads the request then; a longer wait only gives an engine longer to send its first token. `
             : ''}
-          Local inference servers never queue in the gateway, so a request sent to one is never
-          offloaded by waiting.
+          The engine&apos;s wait starts when the request leaves the gateway&apos;s queue, so a local
+          inference server, which never queues there, gets the whole wait. Only streaming requests
+          are watched for a first token.
         </p>
       )}
     </section>
