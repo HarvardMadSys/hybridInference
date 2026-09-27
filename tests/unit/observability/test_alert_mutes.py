@@ -203,25 +203,80 @@ async def test_a_failed_first_read_mutes_nothing(store, monkeypatch):
     assert await alert_mutes.is_alert_type_muted("auth_ip_blocked") is False
 
 
-async def test_a_read_in_flight_cannot_undo_a_later_write(store, monkeypatch):
-    """A slow read that started before a mute must not publish its older view."""
+def _hold_the_next_read(store, monkeypatch, *, fail: bool = False):
+    """Make the store's next read wait for the returned event, then answer with
+    what it held *before* that wait -- or raise, with ``fail``. Later reads are
+    served normally, so a caller that reads again sees the store as it is now.
+    """
     released = asyncio.Event()
-    before_the_write = await store.list_settings()
+    real_list = store.list_settings
 
-    async def slow_list():
+    async def held_read():
+        before = await real_list()
+        monkeypatch.setattr(store, "list_settings", real_list)
         await released.wait()
-        return before_the_write
+        if fail:
+            raise ConnectionError("database unavailable")
+        return before
 
-    monkeypatch.setattr(store, "list_settings", slow_list)
-    reader = asyncio.create_task(alert_mutes.list_mutes())
+    monkeypatch.setattr(store, "list_settings", held_read)
+    return released
+
+
+async def test_a_lookup_that_raced_a_mute_sees_the_mute(store, monkeypatch):
+    """The caller already in flight honors the mute, not only the ones after it.
+
+    Otherwise an alert whose lookup began just before the dashboard confirmed a
+    mute would still be sent.
+    """
+    released = _hold_the_next_read(store, monkeypatch)
+    lookup = asyncio.create_task(alert_mutes.is_alert_type_muted("auth_ip_blocked"))
     await asyncio.sleep(0)
 
-    monkeypatch.setattr(store, "list_settings", FakeStore.list_settings.__get__(store))
     await alert_mutes.mute_alert_type("auth_ip_blocked", None, "admin@x.com")
     released.set()
-    await reader
 
+    assert await lookup is True
     assert await alert_mutes.is_alert_type_muted("auth_ip_blocked") is True
+
+
+async def test_a_lookup_that_raced_an_unmute_sees_it_lifted(store, monkeypatch):
+    await alert_mutes.mute_alert_type("auth_ip_blocked", None, "admin@x.com")
+    released = _hold_the_next_read(store, monkeypatch)
+    lookup = asyncio.create_task(alert_mutes.is_alert_type_muted("auth_ip_blocked"))
+    await asyncio.sleep(0)
+
+    await alert_mutes.unmute_alert_type("auth_ip_blocked")
+    released.set()
+
+    assert await lookup is False
+    assert await alert_mutes.is_alert_type_muted("auth_ip_blocked") is False
+
+
+async def test_a_failed_read_that_raced_a_mute_reads_again(store, monkeypatch):
+    """The fallback snapshot predates the write, so it is not the answer either."""
+    released = _hold_the_next_read(store, monkeypatch, fail=True)
+    lookup = asyncio.create_task(alert_mutes.is_alert_type_muted("auth_ip_blocked"))
+    await asyncio.sleep(0)
+
+    await alert_mutes.mute_alert_type("auth_ip_blocked", None, "admin@x.com")
+    released.set()
+
+    assert await lookup is True
+
+
+async def test_writes_racing_every_read_cannot_pin_the_caller(store, monkeypatch):
+    real_list = store.list_settings
+
+    async def every_read_races_a_write():
+        rows = await real_list()
+        await alert_mutes.mute_alert_type("auth_ip_blocked", None, "admin@x.com")
+        return rows
+
+    monkeypatch.setattr(store, "list_settings", every_read_races_a_write)
+
+    await alert_mutes.list_mutes()
+    assert store.list_calls == alert_mutes._READ_ATTEMPTS
 
 
 # -- alert_slack --------------------------------------------------------------

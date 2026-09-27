@@ -65,9 +65,12 @@ _store: Any | None = None
 # (cached_at_monotonic, every stored mute keyed by alert type)
 _cache: tuple[float, dict[str, AlertMute]] | None = None
 # Bumped by every write, so a read that was already in flight when a mute
-# changed cannot publish what it saw before the change. The next read, or the
-# TTL, picks up what it missed.
+# changed can tell: it neither publishes what it saw nor returns it, and reads
+# again instead.
 _generation = 0
+
+#: Reads per lookup when writes keep landing while the read is in flight.
+_READ_ATTEMPTS = 3
 
 
 def init_alert_mutes(store: Any | None) -> None:
@@ -159,30 +162,35 @@ async def list_mutes() -> dict[str, AlertMute]:
     being served, cached for the TTL like a success so a database outage does
     not turn every alert check into a query: a mute an admin set stays honored
     while the store is down, and with no snapshot at all nothing is muted.
+
+    A read that a mute or unmute raced is read again rather than returned: what
+    it saw may predate a change whose author has already been told it took
+    effect, and the alert asking would then be sent, or held, against it.
+    Bounded by :data:`_READ_ATTEMPTS`, so a stream of writes cannot pin the
+    caller; past the bound the last read is returned without being cached.
     """
     global _cache
     if _store is None:
         return {}
 
-    now = time.monotonic()
     cached = _cache
-    if cached is not None and (now - cached[0]) < _CACHE_TTL:
+    if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL:
         return dict(cached[1])
 
-    generation = _generation
-    try:
-        rows = await _store.list_settings()
-    except Exception:
-        logger.debug("alert mute read failed", exc_info=True)
-        fallback = cached[1] if cached is not None else {}
+    result: dict[str, AlertMute] = {}
+    for _ in range(_READ_ATTEMPTS):
+        generation = _generation
+        try:
+            rows = await _store.list_settings()
+        except Exception:
+            logger.debug("alert mute read failed", exc_info=True)
+            result = cached[1] if cached is not None else {}
+        else:
+            result = _decode_rows(rows)
         if generation == _generation:
-            _cache = (now, fallback)
-        return dict(fallback)
-
-    loaded = _decode_rows(rows)
-    if generation == _generation:
-        _cache = (time.monotonic(), loaded)
-    return dict(loaded)
+            _cache = (time.monotonic(), result)
+            return dict(result)
+    return dict(result)
 
 
 async def is_alert_type_muted(alert_type: str) -> bool:
