@@ -21,14 +21,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-@pytest.fixture(autouse=True)
-def _reset_req_ctx():
-    """Reset req_ctx between tests so affinity_key does not leak."""
-    req_ctx.set({})
-    yield
-    req_ctx.set({})
-
-
 def _cfg(mid: str, provider: str = "p", base_url: str = "http://test") -> ModelConfig:
     return ModelConfig(
         id=mid,

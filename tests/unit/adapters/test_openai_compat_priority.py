@@ -25,13 +25,6 @@ _RESPONSE = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _reset_req_ctx():
-    req_ctx.set({})
-    yield
-    req_ctx.set({})
-
-
 def _adapter(*, priority_scheduling: bool) -> OpenAICompatAdapter:
     config = ModelConfig(
         id="deepseek-v4-flash",

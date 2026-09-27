@@ -913,21 +913,6 @@ class TestAlertsNameTheTriggeringRequest:
     minute is the one the alert is about.
     """
 
-    @pytest.fixture(autouse=True)
-    def _clean_request_context(self):
-        """Start each test with no ambient request.
-
-        The contextvar is process-wide, and a sync test elsewhere in the suite
-        that writes one outside a task (``tests/unit/test_auth_key_hash.py``
-        seeds a scope) leaves it visible to whatever runs next in the same
-        worker. The "no request context" cases here would then depend on test
-        ordering.
-        """
-        saved = req_ctx.get()
-        req_ctx.set({})
-        yield
-        req_ctx.set(saved)
-
     async def test_a_firing_page_carries_the_request_id(self, monkeypatch):
         monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
         with (
