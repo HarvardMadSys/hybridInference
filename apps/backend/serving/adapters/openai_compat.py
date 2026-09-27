@@ -21,6 +21,7 @@ from serving.utils.messages import flatten_text_content, merge_leading_system_me
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
+from .dispatch_watch import report_first_token
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -111,6 +112,30 @@ def _stream_error_message(error: Any) -> str:
     if isinstance(error, str) and error.strip():
         return error.strip()
     return "Upstream reported an error mid-stream"
+
+
+def _frame_has_output(choices: Any) -> bool:
+    """Return whether an upstream frame's choices carry generated output.
+
+    Text, reasoning, or any part of a tool call: what an engine sends once it has
+    started answering, as opposed to a role-only delta, a finish or a usage
+    frame. Read from the upstream's own frame, before a stream processor can hold
+    any of it back -- the GLM and Qwen Coder processors keep an XML tool call
+    until it is complete, and the MiniMax one strips a ``<think>`` block out.
+    """
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if not isinstance(delta, dict):
+            continue
+        for key in ("content", "reasoning_content", "reasoning", "thinking"):
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                return True
+        if delta.get("tool_calls") or delta.get("function_call"):
+            return True
+    return False
 
 
 # Total timeout (seconds) for a non-streaming upstream completion POST. The old
@@ -1465,10 +1490,20 @@ class OpenAICompatAdapter(BaseAdapter):
         # (aiohttp.ClientError — disconnect, ClientPayloadError) is key-specific
         # or transient. Chunk-processing errors (json / processor / format) are
         # request/model/processor-scoped and propagate WITHOUT muting, and
-        # client-side cancellations (CancelledError, GeneratorExit) are
-        # BaseExceptions that never mute either.
+        # cancellations (CancelledError, GeneratorExit) are BaseExceptions that
+        # never mute either.
         stream_error = False
         stream_error_status: int | None = None
+        # The stream was abandoned before it finished: the client went away, or
+        # the router cancelled the attempt -- an engine that never started
+        # answering is cancelled by the router's first-token wait. Released
+        # neutrally, as ``upstream_limiter.outcome_status`` releases every
+        # cancellation: an unfinished generation is evidence neither of headroom
+        # (a 200 counts toward the AIMD probe) nor of a working key (a 200 resets
+        # its failure streak).
+        abandoned = False
+        # Whether the upstream has sent any output yet (``_frame_has_output``).
+        saw_output = False
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -1502,6 +1537,14 @@ class OpenAICompatAdapter(BaseAdapter):
                             for choice in raw_choices
                         ):
                             saw_terminal_finish_reason = True
+
+                        # The engine has started answering, even if the processor
+                        # below holds this output back: a router waiting on a
+                        # first token must hear it now, not when the processor
+                        # lets something through (``dispatch_watch``).
+                        if not saw_output and _frame_has_output(raw_choices):
+                            saw_output = True
+                            report_first_token()
 
                         # Process output format (returns a list of chunks)
                         processed_chunks = processor.process_stream_chunk(data)
@@ -1562,19 +1605,27 @@ class OpenAICompatAdapter(BaseAdapter):
             if isinstance(exc, UpstreamStreamError):
                 stream_error_status = exc.status
             raise
+        except (asyncio.CancelledError, GeneratorExit):
+            abandoned = True
+            raise
         finally:
             # The outbound slot was held for the whole generation, not just the
             # response open, so it comes back here — on every exit path this
             # ``finally`` covers, client disconnect and mid-stream error
             # included. Released with the same outcome as the lease, and
             # unconditionally on the pool: a pool-less adapter still holds one.
+            slot_status: int | None
+            release_status: int | None
+            if abandoned:
+                slot_status = release_status = None
+            elif stream_error:
+                slot_status = 0
+                release_status = stream_error_status if stream_error_status else 0
+            else:
+                slot_status = release_status = 200
             if active_slot is not None:
-                active_slot.release(status_code=0 if stream_error else 200)
+                active_slot.release(status_code=slot_status)
             if active_lease is not None and self._key_pool is not None:
-                if stream_error:
-                    release_status = stream_error_status if stream_error_status else 0
-                else:
-                    release_status = 200
                 self._key_pool.release(active_lease, status_code=release_status)
                 logger.debug(
                     "key_pool_active_affinities",

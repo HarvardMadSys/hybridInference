@@ -777,6 +777,75 @@ async def test_stream_releases_the_slot_when_the_client_disconnects(installed_li
 
     await stream.aclose()
     assert _state(installed_limiter)["in_flight"] == 0
+    # Neutrally, like every cancellation (``outcome_status``): an unfinished
+    # generation is no evidence of headroom.
+    assert _state(installed_limiter)["successes_since_probe"] == 0
+
+
+def _queued_at_the_engine(started: asyncio.Event):
+    """An upstream that opens its answer with a role delta and then never starts."""
+
+    async def fake_stream_post(*_args, **_kwargs):
+        yield _chunk({"role": "assistant"})
+        started.set()
+        await asyncio.Event().wait()
+        yield _chunk({"content": "never"})  # pragma: no cover - never scheduled
+
+    return fake_stream_post
+
+
+async def _cancel_while_waiting(adapter: OpenAICompatAdapter, started: asyncio.Event) -> None:
+    async def consume():
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "x"}]):
+            pass  # pragma: no cover - nothing is ever yielded
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_a_stream_cancelled_before_its_first_token_is_no_success(
+    installed_limiter, monkeypatch
+):
+    """The router's first-token wait cancels an engine that has not started answering.
+
+    That attempt must hand its slot back without counting toward a probe for
+    more headroom: the engine had none to give it.
+    """
+    adapter = _adapter()
+    started = asyncio.Event()
+    monkeypatch.setattr(adapter.http, "stream_post", _queued_at_the_engine(started))
+
+    await _cancel_while_waiting(adapter, started)
+
+    assert _state(installed_limiter)["in_flight"] == 0
+    assert _state(installed_limiter)["successes_since_probe"] == 0
+
+
+async def test_a_cancelled_stream_leaves_its_key_as_it_was(installed_limiter, monkeypatch):
+    """A pooled key keeps its failure streak through an attempt that never finished."""
+    adapter = _adapter(api_keys=[KEY_A, KEY_B])
+    assert adapter._key_pool is not None
+    keys = adapter._key_pool._keys
+    for key in keys:
+        key.consecutive_failures = 2
+    started = asyncio.Event()
+    monkeypatch.setattr(adapter.http, "stream_post", _queued_at_the_engine(started))
+
+    await _cancel_while_waiting(adapter, started)
+    assert [key.consecutive_failures for key in keys] == [2, 2]
+
+    # A generation that does finish is the success that clears the streak.
+    async def answering(*_args, **_kwargs):
+        yield _chunk({"content": "hi"})
+        yield _chunk({}, finish_reason="stop")
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(adapter.http, "stream_post", answering)
+    [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "x"}])]
+    assert sorted(key.consecutive_failures for key in keys) == [0, 2]
 
 
 async def test_stream_opening_429_feeds_the_limiter(installed_limiter, monkeypatch):

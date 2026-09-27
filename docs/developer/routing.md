@@ -208,8 +208,7 @@ this order:
    routes whose circuit is open or already carrying a half-open probe. If
    nothing survives, `AllCircuitsOpenError`
    names the endpoints it considered. A model's offload route is held back
-   here too, unless it is the only route left, and a route stalled on the
-   model's earlier requests comes after it (see
+   here too, unless it is the only route left (see
    [Queue-wait offload](#queue-wait-offload)).
 5. **Session affinity.** A live pin for this caller and model wins, unless the
    pinned endpoint is backlogged (see [Session affinity](#session-affinity)).
@@ -227,8 +226,8 @@ claim for (open, or already carrying a probe). The first one that succeeds
 answers the request. If every route fails, the *primary*
 error is re-raised, with the whole attempt list attached. A model's offload
 route is not in that order: it comes next after an attempt that waited out its
-queue budget or its engine's first token, and last otherwise, and a stalled
-route is tried only after it (see [Queue-wait offload](#queue-wait-offload)).
+queue budget or its engine's first token, and last otherwise (see
+[Queue-wait offload](#queue-wait-offload)).
 
 Two deliberate exceptions:
 
@@ -460,14 +459,14 @@ gateway: giving up its place in line releases nothing upstream, cannot
 duplicate a generation, and is not charged to the endpoint's circuit breaker or
 its prefix-cache hints.
 
-### Engine waits and stalled engines
+### Engine waits
 
 The gateway cannot see an inference engine's own queue. A vLLM or SGLang server
 accepts every request and queues what it cannot schedule yet, and a request
 waiting there looks, from outside, like one that is merely slow — until the
 engine sends its first token. For a model with an offload route, `FixedRouter`
-therefore watches every streaming attempt on the model's other routes for that
-token (`apps/backend/routing/engine_stall.py`):
+therefore gives every streaming attempt on the model's other routes a wait for
+that token (`apps/backend/routing/engine_wait.py`):
 
 - **First-token wait.** An attempt whose engine sends no token within the same
   wait is cancelled — closing the stream aborts the request at the engine — and
@@ -477,37 +476,29 @@ token (`apps/backend/routing/engine_stall.py`):
   whole of it. Anything the engine sends before its first token, such as a
   role-only delta, is held back until the token arrives, so a client never sees
   the attempt that was abandoned.
-- **Stalled engines.** The endpoint is then *stalled*. New requests go to the
-  model's other routes, or straight to the offload route when every other route
-  is stalled, instead of joining a queue already known to be long. The stall
-  ends when a request already on the engine sends a token. When none of this
-  worker's requests is left there, the endpoint takes one streaming request as a
-  probe: its first token ends the stall, and a probe that waits too long is
-  offloaded like any other attempt.
-- **Only as a last resort.** A stalled route still takes a request when nothing
-  else can, the offload route included. An engine wait is not charged to the
-  circuit breaker: the stall already keeps new requests away and ends as soon as
-  the engine answers, where an open circuit would hold the endpoint out for a
-  cooldown.
+- **Per request.** The wait decides for the one request it times. Nothing is
+  recorded against the engine: the next request is sent to it as usual, with a
+  wait of its own, and an engine wait is not charged to the circuit breaker or
+  the endpoint's prefix-cache hints.
+- **Output an adapter holds back counts.** Some adapters hold output until they
+  can tell what it is: the GLM and Qwen Coder stream processors keep an XML tool
+  call until it is complete, the MiniMax one strips out a `<think>` block, and
+  the Claude adapters keep a tool call's JSON until the message ends. Each tells
+  the router when it reads the first output from the upstream, and from then on
+  the request waits as long as the engine needs.
 
 Only streaming requests are watched: a non-streaming response arrives whole, so
-there is no first token to wait for. Non-streaming requests still go around a
-stalled engine, but never probe one. The first-token wait includes the engine's
+there is no first token to wait for. The first-token wait includes the engine's
 prefill, so a model serving very long prompts needs a wait above the time it
 takes to start answering them. The wait needs Python 3.11 or newer: its
 deadline is `asyncio.timeout`, which can tell its own cancellation from a client
-that hangs up at the same moment. On Python 3.10 streams are tracked but never
-timed, so no engine stalls. Stalls are kept per worker process, like circuit
-state. `GET /admin/routing/offload-routes` reports each model's stalled routes
-as `stalled_endpoints`, the console marks them **Stalled**, and each stall and
-recovery logs an `engine_stalled` or `engine_recovered` line.
+that hangs up at the same moment. On Python 3.10 streams are never timed.
 
 A response served by the offload route carries `_routing.offload` beside the
 usual `fallback` and `failed_attempts`: `queue_wait` or `engine_wait` after an
-attempt that waited too long, `engine_stalled` when every other route was
-stalled, and `last_resort` otherwise. The request log's metadata keeps it,
-streamed or not, and every dispatch to an offload route also logs a
-`route_offload` line.
+attempt that waited too long, and `last_resort` otherwise. The request log's
+metadata keeps it, streamed or not, and every dispatch to an offload route also
+logs a `route_offload` line.
 
 What does not offload:
 
@@ -527,10 +518,9 @@ What does not offload:
   configured `context_length` is no wider, the offload route included. No later
   attempt leaves its queue for an offload route that would be passed over.
 - **`/v1/messages`.** It picks one adapter itself and has no fallback. It keeps
-  the offload route out of that pick unless nothing else is eligible, and a
-  stalled route after it, but does not offload on a wait. `/v1/chat/completions`
-  and the surfaces built on it — `/v1/responses`, `/v1/completions` and the
-  admin playground — do.
+  the offload route out of that pick unless nothing else is eligible, but does
+  not offload on a wait. `/v1/chat/completions` and the surfaces built on it —
+  `/v1/responses`, `/v1/completions` and the admin playground — do.
 - **RouteWise.** A `routewise` model plans its own candidates and ignores offload
   routes, as does a `fixed` model with `hybrid_composition: true`. The admin API
   refuses to set an offload route on either, and refuses to switch a model that

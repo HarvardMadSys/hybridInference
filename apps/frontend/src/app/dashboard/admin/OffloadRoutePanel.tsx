@@ -80,10 +80,6 @@ export function OffloadRoutePanel({
     editable && hasOtherRoute && draftRouteId !== '' && validatedWait.ok && dirty && !saving;
 
   const status = offload === null ? null : offload.active ? 'Active' : 'Inactive';
-  const stalledLabels = (offload?.stalled_endpoints ?? []).map((endpointId) => {
-    const route = routes.find((candidate) => candidate.endpoint_id === endpointId);
-    return route ? routeLabel(route) : endpointId;
-  });
 
   const onSave = async () => {
     if (!validatedWait.ok || !draftRouteId) return;
@@ -123,9 +119,10 @@ export function OffloadRoutePanel({
           <p className="mt-1 text-[12px] leading-5 text-gray-500">
             Reserve one route for requests the others cannot take. When a request has waited this
             long for an outbound slot on its route, or a streaming request has waited this long for
-            its engine&apos;s first token, it is sent to the offload route instead, and that engine
-            gets no new requests until it answers again. The offload route gets no ordinary traffic,
-            and it is also the last resort when every other route fails.
+            its engine&apos;s first token, it is sent to the offload route instead. Each request is
+            judged on its own wait, so the route that kept one waiting still gets the next. The
+            offload route gets no ordinary traffic, and it is also the last resort when every other
+            route fails.
           </p>
         </div>
         {status && (
@@ -151,17 +148,6 @@ export function OffloadRoutePanel({
       {offload && !offload.active && offload.inactive_reason && (
         <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
           {offload.inactive_reason}
-        </div>
-      )}
-
-      {offload?.active && stalledLabels.length > 0 && (
-        <div
-          className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
-          data-testid="offload-stalled-routes"
-        >
-          Stalled now: {stalledLabels.join(', ')}. New requests go around{' '}
-          {stalledLabels.length === 1 ? 'it' : 'them'} until a request already there gets its first
-          token.
         </div>
       )}
 

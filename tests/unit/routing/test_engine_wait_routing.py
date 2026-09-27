@@ -1,4 +1,4 @@
-"""Engine-stall offload in FixedRouter (``routing.engine_stall``).
+"""The engine wait in FixedRouter (``routing.engine_wait``).
 
 The fake engines here take an outbound slot from the process-wide limiter the way
 the real adapters do, so the limiter's reports reach the router's first-token
@@ -15,21 +15,18 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.engine_stall import FirstTokenWatch
-from routing.offload import (
-    OFFLOAD_ENGINE_STALLED,
-    OFFLOAD_ENGINE_WAIT,
-    OFFLOAD_QUEUE_WAIT,
-    OffloadPolicy,
-)
+from routing.engine_wait import FirstTokenWatch
+from routing.offload import OFFLOAD_ENGINE_WAIT, OFFLOAD_QUEUE_WAIT, OffloadPolicy
 from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.upstream_limiter import (
     UpstreamConcurrencyLimiter,
     reset_upstream_limiter,
     upstream_slot,
 )
+from serving.http import AsyncHTTPClient
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
@@ -121,8 +118,11 @@ class _Engine(BaseAdapter):
             yield _chunk({"content": self.config.provider})
 
 
-def _chunk(delta: dict[str, str]) -> str:
-    payload = {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": delta}]}
+def _chunk(delta: dict[str, str], finish_reason: str | None = None) -> str:
+    payload = {
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
     return f"data: {json.dumps(payload)}\n\n"
 
 
@@ -147,14 +147,6 @@ def _policy(wait_seconds: float = 0.05) -> OffloadPolicy:
     return OffloadPolicy(route_id="offload", wait_seconds=wait_seconds)
 
 
-def _stall(router: FixedRouter, endpoint_id: str, *, still_waiting: bool) -> None:
-    """Stall an endpoint the way an expired attempt does, optionally leaving one behind."""
-    tracker = router.engine_stalls
-    if still_waiting:
-        tracker.begin(endpoint_id)
-    tracker.expired(endpoint_id, tracker.begin(endpoint_id), model_id=MODEL, wait_seconds=1.0)
-
-
 @pytest.fixture(autouse=True)
 def _limiter():
     """A fresh process-wide limiter with room to spare, so no test queues by accident."""
@@ -176,7 +168,11 @@ async def _collect(stream) -> list[str]:
 
 
 def _payloads(chunks: list[str]) -> list[dict[str, Any]]:
-    return [json.loads(chunk.removeprefix("data: ").strip()) for chunk in chunks]
+    return [
+        json.loads(chunk.removeprefix("data: ").strip())
+        for chunk in chunks
+        if chunk.strip() != "data: [DONE]"
+    ]
 
 
 def _content(chunks: list[str]) -> str:
@@ -223,7 +219,6 @@ async def test_a_stream_with_no_first_token_is_cancelled_and_offloaded():
     assert failure["endpoint_id"] == "m:engine-api"
     # Closing the stream is what aborts the request at a real engine.
     assert engine.cancelled == 1
-    assert router.engine_stalls.is_stalled("m:engine-api")
     # A busy engine is not a broken one: the circuit is untouched.
     assert router.endpoint_health_registry.allow_request("m:engine-api")
 
@@ -239,23 +234,114 @@ async def test_a_first_token_in_time_goes_out_with_what_came_before_it():
     assert _content(chunks) == "engine"
     assert [block.get("offload") for block in _routing(chunks)] == [None]
     assert reserved.calls == 0
-    assert router.engine_stalls._endpoints == {}
 
 
 @needs_timeout
-async def test_only_attempts_on_other_routes_are_watched():
+async def test_only_streaming_attempts_on_other_routes_are_watched():
     engine = _Engine("engine")
     reserved = _Engine("reserved", route_id="offload", answered=True)
     router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.05))
 
     await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+    engine.gate.set()
     await router.chat_completion(MODEL, MESSAGES)
 
-    (engine_watch,) = engine.watches
-    assert isinstance(engine_watch, FirstTokenWatch)
-    assert engine_watch.wait_seconds == 0.05
-    # The offload attempt has nowhere left to go, and a non-stream nothing to watch.
-    assert reserved.watches == [None, None]
+    stream_watch, non_stream_watch = engine.watches
+    assert isinstance(stream_watch, FirstTokenWatch)
+    assert stream_watch.wait_seconds == 0.05
+    # A non-stream has no first token to watch, and the offload attempt that
+    # took the stream had nowhere left to go.
+    assert non_stream_watch is None
+    assert reserved.watches == [None]
+
+
+# ---------------------------------------------------- one decision per request
+
+
+@needs_timeout
+async def test_an_engine_that_kept_one_request_waiting_takes_the_next():
+    """Nothing is held against the engine: the next request is sent to it as usual."""
+    engine = _Engine("engine")
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.05))
+
+    offloaded = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+    engine.gate.set()  # the engine's queue drains
+    served = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+    answered = await router.chat_completion(MODEL, MESSAGES)
+
+    assert _content(offloaded) == "reserved"
+    assert _content(served) == "engine"
+    assert [block.get("offload") for block in _routing(served)] == [None]
+    assert answered["choices"][0]["message"]["content"] == "engine"
+    assert "offload" not in answered["_routing"]
+    assert engine.calls == 3
+    assert reserved.calls == 1
+
+
+@needs_timeout
+async def test_each_request_waits_from_its_own_start():
+    """Two requests queued at the same engine: only the one past its own wait moves."""
+    engine = _Engine("engine")
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.4))
+    loop = asyncio.get_running_loop()
+
+    early = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
+    await asyncio.sleep(0.2)
+    late = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
+    # The engine starts answering between the two deadlines: 0.5s after the
+    # early request (past its 0.4s) and 0.3s after the late one (within its own).
+    loop.call_later(0.3, engine.gate.set)
+
+    assert _content(await early) == "reserved"
+    assert _content(await late) == "engine"
+    assert engine.cancelled == 1
+    assert reserved.calls == 1
+
+
+@needs_timeout
+async def test_output_a_processor_holds_back_is_not_an_engine_wait(monkeypatch):
+    """A MiniMax ``<think>`` block the adapter strips out is the engine answering.
+
+    The real adapter and processor: ``think_block`` yields nothing until the
+    block closes, so the router sees no first token for far longer than the
+    wait. The adapter reports the first output it reads, and the request stays.
+    """
+    thinker = OpenAICompatAdapter(
+        ModelConfig(
+            id=MODEL,
+            name=MODEL,
+            provider="thinker",
+            base_url="http://localhost:8001/v1",
+            api_key="k",
+            endpoint_id=f"{MODEL}:thinker-api",
+            processor="think_block",
+        )
+    )
+    thinker.http = AsyncHTTPClient()
+
+    async def upstream(*_args: Any, **_kwargs: Any) -> AsyncGenerator[str, None]:
+        yield _chunk({"role": "assistant", "content": ""})
+        yield _chunk({"content": "<think>"})
+        for _ in range(6):
+            await asyncio.sleep(0.05)  # 0.3s of thinking against a 0.1s wait
+            yield _chunk({"content": "still thinking. "})
+        yield _chunk({"content": "</think>answer"})
+        yield _chunk({}, finish_reason="stop")
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(thinker.http, "stream_post", upstream)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    router = _router([(thinker, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.1))
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    assert _content(chunks) == "answer"
+    # The adapter's usage chunk carries a ``_routing`` block of its own; neither
+    # it nor the router's says the request moved.
+    assert not any(block.get("offload") or block.get("fallback") for block in _routing(chunks))
+    assert reserved.calls == 0
 
 
 async def test_time_in_the_gateway_queue_does_not_count_against_the_engine():
@@ -275,7 +361,7 @@ async def test_time_in_the_gateway_queue_does_not_count_against_the_engine():
     assert reserved.calls == 0
 
 
-async def test_a_wait_that_ends_in_the_gateway_queue_is_not_a_stall():
+async def test_a_wait_that_ends_in_the_gateway_queue_is_a_queue_wait():
     limiter = UpstreamConcurrencyLimiter(initial_limit=1, max_limit=1, acquire_timeout=10.0)
     reset_upstream_limiter(limiter)
     engine = _Engine("engine", answered=True, local=False)
@@ -287,7 +373,6 @@ async def test_a_wait_that_ends_in_the_gateway_queue_is_not_a_stall():
 
     assert _content(chunks) == "reserved"
     assert _routing(chunks)[-1]["offload"] == OFFLOAD_QUEUE_WAIT
-    assert not router.engine_stalls.is_stalled("m:engine-api")
     held.release(status_code=200)
 
 
@@ -299,7 +384,7 @@ async def test_a_non_streaming_request_is_never_cut_short():
     resp = await router.chat_completion(MODEL, MESSAGES)
 
     assert resp["choices"][0]["message"]["content"] == "engine"
-    assert router.engine_stalls._endpoints == {}
+    assert reserved.calls == 0
 
 
 async def test_without_an_offload_route_nothing_is_watched():
@@ -311,7 +396,6 @@ async def test_without_an_offload_route_nothing_is_watched():
 
     assert _content(chunks) == "engine"
     assert engine.watches == [None]
-    assert router.engine_stalls._endpoints == {}
 
 
 async def test_a_pinned_stream_waits_as_long_as_its_engine_needs():
@@ -331,168 +415,10 @@ async def test_a_pinned_stream_waits_as_long_as_its_engine_needs():
     assert engine.watches == [None]
 
 
-async def test_a_client_that_hangs_up_while_waiting_leaves_nothing_behind():
-    engine = _Engine("engine")
+async def test_with_the_offload_route_unavailable_a_stream_waits_for_its_engine():
+    engine = _Engine("engine", answered=True, delay=0.1)
     reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=5.0))
-
-    task = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
-    await asyncio.sleep(0.02)
-    assert router.engine_stalls._endpoints["m:engine-api"].pending
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert engine.cancelled == 1
-    assert reserved.calls == 0
-    assert router.engine_stalls._endpoints == {}
-
-
-# ------------------------------------------------------- stalled endpoints
-
-
-async def test_new_requests_go_around_an_engine_that_still_holds_one_of_ours():
-    engine = _Engine("engine", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=True)
-
-    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-    resp = await router.chat_completion(MODEL, MESSAGES)
-
-    assert _content(chunks) == "reserved"
-    assert _routing(chunks)[0]["offload"] == OFFLOAD_ENGINE_STALLED
-    assert resp["_routing"]["offload"] == OFFLOAD_ENGINE_STALLED
-    assert engine.calls == 0
-
-
-async def test_going_straight_to_the_offload_route_is_logged(caplog):
-    engine = _Engine("engine", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=True)
-
-    with caplog.at_level("INFO", logger="routing.routers"):
-        await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-        await router.chat_completion(MODEL, MESSAGES)
-
-    offloads = [r for r in caplog.records if r.getMessage() == "route_offload"]
-    assert [(r.reason, r.endpoint_id) for r in offloads] == [
-        (OFFLOAD_ENGINE_STALLED, "m:reserved-api"),
-        (OFFLOAD_ENGINE_STALLED, "m:reserved-api"),
-    ]
-
-
-async def test_another_ordinary_route_takes_the_traffic_first():
-    engine = _Engine("engine", answered=True)
-    sibling = _Engine("sibling", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (sibling, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=True)
-
-    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-
-    assert _content(chunks) == "sibling"
-    assert "offload" not in _routing(chunks)[0]
-    assert engine.calls == reserved.calls == 0
-
-
-async def test_a_stalled_engine_with_nothing_of_ours_on_it_takes_a_streaming_probe():
-    engine = _Engine("engine", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=False)
-
-    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-
-    assert _content(chunks) == "engine"
-    assert not router.engine_stalls.is_stalled("m:engine-api")
-
-
-async def test_a_non_streaming_request_never_probes():
-    engine = _Engine("engine", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=False)
-
-    resp = await router.chat_completion(MODEL, MESSAGES)
-
-    assert resp["choices"][0]["message"]["content"] == "reserved"
-    assert resp["_routing"]["offload"] == OFFLOAD_ENGINE_STALLED
-    assert engine.calls == 0
-    assert router.engine_stalls.is_stalled("m:engine-api")
-
-
-async def test_one_probe_at_a_time():
-    engine = _Engine("engine")
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=5.0))
-    _stall(router, "m:engine-api", still_waiting=False)
-
-    probe = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
-    await asyncio.sleep(0.02)
-    while_probing = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-    engine.gate.set()
-
-    assert _content(while_probing) == "reserved"
-    assert _content(await probe) == "engine"
-    assert engine.calls == 1
-    assert not router.engine_stalls.is_stalled("m:engine-api")
-
-
-@needs_timeout
-async def test_a_probe_that_gets_no_token_either_is_offloaded_and_the_stall_stands():
-    engine = _Engine("engine")
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.05))
-    _stall(router, "m:engine-api", still_waiting=False)
-
-    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-
-    assert _content(chunks) == "reserved"
-    assert _routing(chunks)[-1]["offload"] == OFFLOAD_ENGINE_WAIT
-    assert router.engine_stalls.is_stalled("m:engine-api")
-
-
-async def test_a_stall_ends_when_an_attempt_already_on_the_engine_answers():
-    engine = _Engine("engine")
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=5.0))
-
-    waiting = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
-    await asyncio.sleep(0.02)
-    # Some other request on this engine waited out its budget meanwhile.
-    _stall(router, "m:engine-api", still_waiting=False)
-    assert router.engine_stalls.is_stalled("m:engine-api")
-    engine.gate.set()
-
-    assert _content(await waiting) == "engine"
-    assert not router.engine_stalls.is_stalled("m:engine-api")
-
-
-async def test_a_stalled_fallback_is_tried_only_after_the_offload_route():
-    primary = _Engine("primary", fail_with=RuntimeError("upstream 500"))
-    stalled = _Engine("stalled", answered=True)
-    reserved = _Engine("reserved", route_id="offload", fail_with=RuntimeError("upstream 502"))
-    router = _router([(primary, 1.0), (stalled, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:stalled-api", still_waiting=True)
-
-    resp = await router.chat_completion(MODEL, MESSAGES)
-    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
-
-    assert resp["choices"][0]["message"]["content"] == "stalled"
-    assert [attempt["endpoint_id"] for attempt in resp["_routing"]["failed_attempts"]] == [
-        "m:primary-api",
-        "m:reserved-api",
-    ]
-    assert _content(chunks) == "stalled"
-
-
-async def test_a_stalled_route_still_serves_when_the_offload_route_cannot():
-    engine = _Engine("engine", answered=True)
-    reserved = _Engine("reserved", route_id="offload", answered=True)
-    router = _router([(engine, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:engine-api", still_waiting=True)
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.02))
     for _ in range(10):
         router.endpoint_health_registry.record_failure("m:reserved-api", reason="test")
 
@@ -500,18 +426,19 @@ async def test_a_stalled_route_still_serves_when_the_offload_route_cannot():
 
     assert _content(chunks) == "engine"
     # With nowhere to offload it, the attempt had no first-token deadline.
-    (watch,) = engine.watches
-    assert watch.wait_seconds is None
+    assert engine.watches == [None]
 
 
-def test_eligible_adapters_list_a_stalled_route_after_the_offload_route():
-    a = _Engine("a")
-    b = _Engine("b")
-    reserved = _Engine("reserved", route_id="offload")
-    router = _router([(a, 1.0), (b, 1.0), (reserved, 1.0)], _policy())
-    _stall(router, "m:a-api", still_waiting=False)
+async def test_a_client_that_hangs_up_while_waiting_is_not_offloaded():
+    engine = _Engine("engine")
+    reserved = _Engine("reserved", route_id="offload", answered=True)
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=5.0))
 
-    order = [adapter for adapter, _ in router.eligible_adapters(MODEL)]
+    task = asyncio.create_task(_collect(router.stream_chat_completion(MODEL, MESSAGES)))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
-    # A surface that sends one unwatched request never uses it as a probe.
-    assert order == [b, reserved, a]
+    assert engine.cancelled == 1
+    assert reserved.calls == 0

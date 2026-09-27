@@ -13,9 +13,8 @@ traffic, and :class:`~routing.routers.FixedRouter` uses it in two situations:
   queued and never got a slot.
 - **Engine wait.** A streaming attempt that reaches an engine but gets no first
   token within the same threshold is cancelled there and offloaded the same
-  way, and its endpoint is stalled until it answers again
-  (``routing.engine_stall``). While every other route is stalled, new requests
-  go to the offload route directly.
+  way (``routing.engine_wait``). That is the request's own outcome: the engine
+  is not marked, and the next request is routed to it as usual.
 - **Last resort.** When no other route is admissible at selection time, or every
   other route has failed, the offload route is tried like any fallback.
 
@@ -27,7 +26,8 @@ dispatch. The request has not reached the provider, so abandoning its place in
 line releases nothing upstream and cannot duplicate a generation; the limiter
 exempts the refusal from endpoint health for the same reason. An endpoint the
 gateway does not queue for -- a local inference server, or any endpoint while the
-limiter is disabled -- never triggers an offload by waiting.
+limiter is disabled -- never triggers an offload by waiting in that queue, only
+by an engine wait.
 
 This module holds the parts that are independent of one router's control flow:
 the policy value, the read-only source routers consult, and the per-request
@@ -41,7 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from routing.engine_stall import EngineWaitExpired
+from routing.engine_wait import EngineWaitExpired
 from serving.adapters.upstream_limiter import UpstreamSaturated
 
 if TYPE_CHECKING:
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 __all__ = [
-    "OFFLOAD_ENGINE_STALLED",
     "OFFLOAD_ENGINE_WAIT",
     "OFFLOAD_LAST_RESORT",
     "OFFLOAD_QUEUE_WAIT",
@@ -65,9 +64,6 @@ __all__ = [
 OFFLOAD_QUEUE_WAIT = "queue_wait"
 #: ``_routing["offload"]`` when an earlier attempt's engine sent no first token in time.
 OFFLOAD_ENGINE_WAIT = "engine_wait"
-#: ``_routing["offload"]`` when every other route was stalled as the request was
-#: routed, so it went straight to the offload route without trying them.
-OFFLOAD_ENGINE_STALLED = "engine_stalled"
 #: ``_routing["offload"]`` when no other route could serve the request.
 OFFLOAD_LAST_RESORT = "last_resort"
 
@@ -138,15 +134,13 @@ class FallbackOrder:
     has a usable one, is taken out of that order and placed by outcome instead:
     straight after an attempt that waited too long (:func:`offload_reason_for`),
     otherwise after every ordinary candidate. It is handed out at most once per
-    request. A candidate the caller finds stalled can be moved to the very end
-    with :meth:`defer`, after the offload route, so it is used only if nothing
-    else serves.
+    request.
 
     Callers report each failed attempt through :meth:`record_failure` before
     asking for the next candidate.
     """
 
-    __slots__ = ("_deferred", "_offload", "_offload_next", "_ordinary", "_serving_deferred")
+    __slots__ = ("_offload", "_offload_next", "_ordinary")
 
     def __init__(
         self,
@@ -158,8 +152,6 @@ class FallbackOrder:
         )
         self._offload = offload
         self._offload_next: str | None = None
-        self._deferred: deque[BaseAdapter] = deque()
-        self._serving_deferred = False
 
     @property
     def offload_pending(self) -> BaseAdapter | None:
@@ -173,18 +165,6 @@ class FallbackOrder:
         reason = offload_reason_for(exc)
         if reason is not None:
             self._offload_next = reason
-
-    def defer(self, adapter: BaseAdapter) -> bool:
-        """Move a stalled ordinary candidate to the end of the order.
-
-        Returns True when the candidate was deferred and the caller should skip
-        it for now, and False once the order is handing out deferred candidates
-        -- nothing else is left, so the caller should try this one.
-        """
-        if self._serving_deferred:
-            return False
-        self._deferred.append(adapter)
-        return True
 
     def next(self) -> tuple[BaseAdapter, str | None] | None:
         """Return the next candidate and, for the offload route, why it is used.
@@ -201,7 +181,4 @@ class FallbackOrder:
             return adapter, reason
         if self._ordinary:
             return self._ordinary.popleft(), None
-        if self._deferred:
-            self._serving_deferred = True
-            return self._deferred.popleft(), None
         return None

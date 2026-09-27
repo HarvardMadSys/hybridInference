@@ -1613,11 +1613,6 @@ class OffloadRouteItem(BaseModel):
     policy can outlive the conditions it needs -- the model switched to another
     routing policy, the route was removed or weighted to zero -- and
     ``inactive_reason`` then says which.
-
-    ``stalled_endpoints`` are the model's other routes that are stalled right
-    now (``routing.engine_stall``): an attempt there got no first token within
-    the wait, and new requests go around them until one does. It is this
-    worker's view, like circuit state.
     """
 
     model_id: str
@@ -1626,7 +1621,6 @@ class OffloadRouteItem(BaseModel):
     endpoint_id: str | None = None
     active: bool
     inactive_reason: str | None = None
-    stalled_endpoints: list[str] = Field(default_factory=list)
     updated_at: datetime | None = None
     updated_by: str | None = None
 

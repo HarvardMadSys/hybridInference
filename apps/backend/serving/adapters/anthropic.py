@@ -40,10 +40,12 @@ from .claude_format import (
     convert_tools,
     extract_system,
     handle_stream_event,
+    is_output_event,
     map_stop_reason,
     parse_response_content,
     parse_usage,
 )
+from .dispatch_watch import report_first_token
 from .openai_compat import _COMPLETION_TIMEOUT_S, _key_pool_provider_label
 from .upstream_limiter import UpstreamSlot, upstream_slot
 
@@ -277,6 +279,7 @@ class AnthropicAdapter(BaseAdapter):
         cache_read_reported = False
         finish_reason = "stop"
         total_content = ""
+        saw_output = False
 
         # The slot is chained onto the response context manager so it is held for
         # the whole body iteration below — a generation in flight, not just an
@@ -314,6 +317,12 @@ class AnthropicAdapter(BaseAdapter):
                             evt = json.loads(payload_bytes)
                         except json.JSONDecodeError:
                             continue
+
+                        # Before the handler keeps a tool call's JSON back: a
+                        # router waiting on a first token must hear it now.
+                        if not saw_output and is_output_event(evt):
+                            saw_output = True
+                            report_first_token()
 
                         result = handle_stream_event(evt, accum)
 

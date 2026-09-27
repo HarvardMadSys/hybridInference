@@ -42,11 +42,13 @@ from .claude_format import (
     extract_system,
     handle_stream_event,
     infer_media_type_from_url,
+    is_output_event,
     map_stop_reason,
     parse_data_url,
     parse_response_content,
     parse_usage,
 )
+from .dispatch_watch import report_first_token
 from .openai_compat import _key_pool_provider_label
 from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
@@ -268,6 +270,7 @@ class ClaudeAdapter(BaseAdapter):
         finish_reason = "stop"
 
         accumulator = ToolCallAccumulator()
+        saw_output = False
 
         logger.debug(f"Starting stream to: {endpoint}")
         logger.debug(f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}")
@@ -433,6 +436,12 @@ class ClaudeAdapter(BaseAdapter):
                     upstream_outcome = 200
                     yield done_sentinel()
                     return
+
+                # Before the handler keeps a tool call's JSON back: a router
+                # waiting on a first token must hear it now.
+                if not saw_output and is_output_event(chunk_data):
+                    saw_output = True
+                    report_first_token()
 
                 # Normal streaming events — delegate to shared handler
                 result = handle_stream_event(chunk_data, accumulator)

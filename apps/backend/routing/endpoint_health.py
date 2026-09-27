@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from routing.engine_stall import EngineWaitExpired
+from routing.engine_wait import EngineWaitExpired
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
@@ -1044,11 +1044,12 @@ class EndpointHealthRegistry:
             return
         if exc is not None and isinstance(exc, EngineWaitExpired):
             # The router cancelled this attempt because the engine had not
-            # started it within the model's offload wait (``routing.engine_stall``).
-            # A queued request is not a failure of the engine: it is busy, and the
-            # stall tracker already keeps new requests away until it answers.
-            # Counting it here too would open the circuit on a burst of load and
-            # hold the endpoint out for a cooldown long after its queue drained.
+            # started it within the model's offload wait (``routing.engine_wait``),
+            # and sent the request to the offload route. A queued request is not a
+            # failure of the engine: it is busy, and the next request is still
+            # sent to it. Counting it here would open the circuit on a burst of
+            # load and hold the endpoint out for a cooldown long after its queue
+            # drained.
             logger.info(
                 "engine_wait_skip_breaker",
                 extra={
