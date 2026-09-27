@@ -1606,6 +1606,53 @@ class UpstreamConcurrencyResponse(BaseModel):
     buckets: list[UpstreamConcurrencyBucket]
 
 
+class OffloadRouteItem(BaseModel):
+    """One model's queue-offload route, as stored and as routing applies it.
+
+    ``active`` is whether ``FixedRouter`` honors the policy right now. A stored
+    policy can outlive the conditions it needs -- the model switched to another
+    routing policy, the route was removed or weighted to zero -- and
+    ``inactive_reason`` then says which.
+    """
+
+    model_id: str
+    route_id: str
+    wait_seconds: float
+    endpoint_id: str | None = None
+    active: bool
+    inactive_reason: str | None = None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class ModelOffloadRouteResponse(BaseModel):
+    """One model's offload route, or ``offload: null`` when it has none."""
+
+    model_id: str
+    offload: OffloadRouteItem | None = None
+
+
+class ListOffloadRoutesResponse(BaseModel):
+    """Every stored offload route plus the queue they are measured against.
+
+    ``queue_enabled`` is false while ``UPSTREAM_CONCURRENCY_ENABLED`` is off: no
+    request then waits for an outbound slot, so none is offloaded by waiting.
+    ``max_wait_seconds`` is the limiter's acquire timeout, the longest wait a
+    request can spend in that queue before it fails over anyway.
+    """
+
+    queue_enabled: bool
+    max_wait_seconds: float
+    offload_routes: list[OffloadRouteItem]
+
+
+class UpdateOffloadRouteRequest(BaseModel):
+    """Request payload for designating one model's offload route."""
+
+    route_id: str = Field(..., min_length=1, max_length=512)
+    wait_seconds: float = Field(..., gt=0, allow_inf_nan=False)
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -1653,6 +1700,7 @@ __all__ = [
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListOffloadRoutesResponse",
     "ListOpenRouterProviderOptionsResponse",
     "ListProviderApiKeyProvidersResponse",
     "ListProviderDefinitionsResponse",
@@ -1664,7 +1712,9 @@ __all__ = [
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
+    "ModelOffloadRouteResponse",
     "ModelVisibilityItem",
+    "OffloadRouteItem",
     "OpenRouterProviderOption",
     "ProbeProviderDefinitionRequest",
     "ProbeProviderDefinitionResponse",
@@ -1703,6 +1753,7 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateOffloadRouteRequest",
     "UpdateProviderDefinitionRequest",
     "UpdateProviderRouteRequest",
     "UpdateProviderRouteStrategyRequest",

@@ -40,6 +40,16 @@ PRICING_TIME = "pricing_time"
 # background reader task that consumes the upstream stream.
 UPSTREAM_PRIORITY = "upstream_priority"
 
+# req_ctx key holding the ``time.monotonic()`` deadline by which this dispatch
+# must hold an outbound concurrency slot, or ``None`` for no deadline of its own.
+# FixedRouter pushes it around each dispatch -- a deadline on an attempt it could
+# offload elsewhere (see ``routing.offload``), ``None`` on every other attempt so
+# no dispatch inherits another's. ``upstream_limiter`` reads it: a request still
+# queued at the deadline gives up its place instead of waiting out the limiter's
+# own acquire timeout. Only ever pushed, never written durably, so it needs no
+# entry in REQUEST_SCOPED_KEYS.
+UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.

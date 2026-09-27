@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from contextlib import contextmanager
 
 import aiohttp
 import pytest
@@ -18,6 +20,7 @@ from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.upstream_limiter import (
     UpstreamConcurrencyLimiter,
+    UpstreamQueueWaitExpired,
     UpstreamSaturated,
     get_upstream_limiter,
     key_fingerprint,
@@ -25,6 +28,7 @@ from serving.adapters.upstream_limiter import (
     upstream_slot,
 )
 from serving.http import AsyncHTTPClient
+from serving.utils import context as req_ctx
 
 PROVIDER = "zai"
 KEY_A = "sk-aaa"
@@ -195,6 +199,116 @@ async def test_cancelled_waiter_is_removed_and_does_not_hold_a_slot():
     assert _state(limiter)["waiting"] == 0
     held.release(status_code=200)
     assert _state(limiter)["in_flight"] == 0
+
+
+# ------------------------------------------------------- dispatch deadlines
+
+
+@contextmanager
+def _queue_deadline(seconds_from_now: float | None):
+    """Push the per-dispatch queue deadline the way FixedRouter does."""
+    deadline = None if seconds_from_now is None else time.monotonic() + seconds_from_now
+    with req_ctx.push(**{req_ctx.UPSTREAM_QUEUE_DEADLINE: deadline}):
+        yield
+
+
+async def test_a_dispatch_deadline_ends_the_wait_before_the_acquire_timeout():
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    held = await _acquire(limiter)
+
+    started = time.monotonic()
+    with _queue_deadline(0.02), pytest.raises(UpstreamQueueWaitExpired, match="No outbound slot"):
+        await _acquire(limiter)
+
+    assert time.monotonic() - started < 2.0
+    # It left the queue exactly as a timed-out waiter does, holding nothing.
+    assert _state(limiter)["waiting"] == 0
+    assert _state(limiter)["in_flight"] == 1
+    held.release(status_code=200)
+    assert _state(limiter)["in_flight"] == 0
+
+
+async def test_an_expired_deadline_still_reads_as_plain_saturation():
+    """Key rotation, the breaker exemption and /v1/messages all catch the base class."""
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    await _acquire(limiter)
+
+    with _queue_deadline(0.01), pytest.raises(UpstreamSaturated) as excinfo:
+        await _acquire(limiter)
+
+    from routing.endpoint_health import _http_status_of
+
+    assert isinstance(excinfo.value, UpstreamQueueWaitExpired)
+    assert _http_status_of(excinfo.value) is None
+
+
+async def test_a_deadline_past_the_acquire_timeout_changes_nothing():
+    limiter = _limiter(initial_limit=1, acquire_timeout=0.02)
+    await _acquire(limiter)
+
+    with _queue_deadline(60.0), pytest.raises(UpstreamSaturated) as excinfo:
+        await _acquire(limiter)
+
+    assert not isinstance(excinfo.value, UpstreamQueueWaitExpired)
+
+
+async def test_an_explicit_none_deadline_keeps_the_acquire_timeout():
+    """FixedRouter pushes None on attempts it cannot offload; that means "no budget"."""
+    limiter = _limiter(initial_limit=1, acquire_timeout=0.02)
+    await _acquire(limiter)
+
+    with _queue_deadline(None), pytest.raises(UpstreamSaturated) as excinfo:
+        await _acquire(limiter)
+
+    assert not isinstance(excinfo.value, UpstreamQueueWaitExpired)
+
+
+async def test_a_spent_deadline_leaves_without_taking_a_place_in_line():
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    held = await _acquire(limiter)
+    queued = asyncio.ensure_future(_acquire(limiter))
+    await asyncio.sleep(0)
+    assert _state(limiter)["waiting"] == 1
+
+    with _queue_deadline(-1.0), pytest.raises(UpstreamQueueWaitExpired):
+        await _acquire(limiter)
+
+    # Only the request that was already queued is still waiting, and it is the
+    # one the next free slot goes to.
+    assert _state(limiter)["waiting"] == 1
+    held.release(status_code=200)
+    (await queued).release(status_code=200)
+    assert _state(limiter)["in_flight"] == 0
+
+
+async def test_a_spent_deadline_still_takes_a_free_slot():
+    """The deadline bounds waiting, never admission: a free slot is simply taken."""
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+
+    with _queue_deadline(-1.0):
+        slot = await _acquire(limiter)
+
+    assert slot.held
+    assert _state(limiter)["in_flight"] == 1
+    slot.release(status_code=200)
+
+
+async def test_a_waiter_granted_before_its_deadline_keeps_the_slot():
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    held = await _acquire(limiter)
+
+    async def budgeted():
+        with _queue_deadline(1.0):
+            return await _acquire(limiter)
+
+    waiting = asyncio.ensure_future(budgeted())
+    await asyncio.sleep(0)
+    held.release(status_code=200)
+    granted = await waiting
+
+    assert granted.held
+    assert _state(limiter)["in_flight"] == 1
+    granted.release(status_code=200)
 
 
 # ----------------------------------------------------------------------- AIMD
@@ -650,6 +764,32 @@ async def test_every_key_saturated_surfaces_upstream_saturated(monkeypatch):
 
         with pytest.raises(UpstreamSaturated):
             await adapter.chat_completion([{"role": "user", "content": "x"}])
+    finally:
+        reset_upstream_limiter()
+
+
+async def test_one_deadline_bounds_the_wait_across_every_pooled_key(monkeypatch):
+    """Rotating keys must not multiply the wait: the deadline is per dispatch."""
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    reset_upstream_limiter(limiter)
+    try:
+        adapter = _adapter(api_keys=[KEY_A, KEY_B])
+        for key in (KEY_A, KEY_B):
+            await limiter.acquire(PROVIDER, key, base_url=REMOTE)
+
+        async def never_called(**_kwargs):  # pragma: no cover - must not run
+            raise AssertionError("no request may be sent when every key is saturated")
+
+        monkeypatch.setattr(adapter.http, "json_post", never_called)
+
+        started = time.monotonic()
+        with _queue_deadline(0.05), pytest.raises(UpstreamQueueWaitExpired):
+            await adapter.chat_completion([{"role": "user", "content": "x"}])
+
+        # Two keys at the 5s acquire timeout each would be 10s.
+        assert time.monotonic() - started < 2.0
+        assert _state(limiter, KEY_A)["waiting"] == 0
+        assert _state(limiter, KEY_B)["waiting"] == 0
     finally:
         reset_upstream_limiter()
 

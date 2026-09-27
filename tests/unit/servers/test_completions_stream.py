@@ -540,6 +540,70 @@ async def test_ttft_clock_restarts_on_fallback_routing_chunk():
     assert obs_kwargs["total_latency_ms"] >= 10000
 
 
+def _adapter_final_chunk(provider: str) -> str:
+    """Final chunk carrying the adapter's own ``_routing`` block, as openai_compat emits."""
+    payload = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "created": 1234567890,
+        "model": "gpt-4",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "_routing": {
+            "provider": provider,
+            "base_url": f"https://api.{provider}.example/v1",
+            "endpoint_id": f"{provider}:api:443",
+        },
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+@pytest.mark.asyncio
+async def test_router_routing_keys_survive_the_adapters_own_routing_block():
+    """``fallback`` / ``failed_attempts`` / ``offload`` must reach the request log.
+
+    The router announces each attempt with its own block, and the adapter then
+    ends the stream with a ``_routing`` block of its own. Keeping only the last
+    block used to drop every router-owned key from a streamed request's log.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    offload_attempt = json.loads(_routing_chunk("anthropic", fallback=True)[len("data: ") :])
+    offload_attempt["_routing"]["offload"] = "queue_wait"
+    chunks = [
+        _routing_chunk("openai"),
+        f"data: {json.dumps(offload_attempt)}\n\n",
+        _content_chunk("gpt-4", "hello"),
+        _adapter_final_chunk("anthropic"),
+    ]
+    await _consume(session.stream(_aiter(chunks)))
+
+    metadata = cl_logger.schedule_log.call_args.args[1]["metadata"]
+    assert metadata["offload"] == "queue_wait"
+    assert metadata["fallback"] is True
+    assert metadata["failed_attempts"][0]["endpoint_id"] == "openai:api:443"
+    assert metadata["endpoint_id"] == "anthropic:api:443"
+
+
+@pytest.mark.asyncio
+async def test_a_new_attempt_does_not_inherit_the_last_attempts_offload_marker():
+    """An offload primary that failed must not label the ordinary route that served."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    last_resort_primary = json.loads(_routing_chunk("openai")[len("data: ") :])
+    last_resort_primary["_routing"]["offload"] = "last_resort"
+    chunks = [
+        f"data: {json.dumps(last_resort_primary)}\n\n",
+        _routing_chunk("anthropic", fallback=True),
+        _content_chunk("gpt-4", "hello"),
+        _adapter_final_chunk("anthropic"),
+    ]
+    await _consume(session.stream(_aiter(chunks)))
+
+    metadata = cl_logger.schedule_log.call_args.args[1]["metadata"]
+    assert "offload" not in metadata
+    assert metadata["fallback"] is True
+
+
 @pytest.mark.asyncio
 async def test_ttft_clock_not_restarted_by_primary_routing_chunk():
     """A non-fallback routing chunk keeps the request-entry TTFT reference."""

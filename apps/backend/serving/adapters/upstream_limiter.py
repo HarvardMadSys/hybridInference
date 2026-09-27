@@ -54,6 +54,13 @@ endpoint for this gateway's own admission decision (see
 ``endpoint_health.record_failure``, which exempts it from the breaker for the
 same reason).
 
+**A dispatch may wait less.** A router with somewhere better to send a request
+than the back of this queue -- an admin-designated offload route -- pushes a
+deadline (``req_ctx.UPSTREAM_QUEUE_DEADLINE``) around the dispatch. A waiter
+still queued at that deadline leaves exactly as a timed-out one does and raises
+:class:`UpstreamQueueWaitExpired`. The deadline can only shorten the wait: one
+further out than ``acquire_timeout`` changes nothing.
+
 Counters are plain ints under the asyncio single-thread invariant, exactly as
 ``servers/concurrency._UserSlot`` documents: every mutation below happens in a
 block with no ``await`` in it, so it is atomic with respect to other tasks on
@@ -64,6 +71,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -73,6 +81,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from serving.config.settings import get_settings
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -94,6 +103,19 @@ class UpstreamSaturated(Exception):
     would be a lie about what the upstream said — 429 most of all, which would
     mute the key in ``KeyPool`` and count a rate limit against an endpoint that
     was never asked.
+    """
+
+
+class UpstreamQueueWaitExpired(UpstreamSaturated):
+    """The dispatch's own queue-wait deadline passed before a slot came free.
+
+    Raised instead of the plain saturation when the caller pushed a deadline
+    sooner than the acquire timeout (``req_ctx.UPSTREAM_QUEUE_DEADLINE``): the
+    caller had an offload route to send the request to, so it chose not to wait
+    for this queue to drain. A subclass because nothing else changes -- the
+    request still never reached the provider, and every ``UpstreamSaturated``
+    reader (key rotation, the breaker exemption, the Anthropic surface) must keep
+    treating it that way.
     """
 
 
@@ -436,6 +458,8 @@ class UpstreamConcurrencyLimiter:
             whole generation) is done.
 
         Raises:
+            UpstreamQueueWaitExpired: The dispatch's own queue-wait deadline
+                passed first (see :meth:`_queue_wait`).
             UpstreamSaturated: No slot came free within the acquire timeout.
         """
         if not self._enabled or is_local_endpoint(base_url):
@@ -449,12 +473,22 @@ class UpstreamConcurrencyLimiter:
             bucket.take_slot()
             return UpstreamSlot(bucket)
 
+        wait, deadline_bound = self._queue_wait()
+        if deadline_bound and wait <= 0:
+            # The deadline had already passed when this dispatch reached the
+            # queue -- a pooled adapter rotating onto a sibling key after waiting
+            # out the first one. Joining the queue only to leave it again would
+            # take a place in line from nobody, so leave straight away.
+            raise self._queue_wait_expired(bucket)
+
         waiter: asyncio.Future[None] = loop.create_future()
         bucket.waiters.append(waiter)
         try:
-            await asyncio.wait_for(waiter, self._acquire_timeout)
+            await asyncio.wait_for(waiter, wait)
         except asyncio.TimeoutError:
             bucket.abandon(waiter)
+            if deadline_bound:
+                raise self._queue_wait_expired(bucket) from None
             logger.warning(
                 "upstream_concurrency_saturated",
                 extra={
@@ -478,6 +512,47 @@ class UpstreamConcurrencyLimiter:
             raise
         # Woken: ``wake_waiters`` already reserved the slot in our name.
         return UpstreamSlot(bucket)
+
+    def _queue_wait(self) -> tuple[float, bool]:
+        """Return how long this dispatch may queue, and whether its deadline binds.
+
+        The acquire timeout is the ceiling. A dispatch's deadline can only bring
+        the end of the wait forward: one further out than the timeout is ignored,
+        and the wait then ends as plain saturation, exactly as it would without
+        a deadline.
+        """
+        deadline = req_ctx.get().get(req_ctx.UPSTREAM_QUEUE_DEADLINE)
+        if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+            return self._acquire_timeout, False
+        remaining = float(deadline) - time.monotonic()
+        if remaining < self._acquire_timeout:
+            return remaining, True
+        return self._acquire_timeout, False
+
+    @staticmethod
+    def _queue_wait_expired(bucket: _Bucket) -> UpstreamQueueWaitExpired:
+        """Build the error for a dispatch whose own deadline ended its wait.
+
+        Logged at debug only: the caller armed the deadline because it has an
+        offload route to send the request to, and it logs that decision itself.
+        The ``upstream_concurrency_saturated`` warning stays reserved for a wait
+        that ran out with nowhere better to go.
+        """
+        logger.debug(
+            "upstream_queue_wait_expired",
+            extra={
+                "event": "upstream_queue_wait_expired",
+                "provider": bucket.provider,
+                "key_fingerprint": bucket.fingerprint,
+                "limit": bucket.limit,
+                "in_flight": bucket.in_flight,
+                "waiting": len(bucket.waiters),
+            },
+        )
+        return UpstreamQueueWaitExpired(
+            f"No outbound slot for provider {bucket.provider!r} "
+            f"(limit={bucket.limit}) before the dispatch's queue-wait deadline"
+        )
 
     def _bucket_for(self, provider: str, api_key: str | None) -> _Bucket:
         """Return the bucket for one (provider, key), creating it on first use."""

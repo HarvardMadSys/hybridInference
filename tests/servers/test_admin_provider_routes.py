@@ -3832,6 +3832,9 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
     client.app.state.services.weight_override_resolver = weight_resolver
     routewise_settings_resolver = MagicMock()
     client.app.state.services.routewise_settings_resolver = routewise_settings_resolver
+    offload_route_resolver = MagicMock()
+    offload_route_resolver.get_offload_policy.return_value = None
+    client.app.state.services.offload_route_resolver = offload_route_resolver
     initial_openrouter_pool_count = len(dynamic_keys.get_pools_for_provider("openrouter"))
     op_store.list_weight_overrides_for_model.return_value = [
         {
@@ -3879,6 +3882,7 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
             "model_required_role:deepseek-v4-flash",
             "model_router_strategy:deepseek-v4-flash",
             *model_routewise_setting_keys("deepseek-v4-flash"),
+            "model_offload_route:deepseek-v4-flash",
         ),
     )
     # Its visibility override and resolver cache are also cleared so recreating
@@ -3892,6 +3896,8 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
     op_store.delete_weight_override.assert_not_awaited()
     weight_resolver.clear_model.assert_called_once_with("deepseek-v4-flash")
     routewise_settings_resolver.clear_model.assert_called_once_with("deepseek-v4-flash")
+    # And a model later created under the same id must not inherit its offload route.
+    offload_route_resolver.clear_model.assert_called_once_with("deepseek-v4-flash")
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == (initial_openrouter_pool_count)
 
 

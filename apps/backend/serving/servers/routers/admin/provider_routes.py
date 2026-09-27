@@ -24,6 +24,7 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
+from serving.config.offload_routes import offload_route_setting_key
 from serving.config.settings import (
     ROUTE_TYPE_ORDER,
     VALID_ROLES,
@@ -278,6 +279,24 @@ def _model_id_from_strategy_setting_key(key: str) -> str | None:
     return model_id or None
 
 
+def _offload_route_id(services: Any, model_id: str) -> str | None:
+    """Return the route id of the model's stored offload route, if it has one."""
+    resolver = getattr(services, "offload_route_resolver", None)
+    get_policy = getattr(resolver, "get_offload_policy", None)
+    if not callable(get_policy):
+        return None
+    policy = get_policy(model_id)
+    return policy.route_id if policy is not None else None
+
+
+def _clear_offload_route_snapshot(services: Any, model_id: str) -> None:
+    """Drop a removed model's offload route from the routing snapshot."""
+    resolver = getattr(services, "offload_route_resolver", None)
+    clear_model = getattr(resolver, "clear_model", None)
+    if callable(clear_model):
+        clear_model(model_id)
+
+
 def _model_required_role_setting_key(model_id: str) -> str:
     return f"{MODEL_REQUIRED_ROLE_SETTING_PREFIX}{model_id}"
 
@@ -298,6 +317,16 @@ def _validate_model_router_strategy(
         raise HTTPException(status_code=422, detail="strategy must be fixed or routewise")
     registry = _require_model_router_registry(services)
     route = _validate_canonical_route(services, model_id)
+    if strategy != "fixed" and _offload_route_id(services, model_id) is not None:
+        # Offload is a FixedRouter behavior; switching away would leave the
+        # model's reserved route silently back in ordinary selection.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"clear the model's offload route before switching to {strategy}: "
+                "offload routes need fixed routing"
+            ),
+        )
     if strategy == "fixed":
         resource_route_types = sorted(
             {
@@ -2821,6 +2850,7 @@ async def _teardown_runtime_model_locked(
             _model_required_role_setting_key(model_id),
             _model_strategy_setting_key(model_id),
             *model_routewise_setting_keys(model_id),
+            offload_route_setting_key(model_id),
         ):
             try:
                 await op_store.delete_setting(setting_key)
@@ -2882,6 +2912,10 @@ async def _teardown_runtime_model_locked(
     clear_routewise_settings = getattr(routewise_settings_resolver, "clear_model", None)
     if callable(clear_routewise_settings):
         clear_routewise_settings(model_id)
+
+    # Same reason as the weight snapshot: a future model created under this id
+    # must not inherit the old one's reserved route.
+    _clear_offload_route_snapshot(services, model_id)
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -3390,6 +3424,7 @@ async def create_provider_route_model(
                     _model_required_role_setting_key(model_id),
                     _model_strategy_setting_key(model_id),
                     *model_routewise_setting_keys(model_id),
+                    offload_route_setting_key(model_id),
                 )
             ]
             if persisted_candidates or persisted_configs or any(persisted_settings):
@@ -3997,6 +4032,17 @@ async def delete_provider_route_candidate(
         # Decide last-route teardown only after acquiring the same lock used by
         # candidate creation and strategy changes.
         deleting_model = len(current_entries) == 1
+        if not deleting_model and _offload_route_id(services, model_id) == route_id:
+            # Refused rather than cleared as a side effect: the admin chose this
+            # route to take the model's overflow, and deleting it would quietly
+            # change where queued requests go.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"route {route_id!r} is the model's offload route; clear the offload "
+                    "route before deleting it"
+                ),
+            )
         candidate_snapshot = _rows_by_route_id(
             await op_store.list_provider_route_candidates_for_model(model_id)
         ).get(route_id)
@@ -4018,6 +4064,7 @@ async def delete_provider_route_candidate(
                                 _model_required_role_setting_key(model_id),
                                 _model_strategy_setting_key(model_id),
                                 *model_routewise_setting_keys(model_id),
+                                offload_route_setting_key(model_id),
                             ),
                         )
                     except BaseException:
@@ -4231,6 +4278,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                             _model_required_role_setting_key(model_id),
                             _model_strategy_setting_key(model_id),
                             *model_routewise_setting_keys(model_id),
+                            offload_route_setting_key(model_id),
                         ),
                     )
                     continue

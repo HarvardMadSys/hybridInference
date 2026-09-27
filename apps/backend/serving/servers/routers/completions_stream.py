@@ -346,9 +346,14 @@ class StreamSession:
         self._tool_calls = ToolCallAccumulator()
         self._ttft = _TTFTTracker(start_time)
         self._usage_data: dict[str, Any] | None = None
-        # Most recent adapter ``_routing`` dict (raw); ``None`` until first
-        # chunk that exposes one. Kept around because the success-path
-        # finalizer takes a different code branch when this is unset.
+        # The current attempt's ``_routing`` dicts (raw), merged in arrival order
+        # so a later block overrides an earlier one key by key; ``None`` until
+        # the first chunk that exposes one. Kept around because the success-path
+        # finalizer takes a different code branch when this is unset. Merged
+        # rather than replaced: the router's block for an attempt carries
+        # ``fallback`` / ``failed_attempts`` / ``offload``, and an adapter that
+        # ends its stream with a ``_routing`` block of its own (openai_compat
+        # does) would otherwise drop them from the request log.
         self._adapter_routing: dict[str, Any] | None = None
         self._provider_from_ctx: str | None = None
         # Upstream label resolved on the failure path, exposed for the caller
@@ -516,7 +521,15 @@ class StreamSession:
                                     f"{self._chunk_count}: {self._usage_data}"
                                 )
                             if result.routing_info:
-                                self._adapter_routing = result.routing_info
+                                # A fallback-flagged block opens a new upstream
+                                # attempt (see the TTFT restart below), so it
+                                # replaces the last attempt's keys; any later
+                                # block in the same attempt merges on top.
+                                self._adapter_routing = (
+                                    dict(result.routing_info)
+                                    if result.routing_info.get("fallback")
+                                    else {**(self._adapter_routing or {}), **result.routing_info}
+                                )
                                 self._routing = merge_adapter_routing(
                                     self._routing, result.routing_info
                                 )

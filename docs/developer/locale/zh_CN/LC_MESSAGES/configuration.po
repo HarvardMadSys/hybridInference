@@ -826,6 +826,22 @@ msgid "`site_settings`"
 msgstr ""
 
 #: ../developer/configuration.md
+msgid "Reserve a route for requests left waiting in the outbound queue"
+msgstr "为在出站队列中等待过久的请求预留一条路由"
+
+#: ../developer/configuration.md
+msgid "**Queue offload**"
+msgstr ""
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`PUT` / `DELETE /admin/routing/offload-routes/{model_id}`; `GET "
+"/admin/routing/offload-routes` lists every model's, and whether routing "
+"applies it — see [Queue-wait offload](routing.md#queue-wait-offload)"
+msgstr "`PUT` / `DELETE /admin/routing/offload-routes/{model_id}`；`GET /admin/routing/offload-routes` 列出每个模型的卸载路由，以及路由是否正在应用它——见 [排队等待卸载](routing.md#queue-wait-offload)"
+
+#: ../developer/configuration.md
 msgid "Tune RouteWise for one model"
 msgstr "为单个模型调 RouteWise"
 
@@ -952,9 +968,10 @@ msgstr "路由覆盖项，把它们指名的注册表路由改指向别处。"
 
 #: ../developer/configuration.md:343
 msgid ""
-"Key tier reservations, re-read now that every provider is known; then weight overrides, disabled "
-"providers and model visibility, loaded into resolvers the router consults at request time."
-msgstr "key 的层级预留，此时每个 provider 都已知，于是重读一遍；然后是权重覆盖项、被禁用的 provider 和模型可见性，装进路由器在请求时查询的解析器里。"
+"Key tier reservations, re-read now that every provider is known; then weight "
+"overrides, disabled providers, offload routes and model visibility, loaded "
+"into resolvers the router consults at request time."
+msgstr "key 的层级预留，此时每个 provider 都已知，于是重读一遍；然后是权重覆盖项、被禁用的 provider、卸载路由和模型可见性，装进路由器在请求时查询的解析器里。"
 
 #: ../developer/configuration.md:347
 msgid ""

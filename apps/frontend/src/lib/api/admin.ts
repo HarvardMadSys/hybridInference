@@ -1964,6 +1964,62 @@ export async function clearRouteWeight(modelId: string, endpointId: string): Pro
   return jsonOrThrow<RouteWeight>(resp);
 }
 
+/** One model's queue-offload route: a reserved route for requests left queued too long. */
+export interface OffloadRoute {
+  model_id: string;
+  route_id: string;
+  wait_seconds: number;
+  endpoint_id: string | null;
+  active: boolean;
+  inactive_reason: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface ListOffloadRoutesResponse {
+  /** False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues, so nothing waits. */
+  queue_enabled: boolean;
+  /** The outbound queue's acquire timeout; the longest wait a route may be given. */
+  max_wait_seconds: number;
+  offload_routes: OffloadRoute[];
+}
+
+export interface ModelOffloadRouteResponse {
+  model_id: string;
+  offload: OffloadRoute | null;
+}
+
+export async function listOffloadRoutes(): Promise<ListOffloadRoutesResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routing/offload-routes');
+  return jsonOrThrow<ListOffloadRoutesResponse>(resp);
+}
+
+export async function setOffloadRoute(
+  modelId: string,
+  routeId: string,
+  waitSeconds: number,
+): Promise<ModelOffloadRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/offload-routes/${encodeURIComponent(modelId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ route_id: routeId, wait_seconds: waitSeconds }),
+    },
+  );
+  return jsonOrThrow<ModelOffloadRouteResponse>(resp);
+}
+
+export async function clearOffloadRoute(modelId: string): Promise<ModelOffloadRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/offload-routes/${encodeURIComponent(modelId)}`,
+    { method: 'DELETE' },
+  );
+  return jsonOrThrow<ModelOffloadRouteResponse>(resp);
+}
+
 export async function listRoutewiseSettings(
   modelId: string,
 ): Promise<ListRoutewiseSettingsResponse> {

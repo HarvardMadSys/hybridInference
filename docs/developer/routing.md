@@ -207,7 +207,9 @@ this order:
 4. **Weight and circuit admission.** Routes with weight `0` are dropped, as are
    routes whose circuit is open or already carrying a half-open probe. If
    nothing survives, `AllCircuitsOpenError`
-   names the endpoints it considered.
+   names the endpoints it considered. A model's offload route is held back
+   here too, unless it is the only route left (see
+   [Queue-wait offload](#queue-wait-offload)).
 5. **Session affinity.** A live pin for this caller and model wins, unless the
    pinned endpoint is backlogged (see [Session affinity](#session-affinity)).
 6. **Weighted draw.** Remaining weights are renormalised to sum to 1 and one
@@ -222,7 +224,9 @@ routes in declaration order — skipping weight-`0` routes, routes that cannot
 accept the request's modalities, and routes the breaker refuses a dispatch
 claim for (open, or already carrying a probe). The first one that succeeds
 answers the request. If every route fails, the *primary*
-error is re-raised, with the whole attempt list attached.
+error is re-raised, with the whole attempt list attached. A model's offload
+route is not in that order: it comes next after an attempt that waited out its
+queue budget, and last otherwise (see [Queue-wait offload](#queue-wait-offload)).
 
 Two deliberate exceptions:
 
@@ -420,6 +424,78 @@ the admin playground) publishes nothing and shares one anonymous binding.
 
 **Kill switch:** set `ROUTING_AFFINITY_ENABLED=0`.
 
+## Queue-wait offload
+
+A model routed by `fixed` can reserve one of its routes as its **offload
+route**: the route that takes the requests its other routes cannot seat. It is
+set per model in the admin console (**Routing → Queue offload**) or with
+`PUT /admin/routing/offload-routes/{model_id}`, as a route id and a wait in
+seconds, and stored in `site_settings` under `model_offload_route:<model_id>`.
+The routing mechanics live in `apps/backend/routing/offload.py`.
+
+The wait is measured in the gateway's own outbound queue. The concurrency
+limiter (`apps/backend/serving/adapters/upstream_limiter.py`) keeps at most a
+learned number of requests open against each provider key and queues the rest;
+without an offload route a queued request waits up to
+`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` (default `30`) for a slot and then
+fails over. With one:
+
+- **Selection.** The offload route is never the primary while another route is
+  admissible: the weighted draw, affinity and a preferred target all skip it,
+  so it takes no ordinary traffic whatever its weight.
+- **Queue wait.** Every other attempt the request makes may wait at most the
+  configured seconds for an outbound slot. When that runs out the request leaves
+  the queue and goes to the offload route next, ahead of the rest of the
+  fallback order. A wait ended by the limiter's own acquire timeout counts the
+  same way: the request queued and never got a slot.
+- **Last resort.** The offload route is also the last fallback after every
+  other route has failed, and the primary when no other route is admissible.
+- **The offload attempt** queues normally, with the full acquire timeout, since
+  there is nowhere left to send it. A request is offloaded at most once.
+
+Cutting a queue wait short is safe because the request has not left the
+gateway: giving up its place in line releases nothing upstream, cannot
+duplicate a generation, and is not charged to the endpoint's circuit breaker or
+its prefix-cache hints.
+
+A response served by the offload route carries `_routing.offload` —
+`queue_wait` or `last_resort` — beside the usual `fallback` and
+`failed_attempts`, and the request log's metadata keeps it, streamed or not.
+Every dispatch to an offload route also logs a `route_offload` line.
+
+What does not offload:
+
+- **An endpoint the gateway does not queue for.** Only the limiter queues, and
+  it exempts local inference servers (a host in `registry._LOCAL_HOSTS`), which
+  schedule their own work. Nothing queues at all while
+  `UPSTREAM_CONCURRENCY_ENABLED=false`. The offload route still serves as the
+  last resort in both cases.
+- **A pinned request.** `X-Route-Pin` names one endpoint and never falls back,
+  so it never offloads either. Nor does an attempt whose caller owns the
+  candidate order (`allow_fallback` off, as the hybrid composition plans them),
+  and the offload route has to be inside the dispatch scope and accept the
+  request's modalities.
+- **A prompt the offload route cannot fit.** Once a route refuses a prompt as
+  too long for its context window, fallback passes over every route whose
+  configured `context_length` is no wider, the offload route included. No later
+  attempt leaves its queue for an offload route that would be passed over.
+- **`/v1/messages`.** It picks one adapter itself and has no fallback. It keeps
+  the offload route out of that pick unless nothing else is eligible, but does
+  not offload on a queue wait. `/v1/chat/completions` and the surfaces built on
+  it — `/v1/responses`, `/v1/completions` and the admin playground — do.
+- **RouteWise.** A `routewise` model plans its own candidates and ignores offload
+  routes, as does a `fixed` model with `hybrid_composition: true`. The admin API
+  refuses to set an offload route on either, and refuses to switch a model that
+  has one to `routewise`.
+
+The wait must be positive and at most the acquire timeout, since a longer wait
+would end at the timeout anyway. The offload route needs an effective weight
+above `0`: a weight override of `0` or a disabled provider turns the offload
+off, and `GET /admin/routing/offload-routes` then reports the policy with
+`active: false` and an `inactive_reason`. The route is named by its route id, which survives an admin
+retarget; deleting a runtime route that is a model's offload route is refused
+until the offload route is cleared.
+
 ## API endpoints
 
 | Endpoint | Purpose |
@@ -455,6 +531,7 @@ endpoints:
 | `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
 | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
 | `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
+| `GET /admin/routing/offload-routes` | Every model's offload route and whether routing applies it; `PUT` / `DELETE .../{model_id}` sets or clears one — see [Queue-wait offload](#queue-wait-offload). |
 | `/admin/routewise/model-settings` | Per-model RouteWise tuning — see [RouteWise](#routewise). |
 
 Each `POST` or `PUT` that changes a route has a `...-verifications` twin that
