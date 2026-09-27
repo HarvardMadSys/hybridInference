@@ -466,6 +466,81 @@ async def test_forced_streaming_upstream_401_reaches_the_request_log_attributed(
 
 
 @pytest.mark.asyncio
+async def test_sse_stream_upstream_401_before_first_byte_is_relayed_and_attributed(
+    monkeypatch, mock_db_logger, mock_log_store, caplog
+):
+    """``stream: true`` relays a pre-first-byte upstream 401 as a 401, attributed.
+
+    Until the SSE path held its first byte back this could not happen at all: the
+    200 was committed before the upstream was asked, and the 401 arrived as an
+    error frame inside it. Now that the status is relayed, the same attribution
+    rule as the two siblings above applies -- an unattributed 401 reads as the
+    gateway's own auth churn and would be logged at DEBUG.
+    """
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    class _Unauthorized(Exception):
+        """An upstream credential rejection, as aiohttp surfaces it."""
+
+        status = 401
+
+    class RejectingStreamAdapter(BaseAdapter):
+        async def chat_completion(self, messages: list[dict[str, Any]], **params):
+            raise _Unauthorized("HTTP 401: invalid api key")
+
+        async def stream_chat_completion(
+            self, messages: list[dict[str, Any]], **params
+        ) -> AsyncGenerator[str, None]:
+            raise _Unauthorized("HTTP 401: invalid api key")
+            if False:  # pragma: no cover
+                yield ""
+
+    cfg = ModelConfig(
+        id="diffusiongemma",
+        name="diffusiongemma",
+        provider="diffusiongemma-local",
+        base_url="http://localhost:8002/v1",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "max_tokens"],
+    )
+    router = RouteExecutor()
+    router.register_route("diffusiongemma", [(RejectingStreamAdapter(cfg), 1.0)])
+
+    app = FastAPI(title="SSE Upstream 401 App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.add_middleware(RequestLogMiddleware)
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "diffusiongemma",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": True,
+                },
+            )
+
+    assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+    assert resp.json()["error"]["code"] == 401
+
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(records) == 1, "expected one request log line at INFO or above"
+    record = records[0]
+    assert record.status_code == 401
+    assert record.provider == "diffusiongemma-local"
+    assert record.levelno == logging.INFO
+
+
+@pytest.mark.asyncio
 async def test_streaming_sse_format(completions_client: AsyncClient):
     async with completions_client.stream(
         "POST",
@@ -782,16 +857,10 @@ async def test_unavailable_routing_target_surfaces_503(completions_app, monkeypa
                 "stream": streaming,
             },
         )
-    if streaming:
-        assert response.status_code == 200
-        errors = [
-            json.loads(line[6:])["error"]
-            for line in response.text.splitlines()
-            if line.startswith("data: {") and '"error"' in line
-        ]
-        assert errors and errors[0]["code"] == 503
-    else:
-        assert response.status_code == 503
+    # Streaming too: the refusal comes back before a byte is sent, so there is
+    # no 200 to wrap it in.
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == 503
 
 
 @pytest.mark.asyncio
@@ -2150,16 +2219,15 @@ async def test_streaming_upstream_error_status_logged_to_db(monkeypatch, mock_lo
             },
         ) as resp,
     ):
-        assert resp.status_code == 200
-        lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+        # Failed before the first byte: the upstream's status is the response's,
+        # not an error frame inside a 200.
+        assert resp.status_code == 503
+        body = json.loads(await resp.aread())
 
     db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert db_kwargs is not None, "DB log_request should have been called on error path"
     assert db_kwargs["status_code"] == 503
-
-    error_chunks = [json.loads(line[6:])["error"] for line in lines if "error" in line]
-    assert error_chunks
-    assert error_chunks[0]["code"] == 503
+    assert body["error"]["code"] == 503
 
 
 @pytest.mark.asyncio
@@ -2191,15 +2259,64 @@ async def test_streaming_upstream_error_body_logged_to_db(monkeypatch, mock_log_
             },
         ) as resp,
     ):
-        assert resp.status_code == 200
-        async for _ in resp.aiter_lines():
-            pass
+        assert resp.status_code == 503
+        client_body = (await resp.aread()).decode()
 
     db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert db_kwargs is not None, "DB log_request should have been called on error path"
     assert "cliproxy queue overloaded" in db_kwargs["error"]
     assert "upstream_body=" in db_kwargs["error"]
     assert "sk-secret" not in db_kwargs["error"]
+    # What the client reads is the session's scrubbed message, never the raw body.
+    assert "sk-secret" not in client_body
+
+
+@pytest.mark.asyncio
+async def test_streaming_upstream_client_error_returns_real_status(monkeypatch, mock_log_store):
+    """A 4xx the upstream answered before streaming reaches the client as that 4xx.
+
+    The case that paged a downstream gateway: a caller's malformed tool schema,
+    rejected by SGLang in ~100ms. As a 200 whose stream ends in an error frame
+    with no [DONE], a gateway in front read it as a truncated generation and
+    scored it against this endpoint; as a 400 it is a client error there too.
+    """
+    upstream_body = (
+        '{"object":"error","message":"Tool 0 function has invalid \'parameters\' '
+        "schema: 'string' is not of type 'object', 'boolean'\",\"type\":\"BadRequestError\","
+        '"param":null,"code":400}'
+    )
+    app = _build_ttft_app(
+        "bad-tools-model",
+        UpstreamStatusErrorAdapter(
+            _mk_cfg("bad-tools-model"), status_code=400, error_body=upstream_body
+        ),
+        mock_log_store,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "bad-tools-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == 400
+        assert not resp.headers.get("content-type", "").startswith("text/event-stream")
+        body = json.loads(await resp.aread())
+
+    assert body["error"]["code"] == 400
+    # The upstream's own explanation survives, so the caller can fix the request.
+    assert "invalid 'parameters' schema" in body["error"]["message"]
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None
+    assert db_kwargs["status_code"] == 400
 
 
 # ===========================================================================

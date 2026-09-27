@@ -370,8 +370,9 @@ class StreamSession:
         anything this generator writes to ``req_ctx`` dies with it, unseen by the
         handler, ``RequestLogMiddleware`` and the alert rules. An attribute on a
         shared object crosses that boundary; ``ContextVar.set`` does not. The
-        buffered caller, which relays this failure's status to the client, reads
-        it and publishes in the request's own context.
+        callers that relay this failure's status to the client -- the buffered
+        caller, and the SSE handler for a failure before the commit -- read it
+        and publish in the request's own context.
 
         ``None`` when the stream never failed, and the ``"router"`` sentinel when
         it failed before any upstream was selected. Both are safe to hand straight
@@ -381,11 +382,15 @@ class StreamSession:
 
     @property
     def yielded_first_chunk(self) -> bool:
-        """Return ``True`` once the first SSE byte chunk has been emitted.
+        """Return ``True`` once the response has been committed.
 
-        The router uses this to decide whether a fallback is still safe:
-        once we've committed bytes to the client, we cannot start a new
-        adapter without breaking the SSE wire contract.
+        Committed means the role chunk, which precedes every other byte of a
+        response, has been yielded. Once bytes have reached the client we
+        cannot start a new adapter without breaking the SSE wire contract.
+
+        An error frame yielded while this is still ``False`` is a failure that
+        happened before anything was sent, which the caller can -- and the SSE
+        handler does -- answer with a real HTTP status instead.
         """
         return self._yielded_first_chunk
 
@@ -395,8 +400,15 @@ class StreamSession:
         Owns: initial role chunk emission, keepalive heartbeats, per-chunk
         sanitization, tool-call delta merging, reasoning-content extraction,
         TTFT measurement, final usage propagation, and DB-log + cost
-        finalization. On error after the first byte was yielded, emits an
-        error chunk to the client and schedules an error DB log.
+        finalization. On error, emits an error chunk and schedules an error
+        DB log.
+
+        Nothing is yielded until there is something to show the client or the
+        keepalive interval runs out (see ``_commit``), so a failure that comes
+        back first -- a 4xx the upstream answered in a few milliseconds, every
+        circuit open -- is this generator's *first* item, an error frame with
+        no role chunk before it. The SSE handler reads that item before it
+        starts the response and answers with the real status instead.
 
         ``adapter_chunks`` is consumed via a queue + background task so
         idle pauses can be filled with keepalive comments without
@@ -405,10 +417,30 @@ class StreamSession:
         try:
             # Initial assistant role chunk — many OpenAI-compatible clients
             # (e.g., Cursor) expect role:"assistant" before any content.
+            #
+            # Held back, not yielded up front. The first byte commits the response
+            # -- Starlette sends the 200 with it -- and after that a failure can
+            # only be reported in-band: a ``data: {"error": ...}`` frame, then the
+            # stream closes with no ``[DONE]``. A client that is itself a gateway
+            # reads that as a truncated generation, a ``stream_exception`` against
+            # this endpoint: a caller's malformed tool schema, rejected by the
+            # upstream in 100ms, tripped a downstream breaker and paged on it. So
+            # the role chunk goes out with the first byte the client would see
+            # anyway: every yield below is preceded by ``_commit`` until one has.
+            #
+            # Bounded by the keepalive interval: the Cloudflare tunnel in front
+            # drops a connection that shows no byte for 100s, and a long prefill
+            # can take longer than that to produce anything. When the interval
+            # expires with nothing to show, the role chunk is the byte that goes
+            # out -- the same moment a keepalive comment would have -- so a slow
+            # upstream is committed exactly as before, just 15s later.
             role_chunk = make_role_chunk(model=self._model, completion_id=self._completion_id)
-            logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
-            self._yielded_first_chunk = True
-            yield role_chunk
+
+            def _commit() -> str:
+                """Mark the response committed and return the role chunk that commits it."""
+                self._yielded_first_chunk = True
+                logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
+                return role_chunk
 
             serializer_mode = resolve_mode(self._request_headers)
             if serializer_mode.value != "strict_openai":
@@ -442,11 +474,16 @@ class StreamSession:
                             chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
                         )
                     except asyncio.TimeoutError:
-                        logger.debug(
-                            f"Emitting SSE keepalive (no chunk in "
-                            f"{_KEEPALIVE_INTERVAL}s) for model={self._model}"
-                        )
-                        yield ": keepalive\n\n"
+                        if not self._yielded_first_chunk:
+                            # Out of time to hold it: the role chunk is this
+                            # interval's byte.
+                            yield _commit()
+                        else:
+                            logger.debug(
+                                f"Emitting SSE keepalive (no chunk in "
+                                f"{_KEEPALIVE_INTERVAL}s) for model={self._model}"
+                            )
+                            yield ": keepalive\n\n"
                         last_client_yield = time.monotonic()
                         continue
                     if item is _SENTINEL:
@@ -505,12 +542,15 @@ class StreamSession:
                             if not result.should_forward:
                                 now = time.monotonic()
                                 if now - last_client_yield >= _KEEPALIVE_INTERVAL:
-                                    logger.debug(
-                                        f"Sending keepalive instead of "
-                                        f"reasoning chunk {self._chunk_count} "
-                                        f"for model={self._model}"
-                                    )
-                                    yield ": keepalive\n\n"
+                                    if not self._yielded_first_chunk:
+                                        yield _commit()
+                                    else:
+                                        logger.debug(
+                                            f"Sending keepalive instead of "
+                                            f"reasoning chunk {self._chunk_count} "
+                                            f"for model={self._model}"
+                                        )
+                                        yield ": keepalive\n\n"
                                     last_client_yield = now
                                 continue
 
@@ -521,17 +561,26 @@ class StreamSession:
                                 f"Yielding sanitized chunk {self._chunk_count} "
                                 f"to client: {sanitized_chunk[:150]}"
                             )
+                            if not self._yielded_first_chunk:
+                                yield _commit()
                             yield sanitized_chunk
                             last_client_yield = time.monotonic()
                             continue
 
                     # Non-JSON or [DONE] chunks pass through verbatim.
                     logger.debug(f"Yielding chunk {self._chunk_count} to client: {chunk[:150]}")
+                    if not self._yielded_first_chunk:
+                        yield _commit()
                     yield chunk
             finally:
                 reader_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await reader_task
+
+            # An upstream that finished without one client-visible chunk still
+            # answers with the role chunk, as it always has.
+            if not self._yielded_first_chunk:
+                yield _commit()
 
             logger.info(f"Stream complete: total_chunks={self._chunk_count}")
 
@@ -595,6 +644,10 @@ class StreamSession:
                 }
             }
             error_msg = f"data: {json.dumps(error_chunk)}\n\n"
+            # Before the commit this is the stream's first item, and no role chunk
+            # precedes it: the SSE handler turns it into the HTTP status in
+            # ``code`` (``completions.py``). After the commit it is the in-band
+            # report it has always been.
             logger.error(f"Yielding error chunk: {error_msg}")
             yield error_msg
         except (asyncio.CancelledError, GeneratorExit):
@@ -931,11 +984,13 @@ class StreamSession:
         if provider_for_error == "router":
             provider_for_error = self._provider_from_ctx or self._routing.provider or "router"
         # Expose the label as well as logging it as a value below: the buffered
-        # caller relays this failure's status to the client and needs the
-        # attribution in req_ctx, which it cannot get from here. See
-        # ``error_provider``. Deliberately not published from this generator —
-        # every current driver runs it in a task of its own, so a publish here
-        # would write to a context copy and read as a fix while doing nothing.
+        # caller, and the SSE handler for a failure before the commit, relay this
+        # failure's status to the client and need the attribution in req_ctx,
+        # which they cannot get from here. See ``error_provider``. Deliberately
+        # not published from this generator — which context a publish would land
+        # in depends on the task driving it (the buffered caller's reader task,
+        # Starlette's streaming task, or the SSE handler for the first item), so
+        # a publish here would read as a fix while, on most paths, doing nothing.
         self._error_provider = provider_for_error
         exc_status_code = _extract_exception_status_code(exc)
 

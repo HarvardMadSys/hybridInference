@@ -363,3 +363,93 @@ async def test_stream_post_ndjson(monkeypatch):
         lines.append(line)
 
     assert [json.loads(line) for line in lines] == [{"a": 1}, {"b": 2}]
+
+
+# ---------------------------------------------------------------------------
+# upstream error status: SGLang's 500 for media it cannot decode
+# ---------------------------------------------------------------------------
+
+# Verbatim from SGLang (qwen3.6-35b replica, 2026-09-25): the caller sent a chat
+# platform's JSON error body, base64-encoded and labelled image/jpeg.
+_SGLANG_UNDECODABLE_IMAGE = (
+    '{"object":"error","message":"Internal server error: An exception occurred while '
+    "loading IMAGE data at index 0: Error while loading data ImageData( cannot identify "
+    'image file <_io.BytesIO object at 0x7b51e81a94e0>","type":"InternalServerError",'
+    '"param":null,"code":500}'
+)
+
+
+class _ErrorResp:
+    """An upstream error response as ``_upstream_status_error`` reads it."""
+
+    def __init__(self, status: int, body: str, reason: str = "Internal Server Error"):
+        self.status = status
+        self.reason = reason
+        self.request_info = None
+        self.history = ()
+        self.headers = {"Content-Type": "application/json"}
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+
+@pytest.mark.unit
+def test_undecodable_media_500_is_raised_as_a_400():
+    from serving.http import _upstream_status_error
+
+    error = _upstream_status_error(
+        _ErrorResp(500, _SGLANG_UNDECODABLE_IMAGE), _SGLANG_UNDECODABLE_IMAGE
+    )
+
+    assert error.status == 400
+    # The body is untouched, so the operator log and the caller's message still
+    # carry SGLang's own explanation.
+    assert error.error_body == _SGLANG_UNDECODABLE_IMAGE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        # A genuine server error from a multimodal model still counts.
+        (500, '{"object":"error","message":"CUDA error: an illegal memory access","code":500}'),
+        # Only the 500 is reinterpreted; any other status stands as sent.
+        (503, _SGLANG_UNDECODABLE_IMAGE),
+        (500, ""),
+    ],
+)
+def test_other_upstream_errors_keep_their_status(status, body):
+    from serving.http import _upstream_status_error
+
+    assert _upstream_status_error(_ErrorResp(status, body), body).status == status
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_post_raises_undecodable_media_as_a_client_error(monkeypatch):
+    """The streaming path -- the one the breaker reads -- raises the 400 too."""
+    client = AsyncHTTPClient.shared()
+
+    class _CM:
+        async def __aenter__(self):
+            return _ErrorResp(500, _SGLANG_UNDECODABLE_IMAGE)
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class _S:
+        def post(self, *_a, **_k):
+            return _CM()
+
+    async def _ensure(_self):
+        return _S()
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _ensure)
+
+    with pytest.raises(aiohttp.ClientResponseError) as caught:
+        async for _ in client.stream_post("http://local/v1/chat/completions", json={}, mode="sse"):
+            pass
+
+    assert caught.value.status == 400
+    assert caught.value.error_body == _SGLANG_UNDECODABLE_IMAGE
