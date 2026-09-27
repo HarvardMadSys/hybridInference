@@ -281,49 +281,6 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByTestId(`offload-badge-${reservedRoute.route_id}`)).not.toBeInTheDocument();
   });
 
-  it('marks the routes that are stalled right now', async () => {
-    const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
-    const reservedRoute = {
-      ...fixedRoute,
-      route_id: 'minimax-fast:openrouter-api',
-      provider: 'openrouter',
-      upstream_provider: 'openrouter',
-      key_provider: 'openrouter',
-      base_url: 'https://openrouter.ai/api/v1',
-      endpoint_id: 'minimax-fast:openrouter-api',
-    };
-    vi.mocked(listProviderRoutes).mockResolvedValue({
-      provider_options: providerOptions,
-      openrouter_provider_options: openRouterProviderOptions,
-      routes: [fixedRoute, reservedRoute],
-    });
-    vi.mocked(listOffloadRoutes).mockResolvedValue({
-      queue_enabled: true,
-      max_wait_seconds: 30,
-      offload_routes: [
-        {
-          model_id: 'minimax-fast',
-          route_id: reservedRoute.route_id,
-          wait_seconds: 5,
-          endpoint_id: reservedRoute.endpoint_id,
-          active: true,
-          inactive_reason: null,
-          stalled_endpoints: [fixedRoute.endpoint_id],
-          updated_at: null,
-          updated_by: 'admin@example.com',
-        },
-      ],
-    });
-
-    render(<ProviderRoutesTab />);
-
-    expect(await screen.findByTestId(`stalled-badge-${fixedRoute.route_id}`)).toHaveTextContent(
-      'Stalled',
-    );
-    expect(screen.queryByTestId(`stalled-badge-${reservedRoute.route_id}`)).not.toBeInTheDocument();
-    expect(screen.getByTestId('offload-stalled-routes')).toHaveTextContent('Stalled now:');
-  });
-
   it('shows no offload panel for a routewise model without one', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,

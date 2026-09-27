@@ -1703,10 +1703,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 parsedDraftConcurrencyLimit !== null && parsedDraftConcurrencyLimit > 0;
               const isSavingConcurrencyLimit = savingConcurrencyKey === key;
               const isOffloadRoute = selectedOffload?.route_id === route.route_id;
-              const isStalled =
-                !isOffloadRoute &&
-                !!selectedOffload?.active &&
-                (selectedOffload.stalled_endpoints ?? []).includes(route.endpoint_id);
               return (
                 <div
                   key={key}
@@ -1891,15 +1887,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           data-testid={`offload-badge-${route.route_id}`}
                         >
                           Offload
-                        </span>
-                      )}
-                      {isStalled && (
-                        <span
-                          className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
-                          title={`A request here got no first token within ${selectedOffload?.wait_seconds}s; new requests go to other routes until one does`}
-                          data-testid={`stalled-badge-${route.route_id}`}
-                        >
-                          Stalled
                         </span>
                       )}
                     </div>

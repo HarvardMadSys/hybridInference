@@ -548,6 +548,18 @@ class ToolCallAccumulator:
         self._completed = []
 
 
+def is_output_event(event: dict[str, Any]) -> bool:
+    """Return whether a Claude SSE event carries generated content.
+
+    A content block starting, or a delta to one: text, thinking, or a tool call's
+    JSON. The first such event is the model starting to answer, whatever the
+    adapter then does with it -- :func:`handle_stream_event` keeps tool-use JSON
+    until the message ends and drops thinking, so neither reaches the router
+    until later, if at all.
+    """
+    return event.get("type") in ("content_block_start", "content_block_delta")
+
+
 def handle_stream_event(
     event: dict[str, Any],
     accumulator: ToolCallAccumulator,

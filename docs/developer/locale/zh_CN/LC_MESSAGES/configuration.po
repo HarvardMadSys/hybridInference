@@ -827,9 +827,9 @@ msgstr ""
 
 #: ../developer/configuration.md
 msgid ""
-"Reserve a route for requests left waiting in the outbound queue or at a "
-"stalled engine"
-msgstr "为在出站队列中或在停滞的引擎上等待过久的请求预留一条路由"
+"Reserve a route for requests left waiting in the outbound queue or for an "
+"engine's first token"
+msgstr "为在出站队列中等待过久、或迟迟等不到引擎首个 token 的请求预留一条路由"
 
 #: ../developer/configuration.md
 msgid "**Queue offload**"

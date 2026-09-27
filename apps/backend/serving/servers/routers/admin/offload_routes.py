@@ -4,9 +4,9 @@ An admin designates one route of a fixed-routed model as its *offload route*
 and sets how long a request may wait -- for an outbound concurrency slot, then
 for its engine's first token -- before it is sent there. The offload route then
 takes no ordinary traffic: ``FixedRouter`` reserves it for requests whose
-selected route kept them waiting past the wait, for requests arriving while the
-model's other routes are stalled (``routing.engine_stall``), and for requests no
-other route could serve.
+selected route kept them waiting past the wait, and for requests no other route
+could serve. Each request is judged on its own wait (``routing.engine_wait``):
+nothing marks a route that kept one waiting, and it takes the next as usual.
 
 Each policy is one ``site_settings`` row, applied to routing through
 ``OffloadRouteResolver``'s in-process snapshot the moment the write succeeds.
@@ -135,23 +135,11 @@ def _route_is_weighted(
     return weight > 0
 
 
-def _stalled_endpoints(services: Any, route: Any, offload_endpoint_id: str | None) -> list[str]:
-    """Return the route's endpoints this worker has stalled, the offload route aside."""
-    tracker = getattr(services.router, "engine_stalls", None)
-    if tracker is None:
-        return []
-    endpoint_ids = [endpoint_id_for_adapter(entry[0]) for entry in _raw_route_entries(route)]
-    return tracker.stalled(
-        endpoint_id for endpoint_id in endpoint_ids if endpoint_id != offload_endpoint_id
-    )
-
-
 def _offload_item(services: Any, model_id: str, record: OffloadRouteRecord) -> OffloadRouteItem:
     """Describe one stored policy and whether routing currently applies it."""
     policy = record.policy
     endpoint_id: str | None = None
     reason: str | None = None
-    stalled: list[str] = []
     route = _canonical_route(services, model_id)
     if route is None:
         reason = "The model no longer exists"
@@ -174,7 +162,6 @@ def _offload_item(services: Any, model_id: str, record: OffloadRouteRecord) -> O
                     "The route's effective weight is 0, so routing sends it nothing; "
                     "give it a weight above 0 (it still takes no ordinary traffic)"
                 )
-        stalled = _stalled_endpoints(services, route, endpoint_id)
     return OffloadRouteItem(
         model_id=model_id,
         route_id=policy.route_id,
@@ -182,7 +169,6 @@ def _offload_item(services: Any, model_id: str, record: OffloadRouteRecord) -> O
         endpoint_id=endpoint_id,
         active=reason is None,
         inactive_reason=reason,
-        stalled_endpoints=stalled,
         updated_at=record.updated_at,
         updated_by=record.updated_by,
     )
@@ -255,7 +241,7 @@ async def set_offload_route(
     # wait longer than the limiter's acquire timeout still ends a queue wait at
     # that timeout, which offloads the request too; what it lengthens is the
     # engine's first-token wait, which a model whose long prompts take a while
-    # to start answering needs (``routing.engine_stall``).
+    # to start answering needs (``routing.engine_wait``).
     _require_canonical_route(services, model_id)
 
     async with model_router_transition_lock(services, model_id):
