@@ -1,9 +1,4 @@
-"""The RouteWise example's runtime path: real sockets, real probe, no database.
-
-These live outside `tests/unit/` on purpose. That tier stubs `aiohttp` with a
-placeholder session, so a probe there cannot make a request and a green run
-would prove nothing about the behaviour the README promises.
-"""
+"""The RouteWise example's runtime path: real sockets, real probe, no database."""
 
 from __future__ import annotations
 
