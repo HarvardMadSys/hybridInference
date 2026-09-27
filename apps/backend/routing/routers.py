@@ -1006,18 +1006,23 @@ class FixedRouter:
                 aborts the request at the engine.
         """
         held: list[Any] = []
-        watch.start()
         try:
-            while True:
-                try:
-                    chunk = await stream.__anext__()
-                except StopAsyncIteration:
-                    break
-                held.append(chunk)
-                if has_non_empty_content(chunk):
-                    break
-        except asyncio.CancelledError:
-            if not watch.owns_cancellation():
+            async with watch.deadline() as deadline:
+                watch.arm(deadline)
+                while True:
+                    try:
+                        chunk = await stream.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    held.append(chunk)
+                    if has_non_empty_content(chunk):
+                        break
+        except TimeoutError:
+            # Only the watch's own deadline becomes an offload: a TimeoutError the
+            # adapter raised is that attempt's failure, and a client hanging up as
+            # the deadline passes stays a cancellation, never an offload request
+            # nobody reads.
+            if not watch.expired():
                 raise
             watch.record_expiry()
             raise EngineWaitExpired(watch.endpoint_id, float(watch.wait_seconds or 0.0)) from None

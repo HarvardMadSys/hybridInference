@@ -39,6 +39,11 @@ MODEL = "m"
 MESSAGES = [{"role": "user", "content": "hi"}]
 KEY = "shared-key"
 
+#: The first-token wait is enforced with ``asyncio.timeout`` (Python 3.11+).
+needs_timeout = pytest.mark.skipif(
+    not hasattr(asyncio, "timeout"), reason="the first-token wait needs asyncio.timeout"
+)
+
 
 class _Engine(BaseAdapter):
     """An upstream that sends its first token only once ``gate`` is set.
@@ -198,6 +203,7 @@ def _routing(chunks: list[str]) -> list[dict[str, Any]]:
 # ------------------------------------------------------ the first-token wait
 
 
+@needs_timeout
 async def test_a_stream_with_no_first_token_is_cancelled_and_offloaded():
     engine = _Engine("engine")
     reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
@@ -236,6 +242,7 @@ async def test_a_first_token_in_time_goes_out_with_what_came_before_it():
     assert router.engine_stalls._endpoints == {}
 
 
+@needs_timeout
 async def test_only_attempts_on_other_routes_are_watched():
     engine = _Engine("engine")
     reserved = _Engine("reserved", route_id="offload", answered=True)
@@ -433,6 +440,7 @@ async def test_one_probe_at_a_time():
     assert not router.engine_stalls.is_stalled("m:engine-api")
 
 
+@needs_timeout
 async def test_a_probe_that_gets_no_token_either_is_offloaded_and_the_stall_stands():
     engine = _Engine("engine")
     reserved = _Engine("reserved", route_id="offload", answered=True)

@@ -26,6 +26,12 @@ Only streaming attempts can be watched: a non-streaming response arrives whole,
 so there is no first token to wait for. Non-streaming requests still avoid a
 stalled endpoint, but never probe one.
 
+The first-token wait needs Python 3.11+. Its deadline is ``asyncio.timeout``,
+the one primitive that can tell its own cancellation of a task from a client's
+that lands at the same moment; Python 3.10 has no way to (it merges the two),
+and turning a disconnect into an offload would send a request nobody reads. On
+3.10 attempts are tracked but never timed, so no endpoint stalls.
+
 State is per process, like the circuit breaker: each gateway worker learns about
 an engine from its own traffic.
 """
@@ -33,6 +39,7 @@ an engine from its own traffic.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import threading
 import time
@@ -43,8 +50,13 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
+    from contextlib import AbstractAsyncContextManager
 
 logger = get_logger(__name__)
+
+# ``asyncio.timeout`` (Python 3.11+); None on an interpreter without it.
+_asyncio_timeout: Callable[[float | None], Any] | None = getattr(asyncio, "timeout", None)
+_warned_untimed = False
 
 __all__ = [
     "EngineStallTracker",
@@ -233,13 +245,14 @@ class FirstTokenWatch:
     is created, and settles it exactly once: :meth:`record_answer`,
     :meth:`record_expiry`, or :meth:`close` for any other ending.
 
-    When ``wait_seconds`` is set it is also the attempt's deadline. The deadline
-    runs in the task awaiting the first token and cancels that task when it
-    passes, the way ``asyncio.timeout`` does (which Python 3.10 lacks). The
-    cancellation lands inside the adapter's read and unwinds its stream, which
-    closes the connection and so aborts the request at the engine; the router
-    then turns it into :class:`EngineWaitExpired`. The router yields nothing
-    while the deadline is armed, so it can never cancel the stream's consumer.
+    When ``wait_seconds`` is set it is also the attempt's deadline, enforced by
+    ``asyncio.timeout`` around the wait (:meth:`deadline`, then :meth:`arm`).
+    Its cancellation lands inside the adapter's read and unwinds the stream,
+    which closes the connection and so aborts the request at the engine; the
+    router then turns the ``TimeoutError`` into :class:`EngineWaitExpired`. A
+    client's cancellation arriving at the same moment stays a cancellation --
+    ``asyncio.timeout`` tells the two apart -- and the router yields nothing
+    while the deadline is armed, so it never cancels the stream's consumer.
 
     ``serving.adapters.upstream_limiter`` calls :meth:`on_queued` when the
     request has to wait for an outbound slot and :meth:`on_sent` when it gets
@@ -260,69 +273,59 @@ class FirstTokenWatch:
         self.wait_seconds = wait_seconds
         self._tracker = tracker
         self._token: int | None = tracker.begin(endpoint_id)
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._task: asyncio.Task[Any] | None = None
-        self._cancelling = 0
-        self._handle: asyncio.TimerHandle | None = None
-        self._fired = False
+        self._deadline: Any = None
+        self._stopped = False
 
     # -- the deadline ---------------------------------------------------------
 
-    def start(self) -> None:
-        """Arm the deadline in the current task. A no-op without ``wait_seconds``."""
+    def deadline(self) -> AbstractAsyncContextManager[Any]:
+        """Return the context the wait for the first token runs in.
+
+        ``asyncio.timeout`` for an attempt with a wait, not yet armed -- pass what
+        it yields to :meth:`arm`. Without a wait, or on Python 3.10, a context
+        that never times out.
+        """
         if self.wait_seconds is None:
+            return contextlib.nullcontext()
+        if _asyncio_timeout is None:
+            _warn_untimed()
+            return contextlib.nullcontext()
+        return _asyncio_timeout(None)
+
+    def arm(self, deadline: Any) -> None:
+        """Start the wait on the entered ``deadline``; a no-op for an untimed one."""
+        if deadline is None:
             return
-        self._loop = asyncio.get_running_loop()
-        self._task = asyncio.current_task()
-        cancelling = getattr(self._task, "cancelling", None)
-        self._cancelling = cancelling() if cancelling is not None else 0
-        self._arm()
+        self._deadline = deadline
+        self._restart()
 
     def on_queued(self) -> None:
         """Pause the deadline: the request is waiting for an outbound slot."""
-        self._disarm()
+        self._reschedule(None)
 
     def on_sent(self) -> None:
         """Restart the deadline: the request is on its way to the engine."""
-        self._arm()
+        self._restart()
 
     def stop(self) -> None:
-        """Disarm the deadline for good; later reports from the limiter do nothing."""
-        self._disarm()
-        self._loop = None
+        """End the wait; later reports from the limiter do nothing."""
+        self._stopped = True
 
-    def owns_cancellation(self) -> bool:
-        """Return whether the ``CancelledError`` being handled is this deadline's.
+    def expired(self) -> bool:
+        """Return whether this attempt's deadline passed."""
+        return self._deadline is not None and bool(self._deadline.expired())
 
-        Call it once, from the handler. On Python 3.11+ it also withdraws this
-        deadline's cancel request, and answers False when something else asked
-        for the task to be cancelled as well: a client disconnect landing at the
-        same moment still cancels the request instead of turning into an
-        offload.
-        """
-        if not self._fired:
-            return False
-        uncancel = getattr(self._task, "uncancel", None)
-        if uncancel is None:
-            return True
-        return uncancel() <= self._cancelling
+    def _restart(self) -> None:
+        if self.wait_seconds is not None:
+            self._reschedule(asyncio.get_running_loop().time() + self.wait_seconds)
 
-    def _arm(self) -> None:
-        if self._loop is None or self._fired or self.wait_seconds is None:
+    def _reschedule(self, when: float | None) -> None:
+        if self._deadline is None or self._stopped:
             return
-        self._disarm()
-        self._handle = self._loop.call_later(self.wait_seconds, self._fire)
-
-    def _disarm(self) -> None:
-        if self._handle is not None:
-            self._handle.cancel()
-            self._handle = None
-
-    def _fire(self) -> None:
-        self._handle = None
-        self._fired = True
-        if self._task is not None:
-            self._task.cancel()
+        # A deadline that is already expiring, or whose block has exited, cannot
+        # move, and has no attempt left to time.
+        with contextlib.suppress(RuntimeError):
+            self._deadline.reschedule(when)
 
     # -- the tracker ----------------------------------------------------------
 
@@ -344,8 +347,23 @@ class FirstTokenWatch:
             self._token = None
 
     def close(self) -> None:
-        """Disarm, and settle the attempt as abandoned if nothing else settled it."""
+        """End the wait, and settle the attempt as abandoned if nothing else settled it."""
         self.stop()
         if self._token is not None:
             self._tracker.abandoned(self.endpoint_id, self._token)
             self._token = None
+
+
+def _warn_untimed() -> None:
+    """Say once per process that first-token waits cannot be enforced here."""
+    global _warned_untimed
+    if _warned_untimed:
+        return
+    _warned_untimed = True
+    logger.warning(
+        "engine_wait_untimed",
+        extra={
+            "event": "engine_wait_untimed",
+            "reason": "asyncio.timeout needs Python 3.11+; streams are tracked, not timed",
+        },
+    )

@@ -494,7 +494,10 @@ Only streaming requests are watched: a non-streaming response arrives whole, so
 there is no first token to wait for. Non-streaming requests still go around a
 stalled engine, but never probe one. The first-token wait includes the engine's
 prefill, so a model serving very long prompts needs a wait above the time it
-takes to start answering them. Stalls are kept per worker process, like circuit
+takes to start answering them. The wait needs Python 3.11 or newer: its
+deadline is `asyncio.timeout`, which can tell its own cancellation from a client
+that hangs up at the same moment. On Python 3.10 streams are tracked but never
+timed, so no engine stalls. Stalls are kept per worker process, like circuit
 state. `GET /admin/routing/offload-routes` reports each model's stalled routes
 as `stalled_endpoints`, the console marks them **Stalled**, and each stall and
 recovery logs an `engine_stalled` or `engine_recovered` line.
