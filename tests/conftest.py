@@ -150,3 +150,26 @@ def _reset_dynamic_keys_registry():
     dynamic_keys.reset()
     yield
     dynamic_keys.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_request_context():
+    """Start each test with an empty request context, and restore it afterwards.
+
+    ``serving.utils.context`` keeps the request context in a ``ContextVar``. A
+    synchronous test runs in the worker's main context, so whatever it writes
+    with ``req_ctx.set``/``update`` stays visible to every later test in that
+    worker. pytest-asyncio runs each async test in a copy, so async tests cannot
+    leak — but they still read what a sync test left behind. A leaked
+    ``affinity_key`` is the costly one: a later test's ``FixedRouter`` pins all
+    its weighted draws to whichever backend it drew first. Under
+    ``--dist loadfile`` that needs the writer and the victim on one worker, and
+    any new test file reshuffles which files share one, so it surfaces as a
+    rare flake on an unrelated change.
+    """
+    from serving.utils import context as req_ctx
+
+    saved = req_ctx.get()
+    req_ctx.set({})
+    yield
+    req_ctx.set(saved)

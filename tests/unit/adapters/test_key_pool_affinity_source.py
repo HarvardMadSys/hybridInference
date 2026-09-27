@@ -50,13 +50,6 @@ async def _chat_as(adapter: OpenAICompatAdapter, ctx: dict) -> None:
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
 
-@pytest.fixture(autouse=True)
-def _clean_context():
-    req_ctx.set({})
-    yield
-    req_ctx.set({})
-
-
 @pytest.mark.unit
 def test_prefers_the_published_affinity_key():
     req_ctx.set({"affinity_key": "ip:203.0.113.7", "auth_key_hash": "_anon"})
