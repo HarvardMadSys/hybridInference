@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -347,6 +348,113 @@ def _raise_surfaced_error(
         # upstream keeps whatever it already decided.
         routing.setdefault("fallback", True)
     raise exc
+
+
+# How upstreams word "this prompt does not fit the model's context window".
+# Matched on the provider's own text because no status sets it apart from any
+# other malformed request -- SGLang, vLLM and OpenAI all answer it with a 400:
+#   SGLang     "The input (605732 tokens) is longer than the model's context
+#              length (262144 tokens)." / "Requested token count exceeds the
+#              model's maximum context length of 262144 tokens. ..."
+#   vLLM       "This model's maximum context length is 131072 tokens. ..." /
+#              "The decoder prompt (length 140000) is longer than the maximum
+#              model length of 131072. ..."
+#   OpenAI     code ``context_length_exceeded``
+#   Anthropic  "prompt is too long: 208000 tokens > 200000 maximum"
+#   Gemini     "The input token count (1100000) exceeds the maximum number of
+#              tokens allowed (1048576)."
+#   Moonshot   "Your request exceeded model token limit: 262144"
+#   xAI        "This model's maximum prompt length is 131072 but the request
+#              contains 140000 tokens."
+# The prose is spelled with a space on purpose: the snake_case parameter name
+# appears in unrelated 400s ("Unrecognized request argument supplied:
+# context_length"), so only OpenAI's full error code is matched in that form.
+_CONTEXT_WINDOW_REFUSAL_RE = re.compile(
+    r"context length|context window|context_length_exceeded"
+    r"|maximum (?:model|prompt) length|prompt is too long"
+    r"|input token count\b.{0,40}\bexceeds|model token limit",
+    re.IGNORECASE,
+)
+
+
+def exceeds_context_window(exc: BaseException) -> bool:
+    """Return whether ``exc`` is an upstream refusing a prompt too long for its window.
+
+    Of all the request-describing failures this is the one a second route can
+    be predicted to repeat. Most 400s are the answering server's own verdict --
+    one SGLang build rejects a tool schema another accepts -- so trying the next
+    route stays worthwhile. Whether a prompt fits is a matter of its length and
+    the route's window, and every route's window is in its config.
+
+    Public for the same reason as ``describes_request_error``: any router that
+    walks candidates after a failure needs the same answer. The text is read
+    from ``error_body``, where ``serving.http`` keeps a failed response's body,
+    and from the message, where an in-band stream error frame carries it.
+    """
+    if not _describes_request(exc):
+        return False
+    body = getattr(exc, "error_body", None)
+    texts = (body, str(exc)) if isinstance(body, str) else (str(exc),)
+    return any(_CONTEXT_WINDOW_REFUSAL_RE.search(text) for text in texts)
+
+
+def _configured_context_window(adapter: BaseAdapter) -> int | None:
+    """Return the context window ``adapter``'s route is configured with, if usable."""
+    window = getattr(adapter.config, "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    return window
+
+
+def _widest_refused_window(
+    refused_window: int | None, adapter: BaseAdapter, exc: BaseException
+) -> int | None:
+    """Fold one failed attempt into the widest configured window that refused the prompt."""
+    if not exceeds_context_window(exc):
+        return refused_window
+    window = _configured_context_window(adapter)
+    if window is None:
+        return refused_window
+    return window if refused_window is None else max(refused_window, window)
+
+
+def _skips_for_context_window(
+    model_id: str, adapter: BaseAdapter, refused_window: int | None
+) -> bool:
+    """Return whether fallback should pass over ``adapter`` because the prompt cannot fit it.
+
+    ``refused_window`` is the widest configured window among the routes that have
+    already refused this prompt as too long. A route whose window is no wider
+    would refuse it too, but only after receiving and tokenizing the whole
+    prompt: on a long-context model that is hundreds of thousands of tokens and
+    seconds of upstream work per attempt, repeated for every route and every
+    client retry. A wider route may still fit the prompt and is tried. When
+    either window is unknown nothing is skipped, as before this rule existed.
+    A skipped route was never contacted, so it gets no health sample and no
+    ``failed_attempts`` entry.
+    """
+    if refused_window is None:
+        return False
+    window = _configured_context_window(adapter)
+    if window is None or window > refused_window:
+        return False
+    endpoint_id = endpoint_id_for_adapter(adapter)
+    logger.info(
+        "Skipping fallback %s for %s: its %d-token context window is no wider "
+        "than the %d-token window that refused the prompt",
+        endpoint_id,
+        model_id,
+        window,
+        refused_window,
+        extra={
+            "event": "context_window_fallback_skipped",
+            "model_id": model_id,
+            "endpoint_id": endpoint_id,
+            "context_length": window,
+            "refused_context_length": refused_window,
+        },
+    )
+    return True
 
 
 # ============================================================================
@@ -1656,6 +1764,7 @@ class FixedRouter:
                 # same candidate twice, once here and once from the caller.
                 raise primary_error
             self._drop_affinity(model_id)
+            refused_window = _widest_refused_window(None, primary, primary_error)
             route = self.routes[model_id]
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
@@ -1668,6 +1777,8 @@ class FixedRouter:
                     continue
                 endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):
+                    continue
+                if _skips_for_context_window(model_id, adapter, refused_window):
                     continue
                 # Resolved before the claim so a binding this router cannot honor
                 # costs no admission slot.
@@ -1724,6 +1835,7 @@ class FixedRouter:
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
                     attempts.append(_RouteAttempt(execution, fallback_error))
+                    refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
@@ -1921,6 +2033,7 @@ class FixedRouter:
             # closes the stream — the partial response is the lesser harm.
             if chunks_yielded:
                 raise primary_error
+            refused_window = _widest_refused_window(None, primary, primary_error)
             route = self.routes[model_id]
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
@@ -1931,6 +2044,8 @@ class FixedRouter:
                     continue
                 adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                 if not adapter_supports_modalities(adapter, required_modalities):
+                    continue
+                if _skips_for_context_window(model_id, adapter, refused_window):
                     continue
                 # Resolved before the claim, for the same reason as the
                 # non-streaming loop: an unusable binding costs no probe slot.
@@ -1995,6 +2110,7 @@ class FixedRouter:
                     # another provider into the same response.
                     if chunks_yielded:
                         raise
+                    refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     continue
                 finally:
                     # Covers the attempt that never reached a first token.
