@@ -694,7 +694,12 @@ async def test_error_provider_recovered_from_routing_chunk_when_exc_has_no_routi
 
 
 @pytest.mark.asyncio
-async def test_error_before_any_chunk_still_emits_role_chunk_then_error():
+async def test_error_before_any_chunk_yields_the_error_frame_alone():
+    """A failure before anything was sent is the first item, with no role chunk.
+
+    Nothing has been committed, so the SSE handler can still answer with the
+    frame's status -- a role chunk in front of it would have sent the 200.
+    """
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger)
 
@@ -704,16 +709,91 @@ async def test_error_before_any_chunk_still_emits_role_chunk_then_error():
             yield ""
 
     out = await _consume(session.stream(_gen()))
-    # The role chunk yields BEFORE we touch the adapter generator, so it
-    # always appears even when the adapter raises immediately.
-    assert len(out) == 2
-    role_payload = json.loads(out[0][6:])
-    assert role_payload["choices"][0]["delta"] == {"role": "assistant"}
-    assert "error" in out[1]
+    assert len(out) == 1
+    assert json.loads(out[0][6:])["error"]["code"] == 500
+    assert session.yielded_first_chunk is False
     log_data = cl_logger.schedule_log.call_args.args[1]
     assert log_data["status_code"] == 500
     # TTFT was never set since no meaningful delta arrived.
     assert log_data["ttft_ms"] is None
+
+
+@pytest.mark.asyncio
+async def test_failure_after_a_routing_chunk_is_still_uncommitted():
+    """The router's synthetic ``_routing`` chunk is not a byte the client sees.
+
+    ``FixedRouter.stream_chat_completion`` yields one before every attempt, so a
+    request whose every attempt fails produces routing chunks and then the error.
+    Committing on the first of them would put every such failure back in-band.
+    """
+    routing_only = (
+        'data: {"choices": [], "_routing": {"provider": "openai", '
+        '"endpoint_id": "gpt-4:openai-api"}}\n\n'
+    )
+    session = _make_session()
+
+    async def _gen():
+        yield routing_only
+        raise RuntimeError("400 from upstream")
+
+    out = await _consume(session.stream(_gen()))
+    assert len(out) == 1
+    assert "error" in json.loads(out[0][6:])
+    assert session.yielded_first_chunk is False
+
+
+@pytest.mark.asyncio
+async def test_role_chunk_goes_out_with_the_first_content_chunk():
+    """Held back, the role chunk still leads: success output is byte-identical."""
+    routing_only = 'data: {"choices": [], "_routing": {"provider": "openai"}}\n\n'
+    session = _make_session()
+    out = await _consume(
+        session.stream(_aiter([routing_only, _content_chunk("gpt-4", "hi", finish="stop")]))
+    )
+    assert json.loads(out[0][6:])["choices"][0]["delta"] == {"role": "assistant"}
+    assert json.loads(out[1][6:])["choices"][0]["delta"] == {"content": "hi"}
+    assert len(out) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_still_answers_with_the_role_chunk():
+    session = _make_session()
+    out = await _consume(session.stream(_aiter([])))
+    assert len(out) == 1
+    assert json.loads(out[0][6:])["choices"][0]["delta"] == {"role": "assistant"}
+    assert session.yielded_first_chunk is True
+
+
+@pytest.mark.asyncio
+async def test_slow_upstream_commits_when_the_keepalive_interval_expires(monkeypatch):
+    """With nothing to show for a whole interval, the role chunk is that interval's byte.
+
+    The proxies in front still need a byte within the interval, so the hold is
+    bounded by it; a failure after that point is reported in-band, as before.
+    """
+    real_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(awaitable, timeout=None):
+        shortened = 0.01 if timeout is not None and timeout > 0.01 else timeout
+        return await real_wait_for(awaitable, timeout=shortened)
+
+    monkeypatch.setattr(
+        "serving.servers.routers.completions_stream.asyncio.wait_for", fast_wait_for
+    )
+    session = _make_session()
+
+    async def _slow_then_fail():
+        await asyncio.sleep(0.05)
+        raise RuntimeError("upstream died during prefill")
+        if False:  # pragma: no cover
+            yield ""
+
+    out = await _consume(session.stream(_slow_then_fail()))
+    # The first timeout commits with the role chunk -- not a keepalive comment.
+    assert json.loads(out[0][6:])["choices"][0]["delta"] == {"role": "assistant"}
+    assert session.yielded_first_chunk is True
+    assert any(line == ": keepalive\n\n" for line in out[1:-1])
+    assert "error" in json.loads(out[-1][6:])
 
 
 @pytest.mark.asyncio

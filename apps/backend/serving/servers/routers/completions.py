@@ -290,15 +290,35 @@ async def _close_stream_quietly(stream: Any) -> None:
         pass
 
 
-async def _yield_with_cleanup(stream: Any) -> Any:
+def _pre_commit_error(chunk: str | None) -> tuple[int, str | None] | None:
+    """Return ``(status, message)`` when ``chunk`` is an SSE error frame.
+
+    Applied only to a stream's first item, and only while ``StreamSession`` has
+    not committed: there an error frame is a failure that happened before a byte
+    was sent (see ``StreamSession.stream``). ``code`` is the status the session
+    extracted from the upstream exception; anything that is not an HTTP error
+    status becomes a 500, the status that frame would otherwise have carried.
+    ``message`` is already scrubbed for the user by the session.
+    """
+    if not chunk or not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+        return None
     try:
-        async for data in stream:
-            yield data
-    finally:
-        await _close_stream_quietly(stream)
+        payload = json.loads(chunk[6:])
+    except json.JSONDecodeError:
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    is_status = isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599
+    message = error.get("message")
+    return (
+        code if is_status else 500,
+        message if isinstance(message, str) and message.strip() else None,
+    )
 
 
-async def _chain_first_then_rest(first: bytes | None, stream: Any) -> Any:
+async def _chain_first_then_rest(first: bytes | str | None, stream: Any) -> Any:
     try:
         if first is not None:
             yield first
@@ -976,6 +996,36 @@ async def chat_completions(
                 headers=streaming_headers or None,
             )
 
+        # Pull the first item before the response starts, as the buffered path
+        # above does. A 200 is committed with the first byte, and everything the
+        # stream could say after it arrives in-band: a failure becomes an error
+        # frame and a close with no [DONE], which a client that is itself a
+        # gateway (every `kind: staging` / `openai_compat` hop) reads as a
+        # truncated generation and scores against this endpoint. StreamSession
+        # holds its bytes back until it has something to send, so a failure that
+        # came back first -- a 4xx the upstream answered in milliseconds, every
+        # circuit open -- is the first item, with nothing committed yet, and the
+        # client can be told the real status instead.
+        sse_stream = session.stream(adapter_chunks)
+        first_sse: str | None
+        try:
+            first_sse = await sse_stream.__anext__()
+        except StopAsyncIteration:
+            first_sse = None
+        pre_commit_error = None if session.yielded_first_chunk else _pre_commit_error(first_sse)
+        if pre_commit_error is not None:
+            await _close_stream_quietly(sse_stream)
+            # This now relays the upstream's status to the client, so attribute
+            # it, as the buffered path does: a relayed 401 with no label reads as
+            # the gateway's own routine auth churn to RequestLogMiddleware and the
+            # failed-request rule. The session only records the label.
+            req_ctx.publish_upstream_provider(session.error_provider)
+            status_code, message = pre_commit_error
+            raise HTTPException(
+                status_code=status_code,
+                detail=message or scrub_error_for_user(None, request_id, status_code),
+            )
+
         # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
         # the stream to compress it, which collapses TTFT to total latency.
         response_headers = {
@@ -987,7 +1037,7 @@ async def chat_completions(
             if provider_header:
                 response_headers["X-Provider"] = provider_header
         return StreamingResponse(
-            _yield_with_cleanup(session.stream(adapter_chunks)),
+            _chain_first_then_rest(first_sse, sse_stream),
             media_type="text/event-stream",
             headers=response_headers,
         )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,48 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
+
+# SGLang answers a request whose image, audio or video it cannot decode with a
+# 500 -- "An exception occurred while loading IMAGE data at index 0: ... cannot
+# identify image file" -- although nothing about the server is wrong: the caller
+# sent bytes that are not media (seen: a chat platform's JSON error body,
+# base64-encoded and labelled image/jpeg). Raised as a 500 it is scored against
+# the endpoint, so one client retrying one bad attachment opened the circuit for
+# every user of the model; it also rotates keys on a fault no key can fix, and
+# reaches a downstream gateway as a server failure. It is the caller's input, so
+# it is raised as the 400 it is. Matched on the decode failure's own wording, not
+# on "500 from a multimodal model", so a genuine server error still counts.
+_UNDECODABLE_MEDIA_RE = re.compile(
+    r"exception occurred while loading (?:IMAGE|AUDIO|VIDEO) data|cannot identify image file"
+)
+
+
+def _upstream_status_error(resp: Any, error_body: str) -> aiohttp.ClientResponseError:
+    """Build the ``ClientResponseError`` raised for an upstream error response.
+
+    The upstream body rides along as ``error_body`` so the provider's own message
+    survives for logging and user-facing display. One construction for both the
+    JSON and the streaming path, so the status they raise cannot drift apart.
+    """
+    status = resp.status
+    message = resp.reason or "Unknown error"
+    if status == 500 and error_body and _UNDECODABLE_MEDIA_RE.search(error_body):
+        status = 400
+        message = "Bad Request (upstream answered 500: the request's media could not be decoded)"
+        logger.info(
+            "upstream_media_rejection",
+            extra={"event": "upstream_media_rejection", "upstream_status": resp.status},
+        )
+    error = aiohttp.ClientResponseError(
+        request_info=resp.request_info,
+        history=resp.history,
+        status=status,
+        message=message,
+        headers=resp.headers,
+    )
+    if error_body:
+        error.error_body = error_body  # type: ignore[attr-defined]
+    return error
 
 
 class AsyncHTTPClient:
@@ -94,16 +137,7 @@ class AsyncHTTPClient:
                 error_body = ""
                 with suppress(Exception):
                     error_body = await resp.text()
-                error = aiohttp.ClientResponseError(
-                    request_info=resp.request_info,
-                    history=resp.history,
-                    status=resp.status,
-                    message=resp.reason or "Unknown error",
-                    headers=resp.headers,
-                )
-                if error_body:
-                    error.error_body = error_body  # type: ignore[attr-defined]
-                raise error
+                raise _upstream_status_error(resp, error_body)
             from typing import cast
 
             return cast("dict[str, Any]", await resp.json())
@@ -284,18 +318,7 @@ class AsyncHTTPClient:
             with suppress(Exception):
                 error_body = await resp.text()
 
-            # Create a more informative error
-            error = aiohttp.ClientResponseError(
-                request_info=resp.request_info,
-                history=resp.history,
-                status=resp.status,
-                message=resp.reason or "Unknown error",
-                headers=resp.headers,
-            )
-            # Attach error body for logging
-            if error_body:
-                error.error_body = error_body  # type: ignore[attr-defined]
-            raise error
+            raise _upstream_status_error(resp, error_body)
 
         # Detect content type for streaming mode if requested
         content_type = str(resp.headers.get("Content-Type", "")).lower()
