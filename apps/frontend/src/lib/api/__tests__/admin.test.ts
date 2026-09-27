@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
+  clearOffloadRoute,
   clearRouteWeight,
   createProviderRouteModel,
   createProviderRouteCandidate,
@@ -16,9 +17,11 @@ import {
   listRoutewiseSettings,
   updateUser,
   listModelVisibility,
+  listOffloadRoutes,
   previewRoleQuotaApply,
   resetRoutewiseSetting,
   runRoutewiseProbe,
+  setOffloadRoute,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
@@ -378,6 +381,73 @@ describe('route weight client', () => {
     expect(out.override_weight).toBeNull();
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/weights/gpt-4o-mini/gpt-4o-mini%3Aremote');
+    expect(init.method).toBe('DELETE');
+  });
+});
+
+describe('offload route client', () => {
+  const offload = {
+    model_id: 'org/glm-4.7',
+    route_id: 'org/glm-4.7:reserved-api',
+    wait_seconds: 5,
+    endpoint_id: 'org/glm-4.7:reserved-api',
+    active: true,
+    inactive_reason: null,
+    updated_at: null,
+    updated_by: 'admin@example.com',
+  };
+
+  it('listOffloadRoutes GETs every stored offload route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ queue_enabled: true, max_wait_seconds: 30, offload_routes: [offload] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listOffloadRoutes();
+
+    expect(out.max_wait_seconds).toBe(30);
+    expect(out.offload_routes[0].route_id).toBe('org/glm-4.7:reserved-api');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/offload-routes');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('setOffloadRoute PUTs the route and wait to the encoded model path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ model_id: 'org/glm-4.7', offload }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await setOffloadRoute('org/glm-4.7', 'org/glm-4.7:reserved-api', 5);
+
+    expect(out.offload?.active).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/offload-routes/org%2Fglm-4.7');
+    expect(init.method).toBe('PUT');
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      route_id: 'org/glm-4.7:reserved-api',
+      wait_seconds: 5,
+    });
+  });
+
+  it('clearOffloadRoute DELETEs the model offload route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ model_id: 'org/glm-4.7', offload: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await clearOffloadRoute('org/glm-4.7');
+
+    expect(out.offload).toBeNull();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/offload-routes/org%2Fglm-4.7');
     expect(init.method).toBe('DELETE');
   });
 });

@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
+  OffloadRoute,
   OpenRouterProviderOption,
   OpenRouterSortPolicy,
   ProviderApiKeyItem,
@@ -17,6 +18,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listOffloadRoutes,
   listRouteWeights,
   listProviderKeys,
   listOpenRouterProviderOptions,
@@ -30,6 +32,8 @@ import {
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { OffloadRoutePanel } from './OffloadRoutePanel';
+import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
 
@@ -599,6 +603,30 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
+  const [offloadRoutes, setOffloadRoutes] = useState<OffloadRoute[]>([]);
+  const [offloadQueue, setOffloadQueue] = useState<OffloadQueueInfo | null>(null);
+  const [offloadLoadError, setOffloadLoadError] = useState<string | null>(null);
+
+  // Loaded on its own so a failure here costs the offload panel, not the whole
+  // routes table. Refreshed after the edits that can change whether a stored
+  // offload route is in force: a routing-policy switch and a weight change.
+  const loadOffloadRoutes = useCallback(async () => {
+    try {
+      const resp = await listOffloadRoutes();
+      setOffloadRoutes(resp.offload_routes);
+      setOffloadQueue({ enabled: resp.queue_enabled, maxWaitSeconds: resp.max_wait_seconds });
+      setOffloadLoadError(null);
+    } catch (err) {
+      setOffloadLoadError(getErrorMessage(err));
+    }
+  }, []);
+
+  const onOffloadChange = useCallback((modelId: string, offload: OffloadRoute | null) => {
+    setOffloadRoutes((current) => {
+      const others = current.filter((item) => item.model_id !== modelId);
+      return offload ? [...others, offload] : others;
+    });
+  }, []);
 
   const loadRoutes = useCallback(async () => {
     setLoading(true);
@@ -619,7 +647,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   useEffect(() => {
     void loadRoutes();
-  }, [loadRoutes]);
+    void loadOffloadRoutes();
+  }, [loadOffloadRoutes, loadRoutes]);
 
   const models = useMemo(
     () => Array.from(new Set(routes.map((route) => route.model_id))).sort(),
@@ -632,6 +661,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const selectedQuotaRoutes = useMemo(
     () => selectedRoutes.filter((route) => route.route_type === 'quota'),
     [selectedRoutes],
+  );
+  const selectedOffload = useMemo(
+    () => offloadRoutes.find((item) => item.model_id === selectedModel) ?? null,
+    [offloadRoutes, selectedModel],
   );
   const createFormOpen = addingRoute || creatingModel;
   const createTargetRoutes = creatingModel ? EMPTY_PROVIDER_ROUTES : selectedRoutes;
@@ -1384,6 +1417,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       replaceModelRoutes(updated.model_id ?? selectedModel, updated.routes);
       setEditingRoute(null);
       toast.success('Routing policy updated');
+      void loadOffloadRoutes();
     } catch (err) {
       toast.error(`Policy update failed: ${getErrorMessage(err)}`);
     } finally {
@@ -1412,6 +1446,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         return next;
       });
       toast.success(`Updated ${route.endpoint_id} weight.`);
+      void loadOffloadRoutes();
     } catch (err) {
       toast.error(`Weight update failed: ${getErrorMessage(err)}`);
     } finally {
@@ -1460,6 +1495,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         return next;
       });
       toast.success(`Cleared ${route.endpoint_id} weight override.`);
+      void loadOffloadRoutes();
     } catch (err) {
       toast.error(`Weight reset failed: ${getErrorMessage(err)}`);
     } finally {
@@ -1479,6 +1515,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         return next;
       });
       toast.success(`Disabled ${route.endpoint_id}.`);
+      void loadOffloadRoutes();
     } catch (err) {
       toast.error(`Disable failed: ${getErrorMessage(err)}`);
     } finally {
@@ -1498,6 +1535,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         return next;
       });
       toast.success(`Enabled ${route.endpoint_id}.`);
+      void loadOffloadRoutes();
     } catch (err) {
       toast.error(`Enable failed: ${getErrorMessage(err)}`);
     } finally {
@@ -1569,6 +1607,27 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           </button>
         </div>
       </div>
+
+      {selectedModel && selectedRoutes.length > 0 && (!isRoutewise || selectedOffload) && (
+        // RouteWise does not use offload routes, and the console refuses to switch
+        // a model that has one. The panel still appears for a RouteWise model
+        // when a policy is stored for it anyway (its registry `router:` changed),
+        // so the leftover can be seen and cleared.
+        <OffloadRoutePanel
+          modelId={selectedModel}
+          routes={selectedRoutes}
+          offload={selectedOffload}
+          queue={offloadQueue}
+          editable={!isRoutewise}
+          loadError={offloadLoadError}
+          routeLabel={(route) =>
+            `${routeTargetLabel(route, providerSelectBaseOptions, openRouterSelectOptions)} (${
+              route.endpoint_id
+            })`
+          }
+          onChange={onOffloadChange}
+        />
+      )}
 
       {showRoutewiseSettings && isRoutewise && (
         <RoutewiseSettingsPanel
@@ -1643,6 +1702,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               const concurrencyLimitValid =
                 parsedDraftConcurrencyLimit !== null && parsedDraftConcurrencyLimit > 0;
               const isSavingConcurrencyLimit = savingConcurrencyKey === key;
+              const isOffloadRoute = selectedOffload?.route_id === route.route_id;
               return (
                 <div
                   key={key}
@@ -1783,6 +1843,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             </button>
                           ) : null}
                         </div>
+                        {isOffloadRoute && (
+                          // The weight still decides whether routing may use the
+                          // route at all (0 turns the offload off), but not how
+                          // much ordinary traffic it gets: none.
+                          <div className="text-[11px] leading-4 text-violet-700">
+                            Offload route: gets no ordinary traffic
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1790,19 +1858,38 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
                       Status
                     </div>
-                    <span
-                      className={
-                        routeDisabled
-                          ? 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                          : route.source === 'override'
-                            ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                            : route.source === 'runtime'
-                              ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
-                              : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                      }
-                    >
-                      {routeDisabled ? 'Disabled' : sourceLabel(route)}
-                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      <span
+                        className={
+                          routeDisabled
+                            ? 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                            : route.source === 'override'
+                              ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                              : route.source === 'runtime'
+                                ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                                : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                        }
+                      >
+                        {routeDisabled ? 'Disabled' : sourceLabel(route)}
+                      </span>
+                      {isOffloadRoute && selectedOffload && (
+                        <span
+                          className={
+                            selectedOffload.active
+                              ? 'inline-flex rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700'
+                              : 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                          }
+                          title={
+                            selectedOffload.active
+                              ? `Takes requests that waited ${selectedOffload.wait_seconds}s for a slot, and serves as the last resort`
+                              : (selectedOffload.inactive_reason ?? undefined)
+                          }
+                          data-testid={`offload-badge-${route.route_id}`}
+                        >
+                          Offload
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
                     {route.source === 'override' && (

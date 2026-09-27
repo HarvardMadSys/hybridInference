@@ -294,6 +294,7 @@ the variable and restart for that.
 | Point a registry route somewhere else | edit the route's **Target** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first; `DELETE` removes the override and restores the YAML route | `provider_route_configs` |
 | Change a route's weight | the weight field on each route | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`; `GET` shows the YAML, override and effective values | `provider_weight_overrides` |
 | Switch a model between `fixed` and `routewise` | the strategy selector | `PATCH /admin/routing/provider-route-strategies/{model_id}` | `site_settings` |
+| Reserve a route for requests left waiting in the outbound queue | **Queue offload** | `PUT` / `DELETE /admin/routing/offload-routes/{model_id}`; `GET /admin/routing/offload-routes` lists every model's, and whether routing applies it — see [Queue-wait offload](routing.md#queue-wait-offload) | `site_settings` |
 | Tune RouteWise for one model | RouteWise settings | `/admin/routewise/model-settings` — see [RouteWise](routing.md#routewise) | `site_settings` |
 
 `GET /admin/routing/provider-routes` (or `.../{model_id}`) returns every route
@@ -341,8 +342,8 @@ moment it is saved.
    a model from YAML does not bring it back through a leftover row.
 5. Route overrides, retargeting the registry routes they name.
 6. Key tier reservations, re-read now that every provider is known; then
-   weight overrides, disabled providers and model visibility, loaded into
-   resolvers the router consults at request time.
+   weight overrides, disabled providers, offload routes and model visibility,
+   loaded into resolvers the router consults at request time.
 
 Two rules follow from that order. A stored change never edits the file it
 overrides: delete the override and the registry route, weight or `router:`

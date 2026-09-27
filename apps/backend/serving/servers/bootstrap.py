@@ -27,6 +27,7 @@ from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
+from serving.config.offload_routes import OffloadRouteResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
@@ -316,6 +317,24 @@ async def _refresh_disabled_provider_snapshots(
                 _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
+
+
+async def _refresh_offload_route_snapshots(
+    resolver: OffloadRouteResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload offload routes so workers converge after admin edits.
+
+    No RouteWise rebuild follows a change: offload is a FixedRouter behavior,
+    read from the resolver on each request, and RouteWise ignores it.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Offload route snapshot refresh failed", exc_info=True)
 
 
 async def _apply_cached_routewise_model_settings(
@@ -1226,6 +1245,8 @@ async def initialize() -> AppServices:
     weight_override_refresh_task = None
     disabled_provider_resolver = None
     disabled_provider_refresh_task = None
+    offload_route_resolver = None
+    offload_route_refresh_task = None
     if operational_store is not None:
         try:
             routewise_settings_resolver = RouteWiseSettingsResolver(
@@ -1308,6 +1329,25 @@ async def initialize() -> AppServices:
             logger.info("Disabled provider resolver initialized")
         except Exception as exc:
             logger.warning(f"Disabled provider resolver initialization failed: {exc}")
+        # Attached even when the first load fails: an empty snapshot routes
+        # exactly as a gateway without offload routes does, and the refresh loop
+        # picks the stored policies up on its next pass instead of leaving them
+        # dark until a restart.
+        offload_route_resolver = OffloadRouteResolver(operational_store)
+        try:
+            await offload_route_resolver.load_all()
+        except Exception:
+            logger.warning(
+                "Offload route snapshot load failed; retrying in the background",
+                exc_info=True,
+            )
+        router.offload_policy_resolver = offload_route_resolver
+        offload_route_refresh_task = asyncio.create_task(
+            _refresh_offload_route_snapshots(offload_route_resolver)
+        )
+        _BACKGROUND_TASKS.add(offload_route_refresh_task)
+        offload_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info("Offload route resolver initialized")
 
     # Say which routes the operational store just took out of service. Both
     # resolvers are attached by now, so this is the first moment the effective
@@ -1423,6 +1463,7 @@ async def initialize() -> AppServices:
         routewise_settings_resolver=routewise_settings_resolver,
         weight_override_resolver=weight_override_resolver,
         disabled_provider_resolver=disabled_provider_resolver,
+        offload_route_resolver=offload_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
@@ -1433,6 +1474,7 @@ async def initialize() -> AppServices:
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
+        offload_route_refresh_task=offload_route_refresh_task,
     )
 
 
@@ -1513,6 +1555,11 @@ async def shutdown(services: AppServices) -> None:
         services.disabled_provider_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.disabled_provider_refresh_task
+
+    if services.offload_route_refresh_task is not None:
+        services.offload_route_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.offload_route_refresh_task
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

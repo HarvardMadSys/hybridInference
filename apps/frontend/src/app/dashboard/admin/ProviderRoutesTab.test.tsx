@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('@/lib/api/admin', () => ({
+  clearOffloadRoute: vi.fn(),
   clearRouteWeight: vi.fn(),
   createProviderRouteModel: vi.fn(),
   createProviderRouteCandidate: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('@/lib/api/admin', () => ({
       buckets: [],
     }),
   ),
+  listOffloadRoutes: vi.fn(),
   listOpenRouterProviderOptions: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock('@/lib/api/admin', () => ({
   listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
   resetRoutewiseSetting: vi.fn(),
   runRoutewiseProbe: vi.fn(),
+  setOffloadRoute: vi.fn(),
   setRouteWeight: vi.fn(),
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
@@ -64,6 +67,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listOffloadRoutes,
   listOpenRouterProviderOptions,
   listProviderKeys,
   listProviderRoutes,
@@ -71,6 +75,7 @@ import {
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
   runRoutewiseProbe,
+  setOffloadRoute,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
@@ -212,6 +217,101 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(verifyProviderRoute).mockResolvedValue({ ok: true });
     vi.mocked(verifyProviderRouteCandidate).mockResolvedValue({ ok: true });
     vi.mocked(verifyProviderRouteModel).mockResolvedValue({ ok: true });
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [],
+    });
+  });
+
+  it('marks the offload route of a fixed model and saves a new one', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
+    const reservedRoute = {
+      ...fixedRoute,
+      route_id: 'minimax-fast:openrouter-api',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      endpoint_id: 'minimax-fast:openrouter-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute, reservedRoute],
+    });
+    const offload = {
+      model_id: 'minimax-fast',
+      route_id: reservedRoute.route_id,
+      wait_seconds: 5,
+      endpoint_id: reservedRoute.endpoint_id,
+      active: true,
+      inactive_reason: null,
+      updated_at: null,
+      updated_by: 'admin@example.com',
+    };
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [offload],
+    });
+    vi.mocked(setOffloadRoute).mockResolvedValue({
+      model_id: 'minimax-fast',
+      offload: { ...offload, route_id: fixedRoute.route_id, endpoint_id: fixedRoute.endpoint_id },
+    });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByTestId('offload-route-panel')).toBeInTheDocument();
+    expect(await screen.findByTestId(`offload-badge-${reservedRoute.route_id}`)).toHaveTextContent(
+      'Offload',
+    );
+    expect(screen.queryByTestId(`offload-badge-${fixedRoute.route_id}`)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Offload route'), {
+      target: { value: fixedRoute.route_id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+
+    await waitFor(() => {
+      expect(setOffloadRoute).toHaveBeenCalledWith('minimax-fast', fixedRoute.route_id, 5);
+    });
+    // The badge follows the saved route without a reload.
+    expect(await screen.findByTestId(`offload-badge-${fixedRoute.route_id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`offload-badge-${reservedRoute.route_id}`)).not.toBeInTheDocument();
+  });
+
+  it('shows no offload panel for a routewise model without one', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
+    expect(screen.queryByTestId('offload-route-panel')).not.toBeInTheDocument();
+  });
+
+  it('keeps the routes table when the offload routes fail to load', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed' };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute],
+    });
+    vi.mocked(listOffloadRoutes).mockRejectedValue(new Error('offload store down'));
+
+    render(<ProviderRoutesTab />);
+
+    expect(
+      await screen.findByText('Failed to load offload routes: offload store down'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Runtime weight for minimax-fast:featherless-api'),
+    ).toBeInTheDocument();
   });
 
   it('renders routewise provider candidates without weight columns', async () => {
