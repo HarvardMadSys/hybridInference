@@ -1758,6 +1758,59 @@ export async function clearAlertSnooze(): Promise<AlertSnoozeStatus> {
 }
 
 // ========================================
+// Per-Type Slack Alert Mutes
+// ========================================
+
+export interface AlertTypeMute {
+  alert_type: string;
+  label: string;
+  description: string;
+  group: string;
+  key_pattern: string;
+  muted: boolean;
+  /** Epoch seconds. `null` while `muted` means the mute lasts until lifted. */
+  muted_until: number | null;
+  muted_by: string | null;
+  /** Epoch seconds the mute was set, when known. */
+  muted_at: number | null;
+}
+
+export interface ListAlertMutesResponse {
+  types: AlertTypeMute[];
+}
+
+export async function listAlertMutes(): Promise<ListAlertMutesResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/mutes');
+  return jsonOrThrow<ListAlertMutesResponse>(resp);
+}
+
+/** Mute one alert type for `durationSeconds`, or until unmuted when `null`. */
+export async function muteAlertType(
+  alertType: string,
+  durationSeconds: number | null,
+): Promise<AlertTypeMute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/alerts/mutes/${encodeURIComponent(alertType)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration_seconds: durationSeconds }),
+    },
+  );
+  return jsonOrThrow<AlertTypeMute>(resp);
+}
+
+export async function unmuteAlertType(alertType: string): Promise<AlertTypeMute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/alerts/mutes/${encodeURIComponent(alertType)}`,
+    { method: 'DELETE' },
+  );
+  return jsonOrThrow<AlertTypeMute>(resp);
+}
+
+// ========================================
 // Per-Role Daily Quota
 // ========================================
 

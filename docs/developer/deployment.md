@@ -333,6 +333,24 @@ Counts marked `(capped)` are floors, not totals: a source rotating addresses
 faster than the tally tracks them stops being counted rather than being allowed
 to grow it without bound. Do not size an incident from a capped number.
 
+### Silencing alerts from the dashboard
+
+The admin dashboard's Settings tab has two controls, and neither changes your
+alerts file:
+
+- **Slack Alerts** snoozes every alert for up to seven days.
+- **Alert Types** mutes one type of alert, such as `auth_ip_blocked` or
+  `circuit_open`, for an hour, a day, a week, or until it is unmuted. Every
+  other type keeps sending.
+
+A mute is stored in the database, so it survives a restart and reaches every
+gateway process within a few seconds. While a type is muted nothing of it is
+sent, and an incident that opens during the mute also closes without a recovery
+message. An incident that was posted before the mute still gets its recovery,
+and a breach still live when the mute lifts pages at its next evaluation. A mute
+is for an alert you want back later; to retire a rule for good, turn it off in
+your alerts file instead.
+
 ## Database
 
 PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume
