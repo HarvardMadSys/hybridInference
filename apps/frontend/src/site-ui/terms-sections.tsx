@@ -121,7 +121,7 @@ function useTermsSections(): { title: string; body: string[] }[] {
         ),
         t(
           'terms.s5.body_3',
-          'Logged requests are analyzed to study how the service is used, and anonymized data derived from them — such as sanitized prompts and responses, usage statistics, and routing metrics — may be published or open-sourced to support reproducible research. Any such release is intended to contain only de-identified data, but, as noted above, sanitization cannot guarantee that all sensitive information is removed.',
+          'Logged requests are analyzed to study how the service is used. We will open-source anonymized logs — such as sanitized prompts and responses, usage statistics, and routing metrics — to support reproducible research. Each release is intended to contain only de-identified data, but, as noted above, sanitization cannot guarantee that all sensitive information is removed.',
         ),
         t(
           'terms.s5.body_4',

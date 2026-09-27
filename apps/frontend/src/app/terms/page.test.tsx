@@ -64,9 +64,7 @@ describe('TermsPage', () => {
       screen.getByText(/sanitize all text before analysis where feasible/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/sanitization is not a guarantee/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/anonymized data derived from them.*may be published or open-sourced/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/we will open-source anonymized logs/i)).toBeInTheDocument();
     expect(
       screen.getByText(/must review model outputs before relying on them/i),
     ).toBeInTheDocument();
