@@ -1,7 +1,4 @@
-"""Exercise the opt-in quota example over loopback sockets, without a database.
-
-These tests live outside tests/unit because that tier can stub aiohttp.
-"""
+"""Exercise the opt-in quota example over loopback sockets, without a database."""
 
 from __future__ import annotations
 

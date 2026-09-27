@@ -141,9 +141,9 @@ def _connect_phase_error(token: str) -> BaseException:
 
     aiohttp wraps socket errors (ECONNRESET, EPIPE) in ``ClientOSError``;
     ``connect_error`` is a genuine fresh-connection failure that must NOT
-    retry. ``ClientConnectorError`` has a version-specific constructor, so
-    fall back to ``__new__`` when the simple form isn't accepted (keeps the
-    test robust whether ``aiohttp`` is the real package or the unit stub).
+    retry. ``ClientConnectorError``'s constructor wants the connection key and
+    the ``OSError`` it wraps; the retry guard only checks the type, so an
+    uninitialised instance is enough.
     """
     if token == "disconnect":
         return aiohttp.ServerDisconnectedError()
@@ -153,10 +153,7 @@ def _connect_phase_error(token: str) -> BaseException:
         return aiohttp.ClientOSError(32, "Broken pipe")
     if token == "connect_error":
         cls = aiohttp.ClientConnectorError
-        try:
-            return cls("Connection refused")
-        except TypeError:
-            return cls.__new__(cls)
+        return cls.__new__(cls)
     raise ValueError(f"unknown connect-phase token: {token!r}")
 
 

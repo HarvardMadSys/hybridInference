@@ -119,9 +119,8 @@ async def _run(router: FixedRouter, *, stream: bool) -> Any:
 def _upstream_response(status: int) -> SimpleNamespace:
     """An upstream error response as ``_upstream_status_error`` reads it.
 
-    ``request_info`` carries a ``real_url`` because whether ``serving.http`` is
-    bound to the real aiohttp or to the unit-tier stub depends on import order
-    across the suite, and the real ``ClientResponseError.__str__`` reads it.
+    ``request_info`` carries a ``real_url`` because aiohttp's
+    ``ClientResponseError.__str__`` reads it.
     """
     return SimpleNamespace(
         status=status,
