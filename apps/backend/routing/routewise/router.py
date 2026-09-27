@@ -113,15 +113,11 @@ RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
 _PROBE_READBACK_MAX_ROWS = 10_000
 _PROBE_SELF_SAMPLE_ID_CAP = 10_000
-_AIOHTTP_RETRYABLE_ERRORS = tuple(
-    cls
-    for cls in (
-        getattr(aiohttp, "ClientConnectionError", None),
-        getattr(aiohttp, "ServerConnectionError", None),
-        getattr(aiohttp, "ServerDisconnectedError", None),
-        getattr(aiohttp, "ClientError", None),
-    )
-    if isinstance(cls, type)
+_AIOHTTP_RETRYABLE_ERRORS = (
+    aiohttp.ClientConnectionError,
+    aiohttp.ServerConnectionError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ClientError,
 )
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",

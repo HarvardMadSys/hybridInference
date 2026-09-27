@@ -17,12 +17,9 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-try:
-    # aiohttp's marker for "use the session default timeout". An explicit
-    # timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
-    from aiohttp.helpers import sentinel as _aiohttp_sentinel
-except ImportError:  # pragma: no cover - aiohttp is stubbed in unit tests
-    _aiohttp_sentinel = object()
+# aiohttp's marker for "use the session default timeout". An explicit
+# timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
+from aiohttp.helpers import sentinel as _aiohttp_sentinel
 
 from serving.servers.sse import SSEMessage, SSEParser
 from serving.utils import context as req_ctx
