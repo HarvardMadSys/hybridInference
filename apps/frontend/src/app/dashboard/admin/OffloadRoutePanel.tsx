@@ -30,10 +30,12 @@ interface OffloadRoutePanelProps {
   onChange: (modelId: string, offload: OffloadRoute | null) => void;
 }
 
-function validateWait(raw: string, maxWaitSeconds: number | null) {
+// No upper bound: the gateway's queue ends a wait at its own acquire timeout either
+// way, and a longer wait gives an engine longer to send its first token.
+function validateWait(raw: string) {
   const validated = validateNumericSettingInput(raw, {
     min: null,
-    max: maxWaitSeconds,
+    max: null,
     integer: false,
   });
   if (validated.ok && validated.value <= 0) {
@@ -65,7 +67,7 @@ export function OffloadRoutePanel({
   }, [modelId, offload]);
 
   const maxWaitSeconds = queue?.maxWaitSeconds ?? null;
-  const validatedWait = validateWait(draftWait, maxWaitSeconds);
+  const validatedWait = validateWait(draftWait);
   const storedRouteMissing =
     offload !== null && !routes.some((route) => route.route_id === offload.route_id);
   const hasOtherRoute = routes.length >= 2;
@@ -209,7 +211,6 @@ export function OffloadRoutePanel({
                 aria-label="Offload wait seconds"
                 type="number"
                 min={0}
-                max={maxWaitSeconds ?? undefined}
                 step={0.5}
                 value={draftWait}
                 onChange={(event) => setDraftWait(event.target.value)}
@@ -248,7 +249,7 @@ export function OffloadRoutePanel({
       {editable && (
         <p className="mt-2 text-[11px] leading-5 text-gray-400">
           {maxWaitSeconds !== null
-            ? `At most ${maxWaitSeconds}s, the outbound queue's acquire timeout: a request that waits that long is offloaded anyway. `
+            ? `The outbound queue gives up at ${maxWaitSeconds}s, its acquire timeout, and offloads the request then; a longer wait only gives an engine longer to send its first token. `
             : ''}
           The engine&apos;s wait starts when the request leaves the gateway&apos;s queue, so a local
           inference server, which never queues there, gets the whole wait. Only streaming requests

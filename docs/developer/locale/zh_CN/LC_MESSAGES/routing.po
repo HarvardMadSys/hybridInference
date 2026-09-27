@@ -1121,15 +1121,17 @@ msgstr "**RouteWise**。`routewise` 模型自己规划候选，忽略卸载路�
 
 #: ../developer/routing.md
 msgid ""
-"The wait must be positive and at most the acquire timeout, since a longer "
-"wait in the gateway's queue would end at the timeout anyway. The offload "
-"route needs an effective weight above `0`: a weight override of `0` or a "
-"disabled provider turns the offload off, and `GET "
+"The wait must be positive, and may be longer than the acquire timeout: a "
+"request still leaves the gateway's queue at that timeout, which offloads it "
+"as well, and the longer wait then bounds only the engine's first token — "
+"what a model whose long prompts take a while to start answering needs. The "
+"offload route needs an effective weight above `0`: a weight override of `0` "
+"or a disabled provider turns the offload off, and `GET "
 "/admin/routing/offload-routes` then reports the policy with `active: false` "
 "and an `inactive_reason`. The route is named by its route id, which survives "
 "an admin retarget; deleting a runtime route that is a model's offload route "
 "is refused until the offload route is cleared."
-msgstr "等待时间必须为正，且不超过获取超时，因为在网关队列中更长的等待反正会在超时处结束。卸载路由需要大于 `0` 的有效权重：权重覆盖为 `0` 或 provider 被禁用都会让卸载失效，此时 `GET /admin/routing/offload-routes` 会以 `active: false` 和一个 `inactive_reason` 报告该策略。路由用它的路由 id 命名，管理员把路由改指向别处之后 id 保持不变；某条运行时路由是模型的卸载路由时，在清除卸载路由之前，删除它会被拒绝。"
+msgstr "等待时间必须为正，并且可以长于获取超时：请求仍会在该超时处离开网关队列，这同样会让它被卸载；更长的等待此时只约束引擎的首个 token——这正是长 prompt 需要一段时间才开始回答的模型所需要的。卸载路由需要大于 `0` 的有效权重：权重覆盖为 `0` 或 provider 被禁用都会让卸载失效，此时 `GET /admin/routing/offload-routes` 会以 `active: false` 和一个 `inactive_reason` 报告该策略。路由用它的路由 id 命名，管理员把路由改指向别处之后 id 保持不变；某条运行时路由是模型的卸载路由时，在清除卸载路由之前，删除它会被拒绝。"
 
 #: ../developer/routing.md:271
 msgid "API endpoints"

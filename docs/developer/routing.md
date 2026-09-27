@@ -536,9 +536,11 @@ What does not offload:
   refuses to set an offload route on either, and refuses to switch a model that
   has one to `routewise`.
 
-The wait must be positive and at most the acquire timeout, since a longer wait
-in the gateway's queue would end at the timeout anyway. The offload route needs an effective weight
-above `0`: a weight override of `0` or a disabled provider turns the offload
+The wait must be positive, and may be longer than the acquire timeout: a request
+still leaves the gateway's queue at that timeout, which offloads it as well, and
+the longer wait then bounds only the engine's first token — what a model whose
+long prompts take a while to start answering needs. The offload route needs an
+effective weight above `0`: a weight override of `0` or a disabled provider turns the offload
 off, and `GET /admin/routing/offload-routes` then reports the policy with
 `active: false` and an `inactive_reason`. The route is named by its route id, which survives an admin
 retarget; deleting a runtime route that is a model's offload route is refused

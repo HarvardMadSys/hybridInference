@@ -251,18 +251,11 @@ async def set_offload_route(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     resolver = _require_resolver(services)
-    max_wait = get_upstream_limiter().acquire_timeout
-    if payload.wait_seconds > max_wait:
-        # Past the acquire timeout the limiter ends the wait itself, and that
-        # offloads the request too, so a longer value would not mean what it says.
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"wait_seconds must be at most {max_wait:g}, the outbound queue's acquire "
-                "timeout (UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC): a request that has "
-                "waited that long is offloaded anyway"
-            ),
-        )
+    # No ceiling past positive and finite (the request model's own checks). A
+    # wait longer than the limiter's acquire timeout still ends a queue wait at
+    # that timeout, which offloads the request too; what it lengthens is the
+    # engine's first-token wait, which a model whose long prompts take a while
+    # to start answering needs (``routing.engine_stall``).
     _require_canonical_route(services, model_id)
 
     async with model_router_transition_lock(services, model_id):

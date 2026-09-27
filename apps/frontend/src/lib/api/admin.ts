@@ -1985,7 +1985,7 @@ export interface OffloadRoute {
 export interface ListOffloadRoutesResponse {
   /** False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues, so nothing waits. */
   queue_enabled: boolean;
-  /** The outbound queue's acquire timeout; the longest wait a route may be given. */
+  /** The outbound queue's acquire timeout: the longest a request waits in that queue. */
   max_wait_seconds: number;
   offload_routes: OffloadRoute[];
 }

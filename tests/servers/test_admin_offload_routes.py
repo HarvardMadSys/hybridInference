@@ -266,7 +266,7 @@ async def test_put_for_an_unknown_route_is_400(offload_client):
     op_store.set_setting.assert_not_awaited()
 
 
-@pytest.mark.parametrize("wait", [0, -1, 30.5])
+@pytest.mark.parametrize("wait", [0, -1])
 async def test_put_rejects_a_wait_routing_could_not_honor(offload_client, wait):
     client, op_store, *_ = offload_client
 
@@ -276,12 +276,15 @@ async def test_put_rejects_a_wait_routing_could_not_honor(offload_client, wait):
     op_store.set_setting.assert_not_awaited()
 
 
-async def test_put_accepts_a_wait_equal_to_the_acquire_timeout(offload_client):
-    client, *_ = offload_client
+async def test_put_accepts_a_wait_past_the_acquire_timeout(offload_client):
+    """The queue still ends its wait at 30s; the rest bounds the engine's first token."""
+    client, _op_store, _router, _registry, resolver, _audit = offload_client
 
-    response = await _set(client, wait=30.0)
+    response = await _set(client, wait=90.0)
 
     assert response.status_code == 200
+    assert response.json()["offload"]["wait_seconds"] == 90.0
+    assert resolver.get_offload_policy(MODEL).wait_seconds == 90.0
 
 
 async def test_put_on_a_routewise_model_is_refused(offload_client):
