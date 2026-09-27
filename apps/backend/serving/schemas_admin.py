@@ -1173,6 +1173,42 @@ class AlertSnoozeStatus(BaseModel):
     seconds_remaining: int = 0
 
 
+class MuteAlertTypeRequest(BaseModel):
+    """Request payload for muting one alert type's Slack alerts."""
+
+    duration_seconds: int | None = Field(
+        None,
+        gt=0,
+        le=30 * 24 * 60 * 60,
+        description=(
+            "How long to mute this alert type, in seconds (max 30 days). "
+            "Omit or send null to mute it until it is unmuted."
+        ),
+    )
+
+
+class AlertTypeMuteStatus(BaseModel):
+    """One alert type from the catalog, and whether its Slack alerts are muted."""
+
+    alert_type: str
+    label: str
+    description: str
+    group: str
+    key_pattern: str
+    muted: bool
+    #: Epoch seconds. None while ``muted`` means the mute lasts until lifted.
+    muted_until: float | None = None
+    muted_by: str | None = None
+    #: Epoch seconds the mute was set, when known.
+    muted_at: float | None = None
+
+
+class AlertMuteListResponse(BaseModel):
+    """Every alert type the gateway can send, in catalog order."""
+
+    types: list[AlertTypeMuteStatus]
+
+
 class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 

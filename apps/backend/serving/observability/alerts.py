@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
+from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
 from serving.utils.secret_urls import posting_to, scrub
 
@@ -47,6 +48,17 @@ _IN_FLIGHT: dict[str, asyncio.Event] = {}
 #: free retry on it — see ``alert_slack``. Resolutions are not counted here:
 #: they bypass the cooldown, so they never compete for that retry.
 _FAILED_DELIVERIES: dict[str, int] = {}
+
+#: Keys whose open incident has had a firing delivered. Written by
+#: ``alert_slack`` and cleared when the incident closes; read only to tell an
+#: incident the channel has seen apart from one a type mute kept out of it.
+_ANNOUNCED: set[str] = set()
+
+#: Keys whose open incident a type mute has kept entirely out of the channel: at
+#: least one firing was muted and none was delivered. Such an incident closes
+#: without a message — see ``_closes_silently``. An incident announced before
+#: its type was muted never lands here, so its close is still posted.
+_MUTED_UNANNOUNCED: set[str] = set()
 
 #: Failed webhook deliveries since process start, keyed by HTTP status as a
 #: string (or ``"exception"`` for a transport error). Delivery health cannot be
@@ -198,6 +210,8 @@ def reset_dedupe_state() -> None:
     _IN_FLIGHT.clear()
     _FAILED_DELIVERIES.clear()
     _DELIVERY_FAILURES_TOTAL.clear()
+    _ANNOUNCED.clear()
+    _MUTED_UNANNOUNCED.clear()
 
 
 def alert_delivery_failures_total() -> dict[str, int]:
@@ -371,6 +385,22 @@ async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = ""
             return False
 
 
+async def _type_muted(key: str) -> bool:
+    """Whether an admin has muted the alert type ``key`` belongs to. Never raises.
+
+    Fails open, like the snooze lookup: a mute that cannot be read mutes
+    nothing, because the cost of that is one alert someone wanted silenced and
+    the cost of the reverse is an outage nobody hears about.
+    """
+    try:
+        from serving.observability.alert_mutes import is_alert_type_muted
+
+        return await is_alert_type_muted(alert_type_of(key))
+    except Exception:
+        log.debug("alert mute check failed; sending alert", exc_info=True)
+        return False
+
+
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
@@ -452,6 +482,7 @@ async def alert_slack(
 
     sent = False
     attempted = False
+    muted = False
     try:
         # Admin-controlled global snooze: pause all alerts until a deadline.
         # Deliberately inside the try, after the in-flight registration: the
@@ -459,7 +490,15 @@ async def alert_slack(
         # marker is exactly the inversion described above. The early return is
         # safe from here — the ``finally`` releases the marker, and ``sent`` stays
         # False so a snoozed breach does not consume its cooldown either.
+        #
+        # A per-type mute is the same suppression for one alert type, and is
+        # checked first for the sake of the bookkeeping in the ``finally``: a
+        # muted firing is recorded as muted even while everything is snoozed,
+        # so the incident still closes without a word once the snooze lapses.
         if not resolution:
+            if await _type_muted(key):
+                muted = True
+                return False
             try:
                 from serving.observability.alert_snooze import is_snoozed
 
@@ -500,10 +539,18 @@ async def alert_slack(
                 _FAILED_DELIVERIES.pop(key, None)
             elif attempted and not resolution:
                 _FAILED_DELIVERIES[key] = _FAILED_DELIVERIES.get(key, 0) + 1
+            if sent and not resolution:
+                # The channel has seen this incident now, so its close is owed
+                # to it even if the type is muted afterwards.
+                _ANNOUNCED.add(key)
+                _MUTED_UNANNOUNCED.discard(key)
+            elif muted and key not in _ANNOUNCED:
+                _MUTED_UNANNOUNCED.add(key)
             if sent and resolution:
                 # The breach is over, so the next one must page immediately
                 # rather than serve out the cooldown this incident started.
                 _LAST_FIRED.pop(key, None)
+                _ANNOUNCED.discard(key)
             elif attempted and not resolution:
                 # Armed on the attempt, not on delivery. Arming only on success
                 # meant a sink that never succeeds never armed anything: the
@@ -513,8 +560,8 @@ async def alert_slack(
                 # still an attempt; the guard above spends one free retry on the
                 # transient case so this cannot silently swallow a real alert.
                 #
-                # A *snoozed* or short-circuited call never reaches here with
-                # ``attempted`` set, so it still costs no cooldown.
+                # A *snoozed*, *muted* or short-circuited call never reaches here
+                # with ``attempted`` set, so it still costs no cooldown.
                 #
                 # Resolutions stay out of both tables entirely, exactly as
                 # before: they never consult the cooldown, so arming it on a
@@ -588,11 +635,34 @@ def _forget_resolution_detail(key: str) -> None:
 
     The ``_SILENT_RESOLUTIONS`` entry goes with them: every breached evaluation
     re-registers it, so holding it past the close would only leak one entry per
-    dynamic key and keep a rule silent after it stopped asking to be.
+    dynamic key and keep a rule silent after it stopped asking to be. So does
+    what ``alert_slack`` recorded about the incident's firings, which describes
+    this incident and must not carry over to the next one on the same key.
     """
     _RESOLUTION_CONTEXT.pop(key, None)
     _RESOLUTION_DETAIL.pop(key, None)
     _SILENT_RESOLUTIONS.discard(key)
+    _ANNOUNCED.discard(key)
+    _MUTED_UNANNOUNCED.discard(key)
+
+
+def _closes_silently(key: str) -> bool:
+    """Whether the incident on ``key`` must close without a message.
+
+    Two reasons, one outcome. The rule opted out of announcing its closes
+    (``announce_resolution=False``), or an admin muted the alert's type and it
+    kept this whole incident out of the channel. A "Recovered" card for an
+    incident nobody was told about would be the first and only word about it,
+    for exactly the type the operator asked not to hear about. Every close path
+    asks this one question, because a card the transition edge suppresses must
+    not come back out of the sweep.
+
+    Silencing is safe only because nothing was delivered: there is no open
+    incident on the sink's side for a missing close to strand. An incident that
+    was announced before its type was muted is not silenced, so it still gets
+    the recovery the channel is owed.
+    """
+    return key in _SILENT_RESOLUTIONS or key in _MUTED_UNANNOUNCED
 
 
 def _resolution_detail(key: str) -> dict[str, Any]:
@@ -680,6 +750,8 @@ def reset_transition_state() -> None:
     _RESOLUTION_CONTEXT.clear()
     _RESOLUTION_DETAIL.clear()
     _SILENT_RESOLUTIONS.clear()
+    _ANNOUNCED.clear()
+    _MUTED_UNANNOUNCED.clear()
 
 
 async def alert_on_transition(
@@ -779,10 +851,10 @@ async def alert_on_transition(
         )
     if transition != "resolved":
         return False
-    if key in _SILENT_RESOLUTIONS:
+    if _closes_silently(key):
         # Close it, say nothing. There is no send to confirm and so nothing to
         # retry: no ``_PendingResolution`` is queued and the key is not re-armed,
-        # since a retry could only reproduce the card this rule opted out of.
+        # since a retry could only reproduce the card this close suppresses.
         # The ``is_firing`` guard is the one the delivered close uses, for the
         # same reason — ``observe`` dropped the firing state on this edge, so
         # anything present now belongs to a fresh incident that must stay
@@ -855,7 +927,7 @@ async def sweep_stale_breaches() -> None:
             # is live again and this recovery would announce it as over.
             continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
-        if key in _SILENT_RESOLUTIONS:
+        if _closes_silently(key):
             # A silent close queues nothing — it has no send that can fail — so
             # this is an entry left by an announcing close on a key that has
             # since opted out. Retrying it would post the card the opt-out
@@ -920,8 +992,9 @@ async def sweep_stale_breaches() -> None:
         # above all: "no recent samples" is the most misleading thing that can
         # be said about a key whose rule only ever speaks on a transition, since
         # having no recent samples is that rule's normal state. Everything below
-        # the send still runs, so the incident closes here as it always did.
-        silent = key in _SILENT_RESOLUTIONS
+        # the send still runs, so the incident closes here as it always did. An
+        # incident a type mute kept out of the channel closes here silently too.
+        silent = _closes_silently(key)
         sent = False
         if not silent:
             try:

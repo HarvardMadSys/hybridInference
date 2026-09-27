@@ -1029,11 +1029,14 @@ async def initialize() -> AppServices:
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
 
-    # Wire the operational store into the global Slack-alert snooze so admins
-    # can pause alerting from the dashboard. Safe with a None store (no-op).
+    # Wire the operational store into the global Slack-alert snooze and the
+    # per-type mutes so admins can silence alerting from the dashboard. Safe
+    # with a None store (no-op).
+    from serving.observability.alert_mutes import init_alert_mutes
     from serving.observability.alert_snooze import init_alert_snooze
 
     init_alert_snooze(operational_store)
+    init_alert_mutes(operational_store)
 
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
