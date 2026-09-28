@@ -11,16 +11,16 @@ git clone <your-fork-url> hybridinference
 cd hybridinference
 git remote add upstream https://github.com/HarvardMadSys/hybridInference.git
 git fetch upstream dev
-git worktree add -b yourname/tests/routing-config-defaults \
-  /tmp/claude/worktree/routing-config-defaults upstream/dev
-cd /tmp/claude/worktree/routing-config-defaults
+git switch -c yourname/tests/routing-config-defaults upstream/dev
 make setup-dev
 ```
 
-Replace `yourname` in the branch name with your GitHub username. Development
-happens in the worktree; keep the original checkout available for other work.
-If you already cloned the upstream repository instead of a fork, use
-`origin/dev` as the worktree's starting point and push to your fork remote.
+Replace `yourname` in the branch name with your GitHub username. To keep your
+main checkout free for other work, create the branch in a separate
+[worktree](https://git-scm.com/docs/git-worktree) instead, for example
+`git worktree add -b <branch> ../hybridinference-<feature> upstream/dev`. If you
+cloned the upstream repository rather than a fork, start from `origin/dev` and
+push to your fork remote.
 
 `make setup-dev` creates `.venv` on Python 3.12, installs the project editable,
 syncs the `dev` dependency group and installs the pre-commit hooks. Full
@@ -85,7 +85,8 @@ uv run pytest -q tests/unit/routing/test_config.py
 ```
 
 For a runtime change, repeat the affected request against your local gateway.
-With the Stage 1 example, `make build s=backend DISTRIBUTION=example` rebuilds
+With the [Quickstart](router-tutorial.md)'s example running,
+`make build s=backend DISTRIBUTION=example` rebuilds
 changed backend code; `make smoke DISTRIBUTION=example` checks health, the
 model list and a routed completion. Exercise the changed behavior as well:
 a generic smoke passing does not establish that a particular bug is fixed.
@@ -115,7 +116,7 @@ config/
                   built-in fallback a checkout with no overlay resolves to
 distributions/    deployment overlays, one directory each: manifest, config,
                   branding, deploy env files. `example/` is the runnable
-                  teaching overlay used by the Router Tutorial
+                  example the Quickstart uses
 deploy/
   docker/         Dockerfiles and docker-compose.yml
   systemd/        unit files for host-level deployments
@@ -133,8 +134,9 @@ Two things about the backend are easy to get wrong:
   re-exports `FixedRouter` as `RouteExecutor`. Edit
   `apps/backend/routing/routers.py` instead.
 - The backend packages are `serving` and `routing`, rooted at `apps/backend`.
-  Anything you run by hand needs `PYTHONPATH=apps/backend`; pytest gets it from
-  `pythonpath` in `pyproject.toml`.
+  `make setup-dev` installs them into `.venv`, so `uv run` or an activated
+  `.venv` imports them from any directory; outside that environment, set
+  `PYTHONPATH=apps/backend`.
 
 ## Quality gates
 
@@ -234,157 +236,55 @@ CI additionally runs `npm run format:check` (prettier) and
 ## Documentation
 
 These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, with
-`docs/developer/index.rst` as the root toctree. Build them from the repository
-root:
-
-```bash
-make docs
-```
-
-CI's **Docs Build** job builds the same tree with warnings promoted to errors:
-
-```bash
-uv run sphinx-build -b html docs/developer docs/build/html -W --keep-going
-```
-
-That job is what gates documentation changes in this repository — a broken
-cross-reference or a page missing from the toctree fails the build, so run it
-locally before pushing. Sphinx, `myst-parser` and `sphinx-rtd-theme` come from
-the `dev` dependency group, so `make setup-dev` is enough to build.
-
-Add a new page to `docs/developer/index.rst` as well as writing it; an orphan
-file is a warning, and warnings are errors in CI.
-
-### Translations
-
-The pages are written in English and translated with Sphinx's gettext
-workflow, so a translation is attached to *each paragraph of source text*
-rather than to a whole file. That is what makes a partial translation safe:
-any string without one falls back to English, and the site still builds
-complete.
-
-```bash
-make docs-gettext                      # extract one catalog template per page
-make docs-translate DOCS_LANG=zh_CN    # create or update that language's catalogs
-# edit docs/developer/locale/zh_CN/LC_MESSAGES/*.po -- fill in msgstr
-make docs-lang DOCS_LANG=zh_CN         # build it and read the result
-```
-
-A catalog entry pairs the English source with its translation:
-
-```po
-#: ../index.rst:4
-msgid "HybridInference is an open-source LLM inference gateway."
-msgstr "HybridInference 是一个开源的 LLM 推理网关。"
-```
-
-Because the English text *is* the lookup key, editing a paragraph invalidates
-its translation automatically: the next `make docs-translate` marks that entry
-`#, fuzzy`, the build stops using it, and the page falls back to English rather
-than serving a translation that no longer matches what the code does. A
-translator only has to revisit the entries that are marked. **This is the
-reason to use catalogs instead of parallel `.zh.md` files**, which drift
-silently and give a reader no signal that what they are reading is out of date.
-
-Commit the `.po` files. `docs/gettext/` is generated and ignored.
-
-Translating a page does not require translating all of it, and there is no
-obligation to keep a language complete — an untranslated paragraph is a
-fallback, not a bug.
-
-#### Translating into Chinese, Japanese or Korean
-
-Four traps, all of them silent — the build stays green and the page is wrong.
-Each was hit while translating this doc set into Chinese.
-
-**A heading that starts with a number is discarded.** Sphinx re-parses a
-translated title, and MyST reads `1. ` as an enumerated-list marker rather than
-text. The structure no longer matches the source, the translation is dropped,
-the English heading is emitted, and nothing warns — not even under `-W`. Escape
-the period:
-
-```po
-msgstr "1\. 申请一个节点"
-```
-
-**In `index.rst`, inline markup that touches a CJK character does not parse.**
-reStructuredText requires whitespace or specific punctuation before an opening
-`*`, and a Chinese character is neither, so `请求的*模型 id*` renders literal
-asterisks. Separate them with an escaped space — written `\\ ` in the catalog,
-which is a backslash-space in the string:
-
-```po
-msgstr "客户端请求的\\ *模型 id*\\ ，与真正服务它的\\ *端点*\\ 是解耦的。"
-```
-
-This applies to `index.rst` only. Markdown pages need no escaping: CommonMark
-treats a CJK character as neither whitespace nor punctuation, so `**模型 id**`
-between Chinese characters is a valid emphasis run.
-
-**One Markdown case does break, though**: a closing `**` preceded by a CJK full
-stop and followed by a CJK character is not right-flanking, so
-`**术语。**后文` leaves literal asterisks. Put the period outside the bold —
-`**术语**。后文` — which is better typography anyway, since bolding punctuation
-is wrong.
-
-**A stale `.mo` masks your edits.** Sphinx skips recompilation when the `.mo` is
-newer than its `.po`, so you can verify a build that never read your changes.
-Before any verification build:
-
-```bash
-find docs/developer/locale -name '*.mo' -delete
-```
-
-The check that catches all four at once is a structural diff against the English
-build: for each page, compare the counts of `<code>`, `<strong>`, `<em>` and
-`<a>`, and the multiset of inline-code literals and link targets. A dropped
-marker or a translated link target shows up there and in no other check.
-
-One more, which at least fails loudly: `make docs-translate` can append
-`python-format` to an entry you had annotated `no-python-format` — a source
-string containing something like `≥ 5%` looks like a format string to gettext —
-and `msgfmt -c` then rejects the contradictory pair. Delete the added
-`python-format` and keep `no-python-format`.
-
-#### How a translation reaches the published site
-
-`make docs` builds every published language from one `sphinx-build`. The first
-language named in `DOCS_LANGUAGES` (declared in `conf.py`, defaulting to
-`en:English,zh_CN:简体中文`) is the root language and lands at the top of the
-output tree; each other language is written to `docs/build/html/<code>/` by a
-`build-finished` hook in `conf.py`.
-
-One invocation rather than one per language, because the published site is
-built by a command that lives in the hosting project's settings, not in this
-repository — there is no env var to set at publish time, so the language list
-has to travel in `conf.py`. Keeping the root language at the tree root is what
-preserves every URL the English-only site had: `/routing.html` stays
-`/routing.html`, and the translation is at `/zh_CN/routing.html`.
-
-The sidebar switcher links to the same page in each other language and renders
-nothing when fewer than two languages are declared, so a single-language site
-never shows a dead control. `DOCS_LANGUAGES="en:English"` builds English alone
-when a translation is not what you are working on.
-
-#### The check that catches a reverted translation
+`docs/developer/index.rst` as the root toctree. Build them, and run the checks
+CI runs, from the repository root:
 
 ```bash
 make docs-verify
 ```
 
-`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing the
-Docs Build CI job runs. It exists because none of the failures above are
-visible to `-W`: Sphinx falls back to the English source for any string it
-cannot translate, so a page that has quietly reverted still builds clean. Four
-checks —
+That builds the English and Chinese sites with warnings treated as errors,
+checks the local links in every Markdown file, and checks that no translated
+paragraph has quietly fallen back to English. A broken cross-reference or a page
+missing from the toctree fails it, so run it before pushing. Sphinx,
+`myst-parser` and `sphinx-rtd-theme` come from the `dev` dependency group, so
+`make setup-dev` is enough to build. `make docs` builds the site alone.
 
-- **fuzzy** entries, which Sphinx refuses to apply;
-- **missing catalogs**, for a page added without `make docs-translate`;
-- **stale catalogs** — an English edit whose `msgid` no longer matches any
-  entry, which is the commonest case and carries no `fuzzy` marker at all
-  because nothing re-merged;
-- **structural divergence** between the built pages, which is what catches the
-  CJK-adjacent markup traps above.
+Add a new page to `docs/developer/index.rst` as well as writing it; an orphan
+file is a warning, and warnings are errors in CI.
+
+### Writing a page
+
+These pages ship with the source, and most readers arrive from a search or the
+sidebar with one task in mind. Write for that reader:
+
+- **Say who the page is for and what they can do after reading it**, in the
+  first paragraph.
+- **Lead with the action or the answer.** Put exceptions and edge cases after
+  it, in a note if they run long, and do not open a section with what the
+  software lacks.
+- **Name a file only when the reader will open or edit it.** Do not cite
+  functions or line numbers to prove a statement; tests and review do that.
+- **Describe the software as it is now.** What changed, how it used to work and
+  how you checked belong in the pull request, the release notes or
+  `docs/reviews/`.
+- **Leave out the details of any one installation** — its hosts, model ids,
+  accounts and measurements. They belong in that distribution's own
+  documentation.
+- **Use the words in the [Glossary](glossary.md)**, and add a term there before
+  relying on a new one.
+- **Keep a paragraph to one idea.** When it piles up conditions, make it a list
+  or a table.
+- **When a setting does not do what its name suggests, say so in one
+  sentence**, add it to
+  [Settings that currently have no effect](configuration.md#settings-that-currently-have-no-effect),
+  and open an issue, rather than explaining the internals at length.
+
+### Translations
+
+The site is published in English and Chinese, and an English edit changes the
+paragraph a translation is attached to. Update the Chinese in the same pull
+request; [Translating the Docs](translations.md) explains how.
 
 ## Proposing a change
 
@@ -414,11 +314,11 @@ request touched and then runs only the relevant jobs:
 | Backend Quality | `ruff format --check`, `ruff check --no-fix`, `pydocstyle` |
 | Frontend Quality | prettier, eslint, `tsc --noEmit`, vitest, `npm audit` |
 | Site UI Containers | builds the frontend image with no module and with the example's Site UI module, requires a module build that lacks its context to fail, and checks how the running example serves its assets |
-| Docs Build | `sphinx-build -W --keep-going` |
+| Docs Build | `make docs-verify`: both languages built with warnings as errors, local links checked, and every translation checked against the English |
 | `test` | pytest across four shards with a PostgreSQL service, `-m "not external"` — so the `dbtest` tier does run in CI even though it is excluded from `make test` |
 | Security Scan | `gitleaks detect` over the tree, then `pip-audit` against the exported production requirements |
 | `docker-build` | builds the affected images, then starts the runnable example and smokes it |
-| Tutorial E2E | runs the Router Tutorial's `make up` → `make smoke` → `make demo` → `make demo-smoke` transition |
+| Tutorial E2E | runs the Quickstart's `make up` → `make smoke` → `make demo` → `make demo-smoke` sequence |
 | CI Gate | aggregates the results of the jobs above into one check |
 
 Because CI includes `dbtest`, a change to storage or auth can be green locally

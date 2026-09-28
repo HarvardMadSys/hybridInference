@@ -67,7 +67,7 @@ make demo-down DISTRIBUTION=example
 To connect real models, add a provider, credentials, and model routes through
 the [admin console](docs/developer/configuration.md#runtime-configuration-from-the-admin-console),
 or follow the [local server setup](docs/developer/router-tutorial.md#stage-3-replace-the-fake-provider-with-local-inference).
-The [Router Tutorial](docs/developer/router-tutorial.md) covers prerequisites,
+The [Quickstart](docs/developer/router-tutorial.md) covers prerequisites,
 API calls, request-history checks, and how to resume or reset the example.
 
 ### Backend with an OpenRouter Key
@@ -106,7 +106,7 @@ row describes you:
 
 | If you want to | Start here |
 |---|---|
-| Follow the tutorial through to a local vLLM, SGLang, or Ollama server | [Router Tutorial](docs/developer/router-tutorial.md) |
+| Follow the tutorial through to a local vLLM, SGLang, or Ollama server | [Quickstart](docs/developer/router-tutorial.md) |
 | Run your own gateway against real providers | [Installation](docs/developer/installation.md) |
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |

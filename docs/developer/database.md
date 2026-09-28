@@ -37,8 +37,8 @@ the process environment.
 | `DB_USER` | `postgres` | Required by Compose. |
 | `DB_PASSWORD` | *(empty)* | Required by Compose. |
 | `DB_STORE_FULL_CONTENT` | `false` | Whether prompts and responses are stored verbatim. See [Request logging and privacy](#request-logging-and-privacy). |
-| `ERASURE_FENCE_SECRET` | *(empty; legacy fallback)* | Dedicated stable secret for erasure-fence tombstones. Provision it before the first upgraded worker starts; the first accepted namespace is pinned before serving and a mismatch fails startup validation. |
-| `ERASURE_FENCE_PROTOCOL_READY` | `false` | Enables hard-delete only after every `api_logs` writer has been upgraded to use the erasure-fence protocol. |
+| `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. Set it once and never change it; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
+| `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion. See [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
 initialised with `-E UTF8 --locale=C.UTF-8`, and publishes it on
@@ -47,9 +47,8 @@ an SSH tunnel, not by widening that binding.
 
 ## How the schema is created
 
-There is no migration tool in this repository — no Alembic, no SQL migration
-directory. The schema is created and migrated **by the application at startup**,
-idempotently. Every statement is `CREATE TABLE IF NOT EXISTS`, so the builders
+The application creates and migrates its own schema **at startup**, and it is
+safe to run again and again; there is no separate migration tool to run. Every statement is `CREATE TABLE IF NOT EXISTS`, so the builders
 below overlap harmlessly where two of them define the same table:
 
 | Code | Creates |
@@ -61,14 +60,14 @@ below overlap harmlessly where two of them define the same table:
 | `apps/backend/serving/grants.py` and `apps/backend/serving/admin/geo_demand_rollup.py` | `agent_grants`; the `geo_hourly_*` rollup tables |
 
 Pointing a gateway at an empty database is therefore all the "migration" there
-is: start it and the tables appear. Booting this revision against a blank
-`postgres:16` database creates 33 tables in `public`.
+is: start it and the tables appear.
 
 Two properties are worth knowing before you operate this:
 
-**Schema DDL is gated on the Postgres system catalogs.** Each startup reads `pg_attribute` / `pg_indexes`
-first and issues only the `ALTER`/`CREATE INDEX` statements that are actually
-missing, so a steady-state restart takes no strong table locks. This matters
+**A restart only changes what is missing.** Each startup first checks which
+columns and indexes already exist and issues only the `ALTER`/`CREATE INDEX`
+statements that are actually missing, so a steady-state restart takes no
+strong table locks. This matters
 because `ALTER TABLE` acquires `ACCESS EXCLUSIVE` *before* Postgres evaluates
 `IF NOT EXISTS`, and a queued exclusive lock parks every reader behind it.
 
@@ -79,20 +78,27 @@ usual lock holder is a long-running `pg_dump`, which can hold `ACCESS SHARE` ove
 `api_logs` for hours. If you take backups on a schedule, expect an occasional
 deferred-migration line in the log after a deploy that adds a column.
 
-Before the first upgraded worker starts, provision `ERASURE_FENCE_SECRET` with a
-dedicated stable value and keep it available across restarts and replicas. The
-legacy `API_KEY_SECRET` fallback is retained for existing deployments only; using
-it for a new rollout couples ordinary API-key rotation to the permanent erasure
-tombstone namespace. If that fallback becomes the pinned namespace, changing
-`API_KEY_SECRET` causes startup/fence validation to fail; restore the original
-pinned value. Do not delete erasure tombstones or fingerprint metadata to work
-around the mismatch. Deliberate migration to a new namespace requires a
-separate migration procedure that preserves every existing fence.
+If you are contributing a column to `api_logs`, add it in `log_schema.py` only;
+that is the one place the request log's schema is defined.
 
-If you are contributing a column to `api_logs`, add it in `log_schema.py` only.
-That module exists because the DDL was once duplicated across two builders, they
-drifted, and the builder that actually runs at boot never created the new
-columns.
+### Secrets for deleting accounts
+
+When an admin permanently deletes a user, the gateway also records a keyed
+fingerprint of that account in the `erasure_fence` table, so a request-log
+write that was already on its way cannot put the user's rows back. Two
+settings govern this:
+
+- `ERASURE_FENCE_SECRET` is the key for those fingerprints. Set it to its own
+  random value before the first worker of a version that uses it starts, keep
+  it across restarts and replicas, and never change it: the gateway checks it
+  against the fingerprints already stored and refuses to start on a mismatch.
+  Left empty, it falls back to `API_KEY_SECRET`. That fallback exists only for
+  deployments that already rely on it, because it ties the deletion records to
+  a secret you might one day rotate. If you hit a mismatch, restore the
+  original value; never delete fence rows to get past it.
+- `ERASURE_FENCE_PROTOCOL_READY=true` turns permanent deletion on. Leave it
+  `false` until every process that writes `api_logs` runs a version that checks
+  the fence.
 
 ## What the tables hold
 
@@ -107,9 +113,9 @@ columns.
 | Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled |
 | Geo analytics | `geo_hourly_coverage`, `geo_hourly_demand` | Hourly per-country request and token counts; aggregate only, no IP addresses stored |
 | Agent grants | `agent_grants` | Short-lived, model-scoped capabilities this gateway mints for an external agent control plane |
+| Account deletion | `erasure_fence` | Keyed fingerprints of permanently deleted accounts; see [Secrets for deleting accounts](#secrets-for-deleting-accounts) |
 
-`\dt` on a live database is the authoritative list; the code paths above are the
-authoritative definition.
+`\dt` on a live database lists every table.
 
 ## Request logging and privacy
 
@@ -129,12 +135,10 @@ expectations before you do.
 
 ### Which session a request belongs to
 
-`api_logs.session_id` is what groups one conversation's requests together, and
-it is indexed for exactly that lookup. A client sets it with the gateway's own
-`X-Session-ID` header — but no coding agent sends that header, so the traffic
-the column is most useful on used to arrive unlabelled. Each agent does carry a
-session of its own, in its own idiom, and the gateway reads whichever one the
-request used:
+`api_logs.session_id` groups one conversation's requests together. A client can
+set it with the gateway's `X-Session-ID` header, but coding agents do not send
+that header. Each carries a session id of its own instead, and the gateway
+reads whichever one the request has:
 
 | Read from | Sent by |
 |---|---|
@@ -142,46 +146,24 @@ request used:
 | `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
 | `x-session-affinity` / `x-opencode-session` headers | OpenCode and its Kilo Code fork, which send the affinity header beside `X-Session-ID` on any provider they do not recognise as their own, and `x-opencode-session` on one they do |
 | `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
-| `x-claude-code-session-id` header | Claude Code's own header, a bare UUID on every request — purpose-built for this, so it needs no inference |
+| `x-claude-code-session-id` header | Claude Code, on every request |
 | `metadata.user_id` in the request body | Claude Code, which packs the device, account and run into Anthropic's one `user_id` field. Two shapes — see below |
 
-Claude Code changed that field's shape in **2.1.78** (2026-03-17). Current
-clients send a JSON object — `{"device_id": …, "account_uuid": …, "session_id":
-…}` — whose `session_id` member is the run; older ones sent the underscore
-composite `user_<hash>_account_<uuid>_session_<uuid>`. Both are read, and the
-recorded source distinguishes them (`metadata.user_id.session_id` versus
-`metadata.user_id`). The JSON is read by member name rather than position,
-because an operator's `CLAUDE_CODE_EXTRA_METADATA` keys are serialized ahead of
-the canonical ones. `parent_session_id`, present on a subagent run, is
-deliberately not read — it names the session that spawned this one.
+Since version 2.1.78, Claude Code sends `metadata.user_id` as a JSON object —
+`{"device_id": …, "account_uuid": …, "session_id": …}` — and before that as a
+`user_<hash>_account_<uuid>_session_<uuid>` string. The gateway reads both.
+It does not use `parent_session_id`, which a subagent run carries: that names
+the session that started the subagent, not this one.
 
-A gateway that only understood the retired composite logged no session for any
-current Claude Code request, silently: a parser anchored at `^user_` cannot
-match a value whose first character is `{`.
-
-Those clients have two request paths, and only one of them sends the headers.
-The older `packages/opencode` path builds them directly; the newer
-`packages/core/src/session/runner/llm.ts` runner lost them and got them back
-upstream in `sst/opencode#43188` (2026-08-18). Kilo Code forked before that
-restore, so its core runner — the one `location-services.ts` registers — still
-sends nothing, and nothing else on the wire names the session. The gateway
-records none rather than inferring one from a field that was not meant to carry
-it.
-
-There is no client-side workaround for that path, and it is worth being exact
-about why: the `chat.headers` plugin hook exists only on the older path, which
-already sends the headers. Where the hook exists the fix is unnecessary, and
-where the headers are missing there is no hook to add them with. Upgrading
-OpenCode past the restore fixes OpenCode; Kilo needs the same change ported into
-its fork.
+Some OpenCode versions and the Kilo Code fork send no session id on their newer
+request path. OpenCode fixed this upstream (`sst/opencode#43188`); until Kilo
+Code takes the same fix, its requests are recorded without a session.
 
 The admin console's Recent Requests view shows the session under each row's
-client, and clicking it filters the list to that one conversation — an exact
-match against the indexed column, so it stays a lookup rather than a scan.
+client, and clicking it filters the list to that one conversation.
 
-`metadata.session_id_source` on the same row names which of those it came from,
-so a value read out of a composite id is never mistaken for one a client
-declared under the documented header. Every source is client-supplied, and
+`metadata.session_id_source` on the same row names which of those sources the
+session came from. Every source is client-supplied, and
 nothing is authorized, billed or rate-limited by a session id; a declaration
 over 128 characters, or one carrying control characters, is dropped rather than
 recorded. Like the derived columns above, the session is recorded whether or not

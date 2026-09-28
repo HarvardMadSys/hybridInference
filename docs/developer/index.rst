@@ -60,9 +60,10 @@ Where to start
      - :doc:`distribution-customization`
    * - Follow a request from HTTP through to an upstream call
      - :doc:`architecture`
-   * - Publish a new model id, or wire up a provider the gateway has never
-       talked to
+   * - Serve another model from a provider the gateway already supports
      - :doc:`adding-models`
+   * - Support a provider whose API the gateway cannot speak yet
+     - :doc:`provider-adapters`
    * - Add a provider, a key or a model from the admin console, without
        editing YAML or restarting
      - :doc:`configuration`, under *Runtime configuration from the admin
@@ -73,6 +74,8 @@ Where to start
      - :doc:`contributing`
    * - Identify a version or plan an upgrade
      - :doc:`releases`
+   * - Look up a term such as *route*, *endpoint* or *distribution*
+     - :doc:`glossary`
 
 Scope of this site
 ------------------
@@ -87,10 +90,11 @@ overlay* under ``distributions/`` rather than in the code, which is why a fresh
 clone comes up as nobody's gateway but your own. :doc:`distribution-customization`
 explains how to configure and extend an overlay.
 
-.. Keep all distribution-facing customization instructions in
-   distribution-customization: capability matrix, manifests/branding, public UI
-   contract, backend extensions and upgrades. Extend that page when adding a
-   customization capability; keep implementation notes under docs/agents/specs.
+.. Distribution-facing customization lives in three pages:
+   distribution-customization (capability matrix, manifest, branding,
+   upgrades), site-ui-modules (the public UI contract) and backend-extensions.
+   Extend them when adding a customization capability; keep implementation
+   notes under docs/agents/specs.
 
 .. toctree::
    :maxdepth: 2
@@ -99,7 +103,6 @@ explains how to configure and extend an overlay.
    router-tutorial
    installation
    configuration
-   distribution-customization
 
 .. toctree::
    :maxdepth: 2
@@ -107,7 +110,9 @@ explains how to configure and extend an overlay.
 
    architecture
    routing
+   routing-internals
    public-path-table
+   glossary
 
 .. toctree::
    :maxdepth: 2
@@ -115,10 +120,19 @@ explains how to configure and extend an overlay.
 
    adding-models
    add-local-model
+   provider-adapters
    openrouter
    hpc-model-host
    claude-code-setup
    rag-chat
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Customizing a Deployment
+
+   distribution-customization
+   site-ui-modules
+   backend-extensions
 
 .. toctree::
    :maxdepth: 2
@@ -127,7 +141,6 @@ explains how to configure and extend an overlay.
    deployment
    releases
    database
-   staging
    trusted-proxies-and-client-ips
    automation-score
 
@@ -136,6 +149,7 @@ explains how to configure and extend an overlay.
    :caption: Contributing
 
    contributing
+   translations
 
 .. toctree::
    :maxdepth: 2

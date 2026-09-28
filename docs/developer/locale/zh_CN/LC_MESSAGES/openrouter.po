@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-28 16:04+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -32,12 +32,14 @@ msgid ""
 "routing works in general, see [Architecture](architecture.md); for the "
 "model-registry syntax, see [Adding a New Model](adding-models.md)."
 msgstr ""
-"[OpenRouter](https://openrouter.ai) 是 HybridInference 可以路由到的 provider 之一，也是全新检出默认使用的那一个。本页专门讲 OpenRouter adapter。路由总体上如何工作见[架构](architecture.md)；模型注册表的语法见[添加新模型](adding-models.md)。"
+"[OpenRouter](https://openrouter.ai) 是 HybridInference 可以路由到的 provider "
+"之一，也是全新检出默认使用的那一个。本页专门讲 OpenRouter "
+"adapter。路由总体上如何工作见[架构](architecture.md)；模型注册表的语法见[添加新模型](adding-"
+"models.md)。"
 
 #: ../developer/openrouter.md:9
 msgid "The default catalog"
-msgstr ""
-"默认的模型目录"
+msgstr "默认的模型目录"
 
 #: ../developer/openrouter.md:11
 msgid ""
@@ -67,7 +69,8 @@ msgid ""
 "move, and the pricing figures in that file are approximate and used only "
 "for the gateway's own usage accounting. Copy it and edit freely."
 msgstr ""
-"这份目录是起点，不是一成不变的样板：OpenRouter 的模型 slug 会变动，而那个文件里的价格数字只是近似值，仅用于网关自己的用量核算。复制一份随意改。"
+"这份目录是起点，不是一成不变的样板：OpenRouter 的模型 slug "
+"会变动，而那个文件里的价格数字只是近似值，仅用于网关自己的用量核算。复制一份随意改。"
 
 #: ../developer/openrouter.md:35
 msgid "Route syntax"
@@ -173,31 +176,27 @@ msgstr ""
 
 #: ../developer/openrouter.md:96
 msgid ""
-"**Attribution headers.** `X-Title` carries the site name and `HTTP-"
-"Referer` the site's public base URL, both resolved from the site identity"
-" (`SITE_NAME` / `SITE_PUBLIC_BASE_URL`, else the active distribution "
-"manifest, else the neutral default). OpenRouter attributes traffic to "
-"whoever these name, for leaderboard placement and free-tier limits. A "
-"header with no value is omitted rather than sent blank, so an undeclared "
-"`SITE_PUBLIC_BASE_URL` means no `HTTP-Referer` at all; `X-Title` always "
-"goes out, falling back to the literal `HybridInference` when no site name"
-" is set. Declare `SITE_NAME` if you want your own account credited."
+"**Attribution headers.** OpenRouter credits traffic — for its leaderboard"
+" and its free-tier limits — to the site these two headers name. `X-Title`"
+" carries your site's name and `HTTP-Referer` its public address, taken "
+"from `SITE_NAME` and `SITE_PUBLIC_BASE_URL` or from an active "
+"distribution manifest. Without a public address no `HTTP-Referer` is "
+"sent, and without a site name `X-Title` is `HybridInference`. Set both if"
+" you want your own site credited."
 msgstr ""
-"**归属请求头**。`X-Title` 带的是站点名，`HTTP-Referer` 带的是站点的公开 base "
-"URL，两者都从站点身份解析而来（`SITE_NAME` / `SITE_PUBLIC_BASE_URL`，其次是当前生效的 "
-"distribution manifest，再次是中性默认值）。OpenRouter "
-"会把流量归属到这两个头指向的对象，用于排行榜排名和免费额度限制。没有值的头会被省略，而不是发一个空值，所以未声明 "
-"`SITE_PUBLIC_BASE_URL` 就意味着完全不发 `HTTP-Referer`；`X-Title` "
-"则一定会发出，在没有设置站点名时回退到字面量 `HybridInference`。想让流量记在你自己的账号上，就声明 `SITE_NAME`。"
+"**归属请求头**。OpenRouter 会把流量记在这两个请求头所指明的站点名下，用于它的排行榜和免费额度限制。`X-Title` "
+"携带你的站点名称，`HTTP-Referer` 携带站点的公开地址，取自 `SITE_NAME` 和 "
+"`SITE_PUBLIC_BASE_URL`，或已启用的发行版 manifest。没有公开地址时不发送 `HTTP-"
+"Referer`；没有站点名称时，`X-Title` 为 `HybridInference`。如果希望流量记在你自己的站点名下，两个都要设置。"
 
-#: ../developer/openrouter.md:105
+#: ../developer/openrouter.md:102
 #, python-brace-format
 msgid ""
 "**`usage: {include: true}`** on every request, so OpenRouter returns its "
 "per-request `cost` field."
 msgstr "**`usage: {include: true}`** 加在每一个请求上，好让 OpenRouter 返回它按请求计的 `cost` 字段。"
 
-#: ../developer/openrouter.md:107
+#: ../developer/openrouter.md:104
 #, python-brace-format
 msgid ""
 "**`stream_options: {include_usage: true}`** on streaming requests, so the"
@@ -206,16 +205,16 @@ msgstr ""
 "**`stream_options: {include_usage: true}`** 加在流式请求上，好让最后一个 SSE 分块带上 usage"
 " 块。"
 
-#: ../developer/openrouter.md:109
+#: ../developer/openrouter.md:106
 #, python-brace-format
 msgid "**`provider: {...}`** for the pinned and sort cases described above."
 msgstr "**`provider: {...}`** 用于上面讲的钉死和排序两种情况。"
 
-#: ../developer/openrouter.md:111
+#: ../developer/openrouter.md:108
 msgid "Cost accounting"
 msgstr "成本核算"
 
-#: ../developer/openrouter.md:113
+#: ../developer/openrouter.md:110
 msgid "Two numbers, deliberately kept apart:"
 msgstr "两个数字，刻意分开："
 
@@ -245,7 +244,7 @@ msgstr ""
 msgid "What OpenRouter reported it charged you for that request"
 msgstr "OpenRouter 报告的、它就这次请求向你收取的费用"
 
-#: ../developer/openrouter.md:120
+#: ../developer/openrouter.md:117
 msgid ""
 "`upstream_cost_usd` is `NULL` for non-OpenRouter routes, and `NULL` for "
 "an OpenRouter route when the response carried no cost figure."
@@ -253,11 +252,11 @@ msgstr ""
 "对非 OpenRouter 路由，`upstream_cost_usd` 是 `NULL`；对 OpenRouter "
 "路由，如果响应里没有带成本数字，它同样是 `NULL`。"
 
-#: ../developer/openrouter.md:123
+#: ../developer/openrouter.md:120
 msgid "API keys"
 msgstr "API key"
 
-#: ../developer/openrouter.md:125
+#: ../developer/openrouter.md:122
 msgid ""
 "A route's `api_keys:` is a list. With a single entry — the usual case — "
 "the adapter uses it directly. With several, the inherited key-pool logic "
@@ -273,7 +272,7 @@ msgstr ""
 "或超时）时，请求会转交给下一把。只有当请求再无别的密钥可轮换时，出错的那把才会被静默，而且只静默 20 秒。像 `400` 和 `422` "
 "这类与请求本身有关的失败在每把密钥上都会同样失败，所以它们会立刻向上传递，而不是白白耗掉整个池。"
 
-#: ../developer/openrouter.md:132
+#: ../developer/openrouter.md:130
 msgid ""
 "An `api_keys:` entry that expands from an unset environment variable is "
 "treated as absent. A route marked `optional: true` is then skipped with a"
@@ -285,17 +284,17 @@ msgstr ""
 "的路由会被跳过，并打出一条点名模型和 kind 的警告；其他路由则会抛出 "
 "`MissingEnvBackedKeyError`，启动失败。无论哪种情况，都不会注册一条指向自己无法完成鉴权的端点的路由。"
 
-#: ../developer/openrouter.md:138
+#: ../developer/openrouter.md:136
 msgid "Error handling"
 msgstr "错误处理"
 
-#: ../developer/openrouter.md:140
+#: ../developer/openrouter.md:138
 msgid ""
 "OpenRouter errors travel the same path as any other OpenAI-compatible "
 "provider's. Two mechanisms handle them, and they are independent:"
 msgstr "OpenRouter 的错误走的路径和任何其他 OpenAI 兼容 provider 的一样。有两套机制处理它们，而且彼此独立："
 
-#: ../developer/openrouter.md:143
+#: ../developer/openrouter.md:141
 msgid ""
 "**Fallback.** When a request to an OpenRouter leg fails for any reason, "
 "the router records the failure and tries the model's remaining legs in "
@@ -310,7 +309,7 @@ msgstr ""
 "会记下这次失败，并按路由顺序尝试该模型剩下的分支，跳过被管理员禁用的、模态不兼容的和熔断已打开的分支。例外是调用方用 `X-Route-Pin` "
 "显式钉死的请求，它永远不会回退。如果每条分支都失败，客户端看到的是第一个错误。失败的状态码并不决定「回退」还是「向上传递」——那个决定只取决于是否还有另一条分支可用。"
 
-#: ../developer/openrouter.md:151
+#: ../developer/openrouter.md:149
 msgid ""
 "**The circuit breaker.** Failures accumulate per `endpoint_id`; after "
 "`CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 3) the endpoint"
@@ -324,27 +323,34 @@ msgid ""
 "proxy demanding its own — which no caller can work around, so they count "
 "and additionally page."
 msgstr ""
-"**熔断器**。失败按 `endpoint_id` 累计；连续失败达到 `CIRCUIT_FAILURE_THRESHOLD` 次（默认 3）之后，该端点会在 `CIRCUIT_COOLDOWN_SECONDS`（默认 30）内停止接收流量，然后才做一次半开探测。客户端错误不计入：除 408、429、401 和 407 之外的 4xx 不会打开熔断，因为让一个调用方的错误请求把这个端点从所有人手里拿走，正是这条豁免要防的那种连锁反应。408 和 429 表示 OpenRouter 过载，计入。401 和 407 表示*网关自己*配置的凭据被拒——401 是 `OPENROUTER_API_KEY`，407 是出网代理在要它自己的凭据——这是任何调用方都绕不过去的，所以它们既计入，还会额外触发告警。"
+"**熔断器**。失败按 `endpoint_id` 累计；连续失败达到 `CIRCUIT_FAILURE_THRESHOLD` 次（默认 "
+"3）之后，该端点会在 `CIRCUIT_COOLDOWN_SECONDS`（默认 30）内停止接收流量，然后才做一次半开探测。客户端错误不计入：除"
+" 408、429、401 和 407 之外的 4xx "
+"不会打开熔断，因为让一个调用方的错误请求把这个端点从所有人手里拿走，正是这条豁免要防的那种连锁反应。408 和 429 表示 OpenRouter"
+" 过载，计入。401 和 407 表示*网关自己*配置的凭据被拒——401 是 `OPENROUTER_API_KEY`，407 "
+"是出网代理在要它自己的凭据——这是任何调用方都绕不过去的，所以它们既计入，还会额外触发告警。"
 
-#: ../developer/openrouter.md:162
+#: ../developer/openrouter.md:160
 msgid ""
-"402 and 403 are the awkward pair: they are exempt from the circuit here, "
-"but `KeyPool` still treats them as key-specific and mutes the key that "
-"saw them (`_KEY_SPECIFIC_STATUSES`). An unfunded account answering 402 to"
-" everything therefore mutes every key, and the resulting "
-"`KeyPoolExhausted` carries no HTTP status, is not exempt, and opens the "
-"circuit anyway. 403 is deliberately kept out of the auth-escalation set "
-"because remote providers overload it for per-request rejections — content"
-" policy, region blocks — where the upstream is healthy; see the rationale"
-" in `apps/backend/routing/endpoint_health.py`."
+"402 and 403 do not count against the circuit by themselves, but the "
+"gateway treats them as a problem with the key, as described under [API "
+"keys](#api-keys): it moves on to the next key and, once none is left, "
+"sets the key aside for a while. An account with no credit, which answers "
+"402 to everything, therefore soon has no usable key, and that does open "
+"the circuit. Unlike 401 and 407, 403 does not page, because providers "
+"also use it to refuse single requests — content policy, region blocks — "
+"while the service itself is healthy."
 msgstr ""
-"402 和 403 是尴尬的一对：它们在这里被熔断器豁免，但 `KeyPool` 仍然把它们当作 key 相关的失败，会静默看到它们的那把 key（`_KEY_SPECIFIC_STATUSES`）。于是一个欠费账号对所有请求都答 402 时，每把 key 都会被静默，随之而来的 `KeyPoolExhausted` 不带任何 HTTP 状态码、不在豁免之列，照样会打开熔断。403 被刻意排除在鉴权升级集合之外，是因为远端 provider 把它当作按请求拒绝的通用出口——内容策略、地域封锁——这些情况下上游本身是健康的；理由见 `apps/backend/routing/endpoint_health.py`。"
+"402 和 403 本身不计入熔断，但网关会按 [API key](#api-keys) "
+"一节所述，把它们当作这把密钥的问题来处理：换用下一把密钥；如果已经没有密钥可换，就把这把密钥搁置一段时间。一个没有余额的账号对所有请求都返回 "
+"402，因此很快就会没有可用的密钥，这时熔断确实会被打开。和 401、407 不同，403 不会触发告警，因为 provider "
+"在服务本身正常时，也会用它拒绝单个请求，比如出于内容策略或地区封锁。"
 
-#: ../developer/openrouter.md:171
+#: ../developer/openrouter.md:169
 msgid "Troubleshooting"
 msgstr "排查"
 
-#: ../developer/openrouter.md:173
+#: ../developer/openrouter.md:171
 msgid ""
 "**Every OpenRouter request returns 401.** The gateway's key was rejected,"
 " not the caller's. Check `OPENROUTER_API_KEY` in the environment the "
@@ -356,7 +362,7 @@ msgstr ""
 "`OPENROUTER_API_KEY`。完全没设置的密钥根本走不到这一步——如上所述，路由会被跳过，或者启动直接失败——所以 401 "
 "意味着密钥是有的，只是被 OpenRouter 拒了。"
 
-#: ../developer/openrouter.md:179
+#: ../developer/openrouter.md:177
 msgid ""
 "**The model is missing from `/v1/models`.** Confirm the registry the "
 "gateway loaded: the boot log emits `Registered N routes from <path>`, "
@@ -365,10 +371,10 @@ msgid ""
 "winning over it — see [Configuration](configuration.md)."
 msgstr ""
 "**`/v1/models` 里没有这个模型**。确认网关加载的是哪份注册表：启动日志会打出 `Registered N routes from "
-"<path>`，那就是解析链选中的文件。如果它不是你改的那个文件，说明有显式的 `MODELS_CONFIG_PATH` 或某个 "
-"distribution manifest 压过了它——见 [配置](configuration.md)。"
+"<path>`，那就是解析链选中的文件。如果它不是你改的那个文件，说明有显式的 `MODELS_CONFIG_PATH` 或某个发行版的 "
+"manifest 压过了它——见 [配置](configuration.md)。"
 
-#: ../developer/openrouter.md:185
+#: ../developer/openrouter.md:183
 msgid ""
 "**Requests reach the wrong upstream.** Use `GET /routing` to see the "
 "effective weight distribution per model. Note that this endpoint is "
@@ -378,3 +384,57 @@ msgstr ""
 "**请求打到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。注意这个端点没有鉴权，而且会泄露上游的 base "
 "URL；见 [架构](architecture.md#http-surface) 里的警告。"
 
+#~ msgid ""
+#~ "**Attribution headers.** `X-Title` carries the"
+#~ " site name and `HTTP-Referer` the "
+#~ "site's public base URL, both resolved"
+#~ " from the site identity (`SITE_NAME` "
+#~ "/ `SITE_PUBLIC_BASE_URL`, else the active "
+#~ "distribution manifest, else the neutral "
+#~ "default). OpenRouter attributes traffic to "
+#~ "whoever these name, for leaderboard "
+#~ "placement and free-tier limits. A "
+#~ "header with no value is omitted "
+#~ "rather than sent blank, so an "
+#~ "undeclared `SITE_PUBLIC_BASE_URL` means no "
+#~ "`HTTP-Referer` at all; `X-Title` always "
+#~ "goes out, falling back to the "
+#~ "literal `HybridInference` when no site "
+#~ "name is set. Declare `SITE_NAME` if "
+#~ "you want your own account credited."
+#~ msgstr ""
+#~ "**归属请求头**。`X-Title` 带的是站点名，`HTTP-Referer` 带的是站点的公开"
+#~ " base URL，两者都从站点身份解析而来（`SITE_NAME` / "
+#~ "`SITE_PUBLIC_BASE_URL`，其次是当前生效的 distribution "
+#~ "manifest，再次是中性默认值）。OpenRouter "
+#~ "会把流量归属到这两个头指向的对象，用于排行榜排名和免费额度限制。没有值的头会被省略，而不是发一个空值，所以未声明 "
+#~ "`SITE_PUBLIC_BASE_URL` 就意味着完全不发 `HTTP-"
+#~ "Referer`；`X-Title` 则一定会发出，在没有设置站点名时回退到字面量 "
+#~ "`HybridInference`。想让流量记在你自己的账号上，就声明 `SITE_NAME`。"
+
+#~ msgid ""
+#~ "402 and 403 are the awkward pair:"
+#~ " they are exempt from the circuit "
+#~ "here, but `KeyPool` still treats them"
+#~ " as key-specific and mutes the "
+#~ "key that saw them (`_KEY_SPECIFIC_STATUSES`)."
+#~ " An unfunded account answering 402 to"
+#~ " everything therefore mutes every key, "
+#~ "and the resulting `KeyPoolExhausted` carries"
+#~ " no HTTP status, is not exempt, "
+#~ "and opens the circuit anyway. 403 "
+#~ "is deliberately kept out of the "
+#~ "auth-escalation set because remote "
+#~ "providers overload it for per-request"
+#~ " rejections — content policy, region "
+#~ "blocks — where the upstream is "
+#~ "healthy; see the rationale in "
+#~ "`apps/backend/routing/endpoint_health.py`."
+#~ msgstr ""
+#~ "402 和 403 是尴尬的一对：它们在这里被熔断器豁免，但 `KeyPool` "
+#~ "仍然把它们当作 key 相关的失败，会静默看到它们的那把 "
+#~ "key（`_KEY_SPECIFIC_STATUSES`）。于是一个欠费账号对所有请求都答 402 时，每把 "
+#~ "key 都会被静默，随之而来的 `KeyPoolExhausted` 不带任何 HTTP"
+#~ " 状态码、不在豁免之列，照样会打开熔断。403 被刻意排除在鉴权升级集合之外，是因为远端 provider"
+#~ " 把它当作按请求拒绝的通用出口——内容策略、地域封锁——这些情况下上游本身是健康的；理由见 "
+#~ "`apps/backend/routing/endpoint_health.py`。"

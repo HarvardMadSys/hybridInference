@@ -20,10 +20,8 @@ Windows):
 
 `/anthropic` is the gateway's Anthropic-compatible surface. Claude Code sends
 Messages API requests to `/anthropic/v1/messages`, and token counting to
-`/anthropic/v1/messages/count_tokens`; both are registered in
-`apps/backend/serving/servers/routers/anthropic_messages.py`, which also serves
-the same handlers at the bare `/v1/messages` paths for clients configured
-without the `/anthropic` prefix.
+`/anthropic/v1/messages/count_tokens`. The same endpoints also answer at
+`/v1/messages` for clients configured without the `/anthropic` prefix.
 
 The top-level `model` setting is optional. It selects the initial model and can
 also be changed with `/model`.
@@ -37,24 +35,25 @@ belongs to Claude Code, not to the gateway. See Anthropic's current
 
 ## Model Families and Aliases
 
-Claude Code sends Anthropic family IDs such as `claude-sonnet-4-6` or
-`claude-opus-4-7` rather than a gateway model id. Those two are in the fixed
-compatibility table described below, which rewrites them to `claude-sonnet-4.6`
-and `claude-opus-4.7` — so **the id a deployment registers is the rewritten
-one**, not the id Claude Code sent. Registering `claude-sonnet-4-6` as a model
-id or an alias gets you a 404.
+Claude Code asks for models by Anthropic's names, such as `claude-sonnet-4-6`,
+rather than by a gateway model id. The gateway translates the names it knows
+before looking the model up:
 
-An id the table does not know passes through untouched and is looked up in the
-registry as sent; that is what a model entry's own `aliases:` list is for. Which
-registry is loaded is whatever `MODELS_CONFIG_PATH` names, else the
-`paths.models` entry of an active distribution manifest, else the shipped
-`config/examples/models.openrouter.yaml`. Nothing guarantees a given family ID
-is registered on a given deployment, so query `GET /v1/models` first.
+| Claude Code sends | The gateway looks up |
+|---|---|
+| `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-3-5-sonnet-latest`, `claude-3-5-sonnet-20241022`, `claude-3-5-sonnet-20240620` | `claude-sonnet-4.6` |
+| `claude-opus-4-7`, `claude-3-opus-latest` | `claude-opus-4.7` |
+| `claude-opus-4-6`, `claude-3-opus-20240229` | `claude-opus-4.6` |
 
-Claude Code also appends a bracketed context-window marker to the model id when
-the user opts into a long-context variant (`claude-sonnet-4-6[1m]`). The
-gateway strips that marker before alias and registry lookup, so you do not need
-to register the bracketed form.
+So **a deployment registers the id in the right-hand column**, as a model id or
+in that model's `aliases:` — not the one Claude Code sends. Registering
+`claude-sonnet-4-6` itself gets you a 404. Any other id passes through
+unchanged and is looked up as sent. Not every deployment serves these models,
+so query `GET /v1/models` first.
+
+When the user picks a long-context variant, Claude Code adds a marker to the id
+(`claude-sonnet-4-6[1m]`). The gateway removes it before the lookup, so you do
+not need to register the bracketed form.
 
 To map Claude Code's family selectors explicitly, add any of these supported
 variables to the same `env` block:
@@ -71,17 +70,6 @@ Use the Haiku mapping for Claude Code's smaller background calls. The gateway
 does not read any of these variables — Claude Code resolves them locally and
 sends the resulting id — so Anthropic's model-configuration documentation
 linked above is the authority on which ones your version supports.
-
-Anthropic IDs — current family selectors (`claude-sonnet-4-6`,
-`claude-opus-4-7`) as well as legacy and dated ones (`claude-3-5-sonnet-latest`,
-`claude-sonnet-4-5`, `claude-3-opus-20240229`, …) — first pass through a fixed
-compatibility table in
-`apps/backend/serving/adapters/anthropic_aliases.py`, which rewrites them to
-this project's canonical ids (`claude-sonnet-4.6`, `claude-opus-4.6`,
-`claude-opus-4.7`). Unknown ids pass through untouched. Either way the result
-is then looked up in the registry, so what a deployment must register is the
-**rewritten** id — as a model id or in that model's `aliases:` list. A `404`
-means the deployment has no route for the final id.
 
 ## Usage and Verification
 

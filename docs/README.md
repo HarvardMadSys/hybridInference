@@ -1,7 +1,7 @@
 # Documentation
 
 Start with the [README](../README.md) for what to deploy, then the
-[local tutorial](developer/router-tutorial.md) to run the gateway and consoles.
+[Quickstart](developer/router-tutorial.md) to run the gateway and consoles.
 The [developer guide](developer/index.rst) covers installation, configuration,
 routing, operations and contributing. Its English and Chinese editions are
 built and checked together with `make docs-verify`.

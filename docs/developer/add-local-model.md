@@ -20,15 +20,9 @@ The local server must expose OpenAI-compatible endpoints. The gateway forwards
 chat requests to `/v1/chat/completions`, and embedding requests to
 `/v1/embeddings` when the model is registered with `model_type: embedding`.
 
-**Where your model registry lives.** There is no `config/models.yaml` in this
-repository. The backend resolves the registry path in
-`apps/backend/serving/config/distribution.py` with the precedence
-`MODELS_CONFIG_PATH` → a distribution manifest's `paths.models` (only when
-`DISTRIBUTION_CONFIG_PATH` names one *and* `DISTRIBUTION_CONFIG_MODE=active`) →
-the bundled `config/examples/models.openrouter.yaml`. See
+Below, "your model registry" means the file the gateway loads models from;
 [Where your model registry lives](adding-models.md#where-your-model-registry-lives)
-for the full rules and the two layouts a self-hoster can pick. Below, "your
-model registry" means whichever file that resolution picks.
+explains which one that is.
 
 ## Private Server (No Public Internet)
 
@@ -193,11 +187,11 @@ The dashboard then shows `Local box A · local-a` and `Local box B · local-b` a
 separate providers, each with its own error rate, cache-hit rate, token totals,
 and enable/disable switch.
 
-Only the analytics label changes. The route still talks to the upstream its
-`kind` selects, `endpoint_id` is still derived from the model id, the route's
-`kind`, and its base URL (`_make_provider_id` in
-`apps/backend/serving/servers/registry.py`), and API keys stay
-pooled under the kind — so one `LOCAL_API_KEY` continues to serve both boxes.
+Only the label changes. The route still uses the adapter its `kind` selects
+and the server its `base_url` names, its [`endpoint_id`](glossary.md#routes-and-providers) — and with it the
+circuit breaker, latency history and weight overrides — stays the same, and
+API keys stay pooled under the kind, so one `LOCAL_API_KEY` continues to serve
+both boxes.
 
 Rules and caveats:
 
@@ -205,11 +199,10 @@ Rules and caveats:
   characters), and may not borrow a built-in provider's name (`vllm`, `zai`,
   `openrouter`, …). Reusing one would fold this route's traffic into that
   provider's quota reporting and disable switch. A malformed or reserved label
-  raises during the registry load, so the backend comes up with an incomplete
-  model list rather than silently mislabelling traffic. Note the line is
-  `Failed to load models.yaml` at **WARNING** level (`bootstrap.py`, inside a
-  broad `except Exception`) — grepping for an error will not find it, unlike the
-  missing-registry case, which logs at ERROR.
+  stops the registry from loading, so the backend comes up with an incomplete
+  model list rather than silently mislabelling traffic. Look for
+  `Failed to load models.yaml` in the log; it is written at `WARNING`, not
+  `ERROR`.
 - `provider_display_name` works on its own too, if you want to rename a provider
   in the dashboard without splitting it.
 - A label reserves its slug against custom providers created in the Providers
@@ -225,7 +218,9 @@ Rules and caveats:
 
 ## Step 3: Add Optional Remote Fallbacks
 
-For automatic fallback, add another route with a lower or equal weight:
+For automatic fallback, add another route. The fallback is only tried if its
+weight is above `0`; a small weight such as `0.01` makes it a fallback that
+almost never takes a request first:
 
 ```yaml
     route:
@@ -237,7 +232,7 @@ For automatic fallback, add another route with a lower or equal weight:
           prompt: "0"
           completion: "0"
       - kind: openrouter
-        weight: 0
+        weight: 0.01
         base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
         provider_model_id: "<upstream-model-slug>"
@@ -246,10 +241,11 @@ For automatic fallback, add another route with a lower or equal weight:
           completion: "0"
 ```
 
-Set a fallback's `weight` to `0` to keep the route configured but unselected.
-Set it above `0` to allow weighted routing and failover.
-`config/examples/models.openrouter.yaml` ships a working local-first hybrid
-entry built exactly this way.
+With these weights about one request in a hundred goes to OpenRouter first, and
+a request that fails on the local server is retried there. A route with weight `0`
+stays configured but is never used, not even as a fallback.
+`config/examples/models.openrouter.yaml` ships a working local-first entry
+built this way.
 
 ## Step 4: Restart the Gateway
 
@@ -314,11 +310,10 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
 
 ## Routing Notes
 
-When a routing config file is present, `RoutingManager` can adjust route weights
-after models are registered. Its path resolves the same way the registry does —
-`ROUTING_CONFIG_PATH`, then a manifest's `paths.routing`, then
-`config/examples/routing.minimal.yaml`. Without one, the gateway uses the weights
-written in the model registry. See [Routing](routing.md).
+The gateway splits a model's traffic by the weights in the model registry. A
+routing file can shift weights between local and remote routes, but only on a
+gateway without a database; see [The routing file](configuration.md#the-routing-file)
+and [Routing](routing.md).
 
 ### Prioritizing Decode on an sglang Route
 
@@ -338,16 +333,15 @@ than ahead of it:
       # A remote fallback must NOT set it — it is a fact about an sglang
       # server, not about the model.
       - kind: openrouter
-        weight: 0.0
+        weight: 0.01
         base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
 ```
 
 Priority is derived from the estimated *un-cached* prefill — the prompt size
 minus the prefix this endpoint is expected to have cached. The three tiers
-default to interactive 20, large 15, elephant 0
-(`apps/backend/routing/prefill_load.py`), and clients cannot set their own:
-a `priority` field in a client request body is dropped by `validate_params`.
+default to interactive 20, large 15, elephant 0, and clients cannot set their
+own: a `priority` field in a client request body is dropped.
 Both `/v1/chat/completions` and `/v1/messages` stamp it. A model on
 `router: routewise` keeps the upstream's default priority instead, because that
 router has no prefill accounting to compute the discount from — so
@@ -384,9 +378,8 @@ A route can declare that its server does report, which turns the null into the
 `--enable-cache-report`, and vLLM without `--enable-prompt-tokens-details`,
 send the identical null on every request — hit or miss
 ([vllm-project/vllm#44377](https://github.com/vllm-project/vllm/issues/44377)).
-Declaring the flag there would replace an honest `NULL` with a fabricated
-"measured miss", which is harder to notice later than the missing value it
-replaces. The check is one cold request and one warm repeat of the same prompt
+Setting the flag there would record every request as a cache miss, which is
+harder to notice later than the missing value it replaces. The check is one cold request and one warm repeat of the same prompt
 against the endpoint:
 
 ```bash
@@ -402,8 +395,8 @@ Two loader rules keep a wrong declaration from passing quietly:
 - **Route-level only.** Declaring it on the model (including a shorthand model
   with no `route:` block) is a config error, because the claim is about one
   server's startup flags and inheritance would carry it to every fallback.
-- **Real YAML booleans only.** A quoted `"false"` is a config error rather than
-  a surprise opt-in, since `bool("false")` is `True`.
+- **Real YAML booleans only.** A quoted `"false"` is a config error, so it can
+  never turn the flag on by accident.
 
 What the client sees differs by surface: a non-streaming response carries
 `cache_read_tokens: 0` (the `Usage` response model drops the rest), while a

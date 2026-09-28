@@ -93,15 +93,12 @@ rejects the field with `422` on a non-OpenRouter route or an unrecognised value.
 subclass of the generic OpenAI-compatible adapter. On top of the normal request
 it adds:
 
-- **Attribution headers.** `X-Title` carries the site name and `HTTP-Referer`
-  the site's public base URL, both resolved from the site identity
-  (`SITE_NAME` / `SITE_PUBLIC_BASE_URL`, else the active distribution manifest,
-  else the neutral default). OpenRouter attributes traffic to whoever these
-  name, for leaderboard placement and free-tier limits. A header with no value
-  is omitted rather than sent blank, so an undeclared `SITE_PUBLIC_BASE_URL`
-  means no `HTTP-Referer` at all; `X-Title` always goes out, falling back to the
-  literal `HybridInference` when no site name is set. Declare `SITE_NAME` if you
-  want your own account credited.
+- **Attribution headers.** OpenRouter credits traffic — for its leaderboard and
+  its free-tier limits — to the site these two headers name. `X-Title` carries
+  your site's name and `HTTP-Referer` its public address, taken from `SITE_NAME`
+  and `SITE_PUBLIC_BASE_URL` or from an active distribution manifest. Without a
+  public address no `HTTP-Referer` is sent, and without a site name `X-Title`
+  is `HybridInference`. Set both if you want your own site credited.
 - **`usage: {include: true}`** on every request, so OpenRouter returns its
   per-request `cost` field.
 - **`stream_options: {include_usage: true}`** on streaming requests, so the
@@ -160,14 +157,14 @@ configured credential was rejected — 401 the `OPENROUTER_API_KEY`, 407 an egre
 proxy demanding its own — which no caller can work around, so they count and
 additionally page.
 
-402 and 403 are the awkward pair: they are exempt from the circuit here, but
-`KeyPool` still treats them as key-specific and mutes the key that saw them
-(`_KEY_SPECIFIC_STATUSES`). An unfunded account answering 402 to everything
-therefore mutes every key, and the resulting `KeyPoolExhausted` carries no HTTP
-status, is not exempt, and opens the circuit anyway. 403 is deliberately kept
-out of the auth-escalation set because remote providers overload it for
-per-request rejections — content policy, region blocks — where the upstream is
-healthy; see the rationale in `apps/backend/routing/endpoint_health.py`.
+402 and 403 do not count against the circuit by themselves, but the gateway
+treats them as a problem with the key, as described under
+[API keys](#api-keys): it moves on to the next key and, once none is left, sets
+the key aside for a while. An account with no credit, which answers 402 to
+everything, therefore soon has no usable key, and that does open the circuit.
+Unlike 401 and 407, 403 does not page, because providers also use it to refuse
+single requests — content policy, region blocks — while the service itself is
+healthy.
 
 ## Troubleshooting
 

@@ -7,12 +7,12 @@ service commands are in [Deployment](deployment.md).
 
 ## Release identity and support
 
-The manually dispatched `Sync dev to main` workflow fast-forwards `main` to the
-fetched `dev` tip and creates a
-[GitHub release](https://github.com/HarvardMadSys/hybridInference/releases)
-with generated change notes. Tags use the UTC date, `YYYYMMDD`; another release
-on the same date gets `.1`, `.2`, and so on. These are date-based releases,
-not semantic-version compatibility promises.
+Releases are [GitHub releases](https://github.com/HarvardMadSys/hybridInference/releases)
+tagged with the UTC date, `YYYYMMDD`; another release on the same date gets
+`.1`, `.2`, and so on. They are dated snapshots, not semantic-version
+compatibility promises. A maintainer cuts one by running the `Sync dev to main`
+workflow, which moves `main` up to `dev` and publishes the release with
+generated change notes.
 
 | Identifier | What it tells you |
 |---|---|

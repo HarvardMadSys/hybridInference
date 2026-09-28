@@ -60,9 +60,10 @@ class Settings(BaseSettings):
     db_password: str = ""
 
     # Database privacy settings
-    # Default False: by default we hash prompt/response content rather than
-    # storing it verbatim. Operators can opt in to full-content logging by
-    # setting DB_STORE_FULL_CONTENT=true after weighing the privacy impact.
+    # Default False: prompt, response and request payload are not stored at all
+    # (their api_logs columns are written as NULL). Operators can opt in to
+    # full-content logging by setting DB_STORE_FULL_CONTENT=true after weighing
+    # the privacy impact.
     db_store_full_content: bool = False
 
     # Admin

@@ -5,11 +5,21 @@ reverse proxy, a tunnel, a load balancer. Once that is true, the socket peer
 the gateway sees is the proxy, not the caller, and the caller's address only
 survives in a request header that anyone can also set by hand.
 
-`apps/backend/serving/utils/request_ip.py` is the single place that decides
-which address to believe. This page describes that resolver and its
-configuration. Downstream policy consumers adopt its provenance result in the
-follow-up consumer-contract change; they must not reconstruct proxy trust from
-request headers independently.
+The gateway therefore believes a forwarded address only from peers you have
+authorized. Start with the row that matches what sits in front of your
+gateway:
+
+| In front of the gateway | Set |
+|---|---|
+| Nothing: clients connect directly | Nothing. Forwarding headers are ignored by default. |
+| A reverse proxy or load balancer at a known address | `TRUST_PROXY_HEADERS=1` and `TRUSTED_PROXIES=<that proxy's address>/32` |
+| Cloudflare, connecting straight to the gateway | `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1` and `TRUSTED_CLOUDFLARE_NETWORKS=<Cloudflare's published ranges>` |
+| Cloudflare, then your own proxy, then the gateway | As above, but `TRUSTED_CLOUDFLARE_NETWORKS=<your proxy's address>/32`, and only if that proxy accepts connections from Cloudflare alone and handles the header correctly |
+| Clients on a private network (such as `10.x`) connecting directly | `TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>` |
+
+The rest of this page explains each setting, how the address is resolved, and
+what is logged and stored. `apps/backend/serving/utils/request_ip.py` is the one
+place in the code that makes this decision.
 
 ## The server underneath
 
@@ -22,18 +32,16 @@ in `--forwarded-allow-ips` (default `127.0.0.1`, also settable through the
 `FORWARDED_ALLOW_IPS` environment variable). That rewrite happens before any
 application code runs, upstream of everything this page describes, so left
 enabled it hands `request_ip.py` an already-forged "socket peer" while
-`TRUST_PROXY_HEADERS=0` promises that no header influences the result. The
-Docker image shipped for a while with the widest form of this —
-`--proxy-headers --forwarded-allow-ips "*"` — which made the leftmost
-`X-Forwarded-For` entry, i.e. whatever the caller wrote, the socket peer on
-every request (HarvardMadSys/freeInference#72).
+`TRUST_PROXY_HEADERS=0` promises that no header influences the result. With
+`--forwarded-allow-ips "*"`, the leftmost `X-Forwarded-For` entry — whatever
+the caller wrote — would become the socket peer on every request.
 
 Every launch configuration in this repository therefore passes
 `--no-proxy-headers` explicitly — `deploy/docker/Dockerfile.backend`
 and both systemd units —
-and `tests/unit/deploy/test_uvicorn_proxy_headers.py` fails if one stops doing
-so. If you run the gateway under your own process manager, carry the flag
-over: deleting the two flags is not enough, because the default is on.
+and a test fails if one stops doing so. If you run the gateway under your own
+process manager, pass `--no-proxy-headers` there too: leaving out
+`--proxy-headers` is not enough, because the default is on.
 
 Two consequences of the server never interpreting forwarded headers:
 
@@ -65,8 +73,7 @@ terminate connections from the internet and forward to the gateway should be
 trusted. Do not trust broad internal subnets — that would allow any host
 within that subnet to assert client identity on any request.
 
-Invalid CIDRs fail configuration at startup. Parsed networks are cached in
-`trusted_proxies_parsed` and validated once at startup.
+An invalid CIDR stops the gateway at startup.
 
 ### Direct private client networks
 
@@ -131,22 +138,9 @@ absent.
 ### Why this matters
 
 Without these gates, a client can send `X-Forwarded-For: <anything>` and the
-gateway logs and rate-limits on the attacker-chosen address. The old boolean
-flags (issue #1036) asserted only that *some* proxy exists; they did not
-restrict which peer may assert forwarding provenance. The new model makes
-trust explicit and fail-closed.
-
-### The "unknown" outcome
-
-When the gateway cannot determine a trustworthy routable client address, the
-**provenance identity** (`get_client_ip()`) returns `"unknown"`. This is
-correct: it accurately reflects that we don't know the client.
-
-The resolver returns `ClientIpInfo.resolved=False` and the display value
-`"unknown"` when it cannot establish trustworthy client provenance. This
-foundation deliberately does not define rate-limit, authentication, or
-affinity policy for that outcome. The later consumer-contract change must use
-the canonical result and must not turn `"unknown"` into a shared client key.
+gateway logs and rate-limits on the address the client chose. Naming the exact
+peers that may forward an address closes that hole, and anything not named is
+ignored.
 
 ## Resolution order
 
@@ -231,7 +225,7 @@ than 32 inspected hops fails closed.
 
 ### What counts as routable
 
-`_is_reportable_ip()` rejects anything unparseable, plus loopback, link-local,
+The resolver rejects anything unparseable, plus loopback, link-local,
 multicast and unspecified addresses, and these networks:
 
 ```text
@@ -258,7 +252,8 @@ special-purpose registry changes.
 ## The "unknown" outcome
 
 When the gateway cannot determine a trustworthy routable client address, it
-returns `"unknown"` rather than masquerading an internal address as a client.
+returns `"unknown"` — with `ClientIpInfo.resolved=False` — rather than passing
+off an internal address as the client.
 This is correct: if the socket peer is a Docker bridge and there is no
 trustworthy forwarding provenance, `"unknown"` is more useful than
 `172.19.0.1`.
@@ -285,8 +280,8 @@ path, handing every rotated privacy address its own rate-limit bucket and
 defeating the `/64` grouping below.
 
 The corroboration matters because with Pseudo IPv4 off the header is *absent*
-rather than cleared, so any caller can supply one. `_pseudo_ipv4_origin()`
-therefore honours it only when the IPv6 header parses as IPv6 *and*
+rather than cleared, so any caller can supply one. The gateway therefore
+honours it only when the IPv6 header parses as IPv6 *and*
 `CF-Connecting-IP` parses as IPv4 *and* that IPv4 falls inside `240.0.0.0/4`.
 Cloudflare controls that second value and a real client address is never drawn
 from the reserved Class E range, so the pairing cannot be forged from outside.
@@ -312,9 +307,9 @@ stand in for a caller:
 - Anything unparseable (including the `"unknown"` fallback and scoped literals)
   → returned unchanged.
 
-Logs and analytics keep the full address; only the buckets fold. Callers of
-`normalize_ip_bucket()` at this revision are signup rate limiting, login rate
-limiting, the repeated-auth-failure blocklist, and routing affinity.
+Logs and analytics keep the full address; only the buckets fold. Signup rate
+limiting, login rate limiting, the repeated-auth-failure blocklist and routing
+affinity all group callers this way.
 
 `derive_affinity_key()` is the sticky-routing variant. It falls through caller
 identities in order of how precisely each names one caller: the presented API
@@ -376,8 +371,10 @@ that exist are operator-initiated:
 
 - `DELETE /admin/login-events?older_than_days=N` — purge `login_events` by age.
 - `DELETE /admin/login-events?user_id=...` — purge one user's login events.
-- `hard_delete_user_data(user_id)` — wipes that user's `api_logs` rows.
-- `delete_recent_error_requests(hours=N)` — drops recent error rows.
+- `POST /admin/users/{user_id}/hard-delete` — deletes the user, including their
+  `api_logs` rows. It works only once permanent deletion is turned on; see
+  [Secrets for deleting accounts](database.md#secrets-for-deleting-accounts).
+- `POST /admin/recent-requests/clear-errors` — drops recent error rows.
 
 If your deployment is subject to a data-protection regime, or you simply do not
 want to hold client addresses indefinitely, you must decide on and implement a
@@ -389,15 +386,15 @@ Two knobs that reduce what there is to retain in the first place:
 - Leaving `trusted_proxies` empty where no proxy is in front means only the
   socket peer is ever recorded.
 - Prompt and response content is governed separately by
-  `DB_STORE_FULL_CONTENT` (default `false`, which hashes content rather than
-  storing it verbatim; see `apps/backend/serving/config/settings.py`).
+  `DB_STORE_FULL_CONTENT`. At its default, `false`, prompts and responses are
+  not stored at all; see
+  [Request logging and privacy](database.md#request-logging-and-privacy).
 
 ## Testing your setup
 
 `tests/unit/utils/test_request_ip.py` covers the resolution table, the
 Pseudo IPv4 corroboration, the bucketing rules, and adversarial cases (spoofed
-headers, multi-hop chains, malformed inputs, all-private chains, the two
-production pollution classes from issue #1036);
+headers, multi-hop chains, malformed inputs, all-private chains);
 `tests/unit/config/test_trusted_proxies.py` covers CIDR validation;
 `tests/unit/middleware/test_request_log.py` covers the log fields. Run them
 with:

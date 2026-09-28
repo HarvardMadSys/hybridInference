@@ -1,10 +1,13 @@
 # Deployment Guide
 
-Running HybridInference as a long-lived deployment: what starts, how to operate
-it, and how to reset it without losing (or accidentally keeping) data.
+Running HybridInference as a long-lived deployment: what starts, how to reach
+it publicly or keep it private, how to create the first administrator, how to
+operate it, and how to reset it without losing (or accidentally keeping)
+data. A staging or scratch instance is the same stack; the sections on keeping
+it private and on the first admin account matter most there.
 
 First-time setup — cloning, filling in `.env`, and the first `make up` — is in
-[Installation](installation.md#quick-start-with-docker). This page assumes the
+[Installation](installation.md#running-with-docker). This page assumes the
 stack already comes up.
 
 ## What the stack is
@@ -49,40 +52,66 @@ forwards API routes as well as serving pages, so exposing its port also exposes
 those routes. Set `BACKEND_HOST` separately only if direct gateway access is
 needed.
 
-Earlier releases defaulted the frontend host to `0.0.0.0`. Deployments that
-relied on that default must set `FRONTEND_HOST` explicitly before upgrading.
-See [Releases and upgrades](releases.md) for the upgrade checklist.
+Releases before the loopback default bound the console to `0.0.0.0`. If a
+deployment relied on that, set `FRONTEND_HOST` explicitly before upgrading;
+see [Releases and upgrades](releases.md).
 
 Which public paths the console serves itself and which it forwards to the
 backend is a separate question, and the answer is in the console's own
 `next.config.js` rather than in any proxy config. See
 [The public path table](public-path-table.md).
 
-#### Known gap: protections the stack does not provide itself
+#### What your proxy still has to do
 
-Three things a host reverse proxy is commonly relied on for are implemented
-nowhere inside this stack. A deployment that reaches the published ports
-directly — a tunnel daemon connecting to `127.0.0.1:3001`, for instance — never
-had them, and a deployment that retires its proxy loses them silently, because
-nothing fails when they go missing:
+Three protections are commonly left to the reverse proxy, and nothing inside
+this stack provides them. A deployment that exposes the published ports without
+a proxy — a tunnel daemon connecting to `127.0.0.1:3001`, for instance — has
+none of them, and nothing warns you:
 
-| Not implemented | What a proxy in front typically did |
+| Protection | What a proxy in front typically does |
 |---|---|
 | Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
 | Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`). The gateway enforces no size limit of its own |
 | `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
 
-The third is worth separating from what the gateway *does* do: it reads
-forwarded headers, gated on the relevant trust flag **and** an explicitly
-configured CIDR list (`TRUSTED_PROXIES` or
-`TRUSTED_CLOUDFLARE_NETWORKS`), but it never rewrites them. Enabling a flag
-without authorizing the immediate peer therefore remains fail-closed. With no
-rewriting hop in front, the leftmost `X-Forwarded-For` entry is whatever the
-caller sent — which is why `CF-Connecting-IP` is preferred when Cloudflare is
-the immediate proxy. See [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
+The gateway reads forwarded headers only from the proxies you authorize (see
+[Trusted proxies and client IPs](trusted-proxies-and-client-ips.md)), but it
+never rewrites them. Without a proxy that does, the leftmost `X-Forwarded-For`
+entry is whatever the caller sent — which is why `CF-Connecting-IP` is
+preferred when Cloudflare is in front.
 
-This is recorded as a known gap, not a regression: whether to reimplement any
-of it in the application is an open decision.
+### Keeping it private: an SSH tunnel
+
+A staging or scratch instance, or any gateway you do not want on a network at
+all, can keep the loopback defaults. Reach it from your workstation by
+forwarding both ports:
+
+```bash
+ssh -L 3001:127.0.0.1:3001 -L 8080:127.0.0.1:8080 <user>@<your-server>
+```
+
+Then open `http://localhost:3001`. Keep the local end on `localhost` or
+`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by default
+(`COOKIE_SECURE`), and browsers accept `Secure` cookies only over HTTPS or from
+a loopback origin.
+
+The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked in at
+image build time — `http://localhost:8080` by default — which is why the tunnel
+forwards 8080 as well. Changing it is a frontend rebuild, not a restart.
+
+VS Code-family editors can manage the same forwards from their ports panel.
+
+Check the stack answers:
+
+```bash
+curl -s http://localhost:8080/health
+curl -s http://localhost:8080/v1/models
+```
+
+The default `CORS_ALLOWED_ORIGINS` already covers ports 3000, 3001 and 3002 on
+`localhost` and `127.0.0.1`, plus HTTPS on port 8443, so a tunnelled instance
+needs no CORS entry. Add one only when you serve the console from
+another origin.
 
 ## Everyday operations
 
@@ -111,9 +140,10 @@ outranks every `--env-file` in Compose:
 make up COMPOSE_PROFILES=admin
 ```
 
-`COMPOSE_PROFILES` is a comma-separated list, so `admin,oncall` starts both. It
-can also be set in `.env` (as `.env.example` notes), but the command line is the
-form to reach for when you want certainty about which profiles are active.
+`COMPOSE_PROFILES` is a comma-separated list, so you can name several profiles
+at once. It can also be set in `.env` (as `.env.example` notes), but the
+command line is the form to reach for when you want certainty about which
+profiles are active.
 
 ### What a change actually requires
 
@@ -130,30 +160,23 @@ taking effect:
 | A true build-only `NEXT_PUBLIC_*` compatibility value | `make build s=frontend` — see below |
 | Backend or frontend source | `make build`, or `make build s=<service>` |
 
-Canonical console identity comes from the active distribution's versioned
-branding YAML through `/site-config`, and `/agents` gets its two destinations
-from server-only runtime environment. Neither change requires a frontend image
-rebuild. Recreate the frontend with `make up` after changing its runtime
-environment; restart the backend after changing the branding document it
-loads.
+The console gets its name and branding from the backend's `/site-config` at
+runtime, and the `/agents` destinations from its own runtime environment, so
+neither needs a new frontend image: restart the backend after editing the
+branding file, and run `make up` after changing the console's environment.
 
-The console requires a valid `/site-config` response before rendering normal
-pages. A failed HTTP request, a three-second timeout, or invalid JSON/schema
-shows a retryable configuration error instead of silently enabling build-time
-feature defaults. Check the frontend logs and backend connectivity, then retry
-the page after recovery. Valid neutral defaults and legacy documents remain
-supported; operators do not need to add custom settings just to start the
-example deployment.
+The console will not render its normal pages without a valid `/site-config`
+answer. If the backend is unreachable, slow (over three seconds) or returns
+something invalid, the console shows a configuration error with a retry button
+instead of guessing. Check the frontend logs and whether the backend is up,
+then retry. The example deployment needs no extra settings for this.
 
-The Compose file still exposes the old branding variables as build arguments
-for source compatibility. The Dockerfile also retains the two legacy agent
-arguments for explicit pre-W7 downstream build pipelines, but upstream Compose
-does not populate them. Those are transition bridges, not the canonical
-release path: neutral published images omit them. Values that genuinely remain
-`NEXT_PUBLIC_*` build metadata or compatibility settings are compiled into the
-browser bundle and still require `make build s=frontend`. See [The public path
-table](public-path-table.md) for the distinction between runtime handlers and
-legacy build-time rewrites.
+A few older build-time options remain for existing build pipelines: the old
+branding variables, which Compose still accepts as build arguments, and two
+agent build arguments that it no longer sets. Standard builds do not need them.
+Anything that really is a `NEXT_PUBLIC_*` build value is compiled into the
+browser bundle and needs `make build s=frontend`; see
+[The public path table](public-path-table.md).
 
 ## Configuration
 
@@ -163,17 +186,14 @@ Everything is in `.env` at the repository root; `.env.example` is the annotated
 list. Compose is invoked with `--env-file .env` and the backend service also
 loads it as `env_file`. The variables Compose itself requires, and the two
 secrets you should not leave blank, are in
-[Installation](installation.md#quick-start-with-docker).
+[Installation](installation.md#running-with-docker).
 
 ### Config file resolution
 
-There is no `config/models.yaml` or `config/routing.yaml` in this repository.
-`resolve_config_path` (`apps/backend/serving/config/distribution.py`) picks each
-file by precedence: an explicit `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` /
-`ALERTS_CONFIG_PATH`, then an active distribution manifest, then the built-in
-defaults under `config/examples/`. The full rules, including why
-`DISTRIBUTION_CONFIG_MODE` defaults to `dark`, are in
-[Installation](installation.md#where-the-config-files-live).
+The gateway picks each configuration file from an explicit
+`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then an
+active distribution manifest, then the examples under `config/examples/`; see
+[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config).
 
 Note that the Compose file passes these through explicitly:
 
@@ -184,8 +204,8 @@ DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
 ```
 
 An `--env-file` alone does not put a variable into a container's environment;
-these lines are what carry it in. Losing one silently swaps a deployment's
-routing map or alert thresholds for the defaults — which is why tests pin them.
+these lines are what carry it in. Without them the gateway would silently fall
+back to the default files.
 
 ### Local inference servers
 
@@ -351,6 +371,69 @@ and a breach still live when the mute lifts pages at its next evaluation. A mute
 is for an alert you want back later; to retire a rule for good, turn it off in
 your alerts file instead.
 
+## The first admin account
+
+Every deployment needs one administrator to start with. Choose how you create
+it with care:
+
+```{warning}
+Do not combine `SIGNUP_ENABLED=1`, `SIGNUP_REQUIRE_EMAIL_VERIFICATION=0` and
+`ADMIN_EMAILS` on an instance anyone else can reach. Together they are a
+privilege-escalation recipe:
+
+- with verification disabled, `POST /auth/signup` marks any address as
+  verified without sending mail to it;
+- on login *and* on every token refresh, the backend promotes any account whose
+  address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no check
+  that the person signing up owns that address.
+
+So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up with that
+address and is an admin on their first login.
+```
+
+Pick one of these instead.
+
+**Preferred — create the admin out of band and leave `ADMIN_EMAILS` unset.**
+`ops/admin/create_admin.py` writes the row directly: it creates the account with
+`role='admin'`, `status='active'`, `email_verified=TRUE`, or promotes an
+existing account with the same address. Run it from the repository root once the
+backend has started at least once (the backend creates the schema):
+
+```bash
+python ops/admin/create_admin.py --email you@example.com
+```
+
+Run it inside the project environment (`source .venv/bin/activate` after
+`make setup-dev`) so the `serving` package is importable. It reads `DB_HOST`,
+`DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, and Postgres
+publishes on `127.0.0.1:5432`, so it works from the host shell. Omit
+`--password` and it prompts, keeping the password out of your shell history.
+With this in place the instance can run with signup closed:
+
+```bash
+USER_AUTH_ENABLED=1
+SIGNUP_ENABLED=0
+```
+
+**Alternative — keep signup open, but leave verification on.**
+`SIGNUP_REQUIRE_EMAIL_VERIFICATION` defaults to `true`, and with it on an
+account cannot log in until it has followed a link sent to the address, which
+restores the ownership check that `ADMIN_EMAILS` itself does not perform. This
+needs working SMTP; without it nobody can complete a signup.
+
+`ADMIN_EMAILS` also picks the default recipients for signup approval mail. To
+narrow the notification list without changing who holds the admin role, set
+`SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is empty, notifications fall
+back to `ADMIN_EMAILS`.
+
+```bash
+SIGNUP_NOTIFY_EMAILS=you@example.com
+```
+
+Both `signup_enabled` and `signup_require_email_verification` can also be
+flipped at runtime through the settings store, and the runtime value wins over
+the environment. A `.env` line is the starting point, not a guarantee.
+
 ## Database
 
 PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume
@@ -408,7 +491,7 @@ accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed authentications inside
 The awkward case is a caller you own — a status monitor, a CI job, a service
 account — whose key was rotated, revoked, or never reached its environment. It
 retries on a schedule, crosses the threshold, and is then refused *ahead of the
-key check*, which has two consequences worth internalising:
+key check*, which has two consequences:
 
 - **Repairing the credential does not lift the block.** The blocklist is
   consulted before the presented key is read, so a corrected key gets the same
@@ -431,14 +514,14 @@ To recover, first fix the credential, then clear the block:
 ```bash
 # Which sources is this worker refusing?
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://localhost:8000/admin/auth-blocks
+  http://localhost:8080/admin/auth-blocks
 
 # Lift one. `ip` takes a raw address, or a bucket key exactly as listed
 # (IPv6 sources are bucketed to their /64).
 curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"ip": "203.0.113.7"}' \
-  http://localhost:8000/admin/auth-blocks/clear
+  http://localhost:8080/admin/auth-blocks/clear
 ```
 
 `cleared: false` means there was nothing to lift — it lapsed, or that bucket was
@@ -477,12 +560,10 @@ make up   # docker-volumes recreates it empty; Postgres re-initialises
 log with it. Take a `pg_dump` first if any of it matters.
 ```
 
-pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call relay's
-(`hybridinference_codex_oncall_data`) are ordinary local volumes, so a `down -v`
-*would* remove those. Note that `make down` is a plain `docker compose down`
-with no `--volumes`, so nothing here passes `-v` on your behalf — you have to
-run `docker compose --profile admin --profile oncall down -v` yourself, or
-remove the volumes by name as above.
+pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary local
+volume, so a `down -v` *would* remove it. `make down` never passes `-v`; run
+`docker compose --profile admin down -v` yourself, or remove the volume by name
+as above.
 
 ### Rebuilding after code changes
 

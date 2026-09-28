@@ -11,11 +11,11 @@ must remain changeable after the image is built live in App Router route
 handlers. Anything not named by either mechanism is served by the console's
 own pages.
 
-This is worth stating plainly because it is easy to get wrong from the outside:
-adding a public route is an edit to `next.config.js` or a route handler, not to
-whatever reverse proxy or tunnel happens to sit in front. A path missing from
-both is answered by the console's HTML 404 page — which reads to an API client
-as "the gateway is down" rather than "this path is not forwarded".
+So exposing the console's port exposes every gateway path in the table below,
+and publishing a new path means editing `next.config.js` or adding a route
+handler — not changing the reverse proxy or tunnel in front. A path missing
+from both gets the console's HTML 404 page, which an API client will read as
+"the gateway is down" rather than "this path is not forwarded".
 
 ```text
 client ──▶ (your edge: CDN / tunnel / reverse proxy)
@@ -45,13 +45,13 @@ requires recreating the container, not rebuilding the image.
 | `AGENT_CONTROL_PLANE_INTERNAL_URL` | *(unset)* | runtime | that agent's control-plane API |
 | `PGADMIN_INTERNAL_URL` | `http://pgadmin:80` | runtime | pgAdmin |
 
-`BACKEND_INTERNAL_URL` is one image-build contract, not a container-runtime
-switch. The same value is compiled into both the rewrite manifest and the
-server-only `BUILT_BACKEND_INTERNAL_URL` used by `/site-config` and pgAdmin's
-admin check. This prevents a runtime override from silently sending only some
-backend requests to a new target. The canonical neutral image uses
-`http://backend:8080`; a deployment consuming that image must provide that
-network alias. A different backend target requires rebuilding the console.
+`BACKEND_INTERNAL_URL` is fixed when the console image is built, not when the
+container starts. The same value is compiled into both the rewrite manifest and
+the server-only `BUILT_BACKEND_INTERNAL_URL` used by `/site-config` and
+pgAdmin's admin check, so a runtime override cannot quietly send only some
+backend requests somewhere new. The published image uses `http://backend:8080`,
+so a deployment that runs it must give the backend that network name. A
+different backend address means rebuilding the console.
 
 ### Runtime route handler — the cloud agent proxy
 
@@ -73,7 +73,7 @@ included in the browser's site configuration.
 | `/agents/:path*` | `${AGENT_WEB_INTERNAL_URL}/agents/:path*` | prefix **kept** — that app is built with `basePath=/agents` and generates links carrying it |
 | `/agents` | `${AGENT_WEB_INTERNAL_URL}/agents` | bare prefix |
 
-Three implementation facts are load-bearing here:
+Three details matter here:
 
 - `/agents/api/:path*` is matched before `/agents/:path*`. The first is a prefix
   of the second, so with the order reversed every API call is answered with the
@@ -87,12 +87,11 @@ Three implementation facts are load-bearing here:
 ### Legacy `beforeFiles` compatibility
 
 `next.config.js` still emits the same three rules as `beforeFiles` rewrites when
-both agent URLs are supplied **while building** an older distribution image.
-Direct downstream build pipelines can still opt into that bridge, but upstream
-Compose deliberately does not pass the agent targets as build args. Canonical
-neutral images use the runtime handler above. Because `beforeFiles` wins over a
-filesystem route, an image built with those legacy values keeps its baked-in
-targets and cannot be retargeted by changing only the container environment.
+both agent URLs are supplied **while building** the image, as some older
+distribution pipelines do. This repository's Compose does not pass them, and
+its images use the runtime handler above. Because `beforeFiles` wins over a
+filesystem route, an image built with those values keeps its baked-in targets
+and cannot be retargeted by changing only the container environment.
 
 ### `afterFiles` — the gateway
 
@@ -109,6 +108,7 @@ Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path.
 | `/internal/playground/:path*` | the admin-only model playground the console's dashboard calls |
 | `/internal/model-catalog` | model catalog read |
 | `/internal/users/:userId/status` | single-user status read |
+| `/internal/users/:userId/agent-access` | whether one user may use the Cloud Agent, read by the standalone agent (see [Backend Extensions](backend-extensions.md#cloud-agent-access)) |
 | `/internal/agent-grants` | mint an inference grant (`POST`) |
 | `/internal/agent-grants/:path*` | renew / usage / revoke for one grant |
 | `/health` | health check |
@@ -126,7 +126,8 @@ construction.
 
 ## Why `/pgadmin` is a route handler and not a rewrite
 
-`/pgadmin` is the interesting case, and the reason this page exists.
+This section is for contributors who need to write a route handler of their
+own; the pgAdmin proxy is the worked example.
 
 pgAdmin must only be reachable by an admin. **A rewrite cannot authenticate** —
 it is a static mapping evaluated before any of your code runs, with no way to
@@ -193,4 +194,4 @@ redirecting the request to exactly where it already is).
 4. Rebuild the console for a source or rewrite-table change. After that image
    is deployed, a runtime handler's target can be changed by recreating its
    container; a static rewrite target still requires another image build.
-5. Regenerate the table above.
+5. Add the path to the table above.

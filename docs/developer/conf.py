@@ -53,8 +53,7 @@ myst_heading_anchors = 3
 # source, so a partly-translated language still builds a complete site -- and
 # when an English paragraph changes, its `msgid` changes with it, gettext marks
 # the old translation `fuzzy`, and the page falls back to English rather than
-# serving a translation that no longer matches. See the Translations section of
-# contributing.md.
+# serving a translation that no longer matches. See translations.md.
 language = os.environ.get("DOCS_LANGUAGE", "en").strip() or "en"
 locale_dirs = ["locale"]
 

@@ -22,21 +22,6 @@ own privacy policy, and should treat a score as an input to a human decision
 rather than as grounds for automated enforcement.
 ```
 
-## Where it lives
-
-| Layer | Location |
-|---|---|
-| Core scoring + gather SQL | `apps/backend/serving/analytics/automation_score.py` |
-| Store methods | `LogStore.get_user_automation_score` / `get_bulk_user_automation_scores` (`apps/backend/serving/storage/postgres_log.py`) |
-| Admin endpoints | `GET /admin/users/{user_id}/automation-score`, `GET /admin/users/automation-scores` (`apps/backend/serving/servers/routers/admin/users.py`) |
-| Admin dashboard | per-user button + bulk "Automation" column in the Users tab |
-| CLI | `ops/db/analysis/user_automation_score.py` |
-
-The scoring methodology and the SQL that gathers per-user aggregates live in **one**
-module (`serving.analytics.automation_score`), shared by the admin endpoints and the
-CLI, so the two can never drift. The pure scoring functions have no database
-dependency and are unit-tested in `tests/unit/test_user_automation_score.py`.
-
 ## Inputs
 
 The score is computed over a trailing **window** (default 30 days; the admin
@@ -81,10 +66,9 @@ A signal that lacks enough data for a user is **dropped**, and the remaining
 weights are re-normalized over the survivors — a missing signal is never imputed
 as `0` (which would falsely pull the score toward "human"). The weights need not
 sum to `1.0` (they total `1.15`); the runtime always divides by the available
-weight. `user_message_shape` was added later at weight `0.15` **without changing
-the original six**, so a user lacking the (newer) user-message columns — e.g.
-traffic logged before the migration — drops it and gets the **same blended score
-as before**, only a slightly lower `confidence`.
+weight. A user whose requests all predate the user-message columns simply lacks
+`user_message_shape`: the other six signals blend as usual, and `confidence` is
+slightly lower.
 
 ### 1. `turn_pattern` — user turns
 
@@ -150,7 +134,7 @@ and re-normalized over whichever pass their data floors. Each is HIGH = automati
 | Part | Weight | Formula | Floor |
 |---|---|---|---|
 | Hour coverage | 0.20 | `clamp01((coverage - 0.5) / 0.5)`, `coverage = distinct active UTC hours / 24` | `N ≥ 10` |
-| Hour entropy | 0.20 | `clamp01((Hnorm - 0.5) / (0.92 - 0.5))`, `Hnorm = ShannonEntropy(hours) / log2(24)`. The `0.92` is the ceiling at which this part saturates — a hand-set tuning constant with no derivation in the code, unlike the other numbers on this page | `N ≥ 10` |
+| Hour entropy | 0.20 | `clamp01((Hnorm - 0.5) / (0.92 - 0.5))`, `Hnorm = ShannonEntropy(hours) / log2(24)`. The `0.92` is the ceiling at which this part saturates, a tuning constant | `N ≥ 10` |
 | Nightly rest gap | 0.30 | `clamp01(1 - max_quiet_gap_hours / 6)` | `N ≥ 10` |
 | Inter-arrival regularity | 0.30 | `clamp01(1 - gap_rcv / 1.0)`, `gap_rcv = (p75 - p25) / median` of gaps | `≥ 3 gaps` |
 
@@ -208,8 +192,8 @@ and over (low distinct ratio → high repetition); an interactive human varies a
 three. Because the columns are populated only for new traffic, the signal is
 simply unavailable (dropped) for users whose requests all predate the migration.
 
-This signal isolates the user input, which the metadata in `metadata->>'agent'`
-and the per-message hash make hard to spoof without actually varying the content.
+Because it measures only the user's own messages, a script can look human here
+only by actually varying what it sends.
 
 ## Combining the signals
 
@@ -280,3 +264,18 @@ python ops/db/analysis/user_automation_score.py --min-requests 20
 # full per-signal breakdown for one user
 python ops/db/analysis/user_automation_score.py --email user@example.com
 ```
+
+## Code map
+
+| Layer | Location |
+|---|---|
+| Core scoring + gather SQL | `apps/backend/serving/analytics/automation_score.py` |
+| Store methods | `LogStore.get_user_automation_score` / `get_bulk_user_automation_scores` (`apps/backend/serving/storage/postgres_log.py`) |
+| Admin endpoints | `GET /admin/users/{user_id}/automation-score`, `GET /admin/users/automation-scores` (`apps/backend/serving/servers/routers/admin/users.py`) |
+| Admin dashboard | per-user button + bulk "Automation" column in the Users tab |
+| CLI | `ops/db/analysis/user_automation_score.py` |
+
+The scoring methodology and the SQL that gathers per-user aggregates live in **one**
+module (`serving.analytics.automation_score`), shared by the admin endpoints and the
+CLI, so the two can never drift. The pure scoring functions have no database
+dependency and are unit-tested in `tests/unit/test_user_automation_score.py`.

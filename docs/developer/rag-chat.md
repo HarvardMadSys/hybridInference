@@ -4,7 +4,13 @@ A retrieval-augmented-generation (RAG) chat feature that answers user questions
 about a deployment using its own **public user docs** as the knowledge base. Both
 retrieval and generation route through the gateway itself.
 
-## Architecture
+It is an early feature with known gaps; see [Limitations](#limitations). To
+run it, a deployment needs its documentation as Markdown, an index built from
+it, and an API key the assistant can call the gateway with. A checkout with no
+distribution has none of these, so the assistant answers `503` until you
+supply them.
+
+## How it works
 
 `/v1/rag/chat` is a thin orchestrator: it retrieves in-process, then calls the
 gateway's **own** public API **as a user** for the model work.
@@ -16,53 +22,39 @@ gateway's **own** public API **as a user** for the model work.
      3. build grounded prompt with citations                (in-process)
      4. generate      ── HTTP ─►  POST {RAG_API_BASE_URL}/chat/completions (RAG_CHAT_MODEL)
      → SSE: sources event, then the proxied OpenAI chunks, then [DONE]
-
-   Both HTTP calls carry RAG_API_KEY, so they flow through the standard
-   /v1/embeddings and /v1/chat/completions handlers → logged to api_logs and
-   counted toward cost / quota / concurrency. They also carry
-   X-On-Behalf-Of: <end-user id>, so that attribution lands on the real end
-   user (verified by JWT at /v1/rag/chat), not on the shared RAG_API_KEY account.
 ```
 
-In prose: both inner calls are ordinary authenticated gateway requests carrying
-`RAG_API_KEY`, so they are logged to `api_logs` and counted toward cost, quota
-and concurrency like any other traffic; `X-On-Behalf-Of` moves that attribution
-from the shared RAG account to the JWT-verified end user.
+Both inner calls present `RAG_API_KEY`, the assistant's own API key, so they go
+through the normal `/v1/embeddings` and `/v1/chat/completions` handlers: they
+are logged in `api_logs` and counted toward cost, quota and concurrency like any
+other request. They also carry `X-On-Behalf-Of: <user id>`, so that usage is
+charged to the signed-in user who asked rather than to the shared key, and
+counts against that user's own daily quota. The gateway honours the header only
+on requests made with `RAG_API_KEY`, and ignores it on every other key.
 
 - **Corpus:** the active distribution overlay's documentation source
   (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
   that deployment's public doc site. A checkout with no overlay has no corpus;
   set `RAG_CORPUS_DIR` to your own documentation.
 - **Vector store:** a plain JSON file scanned with pure-Python cosine
-  similarity. A docs corpus is small, so no numpy / ANN index is needed. Like
-  the corpus, the index is distribution content, not source: nothing is
-  committed to this repository, and the default path
-  (`<overlay>/content/rag/docs_index.json`) resolves inside whichever overlay
-  the deployment runs — `apps/backend/serving/rag/config.py` finds it from
-  `DISTRIBUTION_CONFIG_PATH`, or from the single non-example overlay in the
-  tree. A checkout with no overlay resolves a path that does not exist, and
-  `/v1/rag/chat` answers `503` until one is supplied. `RAG_INDEX_PATH` and
-  `RAG_CORPUS_DIR` override both outright.
+  similarity; a docs corpus is small enough not to need anything more. Like the
+  corpus, the index belongs to the distribution, not to this repository: its
+  default path is `<overlay>/content/rag/docs_index.json`, inside whichever
+  distribution the gateway runs. `RAG_INDEX_PATH` and `RAG_CORPUS_DIR` override
+  these two paths.
 - **Why call the gateway as a user (over HTTP) instead of the in-process
-  router?** So RAG requests are observable and metered. Direct
-  `RouteExecutor` / adapter calls bypass the per-request logging, cost, quota,
-  and concurrency that live in the `/v1/*` route handlers. Routing the model
-  work back through those endpoints reuses all of it for free.
+  router?** So RAG requests are observable and metered. Calling the router or
+  an adapter directly would skip the per-request logging, cost, quota and
+  concurrency checks that live in the `/v1/*` handlers.
 
-## Code map
+## Setting it up
 
-| Path | Role |
-|---|---|
-| `apps/backend/serving/rag/chunker.py` | Heading-aware markdown chunking |
-| `apps/backend/serving/rag/embedder.py` | `GatewayHTTPEmbedder` + offline `HashEmbedder` |
-| `apps/backend/serving/rag/store.py` | JSON vector store + cosine search |
-| `apps/backend/serving/rag/pipeline.py` | Prompt assembly + sources payload |
-| `apps/backend/serving/rag/ingest.py` | `python -m serving.rag.ingest` CLI |
-| `apps/backend/serving/servers/routers/rag.py` | `/v1/rag/status` + `/v1/rag/chat` |
-| `apps/frontend/src/app/chat/page.tsx` | Chat UI (`/chat`, behind `ProtectedRoute`) |
-| `apps/frontend/src/lib/api/chat.ts` | Streaming SSE client |
+Set `RAG_API_KEY` to a valid user API key, and point `RAG_API_BASE_URL` at the
+gateway's own address. The default, `http://localhost:8080/v1`, matches the
+port the Compose backend listens on; a deployment that binds the backend
+somewhere else must set it, or every RAG request fails at the self-call.
 
-## Rebuilding the index
+### Rebuilding the index
 
 Build the index with the default `gateway` embedder, which calls a real
 embedding model through a gateway:
@@ -73,7 +65,7 @@ RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
 
 `RAG_CORPUS_DIR` is only needed when your corpus is not the active overlay's
 `content/docs/docs/source`; without an overlay, ingest fails with a message
-telling you to set it (`apps/backend/serving/rag/ingest.py`).
+telling you to set it.
 
 `RAG_GATEWAY_BASE_URL` defaults to `http://localhost:8080/v1` — embedding is
 billable work, so a clone draws on its own gateway rather than on whoever wrote
@@ -93,49 +85,18 @@ RAG_EMBEDDER=hash make rag-ingest
 > vector's dimension doesn't match the index. Always rebuild after switching
 > embedders.
 
-## Deployment
+### Deploying the index
 
 The index is a deployment artifact, not part of the image build: build it with
 `make rag-ingest` and make the resulting JSON file readable at
-`RAG_INDEX_PATH`. In the Compose deployment the overlay directory is
-bind-mounted beside the flattened app tree
-(`deploy/docker/docker-compose.yml`), so an index written into the overlay's
-`content/rag/` is picked up without an image rebuild; the store is cached per
-process and invalidated on the file's mtime, so replacing the file is enough.
+`RAG_INDEX_PATH`. In the Compose deployment the overlay directory is mounted
+into the backend, so an index written into the overlay's `content/rag/` is
+picked up without an image rebuild, and replacing the file is enough.
 `/v1/rag/status` reports `index_loaded`, the embedder mode, and chunk count for
 a post-deploy check. If the embedding backend is unavailable at query time,
 `/v1/rag/chat` returns a graceful `503` rather than a 500.
 
-**Required env per deployment:** set `RAG_API_KEY` to a valid user API key, and
-point `RAG_API_BASE_URL` at the gateway's own address in that environment. The
-default `http://localhost:8080/v1` matches the port the Compose backend listens
-on (`deploy/docker/docker-compose.yml`); a deployment that binds the backend
-somewhere else must set it, or every RAG request fails at the self-call.
-The inner calls present `RAG_API_KEY` as the credential but carry
-`X-On-Behalf-Of: <end-user id>`, so cost / quota / logs / per-user concurrency
-attribute to the **real end user** (verified by JWT at `/v1/rag/chat`) rather than
-to the shared service account — each user's RAG usage counts against their own
-daily quota. `verify_api_key` honors `X-On-Behalf-Of` **only** for the configured
-`RAG_API_KEY`; any other key's header is ignored, and if `RAG_API_KEY` is unset
-impersonation is disabled entirely.
-
 ## Endpoints
-
-With `DISTRIBUTION_CONFIG_MODE=active`, setting `features.rag: false` in the
-distribution manifest disables both RAG endpoints for all users, including
-admins: authenticated requests receive `403` before the index is read or any
-model call starts. This covers streaming and non-streaming chat. A value of
-`true`, `null`, or an omitted field preserves the existing RAG behavior and
-authentication requirements. Intentional `dark` mode (also the default when
-the mode is unset) does not enforce manifest feature restrictions.
-
-An empty or unknown mode, a missing active manifest path, or an invalid active
-manifest makes authenticated RAG requests return `503` with a generic error.
-Unknown keys in `features` or at the manifest root are rejected during
-validation so a misspelled or misplaced restriction cannot silently disappear.
-Correct the configuration and restart the backend; successful manifest loads
-are cached for the life of the process. These restrictions apply to the docs
-assistant endpoints; the general model APIs retain their existing access rules.
 
 Both live under the gateway and authenticate with the dashboard JWT
 (`get_current_user`), so the Next.js chat page calls them with the session token
@@ -149,23 +110,24 @@ it already holds.
     OpenAI-format completion chunks, then `[DONE]`.
   - Non-streaming: `{ answer, sources, model }`.
 
-### Logging & quota
-
-The RAG model calls go through the gateway's own `/v1/embeddings` and
-`/v1/chat/completions`, so they land in `api_logs` and count toward cost, daily
-quota, and per-user concurrency — attributed to the **real end user** via the
-`X-On-Behalf-Of` header (the JWT-verified caller of `/v1/rag/chat`), with
-`RAG_API_KEY` as the presented credential. A row is identifiable as RAG-originated
-by its `metadata.user_agent = "doc_assistant"`. Set `RAG_API_KEY` to a valid user
-API key; when it is unset the endpoint returns `503`. An upstream `429`
-(quota/rate) is passed through to the caller — note this can now be the **end
-user's** own daily quota, not the service account's.
+A request log row from the assistant has `metadata.user_agent = "doc_assistant"`.
+An upstream `429` is passed through to the caller, and may mean the user's own
+daily quota is used up.
 
 ```bash
 curl -sN https://your-gateway.example/v1/rag/chat \
   -H "Authorization: Bearer <jwt>" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"How do I get an API key?"}]}'
 ```
+
+## Turning it off
+
+With an active distribution manifest, `features.rag: false` turns both
+endpoints off for everyone, admins included: they answer `403` before reading
+the index or calling a model. `true`, `null` or leaving the field out keeps the
+assistant on. A broken manifest configuration makes both endpoints answer
+`503`; see [Activating a manifest](distribution-customization.md#activating-a-manifest).
+The general model APIs are not affected either way.
 
 ## Configuration
 
@@ -180,13 +142,13 @@ All optional; sensible defaults resolve relative to the repo root.
 | `RAG_EMBEDDER` | `gateway` | `gateway` (a real embedding model, via `RAG_EMBED_MODEL`) or `hash` (offline) |
 | `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
-| `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model. That default is a leftover deployment-specific id rather than anything this repository serves, so set it to a model your own gateway registers. |
+| `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model. Set it to a model your gateway serves: the default names a model this repository does not ship. |
 | `RAG_GATEWAY_API_KEY` | falls back to `LOCAL_API_KEY` | User API key **ingest** presents to `RAG_GATEWAY_BASE_URL`; must be valid on *that* gateway |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |
 | `RAG_MAX_TOKENS` | `1024` | Answer token budget |
 | `RAG_TEMPERATURE` | `0.3` | Generation temperature |
 
-## Prototype limitations
+## Limitations
 
 - The index is refreshed manually (`make rag-ingest`), not on a schedule — it
   can lag the docs until regenerated.
@@ -194,3 +156,16 @@ All optional; sensible defaults resolve relative to the repo root.
   gateway (dev/CI); its retrieval quality is weak.
 - No answer caching, no reranking, and history is truncated to the last few
   turns. The store is loaded into memory per process (cached, mtime-invalidated).
+
+## Code map
+
+| Path | Role |
+|---|---|
+| `apps/backend/serving/rag/chunker.py` | Heading-aware markdown chunking |
+| `apps/backend/serving/rag/embedder.py` | `GatewayHTTPEmbedder` + offline `HashEmbedder` |
+| `apps/backend/serving/rag/store.py` | JSON vector store + cosine search |
+| `apps/backend/serving/rag/pipeline.py` | Prompt assembly + sources payload |
+| `apps/backend/serving/rag/ingest.py` | `python -m serving.rag.ingest` CLI |
+| `apps/backend/serving/servers/routers/rag.py` | `/v1/rag/status` + `/v1/rag/chat` |
+| `apps/frontend/src/app/chat/page.tsx` | Chat UI (`/chat`, behind `ProtectedRoute`) |
+| `apps/frontend/src/lib/api/chat.ts` | Streaming SSE client |

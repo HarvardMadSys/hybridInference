@@ -16,10 +16,9 @@ This page is the next step: your own deployment, with your own providers.
 | A source checkout | Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and [uv](https://github.com/astral-sh/uv) |
 | Running the console outside Docker | Node.js 22 (the version CI installs) |
 
-Linux or macOS. Every dependency resolves from PyPI, so a plain `uv sync`
-needs nothing but network access to the index.
+Linux or macOS.
 
-## Quick start with Docker
+## Running with Docker
 
 ```bash
 git clone https://github.com/HarvardMadSys/hybridInference.git hybridinference
@@ -27,37 +26,37 @@ cd hybridinference
 cp .env.example .env
 ```
 
-Now edit `.env`. **`make up` aborts before starting anything unless these three
-have values** — `deploy/docker/docker-compose.yml` declares them with Compose's
-`:?` required form, and Compose fails at interpolation, not at runtime:
+Before the first `make up`, fill in three things in `.env`:
 
-| Variable | How `.env.example` ships it |
-|---|---|
-| `DB_NAME` | already set to `hybridinference` — leave it or rename |
-| `DB_USER` | **empty; you must fill it in** |
-| `DB_PASSWORD` | **empty; you must fill it in** |
+1. **The database login.** `DB_USER` and `DB_PASSWORD` ship empty, and
+   `DB_NAME` is already set to `hybridinference`. Compose refuses to start
+   until all three have values.
+2. **Two secrets.** `JWT_SECRET_KEY` signs sign-in tokens and
+   `API_KEY_SECRET` is the key the gateway hashes API keys with. The backend
+   refuses to start without them. Generate each one separately:
 
-The backend also requires `JWT_SECRET_KEY` and `API_KEY_SECRET` at startup.
-Both ship empty; an empty or whitespace-only value stops startup before stores
-or background tasks are initialized. The error names the missing variables,
-never their values. Generate each secret separately:
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
 
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+3. **A credential for the models it serves.** Out of the box the gateway
+   serves three example models through [OpenRouter](https://openrouter.ai),
+   from `config/examples/models.openrouter.yaml`. Set `OPENROUTER_API_KEY` and
+   they work. To serve your own models instead, see
+   [Adding a New Model](adding-models.md).
+
+Store the two secrets with the rest of your deployment's configuration and
+keep them for good: reuse them on every restart and replica, and carry them
+over on upgrades. Changing `JWT_SECRET_KEY` invalidates the access tokens
+already issued, and changing `API_KEY_SECRET` makes every existing API key stop
+working. The gateway never generates or rotates them for you.
+
+```{note}
+Only a gateway with no database and no accounts can run without the two
+secrets: `DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in Stage 1
+of the [Quickstart](router-tutorial.md). `ADMIN_TOKEN` is optional; leaving it
+blank turns off only the legacy admin-token access.
 ```
-
-Save both values in your deployment's secret configuration and reuse them
-across replicas and restarts. On upgrade, check that both are present without
-replacing existing values: changing the JWT secret invalidates access tokens,
-and changing the API-key secret makes existing API-key hashes unverifiable.
-The gateway does not generate or rotate these secrets automatically.
-
-The only exemption is an explicitly database-free, auth-disabled gateway:
-`DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in Stage 1 of the
-[Router Tutorial](router-tutorial.md). Disabling inference authentication alone
-does not disable database-backed login or API-key management, so both secrets
-are still required when the database is enabled. `ADMIN_TOKEN` remains optional;
-leaving it blank disables only legacy admin-token access.
 
 Then start the stack:
 
@@ -67,12 +66,13 @@ make ps     # show the services and their health
 curl -s http://localhost:8080/health
 ```
 
-`make up` runs the Makefile's `docker-volumes` target first, which creates the
-Docker volume `hybridinference_postgres_data` if it does not exist. The volume
-is declared `external: true` in the Compose file, so Compose itself never
-creates or deletes it — see
-[Deployment](deployment.md#resetting-the-stack) before you try to wipe the
-database.
+The first `make up` also creates the Docker volume
+`hybridinference_postgres_data`, which holds the database. `docker compose down
+-v` does not delete it; see [Resetting the stack](deployment.md#resetting-the-stack)
+if you need a clean database.
+
+If you change `.env` later, run `make up` again rather than `make restart`. A
+container reads `.env` when it is created, so a restart keeps the old values.
 
 Three containers start:
 
@@ -88,28 +88,6 @@ an explicit host override. See [Deployment Guide](deployment.md) before
 exposing the console, which also forwards API requests.
 
 pgAdmin is in the Compose file too, behind the optional `admin` profile.
-
-### Which models the fresh stack serves
-
-A clone with no model registry of its own is not empty. When neither
-`MODELS_CONFIG_PATH` nor an active distribution manifest names a file, the
-backend falls back to the bundled reference registry
-`config/examples/models.openrouter.yaml`, paired with
-`config/examples/routing.minimal.yaml`
-(`apps/backend/serving/config/distribution.py`, `_LEGACY_DEFAULTS`). That
-registry routes through [OpenRouter](https://openrouter.ai) and needs exactly
-one credential:
-
-```bash
-OPENROUTER_API_KEY=...   # in .env
-```
-
-Run `make up` again afterwards, not `make restart`: a container reads its
-`env_file` when it is created, so `docker compose restart` leaves the old
-environment in place, while `up` recreates the service whose configuration
-changed. To point the gateway at your own registry instead, see
-[Configuration](#configuration) below and
-[Adding a New Model](adding-models.md).
 
 ## Development checkout (no Docker)
 
@@ -131,13 +109,12 @@ source .venv/bin/activate
 uv sync --group dev
 ```
 
-Run the gateway from the repository root — the backend packages live under
-`apps/backend/`, which is why `PYTHONPATH` is set:
+Run the gateway from the repository root, because the default configuration
+paths are relative to it:
 
 ```bash
 cp .env.example .env    # edit as above; a process started here reads it
-PYTHONPATH=apps/backend uv run uvicorn serving.servers.app:app --no-proxy-headers \
-  --host 127.0.0.1 --port 8080
+uv run uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 8080
 ```
 
 Run the console in a second terminal:
@@ -148,12 +125,11 @@ npm ci
 BACKEND_INTERNAL_URL=http://127.0.0.1:8080 npm run dev -- --hostname 127.0.0.1
 ```
 
-Open `http://localhost:3001`. The explicit backend URL makes the console's API
-proxy reach the gateway running on the host. Its default, `http://backend:8080`,
-is a Docker network address; the frontend process does not load the repository
-root's `.env`. Reuse the override whenever you start the console, and adjust
-the port if your backend uses a different one. Check the complete proxy path
-with `curl http://localhost:3001/health`.
+Open `http://localhost:3001`. The console forwards API paths to the gateway,
+and `BACKEND_INTERNAL_URL` tells it where that is. Its default,
+`http://backend:8080`, is an address that only exists inside Docker, and the
+console does not read the repository's `.env`, so set it each time you start
+the console. Check the whole path with `curl http://localhost:3001/health`.
 
 To develop against Postgres without running the whole stack, start just the
 database container:
@@ -172,15 +148,11 @@ need the database and both authentication secrets.
 
 ### Environment variables
 
-`.env` at the repository root is the single file. Two things read it:
+`.env` at the repository root is the single file. The backend reads it when
+you start it from the repository root, and Compose passes it to the
+containers.
 
-- the backend process, when you start it from the repository root
-  (`Settings.Config.env_file = ".env"` in
-  `apps/backend/serving/config/settings.py`);
-- the containers, because Compose is invoked with `--env-file .env` and the
-  backend service also lists it as `env_file`.
-
-Beyond the five required variables in the quick start (`DB_NAME`, `DB_USER`,
+Beyond the five required variables in the Docker steps above (`DB_NAME`, `DB_USER`,
 `DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`) and the `OPENROUTER_API_KEY`
 the default registry needs, everything in `.env.example` is optional. The ones you are most likely to want:
 
@@ -190,24 +162,25 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 | `ADMIN_TOKEN` | optional legacy bearer token for the `/admin/*` endpoints; blank disables only this access path |
 | `PROVIDER_ROUTE_TYPES` | route types the admin console may add per provider, as `provider=type[\|type]` entries separated by commas (e.g. `chutes=quota,openrouter=concurrency\|on_demand`); blank leaves every provider unrestricted |
 | `DB_ENABLED` | `false` runs the gateway with no database |
-| `DB_STORE_FULL_CONTENT` | `false` (default) hashes prompts and responses instead of storing them |
+| `DB_STORE_FULL_CONTENT` | `false` (default) does not store prompts or responses at all; `true` stores them in full. See [Request logging and privacy](database.md#request-logging-and-privacy) |
 | `FRONTEND_URL` | absolute URL your users click in verification and reset emails |
 | `BASE_URL` | this gateway's own public origin, used to build the absolute links in signup and password-reset emails. Set it: the server does not interpret `X-Forwarded-*`, so a blank value derives `http://…` from the request even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `LOG_LEVEL`, `LOG_FORMAT` | logging verbosity and `json`/text output |
 | `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
-| `TRUST_PROXY_HEADERS` | enables `X-Forwarded-For` / `X-Real-IP` processing only for peers in `TRUSTED_PROXIES` |
-| `TRUSTED_PROXIES` | comma-separated proxy CIDRs whose forwarding assertions may be trusted; required when `TRUST_PROXY_HEADERS=1` |
-| `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for direct client peers; does not authorize forwarding headers |
-| `TRUST_CLOUDFLARE_HEADERS` / `TRUSTED_CLOUDFLARE_NETWORKS` | separately opt into Cloudflare assertions and authorize the immediate Cloudflare-facing peer CIDRs |
+| `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES` | trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the flag has no effect while that list is empty |
+| `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for clients that connect directly from a private network; does not authorize forwarding headers |
+| `TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS` | trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs `TRUST_PROXY_HEADERS=1` |
+
+[Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) says which
+of the proxy settings above to set for your setup.
 
 ### Provider credentials
 
-There is no fixed list of provider variables in the code. A model registry
-substitutes any value that is exactly `${VAR}` when it is loaded, so the
-provider credentials a deployment needs are exactly the variables its own
-registry names. Note the registry's expander is the narrow one: whole values
-only, with no `${VAR:-default}` and no substitution inside a longer string. See
-[Configuration](configuration.md) for the difference from the routing file.
+A model registry names its own credentials. Its `api_key`, `api_keys`,
+`base_url` and `provider_model_id` fields can each be written as `${VAR}`,
+which is read from the environment when the registry loads. So the provider
+keys a deployment needs are the variables its registry names, and you can call
+them whatever you like.
 
 ```yaml
 route:
@@ -216,6 +189,9 @@ route:
     api_keys:
       - ${OPENROUTER_API_KEY}
 ```
+
+Only a whole value is substituted: `${VAR:-default}` and `${VAR}` inside a
+longer string are not. See [Configuration](configuration.md) for the details.
 
 `.env.example` ships blank placeholders for the providers this project has
 adapters or examples for; add your own names freely. The bundled default
@@ -228,30 +204,15 @@ registry names. See
 
 ### Where the config files live
 
-There is no `config/models.yaml` or `config/routing.yaml` in this repository.
-`resolve_config_path` in `apps/backend/serving/config/distribution.py` resolves
-each config file in this order:
+The gateway finds its model registry, routing file and alert rules through
+environment variables or a distribution's manifest, and falls back to the
+examples under `config/examples/` when neither names one.
+[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config)
+has the rules, and the rest of that page covers what goes inside the files.
 
-1. **an explicit environment variable** — `MODELS_CONFIG_PATH`,
-   `ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH` (the older `MODELS_CONFIG` and
-   `ROUTING_CONFIG` spellings are still accepted; the `*_CONFIG_PATH` name wins
-   when both are set);
-2. **a distribution manifest** — `DISTRIBUTION_CONFIG_PATH` pointing at a
-   `distributions/<name>/distribution.yaml`, whose `paths:` section names the
-   files. The manifest only takes effect with
-   `DISTRIBUTION_CONFIG_MODE=active`; the default `dark` loads and validates it
-   and logs what it *would* change while resolution stays as it was;
-3. **the built-in defaults** — `config/examples/models.openrouter.yaml` and
-   `config/examples/routing.minimal.yaml`. There is no default alerts file, and
-   its absence means the built-in thresholds apply.
-
-Paths are relative to the working directory (`/app` in the container). The
-Compose file mounts both `config/` and `distributions/` read-only into the
+The Compose file mounts both `config/` and `distributions/` read-only into the
 backend, so editing either on the host and restarting the backend is enough —
 no image rebuild.
-
-See [Configuration](configuration.md) for what goes *inside* those files, and
-[Quickstart](router-tutorial.md) for a worked overlay.
 
 ```{note}
 A backend running directly on the host can reach a host inference server
@@ -262,14 +223,7 @@ HybridInference does not rewrite provider URLs.
 
 ## Verifying the install
 
-```bash
-make lint     # ruff format --check, ruff check, pydocstyle
-make test     # pytest, excluding the external and dbtest tiers
-make check    # lint + test
-make format   # ruff format, then ruff check --fix --unsafe-fixes
-```
-
-End to end, against a running gateway:
+Against a running gateway:
 
 ```bash
 curl -s http://localhost:8080/v1/models
@@ -298,30 +252,26 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-## Documentation
-
-These developer docs are MyST Markdown built with Sphinx from `docs/developer/`.
-Building them locally and the checks that gate them are covered in
-[Contributing](contributing.md#documentation).
+In a development checkout, `make check` runs the linters and the default test
+suite; [Contributing](contributing.md#quality-gates) lists the other checks.
 
 ## Troubleshooting
 
 **`required variable DB_USER is missing a value: DB_USER must be set in .env
-file`** — Compose stopped at interpolation. Fill in `DB_USER` and `DB_PASSWORD` in `.env`; see the table
-above.
+file`** — Compose stopped before starting anything. Fill in `DB_USER` and
+`DB_PASSWORD` in `.env`, as in step 1 above.
 
-**`env file ... .env not found`** — the backend service reads `../../.env`
-relative to `deploy/docker/`, i.e. `.env` at the repository root. `cp
-.env.example .env` before `make up`.
+**`env file ... .env not found`** — create it with `cp .env.example .env`
+before `make up`.
 
-**Import errors when running from source** — run from the repository root with
-`PYTHONPATH=apps/backend`, and make sure the virtualenv is active (or use
-`uv run`).
+**Import errors when running from source** — run `make setup-dev` (or
+`uv sync --group dev`) so the backend is installed into `.venv`, then start the
+gateway with `uv run` or with `.venv` activated.
 
 **Every request 404s with an empty `/v1/models`** — the registry loaded nothing.
 On startup the backend logs either `Registered N routes from <path>` or an error
 naming the registry path it could not find; compare that path against the
-precedence list above.
+precedence list in [Configuration](configuration.md#how-a-gateway-finds-its-config).
 
 **Port already in use** — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`
 in `.env`.

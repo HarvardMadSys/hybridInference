@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-28 16:04+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -33,10 +33,22 @@ msgid ""
 msgstr "一个检索增强生成（RAG）聊天功能：以某个部署自己的**公开用户文档**为知识库，回答用户关于该部署的问题。检索和生成都经由网关自身。"
 
 #: ../developer/rag-chat.md:7
-msgid "Architecture"
-msgstr "架构"
+msgid ""
+"It is an early feature with known gaps; see [Limitations](#limitations). "
+"To run it, a deployment needs its documentation as Markdown, an index "
+"built from it, and an API key the assistant can call the gateway with. A "
+"checkout with no distribution has none of these, so the assistant answers"
+" `503` until you supply them."
+msgstr ""
+"这是一个早期功能，还有已知的不足，见[局限](#limitations)。要运行它，部署需要准备好 Markdown "
+"格式的文档、基于这些文档构建的索引，以及助手调用网关时使用的 API key。没有发行版的检出里这些都没有，所以在你补齐之前，助手会一直返回 "
+"`503`。"
 
-#: ../developer/rag-chat.md:9
+#: ../developer/rag-chat.md:13
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../developer/rag-chat.md:15
 msgid ""
 "`/v1/rag/chat` is a thin orchestrator: it retrieves in-process, then "
 "calls the gateway's **own** public API **as a user** for the model work."
@@ -46,156 +58,91 @@ msgstr ""
 
 #: ../developer/rag-chat.md:27
 msgid ""
-"In prose: both inner calls are ordinary authenticated gateway requests "
-"carrying `RAG_API_KEY`, so they are logged to `api_logs` and counted "
-"toward cost, quota and concurrency like any other traffic; `X-On-Behalf-"
-"Of` moves that attribution from the shared RAG account to the JWT-"
-"verified end user."
+"Both inner calls present `RAG_API_KEY`, the assistant's own API key, so "
+"they go through the normal `/v1/embeddings` and `/v1/chat/completions` "
+"handlers: they are logged in `api_logs` and counted toward cost, quota "
+"and concurrency like any other request. They also carry `X-On-Behalf-Of: "
+"<user id>`, so that usage is charged to the signed-in user who asked "
+"rather than to the shared key, and counts against that user's own daily "
+"quota. The gateway honours the header only on requests made with "
+"`RAG_API_KEY`, and ignores it on every other key."
 msgstr ""
-"用文字说明一遍：内部这两次调用都是携带 `RAG_API_KEY` 的普通已鉴权网关请求，因此和其他流量一样会写进 `api_logs`，并计入成本、配额和并发；`X-On-Behalf-Of` 把这份归属从共享的 RAG 账号挪到经 JWT 验证的最终用户身上。"
+"两次内部调用都会出示 `RAG_API_KEY`，也就是助手自己的 API key，因此它们走的是普通的 `/v1/embeddings` 和 "
+"`/v1/chat/completions` 处理器：和其他请求一样记入 `api_logs`，并计入成本、配额和并发。它们还会带上 `X-On-"
+"Behalf-Of: <user id>`，这样用量会记在提问的登录用户名下，而不是记在共享的 key 上，并计入该用户自己的每日配额。网关只对用"
+" `RAG_API_KEY` 发出的请求认这个请求头，其他 key 带上它一律忽略。"
 
-#: ../developer/rag-chat.md:32
+#: ../developer/rag-chat.md:35
 msgid ""
 "**Corpus:** the active distribution overlay's documentation source "
 "(`<overlay>/content/docs/docs/source/*.md`) — the same markdown that "
 "builds that deployment's public doc site. A checkout with no overlay has "
 "no corpus; set `RAG_CORPUS_DIR` to your own documentation."
 msgstr ""
-"**语料（corpus）**：生效的 distribution overlay "
+"**语料（corpus）**：生效的发行版 overlay "
 "的文档源文件（`<overlay>/content/docs/docs/source/*.md`）——也就是构建该部署公开文档站的同一批 "
 "markdown。没有 overlay 的检出没有语料；把 `RAG_CORPUS_DIR` 指向你自己的文档即可。"
 
-#: ../developer/rag-chat.md:36
+#: ../developer/rag-chat.md:39
 msgid ""
 "**Vector store:** a plain JSON file scanned with pure-Python cosine "
-"similarity. A docs corpus is small, so no numpy / ANN index is needed. "
-"Like the corpus, the index is distribution content, not source: nothing "
-"is committed to this repository, and the default path "
-"(`<overlay>/content/rag/docs_index.json`) resolves inside whichever "
-"overlay the deployment runs — `apps/backend/serving/rag/config.py` finds "
-"it from `DISTRIBUTION_CONFIG_PATH`, or from the single non-example "
-"overlay in the tree. A checkout with no overlay resolves a path that does"
-" not exist, and `/v1/rag/chat` answers `503` until one is supplied. "
-"`RAG_INDEX_PATH` and `RAG_CORPUS_DIR` override both outright."
+"similarity; a docs corpus is small enough not to need anything more. Like"
+" the corpus, the index belongs to the distribution, not to this "
+"repository: its default path is `<overlay>/content/rag/docs_index.json`, "
+"inside whichever distribution the gateway runs. `RAG_INDEX_PATH` and "
+"`RAG_CORPUS_DIR` override these two paths."
 msgstr ""
-"**向量库**：一个普通的 JSON 文件，用纯 Python 的余弦相似度扫。文档语料很小，所以不需要 numpy 或 ANN "
-"索引。和语料一样，索引属于 distribution "
-"内容而不是源码：本仓库不提交任何索引，默认路径（`<overlay>/content/rag/docs_index.json`）解析到该部署实际运行的那个"
-" overlay 内部——`apps/backend/serving/rag/config.py` 从 "
-"`DISTRIBUTION_CONFIG_PATH` 找到它，或者从代码树中唯一那个非 example 的 overlay 推出来。没有 "
-"overlay 的检出解析出的是一个并不存在的路径，在补上之前 `/v1/rag/chat` 一律回 `503`。`RAG_INDEX_PATH`"
-" 和 `RAG_CORPUS_DIR` 可以直接覆盖掉这两者。"
+"**向量库**：一个普通的 JSON 文件，用纯 Python "
+"计算余弦相似度逐条扫描；文档语料规模很小，不需要更复杂的方案。和语料一样，索引属于发行版，而不属于本仓库：它的默认路径是 "
+"`<overlay>/content/rag/docs_index.json`，位于网关所运行的那个发行版内部。`RAG_INDEX_PATH` "
+"和 `RAG_CORPUS_DIR` 可以分别覆盖这两个路径。"
 
-#: ../developer/rag-chat.md:46
+#: ../developer/rag-chat.md:45
 msgid ""
 "**Why call the gateway as a user (over HTTP) instead of the in-process "
-"router?** So RAG requests are observable and metered. Direct "
-"`RouteExecutor` / adapter calls bypass the per-request logging, cost, "
-"quota, and concurrency that live in the `/v1/*` route handlers. Routing "
-"the model work back through those endpoints reuses all of it for free."
+"router?** So RAG requests are observable and metered. Calling the router "
+"or an adapter directly would skip the per-request logging, cost, quota "
+"and concurrency checks that live in the `/v1/*` handlers."
 msgstr ""
-"**为什么要（走 HTTP）以用户身份调用网关，而不是直接用进程内的 router**？为了让 RAG 请求可观测、可计量。直接调 "
-"`RouteExecutor` 或 adapter 会绕开 `/v1/*` "
-"路由处理器里的逐请求日志、成本、配额和并发控制。把模型调用绕回这些端点，就等于把它们全部免费复用了一遍。"
+"**为什么要以用户身份（通过 HTTP）调用网关，而不是调用进程内的 router**？为了让 RAG 请求可观测、可计量。直接调用 router"
+" 或 adapter，会跳过 `/v1/*` 处理器里的逐请求日志、成本、配额和并发检查。"
+
+#: ../developer/rag-chat.md:50
+msgid "Setting it up"
+msgstr "搭建"
 
 #: ../developer/rag-chat.md:52
-msgid "Code map"
-msgstr "代码地图"
-
-#: ../developer/rag-chat.md
-msgid "Path"
-msgstr "路径"
-
-#: ../developer/rag-chat.md
-msgid "Role"
-msgstr "作用"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/rag/chunker.py`"
+msgid ""
+"Set `RAG_API_KEY` to a valid user API key, and point `RAG_API_BASE_URL` "
+"at the gateway's own address. The default, `http://localhost:8080/v1`, "
+"matches the port the Compose backend listens on; a deployment that binds "
+"the backend somewhere else must set it, or every RAG request fails at the"
+" self-call."
 msgstr ""
+"把 `RAG_API_KEY` 设为一个有效的用户 API key，并把 `RAG_API_BASE_URL` 指向网关自己的地址。默认值 "
+"`http://localhost:8080/v1` 与 Compose "
+"中后端监听的端口一致；如果部署把后端绑定在别的地址上，就必须设置它，否则每个 RAG 请求都会在自调用这一步失败。"
 
-#: ../developer/rag-chat.md
-msgid "Heading-aware markdown chunking"
-msgstr "按标题切分 markdown"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/rag/embedder.py`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "`GatewayHTTPEmbedder` + offline `HashEmbedder`"
-msgstr "`GatewayHTTPEmbedder`，以及离线用的 `HashEmbedder`"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/rag/store.py`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "JSON vector store + cosine search"
-msgstr "JSON 向量库 + 余弦检索"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/rag/pipeline.py`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "Prompt assembly + sources payload"
-msgstr "prompt 组装 + 来源（sources）载荷"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/rag/ingest.py`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "`python -m serving.rag.ingest` CLI"
-msgstr "`python -m serving.rag.ingest` 命令行工具"
-
-#: ../developer/rag-chat.md
-msgid "`apps/backend/serving/servers/routers/rag.py`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "`/v1/rag/status` + `/v1/rag/chat`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "`apps/frontend/src/app/chat/page.tsx`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "Chat UI (`/chat`, behind `ProtectedRoute`)"
-msgstr "聊天界面（`/chat`，在 `ProtectedRoute` 之后）"
-
-#: ../developer/rag-chat.md
-msgid "`apps/frontend/src/lib/api/chat.ts`"
-msgstr ""
-
-#: ../developer/rag-chat.md
-msgid "Streaming SSE client"
-msgstr "流式 SSE 客户端"
-
-#: ../developer/rag-chat.md:65
+#: ../developer/rag-chat.md:57
 msgid "Rebuilding the index"
 msgstr "重建索引"
 
-#: ../developer/rag-chat.md:67
+#: ../developer/rag-chat.md:59
 msgid ""
 "Build the index with the default `gateway` embedder, which calls a real "
 "embedding model through a gateway:"
 msgstr "用默认的 `gateway` embedder 构建索引，它会经由某个网关调用真实的 embedding 模型："
 
-#: ../developer/rag-chat.md:74
+#: ../developer/rag-chat.md:66
 msgid ""
 "`RAG_CORPUS_DIR` is only needed when your corpus is not the active "
 "overlay's `content/docs/docs/source`; without an overlay, ingest fails "
-"with a message telling you to set it "
-"(`apps/backend/serving/rag/ingest.py`)."
+"with a message telling you to set it."
 msgstr ""
-"只有当你的语料不是生效 overlay 的 `content/docs/docs/source` 时，才需要设 "
-"`RAG_CORPUS_DIR`；没有 overlay 时，ingest "
-"会失败并提示你去设它（`apps/backend/serving/rag/ingest.py`）。"
+"只有当你的语料不是生效 overlay 的 `content/docs/docs/source` 时，才需要设置 "
+"`RAG_CORPUS_DIR`；没有 overlay 时，ingest 会失败，并提示你去设置它。"
 
-#: ../developer/rag-chat.md:78
+#: ../developer/rag-chat.md:70
 msgid ""
 "`RAG_GATEWAY_BASE_URL` defaults to `http://localhost:8080/v1` — embedding"
 " is billable work, so a clone draws on its own gateway rather than on "
@@ -209,11 +156,11 @@ msgstr ""
 "必须是*那个*网关上有效的用户 API key。切出来的 chunk 用的是服务端点在查询时所用的同一个 "
 "`RAG_EMBED_MODEL`，这样查询向量和文档向量才处在同一个空间里。"
 
-#: ../developer/rag-chat.md:85
+#: ../developer/rag-chat.md:77
 msgid "For an offline run with no gateway/key (weak retrieval — dev/CI only):"
 msgstr "如果要在没有网关、没有 key 的情况下离线跑一遍（检索质量弱——仅限开发/CI）："
 
-#: ../developer/rag-chat.md:91
+#: ../developer/rag-chat.md:83
 msgid ""
 "The serving endpoint embeds the query with whichever embedder built the "
 "index (recorded in the index metadata) and **fails loud** (HTTP 502) if "
@@ -223,60 +170,33 @@ msgstr ""
 "服务端点会用当初构建索引的那个 embedder（记录在索引元数据里）来 embed "
 "查询；如果查询向量的维度与索引不符，它会**直接报错**（HTTP 502）。换过 embedder 之后一定要重建索引。"
 
-#: ../developer/rag-chat.md:96
-msgid "Deployment"
-msgstr "部署"
+#: ../developer/rag-chat.md:88
+msgid "Deploying the index"
+msgstr "部署索引"
 
-#: ../developer/rag-chat.md:98
+#: ../developer/rag-chat.md:90
 msgid ""
 "The index is a deployment artifact, not part of the image build: build it"
 " with `make rag-ingest` and make the resulting JSON file readable at "
 "`RAG_INDEX_PATH`. In the Compose deployment the overlay directory is "
-"bind-mounted beside the flattened app tree (`deploy/docker/docker-"
-"compose.yml`), so an index written into the overlay's `content/rag/` is "
-"picked up without an image rebuild; the store is cached per process and "
-"invalidated on the file's mtime, so replacing the file is enough. "
-"`/v1/rag/status` reports `index_loaded`, the embedder mode, and chunk "
-"count for a post-deploy check. If the embedding backend is unavailable at"
-" query time, `/v1/rag/chat` returns a graceful `503` rather than a 500."
+"mounted into the backend, so an index written into the overlay's "
+"`content/rag/` is picked up without an image rebuild, and replacing the "
+"file is enough. `/v1/rag/status` reports `index_loaded`, the embedder "
+"mode, and chunk count for a post-deploy check. If the embedding backend "
+"is unavailable at query time, `/v1/rag/chat` returns a graceful `503` "
+"rather than a 500."
 msgstr ""
 "索引是部署产物，不属于镜像构建的一部分：用 `make rag-ingest` 构建它，并让生成的 JSON 文件在 "
-"`RAG_INDEX_PATH` 处可读。在 Compose 部署里，overlay 目录以 bind mount "
-"的方式挂在被展平的应用目录旁边（`deploy/docker/docker-compose.yml`），所以写进 overlay 的 "
-"`content/rag/` 的索引不必重建镜像就会被读到；向量库按进程缓存，并以文件的 mtime "
-"作为失效判据，因此直接替换文件就够了。`/v1/rag/status` 会报告 `index_loaded`、embedder 模式和 chunk"
-" 数量，可用于部署后的检查。如果查询时 embedding 后端不可用，`/v1/rag/chat` 会体面地返回 `503`，而不是 500。"
+"`RAG_INDEX_PATH` 处可读。在 Compose 部署中，overlay 目录挂载进了后端，所以写进 overlay 的 "
+"`content/rag/` 的索引不用重建镜像就能被读到，直接替换文件即可。`/v1/rag/status` 会报告 "
+"`index_loaded`、embedder 模式和 chunk 数量，可用于部署后的检查。如果查询时 embedding "
+"后端不可用，`/v1/rag/chat` 会妥善地返回 `503`，而不是抛出 500。"
 
-#: ../developer/rag-chat.md:109
-msgid ""
-"**Required env per deployment:** set `RAG_API_KEY` to a valid user API "
-"key, and point `RAG_API_BASE_URL` at the gateway's own address in that "
-"environment. The default `http://localhost:8080/v1` matches the port the "
-"Compose backend listens on (`deploy/docker/docker-compose.yml`); a "
-"deployment that binds the backend somewhere else must set it, or every "
-"RAG request fails at the self-call. The inner calls present `RAG_API_KEY`"
-" as the credential but carry `X-On-Behalf-Of: <end-user id>`, so cost / "
-"quota / logs / per-user concurrency attribute to the **real end user** "
-"(verified by JWT at `/v1/rag/chat`) rather than to the shared service "
-"account — each user's RAG usage counts against their own daily quota. "
-"`verify_api_key` honors `X-On-Behalf-Of` **only** for the configured "
-"`RAG_API_KEY`; any other key's header is ignored, and if `RAG_API_KEY` is"
-" unset impersonation is disabled entirely."
-msgstr ""
-"**每个部署必须设置的环境变量**：把 `RAG_API_KEY` 设成一把有效的用户 API key，并把 `RAG_API_BASE_URL`"
-" 指向该环境中网关自身的地址。默认值 `http://localhost:8080/v1` 对应 Compose backend "
-"监听的端口（`deploy/docker/docker-compose.yml`）；如果某个部署把 backend "
-"绑在了别处，就必须设它，否则每个 RAG 请求都会在自调用这一步失败。内部调用出示的凭据是 `RAG_API_KEY`，但会带上 `X-On-"
-"Behalf-Of: <end-user id>`，于是成本、配额、日志和按用户的并发都记在**真正的终端用户**头上（其身份由 "
-"`/v1/rag/chat` 处的 JWT 验证），而不是记在共享的服务账号上——每个用户的 RAG "
-"用量都算进他自己的每日配额。`verify_api_key` **只**对配置的那把 `RAG_API_KEY` 认 `X-On-Behalf-"
-"Of`；其他 key 带的这个头一律忽略，而如果 `RAG_API_KEY` 没设置，身份代持（impersonation）整体关闭。"
-
-#: ../developer/rag-chat.md:122
+#: ../developer/rag-chat.md:99
 msgid "Endpoints"
 msgstr "端点"
 
-#: ../developer/rag-chat.md:124
+#: ../developer/rag-chat.md:101
 msgid ""
 "Both live under the gateway and authenticate with the dashboard JWT "
 "(`get_current_user`), so the Next.js chat page calls them with the "
@@ -285,11 +205,11 @@ msgstr ""
 "两个端点都挂在网关下，用仪表盘的 JWT（`get_current_user`）鉴权，所以 Next.js 聊天页面拿它手上已有的会话 token"
 " 就能调。"
 
-#: ../developer/rag-chat.md:128
+#: ../developer/rag-chat.md:105
 msgid "`GET /v1/rag/status` — whether the index is built, chunk count, models."
 msgstr "`GET /v1/rag/status`——索引是否已构建、chunk 数量、使用的模型。"
 
-#: ../developer/rag-chat.md:129
+#: ../developer/rag-chat.md:106
 #, python-brace-format
 msgid ""
 "`POST /v1/rag/chat` — body `{ messages, top_k?, stream? }`. The "
@@ -300,7 +220,7 @@ msgstr ""
 "`POST /v1/rag/chat`——请求体为 `{ messages, top_k?, stream? "
 "}`。生成用的模型在服务端固定（`RAG_CHAT_MODEL`），**不能**由客户端选择，所以这个端点没法用来够到按角色限制的模型。"
 
-#: ../developer/rag-chat.md:132
+#: ../developer/rag-chat.md:109
 #, python-brace-format
 msgid ""
 "Streaming (default): SSE — first a `{\"type\":\"sources\", ...}` event, "
@@ -309,40 +229,45 @@ msgstr ""
 "流式（默认）：SSE——先是一个 `{\"type\":\"sources\", ...}` 事件，接着是 OpenAI 格式的补全 "
 "chunk，最后是 `[DONE]`。"
 
-#: ../developer/rag-chat.md:134
+#: ../developer/rag-chat.md:111
 #, python-brace-format
 msgid "Non-streaming: `{ answer, sources, model }`."
 msgstr "非流式：`{ answer, sources, model }`。"
 
-#: ../developer/rag-chat.md:136
-msgid "Logging & quota"
-msgstr "日志与配额"
-
-#: ../developer/rag-chat.md:138
+#: ../developer/rag-chat.md:113
 msgid ""
-"The RAG model calls go through the gateway's own `/v1/embeddings` and "
-"`/v1/chat/completions`, so they land in `api_logs` and count toward cost,"
-" daily quota, and per-user concurrency — attributed to the **real end "
-"user** via the `X-On-Behalf-Of` header (the JWT-verified caller of "
-"`/v1/rag/chat`), with `RAG_API_KEY` as the presented credential. A row is"
-" identifiable as RAG-originated by its `metadata.user_agent = "
-"\"doc_assistant\"`. Set `RAG_API_KEY` to a valid user API key; when it is"
-" unset the endpoint returns `503`. An upstream `429` (quota/rate) is "
-"passed through to the caller — note this can now be the **end user's** "
-"own daily quota, not the service account's."
+"A request log row from the assistant has `metadata.user_agent = "
+"\"doc_assistant\"`. An upstream `429` is passed through to the caller, "
+"and may mean the user's own daily quota is used up."
 msgstr ""
-"RAG 的模型调用走的是网关自己的 `/v1/embeddings` 和 `/v1/chat/completions`，所以会落进 "
-"`api_logs`，并计入成本、每日配额和按用户的并发——通过 `X-On-Behalf-Of` 头归属到**真正的终端用户**（即经 JWT "
-"验证的 `/v1/rag/chat` 调用者），而出示的凭据是 `RAG_API_KEY`。一行日志是不是来自 RAG，看它的 "
-"`metadata.user_agent = \"doc_assistant\"` 就能认出来。要把 `RAG_API_KEY` "
-"设成一把有效的用户 API key；没设置时该端点返回 `503`。上游返回的 "
-"`429`（配额或限流）会透传给调用方——注意现在它可能来自**终端用户本人**的每日配额，而不是服务账号的。"
+"助手产生的请求日志行带有 `metadata.user_agent = \"doc_assistant\"`。上游返回的 `429` "
+"会原样传给调用方，这可能意味着该用户自己的每日配额已经用完。"
 
-#: ../developer/rag-chat.md:154
+#: ../developer/rag-chat.md:123
+msgid "Turning it off"
+msgstr "关闭助手"
+
+#: ../developer/rag-chat.md:125
+msgid ""
+"With an active distribution manifest, `features.rag: false` turns both "
+"endpoints off for everyone, admins included: they answer `403` before "
+"reading the index or calling a model. `true`, `null` or leaving the field"
+" out keeps the assistant on. A broken manifest configuration makes both "
+"endpoints answer `503`; see [Activating a manifest](distribution-"
+"customization.md#activating-a-manifest). The general model APIs are not "
+"affected either way."
+msgstr ""
+"发行版 manifest 启用后，`features.rag: false` "
+"会对所有人（包括管理员）关闭这两个端点：它们在读取索引或调用模型之前就返回 `403`。设为 "
+"`true`、`null`，或者不写这个字段，助手都保持开启。manifest 配置损坏时，两个端点都返回 `503`；见[启用 manifest"
+"](distribution-customization.md#activating-a-manifest)。无论哪种情况，通用的模型 API "
+"都不受影响。"
+
+#: ../developer/rag-chat.md:132
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/rag-chat.md:156
+#: ../developer/rag-chat.md:134
 msgid "All optional; sensible defaults resolve relative to the repo root."
 msgstr "全部可选；合理的默认值相对仓库根目录解析。"
 
@@ -452,11 +377,9 @@ msgstr ""
 
 #: ../developer/rag-chat.md
 msgid ""
-"Answer-generation model. That default is a leftover deployment-specific "
-"id rather than anything this repository serves, so set it to a model your"
-" own gateway registers."
-msgstr ""
-"生成答案所用的模型。那个默认值是遗留下来的、某个具体部署专用的 id，本仓库并不提供它，所以要把它设成你自己的网关真正注册了的模型。"
+"Answer-generation model. Set it to a model your gateway serves: the "
+"default names a model this repository does not ship."
+msgstr "生成回答所用的模型。请设为你的网关实际提供的模型：默认值指向的是一个本仓库并不提供的模型。"
 
 #: ../developer/rag-chat.md
 msgid "`RAG_GATEWAY_API_KEY`"
@@ -470,8 +393,7 @@ msgstr "回落到 `LOCAL_API_KEY`"
 msgid ""
 "User API key **ingest** presents to `RAG_GATEWAY_BASE_URL`; must be valid"
 " on *that* gateway"
-msgstr ""
-"**ingest** 向 `RAG_GATEWAY_BASE_URL` 出示的用户 API key；必须在*那个*网关上有效"
+msgstr "**ingest** 向 `RAG_GATEWAY_BASE_URL` 出示的用户 API key；必须在*那个*网关上有效"
 
 #: ../developer/rag-chat.md
 msgid "`RAG_TOP_K`"
@@ -509,35 +431,252 @@ msgstr ""
 msgid "Generation temperature"
 msgstr "生成温度"
 
-#: ../developer/rag-chat.md:173
-msgid "Prototype limitations"
-msgstr "原型阶段的局限"
+#: ../developer/rag-chat.md:151
+msgid "Limitations"
+msgstr "局限"
 
-#: ../developer/rag-chat.md:175
+#: ../developer/rag-chat.md:153
 msgid ""
 "The index is refreshed manually (`make rag-ingest`), not on a schedule — "
 "it can lag the docs until regenerated."
 msgstr "索引是手工刷新的（`make rag-ingest`），没有定时任务——在重新生成之前，它可能落后于文档。"
 
-#: ../developer/rag-chat.md:177
+#: ../developer/rag-chat.md:155
 msgid ""
 "The `HashEmbedder` fallback exists only so the pipeline runs without the "
 "gateway (dev/CI); its retrieval quality is weak."
 msgstr "`HashEmbedder` 这个回退方案存在的唯一理由，是让流水线在没有网关时也能跑（开发/CI）；它的检索质量很弱。"
 
-#: ../developer/rag-chat.md:179
+#: ../developer/rag-chat.md:157
 msgid ""
 "No answer caching, no reranking, and history is truncated to the last few"
 " turns. The store is loaded into memory per process (cached, mtime-"
 "invalidated)."
 msgstr "没有答案缓存，没有重排序，历史被截断到最近几轮。向量库按进程加载进内存（带缓存，按 mtime 失效）。"
 
+#: ../developer/rag-chat.md:160
+msgid "Code map"
+msgstr "代码地图"
+
+#: ../developer/rag-chat.md
+msgid "Path"
+msgstr "路径"
+
+#: ../developer/rag-chat.md
+msgid "Role"
+msgstr "作用"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/rag/chunker.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "Heading-aware markdown chunking"
+msgstr "按标题切分 markdown"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/rag/embedder.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "`GatewayHTTPEmbedder` + offline `HashEmbedder`"
+msgstr "`GatewayHTTPEmbedder`，以及离线用的 `HashEmbedder`"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/rag/store.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "JSON vector store + cosine search"
+msgstr "JSON 向量库 + 余弦检索"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/rag/pipeline.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "Prompt assembly + sources payload"
+msgstr "prompt 组装 + 来源（sources）载荷"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/rag/ingest.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "`python -m serving.rag.ingest` CLI"
+msgstr "`python -m serving.rag.ingest` 命令行工具"
+
+#: ../developer/rag-chat.md
+msgid "`apps/backend/serving/servers/routers/rag.py`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "`/v1/rag/status` + `/v1/rag/chat`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "`apps/frontend/src/app/chat/page.tsx`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "Chat UI (`/chat`, behind `ProtectedRoute`)"
+msgstr "聊天界面（`/chat`，在 `ProtectedRoute` 之后）"
+
+#: ../developer/rag-chat.md
+msgid "`apps/frontend/src/lib/api/chat.ts`"
+msgstr ""
+
+#: ../developer/rag-chat.md
+msgid "Streaming SSE client"
+msgstr "流式 SSE 客户端"
+
 #~ msgid "see `apps/backend/serving/rag/config.py`"
 #~ msgstr "见 `apps/backend/serving/rag/config.py`"
 
+#~ msgid "Architecture"
+#~ msgstr "架构"
 
-msgid "With `DISTRIBUTION_CONFIG_MODE=active`, setting `features.rag: false` in the distribution manifest disables both RAG endpoints for all users, including admins: authenticated requests receive `403` before the index is read or any model call starts. This covers streaming and non-streaming chat. A value of `true`, `null`, or an omitted field preserves the existing RAG behavior and authentication requirements. Intentional `dark` mode (also the default when the mode is unset) does not enforce manifest feature restrictions."
-msgstr "当 `DISTRIBUTION_CONFIG_MODE=active` 时，在 distribution manifest 中设置 `features.rag: false` 会对所有用户（包括管理员）关闭两个 RAG 端点：已鉴权请求会在读取索引或发起任何模型调用之前收到 `403`。这同时覆盖流式和非流式聊天。值为 `true`、`null` 或省略该字段时，保留现有 RAG 行为和鉴权要求。显式选择 `dark` 模式（未设置模式时也默认使用它）不会执行 manifest 中的功能限制。"
+#~ msgid ""
+#~ "In prose: both inner calls are "
+#~ "ordinary authenticated gateway requests "
+#~ "carrying `RAG_API_KEY`, so they are "
+#~ "logged to `api_logs` and counted toward"
+#~ " cost, quota and concurrency like any"
+#~ " other traffic; `X-On-Behalf-Of` "
+#~ "moves that attribution from the shared"
+#~ " RAG account to the JWT-verified "
+#~ "end user."
+#~ msgstr ""
+#~ "用文字说明一遍：内部这两次调用都是携带 `RAG_API_KEY` 的普通已鉴权网关请求，因此和其他流量一样会写进"
+#~ " `api_logs`，并计入成本、配额和并发；`X-On-Behalf-Of` "
+#~ "把这份归属从共享的 RAG 账号挪到经 JWT 验证的最终用户身上。"
 
-msgid "An empty or unknown mode, a missing active manifest path, or an invalid active manifest makes authenticated RAG requests return `503` with a generic error. Unknown keys in `features` or at the manifest root are rejected during validation so a misspelled or misplaced restriction cannot silently disappear. Correct the configuration and restart the backend; successful manifest loads are cached for the life of the process. These restrictions apply to the docs assistant endpoints; the general model APIs retain their existing access rules."
-msgstr "模式为空或无法识别、active 模式缺少 manifest 路径，或者 active manifest 无效时，已鉴权的 RAG 请求会收到 `503` 和通用错误信息。校验会拒绝 `features` 或 manifest 顶层的未知键，防止限制因拼写或位置错误而静默丢失。修正配置后重启后端；成功加载的 manifest 会缓存到进程结束。这些限制适用于文档助手端点；通用模型 API 保留现有访问规则。"
+#~ msgid "Deployment"
+#~ msgstr "部署"
+
+#~ msgid ""
+#~ "**Required env per deployment:** set "
+#~ "`RAG_API_KEY` to a valid user API "
+#~ "key, and point `RAG_API_BASE_URL` at the"
+#~ " gateway's own address in that "
+#~ "environment. The default `http://localhost:8080/v1`"
+#~ " matches the port the Compose backend"
+#~ " listens on (`deploy/docker/docker-compose.yml`);"
+#~ " a deployment that binds the backend"
+#~ " somewhere else must set it, or "
+#~ "every RAG request fails at the "
+#~ "self-call. The inner calls present "
+#~ "`RAG_API_KEY` as the credential but "
+#~ "carry `X-On-Behalf-Of: <end-user "
+#~ "id>`, so cost / quota / logs "
+#~ "/ per-user concurrency attribute to "
+#~ "the **real end user** (verified by "
+#~ "JWT at `/v1/rag/chat`) rather than to"
+#~ " the shared service account — each"
+#~ " user's RAG usage counts against "
+#~ "their own daily quota. `verify_api_key` "
+#~ "honors `X-On-Behalf-Of` **only** for "
+#~ "the configured `RAG_API_KEY`; any other "
+#~ "key's header is ignored, and if "
+#~ "`RAG_API_KEY` is unset impersonation is "
+#~ "disabled entirely."
+#~ msgstr ""
+#~ "**每个部署必须设置的环境变量**：把 `RAG_API_KEY` 设成一把有效的用户 API "
+#~ "key，并把 `RAG_API_BASE_URL` 指向该环境中网关自身的地址。默认值 "
+#~ "`http://localhost:8080/v1` 对应 Compose backend "
+#~ "监听的端口（`deploy/docker/docker-compose.yml`）；如果某个部署把 backend"
+#~ " 绑在了别处，就必须设它，否则每个 RAG 请求都会在自调用这一步失败。内部调用出示的凭据是 "
+#~ "`RAG_API_KEY`，但会带上 `X-On-Behalf-Of: <end-"
+#~ "user id>`，于是成本、配额、日志和按用户的并发都记在**真正的终端用户**头上（其身份由 "
+#~ "`/v1/rag/chat` 处的 JWT 验证），而不是记在共享的服务账号上——每个用户的 "
+#~ "RAG 用量都算进他自己的每日配额。`verify_api_key` **只**对配置的那把 "
+#~ "`RAG_API_KEY` 认 `X-On-Behalf-Of`；其他 key"
+#~ " 带的这个头一律忽略，而如果 `RAG_API_KEY` "
+#~ "没设置，身份代持（impersonation）整体关闭。"
+
+#~ msgid "Logging & quota"
+#~ msgstr "日志与配额"
+
+#~ msgid ""
+#~ "The RAG model calls go through the"
+#~ " gateway's own `/v1/embeddings` and "
+#~ "`/v1/chat/completions`, so they land in "
+#~ "`api_logs` and count toward cost, daily"
+#~ " quota, and per-user concurrency —"
+#~ " attributed to the **real end user**"
+#~ " via the `X-On-Behalf-Of` header "
+#~ "(the JWT-verified caller of "
+#~ "`/v1/rag/chat`), with `RAG_API_KEY` as the "
+#~ "presented credential. A row is "
+#~ "identifiable as RAG-originated by its"
+#~ " `metadata.user_agent = \"doc_assistant\"`. Set"
+#~ " `RAG_API_KEY` to a valid user API"
+#~ " key; when it is unset the "
+#~ "endpoint returns `503`. An upstream "
+#~ "`429` (quota/rate) is passed through to"
+#~ " the caller — note this can now"
+#~ " be the **end user's** own daily "
+#~ "quota, not the service account's."
+#~ msgstr ""
+#~ "RAG 的模型调用走的是网关自己的 `/v1/embeddings` 和 "
+#~ "`/v1/chat/completions`，所以会落进 `api_logs`，并计入成本、每日配额和按用户的并发——通过"
+#~ " `X-On-Behalf-Of` 头归属到**真正的终端用户**（即经 JWT"
+#~ " 验证的 `/v1/rag/chat` 调用者），而出示的凭据是 "
+#~ "`RAG_API_KEY`。一行日志是不是来自 RAG，看它的 `metadata.user_agent "
+#~ "= \"doc_assistant\"` 就能认出来。要把 `RAG_API_KEY` "
+#~ "设成一把有效的用户 API key；没设置时该端点返回 `503`。上游返回的 "
+#~ "`429`（配额或限流）会透传给调用方——注意现在它可能来自**终端用户本人**的每日配额，而不是服务账号的。"
+
+#~ msgid ""
+#~ "Answer-generation model. That default is"
+#~ " a leftover deployment-specific id "
+#~ "rather than anything this repository "
+#~ "serves, so set it to a model "
+#~ "your own gateway registers."
+#~ msgstr "生成答案所用的模型。那个默认值是遗留下来的、某个具体部署专用的 id，本仓库并不提供它，所以要把它设成你自己的网关真正注册了的模型。"
+
+#~ msgid ""
+#~ "With `DISTRIBUTION_CONFIG_MODE=active`, setting "
+#~ "`features.rag: false` in the distribution "
+#~ "manifest disables both RAG endpoints for"
+#~ " all users, including admins: authenticated"
+#~ " requests receive `403` before the "
+#~ "index is read or any model call"
+#~ " starts. This covers streaming and "
+#~ "non-streaming chat. A value of "
+#~ "`true`, `null`, or an omitted field "
+#~ "preserves the existing RAG behavior and"
+#~ " authentication requirements. Intentional `dark`"
+#~ " mode (also the default when the "
+#~ "mode is unset) does not enforce "
+#~ "manifest feature restrictions."
+#~ msgstr ""
+#~ "当 `DISTRIBUTION_CONFIG_MODE=active` 时，在 distribution"
+#~ " manifest 中设置 `features.rag: false` "
+#~ "会对所有用户（包括管理员）关闭两个 RAG 端点：已鉴权请求会在读取索引或发起任何模型调用之前收到 "
+#~ "`403`。这同时覆盖流式和非流式聊天。值为 `true`、`null` 或省略该字段时，保留现有 "
+#~ "RAG 行为和鉴权要求。显式选择 `dark` 模式（未设置模式时也默认使用它）不会执行 "
+#~ "manifest 中的功能限制。"
+
+#~ msgid ""
+#~ "An empty or unknown mode, a "
+#~ "missing active manifest path, or an "
+#~ "invalid active manifest makes authenticated"
+#~ " RAG requests return `503` with a "
+#~ "generic error. Unknown keys in "
+#~ "`features` or at the manifest root "
+#~ "are rejected during validation so a "
+#~ "misspelled or misplaced restriction cannot "
+#~ "silently disappear. Correct the configuration"
+#~ " and restart the backend; successful "
+#~ "manifest loads are cached for the "
+#~ "life of the process. These restrictions"
+#~ " apply to the docs assistant "
+#~ "endpoints; the general model APIs retain"
+#~ " their existing access rules."
+#~ msgstr ""
+#~ "模式为空或无法识别、active 模式缺少 manifest 路径，或者 active"
+#~ " manifest 无效时，已鉴权的 RAG 请求会收到 `503` "
+#~ "和通用错误信息。校验会拒绝 `features` 或 manifest "
+#~ "顶层的未知键，防止限制因拼写或位置错误而静默丢失。修正配置后重启后端；成功加载的 manifest "
+#~ "会缓存到进程结束。这些限制适用于文档助手端点；通用模型 API 保留现有访问规则。"

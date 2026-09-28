@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-31 16:52+0800\n"
+"POT-Creation-Date: 2026-09-28 15:43+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -37,7 +37,21 @@ msgstr ""
 msgid "Getting set up"
 msgstr "环境准备"
 
-#: ../developer/contributing.md:15
+#: ../developer/contributing.md:18
+msgid ""
+"Replace `yourname` in the branch name with your GitHub username. To keep "
+"your main checkout free for other work, create the branch in a separate "
+"[worktree](https://git-scm.com/docs/git-worktree) instead, for example "
+"`git worktree add -b <branch> ../hybridinference-<feature> upstream/dev`."
+" If you cloned the upstream repository rather than a fork, start from "
+"`origin/dev` and push to your fork remote."
+msgstr ""
+"把分支名里的 `yourname` 换成你的 GitHub 用户名。如果想让主 checkout 空出来做别的事，可以改为在单独的 "
+"[worktree](https://git-scm.com/docs/git-worktree) 里创建分支，例如 `git worktree "
+"add -b <branch> ../hybridinference-<feature> upstream/dev`。如果你克隆的是上游仓库而不是"
+" fork，就从 `origin/dev` 开始，并推送到你 fork 的 remote。"
+
+#: ../developer/contributing.md:25
 msgid ""
 "`make setup-dev` creates `.venv` on Python 3.12, installs the project "
 "editable, syncs the `dev` dependency group and installs the pre-commit "
@@ -47,21 +61,112 @@ msgstr ""
 "`make setup-dev` 会用 Python 3.12 创建 `.venv`，以可编辑方式安装本项目，同步 `dev` 依赖组，并装上 "
 "pre-commit 钩子。完整的前置条件和运行网关的各种方式见 [安装](installation.md)。"
 
-#: ../developer/contributing.md:20
+#: ../developer/contributing.md:30
 msgid ""
 "Every `make` target that touches Python runs through `uv run`. Override "
 "that if your environment needs it:"
 msgstr "每一个涉及 Python 的 `make` 目标都通过 `uv run` 执行。如果你的环境需要，可以覆盖它："
 
-#: ../developer/contributing.md:27
+#: ../developer/contributing.md:37
+msgid "Your first contribution"
+msgstr "完成第一次贡献"
+
+#: ../developer/contributing.md:39
+msgid ""
+"Start by running the [Quickstart](router-tutorial.md) in your worktree, "
+"or use the [source development setup](installation.md#development-"
+"checkout-no-docker). Seeing the gateway answer one request makes it "
+"easier to tell whether a later failure comes from your change or from "
+"setup. A local example deployment is enough; contributing does not "
+"require access to a maintainer's server."
+msgstr ""
+"先在 worktree 中运行[快速开始](router-tutorial.md)，或使用[源码开发环境](installation.md"
+"#development-checkout-no-"
+"docker)。先看到网关成功响应一次请求，之后就更容易判断故障来自改动还是环境配置。本地示例部署已经足够；参与贡献不需要访问维护者的服务器。"
+
+#: ../developer/contributing.md:45
+msgid ""
+"Choose a small reproducible bug, an uncovered configuration case, or a "
+"confusing instruction you can verify yourself. Search the issue tracker "
+"and existing tests first. For a larger feature, open a feature request to"
+" agree on the behavior before writing it; the repository provides bug and"
+" feature forms."
+msgstr ""
+"选择一个可复现的小 bug、尚未覆盖的配置场景，或一条你能亲自验证的模糊说明。先搜索 issue "
+"和现有测试。对于较大的功能，先提交功能请求，讨论确定行为后再实现；仓库已提供 bug 和功能请求表单。"
+
+#: ../developer/contributing.md:50
+msgid ""
+"For a concrete first exercise, cover a routing YAML endpoint that uses an"
+" environment-variable default. Read `_expand_env_value` and "
+"`load_routing_config` in `apps/backend/routing/config.py`, then the "
+"neighboring tests in `tests/unit/routing/test_config.py`. An unset "
+"variable should use the default URL; a set variable should override it. "
+"The test below exercises both through the public loader and restores the "
+"environment after each case:"
+msgstr ""
+"第一次练习可以覆盖路由 YAML 中使用环境变量默认值的端点。阅读 `apps/backend/routing/config.py` 中的 "
+"`_expand_env_value` 和 `load_routing_config`，再看 "
+"`tests/unit/routing/test_config.py` 中相邻的测试。变量未设置时应使用默认 "
+"URL，设置后则应覆盖默认值。下面的测试通过公开的加载函数验证这两种情况，并在每次执行后恢复环境："
+
+#: ../developer/contributing.md:76
+msgid ""
+"Add it to that test file only if the case is still uncovered. This is a "
+"test-only contribution when the loader already behaves correctly. For a "
+"bug fix, first make your regression test fail on the original code, then "
+"change the smallest responsible function until it passes."
+msgstr ""
+"仅当这一场景尚未被覆盖时，才把它加入该测试文件。如果加载器已经正确工作，这就是一次仅增加测试的贡献。修复 bug "
+"时，先让回归测试在原始代码上失败，再修改最小范围的负责函数，直到测试通过。"
+
+#: ../developer/contributing.md:81
+msgid "Run the focused tests while editing:"
+msgstr "编辑时运行相关测试："
+
+#: ../developer/contributing.md:87
+msgid ""
+"For a runtime change, repeat the affected request against your local "
+"gateway. With the [Quickstart](router-tutorial.md)'s example running, "
+"`make build s=backend DISTRIBUTION=example` rebuilds changed backend "
+"code; `make smoke DISTRIBUTION=example` checks health, the model list and"
+" a routed completion. Exercise the changed behavior as well: a generic "
+"smoke passing does not establish that a particular bug is fixed. The "
+"[Quickstart](router-tutorial.md) explains the separate full-console check"
+" when your change involves accounts or the frontend."
+msgstr ""
+"如果改动影响运行时行为，请在本地网关上重放受影响的请求。在[快速开始](router-tutorial.md)的示例跑着的时候，`make "
+"build s=backend DISTRIBUTION=example` 会重新构建改动过的后端代码；`make smoke "
+"DISTRIBUTION=example` 会检查健康状态、模型列表和一次经过路由的 completion。还要实际验证改动的行为：通用的 "
+"smoke 通过，并不能说明某个具体的 bug 已经修好。如果改动涉及账号或前端，[快速开始](router-"
+"tutorial.md)里介绍了单独的完整控制台检查。"
+
+#: ../developer/contributing.md:96
+msgid ""
+"Before opening the PR, run `make format`, `make lint` and `make test`, "
+"plus the [frontend](#frontend) or [documentation](#documentation) checks "
+"when relevant. Review `git diff` so the patch contains only your intended"
+" files. Push your branch to your fork and open a PR targeting upstream "
+"`dev`, using a title such as `test(routing): cover endpoint environment "
+"defaults`. Fill in the existing PR template with the behavior covered and"
+" the exact checks you ran; include the reproduction and before/after "
+"result for a bug fix."
+msgstr ""
+"提交 PR 前，运行 `make format`、`make lint` 和 `make "
+"test`，并根据改动运行[前端](#frontend)或[文档](#documentation)检查。检查 `git "
+"diff`，确保补丁只包含预期文件。将分支推送到你的 fork，创建目标为上游 `dev` 的 PR，标题例如 `test(routing): "
+"cover endpoint environment defaults`。在现有 PR 模板中填写覆盖的行为和实际执行的检查；修复 bug "
+"时，也写明复现方式及修复前后的结果。"
+
+#: ../developer/contributing.md:104
 msgid "Repository layout"
 msgstr "仓库结构"
 
-#: ../developer/contributing.md:55
+#: ../developer/contributing.md:131
 msgid "Two things about the backend are easy to get wrong:"
 msgstr "后端有两件事很容易搞错："
 
-#: ../developer/contributing.md:57
+#: ../developer/contributing.md:133
 msgid ""
 "`apps/backend/routing/executor.py` is a backward-compatibility shim that "
 "re-exports `FixedRouter` as `RouteExecutor`. Edit "
@@ -70,16 +175,18 @@ msgstr ""
 "`apps/backend/routing/executor.py` 是一个向后兼容的垫片，把 `FixedRouter` 以 "
 "`RouteExecutor` 的名字重新导出。要改就改 `apps/backend/routing/routers.py`。"
 
-#: ../developer/contributing.md:60
+#: ../developer/contributing.md:136
 msgid ""
 "The backend packages are `serving` and `routing`, rooted at "
-"`apps/backend`. Anything you run by hand needs `PYTHONPATH=apps/backend`;"
-" pytest gets it from `pythonpath` in `pyproject.toml`."
+"`apps/backend`. `make setup-dev` installs them into `.venv`, so `uv run` "
+"or an activated `.venv` imports them from any directory; outside that "
+"environment, set `PYTHONPATH=apps/backend`."
 msgstr ""
-"后端的包是 `serving` 和 `routing`，根目录在 `apps/backend`。任何手工运行的东西都需要 "
-"`PYTHONPATH=apps/backend`；pytest 则从 `pyproject.toml` 的 `pythonpath` 里拿到它。"
+"后端的包是 `serving` 和 `routing`，根目录在 `apps/backend`。`make setup-dev` 会把它们装进 "
+"`.venv`，所以通过 `uv run` 或激活后的 `.venv`，在任何目录下都能 import 它们；在这个环境之外，需要设置 "
+"`PYTHONPATH=apps/backend`。"
 
-#: ../developer/contributing.md:64
+#: ../developer/contributing.md:141
 msgid "Quality gates"
 msgstr "质量门禁"
 
@@ -97,7 +204,7 @@ msgstr ""
 
 #: ../developer/contributing.md
 msgid "`ruff format .`, then `ruff check --fix --unsafe-fixes .`"
-msgstr ""
+msgstr "`ruff format .`，然后 `ruff check --fix --unsafe-fixes .`"
 
 #: ../developer/contributing.md
 msgid "`make lint`"
@@ -131,7 +238,7 @@ msgstr ""
 msgid "`format` + `check`"
 msgstr ""
 
-#: ../developer/contributing.md:74
+#: ../developer/contributing.md:151
 msgid ""
 "`make all` does **not** type-check. `mypy` is in the `dev` dependency "
 "group and you may run it by hand, but `pyproject.toml` has no "
@@ -140,11 +247,11 @@ msgstr ""
 "`make all` **不**做类型检查。`mypy` 在 `dev` 依赖组里，你可以手工运行它，但 `pyproject.toml` 里没有"
 " `[tool.mypy]` 段，也没有任何 target 会调用它，所以没有任何东西强制它。"
 
-#: ../developer/contributing.md:78
+#: ../developer/contributing.md:155
 msgid "Style is enforced by tooling, not by review:"
 msgstr "代码风格由工具强制，而不是靠评审："
 
-#: ../developer/contributing.md:80
+#: ../developer/contributing.md:157
 msgid ""
 "**ruff**, line length 100, target `py310`, with "
 "`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/ `SIM`/`TCH`/`RUF` enabled (`[tool.ruff]` "
@@ -154,7 +261,7 @@ msgstr ""
 "`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/`SIM`/`TCH`/`RUF`（见 `pyproject.toml` 的 "
 "`[tool.ruff]`）。"
 
-#: ../developer/contributing.md:82
+#: ../developer/contributing.md:159
 msgid ""
 "**pydocstyle**, Google convention. It skips `tests`, `.venv`, "
 "`node_modules`, `apps/frontend`, `ops` and `docs`, so docstrings are "
@@ -164,11 +271,11 @@ msgstr ""
 "`tests`、`.venv`、`node_modules`、`apps/frontend`、`ops` 和 `docs`，因此 "
 "`apps/backend` 里必须写 docstring，并且在那里被强制执行。"
 
-#: ../developer/contributing.md:86
+#: ../developer/contributing.md:163
 msgid "Pre-commit hooks run on commit and are installed by `make setup-dev`:"
 msgstr "pre-commit 钩子在 commit 时运行，由 `make setup-dev` 安装："
 
-#: ../developer/contributing.md:92
+#: ../developer/contributing.md:169
 msgid ""
 "They cover ruff (pinned to the version CI uses), pydocstyle, `gitleaks` "
 "secret scanning, the standard whitespace/YAML/JSON/TOML checks, and "
@@ -177,17 +284,17 @@ msgstr ""
 "它们涵盖 ruff（版本锁定为 CI 所用的那个）、pydocstyle、`gitleaks` "
 "密钥扫描、标准的空白字符/YAML/JSON/TOML 检查，以及针对 `apps/frontend` 的 eslint + prettier。"
 
-#: ../developer/contributing.md:96
+#: ../developer/contributing.md:173
 msgid ""
 "Before opening a pull request, run `make format` and make sure `make "
 "test` passes."
 msgstr "开 PR 之前，先跑 `make format`，并确认 `make test` 通过。"
 
-#: ../developer/contributing.md:99
+#: ../developer/contributing.md:176
 msgid "Tests"
 msgstr "测试"
 
-#: ../developer/contributing.md:101
+#: ../developer/contributing.md:178
 msgid ""
 "Markers are the contract; directories are a convention. The markers "
 "declared in `pyproject.toml` are `unit`, `integration`, `slow`, `perf`, "
@@ -274,7 +381,7 @@ msgstr ""
 msgid "`external`"
 msgstr ""
 
-#: ../developer/contributing.md:113
+#: ../developer/contributing.md:190
 msgid ""
 "`testpaths` is `[\"tests\", \"distributions\"]`, so overlay-owned tests "
 "run in the default suite alongside `tests/`."
@@ -282,7 +389,7 @@ msgstr ""
 "`testpaths` 是 `[\"tests\", \"distributions\"]`，因此 overlay 自带的测试会和 "
 "`tests/` 一起在默认测试集中运行。"
 
-#: ../developer/contributing.md:128
+#: ../developer/contributing.md:205
 msgid ""
 "The `dbtest` tier needs a reachable PostgreSQL. Tests read "
 "`TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` "
@@ -294,7 +401,7 @@ msgstr ""
 "`localhost:5432` 和 `postgres`/`postgres`），有些还会读完整的 "
 "`TEST_PG_DSN`。只把数据库容器起起来就够了："
 
-#: ../developer/contributing.md:137
+#: ../developer/contributing.md:214
 msgid ""
 "`make test` parallelises with `pytest-xdist` at file granularity. Run "
 "serially when you are debugging a specific failure, but check a suspected"
@@ -304,15 +411,15 @@ msgstr ""
 "`make test` 用 `pytest-xdist` 以文件为粒度并行。调查某个具体失败时可以串行跑，但怀疑是环境变量泄漏引起的失败，还要在 "
 "`-n auto` 下再查一遍——跨文件的环境泄漏只有在并行运行时才会暴露。"
 
-#: ../developer/contributing.md:142
+#: ../developer/contributing.md:219
 msgid "Frontend"
 msgstr "前端"
 
-#: ../developer/contributing.md:144
+#: ../developer/contributing.md:221
 msgid "The console's gates are separate from the Python ones:"
 msgstr "控制台的门禁与 Python 那套是分开的："
 
-#: ../developer/contributing.md:156
+#: ../developer/contributing.md:233
 msgid ""
 "CI additionally runs `npm run format:check` (prettier) and `npm audit "
 "--omit=dev --audit-level=high` in `apps/frontend`."
@@ -320,264 +427,129 @@ msgstr ""
 "CI 还会在 `apps/frontend` 里额外运行 `npm run format:check`（prettier）和 `npm audit"
 " --omit=dev --audit-level=high`。"
 
-#: ../developer/contributing.md:159
+#: ../developer/contributing.md:236
 msgid "Documentation"
 msgstr "文档"
 
-#: ../developer/contributing.md:161
+#: ../developer/contributing.md:238
 msgid ""
 "These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, "
-"with `docs/developer/index.rst` as the root toctree. Build them from the "
-"repository root:"
+"with `docs/developer/index.rst` as the root toctree. Build them, and run "
+"the checks CI runs, from the repository root:"
 msgstr ""
 "这些页面是 MyST Markdown，由 Sphinx 从 `docs/developer/` 编译，以 "
-"`docs/developer/index.rst` 作为根目录树。在仓库根目录构建："
+"`docs/developer/index.rst` 作为根 toctree。在仓库根目录构建它们，并运行 CI 会跑的那些检查："
 
-#: ../developer/contributing.md:169
+#: ../developer/contributing.md:246
 msgid ""
-"CI's **Docs Build** job builds the same tree with warnings promoted to "
-"errors:"
-msgstr "CI 的 **Docs Build** 任务构建同一棵树，并把警告升级为错误："
-
-#: ../developer/contributing.md:175
-msgid ""
-"That job is what gates documentation changes in this repository — a "
-"broken cross-reference or a page missing from the toctree fails the "
-"build, so run it locally before pushing. Sphinx, `myst-parser` and "
-"`sphinx-rtd-theme` come from the `dev` dependency group, so `make setup-"
-"dev` is enough to build."
+"That builds the English and Chinese sites with warnings treated as "
+"errors, checks the local links in every Markdown file, and checks that no"
+" translated paragraph has quietly fallen back to English. A broken cross-"
+"reference or a page missing from the toctree fails it, so run it before "
+"pushing. Sphinx, `myst-parser` and `sphinx-rtd-theme` come from the `dev`"
+" dependency group, so `make setup-dev` is enough to build. `make docs` "
+"builds the site alone."
 msgstr ""
-"本仓库里的文档改动就是由这个任务把关的——交叉引用断了、或者某个页面没进目录树，构建都会失败，所以推送之前先在本地跑一遍。Sphinx"
-"、`myst-parser` 和 `sphinx-rtd-theme` 都来自 `dev` 依赖组，因此 `make setup-dev` "
-"之后就能构建。"
+"它会把警告当作错误来构建英文和中文站点，检查每个 Markdown "
+"文件里的本地链接，并检查有没有哪段译文悄悄回退成了英文。交叉引用断了、或者某个页面没加进 "
+"toctree，它都会失败，所以推送之前先跑一遍。Sphinx、`myst-parser` 和 `sphinx-rtd-theme` 都来自 "
+"`dev` 依赖组，因此有 `make setup-dev` 就足以构建。`make docs` 只构建站点。"
 
-#: ../developer/contributing.md:180
+#: ../developer/contributing.md:253
 msgid ""
 "Add a new page to `docs/developer/index.rst` as well as writing it; an "
 "orphan file is a warning, and warnings are errors in CI."
 msgstr "写一个新页面的同时，要把它加进 `docs/developer/index.rst`；孤立文件会产生警告，而在 CI 里警告就是错误。"
 
-#: ../developer/contributing.md:183
-msgid "Translations"
-msgstr "翻译"
+#: ../developer/contributing.md:256
+msgid "Writing a page"
+msgstr "撰写页面"
 
-#: ../developer/contributing.md:185
+#: ../developer/contributing.md:258
 msgid ""
-"The pages are written in English and translated with Sphinx's gettext "
-"workflow, so a translation is attached to *each paragraph of source text*"
-" rather than to a whole file. That is what makes a partial translation "
-"safe: any string without one falls back to English, and the site still "
-"builds complete."
-msgstr ""
-"这些页面用英文书写，并通过 Sphinx 的 gettext "
-"流程翻译，因此译文挂在*源文本的每一个段落*上，而不是挂在整份文件上。这正是局部翻译之所以安全的原因：任何没有译文的字符串都会回退到英文，站点照样能完整构建出来。"
+"These pages ship with the source, and most readers arrive from a search "
+"or the sidebar with one task in mind. Write for that reader:"
+msgstr "这些页面随源码一起发布，大多数读者是从搜索结果或侧边栏进来的，心里只想着一件要办的事。要为这样的读者写："
 
-#: ../developer/contributing.md:198
-msgid "A catalog entry pairs the English source with its translation:"
-msgstr "消息目录里的一条记录，把英文原文和它的译文配成一对："
-
-#: ../developer/contributing.md:206
+#: ../developer/contributing.md:261
 msgid ""
-"Because the English text *is* the lookup key, editing a paragraph "
-"invalidates its translation automatically: the next `make docs-translate`"
-" marks that entry `#, fuzzy`, the build stops using it, and the page "
-"falls back to English rather than serving a translation that no longer "
-"matches what the code does. A translator only has to revisit the entries "
-"that are marked. **This is the reason to use catalogs instead of parallel"
-" `.zh.md` files**, which drift silently and give a reader no signal that "
-"what they are reading is out of date."
-msgstr ""
-"由于英文文本*就是*查找键，编辑一个段落会自动让它的译文失效：下一次 `make docs-translate` 会把那条记录标成 `#, "
-"fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这就是采用消息目录、而不是并列一份"
-" `.zh.md` 文件的理由**——后者会悄悄漂移，读者完全看不出自己读到的内容已经过时。"
-
-#: ../developer/contributing.md:214
-msgid "Commit the `.po` files. `docs/gettext/` is generated and ignored."
-msgstr "要提交 `.po` 文件。`docs/gettext/` 是生成物，已被忽略。"
-
-#: ../developer/contributing.md:216
-msgid ""
-"Translating a page does not require translating all of it, and there is "
-"no obligation to keep a language complete — an untranslated paragraph is "
-"a fallback, not a bug."
-msgstr "翻译一个页面不要求把它全部翻完，也没有义务让某种语言保持完整——未翻译的段落是一种回退，不是缺陷。"
-
-#: ../developer/contributing.md:220
-msgid "Translating into Chinese, Japanese or Korean"
-msgstr "翻译成中日韩语言时"
-
-#: ../developer/contributing.md:222
-msgid ""
-"Four traps, all of them silent — the build stays green and the page is "
-"wrong. Each was hit while translating this doc set into Chinese."
-msgstr "四个坑，全都是静默的——构建照样全绿，页面却是错的。这份文档翻成中文时，四个都踩到了。"
-
-#: ../developer/contributing.md:225
-msgid ""
-"**A heading that starts with a number is discarded.** Sphinx re-parses a "
-"translated title, and MyST reads `1. ` as an enumerated-list marker "
-"rather than text. The structure no longer matches the source, the "
-"translation is dropped, the English heading is emitted, and nothing warns"
-" — not even under `-W`. Escape the period:"
-msgstr ""
-"**以数字开头的标题会被丢弃**。Sphinx 会重新解析翻译后的标题，而 MyST 把 `1. ` "
-"读成有序列表标记而不是文本。结构与原文对不上，翻译被丢弃，输出的是英文标题，而且没有任何警告——`-W` 下也没有。把那个点转义掉："
-
-#: ../developer/contributing.md:235
-msgid ""
-"**In `index.rst`, inline markup that touches a CJK character does not "
-"parse.** reStructuredText requires whitespace or specific punctuation "
-"before an opening `*`, and a Chinese character is neither, so `请求的*模型 "
-"id*` renders literal asterisks. Separate them with an escaped space — "
-"written `\\\\ ` in the catalog, which is a backslash-space in the string:"
-msgstr ""
-"**在 `index.rst` 里，紧贴 CJK 字符的行内标记不会被解析**。reStructuredText 要求开头的 `*` "
-"前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` 渲染成字面星号。用一个转义空格把它们隔开——在 catalog 里写作 "
-"`\\\\ `，也就是字符串里的一个反斜杠加空格："
-
-#: ../developer/contributing.md:245
-msgid ""
-"This applies to `index.rst` only. Markdown pages need no escaping: "
-"CommonMark treats a CJK character as neither whitespace nor punctuation, "
-"so `**模型 id**` between Chinese characters is a valid emphasis run."
-msgstr ""
-"这条只适用于 `index.rst`。Markdown 页面不需要转义：CommonMark 认为 CJK "
-"字符既不是空白也不是标点，所以夹在汉字之间的 `**模型 id**` 是合法的强调。"
-
-#: ../developer/contributing.md:249
-msgid ""
-"**One Markdown case does break, though**: a closing `**` preceded by a "
-"CJK full stop and followed by a CJK character is not right-flanking, so "
-"`**术语。**后文` leaves literal asterisks. Put the period outside the bold — "
-"`**术语**。后文` — which is better typography anyway, since bolding "
-"punctuation is wrong."
-msgstr ""
-"**但 Markdown 有一种情况确实会坏**：结尾的 `**` 前面是句号、后面是汉字时不构成右侧闭合，于是 `**术语。**后文` "
-"会留下字面星号。把句号移到加粗外面——`**术语**。后文`——这本来也是更好的排版，给标点加粗是错的。"
-
-#: ../developer/contributing.md:255
-msgid ""
-"**A stale `.mo` masks your edits.** Sphinx skips recompilation when the "
-"`.mo` is newer than its `.po`, so you can verify a build that never read "
-"your changes. Before any verification build:"
-msgstr ""
-"**过期的 `.mo` 会掩盖你的改动**。当 `.mo` 比它的 `.po` 新时，Sphinx "
-"会跳过重新编译，于是你验证的那次构建根本没读到你的修改。每次验证构建之前先执行："
+"**Say who the page is for and what they can do after reading it**, in the"
+" first paragraph."
+msgstr "**说明页面写给谁、读完之后能做什么**，放在第一段。"
 
 #: ../developer/contributing.md:263
 msgid ""
-"The check that catches all four at once is a structural diff against the "
-"English build: for each page, compare the counts of `<code>`, `<strong>`,"
-" `<em>` and `<a>`, and the multiset of inline-code literals and link "
-"targets. A dropped marker or a translated link target shows up there and "
-"in no other check."
-msgstr ""
-"能一次抓住这四种的检查，是与英文构建做结构 diff：逐页比较 `<code>`、`<strong>`、`<em>`、`<a>` "
-"的数量，以及行内代码字面量和链接目标的多重集合。丢掉一个标记、或者把链接目标也翻译了，只有这个检查能发现。"
+"**Lead with the action or the answer.** Put exceptions and edge cases "
+"after it, in a note if they run long, and do not open a section with what"
+" the software lacks."
+msgstr "**先给出要做的操作或答案**。例外和边界情况放在后面，写长了就放进 note；也不要拿软件缺少什么来开启一个小节。"
+
+#: ../developer/contributing.md:266
+msgid ""
+"**Name a file only when the reader will open or edit it.** Do not cite "
+"functions or line numbers to prove a statement; tests and review do that."
+msgstr "**只有读者会打开或编辑某个文件时，才写出它的文件名**。不要为了证明某个说法去引用函数或行号；那是测试和评审的事。"
 
 #: ../developer/contributing.md:268
 msgid ""
-"One more, which at least fails loudly: `make docs-translate` can append "
-"`python-format` to an entry you had annotated `no-python-format` — a "
-"source string containing something like `≥ 5%` looks like a format string"
-" to gettext — and `msgfmt -c` then rejects the contradictory pair. Delete"
-" the added `python-format` and keep `no-python-format`."
-msgstr ""
-"还有一个，好在它至少会明着报错：`make docs-translate` 可能会在你已标注 `no-python-format` "
-"的条目上再追加一个 `python-format`——源串里出现类似 `≥ 5%` 的写法，在 gettext 看来就像格式串——随后 "
-"`msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 `python-format` 删掉，保留 `no-python-format` "
-"即可。"
+"**Describe the software as it is now.** What changed, how it used to work"
+" and how you checked belong in the pull request, the release notes or "
+"`docs/reviews/`."
+msgstr "**描述软件现在的样子**。改了什么、以前是怎么工作的、你是怎么验证的，这些该写进 PR、发布说明或 `docs/reviews/`。"
+
+#: ../developer/contributing.md:271
+msgid ""
+"**Leave out the details of any one installation** — its hosts, model ids,"
+" accounts and measurements. They belong in that distribution's own "
+"documentation."
+msgstr "**不要写某个具体部署的细节**——它的主机、模型 id、账号和测量数据。这些属于那个发行版自己的文档。"
 
 #: ../developer/contributing.md:274
-msgid "How a translation reaches the published site"
-msgstr "翻译是怎么上到已发布站点的"
+msgid ""
+"**Use the words in the [Glossary](glossary.md)**, and add a term there "
+"before relying on a new one."
+msgstr "**用[术语表](glossary.md)里的词**；要用一个新术语，先把它加进术语表。"
 
 #: ../developer/contributing.md:276
 msgid ""
-"`make docs` builds every published language from one `sphinx-build`. The "
-"first language named in `DOCS_LANGUAGES` (declared in `conf.py`, "
-"defaulting to `en:English,zh_CN:简体中文`) is the root language and lands at "
-"the top of the output tree; each other language is written to "
-"`docs/build/html/<code>/` by a `build-finished` hook in `conf.py`."
-msgstr ""
-"`make docs` 用一次 `sphinx-build` 构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` "
-"里声明，默认是 `en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py` "
-"里一个 `build-finished` 钩子写进 `docs/build/html/<code>/`。"
+"**Keep a paragraph to one idea.** When it piles up conditions, make it a "
+"list or a table."
+msgstr "**一个段落只讲一件事**。条件一多，就改成列表或表格。"
 
-#: ../developer/contributing.md:282
+#: ../developer/contributing.md:278
 msgid ""
-"One invocation rather than one per language, because the published site "
-"is built by a command that lives in the hosting project's settings, not "
-"in this repository — there is no env var to set at publish time, so the "
-"language list has to travel in `conf.py`. Keeping the root language at "
-"the tree root is what preserves every URL the English-only site had: "
-"`/routing.html` stays `/routing.html`, and the translation is at "
-"`/zh_CN/routing.html`."
+"**When a setting does not do what its name suggests, say so in one "
+"sentence**, add it to [Settings that currently have no "
+"effect](configuration.md#settings-that-currently-have-no-effect), and "
+"open an issue, rather than explaining the internals at length."
 msgstr ""
-"之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在 "
-"`conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 URL：`/routing.html` 还是 "
-"`/routing.html`，翻译版在 `/zh_CN/routing.html`。"
+"**如果某个设置的实际作用和它的名字对不上，用一句话说明**，把它加进[目前不生效的设置](configuration.md#settings-"
+"that-currently-have-no-effect)，并提一个 issue，而不是长篇解释内部实现。"
+
+#: ../developer/contributing.md:283
+msgid "Translations"
+msgstr "翻译"
+
+#: ../developer/contributing.md:285
+msgid ""
+"The site is published in English and Chinese, and an English edit changes"
+" the paragraph a translation is attached to. Update the Chinese in the "
+"same pull request; [Translating the Docs](translations.md) explains how."
+msgstr ""
+"站点以英文和中文两种语言发布，而改动英文会改变译文所挂靠的段落。请在同一个 PR "
+"里更新中文；具体做法见[翻译文档](translations.md)。"
 
 #: ../developer/contributing.md:289
-msgid ""
-"The sidebar switcher links to the same page in each other language and "
-"renders nothing when fewer than two languages are declared, so a single-"
-"language site never shows a dead control. `DOCS_LANGUAGES=\"en:English\"`"
-" builds English alone when a translation is not what you are working on."
-msgstr ""
-"侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用 "
-"`DOCS_LANGUAGES=\"en:English\"`。"
-
-#: ../developer/contributing.md:294
-msgid "The check that catches a reverted translation"
-msgstr "抓「翻译悄悄退回英文」的那道检查"
-
-#: ../developer/contributing.md:300
-msgid ""
-"`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing "
-"the Docs Build CI job runs. It exists because none of the failures above "
-"are visible to `-W`: Sphinx falls back to the English source for any "
-"string it cannot translate, so a page that has quietly reverted still "
-"builds clean. Four checks —"
-msgstr ""
-"就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，也正是 Docs Build 这个 "
-"CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` 一个都看不见：任何 Sphinx "
-"翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。四项检查——"
-
-#: ../developer/contributing.md:306
-msgid "**fuzzy** entries, which Sphinx refuses to apply;"
-msgstr "**fuzzy** 条目，Sphinx 拒绝使用它们；"
-
-#: ../developer/contributing.md:307
-msgid "**missing catalogs**, for a page added without `make docs-translate`;"
-msgstr "**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
-
-#: ../developer/contributing.md:308
-msgid ""
-"**stale catalogs** — an English edit whose `msgid` no longer matches any "
-"entry, which is the commonest case and carries no `fuzzy` marker at all "
-"because nothing re-merged;"
-msgstr ""
-"**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带 `fuzzy` "
-"标记，因为压根没人重新合并过；"
-
-#: ../developer/contributing.md:311
-msgid ""
-"**structural divergence** between the built pages, which is what catches "
-"the CJK-adjacent markup traps above."
-msgstr "构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
-
-#: ../developer/contributing.md:314
 msgid "Proposing a change"
 msgstr "提出改动"
 
-#: ../developer/contributing.md:316
+#: ../developer/contributing.md:291
 msgid ""
 "**Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on "
 "pull requests against `main` and `dev`."
 msgstr "**从 `dev` 开分支，而不是 `main`**。PR 提向 `dev`；针对 `main` 和 `dev` 的 PR 都会跑 CI。"
 
-#: ../developer/contributing.md:318
+#: ../developer/contributing.md:293
 msgid ""
 "**Name branches `<user>/<scope>/<feature-name>`**, e.g. `jane/routing"
 "/weighted-fallback`."
@@ -585,7 +557,7 @@ msgstr ""
 "**分支命名为 `<user>/<scope>/<feature-name>`**，例如 `jane/routing/weighted-"
 "fallback`。"
 
-#: ../developer/contributing.md:320
+#: ../developer/contributing.md:295
 msgid ""
 "**Write commit and pull-request titles as conventional commits** — "
 "`type(scope): summary`, e.g. `fix(routing): keep the fallback route on "
@@ -597,21 +569,31 @@ msgstr ""
 " `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
 "commit，所以你写的标题就会成为 commit 的 subject——`git log --oneline` 里能看到要对齐的样子。"
 
-#: ../developer/contributing.md:325
+#: ../developer/contributing.md:300
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
 "change, and add tests for new behaviour."
 msgstr "一个 PR 只做一个功能或一处修复，在同一处改动里把文档一起更新，并为新行为补上测试。"
 
-#: ../developer/contributing.md:327
+#: ../developer/contributing.md:302
+msgid ""
+"Call out changes to API behavior, configuration, defaults or database "
+"schema in the PR, with migration steps and rollback limits. See [Releases"
+" and upgrades](releases.md#compatibility-and-breaking-changes)."
+msgstr ""
+"在 PR 中明确说明 API 行为、配置、默认值或数据库 schema "
+"的变化，并提供迁移步骤和回滚限制。参见[发布与升级](releases.md#compatibility-and-breaking-"
+"changes)。"
+
+#: ../developer/contributing.md:305
 msgid "Do not commit to `main` or `dev` directly."
 msgstr "不要直接向 `main` 或 `dev` 提交。"
 
-#: ../developer/contributing.md:329
+#: ../developer/contributing.md:307
 msgid "What CI will run"
 msgstr "CI 会跑什么"
 
-#: ../developer/contributing.md:331
+#: ../developer/contributing.md:309
 msgid ""
 "The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
 "pull request touched and then runs only the relevant jobs:"
@@ -659,8 +641,10 @@ msgid "Docs Build"
 msgstr ""
 
 #: ../developer/contributing.md
-msgid "`sphinx-build -W --keep-going`"
-msgstr ""
+msgid ""
+"`make docs-verify`: both languages built with warnings as errors, local "
+"links checked, and every translation checked against the English"
+msgstr "`make docs-verify`：构建两种语言并把警告当作错误，检查本地链接，并把每条译文都和英文对照检查"
 
 #: ../developer/contributing.md
 msgid "`test`"
@@ -699,9 +683,9 @@ msgstr ""
 
 #: ../developer/contributing.md
 msgid ""
-"runs the Router Tutorial's `make up` → `make smoke` → `make demo` → `make"
-" demo-smoke` transition"
-msgstr "跑快速开始里的 `make up` → `make smoke` → `make demo` → `make demo-smoke` 全流程"
+"runs the Quickstart's `make up` → `make smoke` → `make demo` → `make "
+"demo-smoke` sequence"
+msgstr "运行快速开始里的 `make up` → `make smoke` → `make demo` → `make demo-smoke` 这一整串命令"
 
 #: ../developer/contributing.md
 msgid "CI Gate"
@@ -711,7 +695,7 @@ msgstr ""
 msgid "aggregates the results of the jobs above into one check"
 msgstr "把上面各个 job 的结果汇总成一个检查项"
 
-#: ../developer/contributing.md:345
+#: ../developer/contributing.md:324
 msgid ""
 "Because CI includes `dbtest`, a change to storage or auth can be green "
 "locally and red in CI. Run `make test-db` against a local Postgres when "
@@ -721,7 +705,7 @@ msgstr ""
 "`apps/backend/serving/storage/` 或认证那一面时，要对着本地 Postgres 跑一遍 `make test-"
 "db`。"
 
-#: ../developer/contributing.md:349
+#: ../developer/contributing.md:328
 msgid ""
 "If a pull request shows no CI run at all, check whether it has a merge "
 "conflict first — a conflicted pull request does not trigger the "
@@ -787,113 +771,303 @@ msgstr "如果一个 PR 一次 CI 运行都没有，先看它是不是有合并�
 #~ "-m external`）两边都会选中。它的区别在于自带一份 "
 #~ "`tests/e2e/Makefile`，会在跑测试之前把这些阶段测试所需要的整套服务先立起来。"
 
-#: ../developer/contributing.md:20
-msgid ""
-"Replace `yourname` in the branch name with your GitHub username. "
-"Development happens in the worktree; keep the original checkout available "
-"for other work. If you already cloned the upstream repository instead of a "
-"fork, use `origin/dev` as the worktree's starting point and push to your "
-"fork remote."
-msgstr ""
-"将分支名中的 `yourname` 替换为你的 GitHub 用户名。在 worktree 中开发，原始 checkout "
-"可以留作其他工作。如果你克隆的是上游仓库而非 fork，请以 `origin/dev` 为 worktree 的起点，并将分支推送到你的 fork "
-"remote。"
+#~ msgid ""
+#~ "The backend packages are `serving` and"
+#~ " `routing`, rooted at `apps/backend`. "
+#~ "Anything you run by hand needs "
+#~ "`PYTHONPATH=apps/backend`; pytest gets it from"
+#~ " `pythonpath` in `pyproject.toml`."
+#~ msgstr ""
+#~ "后端的包是 `serving` 和 `routing`，根目录在 "
+#~ "`apps/backend`。任何手工运行的东西都需要 `PYTHONPATH=apps/backend`；pytest "
+#~ "则从 `pyproject.toml` 的 `pythonpath` 里拿到它。"
 
-#: ../developer/contributing.md:37
-msgid "Your first contribution"
-msgstr "完成第一次贡献"
+#~ msgid ""
+#~ "CI's **Docs Build** job builds the "
+#~ "same tree with warnings promoted to "
+#~ "errors:"
+#~ msgstr "CI 的 **Docs Build** 任务构建同一棵树，并把警告升级为错误："
 
-#: ../developer/contributing.md:39
-msgid ""
-"Start by running the [Quickstart](router-tutorial.md) in your worktree, or "
-"use the [source development setup](installation.md#development-checkout-no-"
-"docker). Seeing the gateway answer one request makes it easier to tell "
-"whether a later failure comes from your change or from setup. A local "
-"example deployment is enough; contributing does not require access to a "
-"maintainer's server."
-msgstr ""
-"先在 worktree 中运行[快速入门](router-tutorial.md)，或使用[源码开发环境](installation.md"
-"#development-checkout-no-"
-"docker)。先看到网关成功响应一次请求，之后就更容易判断故障来自改动还是环境配置。本地示例部署已经足够；参与贡献不需要访问维护者的服务器。"
+#~ msgid ""
+#~ "The pages are written in English "
+#~ "and translated with Sphinx's gettext "
+#~ "workflow, so a translation is attached"
+#~ " to *each paragraph of source text*"
+#~ " rather than to a whole file. "
+#~ "That is what makes a partial "
+#~ "translation safe: any string without one"
+#~ " falls back to English, and the "
+#~ "site still builds complete."
+#~ msgstr ""
+#~ "这些页面用英文书写，并通过 Sphinx 的 gettext "
+#~ "流程翻译，因此译文挂在*源文本的每一个段落*上，而不是挂在整份文件上。这正是局部翻译之所以安全的原因：任何没有译文的字符串都会回退到英文，站点照样能完整构建出来。"
 
-#: ../developer/contributing.md:45
-msgid ""
-"Choose a small reproducible bug, an uncovered configuration case, or a "
-"confusing instruction you can verify yourself. Search the issue tracker and"
-" existing tests first. For a larger feature, open a feature request to "
-"agree on the behavior before writing it; the repository provides bug and "
-"feature forms."
-msgstr ""
-"选择一个可复现的小 bug、尚未覆盖的配置场景，或一条你能亲自验证的模糊说明。先搜索 issue "
-"和现有测试。对于较大的功能，先提交功能请求，讨论确定行为后再实现；仓库已提供 bug 和功能请求表单。"
+#~ msgid "A catalog entry pairs the English source with its translation:"
+#~ msgstr "消息目录里的一条记录，把英文原文和它的译文配成一对："
 
-#: ../developer/contributing.md:50
-msgid ""
-"For a concrete first exercise, cover a routing YAML endpoint that uses an "
-"environment-variable default. Read `_expand_env_value` and "
-"`load_routing_config` in `apps/backend/routing/config.py`, then the "
-"neighboring tests in `tests/unit/routing/test_config.py`. An unset variable"
-" should use the default URL; a set variable should override it. The test "
-"below exercises both through the public loader and restores the environment"
-" after each case:"
-msgstr ""
-"第一次练习可以覆盖路由 YAML 中使用环境变量默认值的端点。阅读 `apps/backend/routing/config.py` 中的 "
-"`_expand_env_value` 和 `load_routing_config`，再看 "
-"`tests/unit/routing/test_config.py` 中相邻的测试。变量未设置时应使用默认 "
-"URL，设置后则应覆盖默认值。下面的测试通过公开的加载函数验证这两种情况，并在每次执行后恢复环境："
+#~ msgid ""
+#~ "Because the English text *is* the "
+#~ "lookup key, editing a paragraph "
+#~ "invalidates its translation automatically: the"
+#~ " next `make docs-translate` marks "
+#~ "that entry `#, fuzzy`, the build "
+#~ "stops using it, and the page falls"
+#~ " back to English rather than serving"
+#~ " a translation that no longer matches"
+#~ " what the code does. A translator "
+#~ "only has to revisit the entries "
+#~ "that are marked. **This is the "
+#~ "reason to use catalogs instead of "
+#~ "parallel `.zh.md` files**, which drift "
+#~ "silently and give a reader no "
+#~ "signal that what they are reading "
+#~ "is out of date."
+#~ msgstr ""
+#~ "由于英文文本*就是*查找键，编辑一个段落会自动让它的译文失效：下一次 `make docs-"
+#~ "translate` 会把那条记录标成 `#, "
+#~ "fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这就是采用消息目录、而不是并列一份"
+#~ " `.zh.md` 文件的理由**——后者会悄悄漂移，读者完全看不出自己读到的内容已经过时。"
 
-#: ../developer/contributing.md:76
-msgid ""
-"Add it to that test file only if the case is still uncovered. This is a "
-"test-only contribution when the loader already behaves correctly. For a bug"
-" fix, first make your regression test fail on the original code, then "
-"change the smallest responsible function until it passes."
-msgstr ""
-"仅当这一场景尚未被覆盖时，才把它加入该测试文件。如果加载器已经正确工作，这就是一次仅增加测试的贡献。修复 bug "
-"时，先让回归测试在原始代码上失败，再修改最小范围的负责函数，直到测试通过。"
+#~ msgid "Commit the `.po` files. `docs/gettext/` is generated and ignored."
+#~ msgstr "要提交 `.po` 文件。`docs/gettext/` 是生成物，已被忽略。"
 
-#: ../developer/contributing.md:81
-msgid "Run the focused tests while editing:"
-msgstr "编辑时运行相关测试："
+#~ msgid ""
+#~ "Translating a page does not require "
+#~ "translating all of it, and there "
+#~ "is no obligation to keep a "
+#~ "language complete — an untranslated "
+#~ "paragraph is a fallback, not a "
+#~ "bug."
+#~ msgstr "翻译一个页面不要求把它全部翻完，也没有义务让某种语言保持完整——未翻译的段落是一种回退，不是缺陷。"
 
-#: ../developer/contributing.md:87
-msgid ""
-"For a runtime change, repeat the affected request against your local "
-"gateway. With the Stage 1 example, `make build s=backend "
-"DISTRIBUTION=example` rebuilds changed backend code; `make smoke "
-"DISTRIBUTION=example` checks health, the model list and a routed "
-"completion. Exercise the changed behavior as well: a generic smoke passing "
-"does not establish that a particular bug is fixed. The [Quickstart](router-"
-"tutorial.md) explains the separate full-console check when your change "
-"involves accounts or the frontend."
-msgstr ""
-"如果改动影响运行行为，请在本地网关上重试受影响的请求。使用第一阶段示例时，`make build s=backend "
-"DISTRIBUTION=example` 会重新构建改动后的后端；`make smoke DISTRIBUTION=example` "
-"检查健康状态、模型列表和一次路由补全。也要验证实际改动的行为：通用 smoke 通过不能证明某个具体 bug 已修复。涉及账号或前端时，[快速入门"
-"](router-tutorial.md)说明了完整控制台的独立验证流程。"
+#~ msgid "Translating into Chinese, Japanese or Korean"
+#~ msgstr "翻译成中日韩语言时"
 
-#: ../developer/contributing.md:95
-msgid ""
-"Before opening the PR, run `make format`, `make lint` and `make test`, plus"
-" the [frontend](#frontend) or [documentation](#documentation) checks when "
-"relevant. Review `git diff` so the patch contains only your intended files."
-" Push your branch to your fork and open a PR targeting upstream `dev`, "
-"using a title such as `test(routing): cover endpoint environment defaults`."
-" Fill in the existing PR template with the behavior covered and the exact "
-"checks you ran; include the reproduction and before/after result for a bug "
-"fix."
-msgstr ""
-"提交 PR 前，运行 `make format`、`make lint` 和 `make "
-"test`，并根据改动运行[前端](#frontend)或[文档](#documentation)检查。检查 `git "
-"diff`，确保补丁只包含预期文件。将分支推送到你的 fork，创建目标为上游 `dev` 的 PR，标题例如 `test(routing): "
-"cover endpoint environment defaults`。在现有 PR 模板中填写覆盖的行为和实际执行的检查；修复 bug "
-"时，也写明复现方式及修复前后的结果。"
+#~ msgid ""
+#~ "Four traps, all of them silent —"
+#~ " the build stays green and the "
+#~ "page is wrong. Each was hit while"
+#~ " translating this doc set into "
+#~ "Chinese."
+#~ msgstr "四个坑，全都是静默的——构建照样全绿，页面却是错的。这份文档翻成中文时，四个都踩到了。"
 
-#: ../developer/contributing.md:402
-msgid ""
-"Call out changes to API behavior, configuration, defaults or database "
-"schema in the PR, with migration steps and rollback limits. See [Releases "
-"and upgrades](releases.md#compatibility-and-breaking-changes)."
-msgstr ""
-"在 PR 中明确说明 API 行为、配置、默认值或数据库 schema 的变化，并提供迁移步骤和回滚限制。参见[发布与升级](releases.md"
-"#compatibility-and-breaking-changes)。"
+#~ msgid ""
+#~ "**A heading that starts with a "
+#~ "number is discarded.** Sphinx re-parses"
+#~ " a translated title, and MyST reads"
+#~ " `1. ` as an enumerated-list "
+#~ "marker rather than text. The structure"
+#~ " no longer matches the source, the"
+#~ " translation is dropped, the English "
+#~ "heading is emitted, and nothing warns"
+#~ " — not even under `-W`. Escape "
+#~ "the period:"
+#~ msgstr ""
+#~ "**以数字开头的标题会被丢弃**。Sphinx 会重新解析翻译后的标题，而 MyST 把 "
+#~ "`1. ` 读成有序列表标记而不是文本。结构与原文对不上，翻译被丢弃，输出的是英文标题，而且没有任何警告——`-W`"
+#~ " 下也没有。把那个点转义掉："
+
+#~ msgid ""
+#~ "**In `index.rst`, inline markup that "
+#~ "touches a CJK character does not "
+#~ "parse.** reStructuredText requires whitespace "
+#~ "or specific punctuation before an "
+#~ "opening `*`, and a Chinese character "
+#~ "is neither, so `请求的*模型 id*` renders "
+#~ "literal asterisks. Separate them with an"
+#~ " escaped space — written `\\\\ ` "
+#~ "in the catalog, which is a "
+#~ "backslash-space in the string:"
+#~ msgstr ""
+#~ "**在 `index.rst` 里，紧贴 CJK "
+#~ "字符的行内标记不会被解析**。reStructuredText 要求开头的 `*` "
+#~ "前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` "
+#~ "渲染成字面星号。用一个转义空格把它们隔开——在 catalog 里写作 `\\\\ "
+#~ "`，也就是字符串里的一个反斜杠加空格："
+
+#~ msgid ""
+#~ "This applies to `index.rst` only. "
+#~ "Markdown pages need no escaping: "
+#~ "CommonMark treats a CJK character as "
+#~ "neither whitespace nor punctuation, so "
+#~ "`**模型 id**` between Chinese characters "
+#~ "is a valid emphasis run."
+#~ msgstr ""
+#~ "这条只适用于 `index.rst`。Markdown 页面不需要转义：CommonMark 认为"
+#~ " CJK 字符既不是空白也不是标点，所以夹在汉字之间的 `**模型 id**` "
+#~ "是合法的强调。"
+
+#~ msgid ""
+#~ "**One Markdown case does break, "
+#~ "though**: a closing `**` preceded by "
+#~ "a CJK full stop and followed by"
+#~ " a CJK character is not right-"
+#~ "flanking, so `**术语。**后文` leaves literal "
+#~ "asterisks. Put the period outside the"
+#~ " bold — `**术语**。后文` — which is "
+#~ "better typography anyway, since bolding "
+#~ "punctuation is wrong."
+#~ msgstr ""
+#~ "**但 Markdown 有一种情况确实会坏**：结尾的 `**` "
+#~ "前面是句号、后面是汉字时不构成右侧闭合，于是 `**术语。**后文` "
+#~ "会留下字面星号。把句号移到加粗外面——`**术语**。后文`——这本来也是更好的排版，给标点加粗是错的。"
+
+#~ msgid ""
+#~ "**A stale `.mo` masks your edits.** "
+#~ "Sphinx skips recompilation when the "
+#~ "`.mo` is newer than its `.po`, so"
+#~ " you can verify a build that "
+#~ "never read your changes. Before any "
+#~ "verification build:"
+#~ msgstr ""
+#~ "**过期的 `.mo` 会掩盖你的改动**。当 `.mo` 比它的 `.po`"
+#~ " 新时，Sphinx 会跳过重新编译，于是你验证的那次构建根本没读到你的修改。每次验证构建之前先执行："
+
+#~ msgid ""
+#~ "The check that catches all four at"
+#~ " once is a structural diff against"
+#~ " the English build: for each page,"
+#~ " compare the counts of `<code>`, "
+#~ "`<strong>`, `<em>` and `<a>`, and the"
+#~ " multiset of inline-code literals and"
+#~ " link targets. A dropped marker or"
+#~ " a translated link target shows up"
+#~ " there and in no other check."
+#~ msgstr ""
+#~ "能一次抓住这四种的检查，是与英文构建做结构 diff：逐页比较 "
+#~ "`<code>`、`<strong>`、`<em>`、`<a>` "
+#~ "的数量，以及行内代码字面量和链接目标的多重集合。丢掉一个标记、或者把链接目标也翻译了，只有这个检查能发现。"
+
+#~ msgid ""
+#~ "One more, which at least fails "
+#~ "loudly: `make docs-translate` can append"
+#~ " `python-format` to an entry you "
+#~ "had annotated `no-python-format` — "
+#~ "a source string containing something "
+#~ "like `≥ 5%` looks like a format"
+#~ " string to gettext — and `msgfmt "
+#~ "-c` then rejects the contradictory pair."
+#~ " Delete the added `python-format` and"
+#~ " keep `no-python-format`."
+#~ msgstr ""
+#~ "还有一个，好在它至少会明着报错：`make docs-translate` 可能会在你已标注 "
+#~ "`no-python-format` 的条目上再追加一个 `python-"
+#~ "format`——源串里出现类似 `≥ 5%` 的写法，在 gettext "
+#~ "看来就像格式串——随后 `msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 "
+#~ "`python-format` 删掉，保留 `no-python-format`"
+#~ " 即可。"
+
+#~ msgid "How a translation reaches the published site"
+#~ msgstr "翻译是怎么上到已发布站点的"
+
+#~ msgid ""
+#~ "`make docs` builds every published "
+#~ "language from one `sphinx-build`. The"
+#~ " first language named in `DOCS_LANGUAGES`"
+#~ " (declared in `conf.py`, defaulting to "
+#~ "`en:English,zh_CN:简体中文`) is the root language"
+#~ " and lands at the top of the"
+#~ " output tree; each other language is"
+#~ " written to `docs/build/html/<code>/` by a"
+#~ " `build-finished` hook in `conf.py`."
+#~ msgstr ""
+#~ "`make docs` 用一次 `sphinx-build` "
+#~ "构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` 里声明，默认是 "
+#~ "`en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py`"
+#~ " 里一个 `build-finished` 钩子写进 "
+#~ "`docs/build/html/<code>/`。"
+
+#~ msgid ""
+#~ "One invocation rather than one per "
+#~ "language, because the published site is"
+#~ " built by a command that lives "
+#~ "in the hosting project's settings, not"
+#~ " in this repository — there is "
+#~ "no env var to set at publish "
+#~ "time, so the language list has to"
+#~ " travel in `conf.py`. Keeping the "
+#~ "root language at the tree root is"
+#~ " what preserves every URL the "
+#~ "English-only site had: `/routing.html` "
+#~ "stays `/routing.html`, and the translation "
+#~ "is at `/zh_CN/routing.html`."
+#~ msgstr ""
+#~ "之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在"
+#~ " `conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 "
+#~ "URL：`/routing.html` 还是 `/routing.html`，翻译版在 "
+#~ "`/zh_CN/routing.html`。"
+
+#~ msgid ""
+#~ "The sidebar switcher links to the "
+#~ "same page in each other language "
+#~ "and renders nothing when fewer than "
+#~ "two languages are declared, so a "
+#~ "single-language site never shows a "
+#~ "dead control. `DOCS_LANGUAGES=\"en:English\"` builds"
+#~ " English alone when a translation is"
+#~ " not what you are working on."
+#~ msgstr ""
+#~ "侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用"
+#~ " `DOCS_LANGUAGES=\"en:English\"`。"
+
+#~ msgid "The check that catches a reverted translation"
+#~ msgstr "抓「翻译悄悄退回英文」的那道检查"
+
+#~ msgid ""
+#~ "`make docs` plus "
+#~ "`ops/ci/check_docs_translations.py`, and the same"
+#~ " thing the Docs Build CI job "
+#~ "runs. It exists because none of "
+#~ "the failures above are visible to "
+#~ "`-W`: Sphinx falls back to the "
+#~ "English source for any string it "
+#~ "cannot translate, so a page that "
+#~ "has quietly reverted still builds clean."
+#~ " Four checks —"
+#~ msgstr ""
+#~ "就是 `make docs` 加上 "
+#~ "`ops/ci/check_docs_translations.py`，也正是 Docs Build "
+#~ "这个 CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` "
+#~ "一个都看不见：任何 Sphinx "
+#~ "翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。四项检查——"
+
+#~ msgid "**fuzzy** entries, which Sphinx refuses to apply;"
+#~ msgstr "**fuzzy** 条目，Sphinx 拒绝使用它们；"
+
+#~ msgid "**missing catalogs**, for a page added without `make docs-translate`;"
+#~ msgstr "**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
+
+#~ msgid ""
+#~ "**stale catalogs** — an English edit "
+#~ "whose `msgid` no longer matches any "
+#~ "entry, which is the commonest case "
+#~ "and carries no `fuzzy` marker at "
+#~ "all because nothing re-merged;"
+#~ msgstr ""
+#~ "**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带"
+#~ " `fuzzy` 标记，因为压根没人重新合并过；"
+
+#~ msgid ""
+#~ "**structural divergence** between the built"
+#~ " pages, which is what catches the "
+#~ "CJK-adjacent markup traps above."
+#~ msgstr "构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
+
+#~ msgid "`sphinx-build -W --keep-going`"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Replace `yourname` in the branch name"
+#~ " with your GitHub username. Development "
+#~ "happens in the worktree; keep the "
+#~ "original checkout available for other "
+#~ "work. If you already cloned the "
+#~ "upstream repository instead of a fork,"
+#~ " use `origin/dev` as the worktree's "
+#~ "starting point and push to your "
+#~ "fork remote."
+#~ msgstr ""
+#~ "将分支名中的 `yourname` 替换为你的 GitHub 用户名。在 "
+#~ "worktree 中开发，原始 checkout 可以留作其他工作。如果你克隆的是上游仓库而非 "
+#~ "fork，请以 `origin/dev` 为 worktree 的起点，并将分支推送到你的"
+#~ " fork remote。"

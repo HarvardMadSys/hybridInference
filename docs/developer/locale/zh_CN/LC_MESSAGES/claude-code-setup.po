@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-28 15:43+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -46,24 +46,22 @@ msgstr ""
 msgid ""
 "`/anthropic` is the gateway's Anthropic-compatible surface. Claude Code "
 "sends Messages API requests to `/anthropic/v1/messages`, and token "
-"counting to `/anthropic/v1/messages/count_tokens`; both are registered in"
-" `apps/backend/serving/servers/routers/anthropic_messages.py`, which also"
-" serves the same handlers at the bare `/v1/messages` paths for clients "
-"configured without the `/anthropic` prefix."
+"counting to `/anthropic/v1/messages/count_tokens`. The same endpoints "
+"also answer at `/v1/messages` for clients configured without the "
+"`/anthropic` prefix."
 msgstr ""
 "`/anthropic` 是网关的 Anthropic 兼容接口。Claude Code 把 Messages API 请求发到 "
-"`/anthropic/v1/messages`，把 token 计数发到 "
-"`/anthropic/v1/messages/count_tokens`；两者都注册在 "
-"`apps/backend/serving/servers/routers/anthropic_messages.py` "
-"里，该文件同时把相同的处理器挂在裸的 `/v1/messages` 路径上，供没有配置 `/anthropic` 前缀的客户端使用。"
+"`/anthropic/v1/messages`，把 token 计数请求发到 "
+"`/anthropic/v1/messages/count_tokens`。对于没有配置 `/anthropic` "
+"前缀的客户端，同样的端点也可以通过 `/v1/messages` 访问。"
 
-#: ../developer/claude-code-setup.md:28
+#: ../developer/claude-code-setup.md:26
 msgid ""
 "The top-level `model` setting is optional. It selects the initial model "
 "and can also be changed with `/model`."
 msgstr "顶层的 `model` 设置是可选的。它决定初始使用的模型，之后也可以用 `/model` 换。"
 
-#: ../developer/claude-code-setup.md:31
+#: ../developer/claude-code-setup.md:29
 msgid ""
 "Everything on the client side of this — which variables a given Claude "
 "Code version reads, its request timeout, whether `settings.json` alone is"
@@ -79,50 +77,81 @@ msgstr ""
 "connect)、[模型配置](https://code.claude.com/docs/en/model-"
 "config)和[安装](https://code.claude.com/docs/en/installation)文档。"
 
-#: ../developer/claude-code-setup.md:38
+#: ../developer/claude-code-setup.md:36
 msgid "Model Families and Aliases"
 msgstr "模型家族与别名"
 
-#: ../developer/claude-code-setup.md:40
+#: ../developer/claude-code-setup.md:38
 msgid ""
-"Claude Code sends Anthropic family IDs such as `claude-sonnet-4-6` or "
-"`claude-opus-4-7` rather than a gateway model id. Those two are in the "
-"fixed compatibility table described below, which rewrites them to "
-"`claude-sonnet-4.6` and `claude-opus-4.7` — so **the id a deployment "
-"registers is the rewritten one**, not the id Claude Code sent. "
-"Registering `claude-sonnet-4-6` as a model id or an alias gets you a 404."
+"Claude Code asks for models by Anthropic's names, such as `claude-"
+"sonnet-4-6`, rather than by a gateway model id. The gateway translates "
+"the names it knows before looking the model up:"
 msgstr ""
-"Claude Code 发送的是 `claude-sonnet-4-6`、`claude-opus-4-7` 这类 Anthropic 家族 ID，而不是网关的模型 id。这两个就在下文那张固定兼容表里，会被改写成 `claude-sonnet-4.6` 和 `claude-opus-4.7`——所以**一个部署要注册的是改写之后的那个 id**，而不是 Claude Code 发来的那个。把 `claude-sonnet-4-6` 注册成模型 id 或别名，只会拿到 404。"
+"Claude Code 请求模型时用的是 Anthropic 的名称，例如 `claude-sonnet-4-6`，而不是网关的模型 "
+"id。网关在查找模型之前，会先转换它认识的名称："
 
-#: ../developer/claude-code-setup.md:47
+#: ../developer/claude-code-setup.md
+msgid "Claude Code sends"
+msgstr "Claude Code 发送"
+
+#: ../developer/claude-code-setup.md
+msgid "The gateway looks up"
+msgstr "网关查找"
+
+#: ../developer/claude-code-setup.md
 msgid ""
-"An id the table does not know passes through untouched and is looked up "
-"in the registry as sent; that is what a model entry's own `aliases:` list"
-" is for. Which registry is loaded is whatever `MODELS_CONFIG_PATH` names,"
-" else the `paths.models` entry of an active distribution manifest, else "
-"the shipped `config/examples/models.openrouter.yaml`. Nothing guarantees "
-"a given family ID is registered on a given deployment, so query `GET "
-"/v1/models` first."
+"`claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-3-5-sonnet-latest`, "
+"`claude-3-5-sonnet-20241022`, `claude-3-5-sonnet-20240620`"
 msgstr ""
-"表里没有的 id 会原样通过，按发来的样子去注册表里查；模型条目自己的 `aliases:` 列表就是为这种情况准备的。加载哪份注册表，取自 `MODELS_CONFIG_PATH` 指向的文件，否则取生效的 distribution manifest 里的 `paths.models` 条目，再否则取随仓库分发的 `config/examples/models.openrouter.yaml`。没有任何机制保证某个家族 ID 一定在某个部署上注册过，所以先查 `GET /v1/models`。"
+
+#: ../developer/claude-code-setup.md
+msgid "`claude-sonnet-4.6`"
+msgstr ""
+
+#: ../developer/claude-code-setup.md
+msgid "`claude-opus-4-7`, `claude-3-opus-latest`"
+msgstr ""
+
+#: ../developer/claude-code-setup.md
+msgid "`claude-opus-4.7`"
+msgstr ""
+
+#: ../developer/claude-code-setup.md
+msgid "`claude-opus-4-6`, `claude-3-opus-20240229`"
+msgstr ""
+
+#: ../developer/claude-code-setup.md
+msgid "`claude-opus-4.6`"
+msgstr ""
+
+#: ../developer/claude-code-setup.md:48
+msgid ""
+"So **a deployment registers the id in the right-hand column**, as a model"
+" id or in that model's `aliases:` — not the one Claude Code sends. "
+"Registering `claude-sonnet-4-6` itself gets you a 404. Any other id "
+"passes through unchanged and is looked up as sent. Not every deployment "
+"serves these models, so query `GET /v1/models` first."
+msgstr ""
+"所以，**部署方要注册的是右栏中的 id**——作为模型 id，或者写进该模型的 `aliases:`——而不是 Claude Code "
+"发送的那个。直接注册 `claude-sonnet-4-6` 只会得到 404。其他 id "
+"会原样透传，按发送时的名字查找。并不是每个部署都提供这些模型，所以请先查一下 `GET /v1/models`。"
 
 #: ../developer/claude-code-setup.md:54
 msgid ""
-"Claude Code also appends a bracketed context-window marker to the model "
-"id when the user opts into a long-context variant (`claude-"
-"sonnet-4-6[1m]`). The gateway strips that marker before alias and "
-"registry lookup, so you do not need to register the bracketed form."
+"When the user picks a long-context variant, Claude Code adds a marker to "
+"the id (`claude-sonnet-4-6[1m]`). The gateway removes it before the "
+"lookup, so you do not need to register the bracketed form."
 msgstr ""
-"当用户选用长上下文变体时，Claude Code 还会在模型 id 后面追加一个方括号形式的上下文窗口标记（`claude-"
-"sonnet-4-6[1m]`）。网关在做别名和注册表查找之前会先剥掉这个标记，所以不需要额外注册带方括号的形式。"
+"当用户选用长上下文变体时，Claude Code 会在 id 后面加一个标记（`claude-"
+"sonnet-4-6[1m]`）。网关在查找之前会先去掉它，所以不需要注册带方括号的形式。"
 
-#: ../developer/claude-code-setup.md:59
+#: ../developer/claude-code-setup.md:58
 msgid ""
 "To map Claude Code's family selectors explicitly, add any of these "
 "supported variables to the same `env` block:"
 msgstr "要显式映射 Claude Code 的家族选择器，把下面这些受支持的变量按需加进同一个 `env` 块："
 
-#: ../developer/claude-code-setup.md:70
+#: ../developer/claude-code-setup.md:69
 msgid ""
 "Use the Haiku mapping for Claude Code's smaller background calls. The "
 "gateway does not read any of these variables — Claude Code resolves them "
@@ -133,27 +162,11 @@ msgstr ""
 "Haiku 这一项映射留给 Claude Code 体量较小的后台调用。网关不会读取这些变量中的任何一个——Claude Code "
 "在本地解析它们，只把解析出的 id 发过来——所以上面链接的 Anthropic 模型配置文档才是「你这个版本支持哪些变量」的权威来源。"
 
-#: ../developer/claude-code-setup.md:75
-msgid ""
-"Anthropic IDs — current family selectors (`claude-sonnet-4-6`, `claude-"
-"opus-4-7`) as well as legacy and dated ones (`claude-3-5-sonnet-latest`, "
-"`claude-sonnet-4-5`, `claude-3-opus-20240229`, …) — first pass through a "
-"fixed compatibility table in "
-"`apps/backend/serving/adapters/anthropic_aliases.py`, which rewrites them"
-" to this project's canonical ids (`claude-sonnet-4.6`, `claude-opus-4.6`,"
-" `claude-opus-4.7`). Unknown ids pass through untouched. Either way the "
-"result is then looked up in the registry, so what a deployment must "
-"register is the **rewritten** id — as a model id or in that model's "
-"`aliases:` list. A `404` means the deployment has no route for the final "
-"id."
-msgstr ""
-"Anthropic 的 ID——既包括当前的家族选择符（`claude-sonnet-4-6`、`claude-opus-4-7`），也包括旧的和带日期的那些（`claude-3-5-sonnet-latest`、`claude-sonnet-4-5`、`claude-3-opus-20240229` 等）——都会先经过 `apps/backend/serving/adapters/anthropic_aliases.py` 里一张固定的兼容表，被改写成本项目的规范 id（`claude-sonnet-4.6`、`claude-opus-4.6`、`claude-opus-4.7`）。无法识别的 id 原样通过。两种情况下，结果都会再拿去注册表里查，所以一个部署需要注册的是**改写后**的 id——作为模型 id，或者写进该模型的 `aliases:` 列表。返回 `404` 说明这个部署对最终的 id 没有任何路由。"
-
-#: ../developer/claude-code-setup.md:86
+#: ../developer/claude-code-setup.md:74
 msgid "Usage and Verification"
 msgstr "使用与验证"
 
-#: ../developer/claude-code-setup.md:93
+#: ../developer/claude-code-setup.md:81
 msgid ""
 "Use `/status` to confirm the active model and gateway configuration, and "
 "`/model` to change the model. Local agent features such as tool use, file"
@@ -163,7 +176,7 @@ msgstr ""
 "用 `/status` 确认当前生效的模型和网关配置，用 `/model` "
 "换模型。只要选中的网关模型支持所需的工具调用，工具使用、文件编辑、搜索等本地 agent 功能都照常可用。"
 
-#: ../developer/claude-code-setup.md:98
+#: ../developer/claude-code-setup.md:86
 msgid ""
 "These settings cover model inference only, and only for this machine's "
 "Claude Code. Anthropic-hosted product surfaces are not part of the "
@@ -173,7 +186,7 @@ msgstr ""
 "这些设置只覆盖模型推理，而且只对这台机器上的 Claude Code 生效。Anthropic 托管的那些产品功能不属于网关实现的 "
 "Messages API；其他地方的 Claude 会话——网页版、别的客户端——都不会读这份本地配置。"
 
-#: ../developer/claude-code-setup.md:103
+#: ../developer/claude-code-setup.md:91
 msgid "Troubleshooting"
 msgstr "故障排查"
 
@@ -255,11 +268,11 @@ msgstr "网关或上游的某次请求超出了截止时间"
 msgid "Check gateway health, then adjust timeouts only if needed"
 msgstr "先查网关健康状况，确有必要时再调整超时"
 
-#: ../developer/claude-code-setup.md:113
+#: ../developer/claude-code-setup.md:101
 msgid "Uninstall"
 msgstr "卸载"
 
-#: ../developer/claude-code-setup.md:115
+#: ../developer/claude-code-setup.md:103
 msgid ""
 "Remove the gateway-specific `model` value and the `ANTHROPIC_BASE_URL`, "
 "`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_DEFAULT_*_MODEL` keys from "
@@ -271,3 +284,77 @@ msgstr ""
 "`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_DEFAULT_*_MODEL`"
 " 这几个键。文件里与此无关的其他 Claude Code 设置和环境变量要保留。之后 Claude Code 就会恢复直连 Anthropic。"
 
+#~ msgid ""
+#~ "Claude Code sends Anthropic family IDs"
+#~ " such as `claude-sonnet-4-6` or "
+#~ "`claude-opus-4-7` rather than a gateway "
+#~ "model id. Those two are in the "
+#~ "fixed compatibility table described below, "
+#~ "which rewrites them to `claude-"
+#~ "sonnet-4.6` and `claude-opus-4.7` — so"
+#~ " **the id a deployment registers is"
+#~ " the rewritten one**, not the id "
+#~ "Claude Code sent. Registering `claude-"
+#~ "sonnet-4-6` as a model id or an"
+#~ " alias gets you a 404."
+#~ msgstr ""
+#~ "Claude Code 发送的是 `claude-sonnet-4-6"
+#~ "`、`claude-opus-4-7` 这类 Anthropic 家族 "
+#~ "ID，而不是网关的模型 id。这两个就在下文那张固定兼容表里，会被改写成 `claude-"
+#~ "sonnet-4.6` 和 `claude-"
+#~ "opus-4.7`——所以**一个部署要注册的是改写之后的那个 id**，而不是 Claude Code"
+#~ " 发来的那个。把 `claude-sonnet-4-6` 注册成模型 id "
+#~ "或别名，只会拿到 404。"
+
+#~ msgid ""
+#~ "An id the table does not know "
+#~ "passes through untouched and is looked"
+#~ " up in the registry as sent; "
+#~ "that is what a model entry's own"
+#~ " `aliases:` list is for. Which "
+#~ "registry is loaded is whatever "
+#~ "`MODELS_CONFIG_PATH` names, else the "
+#~ "`paths.models` entry of an active "
+#~ "distribution manifest, else the shipped "
+#~ "`config/examples/models.openrouter.yaml`. Nothing "
+#~ "guarantees a given family ID is "
+#~ "registered on a given deployment, so "
+#~ "query `GET /v1/models` first."
+#~ msgstr ""
+#~ "表里没有的 id 会原样通过，按发来的样子去注册表里查；模型条目自己的 `aliases:` "
+#~ "列表就是为这种情况准备的。加载哪份注册表，取自 `MODELS_CONFIG_PATH` 指向的文件，否则取生效的"
+#~ " distribution manifest 里的 `paths.models` "
+#~ "条目，再否则取随仓库分发的 "
+#~ "`config/examples/models.openrouter.yaml`。没有任何机制保证某个家族 ID "
+#~ "一定在某个部署上注册过，所以先查 `GET /v1/models`。"
+
+#~ msgid ""
+#~ "Anthropic IDs — current family selectors"
+#~ " (`claude-sonnet-4-6`, `claude-opus-4-7`) "
+#~ "as well as legacy and dated ones"
+#~ " (`claude-3-5-sonnet-latest`, `claude-"
+#~ "sonnet-4-5`, `claude-3-opus-20240229`, …) — "
+#~ "first pass through a fixed compatibility"
+#~ " table in "
+#~ "`apps/backend/serving/adapters/anthropic_aliases.py`, which "
+#~ "rewrites them to this project's "
+#~ "canonical ids (`claude-sonnet-4.6`, "
+#~ "`claude-opus-4.6`, `claude-opus-4.7`). Unknown"
+#~ " ids pass through untouched. Either "
+#~ "way the result is then looked up"
+#~ " in the registry, so what a "
+#~ "deployment must register is the "
+#~ "**rewritten** id — as a model id"
+#~ " or in that model's `aliases:` list."
+#~ " A `404` means the deployment has "
+#~ "no route for the final id."
+#~ msgstr ""
+#~ "Anthropic 的 ID——既包括当前的家族选择符（`claude-sonnet-4-6"
+#~ "`、`claude-opus-4-7`），也包括旧的和带日期的那些（`claude-3-5-sonnet-latest"
+#~ "`、`claude-sonnet-4-5`、`claude-3-opus-20240229` 等）——都会先经过 "
+#~ "`apps/backend/serving/adapters/anthropic_aliases.py` "
+#~ "里一张固定的兼容表，被改写成本项目的规范 id（`claude-sonnet-4.6`、`claude-"
+#~ "opus-4.6`、`claude-opus-4.7`）。无法识别的 id "
+#~ "原样通过。两种情况下，结果都会再拿去注册表里查，所以一个部署需要注册的是**改写后**的 id——作为模型 "
+#~ "id，或者写进该模型的 `aliases:` 列表。返回 `404` 说明这个部署对最终的"
+#~ " id 没有任何路由。"

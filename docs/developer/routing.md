@@ -9,144 +9,8 @@ warm.
 This page describes the engine, its knobs, and how to add a routing strategy of
 your own. For where the config files live and how they are found, see
 [Configuration](configuration.md); for the shape of a model entry and its
-`route:` list, see [Adding a New Model](adding-models.md).
-
-## Architecture
-
-Four pieces, all under `apps/backend/routing/`:
-
-| Layer | Code | Responsibility |
-|---|---|---|
-| Deployment-wide weight strategy | `manager.py` + `strategies/weight.py` | Reads the routing file and rewrites each model's per-route weights from a local/remote split. Optional. |
-| Per-model router selection | `model_router_registry.py` + `strategies/__init__.py` | Maps each model id to a `RouterProtocol` implementation, chosen by that model's `router:` field. |
-| Routing | `routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`) | Chooses the endpoint for a request, admits it against capacity, walks the fallback order, and records endpoint health. |
-| Execution | `backends.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
-
-A router owns selection, admission, retries, and feedback. Once it chooses an
-endpoint, it creates an `EndpointBinding` holding the selected adapter, and a
-`LeafBackend` calls that adapter. A `TreeBackend` provides a different capability:
-it delegates to a router inside a declared candidate pool. The wrapped router
-keeps its own selection and execution flow. See
-[Leaves, pools, and dispatch instructions](#leaves-pools-and-dispatch-instructions).
-
-`apps/backend/routing/executor.py` is a backward-compatibility shim that re-exports
-`FixedRouter` as `RouteExecutor` along with `AllCircuitsOpenError`,
-`ProviderPinError`, and `RouteConfig`. Do not edit it — edit `routers.py`.
-
-Startup wiring lives in `apps/backend/serving/servers/bootstrap.py`: it
-registers routes from the model registry into one process-scoped
-`FixedRouter`, optionally applies the `RoutingManager`, then builds a
-`ModelRouterRegistry` over the same route table. Routers for every known model
-are constructed eagerly at boot, so a bad strategy name or bad `router_params:`
-is reported at startup rather than on the first request. What the registry
-returns for a model depends on its `router:` field:
-
-- `routewise` — a `RouteWiseRouter` over the model's full candidate pool, local
-  and cloud alike.
-- `fixed` — the shared `FixedRouter`, unless the model opts in to composition
-  with `router_params.hybrid_composition: true` **and** has both local and cloud
-  candidates. That builds a `HybridRouter`
-  (`serving/servers/hybrid_composition.py`) over a `LocalBackend` and a cloud
-  backend instead. All-local and all-cloud models keep the shared `FixedRouter`
-  even when the option is enabled.
-
-**The leaf execution boundary is already used by ordinary Fixed and RouteWise.**
-Existing configurations use these paths without enabling composition:
-
-```text
-FixedRouter     -> LeafBackend -> selected Adapter
-RouteWiseRouter -> LeafBackend -> selected Adapter
-```
-
-Both routers can select from local and cloud endpoints in the same model's
-route. `hybrid_composition` enables the additional `HybridRouter` layer that
-plans across separate local/cloud pools; it is not required to use either the
-leaf boundary or a mixed candidate pool.
-
-## Leaves, pools, and dispatch instructions
-
-`LeafBackend` uses the adapter's call signature and directly forwards its
-chat call or stream iterator. It does not implement the router-shaped
-`RoutingBackend` protocol. Pool wrappers such as `TreeBackend` implement that
-protocol and forward requests to a scoped router.
-
-For composed dispatch, `HybridRouter` uses two explicit instructions
-(`apps/backend/routing/dispatch.py`) to state what a pool may do:
-
-| Instruction | Permission | Pool behavior |
-|---|---|---|
-| `ExecuteEndpoint(binding)` | Execute exactly the bound endpoint. | `TreeBackend` accepts a binding within its model and endpoint scope. The child router admits that target and executes it through a leaf, with re-selection and fallback disabled. |
-| `DelegatePool(pool_id)` | Select inside the named pool. | `TreeBackend` delegates selection, admission, retries, and hedging to its scoped router. |
-
-An exact dispatch can therefore pass through a child router for admission;
-the instruction limits that router to the bound endpoint. `check_dispatch()`
-and the pool's request validation reject a wrong pool, an excluded model, or an
-out-of-scope binding before upstream I/O. Such composition errors propagate
-without fallback or a provider failure sample. A leaf has no pool-selection
-capability and cannot carry out `DelegatePool`.
-
-`EndpointBinding` carries the endpoint id, the model, the pool, a diagnostic
-route-table `generation`, and **the adapter itself**. Holding the adapter is the
-point: execution does not look the target up a second time, so an admin route
-edit cannot redirect a request that is already in flight. Binding and leaf
-construction both reject an inconsistent endpoint identity, and a leaf refuses a
-composite executor that reports outcomes for several endpoints at once. Each
-hedge leg gets its own leaf. If a RouteWise candidate has been replaced by a
-different adapter object for the same endpoint, RouteWise rejects the old
-binding before reserving capacity: admission and execution must use the same
-adapter. `generation` is diagnostic only; it does not decide whether a binding
-is stale.
-
-**Accounting stays with the owning router.** Selection, the admission claim, the prefill
-lease, retry and hedge bookkeeping, `_routing` metadata, and the feedback handed
-to `record_observation()` all stay with the router that chose the endpoint. A
-leaf adds no second copy of this state or accounting.
-
-**Pool scopes constrain selection and fallback.** `LocalBackend` and
-`FixedCloudBackend` enforce model grants and narrow `RoutingRequestOptions.endpoint_scope`
-before forwarding to the shared router. `RouteWiseCloudBackend` also binds a
-`RouteScopeView` (`route_scope.py`), keeping the child router's candidate
-selection, retries, hedge legs, and active probes inside its cloud range.
-Provider labels are expanded to canonical endpoint ids within the requested
-model before scopes are compared. A caller's scope can narrow the pool's grant;
-an empty intersection is refused, never treated as unrestricted access.
-
-**Requests keep the router API.** Calls use `chat_completion()` or
-`stream_chat_completion()` with `routing_options`. For each composed attempt,
-`dispatch_for_attempt()` constructs the instruction; the resolved binding,
-scope, and target/fallback controls travel through `RoutingRequestOptions` to
-the child router. A preferred endpoint allows selection of another candidate
-unless `require_target` is set. `allow_fallback` controls retries after an
-executed attempt fails.
-
-**Admission refusal does not report an upstream failure.** A configured pool
-with no available capacity can raise `TargetUnavailableError`. `HybridRouter`
-then tries the next permitted attempt; a successful fallback is returned normally.
-If all attempts are refused without reaching an upstream, the final refusal
-maps to **503**. A streaming response whose headers have already been sent
-carries code **503** in its SSE error instead of changing the HTTP status.
-If upstream attempts did fail, the router's error-selection rules determine
-the final error.
-
-Composition is opt-in per model, and off by default:
-
-```yaml
-router: fixed
-router_params:
-  hybrid_composition: true
-```
-
-Its affinity updates, its re-selection after a rejected primary claim, and its
-fallback circuit timing are not yet proven equivalent to the original `Fixed`
-loop, so the default entry point stays the shared `FixedRouter` until they are;
-see [#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457). Pins
-from the HTTP API and the admin playground keep using the shared `FixedRouter`
-regardless.
-
-Candidate scopes do not divide physical capacity. Each `RouteWiseRouter` still
-owns its resource managers; sharing a constrained pool across independent
-instances and rejecting unsupported duplicate-pool configurations remain
-deferred to the same issue.
+`route:` list, see [Adding a New Model](adding-models.md). How a router hands a
+request to the adapter it chose is in [Routing Internals](routing-internals.md).
 
 ## Choosing a router per model
 
@@ -158,8 +22,6 @@ models:
   - id: <model-id>
     provider: openai_compat
     router: fixed            # strategy name; omit to use default_router
-    router_params:           # validated by that strategy's Pydantic model
-      local_fraction: 0.6
     route:
       - kind: openai_compat
         weight: 0.7
@@ -175,25 +37,25 @@ models:
 Two strategies are registered out of the box:
 
 - **`fixed`** — weighted random selection with automatic fallback. This is the
-  default and the only one that needs no extra dependency. Its
-  `hybrid_composition` parameter (default `false`) is the per-model opt-in to
-  local/cloud composition described above.
+  default and the only one that needs no extra dependency. The only one of its
+  settings that has an effect today, `router_params.hybrid_composition`
+  (default `false`), turns on an experimental local/cloud composition described in
+  [Routing Internals](routing-internals.md).
 - **`routewise`** — a cost-aware strategy that lives in a separate package; see
   [RouteWise](#routewise) below.
 
-Names come from the registry in `apps/backend/routing/strategies/__init__.py`.
-An unknown name raises at validation time with the list of known strategies in
-the message; unknown keys in `router_params:` are rejected too, because every
-strategy's params model sets `extra="forbid"`.
+`router_params:` holds settings for the chosen strategy. An unknown strategy
+name, or a key the strategy does not accept, stops startup with a message that
+lists what is accepted. `ENABLE_ROUTEWISE=true` is an older switch that makes
+`routewise` the default when the routing file leaves `default_router` at
+`fixed`.
 
-Aliases share the canonical model's router: `ModelRouterRegistry` resolves an
-alias to its canonical id before looking up or building anything, so a stateful
-router is never split across a model and its alias.
+An alias shares its model's router, so a router that learns from traffic sees
+the model's requests and its aliases' requests together.
 
 ## How `FixedRouter` picks an endpoint
 
-For each request `FixedRouter._select_adapter` narrows the model's routes in
-this order:
+For each request the `fixed` router narrows the model's routes in this order:
 
 1. **Route must be published and non-empty.** Otherwise there is no route and
    the request 404s.
@@ -247,11 +109,38 @@ router strips before forwarding. Clients never see either.
 
 ## Endpoint health and circuit breaking
 
-`apps/backend/routing/endpoint_health.py` holds one `_ProviderHealth` (an EWMA of success
-rate) and one `_CircuitBreaker` per `endpoint_id`, in a process-scoped
-`EndpointHealthRegistry` shared by every router.
+Every endpoint has a circuit breaker and a running average of its success
+rate, shared by all routers in the process. The breaker opens after
+`CIRCUIT_FAILURE_THRESHOLD` consecutive failures and stops all traffic to the
+endpoint. After `CIRCUIT_COOLDOWN_SECONDS` it lets **one** test request
+through: a success closes it, a failure opens it again.
 
-Admission is two calls, and the split matters:
+While that test request is in flight, other requests that have nowhere else to
+go get **503** rather than a second request onto a provider that is probably
+still down. A model with a healthy route elsewhere simply uses that one
+instead. The four settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CIRCUIT_FAILURE_THRESHOLD` | `3` | Consecutive failures before the circuit opens. |
+| `CIRCUIT_COOLDOWN_SECONDS` | `30` | Seconds before a half-open probe is admitted. |
+| `CIRCUIT_MIN_AVAILABILITY` | `0.7` | EWMA success floor below which the endpoint counts as unhealthy. |
+| `ROUTER_HEALTH_EWMA_ALPHA` | `0.1` | Smoothing factor for the availability EWMA. |
+
+`GET /health/deep` shows each endpoint's availability and circuit state. It
+also marks an endpoint degraded from the first time a provider rejects the
+gateway's own credential, without waiting for the success-rate average to fall:
+the average moves slowly, and a rejected key fails every request.
+
+State is per process. Each backend worker keeps its own breakers.
+
+The routing file's `health_check:` probe is separate and only reports; it never
+changes which endpoint a request goes to. See
+[The routing file](configuration.md#the-routing-file).
+
+### Admission, for router authors
+
+A router checks an endpoint in two steps, and the split matters:
 
 - **`allow_request(endpoint_id)`** is a pure predicate — is this endpoint a
   candidate? Routers ask it of *every* route candidate while enumerating and
@@ -263,47 +152,12 @@ Admission is two calls, and the split matters:
   the prefill lease and for the same reason: a client disconnect or a cancelled
   coroutine has to release it too.
 
-The breaker opens after `failure_threshold` consecutive failures, stays open
-for `cooldown_seconds`, and then admits **one** half-open probe at a time — a
-success closes it, a failure re-opens it. The slot belongs to the claim that
-took it: nothing else can free it, because an outcome recorded by a request that
-bypassed admission (an explicit `X-Route-Pin`, or one admitted while the circuit
-was still closed) says nothing about whether the probe has finished. A claim
-also carries a deadline of `cooldown_seconds` as a backstop, so a dispatch that
-never unwinds at all costs one extra cooldown rather than wedging the endpoint
-out of routing.
-
-The visible consequence: while an endpoint is being probed, concurrent callers
-that have nowhere else to go get `AllCircuitsOpenError` → **503**, not a second
-request onto a provider that is probably still down. On a route with a healthy
-sibling they are simply reselected onto it. All four knobs read the environment
-first:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `CIRCUIT_FAILURE_THRESHOLD` | `3` | Consecutive failures before the circuit opens. |
-| `CIRCUIT_COOLDOWN_SECONDS` | `30` | Seconds before a half-open probe is admitted. |
-| `CIRCUIT_MIN_AVAILABILITY` | `0.7` | EWMA success floor below which the endpoint counts as unhealthy. |
-| `ROUTER_HEALTH_EWMA_ALPHA` | `0.1` | Smoothing factor for the availability EWMA. |
-
-`GET /health/deep` reports this registry: per-endpoint availability, circuit
-state, and a consecutive-upstream-auth-rejection counter that degrades the
-endpoint from the first rejection. An auth rejection does feed the availability
-EWMA like any other failure, but the EWMA is deliberately slow: an endpoint
-sitting at full availability needs four consecutive failures at the default
-`alpha` of `0.1` to fall under the `0.7` floor. A rejected credential is fatal
-for every caller from the first request, so the counter reports it without
-waiting for the average to catch up.
-
-State is per process. Each backend worker keeps its own breakers.
-
-This is separate from the routing file's `health_check:` probe loop
-(`apps/backend/routing/health.py`), which polls `local_deployment` endpoints'
-`/health` on an interval. That loop is **observation only** — it logs each
-transition and publishes its verdicts on `GET /routing`, but no request is ever
-routed differently because of it; see [Configuration](configuration.md) for why.
-The circuit breaker described above is what actually takes a failing endpoint
-out of rotation.
+The test request's slot belongs to the claim that took it: nothing else can
+free it, because an outcome recorded by a request that bypassed admission (an
+explicit `X-Route-Pin`, or one admitted while the circuit was still closed)
+says nothing about whether the test has finished. A claim also expires after
+`CIRCUIT_COOLDOWN_SECONDS`, so a dispatch that never unwinds costs one extra
+cooldown rather than keeping the endpoint out of routing for good.
 
 ## Routes excluded from selection
 
@@ -320,10 +174,9 @@ weight, the effective weight, and a `reasons` list:
 | `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `routing.yaml` |
 | `configured_zero` | `weight: 0` in the model registry | the overlay's `models.yaml` |
 
-`routing_yaml` can only appear where no weight-override resolver is attached —
-a deployment with no operational store. With one, selection reads the
-registration weights directly and never looks at the list `RoutingManager`
-rewrote, so that file's local/remote split does not reach the weights at all.
+`routing_yaml` appears only on a gateway without a database. With one, the
+routing file's local/remote split never reaches the weights; see
+[The routing file](configuration.md#the-routing-file).
 
 The same exclusions are merged into the `providers` map — as
 `excluded_from_models` and `exclusion_reasons` — including for endpoints that
@@ -424,6 +277,33 @@ the admin playground) publishes nothing and shares one anonymous binding.
 - An explicit `X-Route-Pin` bypasses affinity entirely.
 
 **Kill switch:** set `ROUTING_AFFINITY_ENABLED=0`.
+
+## Outbound concurrency
+
+The gateway limits how many requests it keeps open at once against each
+provider account — one limit per provider label and API key — and queues the
+rest. The limit adapts: it starts at `UPSTREAM_CONCURRENCY_INITIAL_LIMIT`,
+drops by one each time the provider answers `429`, and rises by one after every
+`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, up to
+`UPSTREAM_CONCURRENCY_MAX_LIMIT`. A request that cannot get a slot within
+`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over to the model's next
+route, and is not counted against the endpoint's circuit breaker: the provider
+never saw it.
+
+Servers addressed as `localhost`, `127.0.0.1`, `0.0.0.0` or
+`host.docker.internal` are never limited, because they schedule their own work.
+A server you run on another machine is limited like a hosted provider.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `UPSTREAM_CONCURRENCY_ENABLED` | `true` | `false` sends every request immediately |
+| `UPSTREAM_CONCURRENCY_INITIAL_LIMIT` | `8` | Starting limit per provider key |
+| `UPSTREAM_CONCURRENCY_MAX_LIMIT` | `64` | Highest the limit can rise |
+| `UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` | `100` | Successful responses between increases |
+| `UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` | `30` | Longest a request waits for a slot before failing over |
+
+A model can also send the requests that wait too long to a route reserved for
+them; see [Queue-wait offload](#queue-wait-offload).
 
 ## Queue-wait offload
 
@@ -536,375 +416,15 @@ off, and `GET /admin/routing/offload-routes` then reports the policy with
 retarget; deleting a runtime route that is a model's offload route is refused
 until the offload route is cleared.
 
-## API endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /v1/models` | List published models. |
-| `POST /v1/chat/completions` | Chat completion with automatic routing. |
-| `GET /health` | Liveness plus a `routes_configured` count. |
-| `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
-| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
-
-```{warning}
-`GET /routing` requires no authentication and returns, for every published
-model, each route's `provider`, **`base_url`**, and weight. On a public host
-that discloses your upstream topology — including private LAN addresses and
-any internal hostnames in a route's base URL. Put it behind your reverse proxy,
-or do not expose it.
-
-`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
-are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` entry
-carries that route's `base_url` too. Gate both, not just `/routing`.
-```
-
-Runtime administration lives under `/admin/...`, requires admin
-authentication, and is backed by the operational store. The routing-related
-endpoints:
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /admin/routing` | The weight distribution, including unpublished routes. |
-| `GET /admin/routing/provider-routes` | Every route the gateway serves, per model, tagged `source: yaml`, `override` or `runtime`; `.../{model_id}` for one model. |
-| `POST /admin/routing/provider-route-models` | Create a runtime model with its first route. |
-| `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
-| `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
-| `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
-| `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
-| `GET /admin/routing/offload-routes` | Every model's offload route and whether routing applies it; `PUT` / `DELETE .../{model_id}` sets or clears one — see [Queue-wait offload](#queue-wait-offload). |
-| `/admin/routewise/model-settings` | Per-model RouteWise tuning — see [RouteWise](#routewise). |
-
-Each `POST` or `PUT` that changes a route has a `...-verifications` twin that
-tries the upstream without saving anything. Which admin-console tab drives
-which endpoint, what each one stores, and how the stored state combines with
-the registry at boot is in
-[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
-
-## Adding a routing strategy
-
-A routing strategy is the main extension point of this repository. Adding one
-means writing a class that satisfies `RouterProtocol` and registering it under
-a name that a model's `router:` field can select.
-
-### 1. Understand the contract
-
-`RouterProtocol` (`apps/backend/routing/protocols.py`) is a runtime-checkable
-`Protocol` with four members:
-
-```python
-async def chat_completion(
-    self,
-    model_id: str,
-    messages: list[dict[str, Any]],
-    *,
-    routing_options: RoutingRequestOptions | None = None,
-    **params: Any,
-) -> dict[str, Any]: ...
-
-def stream_chat_completion(
-    self,
-    model_id: str,
-    messages: list[dict[str, Any]],
-    *,
-    routing_options: RoutingRequestOptions | None = None,
-    **params: Any,
-) -> AsyncIterator[Any]: ...
-
-def record_observation(self, obs: RoutingObservation) -> None: ...
-
-def get_provider_status(self) -> dict[str, dict[str, Any]]: ...
-```
-
-`RoutingRequestOptions` carries the router-owned controls that must never be
-forwarded to a provider adapter: `pin_provider` (the caller's hard pin, which
-collapses the route to one provider and disables fallback), `preferred_endpoint_id`
-(the preferred endpoint unless `require_target` makes it mandatory),
-`endpoint_scope` (the allowed candidate range), `allow_fallback` (whether an
-execution failure may try another candidate), `bound_endpoint` (the resolved
-adapter binding), `require_target`, and `required_modalities`.
-`RoutingObservation` (`routers.py`) is how the serving layer reports a
-completed request — endpoint id, TTFT, total latency, token counts, success,
-and a `strategy_metadata` dict the strategy itself populated during selection.
-A stateless strategy returns `None` from `record_observation`; an
-online-learning one updates its model there.
-
-Two optional capabilities:
-
-- `RouteTableRefreshable` — implement `refresh_route_table()` if your router
-  derives state from the route table and must rebuild it after an admin route
-  change. `ModelRouterRegistry.refresh_route_tables()` calls it.
-- `ManagedRouter` (`routers.py`) — implement `async start()` / `async stop()`
-  if your router owns background tasks. Bootstrap drives their lifecycle.
-
-### 2. Get the routes
-
-Your router is not handed the route table in its constructor. The registry
-builds it, then calls `attach_route_table(route_table)` on it if that method
-exists. The object you receive satisfies `RouteTableView`
-(`apps/backend/routing/route_table.py`):
-
-```python
-def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]: ...
-def canonical_id(self, model_id: str) -> str: ...
-```
-
-Each `EffectiveRoute` is a frozen `(route_key, canonical_model_id, adapters)`
-triple where `adapters` is a tuple of `(adapter, weight)` pairs with runtime
-weight overrides and admin provider disables already applied. Snapshot it; do
-not hold a lock across a dispatch.
-
-**A router that never implements `attach_route_table` sees no routes at all**,
-so this is not optional in practice.
-
-### 3. Write the strategy module
-
-Strategies live in `apps/backend/routing/strategies/`. One module per strategy,
-each exporting a router class and a Pydantic params model. Here is a complete
-round-robin strategy — save it as
-`apps/backend/routing/strategies/round_robin.py`:
-
-```python
-"""Round-robin routing strategy."""
-
-from __future__ import annotations
-
-import threading
-from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel
-
-from routing.endpoint_health import EndpointHealthRegistry
-from routing.endpoints import endpoint_id_for_adapter
-from routing.strategies import register_strategy
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from routing.protocols import RoutingRequestOptions
-    from routing.route_table import RouteTableView
-    from routing.routers import RoutingObservation
-    from serving.adapters.base import BaseAdapter
-
-
-class RoundRobinParams(BaseModel):
-    """Parameters accepted under ``router_params:`` for this strategy."""
-
-    model_config = {"extra": "forbid"}
-
-    skip_open_circuits: bool = True
-
-
-class RoundRobinRouter:
-    """Cycle through a model's routes in declaration order."""
-
-    def __init__(
-        self,
-        params: RoundRobinParams | None = None,
-        *,
-        health_registry: EndpointHealthRegistry | None = None,
-    ) -> None:
-        self.params = params or RoundRobinParams()
-        self._health = health_registry or EndpointHealthRegistry()
-        self._lock = threading.Lock()
-        self._cursor: dict[str, int] = {}
-        self._routes: dict[str, tuple[BaseAdapter, ...]] = {}
-        self.route_table: RouteTableView | None = None
-
-    # -- registry binding -------------------------------------------------
-    def attach_route_table(self, route_table: RouteTableView) -> None:
-        """Bind the shared read-only route table after construction."""
-        self.route_table = route_table
-        self.refresh_route_table()
-
-    def refresh_route_table(self) -> None:
-        """Rebuild route-derived state after an admin route change."""
-        table = self.route_table
-        if table is None:
-            return
-        rebuilt: dict[str, tuple[BaseAdapter, ...]] = {}
-        for route in table.iter_effective_routes():
-            rebuilt[route.route_key] = tuple(
-                adapter for adapter, weight in route.adapters if weight > 0
-            )
-        with self._lock:
-            self._routes = rebuilt
-
-    # -- selection --------------------------------------------------------
-    def _next_adapter(self, model_id: str) -> BaseAdapter | None:
-        with self._lock:
-            adapters = self._routes.get(model_id, ())
-            if not adapters:
-                return None
-            start = self._cursor.get(model_id, 0)
-            for offset in range(len(adapters)):
-                index = (start + offset) % len(adapters)
-                adapter = adapters[index]
-                if self.params.skip_open_circuits and not self._health.allow_request(
-                    endpoint_id_for_adapter(adapter)
-                ):
-                    continue
-                self._cursor[model_id] = index + 1
-                return adapter
-        return None
-
-    # -- RouterProtocol ---------------------------------------------------
-    async def chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        routing_options: RoutingRequestOptions | None = None,
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Route a non-streaming chat completion request."""
-        adapter = self._next_adapter(model_id)
-        if adapter is None:
-            raise ValueError(f"No route available for model {model_id}")
-        endpoint_id = endpoint_id_for_adapter(adapter)
-        self._health.ensure(endpoint_id)
-        try:
-            response = await adapter.chat_completion(messages, **params)
-        except Exception as exc:
-            self._health.record_failure(endpoint_id, reason="chat_exception", exc=exc)
-            raise
-        self._health.record_success(endpoint_id)
-        response.setdefault(
-            "_routing",
-            {
-                "provider": adapter.config.provider,
-                "base_url": adapter.config.base_url,
-                "endpoint_id": endpoint_id,
-            },
-        )
-        return response
-
-    async def stream_chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        routing_options: RoutingRequestOptions | None = None,
-        **params: Any,
-    ) -> AsyncIterator[str]:
-        """Route a streaming chat completion request."""
-        adapter = self._next_adapter(model_id)
-        if adapter is None:
-            raise ValueError(f"No route available for model {model_id}")
-        endpoint_id = endpoint_id_for_adapter(adapter)
-        self._health.ensure(endpoint_id)
-        try:
-            async for chunk in adapter.stream_chat_completion(messages, **params):
-                yield chunk
-        except Exception as exc:
-            self._health.record_failure(endpoint_id, reason="stream_exception", exc=exc)
-            raise
-        self._health.record_success(endpoint_id)
-
-    def record_observation(self, obs: RoutingObservation) -> None:
-        """Ignore observations: this strategy keeps no online-learning state."""
-        return None
-
-    def get_provider_status(self) -> dict[str, dict[str, Any]]:
-        """Return endpoint health and circuit state."""
-        return self._health.snapshot()
-
-
-register_strategy("round_robin")((RoundRobinRouter, RoundRobinParams))
-```
-
-Points worth copying:
-
-- **`extra="forbid"` on the params model.** A typo in `router_params:` then
-  fails at boot with a clear message instead of silently using a default.
-- **Accept `health_registry=`.** When the registry passes application-scoped
-  `RouterBuildDependencies`, it *requires* the constructor to accept
-  `health_registry=` (or `**kwargs`) and raises `TypeError` otherwise. Sharing
-  the process registry is also what makes one endpoint's circuit visible to
-  every router.
-- **`params` must be the first parameter name.** `build_router` calls
-  `router_cls(params=validated, ...)`.
-- **Reuse `endpoint_id_for_adapter`.** Endpoint ids are the key for health,
-  latency profiling, and log attribution; deriving your own would split them.
-- **Execute selected adapters through a leaf.** Follow Fixed and RouteWise:
-  create a binding with `binding_for_adapter()` and a leaf with
-  `LeafBackend.for_binding()`, then call the leaf with the adapter's arguments.
-  Keep admission, health, and `_routing` metadata in the owning router. When
-  delegating to a pool, use `ExecuteEndpoint` only if the parent has resolved an
-  exact target; use `DelegatePool` when the child should choose. The child still
-  performs admission, so pass the resolved binding and the target/fallback
-  controls through `RoutingRequestOptions` as well.
-
-### 4. Register it at import time
-
-Registration happens as an import side effect, so the module must be imported.
-Add it at the *bottom* of `apps/backend/routing/strategies/__init__.py`, next to
-the existing imports:
-
-```python
-from routing.strategies import fixed  # noqa: F401
-from routing.strategies import round_robin  # noqa: F401
-```
-
-The imports sit at the bottom of that file on purpose: strategy modules import
-from `routing.routers` at their top, so the dependency direction is one-way
-(`strategies -> routers`) and a top-of-file import here would be a cycle.
-
-If your strategy depends on an optional package, guard the import and call
-`register_missing_strategy(name, reason)` in the `except ImportError:` branch.
-Selecting it then fails configuration validation with your message instead of
-breaking backend import for everyone — this is exactly how `routewise` is
-handled.
-
-### 5. Select it
-
-Per model, in the model registry:
-
-```yaml
-models:
-  - id: <model-id>
-    router: round_robin
-    router_params:
-      skip_open_circuits: true
-```
-
-Or deployment-wide, in the routing file:
-
-```yaml
-default_router: round_robin
-```
-
-Note that `RoutingManager.apply()` only rewrites weights when the effective
-`default_router` is `fixed`; setting it to anything else leaves each model's
-`route:` weights exactly as written.
-
-### 6. Test it
-
-`tests/unit/routing/test_router_contract.py` holds the behavioural contract
-every serving router must satisfy — add your class to it. `test_strategies.py`
-covers the registry itself: registration, params validation, and the
-dependency-injection check. A `isinstance(router, RouterProtocol)` assertion is
-meaningful because the protocol is `@runtime_checkable`.
-
-Run the routing tests with:
-
-```bash
-uv run pytest tests/unit/routing -q
-```
-
 ## RouteWise
 
-`routewise` is the second registered strategy: a cost-aware router that
-converts every feasible route to one effective cost, solves a cost-budgeted
-mean-TTFT linear program over them, and samples a primary from the resulting
-sparse mixture. It is a per-model opt-in (`router: routewise`), and each
-opted-in model gets its own `RouteWiseRouter` instance.
-
-The primary, each hedge leg, and each active latency probe execute through a
-leaf bound to that endpoint's adapter. Selection, admission, reservations, and
-feedback accounting remain inside `RouteWiseRouter`. A model configured with
-`router: routewise` uses this router directly over its full candidate pool. An
-explicit composition can instead wrap a cloud-scoped instance in
-`RouteWiseCloudBackend`; the same router implementation supports both positions.
+`routewise` is the second registered strategy. It keeps the average time to
+first token as low as it can while staying within a cost budget: it prices
+every usable route, measures how fast each one starts answering, and picks the
+mix of routes that is fastest for the money. It is a per-model opt-in
+(`router: routewise`), and each opted-in model gets its own `RouteWiseRouter`
+instance. How it executes the routes it picks is in
+[Routing Internals](routing-internals.md).
 
 Its implementation lives in a separate package: the MIT-licensed
 [`llm-routewise`](https://github.com/HarvardMadSys/RouteWise), which this
@@ -913,48 +433,33 @@ choose a provider — it performs no network I/O and reads no credentials. The
 design is described in *RouteWise: Latency--Cost Optimization for
 Multi-Provider LLM Routing* (EuroSys '27).
 
-Required, but not load-bearing for startup. When the package is absent —
-a partial install, or a build that deliberately drops the strategy —
-`apps/backend/routing/strategies/__init__.py` registers `routewise` as a
-*missing* strategy: selecting it fails configuration validation with an
-actionable message rather than breaking backend import. No single routing
-algorithm decides whether the gateway can start.
+If the package is missing — a partial install, or a build that leaves the
+strategy out — the gateway still starts. Only a model that selects `routewise`
+fails, with a message saying the package is missing.
 
 For a registry you can run unedited against two loopback providers, with every
 option annotated, see
 [`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml).
 
-**Latency evidence.** The policy only trades latency against cost where it has
-measurements. Two endpoints with no TTFT samples tie on the latency objective,
-`cost_tiebroken_objective` breaks that tie on price, and the LP returns a
-one-hot solution on the cheaper one at every cost budget — so nothing ever
-measures the endpoint the policy is avoiding. Evidence comes from live traffic,
-from `db_bootstrap_enabled` replaying recent `api_logs` at startup, and from
-the active prober (`routewise_probe_enabled`), which runs in-process and does
-not require an operational store; persisting probe samples is an optimization
-on top.
+**RouteWise needs latency measurements.** Until it has measured an endpoint,
+it cannot tell which one is faster, so it sends everything to the cheapest —
+and the other endpoint then never gets measured. Measurements come from live
+traffic, from recent request logs replayed at startup
+(`db_bootstrap_enabled`, on by default), and from the built-in latency prober
+(`routewise_probe_enabled`, off by default), which sends small test requests
+and needs no database. A new deployment has no logs to replay, so turn the
+prober on.
 
-**Probe concurrency is process-wide.** `routewise_probe_max_concurrency`
-(default `1`) is a `router_params:` key, but every RouteWise model owns a
-router and a probe loop of its own, so enforcing it per router would multiply
-it by the number of models. Two models pointed at one provider subscription
-would then probe it simultaneously, the provider would refuse the second with
-its own concurrency error, and that refusal lands on whichever request is in
-flight — real traffic as often as the probe. All routers in a worker therefore
-share one gate, whose capacity is the lowest value any of them configures. Each
-router registers that value when it is built, which is before any router starts
-probing, and the claim lasts as long as the router object — not until `stop()`,
-which cancels the background loop but not a manual probe from `/probes/run`
-that is still on the wire. The guarantee is forward-looking: a router built
-while another is mid-cycle — an admin strategy change, a runtime model publish
-— caps every probe not yet dispatched and the gate then grants nothing further
-until the overlap has drained, but it cannot shrink an overlap already sent,
-since no client-side action un-sends a request that has left. Erring the other
-way only over-serializes probing, so a claim outliving its usefulness is the
-safe direction. Like RouteWise's other concurrency state
-the gate is per worker; the cross-worker guard is the DB probe lease
-(`routewise_probe_leases`), which is keyed per model and so stops two workers
-probing one model rather than capping probe traffic deployment-wide.
+**One probe limit per worker.** `routewise_probe_max_concurrency`
+(default `1`) is set per model, but all RouteWise models in a worker share one
+limit, set to the lowest value any of them asks for. Otherwise two models on
+the same provider subscription could probe it at the same time, and the
+provider's refusal of the second could land on a real request. When a model is
+added while probes are running, the new limit applies to every probe not yet
+sent. Across
+workers, a database lease (`routewise_probe_leases`) stops two workers from
+probing the same model at once; it does not cap probe traffic for the whole
+deployment.
 
 Configuration splits by ownership:
 
@@ -981,7 +486,7 @@ calls those fetchers itself through `ProviderQuotaSnapshotStore`
 poller's cache, and resolves them through the registry the Providers tab uses:
 the gateway enables no fetchers by default, and a backend extension registers one per
 provider with `register_quota_fetcher` (see
-[Quota reporting](distribution-customization.md#quota-reporting)). `usage_label` is
+[Quota reporting](backend-extensions.md#quota-reporting)). `usage_label` is
 the fetcher's own label string, not an operator-chosen name.
 
 The route's `kind:` chooses its inference protocol; its `provider:` identifies
@@ -999,18 +504,15 @@ failure and a provider/route limit mismatch — so the route stays unready and i
 skipped in silence. Verify a new quota source against the fetcher before
 shipping it.
 
-The `local` provider seen in admin-created routes is not a third fetcher: it is
-a gateway-side per-request counter installed through
-`configure_local_fallbacks`. Naming `provider: local` in a `quota_source:` does
-not arm it, but static YAML can still reach it — `_uses_local_quota_fallback`
-selects a quota route whose `route_metadata` sets `local_quota_fallback: true`,
-or whose `route_provider` and `upstream_provider` differ. Know what it is
-before relying on it: the count lives in the worker process, so it starts at
-zero on every restart and does not add up across workers; it increments by one
-per request, so it can only express a **request-count** allowance, never tokens
-or spend; and it resets at the next **server-local midnight**, so it models a
-daily cap and nothing else. A four-hour window, a monthly window, or a plan
-whose reset the provider decides all need a real `quota_source`.
+The `local` provider you may see on admin-created routes is not a quota
+source. It is a simple counter inside the gateway, used for a quota route whose
+`route_metadata` sets `local_quota_fallback: true`, or whose route and upstream
+providers differ; naming `provider: local` in a `quota_source:` does not turn it
+on. It counts requests in the worker process, starting from zero on every
+restart and never adding up across workers, and resets at the server's local
+midnight. So it can only express a daily request allowance. A four-hour window,
+a monthly window, a token or spend limit, or a plan whose reset the provider
+decides all need a real `quota_source`.
 
 **Endpoint identity.** Latency profiles, availability tracking and request logs
 share one key per route, derived by `registry._make_provider_id` as
@@ -1136,3 +638,381 @@ when a reservation applies to it. The dedicated `anthropic`, `claude`, and
 `dynamic_keys`, so a reservation recorded against one of those providers is
 stored and never applied. Gate those models with the catalog's `required_role`
 instead.
+
+## API endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/models` | List published models. |
+| `POST /v1/chat/completions` | Chat completion with automatic routing. |
+| `GET /health` | Liveness plus a `routes_configured` count. |
+| `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
+| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
+
+```{warning}
+`GET /routing` requires no authentication and returns, for every published
+model, each route's `provider`, **`base_url`**, and weight. On a public host
+that discloses your upstream topology — including private LAN addresses and
+any internal hostnames in a route's base URL. Put it behind your reverse proxy,
+or do not expose it.
+
+`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
+are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` entry
+carries that route's `base_url` too. Gate both, not just `/routing`.
+```
+
+Runtime administration lives under `/admin/...`, requires admin
+authentication, and is backed by the operational store. The routing-related
+endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/routing` | The weight distribution, including unpublished routes. |
+| `GET /admin/routing/provider-routes` | Every route the gateway serves, per model, tagged `source: yaml`, `override` or `runtime`; `.../{model_id}` for one model. |
+| `POST /admin/routing/provider-route-models` | Create a runtime model with its first route. |
+| `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
+| `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
+| `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
+| `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
+| `GET /admin/routing/offload-routes` | Every model's offload route and whether routing applies it; `PUT` / `DELETE .../{model_id}` sets or clears one — see [Queue-wait offload](#queue-wait-offload). |
+| `/admin/routewise/model-settings` | Per-model RouteWise tuning — see [RouteWise](#routewise). |
+
+Each `POST` or `PUT` that changes a route has a `...-verifications` twin that
+tries the upstream without saving anything. Which admin-console tab drives
+which endpoint, what each one stores, and how the stored state combines with
+the registry at boot is in
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
+
+## Where the code lives
+
+Four pieces, all under `apps/backend/routing/`:
+
+| Layer | Code | Responsibility |
+|---|---|---|
+| Deployment-wide weight strategy | `manager.py` + `strategies/weight.py` | Reads the routing file and rewrites each model's per-route weights from a local/remote split. Optional. |
+| Per-model router selection | `model_router_registry.py` + `strategies/__init__.py` | Maps each model id to a `RouterProtocol` implementation, chosen by that model's `router:` field. |
+| Routing | `routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`) | Chooses the endpoint for a request, admits it against capacity, walks the fallback order, and records endpoint health. |
+| Execution | `backends.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
+
+`apps/backend/routing/executor.py` is a backward-compatibility shim that re-exports
+`FixedRouter` as `RouteExecutor` along with `AllCircuitsOpenError`,
+`ProviderPinError`, and `RouteConfig`. Do not edit it — edit `routers.py`.
+
+How the router hands a request to the adapter it chose, and the experimental
+composition that plans across a local and a cloud pool, are described in
+[Routing Internals](routing-internals.md).
+
+## Adding a routing strategy
+
+A routing strategy is the main extension point of this repository. Adding one
+means writing a class that satisfies `RouterProtocol` and registering it under
+a name that a model's `router:` field can select.
+
+### 1. Understand the contract
+
+`RouterProtocol` (`apps/backend/routing/protocols.py`) is a runtime-checkable
+`Protocol` with four members:
+
+```python
+async def chat_completion(
+    self,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    *,
+    routing_options: RoutingRequestOptions | None = None,
+    **params: Any,
+) -> dict[str, Any]: ...
+
+def stream_chat_completion(
+    self,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    *,
+    routing_options: RoutingRequestOptions | None = None,
+    **params: Any,
+) -> AsyncIterator[Any]: ...
+
+def record_observation(self, obs: RoutingObservation) -> None: ...
+
+def get_provider_status(self) -> dict[str, dict[str, Any]]: ...
+```
+
+`RoutingRequestOptions` carries the router-owned controls that must never be
+forwarded to a provider adapter: `pin_provider` (the caller's hard pin, which
+collapses the route to one provider and disables fallback), `preferred_endpoint_id`
+(the preferred endpoint unless `require_target` makes it mandatory),
+`endpoint_scope` (the allowed candidate range), `allow_fallback` (whether an
+execution failure may try another candidate), `bound_endpoint` (the resolved
+adapter binding), `require_target`, and `required_modalities`.
+`RoutingObservation` (`routers.py`) is how the serving layer reports a
+completed request — endpoint id, TTFT, total latency, token counts, success,
+and a `strategy_metadata` dict the strategy itself populated during selection.
+A stateless strategy returns `None` from `record_observation`; an
+online-learning one updates its model there.
+
+Two optional capabilities:
+
+- `RouteTableRefreshable` — implement `refresh_route_table()` if your router
+  derives state from the route table and must rebuild it after an admin route
+  change. `ModelRouterRegistry.refresh_route_tables()` calls it.
+- `ManagedRouter` (`routers.py`) — implement `async start()` / `async stop()`
+  if your router owns background tasks. Bootstrap drives their lifecycle.
+
+### 2. Get the routes
+
+Your router is not handed the route table in its constructor. The registry
+builds it, then calls `attach_route_table(route_table)` on it if that method
+exists. The object you receive satisfies `RouteTableView`
+(`apps/backend/routing/route_table.py`):
+
+```python
+def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]: ...
+def canonical_id(self, model_id: str) -> str: ...
+```
+
+Each `EffectiveRoute` is a frozen `(route_key, canonical_model_id, adapters)`
+triple where `adapters` is a tuple of `(adapter, weight)` pairs with runtime
+weight overrides and admin provider disables already applied. Snapshot it; do
+not hold a lock across a dispatch.
+
+**A router that never implements `attach_route_table` sees no routes at all**,
+so this is not optional in practice.
+
+### 3. Write the strategy module
+
+Strategies live in `apps/backend/routing/strategies/`. One module per strategy,
+each exporting a router class and a Pydantic params model. Here is a complete
+round-robin strategy — save it as
+`apps/backend/routing/strategies/round_robin.py`:
+
+```python
+"""Round-robin routing strategy."""
+
+from __future__ import annotations
+
+import threading
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel
+
+from routing.backends import LeafBackend
+from routing.dispatch import binding_for_adapter
+from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoints import endpoint_id_for_adapter
+from routing.strategies import register_strategy
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from routing.protocols import RoutingRequestOptions
+    from routing.route_table import RouteTableView
+    from routing.routers import RoutingObservation
+    from serving.adapters.base import BaseAdapter
+
+
+class RoundRobinParams(BaseModel):
+    """Parameters accepted under ``router_params:`` for this strategy."""
+
+    model_config = {"extra": "forbid"}
+
+    skip_open_circuits: bool = True
+
+
+class RoundRobinRouter:
+    """Cycle through a model's routes in declaration order."""
+
+    def __init__(
+        self,
+        params: RoundRobinParams | None = None,
+        *,
+        health_registry: EndpointHealthRegistry | None = None,
+    ) -> None:
+        self.params = params or RoundRobinParams()
+        self._health = health_registry or EndpointHealthRegistry()
+        self._lock = threading.Lock()
+        self._cursor: dict[str, int] = {}
+        self._routes: dict[str, tuple[BaseAdapter, ...]] = {}
+        self.route_table: RouteTableView | None = None
+
+    # -- registry binding -------------------------------------------------
+    def attach_route_table(self, route_table: RouteTableView) -> None:
+        """Bind the shared read-only route table after construction."""
+        self.route_table = route_table
+        self.refresh_route_table()
+
+    def refresh_route_table(self) -> None:
+        """Rebuild route-derived state after an admin route change."""
+        table = self.route_table
+        if table is None:
+            return
+        rebuilt: dict[str, tuple[BaseAdapter, ...]] = {}
+        for route in table.iter_effective_routes():
+            rebuilt[route.route_key] = tuple(
+                adapter for adapter, weight in route.adapters if weight > 0
+            )
+        with self._lock:
+            self._routes = rebuilt
+
+    # -- selection --------------------------------------------------------
+    def _next_adapter(self, model_id: str) -> BaseAdapter | None:
+        with self._lock:
+            adapters = self._routes.get(model_id, ())
+            if not adapters:
+                return None
+            start = self._cursor.get(model_id, 0)
+            for offset in range(len(adapters)):
+                index = (start + offset) % len(adapters)
+                adapter = adapters[index]
+                if self.params.skip_open_circuits and not self._health.allow_request(
+                    endpoint_id_for_adapter(adapter)
+                ):
+                    continue
+                self._cursor[model_id] = index + 1
+                return adapter
+        return None
+
+    # -- RouterProtocol ---------------------------------------------------
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Route a non-streaming chat completion request."""
+        adapter = self._next_adapter(model_id)
+        if adapter is None:
+            raise ValueError(f"No route available for model {model_id}")
+        leaf = LeafBackend.for_binding(binding_for_adapter(adapter, model_id=model_id))
+        endpoint_id = leaf.endpoint_id
+        self._health.ensure(endpoint_id)
+        try:
+            response = await leaf.chat_completion(messages, **params)
+        except Exception as exc:
+            self._health.record_failure(endpoint_id, reason="chat_exception", exc=exc)
+            raise
+        self._health.record_success(endpoint_id)
+        response.setdefault(
+            "_routing",
+            {
+                "provider": adapter.config.provider,
+                "base_url": adapter.config.base_url,
+                "endpoint_id": endpoint_id,
+            },
+        )
+        return response
+
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
+    ) -> AsyncIterator[str]:
+        """Route a streaming chat completion request."""
+        adapter = self._next_adapter(model_id)
+        if adapter is None:
+            raise ValueError(f"No route available for model {model_id}")
+        leaf = LeafBackend.for_binding(binding_for_adapter(adapter, model_id=model_id))
+        endpoint_id = leaf.endpoint_id
+        self._health.ensure(endpoint_id)
+        try:
+            async for chunk in leaf.stream_chat_completion(messages, **params):
+                yield chunk
+        except Exception as exc:
+            self._health.record_failure(endpoint_id, reason="stream_exception", exc=exc)
+            raise
+        self._health.record_success(endpoint_id)
+
+    def record_observation(self, obs: RoutingObservation) -> None:
+        """Ignore observations: this strategy keeps no online-learning state."""
+        return None
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        """Return endpoint health and circuit state."""
+        return self._health.snapshot()
+
+
+register_strategy("round_robin")((RoundRobinRouter, RoundRobinParams))
+```
+
+Points worth copying:
+
+- **`extra="forbid"` on the params model.** A typo in `router_params:` then
+  fails at boot with a clear message instead of silently using a default.
+- **Accept `health_registry=`.** When the registry passes application-scoped
+  `RouterBuildDependencies`, it *requires* the constructor to accept
+  `health_registry=` (or `**kwargs`) and raises `TypeError` otherwise. Sharing
+  the process registry is also what makes one endpoint's circuit visible to
+  every router.
+- **`params` must be the first parameter name.** `build_router` calls
+  `router_cls(params=validated, ...)`.
+- **Reuse `endpoint_id_for_adapter`.** Endpoint ids are the key for health,
+  latency profiling, and log attribution; deriving your own would split them.
+- **Execute selected adapters through a leaf.** Follow Fixed and RouteWise:
+  create a binding with `binding_for_adapter()` and a leaf with
+  `LeafBackend.for_binding()`, then call the leaf with the adapter's arguments.
+  Keep admission, health, and `_routing` metadata in the owning router. When
+  delegating to a pool, use `ExecuteEndpoint` only if the parent has resolved an
+  exact target; use `DelegatePool` when the child should choose. The child still
+  performs admission, so pass the resolved binding and the target/fallback
+  controls through `RoutingRequestOptions` as well.
+
+### 4. Register it at import time
+
+Registration happens as an import side effect, so the module must be imported.
+Add it at the *bottom* of `apps/backend/routing/strategies/__init__.py`, next to
+the existing imports:
+
+```python
+from routing.strategies import fixed  # noqa: F401
+from routing.strategies import round_robin  # noqa: F401
+```
+
+The imports sit at the bottom of that file on purpose: strategy modules import
+from `routing.routers` at their top, so the dependency direction is one-way
+(`strategies -> routers`) and a top-of-file import here would be a cycle.
+
+If your strategy depends on an optional package, guard the import and call
+`register_missing_strategy(name, reason)` in the `except ImportError:` branch.
+Selecting it then fails configuration validation with your message instead of
+breaking backend import for everyone — this is exactly how `routewise` is
+handled.
+
+### 5. Select it
+
+Per model, in the model registry:
+
+```yaml
+models:
+  - id: <model-id>
+    router: round_robin
+    router_params:
+      skip_open_circuits: true
+```
+
+Or deployment-wide, in the routing file:
+
+```yaml
+default_router: round_robin
+```
+
+Note that `RoutingManager.apply()` only rewrites weights when the effective
+`default_router` is `fixed`; setting it to anything else leaves each model's
+`route:` weights exactly as written.
+
+### 6. Test it
+
+`tests/unit/routing/test_router_contract.py` holds the behavioural contract
+every serving router must satisfy — add your class to it. `test_strategies.py`
+covers the registry itself: registration, params validation, and the
+dependency-injection check. A `isinstance(router, RouterProtocol)` assertion is
+meaningful because the protocol is `@runtime_checkable`.
+
+Run the routing tests with:
+
+```bash
+uv run pytest tests/unit/routing -q
+```
