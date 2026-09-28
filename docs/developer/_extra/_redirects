@@ -41,15 +41,21 @@
 /zh_CN/fasrc                           /zh_CN/hpc-model-host             301
 /zh_CN/fasrc.html                      /zh_CN/hpc-model-host             301
 
-# Distribution UI guides consolidated into the customization entry point (#1465)
-/site-ui                               /distribution-customization      301
-/site-ui.html                          /distribution-customization      301
-/zh_CN/site-ui                         /zh_CN/distribution-customization 301
-/zh_CN/site-ui.html                    /zh_CN/distribution-customization 301
-/site-ui-api                           /distribution-customization      301
-/site-ui-api.html                      /distribution-customization      301
-/zh_CN/site-ui-api                     /zh_CN/distribution-customization 301
-/zh_CN/site-ui-api.html                /zh_CN/distribution-customization 301
+# Distribution UI guides consolidated (#1465), now the Site UI Modules page
+/site-ui                               /site-ui-modules                  301
+/site-ui.html                          /site-ui-modules                  301
+/zh_CN/site-ui                         /zh_CN/site-ui-modules            301
+/zh_CN/site-ui.html                    /zh_CN/site-ui-modules            301
+/site-ui-api                           /site-ui-modules                  301
+/site-ui-api.html                      /site-ui-modules                  301
+/zh_CN/site-ui-api                     /zh_CN/site-ui-modules            301
+/zh_CN/site-ui-api.html                /zh_CN/site-ui-modules            301
+
+# Non-production instance page folded into the deployment guide
+/staging                               /deployment                       301
+/staging.html                          /deployment                       301
+/zh_CN/staging                         /zh_CN/deployment                 301
+/zh_CN/staging.html                    /zh_CN/deployment                 301
 
 # --- Language-code guesses ---------------------------------------------
 /zh                                    /zh_CN/                           301

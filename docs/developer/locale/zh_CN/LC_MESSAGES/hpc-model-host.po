@@ -31,15 +31,15 @@ msgid ""
 " node for a few hours at a time. This page covers running an OpenAI-"
 "compatible model server on such a node and attaching it to the gateway."
 msgstr ""
-"很多自建部署者手上有 GPU，但并不完全拥有这些 "
-"GPU：硬件在一个批处理调度器（Slurm、PBS、LSF）后面，每次只发放几个小时的计算节点。本页讲的是如何在这样的节点上运行一个 OpenAI"
-" 兼容的模型服务器，并把它接到网关上。"
+"很多自建用户有 GPU 可用，但这些 GPU "
+"并不归自己所有：硬件由批处理调度器（Slurm、PBS、LSF）统一管理，每次分给你一个计算节点，只能用几个小时。本页介绍如何在这种节点上运行 "
+"OpenAI 兼容的模型服务器，并把它接入网关。"
 
 #: ../developer/hpc-model-host.md:8
 msgid ""
 "Three things make this different from the fixed-host case in [Adding a "
 "New Local Model](add-local-model.md):"
-msgstr "有三点让它不同于 [添加新的本地模型](add-local-model.md) 里那种固定主机的情形："
+msgstr "和[添加新的本地模型](add-local-model.md)里的固定主机相比，这种情况有三点不同："
 
 #: ../developer/hpc-model-host.md:11
 msgid ""
@@ -51,7 +51,7 @@ msgstr "**节点是临时的**。每次分配到的主机名都不一样，而�
 msgid ""
 "**the node is usually not routable** from wherever the gateway runs, and "
 "often cannot reach a container registry either;"
-msgstr "**从网关运行的位置通常路由不到这个节点**，而且它往往也连不上容器镜像仓库；"
+msgstr "**网关所在的机器通常访问不到这个节点**，而且节点往往也连不上容器镜像仓库；"
 
 #: ../developer/hpc-model-host.md:15
 msgid ""
@@ -69,8 +69,8 @@ msgid ""
 "and a new allocation is picked up by restarting the tunnel rather than by"
 " editing config."
 msgstr ""
-"由此得出的形态是：模型服务器在计算节点上绑定 loopback，一条 SSH 反向隧道把它送到网关主机上一个**固定的** loopback "
-"端口，网关的路由则指向这个固定端口。这样，节点每次变化的主机名就不会出现在模型注册表里，换一次分配只需重启隧道，而不必改配置。"
+"所以做法是：模型服务器在计算节点上只绑定 loopback，用一条 SSH 反向隧道把它接到网关主机上一个**固定的** loopback "
+"端口，网关的路由指向这个固定端口。这样，不断变化的节点主机名不会出现在模型注册表里；换了新的分配，只要重启隧道，不用改配置。"
 
 #: ../developer/hpc-model-host.md:34
 msgid ""
@@ -80,7 +80,7 @@ msgid ""
 "portable default."
 msgstr ""
 "下面所有的调度器参数、路径和端口都是占位符。集群策略——分区名、GPU 资源名、walltime "
-"上限、装的是哪种容器运行时——因站点而异，没有可移植的默认值。"
+"上限、装的是哪种容器运行时——每个集群都不一样，没有通用的默认值。"
 
 #: ../developer/hpc-model-host.md:38
 msgid "1. Allocate a node"
@@ -90,14 +90,14 @@ msgstr "1\\. 申请一个节点"
 msgid ""
 "With Slurm, an interactive allocation looks like this. Fill in the "
 "placeholders from your site's documentation:"
-msgstr "使用 Slurm 时，一次交互式分配大致如下。占位符请照你所在站点的文档填写："
+msgstr "用 Slurm 申请交互式节点大致如下，占位符按你们集群的文档填写："
 
 #: ../developer/hpc-model-host.md:52
 msgid ""
 "Many sites also ship a local wrapper around this; use whichever your "
 "documentation names. Note the job ID and the allocated node name — you "
 "need the first to release the allocation and the second to log in:"
-msgstr "很多站点还提供了自己封装的命令；用你们文档里写明的那个。记下作业 ID 和分配到的节点名——前者用于释放这次分配，后者用于登录："
+msgstr "很多集群还在这之上封装了自己的命令，以你们文档里写的为准。记下作业 ID 和分配到的节点名——前者用来释放这次分配，后者用来登录："
 
 #: ../developer/hpc-model-host.md:61
 msgid ""
@@ -115,7 +115,7 @@ msgid ""
 " image on the node fails. Pull it once somewhere that does have network, "
 "export it to shared storage that the compute nodes can read, and import "
 "it there."
-msgstr "计算节点常常没有出网，因此在节点上拉取服务镜像会失败。要在有网络的地方拉取一次，导出到计算节点能读到的共享存储，再在节点上导入。"
+msgstr "计算节点通常不能访问外网，在节点上直接拉取服务镜像会失败。应该先在能联网的机器上拉取一次，导出到计算节点能读到的共享存储，再在节点上导入。"
 
 #: ../developer/hpc-model-host.md:69
 msgid ""
@@ -123,14 +123,14 @@ msgid ""
 "different image every time you export, which turns \"it worked last "
 "week\" into an unreproducible report."
 msgstr ""
-"要固定一个确切的 tag（或 digest），而不是用 `:latest`。`:latest` "
-"意味着每次导出拿到的都是不同的镜像，会把「上周还是好的」变成一份无法复现的报告。"
+"要固定一个确切的 tag（或 digest），不要用 `:latest`。`:latest` "
+"每次导出都可能是不同的镜像，「上周还好好的」就成了没法复现的问题。"
 
 #: ../developer/hpc-model-host.md:84
 msgid ""
 "`docker save` / `docker load` take the same arguments if that is the "
 "runtime your site provides."
-msgstr "如果你所在站点提供的运行时是 Docker，`docker save` / `docker load` 接受同样的参数。"
+msgstr "如果集群提供的运行时是 Docker，`docker save` / `docker load` 的参数完全一样。"
 
 #: ../developer/hpc-model-host.md:87
 msgid "3. Start the model server"
@@ -138,7 +138,7 @@ msgstr "3\\. 启动模型服务器"
 
 #: ../developer/hpc-model-host.md:105
 msgid "Points worth understanding rather than copying:"
-msgstr "以下几点值得理解，而不是照抄："
+msgstr "下面几点要理解，不要照抄："
 
 #: ../developer/hpc-model-host.md:107
 msgid ""
@@ -149,7 +149,8 @@ msgid ""
 " whether or not the allocation gives you the node exclusively. The "
 "reverse tunnel in the next step is all the reachability you need."
 msgstr ""
-"**`--publish 127.0.0.1:8000:8000`** 让服务器不暴露在集群内网上。裸写 `-p 8000:8000` 会把它发布到这台节点的每一个网络接口上，前面还没有任何鉴权——而节点的集群内网接口，是同一张网络上任何一台机器都能访问到的，无论这次分配是不是把整台节点独占给了你。下一步的反向隧道已经提供了你需要的全部可达性。"
+"**`--publish 127.0.0.1:8000:8000`** 让服务器不暴露在集群内网上。只写 `-p 8000:8000` "
+"会把端口发布到节点的所有网卡上，前面没有任何鉴权——而集群内网上的其他机器都能访问节点的内网接口，不管这次分配是否让你独占这个节点。下一步的反向隧道已经足够让网关访问到它。"
 
 #: ../developer/hpc-model-host.md:113
 msgid ""
@@ -158,8 +159,8 @@ msgid ""
 "loopback publish above to reach it; binding `127.0.0.1` inside the "
 "container would make the published port answer nothing."
 msgstr ""
-"**`--host 0.0.0.0`** 指的是*容器*的接口，不是节点的。进程必须监听容器的对外接口，上面那条 loopback "
-"发布才能把请求送进来；在容器内绑定 `127.0.0.1` 会让发布出去的端口什么也答不了。"
+"**`--host 0.0.0.0`** 指的是*容器*的接口，不是节点的。进程必须监听容器的对外接口，上面那条只发布到 loopback "
+"的端口映射才能把请求送进来；如果在容器内绑定 `127.0.0.1`，发布出去的端口不会有任何响应。"
 
 #: ../developer/hpc-model-host.md:117
 msgid ""
@@ -177,7 +178,7 @@ msgid ""
 "a large `--shm-size` instead if your site disallows `--ipc=host`."
 msgstr ""
 "**`--ipc=host`** 把宿主机的共享内存段交给 vLLM 的张量并行 worker "
-"进程使用；容器的默认值对它们来说太小。如果你所在站点不允许 `--ipc=host`，改为设置一个较大的 `--shm-size`。"
+"进程使用；容器默认的共享内存太小，不够它们用。如果集群不允许 `--ipc=host`，就改为设置一个较大的 `--shm-size`。"
 
 #: ../developer/hpc-model-host.md:122
 msgid ""
@@ -189,7 +190,9 @@ msgstr "**`--device nvidia.com/gpu=all`** 是 Podman 的 CDI 写法。Docker 用
 msgid ""
 "**`:Z`** on the volume relabels the mount for SELinux and is "
 "Podman/Docker specific; drop it where SELinux is not enforced."
-msgstr "**`:Z`** 加在卷上，为 SELinux 重新打标签，是 Podman/Docker 特有的；没有启用 SELinux 的地方去掉它。"
+msgstr ""
+"**`:Z`** 加在卷上，用于给挂载重新打 SELinux 标签，是 Podman/Docker 特有的写法；没有启用 SELinux "
+"的机器上去掉它。"
 
 #: ../developer/hpc-model-host.md:126
 msgid ""
@@ -206,7 +209,7 @@ msgstr "继续之前，先在节点上确认："
 
 #: ../developer/hpc-model-host.md:136
 msgid "4. Tunnel it to the gateway host"
-msgstr "4\\. 把它隧道到网关主机"
+msgstr "4\\. 用隧道接到网关主机"
 
 #: ../developer/hpc-model-host.md:138
 msgid ""
@@ -222,8 +225,8 @@ msgid ""
 "yes`; leaving that off is the safer configuration."
 msgstr ""
 "**远端要绑定到 `127.0.0.1`**。`-R 0.0.0.0:8001:...` "
-"等于要求网关主机把一个没有鉴权的模型服务器发布到它所在的每一个网络上。它还只有在网关的 `sshd` 设了 `GatewayPorts yes` "
-"时才生效；不开这个选项才是更安全的配置。"
+"等于要求网关主机把一个没有鉴权的模型服务器发布到它所在的每个网络上。而且只有网关主机的 `sshd` 设了 `GatewayPorts yes` "
+"才会生效；保持这个选项关闭更安全。"
 
 #: ../developer/hpc-model-host.md:159
 msgid ""
@@ -234,7 +237,9 @@ msgid ""
 "`ssh`, which lives on the **gateway host**, not on your current node — "
 "your local PID file is useless for it. Clear it there:"
 msgstr ""
-"**`ExitOnForwardFailure=yes`** 让隧道在网关主机的 8001 端口仍被上一次分配的转发占着时大声失败，而不是连上之后悄悄什么都不转发。真发生这种情况时，占着端口的是*上一次*分配留下的 `ssh`，它活在**网关主机**上，不在你当前这台节点上——你本地那份 PID 文件对它毫无用处。要在网关主机上清掉它："
+"**`ExitOnForwardFailure=yes`** 的作用是：如果网关主机的 8001 "
+"端口还被上一次分配的转发占着，隧道会直接报错退出，而不是连上后悄悄什么都不转发。出现这种情况时，占着端口的是*上一次*分配留下的 "
+"`ssh`，它在**网关主机**上，不在你当前的节点上——你本地的 PID 文件管不到它。要到网关主机上清掉它："
 
 #: ../developer/hpc-model-host.md:171
 msgid ""
@@ -242,8 +247,8 @@ msgid ""
 "same command in `autossh`, a systemd user unit, or a shell retry loop — "
 "but nothing will survive the job ending."
 msgstr ""
-"隧道会随这次分配一起消失。要扛过网络抖动，可以把同一条命令包进 `autossh`、一个 systemd 用户单元或一个 shell "
-"重试循环——但作业一结束，什么都活不下来。"
+"隧道会随这次分配一起消失。要扛住网络抖动，可以把同一条命令放进 `autossh`、systemd 用户单元或 shell "
+"重试循环里——但作业一结束，这些手段都保不住它。"
 
 #: ../developer/hpc-model-host.md:175
 msgid ""
@@ -264,25 +269,26 @@ msgid ""
 "public `/v1` API. Use the fixed tunnel port as `base_url` and your "
 "`--served-model-name` as `provider_model_id`."
 msgstr ""
-"现在网关看到的就是 `http://127.0.0.1:8001/v1` 上一个普通的 OpenAI "
-"兼容服务器。注册它没有任何特别之处——[添加新的本地模型](add-local-model.md) 才是注册表条目、`openai_compat`"
-" 路由字段以及通过公开 `/v1` API 验证模型的权威说明。把固定的隧道端口填成 `base_url`，把你的 `--served-"
-"model-name` 填成 `provider_model_id`。"
+"现在，网关看到的就是 `http://127.0.0.1:8001/v1` 上一个普通的 OpenAI "
+"兼容服务器，注册它没有任何特别之处。注册表条目怎么写、`openai_compat` 路由有哪些字段、如何通过公开的 `/v1` API "
+"验证模型，都以[添加新的本地模型](add-local-model.md)为准。`base_url` "
+"填固定的隧道端口，`provider_model_id` 填你的 `--served-model-name`。"
 
 #: ../developer/hpc-model-host.md:190
 msgid "6. Release everything when you are done"
-msgstr "6\\. 用完后释放所有东西"
+msgstr "6\\. 用完后释放所有资源"
 
 #: ../developer/hpc-model-host.md:192
 msgid ""
 "Skipping this leaves a job burning its walltime, a dead route in the "
 "registry, and a stale listener on the gateway host that will make the "
 "next allocation's tunnel fail."
-msgstr "跳过这一步，会留下一个仍在烧 walltime 的作业、注册表里一条已死的路由，以及网关主机上一个陈旧的监听——它会让下一次分配的隧道建立失败。"
+msgstr ""
+"跳过这一步会留下三个问题：作业还在白白消耗 "
+"walltime，注册表里多了一条失效的路由，网关主机上还残留着一个监听，会导致下一次分配的隧道建立失败。"
 
 #: ../developer/hpc-model-host.md:209
 msgid ""
 "Then confirm from the gateway host that the port is genuinely free — the "
 "following should now fail to connect:"
 msgstr "然后从网关主机确认端口确实空了出来——下面这条现在应该连不上："
-

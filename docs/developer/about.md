@@ -20,9 +20,9 @@ lists everyone who has landed a change.
 [FreeInference](https://freeinference.org/) is the lab's own deployment of
 this gateway. A deployment's identity — branding, team, sponsors, user-facing
 documentation — lives with the deployment, in its overlay and on its own
-site, not in this repository. That separation is why these pages name no
-default provider and no team: a fresh clone comes up as your gateway, not
-ours.
+site, not in this repository. That separation is why these pages describe no
+particular deployment and name no team: a fresh clone comes up as your gateway,
+not ours.
 
 ## Getting in touch
 
