@@ -208,7 +208,7 @@ selection signal.
   alone, because weights encode cost and provider preference and not only
   capacity.
 - Very large prompts ("elephants") additionally skip endpoints already at the
-  per-endpoint elephant limit, so two mega-prefills serialise across replicas
+  per-endpoint elephant limit, so two mega-prefills go to different replicas
   instead of stacking on one. If every candidate is at the limit the
   restriction is dropped: this degrades to "least loaded", never to "refuse to
   route".
@@ -659,7 +659,7 @@ any internal hostnames in a route's base URL. Put it behind your reverse proxy,
 or do not expose it.
 
 `GET /health/deep` is unauthenticated on the same terms: its `providers` keys
-are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` entry
+are `endpoint_id`s (`<model-id>:<location>`), and each `route_exclusions` entry
 carries that route's `base_url` too. Gate both, not just `/routing`.
 ```
 
@@ -1010,7 +1010,7 @@ Note that `RoutingManager.apply()` only rewrites weights when the effective
 `tests/unit/routing/test_router_contract.py` holds the behavioural contract
 every serving router must satisfy — add your class to it. `test_strategies.py`
 covers the registry itself: registration, params validation, and the
-dependency-injection check. A `isinstance(router, RouterProtocol)` assertion is
+dependency-injection check. An `isinstance(router, RouterProtocol)` assertion is
 meaningful because the protocol is `@runtime_checkable`.
 
 Run the routing tests with:

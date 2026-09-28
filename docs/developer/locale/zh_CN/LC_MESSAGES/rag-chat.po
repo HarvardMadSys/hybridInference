@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:04+0800\n"
+"POT-Creation-Date: 2026-09-28 17:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -26,11 +26,11 @@ msgstr "文档 RAG 助手"
 
 #: ../developer/rag-chat.md:3
 msgid ""
-"A retrieval-augmented-generation (RAG) chat feature that answers user "
-"questions about a deployment using its own **public user docs** as the "
-"knowledge base. Both retrieval and generation route through the gateway "
-"itself."
-msgstr "一个检索增强生成（RAG）聊天功能：以某个部署自己的**公开用户文档**为知识库，回答用户关于该部署的问题。检索和生成都经由网关自身。"
+"The docs assistant is a retrieval-augmented-generation (RAG) chat "
+"feature: it answers users' questions about a deployment from that "
+"deployment's own **public user docs**. Both retrieval and generation go "
+"through the gateway itself."
+msgstr "文档助手是一个基于检索增强生成（RAG）的聊天功能：它根据部署自己的**公开用户文档**，回答用户关于这个部署的问题。检索和生成都通过网关本身完成。"
 
 #: ../developer/rag-chat.md:7
 msgid ""
@@ -40,8 +40,8 @@ msgid ""
 "checkout with no distribution has none of these, so the assistant answers"
 " `503` until you supply them."
 msgstr ""
-"这是一个早期功能，还有已知的不足，见[局限](#limitations)。要运行它，部署需要准备好 Markdown "
-"格式的文档、基于这些文档构建的索引，以及助手调用网关时使用的 API key。没有发行版的检出里这些都没有，所以在你补齐之前，助手会一直返回 "
+"这个功能还处于早期，有已知的不足，见[局限](#limitations)。要运行它，部署需要准备好 Markdown "
+"格式的文档、用这些文档构建的索引，以及助手调用网关用的 API key。仓库里如果没有发行版，这些都不存在，所以在你补齐之前，助手会一直返回 "
 "`503`。"
 
 #: ../developer/rag-chat.md:13
@@ -79,9 +79,9 @@ msgid ""
 "builds that deployment's public doc site. A checkout with no overlay has "
 "no corpus; set `RAG_CORPUS_DIR` to your own documentation."
 msgstr ""
-"**语料（corpus）**：生效的发行版 overlay "
-"的文档源文件（`<overlay>/content/docs/docs/source/*.md`）——也就是构建该部署公开文档站的同一批 "
-"markdown。没有 overlay 的检出没有语料；把 `RAG_CORPUS_DIR` 指向你自己的文档即可。"
+"**语料（corpus）**：当前生效的发行版 overlay "
+"里的文档源文件（`<overlay>/content/docs/docs/source/*.md`），也就是用来构建这个部署公开文档站的那批 "
+"markdown。没有 overlay 就没有语料，这时把 `RAG_CORPUS_DIR` 指向你自己的文档即可。"
 
 #: ../developer/rag-chat.md:39
 msgid ""
@@ -93,9 +93,9 @@ msgid ""
 "`RAG_CORPUS_DIR` override these two paths."
 msgstr ""
 "**向量库**：一个普通的 JSON 文件，用纯 Python "
-"计算余弦相似度逐条扫描；文档语料规模很小，不需要更复杂的方案。和语料一样，索引属于发行版，而不属于本仓库：它的默认路径是 "
-"`<overlay>/content/rag/docs_index.json`，位于网关所运行的那个发行版内部。`RAG_INDEX_PATH` "
-"和 `RAG_CORPUS_DIR` 可以分别覆盖这两个路径。"
+"计算余弦相似度逐条扫描；文档语料规模很小，用不着更复杂的方案。和语料一样，索引属于发行版，而不属于本仓库：默认路径是 "
+"`<overlay>/content/rag/docs_index.json`，在网关当前运行的那个发行版里。`RAG_INDEX_PATH` 和"
+" `RAG_CORPUS_DIR` 可以分别覆盖这两个路径。"
 
 #: ../developer/rag-chat.md:45
 msgid ""
@@ -151,14 +151,14 @@ msgid ""
 "are embedded with the same `RAG_EMBED_MODEL` the serving endpoint uses at"
 " query time, so query and document vectors share one space."
 msgstr ""
-"`RAG_GATEWAY_BASE_URL` 默认是 `http://localhost:8080/v1`——做 embedding "
-"是要花钱的，所以克隆出来的部署应当消耗自己的网关，而不是消耗写下这个默认值的人的网关。把它指向你想借以做 embedding 的那个网关；key "
-"必须是*那个*网关上有效的用户 API key。切出来的 chunk 用的是服务端点在查询时所用的同一个 "
-"`RAG_EMBED_MODEL`，这样查询向量和文档向量才处在同一个空间里。"
+"`RAG_GATEWAY_BASE_URL` 默认是 `http://localhost:8080/v1`：做 embedding "
+"是要花钱的，所以克隆下来的仓库默认用你自己的网关，而不是这个默认值作者的网关。把它指向你想用来做 embedding 的网关；key "
+"必须是*那个*网关上有效的用户 API key。文档 chunk 和查询用的是同一个 "
+"`RAG_EMBED_MODEL`（服务端点在查询时用的就是它），这样查询向量和文档向量才在同一个空间里。"
 
 #: ../developer/rag-chat.md:77
 msgid "For an offline run with no gateway/key (weak retrieval — dev/CI only):"
-msgstr "如果要在没有网关、没有 key 的情况下离线跑一遍（检索质量弱——仅限开发/CI）："
+msgstr "如果想不接网关、不用 key，离线跑一遍（检索效果差，只适合开发/CI）："
 
 #: ../developer/rag-chat.md:83
 msgid ""
@@ -186,11 +186,11 @@ msgid ""
 "is unavailable at query time, `/v1/rag/chat` returns a graceful `503` "
 "rather than a 500."
 msgstr ""
-"索引是部署产物，不属于镜像构建的一部分：用 `make rag-ingest` 构建它，并让生成的 JSON 文件在 "
-"`RAG_INDEX_PATH` 处可读。在 Compose 部署中，overlay 目录挂载进了后端，所以写进 overlay 的 "
-"`content/rag/` 的索引不用重建镜像就能被读到，直接替换文件即可。`/v1/rag/status` 会报告 "
-"`index_loaded`、embedder 模式和 chunk 数量，可用于部署后的检查。如果查询时 embedding "
-"后端不可用，`/v1/rag/chat` 会妥善地返回 `503`，而不是抛出 500。"
+"索引是部署产物，不属于镜像构建的一部分：用 `make rag-ingest` 构建，并保证生成的 JSON 文件能在 "
+"`RAG_INDEX_PATH` 读到。在 Compose 部署中，overlay 目录挂载到了后端里，所以写到 overlay 的 "
+"`content/rag/` 下的索引不用重建镜像就能读到，直接替换文件即可。部署后可以用 `/v1/rag/status` 检查，它会返回 "
+"`index_loaded`、embedder 模式和 chunk 数量。如果查询时 embedding 后端不可用，`/v1/rag/chat`"
+" 会正常返回 `503`，而不是报 500。"
 
 #: ../developer/rag-chat.md:99
 msgid "Endpoints"
@@ -218,7 +218,7 @@ msgid ""
 "models."
 msgstr ""
 "`POST /v1/rag/chat`——请求体为 `{ messages, top_k?, stream? "
-"}`。生成用的模型在服务端固定（`RAG_CHAT_MODEL`），**不能**由客户端选择，所以这个端点没法用来够到按角色限制的模型。"
+"}`。生成用的模型在服务端固定（`RAG_CHAT_MODEL`），**不能**由客户端选择，所以不能借这个端点访问有角色限制的模型。"
 
 #: ../developer/rag-chat.md:109
 #, python-brace-format
@@ -268,8 +268,10 @@ msgid "Configuration"
 msgstr "配置"
 
 #: ../developer/rag-chat.md:134
-msgid "All optional; sensible defaults resolve relative to the repo root."
-msgstr "全部可选；合理的默认值相对仓库根目录解析。"
+msgid ""
+"Only `RAG_API_KEY` is required. The path defaults point inside the active"
+" distribution."
+msgstr "只有 `RAG_API_KEY` 是必填的。各个路径的默认值都指向当前发行版内部。"
 
 #: ../developer/rag-chat.md
 msgid "Env var"
@@ -295,7 +297,7 @@ msgstr "_（未设置）_"
 msgid ""
 "User API key the handler calls the gateway with (**required** at serving "
 "time)"
-msgstr "处理器调用网关时所用的用户 API key（服务时**必需**）"
+msgstr "处理器调用网关时使用的用户 API key（提供服务时**必填**）"
 
 #: ../developer/rag-chat.md
 msgid "`RAG_API_BASE_URL`"
@@ -379,7 +381,7 @@ msgstr ""
 msgid ""
 "Answer-generation model. Set it to a model your gateway serves: the "
 "default names a model this repository does not ship."
-msgstr "生成回答所用的模型。请设为你的网关实际提供的模型：默认值指向的是一个本仓库并不提供的模型。"
+msgstr "生成回答用的模型。请设为你的网关实际提供的模型：默认值是一个本仓库并不自带的模型。"
 
 #: ../developer/rag-chat.md
 msgid "`RAG_GATEWAY_API_KEY`"
@@ -445,18 +447,18 @@ msgstr "索引是手工刷新的（`make rag-ingest`），没有定时任务—�
 msgid ""
 "The `HashEmbedder` fallback exists only so the pipeline runs without the "
 "gateway (dev/CI); its retrieval quality is weak."
-msgstr "`HashEmbedder` 这个回退方案存在的唯一理由，是让流水线在没有网关时也能跑（开发/CI）；它的检索质量很弱。"
+msgstr "`HashEmbedder` 这个回退方案只是为了让流水线在没有网关时也能跑（开发/CI）；检索质量很差。"
 
 #: ../developer/rag-chat.md:157
 msgid ""
 "No answer caching, no reranking, and history is truncated to the last few"
 " turns. The store is loaded into memory per process (cached, mtime-"
 "invalidated)."
-msgstr "没有答案缓存，没有重排序，历史被截断到最近几轮。向量库按进程加载进内存（带缓存，按 mtime 失效）。"
+msgstr "没有答案缓存，没有重排序，历史只保留最近几轮。向量库在每个进程里各加载一份到内存（带缓存，按 mtime 失效）。"
 
 #: ../developer/rag-chat.md:160
 msgid "Code map"
-msgstr "代码地图"
+msgstr "代码位置"
 
 #: ../developer/rag-chat.md
 msgid "Path"
@@ -520,7 +522,7 @@ msgstr ""
 
 #: ../developer/rag-chat.md
 msgid "Chat UI (`/chat`, behind `ProtectedRoute`)"
-msgstr "聊天界面（`/chat`，在 `ProtectedRoute` 之后）"
+msgstr "聊天界面（`/chat`，受 `ProtectedRoute` 保护）"
 
 #: ../developer/rag-chat.md
 msgid "`apps/frontend/src/lib/api/chat.ts`"
@@ -680,3 +682,6 @@ msgstr "流式 SSE 客户端"
 #~ "和通用错误信息。校验会拒绝 `features` 或 manifest "
 #~ "顶层的未知键，防止限制因拼写或位置错误而静默丢失。修正配置后重启后端；成功加载的 manifest "
 #~ "会缓存到进程结束。这些限制适用于文档助手端点；通用模型 API 保留现有访问规则。"
+
+#~ msgid "All optional; sensible defaults resolve relative to the repo root."
+#~ msgstr "全部可选；默认值都比较合理，其中的路径相对仓库根目录解析。"

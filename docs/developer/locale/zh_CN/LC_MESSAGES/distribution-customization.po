@@ -26,8 +26,8 @@ msgid ""
 "what configuration alone can change, how the manifest works, and how to "
 "upgrade."
 msgstr ""
-"[发行版](glossary.md#deployments)是一个部署自己的那套文件：它的名称和品牌、模型与路由配置，以及功能开关。本页面向搭建发行版的运维人员，内容包括：只改配置能改动什么、manifest"
-" 如何工作，以及如何升级。"
+"[发行版](glossary.md#deployments)就是某个部署自己的那套文件：名称和品牌、模型与路由配置，以及功能开关。本页写给搭建发行版的运维人员，内容包括：只改配置能改哪些东西、manifest"
+" 怎么工作，以及怎么升级。"
 
 #: ../developer/distribution-customization.md:8
 msgid ""
@@ -37,8 +37,8 @@ msgid ""
 "interface that covers your requirements; each option has a different "
 "build and upgrade cost."
 msgstr ""
-"发行版可以使用 HybridInference "
-"的标准网站，配置自己的品牌和运营策略，也可以自行开发公开页面，同时共用控制台和认证逻辑。请选择能够满足需求的最小接口；各方案的构建与升级成本不同。"
+"发行版可以直接用 HybridInference "
+"的标准网站，也可以套用自己的品牌和运营策略，还可以自己开发公开页面、同时继续共用控制台和认证逻辑。选能满足需求的最小接口即可；不同方案的构建和升级成本不一样。"
 
 #: ../developer/distribution-customization.md:13
 msgid ""
@@ -70,15 +70,15 @@ msgstr "文件或接口"
 
 #: ../developer/distribution-customization.md
 msgid "Rebuild requirement"
-msgstr "重新构建要求"
+msgstr "是否需要重新构建"
 
 #: ../developer/distribution-customization.md
 msgid "Site name, public URL, support email and organization identity"
-msgstr "站点名称、公开 URL、支持邮箱和组织标识"
+msgstr "站点名称、公开 URL、支持邮箱和组织信息"
 
 #: ../developer/distribution-customization.md
 msgid "`distribution.yaml` plus the `branding.yaml` selected by `site.branding`"
-msgstr "`distribution.yaml` 及 `site.branding` 选定的 `branding.yaml`"
+msgstr "`distribution.yaml`，加上 `site.branding` 指定的 `branding.yaml`"
 
 #: ../developer/distribution-customization.md
 msgid "No frontend rebuild; restart the backend after changing mounted files"
@@ -98,7 +98,7 @@ msgstr "`branding.yaml`；可选挂载的 `site-assets/` 图片，通过 `/site-
 msgid ""
 "No frontend rebuild for mounted configuration/assets; packaged asset "
 "changes need a rebuild"
-msgstr "挂载的配置／资源无需重新构建前端；打包资源变更需要重新构建"
+msgstr "挂载的配置和资源不用重新构建前端；打包进镜像的资源改了，就要重新构建"
 
 #: ../developer/distribution-customization.md
 msgid "Complete home page `/`"
@@ -156,7 +156,7 @@ msgstr "模块的 `server.ts` → `metaMessages` 和 `locale`"
 
 #: ../developer/distribution-customization.md
 msgid "Existing console identity and feature settings"
-msgstr "现有控制台的站点标识和功能设置"
+msgstr "现有控制台的站点信息和功能设置"
 
 #: ../developer/distribution-customization.md
 msgid ""
@@ -174,7 +174,7 @@ msgstr ""
 
 #: ../developer/distribution-customization.md
 msgid "Models, endpoints, aliases, weights and supported router settings"
-msgstr "模型、端点、别名、权重及受支持的路由器设置"
+msgstr "模型、端点、别名、权重及受支持的 router 设置"
 
 #: ../developer/distribution-customization.md
 msgid ""
@@ -186,7 +186,7 @@ msgstr "`config/models.yaml`、`config/routing.yaml`、环境变量及受支持�
 msgid ""
 "No code rebuild for configuration; file edits require backend restart, "
 "admin edits apply at runtime"
-msgstr "配置变更无需重新构建代码；文件修改需要重启后端，管理修改在运行时生效"
+msgstr "改配置不用重新构建代码；改文件要重启后端，通过管理接口修改则运行时生效"
 
 #: ../developer/distribution-customization.md
 msgid "Public registration and configured RAG policy"
@@ -222,13 +222,13 @@ msgstr "运行时环境变量变更后重新创建前端容器；`/agents` 不�
 
 #: ../developer/distribution-customization.md
 msgid "Trusted adapters, agent-access rules and quota reporting"
-msgstr "可信 adapter、agent 访问规则和配额报告"
+msgstr "可信 adapter、agent 访问规则和配额上报"
 
 #: ../developer/distribution-customization.md
 msgid ""
 "Backend environment `BACKEND_EXTENSIONS` plus importable extension `.py` "
 "modules using documented hooks"
-msgstr "后端环境变量 `BACKEND_EXTENSIONS`，以及使用文档所述钩子、可导入的扩展 `.py` 模块"
+msgstr "后端环境变量 `BACKEND_EXTENSIONS`，加上可导入的扩展 `.py` 模块（使用文档中列出的钩子）"
 
 #: ../developer/distribution-customization.md
 msgid ""
@@ -246,7 +246,7 @@ msgstr "额外路由、不同的控制台布局或新的认证流程"
 msgid ""
 "Application source, such as `apps/frontend/src/app/`, in upstream or an "
 "explicitly maintained fork"
-msgstr "上游或明确自行维护的源码分支中的应用源码，例如 `apps/frontend/src/app/`"
+msgstr "应用源码，例如 `apps/frontend/src/app/`；改在上游，或改在你明确自行维护的 fork 里"
 
 #: ../developer/distribution-customization.md
 msgid "Rebuild affected application images; these are outside Site UI API v1"
@@ -278,11 +278,11 @@ msgid ""
 "backend network target matches your deployment; see [When changes take "
 "effect](#when-changes-take-effect)."
 msgstr ""
-"从带注释的 `config/examples/distribution.example.yaml` 和 "
-"`config/examples/branding.example.yaml` 开始。将部署自有文件保存在发行版仓库或 overlay "
-"中，凭据放在环境变量里。使用标准前端镜像，不选择 Site UI "
-"模块，即可保留默认页面布局。复用该镜像的前提是其编译时确定的后端网络目标地址与你的部署一致；请参阅[变更何时生效](#when-changes-"
-"take-effect)。"
+"先从带注释的 `config/examples/distribution.example.yaml` 和 "
+"`config/examples/branding.example.yaml` 入手。属于部署的文件放在发行版仓库或 overlay "
+"里，凭据放在环境变量里。想保留默认的页面布局，就用标准前端镜像，不选任何 Site UI "
+"模块。复用这个镜像有个前提：镜像编译时确定的后端网络地址要和你的部署一致；见[变更何时生效](#when-changes-take-"
+"effect)。"
 
 #: ../developer/distribution-customization.md:54
 msgid "Where your files live"
@@ -308,7 +308,7 @@ msgid ""
 " this repository ships nobody's hosts."
 msgstr ""
 "这样拆分，是为了让源码树和容器镜像保持中立。模型 id、上游 base "
-"URL、端口、站点标识和品牌，都属于某一个部署，而不属于项目本身；把它们放进 overlay，镜像就可以只构建一次，再把某个部署的 overlay"
+"URL、端口、站点信息和品牌，都属于某一个部署，而不属于项目本身；把它们放进 overlay，镜像就可以只构建一次，再把某个部署的 overlay"
 " 挂载进去（`deploy/docker/docker-compose.yml` 以只读方式挂载 "
 "overlay，而不是把它打包进镜像）。这也意味着，从本仓库克隆下来的代码不会带上任何人的主机地址。"
 
@@ -333,8 +333,8 @@ msgid ""
 msgstr ""
 "manifest 是一份带版本号的 YAML "
 "文档，它给部署命名，并告诉网关这个部署的配置文件在哪里。`config/examples/distribution.example.yaml` "
-"是带注释的参考。下方和该文件中的示例在激活后都会关闭公开注册；如果部署应该接受公开注册 API 创建的新账号，请把 `public_signup`"
-" 改为 `true` 或 null："
+"是带注释的参考示例。下面的示例和该文件里的示例一旦启用，都会关闭公开注册；如果这个部署需要通过公开注册 API 接受新账号，请把 "
+"`public_signup` 改成 `true` 或 null："
 
 #: ../developer/distribution-customization.md:115
 msgid ""
@@ -356,8 +356,9 @@ msgid ""
 "`paths.mcp` and the legal-document fields are accepted but have the "
 "limitations described below."
 msgstr ""
-"`paths.models`、`paths.routing` 和 `paths.alerts` 用于选择网关配置文件。相对路径从 manifest"
-" 所在目录解析；显式设置的网关环境变量仍有更高优先级。manifest 接受 `paths.mcp` 和法律文档字段，但存在下文所述限制。"
+"`paths.models`、`paths.routing` 和 `paths.alerts` 指定网关使用的配置文件。相对路径以 "
+"manifest 所在目录为基准；如果显式设置了网关的环境变量，仍以环境变量为准。`paths.mcp` "
+"和法律文档相关字段可以写，但有下文说明的限制。"
 
 #: ../developer/distribution-customization.md:125
 msgid "Point the gateway at it with two environment variables:"
@@ -387,8 +388,8 @@ msgid ""
 "apply to every new account."
 msgstr ""
 "当 manifest 允许注册，或者没有启用 manifest 时，管理控制台里的开关优先于 `SIGNUP_ENABLED`（默认 "
-"`true`）。`GET /site-config` 在 `features.public_signup` "
-"中报告最终结果，控制台以它为准。邮箱验证、按域名审批和配额，对每个新账号依然照常生效。"
+"`true`）。`GET /site-config` 通过 `features.public_signup` "
+"返回最终结果，控制台以它为准。邮箱验证、按域名审批和配额，对每个新账号依然照常生效。"
 
 #: ../developer/distribution-customization.md:145
 msgid ""
@@ -470,7 +471,7 @@ msgstr ""
 
 #: ../developer/distribution-customization.md:199
 msgid "Identity, and what the manifest must not contain"
-msgstr "站点标识，以及 manifest 里不能放什么"
+msgstr "站点信息，以及 manifest 里不能放什么"
 
 #: ../developer/distribution-customization.md:201
 msgid ""
@@ -485,11 +486,10 @@ msgid ""
 "the manifest's."
 msgstr ""
 "manifest 的 `site:` 和 `features:` 两节是公开的：manifest 启用后，`GET /site-config` "
-"会把它们提供给每一位访客。站点名称和地址还会出现在网关发出的邮件里，以及它发给 OpenRouter 的请求头里；这些值依次取自 "
+"会把它们返回给每一位访客。站点名称和地址还会出现在网关发出的邮件里，以及它发给 OpenRouter 的请求头里；取值顺序是：先用已设置的 "
 "`SITE_NAME`、`SITE_PUBLIC_BASE_URL`、`SITE_DOCS_URL` 和 "
-"`SITE_SUPPORT_EMAIL`（只要设置了），其次是已启用的 manifest，最后是中性的默认值。标准 Compose "
-"文件在你没有设置时会把 `SITE_NAME` 设为 `HybridInference`，所以请把它设成你的站点名称，或者设为空值以使用 "
-"manifest 里的名称。"
+"`SITE_SUPPORT_EMAIL`，其次是已启用的 manifest，最后是中立的默认值。你不设置时，标准 Compose 文件会把 "
+"`SITE_NAME` 设为 `HybridInference`，所以请把它设成你的站点名称，或者设为空值，改用 manifest 里的名称。"
 
 #: ../developer/distribution-customization.md:210
 msgid ""
@@ -497,8 +497,8 @@ msgid ""
 "and `schema_version: 1` deliberately does not interpolate environment "
 "variables into manifest values."
 msgstr ""
-"manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 有意不把环境变量插值进 manifest "
-"的取值。"
+"manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 特意不支持在 manifest "
+"的值里插入环境变量。"
 
 #: ../developer/distribution-customization.md:214
 msgid "Runtime branding"
@@ -514,10 +514,11 @@ msgid ""
 "startup and exposed through `/site-config`, so every value in it must be "
 "safe for a visitor to read."
 msgstr ""
-"复制完整的 `config/examples/branding.example.yaml`，设置其中的公开值，并通过 "
-"`site.branding` 指向它。路径相对于 manifest 所在目录。在 `distribution.display_name` "
-"中设置站点名称；如果没有品牌文档，仅设置显示名称不会替换前端的默认名称。品牌文档在后端启动时校验，并通过 `/site-config` "
-"公开，因此其中的每个值都必须可以安全地提供给访客阅读。"
+"把完整的 `config/examples/branding.example.yaml` 复制一份，填好其中的公开值，再让 "
+"`site.branding` 指向它。这个路径相对于 manifest 所在的目录。站点名称在 "
+"`distribution.display_name` "
+"里设置；但如果没有品牌文档，只设显示名称并不会替换前端的默认名称。品牌文档在后端启动时校验，并通过 `/site-config` "
+"公开，所以里面的每个值都必须是可以给访客看的。"
 
 #: ../developer/distribution-customization.md
 msgid "Branding field"
@@ -525,7 +526,7 @@ msgstr "品牌字段"
 
 #: ../developer/distribution-customization.md
 msgid "What the default UI uses it for"
-msgstr "默认 UI 的用途"
+msgstr "默认 UI 用它做什么"
 
 #: ../developer/distribution-customization.md
 msgid "`schema_version`"
@@ -549,7 +550,7 @@ msgstr "`organization.name`, `.url`, `.tagline`"
 
 #: ../developer/distribution-customization.md
 msgid "Organization identity, link and tagline"
-msgstr "组织标识、链接和标语"
+msgstr "组织信息、链接和标语"
 
 #: ../developer/distribution-customization.md
 msgid "`links.docs_url`, `.status_url`, `.github_url`"
@@ -579,7 +580,7 @@ msgstr "`example.api_base`, `.api_key_env_var`, `.model`"
 msgid ""
 "Public quickstart example; an empty API base hides it. The environment-"
 "variable name is an example, not an API-key value"
-msgstr "公开的快速开始示例；API 基础地址为空时隐藏。环境变量名称是示例，不是 API key值"
+msgstr "公开的快速开始示例；API base 为空时不显示。这里填的是环境变量名，只是示例，不是 API key 的值"
 
 #: ../developer/distribution-customization.md
 msgid "`analytics.statcounter_project_id`, `.statcounter_security_key`"
@@ -589,7 +590,7 @@ msgstr "`analytics.statcounter_project_id`, `.statcounter_security_key`"
 msgid ""
 "Public identifiers for optional client-side analytics; empty values "
 "disable it"
-msgstr "可选客户端分析服务的公开标识；空值会禁用该服务"
+msgstr "可选的客户端统计分析所用的公开标识；留空即不启用"
 
 #: ../developer/distribution-customization.md
 msgid "`signup.turnstile_site_key`, `.fast_track_domain`, `.fast_track_org`"
@@ -599,7 +600,7 @@ msgstr "`signup.turnstile_site_key`, `.fast_track_domain`, `.fast_track_org`"
 msgid ""
 "Public widget key and affiliated-organization signup presentation; not "
 "server secrets or authorization rules"
-msgstr "公开的组件密钥及关联组织的注册展示；不是服务器端密钥或授权规则"
+msgstr "公开的 widget key，以及关联组织在注册页上的展示方式；不是服务端密钥，也不是授权规则"
 
 #: ../developer/distribution-customization.md
 msgid "`storage_key_prefix`"
@@ -617,7 +618,7 @@ msgstr "`data_policy_notice`"
 
 #: ../developer/distribution-customization.md
 msgid "Displayed data-policy notice; does not configure backend data handling"
-msgstr "展示的数据政策提示；不会配置后端数据处理方式"
+msgstr "页面上显示的数据政策提示；不影响后端如何处理数据"
 
 #: ../developer/distribution-customization.md
 msgid "`assets.logo_url`, `.favicon_url`"
@@ -657,9 +658,9 @@ msgid ""
 "palette, font or page layout. Custom page components decide which runtime"
 " branding values they render."
 msgstr ""
-"允许的值见模板和 `serving/config/branding.py` "
-"中的数据结构定义。品牌配置会拒绝未知键；不能直接省略必填字段。对于可选内容，请使用文档规定的空字符串／空列表。赞助商的 `class_name` "
-"接受数据结构定义中支持的图片尺寸类名，不接受任意 CSS。品牌字段不提供全局配色、字体或页面布局。自定义页面组件自行决定渲染哪些运行时品牌值。"
+"允许哪些值，以模板和 `serving/config/branding.py` 里的 schema "
+"为准。品牌配置会拒绝未知键；必填字段不能直接省略。可选内容不需要时，按文档写空字符串或空列表。赞助商的 `class_name` 只接受 "
+"schema 支持的图片尺寸类名，不能写任意 CSS。没有哪个品牌字段能设置全局配色、字体或页面布局。自定义页面组件自己决定渲染哪些运行时品牌值。"
 
 #: ../developer/distribution-customization.md:246
 msgid ""
@@ -669,8 +670,9 @@ msgid ""
 "configuration error instead of silently rendering a working site with "
 "different defaults."
 msgstr ""
-"通过挂载的 site-assets 目录和 `/site-assets/*` 提供本地品牌图片，或使用允许的公开资源 URL。通过 HTTP "
-"检查这些 URL。如果 `/site-config` 响应失败或无效，页面会报配置错误，而不会悄悄使用另一套默认值显示看似正常的站点。"
+"本地的品牌图片放在挂载的 site-assets 目录里，通过 `/site-assets/*` 访问；也可以用允许的公开资源 URL。用 "
+"HTTP 实际请求一下这些 URL 来确认。如果 `/site-config` "
+"请求失败或返回无效内容，页面会报配置错误，而不会悄悄换一套默认值，显示一个看似正常的站点。"
 
 #: ../developer/distribution-customization.md:251
 msgid "Feature settings and their limits"
@@ -682,8 +684,8 @@ msgid ""
 "backend access. Allowing RAG still requires the service's configuration; "
 "see [Docs RAG Assistant](rag-chat.md)."
 msgstr ""
-"已启用的 manifest 中的 `features.rag: false` 会禁用 RAG UI 和后端访问。允许 RAG "
-"仍需完成服务配置；请参阅[文档 RAG 助手](rag-chat.md)。"
+"在已启用的 manifest 里设置 `features.rag: false`，会同时关掉 RAG 的界面和后端访问。开启 RAG "
+"仍然需要把服务本身配置好；见[文档 RAG 助手](rag-chat.md)。"
 
 #: ../developer/distribution-customization.md:256
 msgid ""
@@ -691,8 +693,8 @@ msgid ""
 " the existing agent link/proxy integration. They do not install an agent "
 "service. See [The public path table](public-path-table.md)."
 msgstr ""
-"`AGENT_PUBLIC_URL` 或内部 agent 服务目标地址用于配置已有的 agent 链接／代理集成，不会安装 agent "
-"服务。请参阅[公开路径表](public-path-table.md)。"
+"`AGENT_PUBLIC_URL`，或者内部 agent 服务的目标地址，用来配置现有的 agent 链接／代理集成；它们不会替你安装 "
+"agent 服务。见[公开路径表](public-path-table.md)。"
 
 #: ../developer/distribution-customization.md:259
 msgid ""
@@ -703,7 +705,7 @@ msgid ""
 "a [Site UI module](site-ui-modules.md)."
 msgstr ""
 "`features.routers`、`paths.mcp`、`site.terms_document`、`site.privacy_document`"
-" 和 `deployment.target` 会被接受，但目前还不起作用；见[目前不生效的设置](configuration.md"
+" 和 `deployment.target` 可以写，但目前还不起作用；见[目前不生效的设置](configuration.md"
 "#settings-that-currently-have-no-effect)。要发布自己的条款，请使用 [Site UI 模块](site-"
 "ui-modules.md)。"
 
@@ -712,7 +714,7 @@ msgid ""
 "A public branding hint or hidden navigation item is not a substitute for "
 "backend authorization. The registration rules above remain effective with"
 " a custom UI module."
-msgstr "公开的品牌提示或隐藏导航项不能替代后端授权。使用自定义 UI 模块时，上述注册规则仍然生效。"
+msgstr "在公开的品牌配置里加个提示、或者把导航项藏起来，都代替不了后端授权。用了自定义 UI 模块，上面的注册规则照样生效。"
 
 #: ../developer/distribution-customization.md:269
 msgid ""
@@ -723,10 +725,10 @@ msgid ""
 "difference. See [Runtime configuration](configuration.md#runtime-"
 "configuration-from-the-admin-console)."
 msgstr ""
-"通过受支持的管理 API 修改模型／provider，会在运行中的网关上生效，并持久化到其数据库。这些修改不会重写 "
-"YAML；启动时，已保存的覆盖设置会再次叠加到 YAML "
-"之上。排查配置差异时，应同时检查这两层。请参阅[运行时配置](configuration.md#runtime-configuration-"
-"from-the-admin-console)。"
+"通过受支持的管理 API 修改模型或 provider，会在运行中的网关上生效，并保存到它的数据库里。这些修改不会改写 "
+"YAML；每次启动时，保存下来的覆盖设置会重新叠加到 YAML "
+"之上。排查配置不一致时，这两层都要看。见[运行时配置](configuration.md#runtime-configuration-from-"
+"the-admin-console)。"
 
 #: ../developer/distribution-customization.md:275
 msgid "When changes take effect"
@@ -737,7 +739,7 @@ msgid ""
 "Restart the backend after changing mounted manifest, branding, "
 "model/routing or alert files. Reload the page to check presentation; the "
 "backend serves the branding snapshot loaded at startup."
-msgstr "修改挂载的 manifest、品牌、模型／路由或告警文件后重启后端。重新加载页面检查展示；后端提供的是启动时加载的品牌配置快照。"
+msgstr "改了挂载的 manifest、品牌、模型／路由或告警文件，要重启后端。刷新页面看展示效果；后端提供的是启动时加载的那份品牌配置快照。"
 
 #: ../developer/distribution-customization.md:280
 msgid ""
@@ -746,21 +748,21 @@ msgid ""
 "account for browser/proxy caches. Changing `SITE_ASSETS_DIR` itself "
 "requires recreating the frontend container."
 msgstr ""
-"替换挂载的 site-assets 文件无需重新构建镜像。该路由允许浏览器缓存五分钟，因此请验证实际提供的 URL，并考虑浏览器／代理缓存。修改 "
-"`SITE_ASSETS_DIR` 本身需要重新创建前端容器。"
+"替换挂载的 site-assets 文件不需要重新构建镜像。这个路由允许浏览器缓存五分钟，所以要直接请求实际的 URL "
+"来确认，并把浏览器和代理的缓存考虑进去。改 `SITE_ASSETS_DIR` 本身则需要重新创建前端容器。"
 
 #: ../developer/distribution-customization.md:284
 msgid ""
 "Recreate the affected container after changing runtime environment "
 "values. A plain container restart retains its old environment. Server-"
 "only agent destinations are runtime values."
-msgstr "修改运行时环境变量后重新创建受影响的容器。仅重启容器会保留原有环境变量。仅供服务器端使用的 agent 目标地址属于运行时值。"
+msgstr "改了运行时环境变量，要重新创建受影响的容器；只重启容器的话，用的还是原来的环境变量。只在服务端使用的 agent 目标地址也属于运行时值。"
 
 #: ../developer/distribution-customization.md:287
 msgid ""
 "Use the admin console/API for supported live edits, and check effective "
 "values and any feature-specific caching."
-msgstr "通过管理控制台／API 执行受支持的在线修改，并检查实际生效值及该功能的缓存行为。"
+msgstr "支持在线修改的设置，通过管理控制台或 API 来改，然后确认实际生效的值，以及这个功能有没有自己的缓存。"
 
 #: ../developer/distribution-customization.md:289
 msgid ""
@@ -769,8 +771,8 @@ msgid ""
 "`BACKEND_INTERNAL_URL`. These differ from runtime branding and are not "
 "changed by a backend restart."
 msgstr ""
-"修改真正仅在构建时生效的 `NEXT_PUBLIC_*` 值，或由 `BACKEND_INTERNAL_URL` "
-"编译确定的后端网络目标地址后，需要重新构建前端。这些与运行时品牌配置不同，不会随后端重启而改变。"
+"如果改的是真正只在构建时生效的 `NEXT_PUBLIC_*` 值，或者由 `BACKEND_INTERNAL_URL` "
+"编译进去的后端网络地址，就要重新构建前端。这些值和运行时品牌配置不同，重启后端不会改变它们。"
 
 #: ../developer/distribution-customization.md:293
 msgid ""
@@ -780,8 +782,8 @@ msgid ""
 "affected image when configuration or assets are baked into it instead of "
 "mounted."
 msgstr ""
-"请使用运行时品牌配置设置站点标识，避免引入新的构建时品牌变量。具体 Compose 命令见[部署](deployment.md#what-a"
-"-change-actually-requires)。配置或资源如果打包进镜像而非挂载，变更后需要重新构建受影响的镜像。"
+"站点信息请用运行时品牌配置来设置，不要再引入新的构建时品牌变量。具体的 Compose 命令见[部署](deployment.md#what-a"
+"-change-actually-requires)。配置或资源如果是打包进镜像、而不是挂载进去的，改了之后要重新构建对应的镜像。"
 
 #: ../developer/distribution-customization.md:298
 msgid "The example distribution"
@@ -808,13 +810,15 @@ msgstr "它带着一个标记文件 `EXAMPLE_OVERLAY`，只要这个文件在，
 msgid ""
 "Overlays are discovered from `distributions/*/deploy/*.env`, minus any "
 "directory containing `EXAMPLE_OVERLAY`."
-msgstr "overlay 从 `distributions/*/deploy/*.env` 发现，并排除任何含有 `EXAMPLE_OVERLAY` 的目录。"
+msgstr ""
+"根据 `distributions/*/deploy/*.env` 发现 overlay，但排除所有含有 `EXAMPLE_OVERLAY` "
+"的目录。"
 
 #: ../developer/distribution-customization.md:316
 msgid ""
 "Exactly one candidate: it is selected automatically, and `make` prints "
 "which identity it is compiling in."
-msgstr "恰好只有一个候选：自动选中它，`make` 会打印它正在按哪一个站点标识编译。"
+msgstr "恰好一个候选：自动选中它，`make` 会打印出它要编译进去的是哪个站点的信息。"
 
 #: ../developer/distribution-customization.md:318
 msgid "Several candidates: `make` fails and asks you to name one."
@@ -830,7 +834,9 @@ msgstr "一个都没有（刚克隆本仓库时就是这个状态）：不选任
 msgid ""
 "`DISTRIBUTION=<name>` selects one by name — including the example, which "
 "is only ever selected explicitly. `DISTRIBUTION=none` opts out."
-msgstr "`DISTRIBUTION=<name>` 按名字选择——示例也在其中，而它只可能被显式选中。`DISTRIBUTION=none` 表示不选。"
+msgstr ""
+"`DISTRIBUTION=<name>` 按名字选择一个，示例发行版也可以这样选，而且只能这样选。`DISTRIBUTION=none` "
+"表示不选任何发行版。"
 
 #: ../developer/distribution-customization.md:325
 msgid "Custom public pages and backend code"
@@ -841,7 +847,7 @@ msgid ""
 "Configuration covers the site's identity, its branding, its models and "
 "its feature switches. Two further interfaces go beyond that, each with a "
 "build or deployment cost of its own:"
-msgstr "配置涵盖站点标识、品牌、模型和功能开关。在此之外还有两个接口，各自有自己的构建或部署成本："
+msgstr "配置能覆盖的是站点信息、品牌、模型和功能开关。超出这个范围，还有两个接口可用，各自有额外的构建或部署成本："
 
 #: ../developer/distribution-customization.md:331
 msgid ""
@@ -871,12 +877,12 @@ msgid ""
 "distribution maintains its own configuration, module, deployment and any "
 "fork, and decides when to upgrade."
 msgstr ""
-"本仓库维护应用本身及其对外发布的接口：配置、Site UI "
-"模块和后端扩展。每个发行版自行维护自己的配置、模块、部署以及可能存在的源码分支，并自行决定何时升级。"
+"本仓库维护应用本身，以及它对外发布的接口：配置、Site UI 模块和后端扩展。每个发行版自己维护自己的配置、模块、部署以及可能有的 "
+"fork，并自己决定什么时候升级。"
 
 #: ../developer/distribution-customization.md:344
 msgid "An existing source fork"
-msgstr "已有源码分支"
+msgstr "已有的源码 fork"
 
 #: ../developer/distribution-customization.md:346
 msgid ""
@@ -891,53 +897,53 @@ msgid ""
 "the fork, with its ongoing merge and verification work. A UI module keeps"
 " authentication controllers shared."
 msgstr ""
-"将适合的配置值迁入运行时配置，将适合的公开页面展示迁入 Site UI 模块。迁移是可选的；你可以保留源码分支，并继续承担合并和验证工作。UI "
-"模块会继续共用认证控制器。"
+"能迁的就迁：配置值迁到运行时配置，公开页面的展示迁到 Site UI 模块。迁移不是必须的；也可以继续保留 "
+"fork，但要一直承担合并和验证的工作。用 UI 模块时，认证控制器仍然是共用的。"
 
 #: ../developer/distribution-customization.md:352
 msgid ""
 "Identify remaining source changes explicitly. Console redesigns, extra "
 "routes and new authentication behavior do not become supported module "
 "features merely by moving files into the module directory."
-msgstr "明确列出仍需保留的源码修改。重新设计控制台、增加路由或新增认证行为，不会仅因相关文件移入模块目录就成为受支持的模块功能。"
+msgstr "把剩下的源码改动明确列出来。重新设计控制台、增加路由、新的认证行为，不会因为文件挪进了模块目录，就变成受支持的模块功能。"
 
 #: ../developer/distribution-customization.md:355
 msgid ""
 "Merge the intended upstream version in an isolated branch, resolve "
 "conflicts against your required behavior, and build the exact "
 "frontend/backend pair."
-msgstr "在独立分支中合并目标上游版本，按所需行为解决冲突，并构建待发布的确切前端／后端组合。"
+msgstr "在单独的分支里合并要升级到的上游版本，按你需要的行为解决冲突，然后构建出要发布的那一对前端／后端。"
 
 #: ../developer/distribution-customization.md:357
 msgid ""
 "Verify the distribution in staging before promoting it. A successful "
 "merge or upstream CI result alone does not verify a fork's presentation "
 "or flows."
-msgstr "在推广发布前，先在 staging 环境验证发行版。仅合并成功或上游 CI 通过，并不能验证源码分支的展示和流程。"
+msgstr "上线前，先在 staging 环境验证发行版。合并成功、上游 CI 通过，都不能说明 fork 的页面展示和流程没问题。"
 
 #: ../developer/distribution-customization.md:360
 msgid ""
 "Adopting Site UI can reduce future conflicts; it does not automatically "
 "migrate an existing fork or make arbitrary upstream source paths stable "
 "interfaces."
-msgstr "采用 Site UI 可以减少今后的冲突，但不会自动迁移已有源码分支，也不会使任意上游源码路径成为稳定接口。"
+msgstr "改用 Site UI 可以减少以后的冲突，但它不会自动迁移已有的 fork，也不会让上游任意一条源码路径变成稳定接口。"
 
 #: ../developer/distribution-customization.md:363
 msgid "Before promotion"
-msgstr "推广发布前"
+msgstr "上线前"
 
 #: ../developer/distribution-customization.md:365
 msgid ""
 "Pin the upstream version and, for custom UI, the module version and "
 "produced image digest. Keep the matching configuration and asset versions"
 " recoverable."
-msgstr "锁定上游版本；对于自定义 UI，还应锁定模块版本和生成的镜像摘要。确保可以恢复与之匹配的配置和资源版本。"
+msgstr "锁定上游版本；用了自定义 UI 的，还要锁定模块版本和构建出的镜像摘要（digest）。确保与之匹配的配置和资源版本都能找回来。"
 
 #: ../developer/distribution-customization.md:367
 msgid ""
 "Read configuration/API migration notes and validate against the selected "
 "version. Unsupported module API revisions must stop the build."
-msgstr "阅读配置／API 迁移说明，并针对所选版本进行校验。不受支持的模块 API 版本必须使构建终止。"
+msgstr "阅读配置和 API 的迁移说明，并针对选定的版本做校验。遇到不受支持的模块 API 版本，构建必须中止。"
 
 #: ../developer/distribution-customization.md:369
 msgid ""
@@ -960,13 +966,13 @@ msgid ""
 "Check the authenticated console, user/admin permissions and an inference "
 "request against the deployed candidate, including any local fork "
 "behavior."
-msgstr "针对已部署的候选版本检查登录后的控制台、用户／管理员权限，并发起一次推理请求，同时覆盖本地源码分支的行为。"
+msgstr "在部署好的候选版本上，检查登录后的控制台、用户和管理员权限，并发一次推理请求；fork 里的本地行为也要覆盖到。"
 
 #: ../developer/distribution-customization.md:375
 msgid ""
 "Promote only the tested image/configuration combination and retain the "
 "prior combination for rollback."
-msgstr "只推广经过验证的镜像与配置组合，并保留上一组以便回滚。"
+msgstr "只上线测试过的那组镜像和配置，并保留上一组，以便回滚。"
 
 #~ msgid "1. What you can customize"
 #~ msgstr "1\\. 能改什么"

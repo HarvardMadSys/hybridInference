@@ -28,7 +28,7 @@ msgstr "安装"
 msgid ""
 "How to get a HybridInference gateway running, either as the Docker stack "
 "or as a source checkout you can edit."
-msgstr "如何把一个 HybridInference 网关跑起来——可以用 Docker 服务栈，也可以用一份能直接改的源码检出。"
+msgstr "本页介绍怎样把 HybridInference 网关跑起来：用 Docker 服务栈，或者直接从源码运行、方便自己修改。"
 
 #: ../developer/installation.md:6
 msgid ""
@@ -38,8 +38,8 @@ msgid ""
 " no `.env` at all. This page is the next step: your own deployment, with "
 "your own providers."
 msgstr ""
-"如果你更想先看到网关真的应答一次请求、再去配置别的，那就先看[快速开始](router-tutorial.md)。它跑的是一个确定性的假 "
-"provider，不需要 provider 账号、不需要 API key，连 `.env` 都不需要。本页是下一步：用你自己的 "
+"如果想先什么都不配、看网关实际应答一次请求，那就先看[快速开始](router-tutorial.md)。它用一个固定回复的假 "
+"provider，不需要 provider 账号，不需要 API key，连 `.env` 都不用。本页是下一步：用你自己的 "
 "provider，搭你自己的部署。"
 
 #: ../developer/installation.md:11
@@ -48,7 +48,7 @@ msgstr "需要准备什么"
 
 #: ../developer/installation.md
 msgid "For"
-msgstr "用途"
+msgstr "运行方式"
 
 #: ../developer/installation.md
 msgid "Requirement"
@@ -64,14 +64,14 @@ msgstr "Docker Engine 24+ 与 Docker Compose v2+"
 
 #: ../developer/installation.md
 msgid "A source checkout"
-msgstr "源码检出"
+msgstr "从源码运行"
 
 #: ../developer/installation.md
 msgid ""
 "Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and "
 "[uv](https://github.com/astral-sh/uv)"
 msgstr ""
-"Python 3.10–3.13（按 `pyproject.toml`，推荐 3.12）与 [uv](https://github.com"
+"Python 3.10–3.13（推荐 3.12，以 `pyproject.toml` 为准）与 [uv](https://github.com"
 "/astral-sh/uv)"
 
 #: ../developer/installation.md
@@ -124,10 +124,9 @@ msgid ""
 "first). Set `OPENROUTER_API_KEY` and they work. To serve your own models "
 "instead, see [Adding a New Model](adding-models.md)."
 msgstr ""
-"**所提供模型的凭据**。默认情况下，网关提供 `config/examples/models.openrouter.yaml` "
-"里的三个示例模型，它们都用到 [OpenRouter](https://openrouter.ai)（其中一个会先尝试本地的 Ollama "
-"服务器）。设置好 `OPENROUTER_API_KEY`，它们就能用。如果要改为提供你自己的模型，见[添加新模型](adding-"
-"models.md)。"
+"**模型要用的凭据**。默认情况下，网关提供 `config/examples/models.openrouter.yaml` "
+"里的三个示例模型，它们都走 [OpenRouter](https://openrouter.ai)（其中一个会先尝试本地的 Ollama "
+"服务器）。设置好 `OPENROUTER_API_KEY` 就能用。要换成你自己的模型，见[添加新模型](adding-models.md)。"
 
 #: ../developer/installation.md:50
 msgid ""
@@ -169,7 +168,7 @@ msgid ""
 "stack](deployment.md#resetting-the-stack) if you need a clean database."
 msgstr ""
 "第一次 `make up` 还会创建存放数据库的 Docker 卷 `hybridinference_postgres_data`。`docker"
-" compose down -v` 不会删除它；如果需要一个干净的数据库，见[重置这套服务栈](deployment.md#resetting-"
+" compose down -v` 不会删除它；如果需要干净的数据库，见[重置这套服务栈](deployment.md#resetting-"
 "the-stack)。"
 
 #: ../developer/installation.md:79
@@ -191,7 +190,7 @@ msgstr "服务"
 
 #: ../developer/installation.md:59
 msgid "Published on"
-msgstr "发布地址"
+msgstr "宿主机地址"
 
 #: ../developer/installation.md:59
 msgid "Notes"
@@ -249,7 +248,7 @@ msgstr "Compose 文件中也包含 pgAdmin，通过可选的 `admin` profile 启
 
 #: ../developer/installation.md:97
 msgid "Development checkout (no Docker)"
-msgstr "开发用检出（不用 Docker）"
+msgstr "本地开发（不用 Docker）"
 
 #: ../developer/installation.md:106
 msgid ""
@@ -265,7 +264,7 @@ msgstr ""
 msgid ""
 "Run the gateway from the repository root, because the default "
 "configuration paths are relative to it:"
-msgstr "在仓库根目录下运行网关，因为默认的配置路径都是相对于这个目录的："
+msgstr "请在仓库根目录下运行网关，因为默认的配置路径都相对于仓库根目录："
 
 #: ../developer/installation.md:125
 msgid "Run the console in a second terminal:"
@@ -281,14 +280,14 @@ msgid ""
 "http://localhost:3001/health`."
 msgstr ""
 "打开 `http://localhost:3001`。控制台会把 API 路径转发给网关，`BACKEND_INTERNAL_URL` "
-"告诉它网关在哪里。它的默认值 `http://backend:8080` 是只在 Docker 内部才存在的地址，而控制台又不读仓库里的 "
+"告诉它网关在哪。这个变量的默认值 `http://backend:8080` 只在 Docker 内部有效，而控制台又不读仓库里的 "
 "`.env`，所以每次启动控制台都要设置它。用 `curl http://localhost:3001/health` 检查整条链路。"
 
 #: ../developer/installation.md:139
 msgid ""
 "To develop against Postgres without running the whole stack, start just "
 "the database container:"
-msgstr "想在不启动整套服务栈的情况下对着 Postgres 开发，就只起数据库容器："
+msgstr "如果想连着 Postgres 开发、又不想启动整套服务栈，可以只起数据库容器："
 
 #: ../developer/installation.md:147
 msgid ""
@@ -298,9 +297,9 @@ msgid ""
 "Accounts, API keys and request history need the database and both "
 "authentication secrets."
 msgstr ""
-"如果本地网关不需要账户或数据库，在 `.env` 中同时设置 `DB_ENABLED=false` 和 "
+"如果本地网关不需要账号或数据库，在 `.env` 中同时设置 `DB_ENABLED=false` 和 "
 "`USER_AUTH_ENABLED=false`。它仍能路由请求，`/health` 会报告 `\"database_configured\":"
-" false`。账户、API key 和请求历史需要数据库及两个认证密钥。"
+" false`。账号、API key 和请求历史需要数据库及两个认证密钥。"
 
 #: ../developer/installation.md:152
 msgid "Configuration"
@@ -451,7 +450,7 @@ msgstr "`TRUSTED_DIRECT_CLIENT_NETWORKS`"
 msgid ""
 "optional CIDRs for clients that connect directly from a private network; "
 "does not authorize forwarding headers"
-msgstr "从私有网络直接连接的客户端所在的可选 CIDR；不会因此信任转发头"
+msgstr "可选，直接从私有网络连入的客户端所在网段（CIDR）；不会因此信任转发头"
 
 #: ../developer/installation.md:59
 msgid "`TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS`"
@@ -502,8 +501,8 @@ msgid ""
 "has adapters or examples for; add your own names freely. The bundled "
 "default registry needs only `OPENROUTER_API_KEY`."
 msgstr ""
-"`.env.example` 为本项目有 adapter 或示例的那些 provider "
-"提供了空白占位；你也可以随意添加自己的变量名。内置的默认注册表只需要 `OPENROUTER_API_KEY`。"
+"`.env.example` 里为本项目已有 adapter 或示例的 provider "
+"预留了空的占位变量；你也可以随意添加自己的变量名。内置的默认注册表只需要 `OPENROUTER_API_KEY`。"
 
 #: ../developer/installation.md:205
 msgid ""
@@ -512,8 +511,8 @@ msgid ""
 "as the keys the registry names. See [Runtime configuration from the admin"
 " console](configuration.md#runtime-configuration-from-the-admin-console)."
 msgstr ""
-"配置了数据库之后，key 也可以不重启就从管理控制台（**Providers → Keys**）添加；它们会进入注册表指名的那些 key "
-"所在的同一个池子。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-"
+"配置了数据库之后，也可以在管理控制台（**Providers → Keys**）里添加 key，无需重启；这些 key 和注册表里指定的 key "
+"放在同一个池子里。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-"
 "admin-console)。"
 
 #: ../developer/installation.md:210
@@ -531,7 +530,7 @@ msgid ""
 msgstr ""
 "网关通过环境变量或发行版的 manifest 找到自己的模型注册表、路由配置文件和告警规则；两者都没有指定时，就回退到 "
 "`config/examples/` 下的示例。具体规则见[网关如何找到自己的配置](configuration.md#how-a"
-"-gateway-finds-its-config)，这一页的其余部分讲的是文件里该写什么。"
+"-gateway-finds-its-config)，文件里该写什么，那一页后面都有讲。"
 
 #: ../developer/installation.md:218
 msgid ""
@@ -549,9 +548,9 @@ msgid ""
 "address such as `host.docker.internal`, written explicitly in the model "
 "registry; HybridInference does not rewrite provider URLs."
 msgstr ""
-"直接跑在宿主机上的 backend 可以通过 `localhost` 访问宿主机上的推理服务器。而 Docker 里的 backend 必须用 "
-"Docker 能访问到的地址，例如 `host.docker.internal`，并在模型注册表里显式写出来；HybridInference "
-"不会改写 provider 的 URL。"
+"直接跑在宿主机上的后端，可以通过 `localhost` 访问宿主机上的推理服务器。跑在 Docker 里的后端则必须用 Docker "
+"内能访问到的地址，例如 `host.docker.internal`，并且要在模型注册表里显式写出来；HybridInference 不会替你改写"
+" provider 的 URL。"
 
 #: ../developer/installation.md:229
 msgid "Verifying the install"
@@ -581,7 +580,7 @@ msgid ""
 "test suite; [Contributing](contributing.md#quality-gates) lists the other"
 " checks."
 msgstr ""
-"在开发用的检出里，`make check` 会运行 linter 和默认测试套件；其他检查见[贡献指南](contributing.md"
+"本地开发时，`make check` 会运行 linter 和默认测试套件；其他检查见[贡献指南](contributing.md"
 "#quality-gates)。"
 
 #: ../developer/installation.md:263

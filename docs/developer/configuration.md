@@ -300,7 +300,7 @@ built-in kind that the registry, the live route table or a configured
 credential already names. Which route types a provider may be added as — `on_demand`,
 `quota` or `concurrency` — is the deployment's contract with that vendor and
 is declared with `PROVIDER_ROUTE_TYPES` (see
-[Environment variables](#environment-variables)); an unlisted provider may
+[Environment variables](installation.md#environment-variables)); an unlisted provider may
 use any of the three.
 
 A model created here is a **runtime model**: it exists only in the database,

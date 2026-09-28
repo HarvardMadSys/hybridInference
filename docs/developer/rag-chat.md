@@ -1,8 +1,8 @@
 # Docs RAG Assistant
 
-A retrieval-augmented-generation (RAG) chat feature that answers user questions
-about a deployment using its own **public user docs** as the knowledge base. Both
-retrieval and generation route through the gateway itself.
+The docs assistant is a retrieval-augmented-generation (RAG) chat feature: it
+answers users' questions about a deployment from that deployment's own **public
+user docs**. Both retrieval and generation go through the gateway itself.
 
 It is an early feature with known gaps; see [Limitations](#limitations). To
 run it, a deployment needs its documentation as Markdown, an index built from
@@ -131,7 +131,7 @@ The general model APIs are not affected either way.
 
 ## Configuration
 
-All optional; sensible defaults resolve relative to the repo root.
+Only `RAG_API_KEY` is required. The path defaults point inside the active distribution.
 
 | Env var | Default | Purpose |
 |---|---|---|

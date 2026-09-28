@@ -159,7 +159,7 @@ itself and are read only at the model level.
 | `id` | string | Yes | Unique model identifier; the name clients send |
 | `name` | string | Yes | Display name |
 | `provider` | string | Yes | Provider/adapter kind; also the default `route[].kind` when no `route:` list is given. Note the collision: at the model level `provider:` selects an adapter, while `provider:` on a *route* is only an analytics label — see the route-fields table |
-| `base_url` | string | Yes | API endpoint base URL |
+| `base_url` | string | Yes, here or on every route | API endpoint base URL |
 | `api_key` | string | No | API authentication key |
 | `provider_model_id` | string | No | Provider's model identifier (overrides `id` on the wire) |
 | `model_type` | string | No | `"chat"` (default) or `"embedding"`. The alias `type:` is equivalent; embedding models bypass the weighted router and use their routes as an ordered fallback chain |

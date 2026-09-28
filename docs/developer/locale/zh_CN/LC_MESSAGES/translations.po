@@ -38,12 +38,12 @@ msgid ""
 "safe: any string without one falls back to English, and the site still "
 "builds complete."
 msgstr ""
-"这些页面用英文书写，并通过 Sphinx 的 gettext "
-"流程翻译，因此译文挂在*源文本的每一个段落*上，而不是挂在整份文件上。这正是局部翻译之所以安全的原因：任何没有译文的字符串都会回退到英文，站点照样能完整构建出来。"
+"这些页面用英文写成，通过 Sphinx 的 gettext "
+"流程翻译，所以译文是挂在*源文本的每个段落*上，而不是整个文件上。正因为如此，只翻译一部分也是安全的：没有译文的字符串会回退到英文，站点照样能完整构建。"
 
 #: ../developer/translations.md:19
 msgid "A catalog entry pairs the English source with its translation:"
-msgstr "消息目录里的一条记录，把英文原文和它的译文配成一对："
+msgstr "消息目录（catalog）里的每条记录，都由英文原文和对应的译文组成："
 
 #: ../developer/translations.md:27
 msgid ""
@@ -57,19 +57,19 @@ msgid ""
 "what they are reading is out of date."
 msgstr ""
 "由于英文文本*就是*查找键，编辑一个段落会自动让它的译文失效：下一次 `make docs-translate` 会把那条记录标成 `#, "
-"fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这就是采用消息目录、而不是并列一份"
-" `.zh.md` 文件的理由**——后者会悄悄漂移，读者完全看不出自己读到的内容已经过时。"
+"fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这正是用消息目录、而不另外维护一份"
+" `.zh.md` 文件的原因**：平行文件会悄悄和原文脱节，读者完全看不出自己读的内容已经过时。"
 
 #: ../developer/translations.md:35
 msgid "Commit the `.po` files. `docs/gettext/` is generated and ignored."
-msgstr "要提交 `.po` 文件。`docs/gettext/` 是生成物，已被忽略。"
+msgstr "`.po` 文件要提交进仓库；`docs/gettext/` 是生成的，已被 git 忽略。"
 
 #: ../developer/translations.md:37
 msgid ""
 "Translating a page does not require translating all of it, and there is "
 "no obligation to keep a language complete — an untranslated paragraph is "
 "a fallback, not a bug."
-msgstr "翻译一个页面不要求把它全部翻完，也没有义务让某种语言保持完整——未翻译的段落是一种回退，不是缺陷。"
+msgstr "翻译一个页面不必全部翻完，也没有义务让某种语言一直保持完整——没翻译的段落只是回退到英文，不算 bug。"
 
 #: ../developer/translations.md:41
 msgid "Translating into Chinese, Japanese or Korean"
@@ -101,8 +101,8 @@ msgid ""
 "written `\\\\ ` in the catalog, which is a backslash-space in the string:"
 msgstr ""
 "**在 `index.rst` 里，紧贴 CJK 字符的行内标记不会被解析**。reStructuredText 要求开头的 `*` "
-"前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` 渲染成字面星号。用一个转义空格把它们隔开——在 catalog 里写作 "
-"`\\\\ `，也就是字符串里的一个反斜杠加空格："
+"前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` 会把星号原样显示出来。用一个转义空格把它们隔开——在消息目录里写作 "
+"`\\\\ `，也就是字符串里的反斜杠加空格："
 
 #: ../developer/translations.md:65
 msgid ""
@@ -121,8 +121,9 @@ msgid ""
 "`**术语**。后文` — which is better typography anyway, since bolding "
 "punctuation is wrong."
 msgstr ""
-"**但 Markdown 有一种情况确实会坏**：结尾的 `**` 前面是句号、后面是汉字时不构成右侧闭合，于是 `**术语。**后文` "
-"会留下字面星号。把句号移到加粗外面——`**术语**。后文`——这本来也是更好的排版，给标点加粗是错的。"
+"**不过 Markdown 有一种情况确实会出问题**：结尾的 `**` 如果前面是中文句号、后面紧跟汉字，就不满足 right-flanking"
+" 条件，于是 `**术语。**后文` 会原样留下星号。把句号移到加粗外面，写成 "
+"`**术语**。后文`；这样的排版本来也更好，给标点加粗本身就不对。"
 
 #: ../developer/translations.md:75
 msgid ""
@@ -141,8 +142,8 @@ msgid ""
 "targets. A dropped marker or a translated link target shows up there and "
 "in no other check."
 msgstr ""
-"能一次抓住这四种的检查，是与英文构建做结构 diff：逐页比较 `<code>`、`<strong>`、`<em>`、`<a>` "
-"的数量，以及行内代码字面量和链接目标的多重集合。丢掉一个标记、或者把链接目标也翻译了，只有这个检查能发现。"
+"能一次把这四个坑都查出来的办法，是和英文构建结果做结构对比：逐页比较 `<code>`、`<strong>`、`<em>`、`<a>` "
+"的数量，以及行内代码字面量和链接目标的多重集。丢了一个标记，或者连链接目标也翻译了，只有这项检查能发现。"
 
 #: ../developer/translations.md:88
 msgid ""
@@ -159,7 +160,7 @@ msgstr ""
 
 #: ../developer/translations.md:94
 msgid "How a translation reaches the published site"
-msgstr "翻译是怎么上到已发布站点的"
+msgstr "译文如何发布到站点上"
 
 #: ../developer/translations.md:96
 msgid ""
@@ -183,9 +184,9 @@ msgid ""
 "`/routing.html` stays `/routing.html`, and the translation is at "
 "`/zh_CN/routing.html`."
 msgstr ""
-"之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在 "
-"`conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 URL：`/routing.html` 还是 "
-"`/routing.html`，翻译版在 `/zh_CN/routing.html`。"
+"之所以只调用一次、而不是每种语言各调用一次，是因为已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可设，所以语言列表只能写在"
+" `conf.py` 里随代码走。把根语言放在输出目录顶层，是为了保住纯英文站原有的每一个 URL：`/routing.html` 还是 "
+"`/routing.html`，译文在 `/zh_CN/routing.html`。"
 
 #: ../developer/translations.md:109
 msgid ""
@@ -199,7 +200,7 @@ msgstr ""
 
 #: ../developer/translations.md:114
 msgid "The check that catches a reverted translation"
-msgstr "抓「翻译悄悄退回英文」的那道检查"
+msgstr "检查译文是否悄悄退回了英文"
 
 #: ../developer/translations.md:120
 msgid ""
@@ -209,9 +210,9 @@ msgid ""
 "string it cannot translate, so a page that has quietly reverted still "
 "builds clean. Five checks —"
 msgstr ""
-"就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，也正是 Docs Build 这个 "
-"CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` 一个都看不见：任何 Sphinx "
-"翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。五项检查——"
+"它就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，和 Docs Build 这个 CI"
+" job 跑的内容一样。之所以需要它，是因为上面这些问题 `-W` 一个都发现不了：Sphinx "
+"遇到翻不了的字符串就回退到英文原文，所以一个已经悄悄退回英文的页面照样能干净地构建通过。它包含五项检查——"
 
 #: ../developer/translations.md:126
 msgid "**fuzzy** entries, which Sphinx refuses to apply;"
@@ -219,7 +220,7 @@ msgstr "**fuzzy** 条目，Sphinx 拒绝使用它们；"
 
 #: ../developer/translations.md:127
 msgid "**missing catalogs**, for a page added without `make docs-translate`;"
-msgstr "**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
+msgstr "**缺少消息目录**，即新加了页面却没跑 `make docs-translate`；"
 
 #: ../developer/translations.md:128
 msgid ""
@@ -227,8 +228,8 @@ msgid ""
 "entry, which is the commonest case and carries no `fuzzy` marker at all "
 "because nothing re-merged;"
 msgstr ""
-"**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带 `fuzzy` "
-"标记，因为压根没人重新合并过；"
+"**过期的消息目录**——英文改过了，新的 `msgid` 在消息目录里找不到对应的条目。这是最常见的情况，而且根本不会带 `fuzzy` "
+"标记，因为压根没有重新合并过；"
 
 #: ../developer/translations.md:131
 msgid ""

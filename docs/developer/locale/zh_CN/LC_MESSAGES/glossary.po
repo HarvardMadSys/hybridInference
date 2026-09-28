@@ -29,7 +29,7 @@ msgid ""
 "The words these pages use for the parts of a gateway, in the order you "
 "meet them. When a page uses one of these terms, it means exactly what is "
 "written here."
-msgstr "这些页面用来称呼网关各个组成部分的词，按你遇到它们的先后排列。页面里用到这些词时，意思就是这里写的这样。"
+msgstr "本文档用来称呼网关各个部分的术语，按阅读时遇到的先后排列。文档里用到这些术语时，含义就以这里写的为准。"
 
 #: ../developer/glossary.md:7
 msgid "Requests and models"
@@ -97,8 +97,8 @@ msgid ""
 " can have several routes, and that is what lets the gateway balance and "
 "fail over between them."
 msgstr ""
-"服务一个模型 id 的一种方式：模型 `route:` 列表里的一项，写明 adapter 的 kind、base URL、凭据和权重。一个模型 "
-"id 可以有多条路由，网关正是靠这一点在它们之间分流和回退。"
+"为模型 id 提供服务的一条途径，也就是模型 `route:` 列表里的一项，写明 adapter 的 kind、base "
+"URL、凭据和权重。一个模型 id 可以有多条路由，网关正是靠这一点在多条路由之间做负载均衡和故障切换。"
 
 #: ../developer/glossary.md:35
 msgid "Endpoint"
@@ -108,7 +108,7 @@ msgstr "端点（endpoint）"
 msgid ""
 "The server a route sends requests to. Pages say \"endpoint\" when they "
 "mean the server and \"route\" when they mean the configuration entry."
-msgstr "路由把请求发往的那台服务器。页面里说“端点”指服务器本身，说“路由”指配置里的那一项。"
+msgstr "路由发送请求的目标服务器。文档里说「端点」时指服务器本身，说「路由」时指配置里的那一项。"
 
 #: ../developer/glossary.md:39
 msgid "`endpoint_id`"
@@ -123,9 +123,9 @@ msgid ""
 "and port or from the adapter kind, so it does not tell you who runs the "
 "server."
 msgstr ""
-"网关给“某个模型的某个端点”起的键，写作 `<model-id>:<location>`：本机 12003 端口上的服务器是 "
+"网关用来标识「某个模型的某个端点」的键，写作 `<model-id>:<location>`：本机 12003 端口上的服务器是 "
 "`glm-4.6:local-12003`，托管 API 是 `glm-4.6:zai-"
-"api`。熔断器、延迟统计和权重覆盖都以它为键。后缀取自主机和端口，或者取自 adapter 的 kind，所以看不出服务器归谁运行。"
+"api`。熔断器、延迟统计和权重覆盖都以它为键。后缀来自主机和端口，或者来自 adapter 的 kind，所以从它看不出服务器是谁在运行。"
 
 #: ../developer/glossary.md:47
 msgid "Provider"
@@ -138,7 +138,7 @@ msgid ""
 "reported under in logs and dashboards."
 msgstr ""
 "路由背后的服务：OpenRouter、DeepSeek、你自己的 vLLM 服务器。在配置里，路由的 `provider:` "
-"是它的流量在日志和仪表盘里归入的标签。"
+"是一个标签，这条路由的流量在日志和仪表盘里都记在这个标签下。"
 
 #: ../developer/glossary.md:52
 msgid "Kind"
@@ -221,7 +221,7 @@ msgid ""
 "A per-endpoint switch that stops sending traffic to an endpoint after "
 "repeated failures and lets a single test request through after a "
 "cooldown."
-msgstr "每个端点各有一个的开关：连续失败多次后停止向该端点发流量，冷却一段时间后只放一个测试请求过去。"
+msgstr "按端点设置的开关：端点反复失败后，停止向它发送流量；冷却一段时间后，只放一个测试请求过去。"
 
 #: ../developer/glossary.md:84
 msgid "Offload route"
@@ -231,7 +231,7 @@ msgstr "卸载路由（offload route）"
 msgid ""
 "A route set aside for the requests a model's other routes cannot start in"
 " time. See [Queue-wait offload](routing.md#queue-wait-offload)."
-msgstr "专门留给那些在其他路由上无法及时开始处理的请求的一条路由。见[排队等待卸载](routing.md#queue-wait-offload)。"
+msgstr "一条预留的路由，专门接收模型的其他路由来不及开始处理的请求。见[排队等待卸载](routing.md#queue-wait-offload)。"
 
 #: ../developer/glossary.md:88
 msgid "Routing file"
@@ -244,7 +244,7 @@ msgid ""
 "routing-file) for what it does and does not change."
 msgstr ""
 "可选的 "
-"`routing.yaml`。里面是健康探测的设置和一个本地/远端权重划分；它能改变什么、不能改变什么，见[路由配置文件](configuration.md"
+"`routing.yaml`。里面是健康探测设置和本地/远程的权重划分；它能改变什么、不能改变什么，见[路由配置文件](configuration.md"
 "#the-routing-file)。"
 
 #: ../developer/glossary.md:93
@@ -273,7 +273,7 @@ msgstr "overlay"
 msgid ""
 "The `distributions/<name>/` directory itself. It is called an overlay "
 "because it is mounted over the neutral image rather than built into it."
-msgstr "`distributions/<name>/` 这个目录本身。之所以叫 overlay，是因为它是挂载到中立镜像之上的，而不是打包进镜像里。"
+msgstr "`distributions/<name>/` 这个目录本身。之所以叫 overlay，是因为它挂载在中立镜像之上，而不是打包进镜像。"
 
 #: ../developer/glossary.md:105
 msgid "Manifest"
@@ -283,7 +283,7 @@ msgstr "manifest"
 msgid ""
 "`distribution.yaml`, the file in a distribution that names it and says "
 "where its configuration files are."
-msgstr "`distribution.yaml`，发行版里给它命名、并说明配置文件在哪里的那个文件。"
+msgstr "`distribution.yaml`，发行版里的一个文件，写明发行版的名字以及各配置文件放在哪里。"
 
 #: ../developer/glossary.md:109
 msgid "Dry run and active"
@@ -329,8 +329,8 @@ msgid ""
 "playground and the admin console. It also forwards API paths to the "
 "gateway; see [The public path table](public-path-table.md)."
 msgstr ""
-"Next.js 网页应用：注册和登录、用户仪表盘、试验场和管理控制台。它还会把 API 路径转发给网关，见[公开路径表](public-path-"
-"table.md)。"
+"Next.js 网页应用：注册和登录、用户仪表盘、对话调试页（playground）和管理控制台。它还会把 API 路径转发给网关，见[公开路径表"
+"](public-path-table.md)。"
 
 #: ../developer/glossary.md:128
 msgid "Site UI module"

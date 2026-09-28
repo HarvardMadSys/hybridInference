@@ -174,7 +174,7 @@ trailing slash away; pgAdmin (Flask) or the agent web app may add one back. Left
 on, the two layers can bounce a browser between them forever. A proxied path has
 to reach its upstream exactly as the browser asked for it.
 
-Turning that flag off globally would change every other URL on the site, so
+Skipping the redirect everywhere would change every other URL on the site, so
 `apps/frontend/src/middleware.ts` reimplements the redirect for everything
 *except* the `/pgadmin` and `/agents` prefixes — a 308 to the slash-less path,
 built from `new URL(request.url)` rather than `nextUrl.clone()` (a cloned

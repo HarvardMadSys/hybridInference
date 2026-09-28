@@ -33,9 +33,8 @@ returns for a model depends on its `router:` field:
   and cloud alike.
 - `fixed` — the shared `FixedRouter`, unless the model opts in to composition
   with `router_params.hybrid_composition: true` **and** has both local and cloud
-  candidates. That builds a `HybridRouter`
-  (`serving/servers/hybrid_composition.py`) over a `LocalBackend` and a cloud
-  backend instead. All-local and all-cloud models keep the shared `FixedRouter`
+  candidates. In that case `apps/backend/serving/servers/hybrid_composition.py`
+  builds a `HybridRouter` over a `LocalBackend` and a cloud backend instead. All-local and all-cloud models keep the shared `FixedRouter`
   even when the option is enabled.
 
 **The leaf execution boundary is already used by ordinary Fixed and RouteWise.**

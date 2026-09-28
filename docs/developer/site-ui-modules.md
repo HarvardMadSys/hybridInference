@@ -325,7 +325,7 @@ would bypass the `/site-assets` route. Three rules, all enforced:
 - **The route is what serves them.** `/site-assets/*` serves image files only —
   AVIF, GIF, ICO, JPEG, PNG, SVG and WebP, up to 20 MB — with a five-minute
   revalidating cache policy and `nosniff`, and sandboxes an SVG with a
-  `Content-Security-Policy` header. A bundle with anything under
+  `Content-Security-Policy` header. A built bundle that still has files under
   `public/site-assets/<module-id>/` fails the build. Test the URL, not the file.
 
 At runtime, `SITE_ASSETS_DIR` is read first and the image's own copy second. A

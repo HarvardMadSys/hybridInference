@@ -31,7 +31,7 @@ msgid ""
 "change has to pass, and how a change gets proposed."
 msgstr ""
 "HybridInference 采用 MIT 许可（见 "
-"`LICENSE`），欢迎贡献。本页说明仓库里都有什么、一处改动要通过哪些检查，以及一处改动如何提出来。"
+"`LICENSE`），欢迎贡献。本页介绍仓库里有哪些内容、改动需要通过哪些检查，以及如何提交改动。"
 
 #: ../developer/contributing.md:7
 msgid "Getting set up"
@@ -59,13 +59,13 @@ msgid ""
 "[Installation](installation.md)."
 msgstr ""
 "`make setup-dev` 会用 Python 3.12 创建 `.venv`，以可编辑方式安装本项目，同步 `dev` 依赖组，并装上 "
-"pre-commit 钩子。完整的前置条件和运行网关的各种方式见 [安装](installation.md)。"
+"pre-commit 钩子。完整的前置条件和运行网关的各种方式见[安装](installation.md)。"
 
 #: ../developer/contributing.md:30
 msgid ""
 "Every `make` target that touches Python runs through `uv run`. Override "
 "that if your environment needs it:"
-msgstr "每一个涉及 Python 的 `make` 目标都通过 `uv run` 执行。如果你的环境需要，可以覆盖它："
+msgstr "所有涉及 Python 的 `make` 目标都通过 `uv run` 执行。如果你的环境需要，可以覆盖这个设置："
 
 #: ../developer/contributing.md:37
 msgid "Your first contribution"
@@ -80,9 +80,9 @@ msgid ""
 "setup. A local example deployment is enough; contributing does not "
 "require access to a maintainer's server."
 msgstr ""
-"先在 worktree 中运行[快速开始](router-tutorial.md)，或使用[源码开发环境](installation.md"
+"先在你的 worktree 里把[快速开始](router-tutorial.md)跑一遍，或者按[源码开发环境](installation.md"
 "#development-checkout-no-"
-"docker)。先看到网关成功响应一次请求，之后就更容易判断故障来自改动还是环境配置。本地示例部署已经足够；参与贡献不需要访问维护者的服务器。"
+"docker)搭好环境。亲眼看到网关成功响应一次请求，之后遇到失败时就更容易判断是你的改动引起的，还是环境没配好。本地的示例部署就够用了，参与贡献不需要访问维护者的服务器。"
 
 #: ../developer/contributing.md:45
 msgid ""
@@ -92,8 +92,8 @@ msgid ""
 " agree on the behavior before writing it; the repository provides bug and"
 " feature forms."
 msgstr ""
-"选择一个可复现的小 bug、尚未覆盖的配置场景，或一条你能亲自验证的模糊说明。先搜索 issue "
-"和现有测试。对于较大的功能，先提交功能请求，讨论确定行为后再实现；仓库已提供 bug 和功能请求表单。"
+"可以挑一个能复现的小 bug、一个还没有测试覆盖的配置场景，或者一处让人困惑、你又能自己验证的说明。先搜一下 issue tracker "
+"和现有测试。较大的功能，先提交功能请求，把行为讨论清楚再动手写；仓库提供了 bug 报告和功能请求的表单。"
 
 #: ../developer/contributing.md:50
 msgid ""
@@ -105,10 +105,10 @@ msgid ""
 "The test below exercises both through the public loader and restores the "
 "environment after each case:"
 msgstr ""
-"第一次练习可以覆盖路由 YAML 中使用环境变量默认值的端点。阅读 `apps/backend/routing/config.py` 中的 "
-"`_expand_env_value` 和 `load_routing_config`，再看 "
-"`tests/unit/routing/test_config.py` 中相邻的测试。变量未设置时应使用默认 "
-"URL，设置后则应覆盖默认值。下面的测试通过公开的加载函数验证这两种情况，并在每次执行后恢复环境："
+"一个具体的入门练习：给路由 YAML 里使用环境变量默认值的端点补一个测试。先读 `apps/backend/routing/config.py`"
+" 里的 `_expand_env_value` 和 `load_routing_config`，再看 "
+"`tests/unit/routing/test_config.py` 里相邻的测试。变量没设置时应该用默认 "
+"URL，设置了就应该覆盖默认值。下面这个测试通过公开的加载函数把两种情况都测到，并在每个用例结束后恢复环境变量："
 
 #: ../developer/contributing.md:76
 msgid ""
@@ -117,8 +117,8 @@ msgid ""
 "bug fix, first make your regression test fail on the original code, then "
 "change the smallest responsible function until it passes."
 msgstr ""
-"仅当这一场景尚未被覆盖时，才把它加入该测试文件。如果加载器已经正确工作，这就是一次仅增加测试的贡献。修复 bug "
-"时，先让回归测试在原始代码上失败，再修改最小范围的负责函数，直到测试通过。"
+"只有这个场景还没被覆盖时，才把它加进那个测试文件。如果加载器本来就行为正确，这就是一次只加测试的贡献。如果是修 "
+"bug，先写好回归测试，确认它在原来的代码上会失败，再去改负责这段逻辑的、范围最小的那个函数，直到测试通过。"
 
 #: ../developer/contributing.md:81
 msgid "Run the focused tests while editing:"
@@ -137,9 +137,9 @@ msgid ""
 msgstr ""
 "如果改动影响运行时行为，请在本地网关上重放受影响的请求。在[快速开始](router-tutorial.md)的示例跑着的时候，`make "
 "build s=backend DISTRIBUTION=example` 会重新构建改动过的后端代码；`make smoke "
-"DISTRIBUTION=example` 会检查健康状态、模型列表和一次经过路由的 completion。还要实际验证改动的行为：通用的 "
-"smoke 通过，并不能说明某个具体的 bug 已经修好。如果改动涉及账号或前端，[快速开始](router-"
-"tutorial.md)里介绍了单独的完整控制台检查。"
+"DISTRIBUTION=example` 会检查健康状态、模型列表和一次经过路由的 "
+"completion。还要实际验证改动的行为：通用的冒烟测试通过，并不能说明某个具体的 bug 已经修好。如果改动涉及账号或前端，[快速开始"
+"](router-tutorial.md)里介绍了单独的完整控制台检查。"
 
 #: ../developer/contributing.md:96
 msgid ""
@@ -152,11 +152,11 @@ msgid ""
 " the exact checks you ran; include the reproduction and before/after "
 "result for a bug fix."
 msgstr ""
-"提交 PR 前，运行 `make format`、`make lint` 和 `make "
-"test`，并根据改动运行[前端](#frontend)或[文档](#documentation)检查。检查 `git "
-"diff`，确保补丁只包含预期文件。将分支推送到你的 fork，创建目标为上游 `dev` 的 PR，标题例如 `test(routing): "
-"cover endpoint environment defaults`。在现有 PR 模板中填写覆盖的行为和实际执行的检查；修复 bug "
-"时，也写明复现方式及修复前后的结果。"
+"开 PR 之前，运行 `make format`、`make lint` 和 `make "
+"test`；如果涉及[前端](#frontend)或[文档](#documentation)，还要跑相应的检查。看一遍 `git "
+"diff`，确认补丁里只有你打算改的文件。把分支推到你的 fork，向上游的 `dev` 提 PR，标题类似 `test(routing): "
+"cover endpoint environment defaults`。按现有的 PR 模板写明覆盖了哪些行为、实际跑了哪些检查；如果是修 "
+"bug，还要写上复现步骤和修复前后的结果。"
 
 #: ../developer/contributing.md:104
 msgid "Repository layout"
@@ -172,8 +172,8 @@ msgid ""
 "re-exports `FixedRouter` as `RouteExecutor`. Edit "
 "`apps/backend/routing/routers.py` instead."
 msgstr ""
-"`apps/backend/routing/executor.py` 是一个向后兼容的垫片，把 `FixedRouter` 以 "
-"`RouteExecutor` 的名字重新导出。要改就改 `apps/backend/routing/routers.py`。"
+"`apps/backend/routing/executor.py` 只是一个向后兼容的 shim，把 `FixedRouter` 以 "
+"`RouteExecutor` 的名字重新导出。要改请改 `apps/backend/routing/routers.py`。"
 
 #: ../developer/contributing.md:136
 msgid ""
@@ -244,8 +244,8 @@ msgid ""
 "group and you may run it by hand, but `pyproject.toml` has no "
 "`[tool.mypy]` section and no target invokes it, so nothing enforces it."
 msgstr ""
-"`make all` **不**做类型检查。`mypy` 在 `dev` 依赖组里，你可以手工运行它，但 `pyproject.toml` 里没有"
-" `[tool.mypy]` 段，也没有任何 target 会调用它，所以没有任何东西强制它。"
+"`make all` **不**做类型检查。`mypy` 在 `dev` 依赖组里，可以手动运行，但 `pyproject.toml` 里没有 "
+"`[tool.mypy]` 配置段，也没有哪个 target 会调用它，所以类型检查不是强制的。"
 
 #: ../developer/contributing.md:155
 msgid "Style is enforced by tooling, not by review:"
@@ -267,9 +267,9 @@ msgid ""
 "`node_modules`, `apps/frontend`, `ops` and `docs`, so docstrings are "
 "required in `apps/backend` and enforced there."
 msgstr ""
-"**pydocstyle**，Google 约定。它跳过 "
-"`tests`、`.venv`、`node_modules`、`apps/frontend`、`ops` 和 `docs`，因此 "
-"`apps/backend` 里必须写 docstring，并且在那里被强制执行。"
+"**pydocstyle**，采用 Google 风格。它会跳过 "
+"`tests`、`.venv`、`node_modules`、`apps/frontend`、`ops` 和 `docs`，所以 "
+"`apps/backend` 里必须写 docstring，并且会强制检查。"
 
 #: ../developer/contributing.md:163
 msgid "Pre-commit hooks run on commit and are installed by `make setup-dev`:"
@@ -281,8 +281,8 @@ msgid ""
 "secret scanning, the standard whitespace/YAML/JSON/TOML checks, and "
 "eslint + prettier for `apps/frontend`."
 msgstr ""
-"它们涵盖 ruff（版本锁定为 CI 所用的那个）、pydocstyle、`gitleaks` "
-"密钥扫描、标准的空白字符/YAML/JSON/TOML 检查，以及针对 `apps/frontend` 的 eslint + prettier。"
+"这些钩子包括 ruff（版本与 CI 保持一致）、pydocstyle、`gitleaks` "
+"密钥扫描、常规的空白字符/YAML/JSON/TOML 检查，以及 `apps/frontend` 的 eslint + prettier。"
 
 #: ../developer/contributing.md:173
 msgid ""
@@ -301,9 +301,9 @@ msgid ""
 "`external` and `dbtest`, and `--strict-markers` means an undeclared "
 "marker is an error."
 msgstr ""
-"marker 才是约定，目录只是习惯。`pyproject.toml` 里声明的 marker 有 "
-"`unit`、`integration`、`slow`、`perf`、`external` 和 `dbtest`，而 `--strict-"
-"markers` 意味着用了未声明的 marker 就是错误。"
+"测试分层以 marker 为准，目录只是惯例。`pyproject.toml` 里声明的 marker 有 "
+"`unit`、`integration`、`slow`、`perf`、`external` 和 `dbtest`；由于开启了 `--strict-"
+"markers`，使用未声明的 marker 会直接报错。"
 
 #: ../developer/contributing.md
 msgid "Tier"
@@ -315,7 +315,7 @@ msgstr "位置"
 
 #: ../developer/contributing.md
 msgid "Marker"
-msgstr "标记"
+msgstr "marker"
 
 #: ../developer/contributing.md
 msgid "In `make test`?"
@@ -323,7 +323,7 @@ msgstr "在 `make test` 里跑吗？"
 
 #: ../developer/contributing.md
 msgid "Unit"
-msgstr "单元"
+msgstr "单元测试"
 
 #: ../developer/contributing.md
 msgid "`tests/unit/`"
@@ -339,7 +339,7 @@ msgstr "是"
 
 #: ../developer/contributing.md
 msgid "API surface"
-msgstr "API 接口面"
+msgstr "API 接口"
 
 #: ../developer/contributing.md
 msgid "`tests/api/`"
@@ -355,7 +355,7 @@ msgstr ""
 
 #: ../developer/contributing.md
 msgid "Needs a live Postgres"
-msgstr "需要一个可连通的 Postgres"
+msgstr "需要能连上的 Postgres"
 
 #: ../developer/contributing.md
 msgid "mostly `tests/integration/`"
@@ -396,10 +396,10 @@ msgid ""
 "(defaulting to `localhost:5432` and `postgres`/`postgres`), and some read"
 " a full `TEST_PG_DSN`. Starting just the database container is enough:"
 msgstr ""
-"`dbtest` 这一层需要一个可连通的 PostgreSQL。测试会读 "
-"`TEST_DB_HOST`、`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD`（默认为 "
-"`localhost:5432` 和 `postgres`/`postgres`），有些还会读完整的 "
-"`TEST_PG_DSN`。只把数据库容器起起来就够了："
+"`dbtest` 这一层需要能连上的 PostgreSQL。测试会读取 "
+"`TEST_DB_HOST`、`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD`（默认是 "
+"`localhost:5432` 和 `postgres`/`postgres`），有些还会读取完整的 "
+"`TEST_PG_DSN`。只启动数据库容器就够了："
 
 #: ../developer/contributing.md:214
 msgid ""
@@ -437,8 +437,8 @@ msgid ""
 "with `docs/developer/index.rst` as the root toctree. Build them, and run "
 "the checks CI runs, from the repository root:"
 msgstr ""
-"这些页面是 MyST Markdown，由 Sphinx 从 `docs/developer/` 编译，以 "
-"`docs/developer/index.rst` 作为根 toctree。在仓库根目录构建它们，并运行 CI 会跑的那些检查："
+"这些页面用 MyST Markdown 编写，由 Sphinx 从 `docs/developer/` 编译，根 toctree 是 "
+"`docs/developer/index.rst`。在仓库根目录下构建文档，并运行 CI 会跑的检查："
 
 #: ../developer/contributing.md:246
 msgid ""
@@ -453,13 +453,13 @@ msgstr ""
 "它会把警告当作错误来构建英文和中文站点，检查每个 Markdown "
 "文件里的本地链接，并检查有没有哪段译文悄悄回退成了英文。交叉引用断了、或者某个页面没加进 "
 "toctree，它都会失败，所以推送之前先跑一遍。Sphinx、`myst-parser` 和 `sphinx-rtd-theme` 都来自 "
-"`dev` 依赖组，因此有 `make setup-dev` 就足以构建。`make docs` 只构建站点。"
+"`dev` 依赖组，所以执行过 `make setup-dev` 就能构建。`make docs` 只构建站点。"
 
 #: ../developer/contributing.md:253
 msgid ""
 "Add a new page to `docs/developer/index.rst` as well as writing it; an "
 "orphan file is a warning, and warnings are errors in CI."
-msgstr "写一个新页面的同时，要把它加进 `docs/developer/index.rst`；孤立文件会产生警告，而在 CI 里警告就是错误。"
+msgstr "新写一个页面，还要把它加进 `docs/developer/index.rst`；没加进去的孤立文件会产生警告，而 CI 会把警告当作错误。"
 
 #: ../developer/contributing.md:256
 msgid "Writing a page"
@@ -469,7 +469,7 @@ msgstr "撰写页面"
 msgid ""
 "These pages ship with the source, and most readers arrive from a search "
 "or the sidebar with one task in mind. Write for that reader:"
-msgstr "这些页面随源码一起发布，大多数读者是从搜索结果或侧边栏进来的，心里只想着一件要办的事。要为这样的读者写："
+msgstr "这些页面随源码一起发布，大多数读者是从搜索结果或侧边栏进来的，心里只想着一件要办的事。写的时候要想着这样的读者："
 
 #: ../developer/contributing.md:261
 msgid ""
@@ -482,7 +482,7 @@ msgid ""
 "**Lead with the action or the answer.** Put exceptions and edge cases "
 "after it, in a note if they run long, and do not open a section with what"
 " the software lacks."
-msgstr "**先给出要做的操作或答案**。例外和边界情况放在后面，写长了就放进 note；也不要拿软件缺少什么来开启一个小节。"
+msgstr "**先给出操作步骤或答案**。例外和边界情况放在后面，篇幅长的话放进 note；小节开头也不要先讲软件缺少什么。"
 
 #: ../developer/contributing.md:266
 msgid ""
@@ -536,8 +536,8 @@ msgid ""
 " the paragraph a translation is attached to. Update the Chinese in the "
 "same pull request; [Translating the Docs](translations.md) explains how."
 msgstr ""
-"站点以英文和中文两种语言发布，而改动英文会改变译文所挂靠的段落。请在同一个 PR "
-"里更新中文；具体做法见[翻译文档](translations.md)。"
+"站点同时发布英文版和中文版。译文是挂在英文段落上的，改动英文段落，挂在上面的译文就对不上了。请在同一个 PR "
+"里更新中文，具体做法见[翻译文档](translations.md)。"
 
 #: ../developer/contributing.md:289
 msgid "Proposing a change"
@@ -567,13 +567,13 @@ msgid ""
 msgstr ""
 "**commit 和 PR 的标题写成 conventional commits 的形式**——`type(scope): summary`，例如"
 " `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
-"commit，所以你写的标题就会成为 commit 的 subject——`git log --oneline` 里能看到要对齐的样子。"
+"commit，所以你写的 PR 标题就是最终的 commit 标题，格式参照 `git log --oneline` 即可。"
 
 #: ../developer/contributing.md:300
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
 "change, and add tests for new behaviour."
-msgstr "一个 PR 只做一个功能或一处修复，在同一处改动里把文档一起更新，并为新行为补上测试。"
+msgstr "一个 PR 只做一个功能或一处修复，文档在同一个 PR 里一起更新，并为新行为补上测试。"
 
 #: ../developer/contributing.md:302
 msgid ""
@@ -597,9 +597,7 @@ msgstr "CI 会跑什么"
 msgid ""
 "The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
 "pull request touched and then runs only the relevant jobs:"
-msgstr ""
-"`CI` 这个 workflow（`.github/workflows/ci.yml`）会先归类出一个 PR 改动了哪些路径，然后只运行相关的 "
-"job："
+msgstr "`CI` 这个 workflow（`.github/workflows/ci.yml`）会先判断 PR 改动了哪些路径，再只运行相关的 job："
 
 #: ../developer/contributing.md
 msgid "Job"
@@ -634,7 +632,7 @@ msgid ""
 "builds the frontend image with no module and with the example's Site UI "
 "module, requires a module build that lacks its context to fail, and "
 "checks how the running example serves its assets"
-msgstr "分别构建不带模块和带示例 Site UI 模块的前端镜像，要求缺少上下文的模块构建必须失败，并检查运行中的示例如何提供它的资源"
+msgstr "分别构建不带模块和带示例 Site UI 模块的前端镜像，确认缺少上下文的模块构建会失败，并检查运行中的示例如何提供它的静态资源"
 
 #: ../developer/contributing.md
 msgid "Docs Build"
@@ -656,8 +654,8 @@ msgid ""
 "external\"` — so the `dbtest` tier does run in CI even though it is "
 "excluded from `make test`"
 msgstr ""
-"在带 PostgreSQL 服务的四个分片上跑 pytest，`-m \"not external\"`——因此 `dbtest` 这一层虽然被 "
-"`make test` 排除，在 CI 里却确实会跑"
+"分四个分片跑 pytest，带 PostgreSQL 服务，参数为 `-m \"not external\"`——所以 `dbtest` "
+"这一层虽然不在 `make test` 里，CI 却会跑"
 
 #: ../developer/contributing.md
 msgid "Security Scan"
@@ -675,7 +673,7 @@ msgstr ""
 
 #: ../developer/contributing.md
 msgid "builds the affected images, then starts the runnable example and smokes it"
-msgstr "构建受影响的镜像，然后启动那个可运行的 example 并对它做冒烟测试"
+msgstr "构建受影响的镜像，再启动可运行的示例并做冒烟测试"
 
 #: ../developer/contributing.md
 msgid "Tutorial E2E"
@@ -701,8 +699,8 @@ msgid ""
 "locally and red in CI. Run `make test-db` against a local Postgres when "
 "you touch `apps/backend/serving/storage/` or the auth surface."
 msgstr ""
-"因为 CI 包含 `dbtest`，改动存储或认证时，可能本地全绿而 CI 报红。动到 "
-"`apps/backend/serving/storage/` 或认证那一面时，要对着本地 Postgres 跑一遍 `make test-"
+"因为 CI 包含 `dbtest`，改动存储或认证时，可能本地全绿而 CI 报红。改动 "
+"`apps/backend/serving/storage/` 或认证相关接口时，要对着本地 Postgres 跑一遍 `make test-"
 "db`。"
 
 #: ../developer/contributing.md:328

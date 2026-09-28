@@ -23,8 +23,8 @@ stack already comes up.
 All three published ports default to loopback. A reverse proxy on the same
 host can reach the console at `127.0.0.1:3001`. The containers also join one bridge
 network defined in the same Compose file, on which the backend reaches the
-database as `postgres:5432`. Only `DB_PORT` from `.env` reaches this file, and
-only as the host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the
+database as `postgres:5432`. Of the database address settings, only `DB_PORT`
+from `.env` reaches this file, and only as the host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the
 host-side bind address is hard-coded to loopback. `DB_HOST` is pinned to
 `postgres` in the Compose file and is ignored under Compose — it matters only
 for a backend started directly from source.

@@ -31,8 +31,8 @@ msgid ""
 "already supports, you need no code at all; see [Adding a New Model"
 "](adding-models.md)."
 msgstr ""
-"本页写给这样的贡献者：要让网关支持一个它目前还对接不了的 provider。如果只是想用网关已经支持的 provider "
-"再提供一个模型，完全不用写代码；见[添加新模型](adding-models.md)。"
+"本页面向要给网关接入新 provider 的贡献者。如果只是想用网关已经支持的 provider 再提供一个模型，完全不用写代码；见[添加新模型"
+"](adding-models.md)。"
 
 #: ../developer/provider-adapters.md:7
 msgid ""
@@ -42,7 +42,7 @@ msgid ""
 "wire format."
 msgstr ""
 "大多数 provider 也不需要新写 adapter。如果 API 兼容 OpenAI，一个 profile 加上 `registry.py` "
-"里的几行改动就够了，见第 1 步。只有使用自有 wire 格式的 provider 才需要专用 adapter。"
+"里的几行改动就够了，见第 1 步。只有协议格式自成一套的 provider，才需要专门的 adapter。"
 
 #: ../developer/provider-adapters.md:11
 msgid "Step 1: decide whether you need an adapter at all"
@@ -59,8 +59,8 @@ msgid ""
 msgstr ""
 "大多数新 provider 都提供 OpenAI 风格的 `/chat/completions` 端点。对这类 provider，**不要写 "
 "adapter 类**。先注册一个 provider profile，再在 "
-"`apps/backend/serving/servers/registry.py` 的 `_make_adapter` 里加两处：一个选中该 "
-"profile 的分支，以及在同一函数更下方的 OpenAI 兼容元组里加上这个 kind："
+"`apps/backend/serving/servers/registry.py` 的 `_make_adapter` "
+"里改两处：一是加一个选中该 profile 的分支，二是在同一函数靠后的 OpenAI 兼容元组里加上这个 kind："
 
 #: ../developer/provider-adapters.md:43
 msgid ""
@@ -68,9 +68,8 @@ msgid ""
 " that no route can borrow it as a label of its own; a unit test fails if "
 "a dispatchable kind is missing from that set."
 msgstr ""
-"同时还要把这个 kind 加进同一模块里的 "
-"`RESERVED_PROVIDER_LABELS`，这样任何路由都不能把它借用成自己的标签；如果某个可分派的 kind "
-"不在这个集合里，会有单元测试失败。"
+"还要把这个 kind 加进同一模块的 `RESERVED_PROVIDER_LABELS`，防止路由把它拿去当自己的标签；如果可分派的 kind "
+"没有加进这个集合，单元测试会失败。"
 
 #: ../developer/provider-adapters.md:47
 msgid ""
@@ -79,9 +78,9 @@ msgid ""
 "`apps/backend/serving/adapters/profiles.py` carries the usage-metric or "
 "path quirks, and `OpenAICompatAdapter` does the rest."
 msgstr ""
-"`deepseek`、`zai`、`kimi` 和 `minimax` "
-"现在就是这样接入的：`apps/backend/serving/adapters/profiles.py` 里每个 provider 一份的 "
-"profile 承载用量指标或路径上的差异，其余全部交给 `OpenAICompatAdapter`。"
+"`deepseek`、`zai`、`kimi` 和 `minimax` 目前都是这样接入的：每个 provider 在 "
+"`apps/backend/serving/adapters/profiles.py` 里有一份 "
+"profile，记录用量指标或路径上的特殊处理，其余都交给 `OpenAICompatAdapter`。"
 
 #: ../developer/provider-adapters.md:51
 msgid ""
@@ -91,9 +90,9 @@ msgid ""
 "`anthropic`, and `openrouter` all follow that pattern, each with its own "
 "dispatch branch:"
 msgstr ""
-"只有当 provider 说的确实不是 OpenAI 的 wire 格式时，才写专门的 adapter——例如 Gemini 的 "
-"`generateContent`、Anthropic Messages API、OpenRouter 用来锁定 sub-provider 的 "
-"body 字段。`gemini`、`claude`、`anthropic` 和 `openrouter` 都属于这一类，各自有独立的分发分支："
+"只有 provider 用的确实不是 OpenAI 的协议格式时，才需要写专门的 adapter，例如 Gemini 的 "
+"`generateContent`、Anthropic Messages API，以及 OpenRouter 用来锁定 sub-provider "
+"的请求体字段。`gemini`、`claude`、`anthropic` 和 `openrouter` 都是这种情况，各自有独立的分派分支："
 
 #: ../developer/provider-adapters.md:61
 msgid "Step 2: write the adapter (custom protocols only)"
@@ -139,9 +138,9 @@ msgid ""
 " were unset. Mark a route `optional: true` to have only that route be "
 "skipped instead, leaving the rest of the model registered."
 msgstr ""
-"一条路由的 `api_key`、`api_keys` 或 `base_url` 若由 `${VAR}` "
-"提供而解析结果为空，这条路由不会被注册。默认情况下整个模型都会被丢弃，后端会记录哪些模型被跳过、哪些变量没设置。给路由标上 `optional: "
-"true`，就只跳过这一条路由，模型的其余部分照常注册。"
+"如果某条路由的 `api_key`、`api_keys` 或 `base_url` 引用的 `${VAR}` "
+"解析为空，这条路由就不会注册。默认情况下整个模型都会被丢弃，后端日志会写明跳过了哪些模型、哪些变量没设置。给路由加上 `optional: "
+"true`，就只跳过这一条路由，模型的其他路由照常注册。"
 
 #: ../developer/provider-adapters.md:286
 msgid "Step 5: verify it"
@@ -153,19 +152,19 @@ msgid ""
 "as described in [Verify it through the gateway](adding-models.md#verify-"
 "it-through-the-gateway)."
 msgstr ""
-"用一份使用了新 kind 的注册表启动网关，然后按[通过网关验证](adding-models.md#verify-it-through-the-"
-"gateway)中的方法检查。"
+"用包含新 kind 的注册表启动网关，再按[通过网关验证](adding-models.md#verify-it-through-the-"
+"gateway)里的方法检查。"
 
 #: ../developer/provider-adapters.md:291
 msgid "Deployment-local adapters"
-msgstr "部署本地 adapter"
+msgstr "部署自带的 adapter"
 
 #: ../developer/provider-adapters.md:293
 msgid ""
 "A deployment can register a local factory without editing the built-in "
 "dispatch. Its module exposes a synchronous, no-argument `register()` "
 "function:"
-msgstr "部署可以注册本地工厂，而不修改内置分派逻辑。模块需要提供同步、无参数的 `register()` 函数："
+msgstr "部署可以注册自己的 adapter 工厂，不用改内置的分派逻辑。做法是在一个模块里提供一个同步、无参数的 `register()` 函数："
 
 #: ../developer/provider-adapters.md:309
 msgid ""
@@ -179,10 +178,10 @@ msgid ""
 "deployment requirements."
 msgstr ""
 "把 `BACKEND_EXTENSIONS` 设为这个模块的导入名，并在模型注册表里使用 `kind: "
-"example_service`。工厂接收路由的配置字典，返回一个 adapter。它在内置的 provider 默认值之前运行，所以它需要的 "
-"profile 或路径默认值都得自己提供。重复注册会失败；替换内置 kind 需要 `register_adapter_factory(kind,"
-" factory, override=True)`，并且会记日志。启动和部署方面的要求见[后端扩展](backend-"
-"extensions.md)。"
+"example_service`。工厂接收路由的配置字典，返回一个 adapter。它在内置 provider 默认值生效之前运行，所以需要的 "
+"profile 或路径默认值都得自己提供。重复注册会失败；要替换内置 kind，必须调用 "
+"`register_adapter_factory(kind, factory, "
+"override=True)`，并且会记一条日志。启动和部署方面的要求见[后端扩展](backend-extensions.md)。"
 
 #: ../developer/provider-adapters.md:318
 msgid "BaseAdapter API reference"
@@ -254,10 +253,10 @@ msgid ""
 " call in a slot from `apps/backend/serving/adapters/upstream_limiter.py`,"
 " as the built-in adapters do."
 msgstr ""
-"adapter 不需要自己的限流器。网关已经对每个 provider key 同时保持的在途请求数设了上限，并在 provider 返回 429 "
-"时调低这个上限；见[出站并发](routing.md#outbound-concurrency)。新 adapter 只要像内置 adapter "
-"那样，把对上游的调用包在从 `apps/backend/serving/adapters/upstream_limiter.py` "
-"获取的槽位里，就能纳入这套机制。"
+"adapter 不需要自己做限流。网关已经限制了每个 provider key 同时在途的请求数，provider 返回 429 "
+"时还会调低这个上限；见[出站并发](routing.md#outbound-concurrency)。新 adapter 只要像内置 "
+"adapter 那样，把对上游的调用包在从 `apps/backend/serving/adapters/upstream_limiter.py`"
+" 获取的槽位里，就能纳入这套机制。"
 
 #: ../developer/provider-adapters.md:436
 msgid "Examples"
@@ -280,7 +279,7 @@ msgid ""
 "**Custom API format.** See `apps/backend/serving/adapters/gemini.py` for "
 "message conversion against a non-OpenAI wire format."
 msgstr ""
-"**自定义 API 格式**。针对非 OpenAI wire 格式的消息转换，见 "
+"**自定义 API 格式**。按非 OpenAI 协议格式转换消息的做法，可以参考 "
 "`apps/backend/serving/adapters/gemini.py`。"
 
 #: ../developer/provider-adapters.md:444
@@ -296,7 +295,7 @@ msgstr ""
 
 #: ../developer/provider-adapters.md:449
 msgid "Troubleshooting"
-msgstr "排障"
+msgstr "故障排查"
 
 #: ../developer/provider-adapters.md:451
 msgid "Response format errors"
@@ -347,7 +346,7 @@ msgstr "最佳实践"
 msgid ""
 "**Error handling** — use `self.http.json_post_with_retry()` and surface "
 "provider faults with useful messages."
-msgstr "**错误处理**——用 `self.http.json_post_with_retry()`，并用有价值的信息把 provider 的故障暴露出来。"
+msgstr "**错误处理**——使用 `self.http.json_post_with_retry()`；provider 出错时，要给出有用的错误信息。"
 
 #: ../developer/provider-adapters.md:470
 msgid ""
@@ -375,7 +374,7 @@ msgstr "**类型安全**——写完整的类型标注，并让请求/响应的�
 msgid ""
 "**Testing** — exercise both streaming and non-streaming paths, and try "
 "large prompts to validate token clamping."
-msgstr "**测试**——流式和非流式两条路径都要跑到，并用大 prompt 验证 token 的钳制逻辑。"
+msgstr "**测试**——流式和非流式两条路径都要测到，并用大 prompt 验证 token 数会被正确截断。"
 
 #: ../developer/provider-adapters.md:478
 msgid ""

@@ -219,7 +219,7 @@ confidence = alpha * (weight_sum / TOTAL_WEIGHT)
   actually had data, so a pure-embeddings batch user — whose `num_*_turns` columns
   are all `NULL` — is still scored on its user-agent and daily-activity shape.
 - **Shrinkage** (`alpha = N / (N + 30)`) pulls users with little traffic toward
-  the neutral `0.5` prior. Data outweighs the prior at `N = 30` (`alpha = 0.5`);
+  the neutral `0.5` prior. Data and prior weigh equally at `N = 30` (`alpha = 0.5`), and the data dominates above that;
   at `N = 5`, `alpha ≈ 0.14` (the score is pulled ~86% to `0.5`).
 - **`confidence`** combines the request volume (`alpha`) with the share of the
   total signal weight that was actually available (`weight_sum / TOTAL_WEIGHT`),

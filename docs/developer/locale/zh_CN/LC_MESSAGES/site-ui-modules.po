@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-09-28 17:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -30,7 +30,7 @@ msgid ""
 " pages. If configuration and branding are enough for you, see "
 "[Distribution customization](distribution-customization.md) instead."
 msgstr ""
-"本页面向为发行版开发自有公开页面的前端开发者。如果配置和品牌设置已经够用，请改看[发行版定制](distribution-"
+"本页写给要为发行版开发自己公开页面的前端开发者。如果配置和品牌设置已经够用，请直接看[发行版定制](distribution-"
 "customization.md)。"
 
 #: ../developer/site-ui-modules.md:7
@@ -41,14 +41,14 @@ msgid ""
 "tree of React components that the frontend image compiles in, alongside "
 "the shared application rather than instead of it."
 msgstr ""
-"部署可以替换访客看到的公开页面（落地页、账号页面的外壳、法律条款页），而无需 fork 控制台。做法是使用一个**构建时 UI 模块**：一小棵 "
-"React 组件树，由前端镜像编译进去，与共享应用并存，而不是取代它。"
+"部署可以替换访客看到的公开页面（首页、账号页面的外壳、法律条款页），而不用 fork 控制台。靠的是**构建时 UI 模块**：一小组 React"
+" 组件，构建前端镜像时编译进去，和共享应用并存，而不是取代它。"
 
 #: ../developer/site-ui-modules.md:13
 msgid ""
 "One Next.js application, one console, one session. A distribution ships a"
 " small UI module; the build compiles it in."
-msgstr "一个 Next.js 应用、一个控制台、一套会话。发行版提供一个小型 UI 模块，由构建过程编译进应用。"
+msgstr "只有一个 Next.js 应用、一个控制台、一套会话。发行版只需提供一个小小的 UI 模块，构建时会把它编译进去。"
 
 #: ../developer/site-ui-modules.md:23
 msgid ""
@@ -58,12 +58,12 @@ msgid ""
 "changes require a new frontend image. Runtime branding read by the module"
 " retains its runtime behavior."
 msgstr ""
-"这里的 `C` 是上游源码提交，`U` 是发行版的 UI "
-"源码提交。构建发布版本时需同时锁定两者。模块不会在运行时获取或替换；组件、样式表和编译进镜像的文案变更需要新的前端镜像。模块读取的运行时品牌配置仍按运行时配置的方式生效。"
+"这里的 `C` 是上游源码的提交，`U` 是发行版 UI "
+"源码的提交。构建发布版本时，两者都要锁定。模块不会在运行时拉取或替换；改组件、样式表或编译进去的文案，都需要重新构建前端镜像。模块读取的运行时品牌配置，仍然在运行时生效。"
 
 #: ../developer/site-ui-modules.md:28
 msgid "What a module can and cannot change"
-msgstr "模块可以修改什么"
+msgstr "模块能改什么、不能改什么"
 
 #: ../developer/site-ui-modules.md
 msgid "The module owns"
@@ -81,7 +81,7 @@ msgstr "模块导出的首页"
 msgid ""
 "dashboard, chat, admin, team and authorize pages, and the `/agents` proxy"
 " integration"
-msgstr "仪表盘、chat、admin、team 和 authorize 页面，以及 `/agents` 代理集成"
+msgstr "仪表盘、聊天、管理后台、团队和授权页面，以及 `/agents` 代理集成"
 
 #: ../developer/site-ui-modules.md
 msgid "the frame around the account pages, and where each field's parts go"
@@ -99,19 +99,19 @@ msgstr "模块自带的法律文本和注册确认项"
 msgid ""
 "the consent step, the one `accepted_tos` flag sign-up records, and the "
 "terms anchors the account pages link to"
-msgstr "注册同意步骤、注册时记录的唯一 `accepted_tos` 标志，以及账号页面引用的条款锚点"
+msgstr "注册同意步骤、注册时记录的那一个 `accepted_tos` 标志，以及账号页面链接到的条款锚点"
 
 #: ../developer/site-ui-modules.md
 msgid "its own wording for the account pages"
-msgstr "账号页面的自有文案"
+msgstr "它为账号页面写的文案"
 
 #: ../developer/site-ui-modules.md
 msgid "the schemas, error codes, session handling and redirect rules"
-msgstr "数据结构、错误码、会话处理与重定向规则"
+msgstr "schema、错误码、会话处理和重定向规则"
 
 #: ../developer/site-ui-modules.md
 msgid "the public pages' titles, and the language of the pages it renders"
-msgstr "公开页面的标题，以及模块所渲染页面的语言"
+msgstr "公开页面的标题，以及它渲染的页面用什么语言"
 
 #: ../developer/site-ui-modules.md
 msgid "every console page's title and language"
@@ -119,7 +119,7 @@ msgstr "所有控制台页面的标题和语言"
 
 #: ../developer/site-ui-modules.md
 msgid "its own stylesheet and design assets"
-msgstr "自有样式表与设计资源"
+msgstr "它自己的样式表和设计资源"
 
 #: ../developer/site-ui-modules.md
 msgid "the runtime branding document and `/site-config`"
@@ -131,7 +131,7 @@ msgid ""
 "the registration gate, the email-verification requirement and the "
 "permission rules are all in the shared application and are not part of "
 "this interface."
-msgstr "模块不能改变访问资格：账号页面的业务逻辑、注册开关、邮箱验证要求和权限规则都属于共享应用，不在此接口范围内。"
+msgstr "模块决定不了谁能进来：账号页面的业务逻辑、注册开关、邮箱验证要求和权限规则都在共享应用里，不属于这个接口。"
 
 #: ../developer/site-ui-modules.md:43
 msgid ""
@@ -141,9 +141,9 @@ msgid ""
 "such as `/pricing`, a console redesign or a new authentication method "
 "needs an application change beyond this interface."
 msgstr ""
-"共享应用还保留会话存储、代理规则，以及 `AuthField` / `AuthNotice` / `AuthLoading` "
-"的无障碍行为。模块不能注册路由或接管未列出的页面。新增 `/pricing` "
-"等路径、重新设计控制台或增加认证方式，都需要在此接口范围之外修改应用。"
+"共享应用还负责会话存储、代理规则，以及 `AuthField` / `AuthNotice` / `AuthLoading` "
+"的无障碍行为。模块不能注册路由，也不能接管上面没列出的页面。新增 `/pricing` "
+"这样的路径、重新设计控制台或增加认证方式，都超出了这个接口的范围，需要改应用本身。"
 
 #: ../developer/site-ui-modules.md:49
 msgid ""
@@ -154,9 +154,10 @@ msgid ""
 "TypeScript interfaces live in `apps/frontend/src/site-ui/contract.ts`, "
 "and the supported imports in `apps/frontend/src/site-ui/host.ts`."
 msgstr ""
-"宿主接口公开站点配置、解析后的品牌配置、会话状态及受支持的展示类型／辅助函数。页面可以根据会话状态选择展示登录链接或控制台链接；该接口不公开登录／退出、令牌或认证操作。规范性的"
-" TypeScript 接口位于 `apps/frontend/src/site-ui/contract.ts`，受支持的导入位于 "
-"`apps/frontend/src/site-ui/host.ts`。"
+"宿主接口（host "
+"facade）向模块提供公开的站点配置、解析后的品牌配置、会话状态，以及受支持的展示类型和辅助函数。页面可以根据会话状态决定显示登录链接还是控制台链接；但这个接口不提供登录／退出、token"
+" 或任何认证操作。TypeScript 接口以 `apps/frontend/src/site-ui/contract.ts` 为准，可用的导入见"
+" `apps/frontend/src/site-ui/host.ts`。"
 
 #: ../developer/site-ui-modules.md:56
 msgid "What a module may import"
@@ -169,7 +170,7 @@ msgid ""
 " module. Anything else — in particular `@/...` — fails the build."
 msgstr ""
 "模块可以导入 `@site-ui/host`、`react`、`react/*`、`react-dom`、`next`、`next/*` "
-"及自身文件。相对导入必须限定在模块内部。其他导入，尤其是 `@/...`，会使构建失败。"
+"以及模块自己的文件。相对导入不能跳出模块目录。其他任何导入（尤其是 `@/...`）都会导致构建失败。"
 
 #: ../developer/site-ui-modules.md:62
 msgid ""
@@ -178,8 +179,8 @@ msgid ""
 "real path it resolves to rather than by how it is spelled. These fail as "
 "well:"
 msgstr ""
-"构建在 webpack 解析模块每个请求的环节执行这份清单，覆盖 Next.js "
-"运行的每一次编译；判断请求时依据它最终解析到的真实路径，而不是它的写法。以下情况同样会使构建失败："
+"构建时，webpack 每解析模块的一个请求，都会对照这份清单检查一次，Next.js "
+"的每一次编译都是如此；判断依据是请求最终解析到的真实路径，而不是它的写法。下面这些情况同样会导致构建失败："
 
 #: ../developer/site-ui-modules.md:66
 msgid "a relative path or a symlink that leads out of the module;"
@@ -200,8 +201,8 @@ msgid ""
 "a computed import — `require.context`, `import.meta.webpackContext` or an"
 " `import()` of a template literal — over a directory outside the module;"
 msgstr ""
-"作用于模块外目录的计算式导入，包括 `require.context`、`import.meta.webpackContext` "
-"或以模板字符串调用的 `import()`；"
+"针对模块外目录的计算式导入，比如 "
+"`require.context`、`import.meta.webpackContext`，或参数为模板字符串的 `import()`；"
 
 #: ../developer/site-ui-modules.md:71
 msgid "a `data:` or `file:` URI, or a Node.js built-in;"
@@ -226,8 +227,8 @@ msgid ""
 "code, `@swc/helpers` and `styled-jsx`, resolved from Next.js itself. A "
 "module does not import them by name."
 msgstr ""
-"构建还允许 Next.js 编译器注入到模块代码中的辅助库 `@swc/helpers` 和 `styled-jsx`，它们从 Next.js "
-"自身解析。模块不会按名称导入它们。"
+"Next.js 编译器会往模块代码里注入辅助库 `@swc/helpers` 和 `styled-jsx`，构建也放行它们，并从 Next.js "
+"自身解析。模块本身不需要按名字导入它们。"
 
 #: ../developer/site-ui-modules.md:81
 msgid ""
@@ -240,10 +241,10 @@ msgid ""
 "checked like any other file. Every symlink the staging step would copy "
 "must resolve inside the module."
 msgstr ""
-"源码检查会更早报告它能发现的问题：在暂存模块时，以及每次构建、类型检查和测试运行之前。它用 TypeScript "
-"解析器解析脚本，读取样式表，并一次列出所有问题。`test/`、`tests/`、`__tests__/` 或 `__mocks__/` "
-"下的文件，以及 `vitest`、`jest` 或 `playwright` 配置文件，只要生产代码没有导入它们，就不受检查；被 "
-"`client.tsx` 导入的测试辅助文件会像其他文件一样接受检查。暂存步骤会复制的每个符号链接都必须解析到模块内部。"
+"源码检查能更早发现它看得到的问题：暂存模块时会运行，每次构建、类型检查和测试之前也会运行。它用 TypeScript "
+"解析器解析脚本，读取样式表，一次列出所有问题。`test/`、`tests/`、`__tests__/` 或 `__mocks__/` "
+"下的文件，以及 `vitest`、`jest` 或 `playwright` 的配置文件，只要生产代码没有导入，就不受检查；但如果 "
+"`client.tsx` 导入了某个测试辅助文件，它就和其他文件一样要检查。暂存步骤要复制的每个符号链接，都必须解析到模块内部。"
 
 #: ../developer/site-ui-modules.md:89
 msgid "A module is a directory"
@@ -340,7 +341,7 @@ msgstr "`TermsFrame`"
 
 #: ../developer/site-ui-modules.md
 msgid "all three or none"
-msgstr "三者全部提供或都不提供"
+msgstr "三个要么都提供，要么都不提供"
 
 #: ../developer/site-ui-modules.md
 msgid "The page around the module's legal text at `/terms`."
@@ -373,7 +374,7 @@ msgstr "`authAppearance`"
 msgid ""
 "Deprecated class-map compatibility for the shared forms, supported "
 "throughout API v1."
-msgstr "共享表单的类名映射兼容接口，已弃用，但在 API v1 生命周期内持续受支持。"
+msgstr "已弃用：为兼容而保留的共享表单类名映射，整个 API v1 期间都继续支持。"
 
 #: ../developer/site-ui-modules.md
 msgid "`authMessages`"
@@ -381,7 +382,7 @@ msgstr "`authMessages`"
 
 #: ../developer/site-ui-modules.md
 msgid "The deployment's wording for the account pages."
-msgstr "部署的账号页面文案。"
+msgstr "部署自己为账号页面写的文案。"
 
 #: ../developer/site-ui-modules.md:124
 msgid ""
@@ -391,8 +392,8 @@ msgid ""
 "checker and the test runner complete the name in different orders. The "
 "server entry may keep a default export; the host does not read it."
 msgstr ""
-"宿主只读取具名导出。客户端入口带有默认导出会使构建失败；同一入口存在第二个文件（例如 `client.tsx` 旁边还有 "
-"`client.js`）也会失败，因为打包器、类型检查器和测试工具补全文件扩展名的顺序各不相同。服务端入口可以保留默认导出，宿主不会读取它。"
+"宿主只读取具名导出。客户端入口如果有默认导出，构建会失败；同一个入口有第二个文件（比如 `client.tsx` 旁边还有 "
+"`client.js`）也会失败，因为打包器、类型检查器和测试工具补全扩展名的顺序各不相同。服务端入口可以保留默认导出，宿主不会读它。"
 
 #: ../developer/site-ui-modules.md:130
 msgid ""
@@ -406,12 +407,11 @@ msgid ""
 "repeats an id, or has an item without an id or a label. Any of them stops"
 " the module from loading."
 msgstr ""
-"`npm run type-check` 和 `next build` 会按照 `contract.ts` "
-"中的契约检查导出：`client.tsx` 对照 `SiteUiClientModule`，`server.ts` 对照 "
-"`SiteUiServerModule`。类型错误的导出会导致检查失败，错误信息会指明该导出；不完整的法律条款组和空的 "
-"`consentItems` 同样会失败。模块加载时，宿主会再次检查类型断言或 `any` "
-"对编译器隐藏的问题：不是组件的组件导出、不完整的法律条款组，以及为空、id 重复或有条目缺少 id 或 label 的 "
-"`consentItems`。其中任何一项都会使模块无法加载。"
+"`npm run type-check` 和 `next build` 会对照 `contract.ts` "
+"里的契约检查导出：`client.tsx` 对照 `SiteUiClientModule`，`server.ts` 对照 "
+"`SiteUiServerModule`。导出的类型不对会报错，并指出是哪个导出；法律条款组不完整、`consentItems` "
+"为空，也同样报错。模块加载时，宿主还会再查一遍那些被类型断言或 `any` 瞒过编译器的问题：组件导出其实不是组件、法律条款组不完整，以及 "
+"`consentItems` 为空、id 重复，或者有条目缺少 id 或 label。出现其中任何一种，模块都不会加载。"
 
 #: ../developer/site-ui-modules.md:139
 msgid ""
@@ -434,8 +434,8 @@ msgid ""
 "that exports neither replaces nothing, which is fine while you are still "
 "writing it."
 msgstr ""
-"**省略可选导出是一种选择，而不是缺漏**。`Landing: null` 表示「这里使用控制台的首页」；省略 `AuthFrame` "
-"表示「把账号页面放进控制台的容器里」。两者都不导出的模块什么也不替换，在你还在编写它的时候，这完全没问题。"
+"**不导出某个可选项，是有意的选择，不是遗漏**。`Landing: null` 表示“这里用控制台的首页”；不导出 `AuthFrame` "
+"表示“把账号页面放进控制台的容器里”。两个都不导出的模块什么也不替换，开发过程中这样完全没问题。"
 
 #: ../developer/site-ui-modules.md:150
 msgid ""
@@ -454,8 +454,8 @@ msgid ""
 " let one frame serve the five account routes. It supplies the complete "
 "outer page, so the host does not add another header or footer around it."
 msgstr ""
-"`AuthFrame` 必须渲染提供的共享表单 `children`，并保留任何传入的 `topbar` 和 `legal` "
-"节点。标题和页面标识让同一个外壳能够服务五个账号路由。它负责完整的外层页面，因此宿主不会再在它外面添加页头或页脚。"
+"`AuthFrame` 必须渲染传进来的共享表单 `children`，并保留传入的 `topbar` 和 `legal` "
+"节点。它拿到的标题和页面标识，让同一个外壳可以用在五个账号路由上。完整的外层页面由它负责，所以宿主不会在它外面再加页头或页脚。"
 
 #: ../developer/site-ui-modules.md:160
 msgid ""
@@ -468,10 +468,10 @@ msgid ""
 "console's confirmations. The text a visitor accepts is the text the site "
 "publishes."
 msgstr ""
-"**法律条款组是一个整体决定。** 发布自有条款的模块要同时导出 `TermsFrame`、`TermsContent` 和 "
-"`consentItems`；三者都不导出的模块沿用控制台的条款及其四个确认项。宿主会在访客看到条款的两个地方渲染 "
-"`TermsContent`：在 `/terms` 上作为 `TermsFrame` 的 `children`；在注册同意步骤中，由模块的 "
-"`consentItems` 替换控制台的确认项。访客接受的文本就是站点发布的文本。"
+"**法律条款组要整体取舍**。发布自己条款的模块，要同时导出 `TermsFrame`、`TermsContent` 和 "
+"`consentItems`；三个都不导出的，沿用控制台的条款和它的四个确认项。访客会在两个地方看到条款，宿主在这两处都渲染 "
+"`TermsContent`：一是 `/terms`，作为 `TermsFrame` 的 `children`；二是注册同意步骤，这里模块的 "
+"`consentItems` 会取代控制台的确认项。访客同意的文本，就是站点发布的文本。"
 
 #: ../developer/site-ui-modules.md:168
 msgid ""
@@ -514,10 +514,10 @@ msgid ""
 "its own pages and supported keys, but this does not translate every "
 "console page."
 msgstr ""
-"`authMessages` 修改文案，不改变校验规则或必填字段集合。宿主只保留 `AUTH_MESSAGE_KEYS` "
-"声明的键及其字符串值，并在页面读取之前丢弃其余内容，因此针对控制台页面的文案（`/authorize` 的 "
+"`authMessages` 只改文案，不改校验规则，也不改必填字段。宿主只保留 `AUTH_MESSAGE_KEYS` "
+"里声明过、且值为字符串的键，其余内容在页面读取之前就会丢弃，所以写给控制台页面的文案（`/authorize` 的 "
 "`auth.authorize.*`、`/chat` 的 "
-"`chat.*`）不会生效。缺失的键继续使用共享默认值。请保留每条消息的插值变量。模块可以本地化自己的页面和受支持的消息键，但这不会翻译所有控制台页面。"
+"`chat.*`）不会生效。没提供的键沿用共享的默认文案。请保留每条消息里的插值变量。模块可以为自己的页面和支持的键做本地化，但这并不会翻译控制台的所有页面。"
 
 #: ../developer/site-ui-modules.md:191
 msgid "Document language and page titles"
@@ -533,10 +533,10 @@ msgid ""
 "`locale` keeps `en` everywhere. The attribute follows client-side "
 "navigation as well as the first response."
 msgstr ""
-"服务端入口中可选的 `locale` 设置模块所渲染路由的 `<html lang>`：导出 `Landing` 时为 `/`，导出 "
-"`AuthFrame` 时为五个账号页面，导出法律条款组时为 "
-"`/terms`。其余路由（控制台，以及模块未提供相应导出的公开路由）都属于控制台，使用 `en`。`locale` 为空或省略时，所有路由都保持"
-" `en`。该属性既体现在首次响应中，也会随客户端导航更新。"
+"服务端入口里可选的 `locale`，决定模块渲染的那些路由上 `<html lang>` 的值：导出了 `Landing` 就是 `/`，导出了"
+" `AuthFrame` 就是五个账号页面，导出了法律条款组就是 "
+"`/terms`。其余路由（控制台本身，以及模块没有提供对应导出的公开路由）都归控制台，语言为 `en`。`locale` "
+"为空或不写时，所有路由都是 `en`。这个属性不只在首次响应里生效，客户端导航时也会跟着更新。"
 
 #: ../developer/site-ui-modules.md:200
 #, python-brace-format
@@ -632,8 +632,8 @@ msgid ""
 "select the module with `SITE_UI_SUBDIR=site-ui`. This keeps the module "
 "and its related build inputs under one pinned source tree."
 msgstr ""
-"发行版可以将整个 `frontend/` 树作为上下文，并通过 `SITE_UI_SUBDIR=site-ui` "
-"选择模块。这样，模块及其相关构建输入都包含在同一个固定版本的源码树中。"
+"发行版也可以把整个 `frontend/` 目录树作为上下文传进去，再用 `SITE_UI_SUBDIR=site-ui` "
+"选出模块。这样，模块和相关的构建输入都在同一棵锁定了版本的源码树里。"
 
 #: ../developer/site-ui-modules.md:246
 msgid ""
@@ -663,8 +663,8 @@ msgid ""
 "`http://backend:8080`; the existing runtime `/site-config` dependency is "
 "unchanged:"
 msgstr ""
-"同一暂存步骤也可在工作站运行，无需 Docker。请先启动网关；若地址不是 `http://backend:8080`，则设置 "
-"`BACKEND_INTERNAL_URL`。应用对运行时 `/site-config` 的依赖保持不变："
+"同样的暂存步骤也可以在本机运行，不需要 Docker。先启动一个网关；如果它的地址不是 `http://backend:8080`，就把 "
+"`BACKEND_INTERNAL_URL` 设为它的地址。应用在运行时依赖 `/site-config` 这一点不变："
 
 #: ../developer/site-ui-modules.md:271
 msgid ""
@@ -688,8 +688,8 @@ msgid ""
 "directory as well as `src/`, so a utility class that only a module "
 "outside `src/` uses is still generated."
 msgstr ""
-"相对路径形式的 `SITE_UI_DIR` 总是相对于 `apps/frontend` 解析，与命令在哪个目录运行无关。Tailwind 除了扫描"
-" `src/`，还会扫描所选模块的目录，因此只被 `src/` 之外的模块使用的工具类也会生成。"
+"`SITE_UI_DIR` 如果是相对路径，总是相对 `apps/frontend` 解析，不管命令在哪个目录下执行。Tailwind 除了扫描 "
+"`src/`，还会扫描所选模块的目录，所以即使某个工具类只在 `src/` 之外的模块里用到，也照样会生成。"
 
 #: ../developer/site-ui-modules.md:288
 msgid ""
@@ -701,14 +701,14 @@ msgstr "上述变量仅作用于当前命令，不会修改 shell 配置。若�
 msgid ""
 "Local dev serves module assets via `SITE_ASSETS_DIR`; the image recipe "
 "packages them automatically."
-msgstr "本地开发通过 `SITE_ASSETS_DIR` 提供模块资源；镜像配方会自动打包这些资源。"
+msgstr "本地开发时，模块资源通过 `SITE_ASSETS_DIR` 提供；构建镜像时会自动打包这些资源。"
 
 #: ../developer/site-ui-modules.md:298
 msgid ""
 "The staging environment file is used by the Dockerfile, not automatically"
 " read by npm. Leaving a staged directory behind does not select it for "
 "later commands."
-msgstr "暂存环境文件由 Dockerfile 使用，npm 不会自动读取。保留暂存目录不会让之后的命令自动选择该模块。"
+msgstr "暂存步骤生成的环境文件是给 Dockerfile 用的，npm 不会自动读取。暂存目录留着不删，之后的命令也不会因此选中它。"
 
 #: ../developer/site-ui-modules.md:301
 msgid ""
@@ -717,8 +717,8 @@ msgid ""
 "runner all read the same decision. Those files are generated; do not edit"
 " them."
 msgstr ""
-"无论采用哪种方式，解析器都会写出 `src/site-ui/active/` 与 "
-"`tsconfig.generated.json`，让打包器、类型检查器和测试工具使用同一选择。这些文件由工具生成，请勿手工编辑。"
+"无论用哪种方式，解析器都会写出 `src/site-ui/active/` 和 "
+"`tsconfig.generated.json`，这样打包器、类型检查器和测试工具读到的都是同一个选择结果。这些文件是自动生成的，不要手工修改。"
 
 #: ../developer/site-ui-modules.md:305
 msgid ""
@@ -748,16 +748,16 @@ msgid ""
 "route, and a file there would bypass the `/site-assets` route. Three "
 "rules, all enforced:"
 msgstr ""
-"模块图片位于 `public/site-assets/<module-id>/`。镜像构建会把它们打包到独立服务器旁边的 `site-assets"
-"/<module-id>/`，而不是 `public/`：Next.js 会在任何路由之前先提供 `public/` "
-"中的文件，放在那里的文件会绕过 `/site-assets` 路由。以下三条规则均由工具强制执行："
+"模块的图片放在 `public/site-assets/<module-id>/`。构建镜像时会把它们打包到 standalone 服务器旁边的 "
+"`site-assets/<module-id>/`，而不是 `public/`：Next.js 在所有路由之前就会直接提供 `public/` "
+"里的文件，放在那里就会绕过 `/site-assets` 路由。下面三条规则都有强制检查："
 
 #: ../developer/site-ui-modules.md:320
 msgid ""
 "**Under the module's own id.** An asset elsewhere fails the build. This "
 "is what makes \"two modules cannot write the same path, and neither can "
 "shadow the application's\" true."
-msgstr "**资源必须位于模块自身 id 下。** 放在其他路径会使构建失败，从而保证不同模块不能写入同一路径，也不能覆盖应用资源。"
+msgstr "**只能放在模块自己的 id 下**。放在别处，构建就会失败。正是这条规则保证了“两个模块不会写到同一路径，也都不能遮住应用自己的文件”。"
 
 #: ../developer/site-ui-modules.md:323
 msgid ""
@@ -770,14 +770,14 @@ msgid ""
 "**The route is what serves them.** `/site-assets/*` serves image files "
 "only — AVIF, GIF, ICO, JPEG, PNG, SVG and WebP, up to 20 MB — with a "
 "five-minute revalidating cache policy and `nosniff`, and sandboxes an SVG"
-" with a `Content-Security-Policy` header. A bundle with anything under "
-"`public/site-assets/<module-id>/` fails the build. Test the URL, not the "
-"file."
+" with a `Content-Security-Policy` header. A built bundle that still has "
+"files under `public/site-assets/<module-id>/` fails the build. Test the "
+"URL, not the file."
 msgstr ""
-"**资源由路由提供。** `/site-assets/*` 只提供图片文件（AVIF、GIF、ICO、JPEG、PNG、SVG 和 WebP，最大"
-" 20 MB），附带五分钟的重新验证缓存策略和 `nosniff`，并通过 `Content-Security-Policy` 头把 SVG "
-"放进沙箱。构建产物的 `public/site-assets/<module-id>/` 下只要有任何内容，构建就会失败。请测试 "
-"URL，而不是只看文件是否存在。"
+"**资源由路由提供**。`/site-assets/*` 只提供图片文件（AVIF、GIF、ICO、JPEG、PNG、SVG 和 WebP，最大 "
+"20 MB），附带五分钟的重新验证缓存策略和 `nosniff`，并通过 `Content-Security-Policy` 头把 SVG "
+"放进沙箱。构建产物里如果 `public/site-assets/<module-id>/` 下还留有文件，构建就会失败。要测试 "
+"URL，而不是只看文件在不在。"
 
 #: ../developer/site-ui-modules.md:331
 msgid ""
@@ -785,7 +785,9 @@ msgid ""
 "second. A deployment that mounts its branding directory keeps overriding "
 "the module's files, and one that mounts nothing still serves a complete "
 "site."
-msgstr "运行时先读取 `SITE_ASSETS_DIR`，再回退到镜像内的副本。挂载品牌目录的部署可以继续覆盖模块资源；未挂载目录的部署也有完整站点。"
+msgstr ""
+"运行时先读 "
+"`SITE_ASSETS_DIR`，再读镜像里自带的那份。挂载了品牌目录的部署，可以继续覆盖模块的文件；什么都不挂载的部署，也能提供完整的站点。"
 
 #: ../developer/site-ui-modules.md:335
 msgid ""
@@ -809,8 +811,8 @@ msgid ""
 "provides structural variation. The deprecated class map remains supported"
 " throughout API v1."
 msgstr ""
-"共享账号表单负责自己的标记结构和默认样式。稳定的语义属性提供样式与状态接口，`fieldLayout` 导出支持结构差异。已弃用的类名映射在整个 "
-"API v1 生命周期内仍受支持。"
+"共享账号表单自己渲染 HTML 结构和默认样式。稳定的语义钩子用来挂样式、表达状态；`fieldLayout` "
+"导出用来调整结构。已弃用的类名映射在整个 API v1 期间仍然支持。"
 
 #: ../developer/site-ui-modules.md:347
 msgid ""
@@ -834,7 +836,7 @@ msgstr "`data-auth=\"form\"`"
 msgid ""
 "the body of an account page: its `<form>`, or the box a result or the "
 "sign-up consent step sits in"
-msgstr "账号页面的主体：其 `<form>` 元素，或承载结果、注册同意步骤的容器"
+msgstr "账号页面的主体：页面的 `<form>`，或者放结果、放注册同意步骤的那个容器"
 
 #: ../developer/site-ui-modules.md
 msgid "`data-auth=\"field\"`"
@@ -916,7 +918,7 @@ msgstr "`data-auth=\"loading\"`"
 
 #: ../developer/site-ui-modules.md
 msgid "the resolving-session region"
-msgstr "会话解析中的区域"
+msgstr "正在解析会话时显示的区域"
 
 #: ../developer/site-ui-modules.md:363
 msgid ""
@@ -926,8 +928,8 @@ msgid ""
 "class name. The set is part of the contract: an attribute is added, never"
 " repurposed."
 msgstr ""
-"状态由应用设置的现有属性表达，包括 `aria-invalid`、`disabled`、`aria-busy`、`data-auth-error`"
-" 和 `data-auth-tone`。样式表无需根据类名猜测字段是否出错。这组属性属于契约：可以新增，但不能改变已有属性的含义。"
+"状态通过应用本来就会设置的属性表达：`aria-invalid`、`disabled`、`aria-busy`、`data-auth-error"
+"`、`data-auth-tone`，所以样式表不用从类名去推断“这个字段出错了”。这组属性是契约的一部分：只会新增，不会挪作他用。"
 
 #: ../developer/site-ui-modules.md:368
 msgid ""
@@ -952,11 +954,11 @@ msgid ""
 "place it beside its label. `fieldLayout` is a supported export in its own"
 " right, not part of the deprecated class map."
 msgstr ""
-"**字段布局。** 可选的 `fieldLayout` 导出接收共享控件、提示、错误与操作节点，以及标签文本和 `htmlFor` "
-"id。它必须渲染所有传入节点，将标签关联到该 id，并保留 `data-auth=\"field\"` 和 `data-"
+"**字段布局**。可选的 `fieldLayout` 导出会拿到共享的控件、提示、错误和操作节点，以及标签文本和 `htmlFor` "
+"id。它必须渲染传入的每个节点，把标签关联到这个 id，并保留 `data-auth=\"field\"` 和 `data-"
 "auth=\"label\"` "
-"属性。控件传入时已经带有描述关联，因此只要每个节点都被渲染，无论如何排列，这种关联都会保留。默认布局将字段操作放在控件与验证信息之后；模块可以将其放在标签旁边。`fieldLayout`"
-" 本身就是受支持的独立导出，不属于已弃用的类名映射。"
+"这两个钩子。控件传进来时已经带好了描述关联，所以只要每个节点都渲染出来，不管怎么排列，关联都不会丢。默认布局把字段操作放在控件和校验信息后面；模块可以把它放到标签旁边。`fieldLayout`"
+" 本身就是一个受支持的独立导出，不属于已弃用的类名映射。"
 
 #: ../developer/site-ui-modules.md:382
 msgid ""
@@ -966,9 +968,9 @@ msgid ""
 "class map will only be removed in a later API revision, with a migration "
 "guide, so existing v1 modules keep working."
 msgstr ""
-"**已弃用的 `authAppearance` 类名映射**。类名映射导出在 API v1 "
-"的整个生命周期内都受支持；它只包含类名。新的样式应改用限定作用域的 `data-auth` 选择器和状态选择器。类名映射只会在之后的某个 API "
-"修订版中移除，并会附带迁移指南，因此现有的 v1 模块可以继续正常工作。"
+"**已弃用的 `authAppearance` 类名映射**。只要 API v1 "
+"还在，类名映射导出就一直支持；它只能包含类名。新写的样式应该改用限定了作用域的 `data-auth` 选择器和状态选择器。类名映射要到以后的 "
+"API 版本才会移除，届时会附上迁移指南，所以现有的 v1 模块会继续正常工作。"
 
 #: ../developer/site-ui-modules.md:388
 msgid ""
@@ -978,8 +980,8 @@ msgid ""
 "check will catch it for you — scope everything under a root class the "
 "module sets on its own shell."
 msgstr ""
-"所有定制都遵循同一条规则：**模块 CSS 只能影响模块负责的页面。** 选择 `body`、`:root` "
-"或裸元素的样式会同时改变控制台，目前没有检查器替你拦截。应将所有规则限定在模块外壳设置的根类名之下。"
+"所有定制都受同一条规则约束：**模块的 CSS 只能影响模块自己负责的页面**。样式表一旦选中 `body`、`:root` "
+"或使用裸元素选择器，连控制台的样式也会一起改掉，而且没有任何检查会替你发现。所有规则都要限定在模块给自己外壳设置的根类名之下。"
 
 #: ../developer/site-ui-modules.md:393
 msgid "When a module component fails"
@@ -1031,14 +1033,14 @@ msgid ""
 "sit in the console container when no `AuthFrame` is exported, and the "
 "shared pages, schemas and session handling are untouched either way."
 msgstr ""
-"**添加模块不会改变控制台。** 未导出 `AuthFrame` "
-"时，五个账号页面留在控制台容器中；无论是否提供模块，共享页面、数据结构与会话处理都保持不变。"
+"**添加模块不会改变控制台**。没有导出 `AuthFrame` 时，五个账号页面留在控制台的容器里；无论是否导出，共享页面、schema "
+"和会话处理都不受影响。"
 
 #: ../developer/site-ui-modules.md:418
 msgid ""
 "**Removing an optional export is safe.** A module that stops exporting "
 "`Landing` gets the console's home page back."
-msgstr "**移除可选导出是安全的。** 模块停止导出 `Landing` 后，将恢复控制台首页。"
+msgstr "**移除可选导出是安全的**。模块不再导出 `Landing` 后，首页就恢复成控制台的首页。"
 
 #: ../developer/site-ui-modules.md:420
 msgid ""
@@ -1054,8 +1056,8 @@ msgid ""
 " an API revision bump. So does renaming a key in `authMessages` or "
 "`metaMessages`, or changing its interpolation variables."
 msgstr ""
-"**重命名或删除导出、改变属性含义，或改变 `data-auth` 值的用途，均属于破坏性变更**，需要提升 API 版本。重命名 "
-"`authMessages` 或 `metaMessages` 中的键，或改变其插值变量，也一样。"
+"**重命名或删除导出、改变某个 prop 的含义，或者把某个 `data-auth` 值挪作他用，都是破坏性变更**，需要升级 API "
+"版本号。重命名 `authMessages` 或 `metaMessages` 里的键，或者改变键的插值变量，也一样。"
 
 #: ../developer/site-ui-modules.md:426
 msgid "**Adding an optional key or attribute is compatible.**"
@@ -1074,7 +1076,7 @@ msgstr ""
 msgid ""
 "The module API has no shared public-layout export; a module organizes its"
 " own internal layouts freely."
-msgstr "模块 API 不提供共享公开布局导出；模块可以自由组织自己的内部布局。"
+msgstr "模块 API 不提供共享的公开页面布局；模块内部的布局可以自由组织。"
 
 #: ../developer/site-ui-modules.md:435
 msgid "Testing a module"
@@ -1084,7 +1086,7 @@ msgstr "测试模块"
 msgid ""
 "The shared repository owns validation and the image recipe. These checks "
 "use the built-in neutral module and the public example."
-msgstr "共享仓库负责校验和镜像构建配方。这些检查使用内置中立模块和公开示例。"
+msgstr "校验和镜像构建流程归共享仓库负责。下面这些检查用的是内置的中立模块和公开示例。"
 
 #: ../developer/site-ui-modules.md:447
 msgid ""
@@ -1101,14 +1103,14 @@ msgid ""
 "`/terms`. `next build` does not load the module, so this is the first "
 "point at which its load-time check runs."
 msgstr ""
-"然后对构建出的镜像做冒烟测试：由于每个页面都会读取 `/site-config`，请连同网关一起启动它，并请求 `/`、五个账号页面和 "
-"`/terms`。`next build` 不会加载模块，因此这是模块加载时检查第一次运行的时机。"
+"然后对构建出的镜像做冒烟测试：每个页面都会读 `/site-config`，所以要连同网关一起启动，再请求 `/`、五个账号页面和 "
+"`/terms`。`next build` 不会加载模块，所以这里才是加载时检查第一次真正运行的地方。"
 
 #: ../developer/site-ui-modules.md:457
 msgid ""
 "From the repository root, build the neutral image and the public example "
 "through the same upstream recipe:"
-msgstr "在仓库根目录使用同一份上游配方构建默认镜像与公开示例："
+msgstr "在仓库根目录，用同一套上游构建流程构建中立镜像和公开示例："
 
 #: ../developer/site-ui-modules.md:470
 msgid ""
@@ -1117,8 +1119,8 @@ msgid ""
 "access for dependencies. Serving the full application also needs the "
 "gateway's runtime `/site-config` endpoint."
 msgstr ""
-"第一个 manifest 必须报告 `kind: \"neutral\"`，第二个必须报告 `id: \"example\"`。这些构建需要 "
-"Docker 以及下载依赖的网络连接。完整应用运行时还需要网关提供 `/site-config` 端点。"
+"第一个 manifest 里必须是 `kind: \"neutral\"`，第二个必须是 `id: \"example\"`。构建这些镜像需要 "
+"Docker，还需要能联网下载依赖。要运行完整应用，还需要网关在运行时提供 `/site-config` 端点。"
 
 #: ../developer/site-ui-modules.md:475
 msgid ""

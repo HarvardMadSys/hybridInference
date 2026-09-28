@@ -190,10 +190,10 @@ docker exec -i hybridinference-postgres \
   pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < hybridinference-2026-01-01.dump
 ```
 
-Stop the backend (`make down`, or `docker stop hybridinference-backend`) before
-restoring over a live database, and remember that the backup contains hashed API
-keys and — if `DB_STORE_FULL_CONTENT` was ever on — user prompt content. Store it
-accordingly.
+Stop the backend with `docker stop hybridinference-backend` before restoring
+over a live database; `make down` would stop Postgres too. The backup contains
+hashed API keys and, if `DB_STORE_FULL_CONTENT` was ever on, user prompt
+content, so store it accordingly.
 
 ## Reset
 
@@ -259,7 +259,7 @@ around it (Compose then reports the network as still in use). Pass
 
 ### Authentication
 
-Two independent gates, and by default neither is pgAdmin's own login:
+Two separate gates can protect pgAdmin, and by default only the console's is on:
 
 - `PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin with **no
   login of its own**. Set it to `True` in `.env` and pgAdmin asks for

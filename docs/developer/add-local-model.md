@@ -73,7 +73,8 @@ python -m sglang.launch_server \
   --served-model-name my-local-model
 ```
 
-vLLM and Ollama work the same way — `vllm serve <hf-org>/<hf-model> --port 8007`
+vLLM and Ollama work the same way —
+`vllm serve <hf-org>/<hf-model> --port 8007 --served-model-name my-local-model`
 is the equivalent command. All three dispatch to the same `OpenAICompatAdapter`;
 the `kind` you register selects the metrics label and the provider profile, so
 use the one that matches the runtime you actually started.

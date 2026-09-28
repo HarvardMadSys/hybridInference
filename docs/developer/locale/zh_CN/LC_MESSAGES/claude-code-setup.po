@@ -28,7 +28,9 @@ msgstr "Claude Code 接入配置"
 msgid ""
 "Point Claude Code at a HybridInference gateway instead of Anthropic, so "
 "it uses the models and API key issued by that deployment."
-msgstr "把 Claude Code 指向 HybridInference 网关，而不是 Anthropic，让它使用该部署签发的模型和 API key。"
+msgstr ""
+"让 Claude Code 改连 HybridInference 网关、不再直连 Anthropic，这样它用的就是该部署提供的模型和签发的 "
+"API key。"
 
 #: ../developer/claude-code-setup.md:6
 msgid "Setup"
@@ -71,8 +73,8 @@ msgid ""
 "config), and [installation](https://code.claude.com/docs/en/installation)"
 " documentation."
 msgstr ""
-"这件事在客户端一侧的所有细节——某个 Claude Code 版本读哪些变量、它的请求超时是多少、只改 `settings.json` "
-"够不够——都归 Claude Code 管，不归网关管。请参阅 Anthropic 当前的 [LLM "
+"客户端这边的细节——某个版本的 Claude Code 读哪些变量、请求超时是多少、只改 `settings.json` 够不够——都由 "
+"Claude Code 决定，与网关无关。具体请看 Anthropic 最新的 [LLM "
 "网关](https://code.claude.com/docs/en/llm-gateway-"
 "connect)、[模型配置](https://code.claude.com/docs/en/model-"
 "config)和[安装](https://code.claude.com/docs/en/installation)文档。"
@@ -149,7 +151,7 @@ msgstr ""
 msgid ""
 "To map Claude Code's family selectors explicitly, add any of these "
 "supported variables to the same `env` block:"
-msgstr "要显式映射 Claude Code 的家族选择器，把下面这些受支持的变量按需加进同一个 `env` 块："
+msgstr "如果要显式指定 Claude Code 各个模型家族对应的模型，可以把下面这些受支持的变量按需加进同一个 `env` 块："
 
 #: ../developer/claude-code-setup.md:69
 msgid ""
@@ -159,8 +161,8 @@ msgid ""
 "documentation linked above is the authority on which ones your version "
 "supports."
 msgstr ""
-"Haiku 这一项映射留给 Claude Code 体量较小的后台调用。网关不会读取这些变量中的任何一个——Claude Code "
-"在本地解析它们，只把解析出的 id 发过来——所以上面链接的 Anthropic 模型配置文档才是「你这个版本支持哪些变量」的权威来源。"
+"Haiku 这一项用于 Claude Code 较小的后台调用。网关并不读取这些变量——Claude Code 在本地解析它们，只把解析出的 id"
+" 发过来——所以你的版本支持哪些变量，以上面链接的 Anthropic 模型配置文档为准。"
 
 #: ../developer/claude-code-setup.md:74
 msgid "Usage and Verification"
@@ -183,8 +185,8 @@ msgid ""
 "Messages API the gateway implements, and Claude sessions elsewhere — the "
 "web app, other clients — read none of this local configuration."
 msgstr ""
-"这些设置只覆盖模型推理，而且只对这台机器上的 Claude Code 生效。Anthropic 托管的那些产品功能不属于网关实现的 "
-"Messages API；其他地方的 Claude 会话——网页版、别的客户端——都不会读这份本地配置。"
+"这些设置只影响模型推理，而且只对这台机器上的 Claude Code 生效。Anthropic 托管的产品功能不属于网关实现的 Messages "
+"API；其他地方的 Claude 会话——网页版、别的客户端——都不会读这份本地配置。"
 
 #: ../developer/claude-code-setup.md:91
 msgid "Troubleshooting"
@@ -222,14 +224,14 @@ msgstr "404 找不到模型"
 msgid ""
 "The gateway registers no route for the final model ID, or your key's role"
 " may not see it"
-msgstr "网关对最终的模型 id 没有注册任何路由，或者你这把 key 的角色看不到它"
+msgstr "网关没有为最终的模型 id 注册任何路由，或者你的 key 所属的角色看不到这个模型"
 
 #: ../developer/claude-code-setup.md
 msgid ""
 "Query `GET /v1/models` (it lists what your key can reach), then update "
 "`model` or the matching `ANTHROPIC_DEFAULT_*_MODEL`"
 msgstr ""
-"查 `GET /v1/models`（它列出这把 key 能访问的模型），再更新 `model` 或对应的 "
+"查 `GET /v1/models`（它会列出你的 key 能访问的模型），再更新 `model` 或对应的 "
 "`ANTHROPIC_DEFAULT_*_MODEL`"
 
 #: ../developer/claude-code-setup.md
@@ -262,7 +264,7 @@ msgstr "504/超时"
 
 #: ../developer/claude-code-setup.md
 msgid "A gateway or upstream request exceeded its deadline"
-msgstr "网关或上游的某次请求超出了截止时间"
+msgstr "网关或上游的请求超过了时限"
 
 #: ../developer/claude-code-setup.md
 msgid "Check gateway health, then adjust timeouts only if needed"

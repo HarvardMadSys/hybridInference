@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:02+0800\n"
+"POT-Creation-Date: 2026-09-28 17:18+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -63,10 +63,10 @@ msgid ""
 "execution flow. See [Leaves, pools, and dispatch instructions](#leaves-"
 "pools-and-dispatch-instructions)."
 msgstr ""
-"router 负责选择、准入、重试与反馈。选定 endpoint 后，它创建一个持有已选 adapter 的 "
-"`EndpointBinding`，再由 `LeafBackend` 调用该 adapter。`TreeBackend` "
-"提供池委托能力：把请求交给声明候选池内的 router，由被包装的 router 保留自己的选择与执行流程。见[叶子、池与派发指令"
-"](#leaves-pools-and-dispatch-instructions)。"
+"router 负责选择、准入、重试和反馈。选定端点后，它创建一个 `EndpointBinding`，里面放着选中的 adapter，再由 "
+"`LeafBackend` 调用这个 adapter。`TreeBackend` 提供的是另一种能力：把请求委托给一个 "
+"router，并限定它在声明好的候选池里工作；被包装的 router 保留自己的选择和执行流程。见[叶子、池与派发指令](#leaves-"
+"pools-and-dispatch-instructions)。"
 
 #: ../developer/routing-internals.md:24
 msgid ""
@@ -78,10 +78,11 @@ msgid ""
 "`router_params:` is reported at startup rather than on the first request."
 " What the registry returns for a model depends on its `router:` field:"
 msgstr ""
-"启动接线在 `apps/backend/serving/servers/bootstrap.py`：它把模型注册表里的路由注册进一个进程级的 "
-"`FixedRouter`，可选地应用 `RoutingManager`，然后在同一张路由表上构建 "
-"`ModelRouterRegistry`。每个已知模型的 router 都会在启动时被提前构造，因此策略名写错或 "
-"`router_params:` 写错会在启动阶段报出来，而不是等到第一个请求。注册表为一个模型返回什么，取决于它的 `router:` 字段："
+"启动时的组装逻辑在 "
+"`apps/backend/serving/servers/bootstrap.py`：先把模型注册表里的路由注册进一个进程级的 "
+"`FixedRouter`，按需应用 `RoutingManager`，再基于同一张路由表构建 "
+"`ModelRouterRegistry`。所有已知模型的 router 都在启动时就构造好，所以策略名或 `router_params:` "
+"写错，启动时就会报出来，不会等到第一个请求。注册表给某个模型返回什么，取决于它的 `router:` 字段："
 
 #: ../developer/routing-internals.md:32
 msgid ""
@@ -93,55 +94,54 @@ msgstr "`routewise`——一个覆盖该模型完整候选池的 `RouteWiseRoute
 msgid ""
 "`fixed` — the shared `FixedRouter`, unless the model opts in to "
 "composition with `router_params.hybrid_composition: true` **and** has "
-"both local and cloud candidates. That builds a `HybridRouter` "
-"(`serving/servers/hybrid_composition.py`) over a `LocalBackend` and a "
-"cloud backend instead. All-local and all-cloud models keep the shared "
-"`FixedRouter` even when the option is enabled."
+"both local and cloud candidates. In that case "
+"`apps/backend/serving/servers/hybrid_composition.py` builds a "
+"`HybridRouter` over a `LocalBackend` and a cloud backend instead. All-"
+"local and all-cloud models keep the shared `FixedRouter` even when the "
+"option is enabled."
 msgstr ""
-"`fixed` — 使用共享 `FixedRouter`；只有模型通过 `router_params.hybrid_composition: "
-"true` 显式启用组合，**且** 同时具有 local 和 cloud 候选时，才构建 "
-"`HybridRouter`（`serving/servers/hybrid_composition.py`），在 `LocalBackend` "
-"和 cloud backend 之上组织请求。全部为 local 或全部为 cloud 的模型，即使启用了该选项，也继续使用共享 "
-"`FixedRouter`。"
+"`fixed`——使用共享的 `FixedRouter`。只有模型用 `router_params.hybrid_composition: "
+"true` "
+"显式开启组合，**并且**同时有本地和云端候选时，`apps/backend/serving/servers/hybrid_composition.py`"
+" 才会改为在 `LocalBackend` 和一个云端后端之上构建 "
+"`HybridRouter`。全是本地或全是云端候选的模型，即使开了这个选项，也仍使用共享的 `FixedRouter`。"
 
-#: ../developer/routing-internals.md:41
+#: ../developer/routing-internals.md:40
 msgid ""
 "**The leaf execution boundary is already used by ordinary Fixed and "
 "RouteWise.** Existing configurations use these paths without enabling "
 "composition:"
-msgstr "**普通 Fixed 和 RouteWise 已经使用叶子执行边界**：现有配置无需启用组合，就会走以下路径："
+msgstr "**普通的 Fixed 和 RouteWise 已经在使用叶子这层执行边界**。现有配置不用开启组合，走的就是下面这两条路径："
 
-#: ../developer/routing-internals.md:49
+#: ../developer/routing-internals.md:48
 msgid ""
 "Both routers can select from local and cloud endpoints in the same "
 "model's route. `hybrid_composition` enables the additional `HybridRouter`"
 " layer that plans across separate local/cloud pools; it is not required "
 "to use either the leaf boundary or a mixed candidate pool."
 msgstr ""
-"这两个 router 都可以在同一模型的本地和云端 endpoint 之间选择。`hybrid_composition` 启用额外的 "
-"`HybridRouter` 层，由它在分开的 local/cloud 池之间规划尝试；使用叶子执行边界或混合候选池都不需要开启这个选项。"
+"这两个 router 都能在同一模型路由里的本地和云端端点之间选择。`hybrid_composition` 开启的是额外的一层 "
+"`HybridRouter`，由它在分开的本地池和云端池之间规划；无论是用叶子执行边界，还是用混合候选池，都不需要开这个选项。"
 
-#: ../developer/routing-internals.md:54
+#: ../developer/routing-internals.md:53
 msgid "Leaves, pools, and dispatch instructions"
 msgstr "叶子、池与派发指令"
 
-#: ../developer/routing-internals.md:56
+#: ../developer/routing-internals.md:55
 msgid ""
 "`LeafBackend` uses the adapter's call signature and directly forwards its"
 " chat call or stream iterator. It does not implement the router-shaped "
 "`RoutingBackend` protocol. Pool wrappers such as `TreeBackend` implement "
 "that protocol and forward requests to a scoped router."
 msgstr ""
-"`LeafBackend` 使用 adapter 的调用签名，直接转发普通聊天调用或返回流式迭代器。它不实现采用 router 调用形状的 "
-"`RoutingBackend` 协议。`TreeBackend` 等池包装实现该协议，并把请求转发给范围受限的 router。"
+"`LeafBackend` 沿用 adapter 的调用签名，直接转发 chat 调用或流式迭代器。它不实现 `RoutingBackend` "
+"协议，那是按 router 的接口形状定义的。`TreeBackend` 这类池包装才实现这个协议，并把请求转给一个范围受限的 router。"
 
-#: ../developer/routing-internals.md:61
+#: ../developer/routing-internals.md:60
 msgid ""
 "For composed dispatch, `HybridRouter` uses two explicit instructions "
 "(`apps/backend/routing/dispatch.py`) to state what a pool may do:"
-msgstr ""
-"在组合派发中，`HybridRouter` "
-"使用两种显式指令（`apps/backend/routing/dispatch.py`）声明池获得的权限："
+msgstr "组合派发时，`HybridRouter` 用两种显式指令（`apps/backend/routing/dispatch.py`）说明池可以做什么："
 
 #: ../developer/routing-internals.md
 msgid "Instruction"
@@ -161,16 +161,14 @@ msgstr "`ExecuteEndpoint(binding)`"
 
 #: ../developer/routing-internals.md
 msgid "Execute exactly the bound endpoint."
-msgstr "精确执行绑定的 endpoint。"
+msgstr "只执行绑定的那个端点。"
 
 #: ../developer/routing-internals.md
 msgid ""
 "`TreeBackend` accepts a binding within its model and endpoint scope. The "
 "child router admits that target and executes it through a leaf, with re-"
 "selection and fallback disabled."
-msgstr ""
-"`TreeBackend` 接受处于其模型和 endpoint 范围内的 binding。子 router "
-"对该目标做准入检查，再通过叶子执行；不得重新选择或 fallback 到其他 endpoint。"
+msgstr "`TreeBackend` 接受落在自己模型和端点范围内的绑定。子 router 对这个目标做准入，再通过叶子执行，不重新选择，也不回退。"
 
 #: ../developer/routing-internals.md
 msgid "`DelegatePool(pool_id)`"
@@ -184,9 +182,9 @@ msgstr "在指定池内选择。"
 msgid ""
 "`TreeBackend` delegates selection, admission, retries, and hedging to its"
 " scoped router."
-msgstr "`TreeBackend` 将选择、准入、重试和 hedging 委托给其范围受限的 router。"
+msgstr "`TreeBackend` 把选择、准入、重试和对冲都交给自己那个范围受限的 router。"
 
-#: ../developer/routing-internals.md:69
+#: ../developer/routing-internals.md:68
 msgid ""
 "An exact dispatch can therefore pass through a child router for "
 "admission; the instruction limits that router to the bound endpoint. "
@@ -196,12 +194,11 @@ msgid ""
 "sample. A leaf has no pool-selection capability and cannot carry out "
 "`DelegatePool`."
 msgstr ""
-"因此，精确派发仍可以经过子 router 完成准入；指令把该 router 限制在绑定的 endpoint "
-"上。`check_dispatch()` 与池的请求校验会在上游 I/O 之前拒绝错误的池、范围外的模型或越界 "
-"binding。这类组合错误直接传播，不触发 fallback，也不产生 provider 失败样本。叶子没有池内选择能力，无法执行 "
-"`DelegatePool`。"
+"所以精确派发也可以经过子 router 做准入，只是指令把这个 router 限定在绑定的端点上。`check_dispatch()` "
+"和池的请求校验会在发生任何上游 I/O 之前，拒绝错误的池、被排除的模型或越界的绑定。这类组合错误直接向上抛出，不触发回退，也不记为 "
+"provider 失败样本。叶子没有在池内选择的能力，执行不了 `DelegatePool`。"
 
-#: ../developer/routing-internals.md:76
+#: ../developer/routing-internals.md:75
 msgid ""
 "`EndpointBinding` carries the endpoint id, the model, the pool, a "
 "diagnostic route-table `generation`, and **the adapter itself**. Holding "
@@ -216,14 +213,13 @@ msgid ""
 "`generation` is diagnostic only; it does not decide whether a binding is "
 "stale."
 msgstr ""
-"`EndpointBinding` 携带 endpoint id、模型、池、用于诊断的路由表 `generation`，以及 **adapter "
-"本身**。保留 adapter 引用意味着执行时无需再次查找目标，所以管理员修改路由不会把在途请求重定向到其他 adapter。构造 "
-"binding 和叶子时都会拒绝不一致的 endpoint 身份；叶子也会拒绝同时报告多个 endpoint 结果的组合执行器。每条 hedge "
-"支路各有一个叶子。若 RouteWise 的同一 endpoint 候选已被替换为另一个 adapter 对象，RouteWise "
-"会在预留容量前拒绝旧 binding：准入与执行必须使用同一个 adapter。`generation` 仅用于诊断，不决定 binding "
-"是否过期。"
+"`EndpointBinding` 里有端点 id、模型、池、一个用于诊断的路由表 `generation`，以及 **adapter "
+"本身**。关键就在于持有 "
+"adapter：执行时不再查一次目标，所以管理员改了路由，也没法把在途请求改发到别处。构造绑定和叶子时都会校验端点身份，不一致就拒绝；叶子还会拒绝同时报告多个端点结果的组合执行器。每一路对冲请求都有自己的叶子。如果"
+" RouteWise 某个端点的候选已经换成了另一个 adapter 对象，RouteWise "
+"会在预留容量之前拒绝旧的绑定：准入和执行必须用同一个 adapter。`generation` 只用于诊断，不用来判断绑定是否过期。"
 
-#: ../developer/routing-internals.md:88
+#: ../developer/routing-internals.md:87
 msgid ""
 "**Accounting stays with the owning router.** Selection, the admission "
 "claim, the prefill lease, retry and hedge bookkeeping, `_routing` "
@@ -231,11 +227,10 @@ msgid ""
 " the router that chose the endpoint. A leaf adds no second copy of this "
 "state or accounting."
 msgstr ""
-"**记账留在负责该次尝试的 router 中**：选择、准入凭据、prefill 租约、重试与 hedge 记录、`_routing` "
-"元数据，以及交给 `record_observation()` 的反馈，都由选中 endpoint 的 router "
-"管理。叶子不另外保存或重复执行这些状态管理与记账。"
+"**记账留在做出选择的 router 里**。选择、准入凭据、prefill 租约、重试和对冲的记录、`_routing` 元数据，以及交给 "
+"`record_observation()` 的反馈，都归选中该端点的 router 管。叶子不会再存一份这些状态，也不会重复记账。"
 
-#: ../developer/routing-internals.md:93
+#: ../developer/routing-internals.md:92
 msgid ""
 "**Pool scopes constrain selection and fallback.** `LocalBackend` and "
 "`FixedCloudBackend` enforce model grants and narrow "
@@ -247,14 +242,14 @@ msgid ""
 "before scopes are compared. A caller's scope can narrow the pool's grant;"
 " an empty intersection is refused, never treated as unrestricted access."
 msgstr ""
-"**池的范围同时约束选择与 fallback**：`LocalBackend` 和 `FixedCloudBackend` "
-"校验模型权限，并在转发给共享 router 之前收窄 "
-"`RoutingRequestOptions.endpoint_scope`。`RouteWiseCloudBackend` 还会绑定 "
-"`RouteScopeView`（`route_scope.py`），把子 router 的候选选择、重试、hedge 支路和主动探测限制在其 "
-"cloud 范围内。比较范围前，provider 标签会在请求模型内展开成 canonical endpoint "
-"id。调用方可以进一步收窄池授予的范围；交集为空时拒绝派发，不会解释为不受限制的访问。"
+"**池的范围既约束选择，也约束回退**。`LocalBackend` 和 `FixedCloudBackend` 会校验模型授权，并在转给共享 "
+"router 之前收窄 "
+"`RoutingRequestOptions.endpoint_scope`。`RouteWiseCloudBackend` 还会绑定一个 "
+"`RouteScopeView`（`route_scope.py`），把子 router "
+"的候选选择、重试、对冲请求和主动探测都限制在它的云端范围内。比较范围之前，provider 标签会在所请求的模型内展开成规范的端点 "
+"id。调用方的范围可以比池授予的更窄；交集为空时直接拒绝，绝不当成不受限制。"
 
-#: ../developer/routing-internals.md:102
+#: ../developer/routing-internals.md:101
 msgid ""
 "**Requests keep the router API.** Calls use `chat_completion()` or "
 "`stream_chat_completion()` with `routing_options`. For each composed "
@@ -264,14 +259,13 @@ msgid ""
 "selection of another candidate unless `require_target` is set. "
 "`allow_fallback` controls retries after an executed attempt fails."
 msgstr ""
-"**请求沿用 router API**：调用仍使用 `chat_completion()` 或 "
-"`stream_chat_completion()`，并携带 "
-"`routing_options`。对每次组合尝试，`dispatch_for_attempt()` 构造指令；解析出的 "
-"binding、scope、目标与 fallback 控制字段通过 `RoutingRequestOptions` 传给子 "
-"router。除非设置了 `require_target`，偏好 endpoint 允许 router "
-"改选其他候选。`allow_fallback` 控制已经执行的尝试失败后能否重试。"
+"**请求沿用 router 的 API**。调用照样是 `chat_completion()` 或 "
+"`stream_chat_completion()`，带上 `routing_options`。每次组合尝试都由 "
+"`dispatch_for_attempt()` 构造指令；解析好的绑定、范围，以及目标和回退相关的控制项，经 "
+"`RoutingRequestOptions` 传给子 router。偏好的端点只是偏好：除非设置了 "
+"`require_target`，router 可以改选其他候选。`allow_fallback` 控制一次已执行的尝试失败后，还能不能重试。"
 
-#: ../developer/routing-internals.md:110
+#: ../developer/routing-internals.md:109
 msgid ""
 "**Admission refusal does not report an upstream failure.** A configured "
 "pool with no available capacity can raise `TargetUnavailableError`. "
@@ -282,16 +276,16 @@ msgid ""
 " SSE error instead of changing the HTTP status. If upstream attempts did "
 "fail, the router's error-selection rules determine the final error."
 msgstr ""
-"**准入拒绝不记为上游失败**：已配置的池在没有可用容量时可以抛出 `TargetUnavailableError`。`HybridRouter`"
-" 随后尝试下一个获准的候选；fallback 成功时正常返回成功响应。如果所有尝试都在到达上游前被拒绝，最终的拒绝会映射为 "
-"**503**。若流式响应已经发送 HTTP 头，则在 SSE 错误中携带 **503** 错误码，而不是修改 HTTP "
-"状态。若确实有上游执行失败，则由 router 的错误选择规则决定最终错误。"
+"**准入被拒不算上游失败**。配置好的池没有可用容量时，可以抛出 `TargetUnavailableError`。`HybridRouter` "
+"接着执行下一个允许的尝试；回退成功就正常返回。如果所有尝试都在到达上游之前被拒，最终返回 **503**。流式响应如果已经发出了响应头，就在 "
+"SSE 错误里带上 **503** 错误码，而不是改 HTTP 状态码。如果确实有上游请求失败，最终返回哪个错误由 router "
+"的错误选择规则决定。"
 
-#: ../developer/routing-internals.md:119
+#: ../developer/routing-internals.md:118
 msgid "Composition is opt-in per model, and off by default:"
-msgstr "组合按模型选择性启用，默认关闭："
+msgstr "组合按模型单独开启，默认关闭："
 
-#: ../developer/routing-internals.md:127
+#: ../developer/routing-internals.md:126
 msgid ""
 "Its affinity updates, its re-selection after a rejected primary claim, "
 "and its fallback circuit timing are not yet proven equivalent to the "
@@ -301,26 +295,26 @@ msgid ""
 "Pins from the HTTP API and the admin playground keep using the shared "
 "`FixedRouter` regardless."
 msgstr ""
-"它的亲和更新、首选 claim 被拒后的重新选路，以及回退时的熔断器判断时机，都还没有被证明与原 `Fixed` "
-"循环等价；在证明之前，默认入口仍然是共享的 `FixedRouter`。见 "
-"[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457)。来自 "
-"HTTP API 和管理端 playground 的 pin 无论如何都继续使用共享的 `FixedRouter`。"
+"它更新亲和的方式、首选端点准入被拒后的重新选择，以及回退时检查熔断器的时机，都还没有证明与原来的 `Fixed` "
+"循环等价，所以在证明之前，默认入口仍是共享的 `FixedRouter`；见 "
+"[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457)。通过 "
+"HTTP API 和管理端 playground pin 住的请求，无论如何都仍走共享的 `FixedRouter`。"
 
-#: ../developer/routing-internals.md:134
+#: ../developer/routing-internals.md:133
 msgid ""
 "Candidate scopes do not divide physical capacity. Each `RouteWiseRouter` "
 "still owns its resource managers; sharing a constrained pool across "
 "independent instances and rejecting unsupported duplicate-pool "
 "configurations remain deferred to the same issue."
 msgstr ""
-"候选范围不会把物理容量分成独立的份额。每个 `RouteWiseRouter` 仍持有自己的资源 "
-"manager；跨独立实例共享受限池，以及拒绝不受支持的重复池配置，均由同一个 issue 跟踪后续实现。"
+"候选范围并不划分物理容量。每个 `RouteWiseRouter` "
+"仍然持有自己的资源管理器；让相互独立的实例共享同一个受限池，以及拒绝不受支持的重复池配置，这两件事都推迟到同一个 issue 里处理。"
 
-#: ../developer/routing-internals.md:139
+#: ../developer/routing-internals.md:138
 msgid "Router types and execution boundaries"
-msgstr "Router 类型与执行边界"
+msgstr "router 类型与执行边界"
 
-#: ../developer/routing-internals.md:141
+#: ../developer/routing-internals.md:140
 msgid ""
 "Routing also has a composition implementation, `HybridRouter` "
 "(`apps/backend/routing/hybrid.py`), which plans across a local and a "
@@ -333,21 +327,21 @@ msgid ""
 "paths already execute through `LeafBackend`; enabling composition is a "
 "separate choice."
 msgstr ""
-"路由层还提供组合实现 `HybridRouter`（`apps/backend/routing/hybrid.py`），它在 local 与 "
-"cloud 两个池之间规划尝试，并把每次尝试委托给一个 `TreeBackend`。它不是第三种 `router:` 配置值：`router: "
-"fixed` 模型通过 `router_params.hybrid_composition: true` 显式启用，而且只有同时存在 local "
-"和 cloud 候选时才构建组合。其余 `fixed` 模型继续使用共享 `FixedRouter`，`routewise` "
-"模型继续使用自己的入口和完整候选池。普通 Fixed 和 RouteWise 路径已经通过 `LeafBackend` "
-"执行；是否启用组合是另一项选择。"
+"路由层还有一个组合实现 "
+"`HybridRouter`（`apps/backend/routing/hybrid.py`），它在本地池和云端池之间规划，把每次尝试委托给一个"
+" `TreeBackend`。它不是 `router:` 的第三种取值：`router: fixed` 的模型用 "
+"`router_params.hybrid_composition: true` 显式开启，而且只有同时存在本地和云端候选时才会构建组合。其他 "
+"`fixed` 模型仍使用共享的 `FixedRouter`，`routewise` 模型仍使用自己的入口和完整候选池。普通的 Fixed 和 "
+"RouteWise 路径本来就通过 `LeafBackend` 执行；开不开组合是另一回事。"
 
-#: ../developer/routing-internals.md:151
+#: ../developer/routing-internals.md:150
 msgid ""
 "The pool side exists so that one algorithm can own admission for a domain"
 " while a different algorithm owns selection inside it, with neither one "
 "enumerating the other's endpoints."
 msgstr "池这一层存在的意义在于：一个算法可以负责某个域的准入，另一个算法负责该域内部的选择，而两者都不必枚举对方的端点。"
 
-#: ../developer/routing-internals.md:155
+#: ../developer/routing-internals.md:154
 msgid ""
 "The diagrams below adapt the [composable routing "
 "design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-09-14"
@@ -360,7 +354,7 @@ msgstr ""
 "-composable-hybrid-routing-"
 "design.zh.md)整理，画出当前实现及其计划中的扩展。第一张是类型关系图，后面三张是请求路径图。虚线方框或虚线连线表示尚未实现的部分。"
 
-#: ../developer/routing-internals.md:160
+#: ../developer/routing-internals.md:159
 msgid ""
 "![FixedRouter, RouteWiseRouter and HybridRouter implement RouterProtocol."
 " Fixed and RouteWise execute a chosen endpoint through LeafBackend, which"
@@ -375,7 +369,7 @@ msgstr ""
 "来实现该契约。GreedyRouter 和 NimbusRouter 画成虚线，因为它们尚未实现。](images/routing-"
 "contracts.svg)"
 
-#: ../developer/routing-internals.md:160
+#: ../developer/routing-internals.md:159
 msgid ""
 "FixedRouter, RouteWiseRouter and HybridRouter implement RouterProtocol. "
 "Fixed and RouteWise execute a chosen endpoint through LeafBackend, which "
@@ -389,13 +383,13 @@ msgstr ""
 "自己不选择端点，而是委托给 RoutingBackend 池契约，TreeBackend 通过持有一个范围受限的 Router "
 "来实现该契约。GreedyRouter 和 NimbusRouter 画成虚线，因为它们尚未实现。"
 
-#: ../developer/routing-internals.md:162
+#: ../developer/routing-internals.md:161
 msgid ""
 "*Router contracts and endpoint execution. Dashed boxes and edges mark "
 "what is not built yet.*"
 msgstr "*Router 契约与端点执行。虚线方框和虚线连线标出尚未实现的部分*"
 
-#: ../developer/routing-internals.md:165
+#: ../developer/routing-internals.md:164
 msgid ""
 "`FixedRouter` and `RouteWiseRouter` are peer implementations of "
 "`RouterProtocol`; future `GreedyRouter` and `NimbusRouter` belong at that"
@@ -409,19 +403,19 @@ msgid ""
 " router; the held router can be RouteWise without making RouteWise a "
 "different kind of strategy."
 msgstr ""
-"`FixedRouter` 和 `RouteWiseRouter` 是 `RouterProtocol` 的同层实现；未来的 "
-"`GreedyRouter`、`NimbusRouter` 也位于这一层。`HybridRouter` "
-"同样在这一层，只是它是组合而不是策略：它自己不选端点，而是把每次 attempt 交给一个池。每个 Router "
-"保留自己的选择、准入、重试和反馈流程。`LeafBackend` 绑定并执行一个 Adapter，它使用 Adapter 的调用签名，不实现具有 "
-"Router 方法形状的 `RoutingBackend` 协议 —— 这正是叶子成为递归终点的原因。`TreeBackend` "
-"实现该池协议，并持有一个范围受限的 Router；这个 Router 可以是 RouteWise，而不改变 RouteWise "
-"作为同层路由策略的身份。"
+"`FixedRouter` 和 `RouteWiseRouter` 是 `RouterProtocol` 的同级实现；将来的 "
+"`GreedyRouter` 和 `NimbusRouter` 也在这一级。`HybridRouter` "
+"也在这一级，但它是组合而不是策略：它自己不选端点，每次尝试都交给一个池。每个 router "
+"保留自己的选择、准入、重试和反馈流程。`LeafBackend` 绑定一个 adapter 并执行它。它沿用 adapter 的调用约定，不实现按"
+" router 接口定义的 `RoutingBackend` 协议，叶子正因此成为递归的终点。`TreeBackend` "
+"实现这个池协议，并持有一个范围受限的 router；被持有的 router 可以是 RouteWise，RouteWise "
+"并不会因此变成另一类策略。"
 
-#: ../developer/routing-internals.md:176
+#: ../developer/routing-internals.md:175
 msgid "Full-pool RouteWise: available today"
 msgstr "全池 RouteWise：当前已支持"
 
-#: ../developer/routing-internals.md:178
+#: ../developer/routing-internals.md:177
 msgid ""
 "![ModelRouterRegistry sends model A to full-pool RouteWise. Local "
 "endpoint L and cloud endpoint C each have their own LeafBackend and "
@@ -430,7 +424,7 @@ msgstr ""
 "![ModelRouterRegistry 将模型 A 交给全池 RouteWise。本地端点 L 和云端端点 C 各自拥有独立的 "
 "LeafBackend 和 Adapter。](images/routing-routewise.svg)"
 
-#: ../developer/routing-internals.md:178
+#: ../developer/routing-internals.md:177
 msgid ""
 "ModelRouterRegistry sends model A to full-pool RouteWise. Local endpoint "
 "L and cloud endpoint C each have their own LeafBackend and Adapter."
@@ -438,11 +432,11 @@ msgstr ""
 "ModelRouterRegistry 将模型 A 交给全池 RouteWise。本地端点 L 和云端端点 C 各自拥有独立的 "
 "LeafBackend 和 Adapter。"
 
-#: ../developer/routing-internals.md:180
+#: ../developer/routing-internals.md:179
 msgid "*Full-pool RouteWise selects across local and cloud candidates directly.*"
 msgstr "*全池 RouteWise 直接在本地与云端候选中选择*"
 
-#: ../developer/routing-internals.md:182
+#: ../developer/routing-internals.md:181
 msgid ""
 "With `router: routewise`, the registry returns `RouteWiseRouter` "
 "directly. It keeps the model's full candidate pool, reservations, re-"
@@ -451,16 +445,15 @@ msgid ""
 " its own bound leaf. The ordinary `router: fixed` path also uses "
 "`FixedRouter` → `LeafBackend` → `Adapter`, without enabling composition."
 msgstr ""
-"配置 `router: routewise` 时，Registry 直接返回 "
-"`RouteWiseRouter`。它保留模型的完整候选池、预留、重新求解、hedging "
-"和学习机制。图中两条分支表示可能选中的端点，并不要求同时调用：每次实际 attempt 或 hedge 支路都执行各自绑定的 leaf。普通 "
-"`router: fixed` 路径同样使用 `FixedRouter` → `LeafBackend` → `Adapter`，无需开启组合。"
+"配置 `router: routewise` 时，注册表直接返回 "
+"`RouteWiseRouter`。它保留该模型的完整候选池、预留、重新求解、对冲和学习。图中两条分支只表示可能选中的端点，并不是两个都要调用：每次实际的尝试或每一路对冲请求，都执行各自绑定的叶子。普通的"
+" `router: fixed` 路径同样是 `FixedRouter` → `LeafBackend` → `Adapter`，不需要开启组合。"
 
-#: ../developer/routing-internals.md:189
+#: ../developer/routing-internals.md:188
 msgid "Fixed composition: explicitly enabled"
 msgstr "Fixed 组合：需要显式开启"
 
-#: ../developer/routing-internals.md:191
+#: ../developer/routing-internals.md:190
 msgid ""
 "![HybridRouter and FixedPolicy dispatch through LocalBackend or "
 "FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared "
@@ -471,7 +464,7 @@ msgstr ""
 "派发。两个范围受限的 TreeBackend 包装持有同一个共享 FixedRouter，由它通过端点各自的 LeafBackend 和 "
 "Adapter 执行。](images/routing-fixed-composition.svg)"
 
-#: ../developer/routing-internals.md:191
+#: ../developer/routing-internals.md:190
 msgid ""
 "HybridRouter and FixedPolicy dispatch through LocalBackend or "
 "FixedCloudBackend. Both scoped TreeBackend wrappers hold one shared "
@@ -481,13 +474,13 @@ msgstr ""
 "HybridRouter 与 FixedPolicy 通过 LocalBackend 或 FixedCloudBackend 派发。两个范围受限的"
 " TreeBackend 包装持有同一个共享 FixedRouter，由它通过端点各自的 LeafBackend 和 Adapter 执行。"
 
-#: ../developer/routing-internals.md:193
+#: ../developer/routing-internals.md:192
 msgid ""
 "*Current Fixed composition: two scoped pool wrappers, one shared "
 "FixedRouter.*"
 msgstr "*当前的 Fixed 组合：两个范围受限的池包装，共用一个 FixedRouter*"
 
-#: ../developer/routing-internals.md:195
+#: ../developer/routing-internals.md:194
 msgid ""
 "A mixed `router: fixed` model enters this path only with "
 "`router_params.hybrid_composition: true` and both local and cloud "
@@ -497,13 +490,13 @@ msgid ""
 "not erase those per-attempt restrictions. Admission and health accounting"
 " remain in the router; the leaf executes the bound adapter."
 msgstr ""
-"混合 `router: fixed` 模型只有在设置 `router_params.hybrid_composition: true` "
-"且同时存在本地与云端候选时，才进入这条路径。`HybridRouter` 使用 `FixedPolicy` 规划 "
-"attempt；`LocalBackend` 和 `FixedCloudBackend` 将各自的范围与派发约束传给同一个共享 "
-"`FixedRouter`。共享实例不会取消每次 attempt 的限制。准入和健康记账仍由 Router 负责，leaf 执行已经绑定的 "
-"Adapter。"
+"混合候选的 `router: fixed` 模型，只有设置了 `router_params.hybrid_composition: true` "
+"并且同时有本地和云端候选，才会走这条路径。`HybridRouter` 用 `FixedPolicy` 规划各次尝试；`LocalBackend`"
+" 和 `FixedCloudBackend` 把各自的范围和派发约束传给同一个共享的 "
+"`FixedRouter`。实例虽然共享，每次尝试各自的限制并不会因此失效。准入和健康记账仍由 router 负责，叶子只执行已绑定的 "
+"adapter。"
 
-#: ../developer/routing-internals.md:203
+#: ../developer/routing-internals.md:202
 msgid ""
 "Each attempt carries one of the two instructions in "
 "`apps/backend/routing/dispatch.py`, which is what makes it a requirement "
@@ -519,14 +512,14 @@ msgid ""
 "instructions)."
 msgstr ""
 "每次尝试都带着 `apps/backend/routing/dispatch.py` "
-"里两种指令中的一种，正是这一点让它成为必须遵守的要求，而不只是建议。首次尝试是一个 "
-"`DelegatePool(pool_id)`：策略选出的目标作为偏好随它一起传下去，池可以在自己的范围内改选别的端点。每个预先规划好的回退都是一个"
-" `ExecuteEndpoint(binding)`——只能是那个端点，不能换成别的——因此子 router "
-"无法打乱组合已经定下的候选顺序。无论哪种指令，都会在任何上游 I/O "
-"之前接受检查；池如果执行不了，会报告组合错误，而不是回退。完整的表格见[叶子、池与派发指令](#leaves-pools-and-"
-"dispatch-instructions)。"
+"里两种指令中的一种；正因为有指令，它才是必须执行的要求，而不只是建议。首次尝试是 "
+"`DelegatePool(pool_id)`：策略选出的目标作为偏好一起传下去，池可以在自己的范围内改选别的端点。预先规划好的每个回退都是 "
+"`ExecuteEndpoint(binding)`，只能是那个端点，不能换，所以子 router "
+"没法打乱组合已经定下的候选顺序。无论哪种指令，都会在任何上游 I/O "
+"之前检查；池执行不了时报告组合错误，而不是回退。完整的表格见[叶子、池与派发指令](#leaves-pools-and-dispatch-"
+"instructions)。"
 
-#: ../developer/routing-internals.md:214
+#: ../developer/routing-internals.md:213
 msgid ""
 "This is the concrete composition class, not the common router interface. "
 "Its affinity, its re-selection after a rejected primary claim and its "
@@ -536,16 +529,16 @@ msgid ""
 "enumerates the differences — which is why composition stays opt-in "
 "instead of becoming the default."
 msgstr ""
-"这里是具体的组合类，而不是公共 Router 接口。它的 affinity、首选 claim 被拒后的重新选择、以及 fallback 的 "
-"circuit 检查时机，从未被证明与普通 Fixed 路径等价 —— "
-"[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457) "
-"列出了这些差异 —— 所以组合保持显式开启，而没有成为默认。"
+"这是具体的组合类，不是公共的 router 接口。它的亲和处理、首选端点准入被拒后的重新选择，以及回退时检查熔断器的时机，都从未证明与普通 "
+"Fixed "
+"路径等价（[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457)"
+" 列出了这些差异），所以组合一直需要显式开启，没有成为默认。"
 
-#: ../developer/routing-internals.md:220
+#: ../developer/routing-internals.md:219
 msgid "Greedy with cloud RouteWise: future extension"
 msgstr "Greedy 与云端 RouteWise：未来扩展"
 
-#: ../developer/routing-internals.md:222
+#: ../developer/routing-internals.md:221
 msgid ""
 "![A future Greedy admits a local endpoint or delegates a cloud pool to "
 "TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud "
@@ -557,7 +550,7 @@ msgstr ""
 "实例。每个选中的云端端点各自拥有 LeafBackend 和 Adapter。Greedy "
 "以及它发出的连线画成虚线，因为它们并不存在。](images/routing-greedy-future.svg)"
 
-#: ../developer/routing-internals.md:222
+#: ../developer/routing-internals.md:221
 msgid ""
 "A future Greedy admits a local endpoint or delegates a cloud pool to "
 "TreeBackend and a cloud-scoped RouteWise instance. Each selected cloud "
@@ -567,14 +560,14 @@ msgstr ""
 "未来的 Greedy 接纳一个本地端点，或者把云端池委托给 TreeBackend 与一个仅覆盖云端的 RouteWise "
 "实例。每个选中的云端端点各自拥有 LeafBackend 和 Adapter。Greedy 以及它发出的连线画成虚线，因为它们并不存在。"
 
-#: ../developer/routing-internals.md:224
+#: ../developer/routing-internals.md:223
 msgid ""
 "*Planned topology, not an available router configuration: Greedy would "
 "own local admission; RouteWise would own selection inside the cloud "
 "pool.*"
-msgstr "*计划中的拓扑，而不是现有的 Router 配置：Greedy 负责本地准入，RouteWise 负责云端池内部的选择*"
+msgstr "*计划中的拓扑，目前还不能这样配置：Greedy 将负责本地准入，RouteWise 将负责云端池内部的选择*"
 
-#: ../developer/routing-internals.md:227
+#: ../developer/routing-internals.md:226
 msgid ""
 "The same `RouteWiseRouter` implementation can occupy the model's entry "
 "point in the full-pool diagram or a cloud-scoped position here. Those "
@@ -584,12 +577,12 @@ msgid ""
 "`TreeBackend`, whose inner RouteWise router owns cloud selection, retries"
 " and hedging."
 msgstr ""
-"同一个 `RouteWiseRouter` "
-"实现既可以位于全池图中的模型入口，也可以位于此图中的云端子层。这两种角色分别使用具有各自范围的实例，不会按请求切换一个活跃实例的 "
-"scope。本地准入被拒后，未来的 Greedy Router 可以将云端选择委托给 `TreeBackend`，由它内部的 RouteWise "
-"Router 负责云端选择、重试和 hedging。"
+"同一份 `RouteWiseRouter` "
+"实现，既可以放在全池图里的模型入口，也可以放在这张图里只管云端的位置。这两种角色用的是不同的实例，各有各的范围；不会按请求去切换某个运行中实例的范围。本地准入被拒后，未来的"
+" Greedy router 可以把云端选择委托给 `TreeBackend`，由其中的 RouteWise router "
+"负责云端的选择、重试和对冲。"
 
-#: ../developer/routing-internals.md:234
+#: ../developer/routing-internals.md:233
 msgid ""
 "What is missing is the entry point, not the pool below it. `TreeBackend` "
 "and `RouteWiseCloudBackend` are in `apps/backend/routing/backends.py` "
@@ -600,14 +593,14 @@ msgid ""
 "`models.yaml` field names one, so nothing reaches this shape from "
 "configuration."
 msgstr ""
-"缺的是入口，而不是它下面的池。`TreeBackend` 和 `RouteWiseCloudBackend` 今天就在 "
-"`apps/backend/routing/backends.py` 里，`HybridFixedRouterFactory` 也已经接受 "
+"缺的是入口，而不是入口下面的池。`TreeBackend` 和 `RouteWiseCloudBackend` 现在就在 "
+"`apps/backend/routing/backends.py` 里，`HybridFixedRouterFactory` 也已经支持传入 "
 "`cloud_backend` "
-"构造器（`apps/backend/serving/servers/hybrid_composition.py`），所以 composition "
-"root 现在就可以把一个仅覆盖云端的 RouteWise 放到池下面。而 `GreedyRouter` 和 `NimbusRouter` "
-"不是已注册的策略，`models.yaml` 里也没有字段能指定它们，因此没有任何配置能走到这张图的形状。"
+"构造器（`apps/backend/serving/servers/hybrid_composition.py`），所以组合根（composition"
+" root）现在就能把一个只覆盖云端的 RouteWise 放到池下面。但 `GreedyRouter` 和 `NimbusRouter` "
+"不是已注册的策略，`models.yaml` 里也没有字段能指定它们，所以目前没有任何配置能组装出这种结构。"
 
-#: ../developer/routing-internals.md:242
+#: ../developer/routing-internals.md:241
 msgid ""
 "This example describes two routing levels, not arbitrary recursive "
 "configurations. Sharing physical quota or concurrency across independent "
@@ -617,11 +610,10 @@ msgid ""
 "scopes what that would take. Local/cloud ownership stays independent of "
 "the `provider_type` values `on_demand`, `quota` and `concurrency`."
 msgstr ""
-"这个例子描述的是两层路由，而不是任意递归的配置。让相互独立的 Router 实例共享同一份物理 quota 或 "
-"concurrency，还需要一套没有人写过的所有权实现：不同的 scope "
-"不会产生独立的容量，[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457)"
-" 界定了这件事的范围。本地/云端归属与 `provider_type` 的取值 `on_demand`、`quota`、`concurrency`"
-" 仍是彼此独立的两个维度。"
+"这个例子讲的是两层路由，不是任意递归的配置。要让相互独立的 router "
+"实例共享同一份物理配额或并发额度，还需要一套容量归属的实现，目前还没人写：范围分开并不会带来独立的容量；要做到这一点需要哪些工作，[#1457](https://github.com/HarvardMadSys/hybridInference/issues/1457)"
+" 已经梳理过。本地/云端的归属与 `provider_type` 的取值 `on_demand`、`quota`、`concurrency` "
+"互不相关。"
 
 #~ msgid ""
 #~ "Each attempt carries one of the "

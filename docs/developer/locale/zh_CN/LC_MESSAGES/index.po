@@ -54,9 +54,9 @@ msgid ""
 " API — and hosted provider APIs, then decides per request which of them "
 "answers."
 msgstr ""
-"HybridInference 是一个开源的 LLM 推理网关。它在你自建的推理服务器（vLLM、SGLang、Ollama，或其他任何兼容 "
-"OpenAI API 的服务）和托管的 provider API 前面，提供一套统一的 OpenAI 兼容 HTTP "
-"API，并为每个请求决定由其中哪一个来回答。"
+"HybridInference 是一个开源的 LLM 推理网关。它对外只提供一套 OpenAI 兼容的 HTTP "
+"API，背后可以同时接你自己部署的推理服务器（vLLM、SGLang、Ollama，或其他任何兼容 OpenAI API 的服务）和各家托管的 "
+"provider API，每个请求交给谁来回答，由网关决定。"
 
 #: ../developer/index.rst:9
 msgid ""
@@ -66,8 +66,8 @@ msgid ""
 " weighted, failed over when an endpoint degrades, priced, and logged — "
 "without the client changing a line."
 msgstr ""
-"整个系统的立足点是：客户端请求的\\ *模型 id*\\ ，与真正服务它的\\ *端点*\\ 是解耦的。一个对外发布的 id "
-"可以同时由多条路由承载，于是这些路由之间的流量可以加权、可以在某个端点劣化时回退、可以计价、可以记录日志——而客户端一行都不用改。"
+"整个系统围绕一个想法：客户端请求的是\\ *模型 id*\\ ，而实际处理请求的\\ *端点*\\ 可以随时替换。同一个模型 id "
+"背后可以同时挂多条路由，于是可以按权重在它们之间分流、在某个端点变差时自动切到别的路由、分别计价并记录日志——客户端一行代码都不用改。"
 
 #: ../developer/index.rst:15
 msgid ""
@@ -78,15 +78,15 @@ msgid ""
 "license; bugs and questions go to its `issue tracker "
 "<https://github.com/HarvardMadSys/hybridInference/issues>`_."
 msgstr ""
-"本文档讲的是网关软件本身：如何运行它、理解它、扩展它，以及如何为它贡献代码。源码在 "
+"这份文档讲的是网关软件本身：怎么运行、怎么理解、怎么扩展，以及怎么参与开发。源码在 "
 "`github.com/HarvardMadSys/hybridInference "
-"<https://github.com/HarvardMadSys/hybridInference>`_，采用 MIT 许可；缺陷与提问请走它的 "
-"`issue tracker "
+"<https://github.com/HarvardMadSys/hybridInference>`_，采用 MIT 许可；发现 bug "
+"或有问题，请提交到它的 `issue tracker "
 "<https://github.com/HarvardMadSys/hybridInference/issues>`_。"
 
 #: ../developer/index.rst:23
 msgid "What is in the box"
-msgstr "开箱内容"
+msgstr "包含哪些部分"
 
 #: ../developer/index.rst:25
 msgid ""
@@ -95,10 +95,10 @@ msgid ""
 "Anthropic Messages surface at ``/v1/messages`` and "
 "``/anthropic/v1/messages`` for clients that speak that protocol instead."
 msgstr ""
-"**一套 OpenAI 兼容的接口**\\ ——包括 ``POST /v1/chat/completions``、``POST "
-"/v1/embeddings``、``POST /v1/responses`` 和 ``GET /v1/models``\\ ；另外还在 "
-"``/v1/messages`` 和 ``/anthropic/v1/messages`` 上提供一套 Anthropic Messages "
-"接口，供使用该协议的客户端调用。"
+"**OpenAI 兼容的接口**\\ ——``POST /v1/chat/completions``、``POST "
+"/v1/embeddings``、``POST /v1/responses`` 和 ``GET /v1/models``\\ "
+"；另外，``/v1/messages`` 和 ``/anthropic/v1/messages`` 提供 Anthropic Messages "
+"接口，方便使用这套协议的客户端。"
 
 #: ../developer/index.rst:29
 msgid ""
@@ -106,8 +106,8 @@ msgid ""
 "among an id's routes, automatic fallback to the next route, and a per-"
 "endpoint circuit breaker that pulls a failing endpoint out of rotation."
 msgstr ""
-"**一套路由引擎**\\ ——按模型选择 router、在一个 id "
-"的多条路由之间加权选择、自动回退到下一条路由，以及按端点计的熔断器（circuit breaker），把持续失败的端点摘出轮转。"
+"**路由引擎**\\ ——每个模型可以选自己的 router；同一个模型 id "
+"的多条路由按权重挑选，失败了自动换下一条；每个端点还有熔断器，持续失败的端点会被暂时移出。"
 
 #: ../developer/index.rst:32
 msgid ""
@@ -115,9 +115,8 @@ msgid ""
 "serves your own local servers, alongside dedicated adapters for "
 "OpenRouter, Anthropic's direct API, Claude via Google Vertex, and Gemini."
 msgstr ""
-"**一组 provider adapter**\\ ——一个通用的 OpenAI 兼容 adapter（自建的本地服务器也走它），外加面向 "
-"OpenRouter、Anthropic 直连 API、经 Google Vertex 的 Claude 以及 Gemini 的专用 "
-"adapter。"
+"**provider adapter**\\ ——一个通用的 OpenAI 兼容 adapter，你自己部署的本地服务器也用它；另外还有 "
+"OpenRouter、Anthropic 官方 API、Google Vertex 上的 Claude 和 Gemini 的专用 adapter。"
 
 #: ../developer/index.rst:35
 msgid ""
@@ -126,14 +125,14 @@ msgid ""
 "covering users, model visibility, provider keys, route weights and "
 "analytics."
 msgstr ""
-"**一套 Web 与管理控制台**\\ ——一个 Next.js 应用，提供注册登录、API "
-"key、用量与最近请求、聊天试验场，以及涵盖用户、模型可见性、provider key、路由权重和分析的管理区。"
+"**Web 控制台与管理后台**\\ ——一个 Next.js 应用，提供注册登录、API key "
+"管理、用量和最近请求、对话调试页（playground），以及管理后台：用户、模型可见性、provider key、路由权重和数据分析。"
 
 #: ../developer/index.rst:38
 msgid ""
 "**Operational storage** — Postgres for accounts, API keys and a request "
 "log, with the schema created on startup rather than by a migration tool."
-msgstr "**运行数据存储**\\ ——用 Postgres 存放账号、API key 和请求日志；表结构在启动时创建，而不是交给迁移工具。"
+msgstr "**运行数据存储**\\ ——用 Postgres 存账号、API key 和请求日志；表结构由网关在启动时自动创建，不需要单独的迁移工具。"
 
 #: ../developer/index.rst:41
 msgid ""
@@ -143,9 +142,9 @@ msgid ""
 "console is Next.js under ``apps/frontend/``. The repository is MIT-"
 "licensed."
 msgstr ""
-"后端是 ``apps/backend/`` 下的 Python（3.10–3.13），分成 ``serving/``\\ （HTTP "
-"接口、鉴权、adapter、存储、可观测性）和 ``routing/``\\ （路由表、策略、端点健康、回退）两半。控制台是 "
-"``apps/frontend/`` 下的 Next.js。仓库采用 MIT 许可证。"
+"后端是 ``apps/backend/`` 下的 Python 代码（3.10–3.13），分成两部分：``serving/``\\ （HTTP "
+"接口、鉴权、adapter、存储、可观测性）和 ``routing/``\\ （路由表、路由策略、端点健康、回退）。控制台是 "
+"``apps/frontend/`` 下的 Next.js 应用。整个仓库采用 MIT 许可证。"
 
 #: ../developer/index.rst:47
 msgid "Where to start"
@@ -157,11 +156,11 @@ msgstr "如果你想"
 
 #: ../developer/index.rst:54
 msgid "Start here"
-msgstr "从这里开始"
+msgstr "看这里"
 
 #: ../developer/index.rst:55
 msgid "Watch a gateway serve a request, with no account, key or GPU"
-msgstr "不用账号、不用 key、不用 GPU，看一个网关处理一次请求"
+msgstr "不用账号、key 或 GPU，先看网关处理一次请求"
 
 #: ../developer/index.rst:56
 msgid ":doc:`router-tutorial`"
@@ -177,7 +176,7 @@ msgstr ""
 
 #: ../developer/index.rst:59
 msgid "Choose what your distribution can configure or customize"
-msgstr "了解发行版可以配置或定制哪些能力"
+msgstr "了解发行版能配置、能定制哪些东西"
 
 #: ../developer/index.rst:60
 msgid ":doc:`distribution-customization`"
@@ -185,7 +184,7 @@ msgstr ""
 
 #: ../developer/index.rst:61
 msgid "Follow a request from HTTP through to an upstream call"
-msgstr "跟着一次请求，从 HTTP 一路走到上游调用"
+msgstr "跟着一个请求，从 HTTP 入口一路走到上游调用"
 
 #: ../developer/index.rst:62
 msgid ":doc:`architecture`"
@@ -193,7 +192,7 @@ msgstr ""
 
 #: ../developer/index.rst:63
 msgid "Serve another model from a provider the gateway already supports"
-msgstr "用网关已经支持的 provider 再提供一个模型"
+msgstr "从网关已经支持的 provider 再接入一个模型"
 
 #: ../developer/index.rst:64
 msgid ":doc:`adding-models`"
@@ -201,7 +200,7 @@ msgstr ""
 
 #: ../developer/index.rst:65
 msgid "Support a provider whose API the gateway cannot speak yet"
-msgstr "支持一个网关还不会对接的 provider API"
+msgstr "接入一个网关还不支持的 provider API"
 
 #: ../developer/index.rst:66
 msgid ":doc:`provider-adapters`"
@@ -211,15 +210,15 @@ msgstr ""
 msgid ""
 "Add a provider, a key or a model from the admin console, without editing "
 "YAML or restarting"
-msgstr "不改 YAML、不重启，直接从管理控制台添加 provider、key 或模型"
+msgstr "不改 YAML、不重启，直接在管理控制台里添加 provider、key 或模型"
 
 #: ../developer/index.rst:69
 msgid ":doc:`configuration`, under *Runtime configuration from the admin console*"
-msgstr ""
+msgstr ":doc:`configuration` 里的\\ *从管理控制台做运行时配置*\\ 一节"
 
 #: ../developer/index.rst:71
 msgid "Change how an endpoint gets chosen, or write your own strategy"
-msgstr "改变端点的选中方式，或自己写一个策略"
+msgstr "改变端点的挑选方式，或者自己写一个路由策略"
 
 #: ../developer/index.rst:72
 msgid ":doc:`routing`"
@@ -227,7 +226,7 @@ msgstr ""
 
 #: ../developer/index.rst:73
 msgid "Send a patch"
-msgstr "提交一个补丁"
+msgstr "提交代码改动"
 
 #: ../developer/index.rst:74
 msgid ":doc:`contributing`"
@@ -235,7 +234,7 @@ msgstr ""
 
 #: ../developer/index.rst:75
 msgid "Identify a version or plan an upgrade"
-msgstr "确认版本或规划升级"
+msgstr "确认运行的是哪个版本，或规划一次升级"
 
 #: ../developer/index.rst:76
 msgid ":doc:`releases`"
@@ -258,7 +257,7 @@ msgid ""
 "These pages document the software, not any one installation of it. Which "
 "models a given gateway serves, and how to get an account on it, are the "
 "operator's to publish separately."
-msgstr "这些页面记录的是软件本身，而不是它的某一次具体安装。某个网关服务哪些模型、怎样在它上面拿到账号，由运营方另行公布。"
+msgstr "这些页面讲的是软件本身，不针对任何一个具体部署。某个网关提供哪些模型、怎么在上面开账号，由各自的运营方另行公布。"
 
 #: ../developer/index.rst:87
 msgid ""
@@ -269,6 +268,6 @@ msgid ""
 ":doc:`distribution-customization` explains how to configure and extend an"
 " overlay."
 msgstr ""
-"仓库本身贯彻了这种分离：部署将站点标识、配置文件位置和功能开关保存在 ``distributions/`` 下的\\ *发行版 "
-"overlay*\\ 中，而非代码中，因此新克隆的仓库可以成为你自己的网关，不携带其他部署的身份。:doc:`distribution-"
-"customization` 说明了如何配置和扩展 overlay。"
+"仓库的组织方式也体现了这一点：每个部署把自己的站点信息、配置文件位置和功能开关放在 ``distributions/`` 下的\\ *发行版 "
+"overlay*\\ 里，而不是写进代码。所以新克隆下来的仓库不带任何别人的部署信息，跑起来就是你自己的网关。怎么配置和扩展 overlay，见 "
+":doc:`distribution-customization`。"

@@ -18,8 +18,8 @@ aborts startup; the gateway does not silently use a different adapter.
 Extensions register factories through
 `serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)`.
 A factory receives a configuration dictionary and returns an adapter, before
-built-in provider defaults are applied. Registering an existing extension kind
-is an error. Replacing a built-in kind requires `override=True` and emits a log
+built-in provider defaults are applied. Registering a kind that another
+extension has already registered is an error. Replacing a built-in kind requires `override=True` and emits a log
 entry. Registered kinds also become reserved provider labels. The startup
 `register()` function may populate the existing runtime-setting and provider
 metadata dictionaries before their consumers run; it must mutate those shared
