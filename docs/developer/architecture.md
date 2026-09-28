@@ -25,8 +25,8 @@ Five ideas explain most of the code:
 1. **One model id, many endpoints.** Clients name a model; the gateway owns
    which machine serves it. Everything else follows from that.
 2. **Failure is routed around, not retried into.** A non-idempotent generation
-   is never re-sent to the same endpoint; resilience comes from the fallback
-   chain and the circuit breaker.
+   is never re-sent with the same key; resilience comes from rotating keys, the
+   fallback chain and the circuit breaker.
 3. **A caller learns nothing it is not entitled to.** Access failures collapse
    to a uniform `404`, and upstream errors are scrubbed before they reach a
    client.
@@ -397,7 +397,8 @@ set but `DISTRIBUTION_CONFIG_MODE` unset, the mode is `dark`: the manifest is
 loaded, validated, and compared against the paths that are actually in effect —
 logging a per-file digest comparison — while resolution stays unchanged. Setting
 `DISTRIBUTION_CONFIG_MODE=active` makes manifest paths effective, and in that
-mode a manifest that fails to load stops the process rather than quietly serving
+mode a manifest that fails to load leaves the gateway with no models, logged at
+`CRITICAL`, rather than quietly serving
 a different registry than the deployment named.
 
 All three YAML files support environment interpolation, but not the same

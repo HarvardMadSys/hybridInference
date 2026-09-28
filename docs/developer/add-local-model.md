@@ -188,10 +188,11 @@ separate providers, each with its own error rate, cache-hit rate, token totals,
 and enable/disable switch.
 
 Only the label changes. The route still uses the adapter its `kind` selects
-and the server its `base_url` names, its [`endpoint_id`](glossary.md#routes-and-providers) — and with it the
-circuit breaker, latency history and weight overrides — stays the same, and
-API keys stay pooled under the kind, so one `LOCAL_API_KEY` continues to serve
-both boxes.
+and the server its `base_url` names. Its
+[`endpoint_id`](glossary.md#routes-and-providers) — and with it the circuit
+breaker, latency history and weight overrides — stays the same, and API keys
+stay pooled under the kind, so one `LOCAL_API_KEY` continues to serve both
+boxes.
 
 Rules and caveats:
 
@@ -199,8 +200,8 @@ Rules and caveats:
   characters), and may not borrow a built-in provider's name (`vllm`, `zai`,
   `openrouter`, …). Reusing one would fold this route's traffic into that
   provider's quota reporting and disable switch. A malformed or reserved label
-  stops the registry from loading, so the backend comes up with an incomplete
-  model list rather than silently mislabelling traffic. Look for
+  stops the registry from loading at that model, so the backend comes up with
+  only the models before it rather than silently mislabelling traffic. Look for
   `Failed to load models.yaml` in the log; it is written at `WARNING`, not
   `ERROR`.
 - `provider_display_name` works on its own too, if you want to rename a provider

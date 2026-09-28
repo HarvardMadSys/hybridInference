@@ -561,9 +561,8 @@ log with it. Take a `pg_dump` first if any of it matters.
 ```
 
 pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary local
-volume, so a `down -v` *would* remove it. `make down` never passes `-v`; run
-`docker compose --profile admin down -v` yourself, or remove the volume by name
-as above.
+volume that `make down` leaves in place. To clear pgAdmin's saved state, remove
+it by name as described in [Resetting pgAdmin](database.md#resetting-pgadmin).
 
 ### Rebuilding after code changes
 

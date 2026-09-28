@@ -161,9 +161,10 @@ is `DISTRIBUTION_CONFIG_MODE`, and its default value, `dark`, means dry run:
 ```
 
 Read those lines, then set `DISTRIBUTION_CONFIG_MODE=active` to apply the
-manifest. An active manifest that fails to load — a missing mount, a YAML error
-— stops the gateway from starting, so it never serves a different registry
-than the one you named. In a dry run the same failure is only logged.
+manifest. If an active manifest fails to load — a missing mount, a YAML error
+— the gateway logs it at `CRITICAL` and comes up with no models, rather than
+serving a different registry from the one you named. In a dry run the same
+failure is only logged.
 
 Leave the mode unset or set it to exactly `dark` or `active`. Any other value,
 an empty one, or `active` without a manifest path is treated as a broken
@@ -198,11 +199,13 @@ registry. After activating, check that the startup log's
 ### Identity, and what the manifest must not contain
 
 The manifest's `site:` and `features:` sections are public: `GET /site-config`
-serves them to every visitor, and the site's name and address also appear in
-the emails the gateway sends and in the headers it sends to OpenRouter. They
-take effect only once the manifest is active; until then the site uses
-`SITE_NAME`, `SITE_PUBLIC_BASE_URL`, `SITE_DOCS_URL` and `SITE_SUPPORT_EMAIL`,
-or neutral defaults.
+serves them to every visitor once the manifest is active. The site's name and
+address also appear in the emails the gateway sends and in the headers it
+sends to OpenRouter; those come from `SITE_NAME`, `SITE_PUBLIC_BASE_URL`,
+`SITE_DOCS_URL` and `SITE_SUPPORT_EMAIL` when they are set, then from an active
+manifest, then from neutral defaults. The standard Compose file sets
+`SITE_NAME` to `HybridInference` unless you set it, so set it to your site's
+name — or to an empty value to use the manifest's.
 
 Manifests must not contain secrets. Credentials stay in the environment, and
 `schema_version: 1` deliberately does not interpolate environment variables into

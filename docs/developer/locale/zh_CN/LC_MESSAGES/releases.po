@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -205,16 +205,19 @@ msgstr "记录当前和目标 release/commit、后端和控制台镜像标识，
 msgid ""
 "Read the target's configuration requirements. Preserve the deployment's "
 "existing `.env`, overlay and secrets; merge required changes instead of "
-"replacing them with fresh example files. Keep `JWT_SECRET_KEY` and "
-"`API_KEY_SECRET` stable across replicas and upgrades. Changing the former"
-" invalidates access tokens; changing the latter makes existing API-key "
-"hashes unverifiable. An upgrade is not a secret-rotation procedure."
+"replacing them with fresh example files. Keep `JWT_SECRET_KEY`, "
+"`API_KEY_SECRET` and `ERASURE_FENCE_SECRET` stable across replicas and "
+"upgrades. Changing the first invalidates access tokens, changing the "
+"second makes existing API-key hashes unverifiable, and changing the third"
+" — or the second, while it stands in for the third — stops the backend "
+"from starting. An upgrade is not a secret-rotation procedure."
 msgstr ""
 "阅读目标版本的配置要求。保留部署现有的 `.env`、overlay 和密钥，合入必需的变化，不要用新的示例文件覆盖它们。在各副本和升级前后保持 "
-"`JWT_SECRET_KEY` 和 `API_KEY_SECRET` 不变。更改前者会使访问 token 失效，更改后者会使现有 API key"
-" 的哈希无法验证。升级不是密钥轮换流程。"
+"`JWT_SECRET_KEY`、`API_KEY_SECRET` 和 `ERASURE_FENCE_SECRET` 不变。更改第一个会使访问 "
+"token 失效，更改第二个会使现有 API key "
+"的哈希无法验证，而更改第三个——或者在它留空时代替它的第二个——会让后端无法启动。升级不是密钥轮换流程。"
 
-#: ../developer/releases.md:92
+#: ../developer/releases.md:94
 msgid ""
 "Back up each configured database and check that the backup restores into "
 "a separate database. Protect a matching copy of the configuration and "
@@ -225,7 +228,7 @@ msgstr ""
 "备份每个已配置的数据库，并确认备份可恢复到独立数据库。妥善保存配套的配置和密钥副本。标准 Postgres "
 "命令见[数据库备份](database.md#backup)；其他部署请采用存储服务商的备份流程。"
 
-#: ../developer/releases.md:96
+#: ../developer/releases.md:98
 msgid ""
 "Rehearse on an isolated local or staging deployment, using separate "
 "storage and suitable test data. The application creates and updates "
@@ -237,7 +240,7 @@ msgstr ""
 "schema，因此仅仅让新后端连接数据库并启动，就可能修改它。检查启动日志和 `/health/ready`，然后验证登录、现有 API "
 "key、一次路由请求，以及客户端使用的流式请求。"
 
-#: ../developer/releases.md:101
+#: ../developer/releases.md:103
 msgid ""
 "Deploy the selected revision using your existing deployment method. For "
 "the standard stack built from source, `make build` rebuilds and recreates"
@@ -251,7 +254,7 @@ msgstr ""
 "restart` 继续使用现有镜像。重新构建代码与重新加载配置的区别，见[部署](deployment.md#what-a-change-"
 "actually-requires)。检查运行中的产物标识，并在恢复正常流量前重复演练时的检查。"
 
-#: ../developer/releases.md:109
+#: ../developer/releases.md:111
 msgid ""
 "Returning to a previous image does not undo database changes. If the "
 "previous version is compatible with the upgraded schema and data, restore"

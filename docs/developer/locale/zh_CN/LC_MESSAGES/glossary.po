@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -119,18 +119,19 @@ msgid ""
 "The gateway's key for one endpoint of one model, written `<model-"
 "id>:<location>` — `glm-4.6:local-12003` for a server on local port 12003,"
 " `glm-4.6:zai-api` for a hosted API. Circuit breakers, latency profiles "
-"and weight overrides are all keyed on it. The suffix is derived from the "
-"host name, so it does not tell you who runs the server."
+"and weight overrides are all keyed on it. The suffix comes from the host "
+"and port or from the adapter kind, so it does not tell you who runs the "
+"server."
 msgstr ""
 "网关给“某个模型的某个端点”起的键，写作 `<model-id>:<location>`：本机 12003 端口上的服务器是 "
 "`glm-4.6:local-12003`，托管 API 是 `glm-4.6:zai-"
-"api`。熔断器、延迟统计和权重覆盖都以它为键。后缀是从主机名推出来的，所以看不出服务器归谁运行。"
+"api`。熔断器、延迟统计和权重覆盖都以它为键。后缀取自主机和端口，或者取自 adapter 的 kind，所以看不出服务器归谁运行。"
 
-#: ../developer/glossary.md:46
+#: ../developer/glossary.md:47
 msgid "Provider"
 msgstr "provider"
 
-#: ../developer/glossary.md:47
+#: ../developer/glossary.md:48
 msgid ""
 "The service behind a route: OpenRouter, DeepSeek, your own vLLM server. "
 "In configuration, a route's `provider:` is the label its traffic is "
@@ -139,11 +140,11 @@ msgstr ""
 "路由背后的服务：OpenRouter、DeepSeek、你自己的 vLLM 服务器。在配置里，路由的 `provider:` "
 "是它的流量在日志和仪表盘里归入的标签。"
 
-#: ../developer/glossary.md:51
+#: ../developer/glossary.md:52
 msgid "Kind"
 msgstr "kind"
 
-#: ../developer/glossary.md:52
+#: ../developer/glossary.md:53
 msgid ""
 "A route's `kind:`, which picks the adapter that talks to the endpoint: "
 "`openai_compat`, `vllm`, `openrouter`, `anthropic` and so on."
@@ -151,11 +152,11 @@ msgstr ""
 "路由的 `kind:`，决定用哪个 adapter "
 "和端点通信：`openai_compat`、`vllm`、`openrouter`、`anthropic` 等。"
 
-#: ../developer/glossary.md:55
+#: ../developer/glossary.md:56
 msgid "Adapter"
 msgstr "adapter"
 
-#: ../developer/glossary.md:56
+#: ../developer/glossary.md:57
 msgid ""
 "The code that speaks one provider's API. It builds the request, holds the"
 " provider key and turns the response back into the OpenAI shape. Self-"
@@ -164,23 +165,23 @@ msgstr ""
 "对接某一家 provider API 的代码。它负责构造请求、持有 provider key，并把响应转换回 OpenAI "
 "的格式。自建服务器用的是通用的 OpenAI 兼容 adapter。"
 
-#: ../developer/glossary.md:60
+#: ../developer/glossary.md:61
 msgid "Upstream"
 msgstr "上游（upstream）"
 
-#: ../developer/glossary.md:61
+#: ../developer/glossary.md:62
 msgid "Whatever the gateway calls to produce an answer — the far end of a route."
 msgstr "网关为了得到回答而调用的那一端，也就是路由的另一头。"
 
-#: ../developer/glossary.md:63
+#: ../developer/glossary.md:64
 msgid "Choosing a route"
 msgstr "选择路由"
 
-#: ../developer/glossary.md:65
+#: ../developer/glossary.md:66
 msgid "Router"
 msgstr "router"
 
-#: ../developer/glossary.md:66
+#: ../developer/glossary.md:67
 msgid ""
 "The per-model logic that picks a route for each request. `fixed` draws a "
 "route at random by weight and falls back to the others on failure; it is "
@@ -190,53 +191,53 @@ msgstr ""
 "按模型配置、为每个请求挑选路由的逻辑。`fixed` 按权重随机选一条路由，失败时回退到其他路由，是默认值；`routewise` "
 "在延迟和成本之间做取舍。模型用 `router:` 指定其中一个。"
 
-#: ../developer/glossary.md:71
+#: ../developer/glossary.md:72
 msgid "Weight"
 msgstr "权重（weight）"
 
-#: ../developer/glossary.md:72
+#: ../developer/glossary.md:73
 msgid ""
 "A route's relative share of traffic under the `fixed` router. A route "
 "with weight `0` stays configured but receives no traffic, not even as a "
 "fallback."
 msgstr "在 `fixed` router 下，一条路由分到的相对流量份额。权重为 `0` 的路由仍保留在配置里，但不会收到任何流量，连回退也不会用到它。"
 
-#: ../developer/glossary.md:75
+#: ../developer/glossary.md:76
 msgid "Fallback"
 msgstr "回退（fallback）"
 
-#: ../developer/glossary.md:76
+#: ../developer/glossary.md:77
 msgid ""
 "What the router does when a route fails: it tries the model's remaining "
 "routes in order until one answers."
 msgstr "某条路由失败时 router 的做法：按顺序尝试该模型剩下的路由，直到有一条返回结果。"
 
-#: ../developer/glossary.md:79
+#: ../developer/glossary.md:80
 msgid "Circuit breaker"
 msgstr "熔断器（circuit breaker）"
 
-#: ../developer/glossary.md:80
+#: ../developer/glossary.md:81
 msgid ""
 "A per-endpoint switch that stops sending traffic to an endpoint after "
 "repeated failures and lets a single test request through after a "
 "cooldown."
 msgstr "每个端点各有一个的开关：连续失败多次后停止向该端点发流量，冷却一段时间后只放一个测试请求过去。"
 
-#: ../developer/glossary.md:83
+#: ../developer/glossary.md:84
 msgid "Offload route"
 msgstr "卸载路由（offload route）"
 
-#: ../developer/glossary.md:84
+#: ../developer/glossary.md:85
 msgid ""
 "A route set aside for the requests a model's other routes cannot start in"
 " time. See [Queue-wait offload](routing.md#queue-wait-offload)."
 msgstr "专门留给那些在其他路由上无法及时开始处理的请求的一条路由。见[排队等待卸载](routing.md#queue-wait-offload)。"
 
-#: ../developer/glossary.md:87
+#: ../developer/glossary.md:88
 msgid "Routing file"
 msgstr "路由配置文件（routing file）"
 
-#: ../developer/glossary.md:88
+#: ../developer/glossary.md:89
 msgid ""
 "The optional `routing.yaml`. It holds health-probe settings and a "
 "local/remote weight split; see [The routing file](configuration.md#the-"
@@ -246,15 +247,15 @@ msgstr ""
 "`routing.yaml`。里面是健康探测的设置和一个本地/远端权重划分；它能改变什么、不能改变什么，见[路由配置文件](configuration.md"
 "#the-routing-file)。"
 
-#: ../developer/glossary.md:92
+#: ../developer/glossary.md:93
 msgid "Deployments"
 msgstr "部署"
 
-#: ../developer/glossary.md:94
+#: ../developer/glossary.md:95
 msgid "Distribution"
 msgstr "发行版（distribution）"
 
-#: ../developer/glossary.md:95
+#: ../developer/glossary.md:96
 msgid ""
 "One deployment's own files — its manifest, model registry, routing file, "
 "branding and Compose settings — kept together in `distributions/<name>/` "
@@ -264,31 +265,31 @@ msgstr ""
 "某个部署自己的文件——它的 manifest、模型注册表、路由配置文件、品牌和 Compose 设置——集中放在 "
 "`distributions/<name>/` 里，而不是放在源码里。`distributions/example/` 是本仓库自带的那一个。"
 
-#: ../developer/glossary.md:100
+#: ../developer/glossary.md:101
 msgid "Overlay"
 msgstr "overlay"
 
-#: ../developer/glossary.md:101
+#: ../developer/glossary.md:102
 msgid ""
 "The `distributions/<name>/` directory itself. It is called an overlay "
 "because it is mounted over the neutral image rather than built into it."
 msgstr "`distributions/<name>/` 这个目录本身。之所以叫 overlay，是因为它是挂载到中立镜像之上的，而不是打包进镜像里。"
 
-#: ../developer/glossary.md:104
+#: ../developer/glossary.md:105
 msgid "Manifest"
 msgstr "manifest"
 
-#: ../developer/glossary.md:105
+#: ../developer/glossary.md:106
 msgid ""
 "`distribution.yaml`, the file in a distribution that names it and says "
 "where its configuration files are."
 msgstr "`distribution.yaml`，发行版里给它命名、并说明配置文件在哪里的那个文件。"
 
-#: ../developer/glossary.md:108
+#: ../developer/glossary.md:109
 msgid "Dry run and active"
 msgstr "试运行与生效（dry run / active）"
 
-#: ../developer/glossary.md:109
+#: ../developer/glossary.md:110
 msgid ""
 "The two modes of `DISTRIBUTION_CONFIG_MODE`. In a dry run — the default, "
 "written `dark` in the setting — the gateway reads and checks the manifest"
@@ -298,31 +299,31 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_MODE` 的两种模式。试运行是默认模式，这个设置里写作 `dark`：网关会读取并检查 "
 "manifest，在日志里记下启用后会改变什么，但不使用其中任何内容。`active` 则真正应用它。"
 
-#: ../developer/glossary.md:114
+#: ../developer/glossary.md:115
 msgid "Operational store"
 msgstr "运行数据存储（operational store）"
 
-#: ../developer/glossary.md:115
+#: ../developer/glossary.md:116
 msgid ""
 "The Postgres tables that hold accounts, API keys and everything changed "
 "from the admin console."
 msgstr "Postgres 里存放账号、API key 以及管理控制台上所有改动的那些表。"
 
-#: ../developer/glossary.md:118
+#: ../developer/glossary.md:119
 msgid "Runtime model"
 msgstr "运行时模型（runtime model）"
 
-#: ../developer/glossary.md:119
+#: ../developer/glossary.md:120
 msgid ""
 "A model created from the admin console instead of the model registry. It "
 "exists only in the operational store."
 msgstr "在管理控制台里创建、而不是写在模型注册表里的模型。它只存在于运行数据存储中。"
 
-#: ../developer/glossary.md:122
+#: ../developer/glossary.md:123
 msgid "Console"
 msgstr "控制台（console）"
 
-#: ../developer/glossary.md:123
+#: ../developer/glossary.md:124
 msgid ""
 "The Next.js web app: sign-up and sign-in, the user dashboard, the "
 "playground and the admin console. It also forwards API paths to the "
@@ -331,21 +332,21 @@ msgstr ""
 "Next.js 网页应用：注册和登录、用户仪表盘、试验场和管理控制台。它还会把 API 路径转发给网关，见[公开路径表](public-path-"
 "table.md)。"
 
-#: ../developer/glossary.md:127
+#: ../developer/glossary.md:128
 msgid "Site UI module"
 msgstr "Site UI 模块（Site UI module）"
 
-#: ../developer/glossary.md:128
+#: ../developer/glossary.md:129
 msgid ""
 "A distribution's own React components for the public pages, compiled into"
 " its console image. See [Site UI Modules](site-ui-modules.md)."
 msgstr "发行版为公开页面编写的 React 组件，编译进它自己的控制台镜像。见 [Site UI 模块](site-ui-modules.md)。"
 
-#: ../developer/glossary.md:131
+#: ../developer/glossary.md:132
 msgid "Backend extension"
 msgstr "后端扩展（后端 extension）"
 
-#: ../developer/glossary.md:132
+#: ../developer/glossary.md:133
 msgid ""
 "A trusted Python module a deployment loads at startup to add an adapter, "
 "an agent-access rule or a quota source. See [Backend Extensions](backend-"

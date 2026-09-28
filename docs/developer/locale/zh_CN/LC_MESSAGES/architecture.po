@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -97,9 +97,9 @@ msgstr "**一个模型 id，多个端点**。客户端点名一个模型；由�
 #: ../developer/architecture.md:27
 msgid ""
 "**Failure is routed around, not retried into.** A non-idempotent "
-"generation is never re-sent to the same endpoint; resilience comes from "
-"the fallback chain and the circuit breaker."
-msgstr "**故障是被绕过去的，不是往里重试的**。非幂等的生成绝不会重发到同一个端点；韧性来自回退链和熔断器。"
+"generation is never re-sent with the same key; resilience comes from "
+"rotating keys, the fallback chain and the circuit breaker."
+msgstr "**故障是被绕过去的，不是往里重试的**。非幂等的生成绝不会用同一把 key 重发；韧性来自轮换 key、回退链和熔断器。"
 
 #: ../developer/architecture.md:30
 msgid ""
@@ -958,16 +958,17 @@ msgid ""
 "the paths that are actually in effect — logging a per-file digest "
 "comparison — while resolution stays unchanged. Setting "
 "`DISTRIBUTION_CONFIG_MODE=active` makes manifest paths effective, and in "
-"that mode a manifest that fails to load stops the process rather than "
-"quietly serving a different registry than the deployment named."
+"that mode a manifest that fails to load leaves the gateway with no "
+"models, logged at `CRITICAL`, rather than quietly serving a different "
+"registry than the deployment named."
 msgstr ""
-"manifest 是可选启用的，默认只做一次空跑。设置了 `DISTRIBUTION_CONFIG_PATH` 但没设 "
+"manifest 是可选启用的，默认只做试运行。设置了 `DISTRIBUTION_CONFIG_PATH` 但没设 "
 "`DISTRIBUTION_CONFIG_MODE` 时，模式是 `dark`：manifest "
 "会被加载、校验，并与实际生效的路径做比对——按文件记录一份 digest 比对——而解析结果保持不变。设置 "
 "`DISTRIBUTION_CONFIG_MODE=active` 会让 manifest 里的路径真正生效；在该模式下，加载失败的 "
-"manifest 会让进程直接停下，而不是悄悄提供一份与所声明的部署不同的注册表。"
+"manifest 会让网关在没有任何模型的状态下运行，并记一条 `CRITICAL` 日志，而不是悄悄提供一份与所声明的部署不同的注册表。"
 
-#: ../developer/architecture.md:403
+#: ../developer/architecture.md:404
 #, python-brace-format
 msgid ""
 "All three YAML files support environment interpolation, but not the same "
@@ -985,33 +986,33 @@ msgstr ""
 "`_expand_env_value`）。一条路由的 `api_key`、`api_keys` 或 `base_url` "
 "如果展开成空，要么被跳过（如果该路由标记为可选），要么导致启动失败——绝不会被注册成一个死端点。"
 
-#: ../developer/architecture.md:412
+#: ../developer/architecture.md:413
 msgid ""
 "See [Configuration](configuration.md) for the field-by-field reference "
 "and [Quickstart](router-tutorial.md) for a working end-to-end example."
 msgstr "逐字段的参考见[配置](configuration.md)，可运行的端到端示例见[快速开始](router-tutorial.md)。"
 
-#: ../developer/architecture.md:415
+#: ../developer/architecture.md:416
 msgid "Storage"
 msgstr "存储"
 
-#: ../developer/architecture.md:417
+#: ../developer/architecture.md:418
 msgid ""
 "Persistence is defined by two abstract base classes in "
 "`apps/backend/serving/storage/base.py`:"
 msgstr "持久化由 `apps/backend/serving/storage/base.py` 中的两个抽象基类定义："
 
-#: ../developer/architecture.md:420
+#: ../developer/architecture.md:421
 msgid ""
 "**`OperationalStore`** — accounts, API keys, roles, quotas, admin-managed"
 " providers and routes, runtime settings."
 msgstr "**`OperationalStore`**——账户、API key、角色、配额、管理员管理的 provider 与路由、运行时设置。"
 
-#: ../developer/architecture.md:422
+#: ../developer/architecture.md:423
 msgid "**`LogStore`** — the request log."
 msgstr "**`LogStore`**——请求日志。"
 
-#: ../developer/architecture.md:424
+#: ../developer/architecture.md:425
 msgid ""
 "Postgres implements both (`postgres_operational.py`, `postgres_log.py`). "
 "`CachedOperationalStore` wraps the operational store with an in-process "
@@ -1021,7 +1022,7 @@ msgstr ""
 "两个都实现了（`postgres_operational.py`、`postgres_log.py`）。`CachedOperationalStore`"
 " 给操作型存储包了一层进程内缓存，因为每一个请求的认证都要查它。"
 
-#: ../developer/architecture.md:428
+#: ../developer/architecture.md:429
 msgid ""
 "The request log table `api_logs` and its hourly rollup are defined in "
 "exactly one place, `apps/backend/serving/storage/log_schema.py`, applied "
@@ -1038,7 +1039,7 @@ msgstr ""
 "`latency_ms`、各项 token 计数、`cost_usd`（按模型自身定价向调用方计费的金额）和 "
 "`upstream_cost_usd`（上游报告的金额，如果它报告的话）。"
 
-#: ../developer/architecture.md:436
+#: ../developer/architecture.md:437
 msgid ""
 "Schema migrations read the catalog first and issue only the DDL that is "
 "actually missing, under a bounded lock wait — an `ALTER TABLE` that "
@@ -1048,7 +1049,7 @@ msgstr ""
 "表结构迁移会先读系统目录（catalog），只发出确实缺失的那部分 DDL，并且在有上限的锁等待下执行——一条排在长查询后面的 `ALTER "
 "TABLE`，会把排在它后面的每一个读者都挡住。见[数据库](database.md)。"
 
-#: ../developer/architecture.md:440
+#: ../developer/architecture.md:441
 msgid ""
 "The gateway starts without a database. `/health` then reports "
 "`database_connected: false`, and request logging and accounts are "
@@ -1059,15 +1060,15 @@ msgstr ""
 "false`，请求日志和账户功能不可用，但路由和补全照常工作——这正是 router 教程的第一阶段完全不需要 Postgres "
 "就能跑起来的原因。"
 
-#: ../developer/architecture.md:445
+#: ../developer/architecture.md:446
 msgid "Observability"
 msgstr "可观测性"
 
-#: ../developer/architecture.md:447
+#: ../developer/architecture.md:448
 msgid "The gateway reports through these; it has no Prometheus exporter:"
 msgstr "网关通过以下途径对外报告状态，它没有 Prometheus exporter："
 
-#: ../developer/architecture.md:449
+#: ../developer/architecture.md:450
 msgid ""
 "**Structured logs.** `RequestLogMiddleware` emits one record per HTTP "
 "request; `apps/backend/serving/utils/logging.py` shapes them and "
@@ -1077,13 +1078,13 @@ msgstr ""
 "请求发出一条记录；`apps/backend/serving/utils/logging.py` 负责整形，并在 "
 "`LOG_LEVEL=DEBUG` 之外抑制健康探测路径带来的噪声。"
 
-#: ../developer/architecture.md:452
+#: ../developer/architecture.md:453
 msgid ""
 "**The request log.** `api_logs` is the durable record and the source for "
 "the admin dashboards and usage reporting."
 msgstr "**请求日志**。`api_logs` 是持久的记录，也是管理员仪表盘和用量报表的数据来源。"
 
-#: ../developer/architecture.md:454
+#: ../developer/architecture.md:455
 msgid ""
 "**Health endpoints.** `/health` is a liveness check that returns 200 with"
 " `status: \"degraded\"` when a configured store is down but traffic can "
@@ -1097,7 +1098,7 @@ msgstr ""
 "是严格版本：除非配置的一切都正常，否则返回 503。`/health/deep` "
 "额外给出每个端点的可用性和熔断器状态，只要有任何一个端点处于降级状态，它就报告 `degraded`。"
 
-#: ../developer/architecture.md:460
+#: ../developer/architecture.md:461
 msgid ""
 "**Alerting.** `alert_slack()` and `alert_on_transition()` in "
 "`apps/backend/serving/observability/alerts.py` post to a Slack webhook "
@@ -1114,11 +1115,11 @@ msgstr ""
 "链解析出来的告警配置；没有告警文件时使用内置阈值。熔断器会在 `circuit_open` "
 "状态转换时、以及上游凭据被拒时呼叫值班，并按端点设置冷却时间，让持续存在的故障以固定节奏重复呼叫，而不是刷屏。"
 
-#: ../developer/architecture.md:469
+#: ../developer/architecture.md:470
 msgid "HTTP surface"
 msgstr "HTTP 接口"
 
-#: ../developer/architecture.md:471
+#: ../developer/architecture.md:472
 msgid "Client-facing groups, all served by the same app:"
 msgstr "面向客户端的分组，全部由同一个应用提供："
 
@@ -1210,7 +1211,7 @@ msgstr ""
 msgid "Mixed"
 msgstr "混合"
 
-#: ../developer/architecture.md:484
+#: ../developer/architecture.md:485
 msgid ""
 "`GET /routing` requires no authentication and returns each published "
 "route's provider label, **upstream base URL**, and traffic weight. If "
@@ -1225,7 +1226,7 @@ msgstr ""
 "还额外包含未发布的路由和路由管理器状态，但需要在 `Authorization: Bearer ...` 请求头中提供管理员的 JWT 或 "
 "`ADMIN_TOKEN`。"
 
-#: ../developer/architecture.md:492
+#: ../developer/architecture.md:493
 msgid ""
 "`/v1/models` shape-shifts by client: an Anthropic-family client calling "
 "it receives the Anthropic list response, while `/models` and "
@@ -1234,11 +1235,11 @@ msgstr ""
 "`/v1/models` 会随客户端变形：Anthropic 系的客户端调用它，会拿到 Anthropic 的列表响应；而 `/models` 和"
 " `/openrouter/models` 始终返回 OpenAI/OpenRouter 的形状。"
 
-#: ../developer/architecture.md:496
+#: ../developer/architecture.md:497
 msgid "Deployment shape"
 msgstr "部署形态"
 
-#: ../developer/architecture.md:498
+#: ../developer/architecture.md:499
 msgid ""
 "The repository ships Dockerfiles and Compose files under "
 "`deploy/docker/`: `Dockerfile.backend` (the gateway), "
@@ -1251,7 +1252,7 @@ msgstr ""
 "Next.js 控制台）、`Dockerfile.rocm`（AMD GPU 变体）和 `docker-compose.yml`。systemd "
 "单元在 `deploy/systemd/`。"
 
-#: ../developer/architecture.md:503
+#: ../developer/architecture.md:504
 msgid ""
 "The console and the API share one origin: the Next.js rewrites in "
 "`apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, "
@@ -1267,7 +1268,7 @@ msgstr ""
 "rewrites——而不是某份反向代理配置——才是[公开路径表](public-path-table.md)。前端有自己的工具链和质量门禁，与 "
 "Python 的 `make` 目标相互独立。"
 
-#: ../developer/architecture.md:511
+#: ../developer/architecture.md:512
 msgid ""
 "See [Deployment Guide](deployment.md) to run it, "
 "[Installation](installation.md) for a local checkout, and "

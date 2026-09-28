@@ -45,8 +45,8 @@ Two strategies are registered out of the box:
   [RouteWise](#routewise) below.
 
 `router_params:` holds settings for the chosen strategy. An unknown strategy
-name, or a key the strategy does not accept, stops startup with a message that
-lists what is accepted. `ENABLE_ROUTEWISE=true` is an older switch that makes
+name stops startup with a message listing the known strategies, and a key the
+strategy does not accept stops it with a message naming that key. `ENABLE_ROUTEWISE=true` is an older switch that makes
 `routewise` the default when the routing file leaves `default_router` at
 `fixed`.
 
@@ -111,8 +111,9 @@ router strips before forwarding. Clients never see either.
 
 Every endpoint has a circuit breaker and a running average of its success
 rate, shared by all routers in the process. The breaker opens after
-`CIRCUIT_FAILURE_THRESHOLD` consecutive failures and stops all traffic to the
-endpoint. After `CIRCUIT_COOLDOWN_SECONDS` it lets **one** test request
+`CIRCUIT_FAILURE_THRESHOLD` consecutive failures, or on any failure that leaves
+the success rate below `CIRCUIT_MIN_AVAILABILITY`, and then stops routing
+requests to the endpoint. After `CIRCUIT_COOLDOWN_SECONDS` it lets **one** test request
 through: a success closes it, a failure opens it again.
 
 While that test request is in flight, other requests that have nowhere else to
@@ -124,7 +125,7 @@ instead. The four settings:
 |---|---|---|
 | `CIRCUIT_FAILURE_THRESHOLD` | `3` | Consecutive failures before the circuit opens. |
 | `CIRCUIT_COOLDOWN_SECONDS` | `30` | Seconds before a half-open probe is admitted. |
-| `CIRCUIT_MIN_AVAILABILITY` | `0.7` | EWMA success floor below which the endpoint counts as unhealthy. |
+| `CIRCUIT_MIN_AVAILABILITY` | `0.7` | Success-rate floor: a failure that leaves the endpoint's average below it opens the circuit. |
 | `ROUTER_HEALTH_EWMA_ALPHA` | `0.1` | Smoothing factor for the availability EWMA. |
 
 `GET /health/deep` shows each endpoint's availability and circuit state. It
@@ -434,8 +435,9 @@ design is described in *RouteWise: Latency--Cost Optimization for
 Multi-Provider LLM Routing* (EuroSys '27).
 
 If the package is missing — a partial install, or a build that leaves the
-strategy out — the gateway still starts. Only a model that selects `routewise`
-fails, with a message saying the package is missing.
+strategy out — the backend still imports, and a gateway whose models do not use
+`routewise` starts normally. If any model selects it, startup stops with a
+message saying the package is missing.
 
 For a registry you can run unedited against two loopback providers, with every
 option annotated, see

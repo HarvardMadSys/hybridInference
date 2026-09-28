@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:02+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -20,7 +20,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../developer/routing.md:1 ../developer/routing.md:652
+#: ../developer/routing.md:1 ../developer/routing.md:654
 msgid "Routing"
 msgstr "路由"
 
@@ -84,13 +84,14 @@ msgstr "**`routewise`**——一个成本感知的策略，实现在一个独立
 #: ../developer/routing.md:47
 msgid ""
 "`router_params:` holds settings for the chosen strategy. An unknown "
-"strategy name, or a key the strategy does not accept, stops startup with "
-"a message that lists what is accepted. `ENABLE_ROUTEWISE=true` is an "
-"older switch that makes `routewise` the default when the routing file "
-"leaves `default_router` at `fixed`."
+"strategy name stops startup with a message listing the known strategies, "
+"and a key the strategy does not accept stops it with a message naming "
+"that key. `ENABLE_ROUTEWISE=true` is an older switch that makes "
+"`routewise` the default when the routing file leaves `default_router` at "
+"`fixed`."
 msgstr ""
 "`router_params:` "
-"存放所选策略的设置。未知的策略名，或者策略不接受的键，都会让启动失败，并在错误消息里列出可接受的取值。`ENABLE_ROUTEWISE=true`"
+"存放所选策略的设置。未知的策略名会让启动失败，错误消息会列出已知的策略；策略不接受的键也会让启动失败，错误消息会指出是哪个键。`ENABLE_ROUTEWISE=true`"
 " 是一个较早的开关：当路由配置文件里的 `default_router` 仍是 `fixed` 时，它会把默认策略换成 `routewise`。"
 
 #: ../developer/routing.md:53
@@ -230,15 +231,18 @@ msgstr "端点健康与熔断"
 msgid ""
 "Every endpoint has a circuit breaker and a running average of its success"
 " rate, shared by all routers in the process. The breaker opens after "
-"`CIRCUIT_FAILURE_THRESHOLD` consecutive failures and stops all traffic to"
-" the endpoint. After `CIRCUIT_COOLDOWN_SECONDS` it lets **one** test "
-"request through: a success closes it, a failure opens it again."
+"`CIRCUIT_FAILURE_THRESHOLD` consecutive failures, or on any failure that "
+"leaves the success rate below `CIRCUIT_MIN_AVAILABILITY`, and then stops "
+"routing requests to the endpoint. After `CIRCUIT_COOLDOWN_SECONDS` it "
+"lets **one** test request through: a success closes it, a failure opens "
+"it again."
 msgstr ""
 "每个端点都有一个熔断器和一个成功率的滑动平均值，进程内的所有 router 共用它们。连续失败 "
-"`CIRCUIT_FAILURE_THRESHOLD` 次后，熔断器打开，停止向该端点发送任何流量。过了 "
-"`CIRCUIT_COOLDOWN_SECONDS` 秒，它会放行**一个**探测请求：成功就关闭熔断器，失败则重新打开。"
+"`CIRCUIT_FAILURE_THRESHOLD` 次，或者某次失败让成功率跌到 `CIRCUIT_MIN_AVAILABILITY` "
+"以下，熔断器就会打开，不再把请求路由到这个端点。过了 `CIRCUIT_COOLDOWN_SECONDS` "
+"秒，它会放行**一个**测试请求：成功就关闭熔断器，失败则重新打开。"
 
-#: ../developer/routing.md:118
+#: ../developer/routing.md:119
 msgid ""
 "While that test request is in flight, other requests that have nowhere "
 "else to go get **503** rather than a second request onto a provider that "
@@ -293,8 +297,10 @@ msgid "`0.7`"
 msgstr ""
 
 #: ../developer/routing.md
-msgid "EWMA success floor below which the endpoint counts as unhealthy."
-msgstr "EWMA 成功率下限，低于此值即视该端点为不健康。"
+msgid ""
+"Success-rate floor: a failure that leaves the endpoint's average below it"
+" opens the circuit."
+msgstr "成功率下限：某次失败让端点的平均成功率跌到它以下时，熔断器打开。"
 
 #: ../developer/routing.md
 msgid "`ROUTER_HEALTH_EWMA_ALPHA`"
@@ -308,7 +314,7 @@ msgstr ""
 msgid "Smoothing factor for the availability EWMA."
 msgstr "可用性 EWMA 的平滑系数。"
 
-#: ../developer/routing.md:130
+#: ../developer/routing.md:131
 msgid ""
 "`GET /health/deep` shows each endpoint's availability and circuit state. "
 "It also marks an endpoint degraded from the first time a provider rejects"
@@ -319,11 +325,11 @@ msgstr ""
 "`GET /health/deep` 显示每个端点的可用性和熔断状态。provider "
 "第一次拒绝网关自己的凭据时，它就会把该端点标为降级，而不必等成功率平均值降下来：平均值变化很慢，而一把被拒的 key 会让每个请求都失败。"
 
-#: ../developer/routing.md:135
+#: ../developer/routing.md:136
 msgid "State is per process. Each backend worker keeps its own breakers."
 msgstr "状态是按进程隔离的。每个后端 worker 各自维护自己的熔断器。"
 
-#: ../developer/routing.md:137
+#: ../developer/routing.md:138
 msgid ""
 "The routing file's `health_check:` probe is separate and only reports; it"
 " never changes which endpoint a request goes to. See [The routing "
@@ -332,15 +338,15 @@ msgstr ""
 "路由配置文件里的 `health_check:` "
 "探测是另一回事，它只负责报告，从不改变请求发往哪个端点。见[路由配置文件](configuration.md#the-routing-file)。"
 
-#: ../developer/routing.md:141
+#: ../developer/routing.md:142
 msgid "Admission, for router authors"
 msgstr "准入（写给 router 作者）"
 
-#: ../developer/routing.md:143
+#: ../developer/routing.md:144
 msgid "A router checks an endpoint in two steps, and the split matters:"
 msgstr "router 分两步检查一个端点，这个拆分很重要："
 
-#: ../developer/routing.md:145
+#: ../developer/routing.md:146
 msgid ""
 "**`allow_request(endpoint_id)`** is a pure predicate — is this endpoint a"
 " candidate? Routers ask it of *every* route candidate while enumerating "
@@ -349,7 +355,7 @@ msgstr ""
 "**`allow_request(endpoint_id)`** "
 "是一个纯谓词——这个端点是否算候选？路由器在枚举候选时会对*每一条*候选路由都问一遍，然后最多只向其中一条派发，因此它不改变任何状态。"
 
-#: ../developer/routing.md:148
+#: ../developer/routing.md:149
 msgid ""
 "**`begin_dispatch(endpoint_id)`** is the commit. It is called once, where"
 " a router has settled on an endpoint, and returns a `DispatchClaim` or "
@@ -362,7 +368,7 @@ msgstr ""
 "`DispatchClaim`；当该端点无法接受这个请求时返回 `None`。调用方在覆盖整个派发过程的 `finally` 里通过 "
 "`end_dispatch(claim)` 把凭据交还，与 prefill 租约放在一处，理由也相同：客户端断连或协程被取消时同样必须释放它。"
 
-#: ../developer/routing.md:155
+#: ../developer/routing.md:156
 msgid ""
 "The test request's slot belongs to the claim that took it: nothing else "
 "can free it, because an outcome recorded by a request that bypassed "
@@ -376,11 +382,11 @@ msgstr ""
 "Pin`，或者在熔断器还关着时就被放行的请求）所记录的结果，并不能说明探测是否已经结束。派发凭据还会在 "
 "`CIRCUIT_COOLDOWN_SECONDS` 秒后过期，因此一次始终没有收尾的派发，只会多耗掉一个冷却周期，而不会把端点永远挡在路由之外。"
 
-#: ../developer/routing.md:162
+#: ../developer/routing.md:163
 msgid "Routes excluded from selection"
 msgstr "被排除在选路之外的路由"
 
-#: ../developer/routing.md:164
+#: ../developer/routing.md:165
 msgid ""
 "A route whose *effective* weight is zero is skipped by weighted selection"
 " and by every fallback loop, so it is configured capacity that does not "
@@ -453,7 +459,7 @@ msgstr "模型注册表里的 `weight: 0`"
 msgid "the overlay's `models.yaml`"
 msgstr "该部署 overlay 的 `models.yaml`"
 
-#: ../developer/routing.md:177
+#: ../developer/routing.md:178
 msgid ""
 "`routing_yaml` appears only on a gateway without a database. With one, "
 "the routing file's local/remote split never reaches the weights; see [The"
@@ -463,7 +469,7 @@ msgstr ""
 "`routing_yaml`。有数据库时，路由配置文件里的本地/远端拆分根本不会作用到权重上；见[路由配置文件](configuration.md"
 "#the-routing-file)。"
 
-#: ../developer/routing.md:181
+#: ../developer/routing.md:182
 msgid ""
 "The same exclusions are merged into the `providers` map — as "
 "`excluded_from_models` and `exclusion_reasons` — including for endpoints "
@@ -477,7 +483,7 @@ msgstr ""
 "的形式——其中包括那些本来完全不会出现在该映射里的端点，因为从未被派发过请求的路由根本不会进入端点健康登记表。它们刻意不会拉低 deep "
 "health 的结论：把一条路由置零是运维人员的决定，而不是故障。"
 
-#: ../developer/routing.md:187
+#: ../developer/routing.md:188
 msgid ""
 "The gateway also names them at boot and after every override reload: "
 "`route_weight_zeroed` at `WARNING` when a configured route is zeroed at "
@@ -490,11 +496,11 @@ msgstr ""
 "`route_weight_overridden`。两条日志都带有 `configured_weight`、`effective_weight` "
 "和原因。"
 
-#: ../developer/routing.md:192
+#: ../developer/routing.md:193
 msgid "Prefill-aware selection"
 msgstr "prefill 感知的选路"
 
-#: ../developer/routing.md:194
+#: ../developer/routing.md:195
 msgid ""
 "Weighted-random selection balances *request counts*, which is the wrong "
 "unit for a prefill-bound deployment: one very large cache-miss prompt can"
@@ -508,7 +514,7 @@ msgstr ""
 "只花几毫秒，两者却都算一个请求。`apps/backend/routing/prefill_load.py` 按端点统计当前正在 prefill "
 "的*未缓存* prompt token 数，并把它当作选路信号。"
 
-#: ../developer/routing.md:201
+#: ../developer/routing.md:202
 msgid ""
 "Selection is power-of-two-choices: two independent weighted draws, keep "
 "the endpoint holding less prefill. A route weighted 10× is still drawn "
@@ -518,7 +524,7 @@ msgstr ""
 "选路采用 power-of-two-choices：做两次独立的加权抽取，保留 prefill 负载较小的那个端点。权重高 10 "
 "倍的路由仍然大约被抽中 10 倍的次数，但抽取结果不太会落到已被 prefill 压住的端点上。"
 
-#: ../developer/routing.md:204
+#: ../developer/routing.md:205
 msgid ""
 "The tie-break only engages once the heavier draw carries at least "
 "`ROUTING_PREFILL_INTERVENE_TOKENS` of un-cached prompt tokens queued for "
@@ -530,7 +536,7 @@ msgstr ""
 " prompt token 时，这条决胜规则才会启用；低于该值时完全由配置的权重决定，因为权重编码的是成本和 provider "
 "偏好，而不只是容量。"
 
-#: ../developer/routing.md:209
+#: ../developer/routing.md:210
 msgid ""
 "Very large prompts (\"elephants\") additionally skip endpoints already at"
 " the per-endpoint elephant limit, so two mega-prefills serialise across "
@@ -541,14 +547,14 @@ msgstr ""
 "超大的 prompt（「大象」）还会额外跳过那些已经达到逐端点大象上限的端点，这样两个超大 prefill "
 "会在副本之间串行，而不是堆在同一个副本上。如果所有候选都已到上限，这条限制就被放弃：它降级为「最少负载」，绝不会降级为「拒绝路由」。"
 
-#: ../developer/routing.md:214
+#: ../developer/routing.md:215
 msgid ""
 "Un-cached size is estimated from the caller's last completed prompt on "
 "that endpoint, so a warm continuation is not mistaken for a cold mega-"
 "prefill."
 msgstr "未缓存的规模，是按调用方在那个端点上最近一次完成的 prompt 估算的，因此一次预热过的续写不会被误判成冷启动的超大 prefill。"
 
-#: ../developer/routing.md:216
+#: ../developer/routing.md:217
 msgid ""
 "A lease is released at the first token, not at end of stream: a long "
 "cheap decode is not prefill pressure."
@@ -622,17 +628,17 @@ msgstr ""
 msgid "Lifetime of the per-(caller, endpoint) prompt-size memory."
 msgstr "按 (调用方, 端点) 记录的 prompt 规模记忆的存活时长。"
 
-#: ../developer/routing.md:228
+#: ../developer/routing.md:229
 msgid ""
 "This module never blocks, rejects, or queues a request. The worst it does"
 " is prefer a different endpoint that was already admissible."
 msgstr "这个模块从不阻塞、拒绝或排队任何请求。它最多也就是改选另一个本来就可用的端点。"
 
-#: ../developer/routing.md:231
+#: ../developer/routing.md:232
 msgid "Session affinity"
 msgstr "会话亲和"
 
-#: ../developer/routing.md:233
+#: ../developer/routing.md:234
 msgid ""
 "`FixedRouter` keeps a per-(caller, model) pin to the last-selected "
 "endpoint for five minutes on a sliding TTL (`AFFINITY_TTL_SECONDS` in "
@@ -641,19 +647,19 @@ msgstr ""
 "`FixedRouter` 按 (调用方, 模型) 把上一次选中的端点钉选五分钟，采用滑动 TTL（`routers.py` 里的 "
 "`AFFINITY_TTL_SECONDS`）。目标："
 
-#: ../developer/routing.md:236
+#: ../developer/routing.md:237
 msgid ""
 "Keep one conversation on one backend so prompt caches stay warm and "
 "latency stays consistent."
 msgstr "把一段对话留在同一个后端上，让 prompt 缓存保持预热、时延保持稳定。"
 
-#: ../developer/routing.md:238
+#: ../developer/routing.md:239
 msgid ""
 "Drop the pin the moment that backend errors, so callers do not get stuck "
 "on a failing provider."
 msgstr "那个后端一出错就立刻丢掉钉选，免得调用方卡在一个正在失败的 provider 上。"
 
-#: ../developer/routing.md:241
+#: ../developer/routing.md:242
 msgid ""
 "**Affinity key** — derived by `derive_affinity_key()` in "
 "`apps/backend/serving/utils/request_ip.py`, first match wins:"
@@ -661,11 +667,11 @@ msgstr ""
 "**亲和键**——由 `apps/backend/serving/utils/request_ip.py` 中的 "
 "`derive_affinity_key()` 推导，先匹配者胜："
 
-#: ../developer/routing.md:244
+#: ../developer/routing.md:245
 msgid "Authenticated requests: the caller's API-key hash."
 msgstr "已鉴权的请求：调用方 API key 的哈希。"
 
-#: ../developer/routing.md:245
+#: ../developer/routing.md:246
 msgid ""
 "Requests presenting an inference grant instead of a key: "
 "`grant:<grant_id>`. Such callers commonly share one NAT or relay address,"
@@ -674,13 +680,13 @@ msgstr ""
 "以推理 grant 而非 key 发起的请求：`grant:<grant_id>`。这类调用方通常共用一个 NAT 或中继地址，若用 IP "
 "作键，会把所有并发任务都压到同一个端点上。"
 
-#: ../developer/routing.md:248
+#: ../developer/routing.md:249
 msgid ""
 "Anonymous requests: `ip:<bucket>`, with IPv6 folded to its `/64` so "
 "rotating privacy addresses stay on one backend."
 msgstr "匿名请求：`ip:<bucket>`，其中 IPv6 会折叠到它的 `/64`，这样轮换的隐私地址仍会落在同一个后端上。"
 
-#: ../developer/routing.md:251
+#: ../developer/routing.md:252
 msgid ""
 "Every request surface that dispatches to an adapter publishes the key on "
 "the request context — `/v1/chat/completions`, `/v1/messages`, and "
@@ -693,33 +699,33 @@ msgstr ""
 "`/v1/embeddings`——都会把这个键发布到请求上下文里，好让 router 的端点钉选和 `KeyPool` 的上游 key "
 "绑定看到同一个调用方。没有调用方身份的内部流量（健康探测、预热、管理员 playground）什么都不发布，共用同一个匿名绑定。"
 
-#: ../developer/routing.md:257
+#: ../developer/routing.md:258
 msgid "**Pin lifecycle:**"
 msgstr "**钉选的生命周期：**"
 
-#: ../developer/routing.md:259
+#: ../developer/routing.md:260
 msgid "First request from `(key, model)` → weighted pick → entry stored."
 msgstr "来自 `(key, model)` 的第一个请求 → 加权挑选 → 存下一条记录。"
 
-#: ../developer/routing.md:260
+#: ../developer/routing.md:261
 msgid ""
 "Later requests within the TTL on the same `(key, model)` reuse the same "
 "endpoint and refresh the TTL."
 msgstr "TTL 之内、同一 `(key, model)` 的后续请求复用同一个端点，并刷新 TTL。"
 
-#: ../developer/routing.md:262
+#: ../developer/routing.md:263
 msgid ""
 "Any exception from the pinned endpoint drops the entry; fallback runs; "
 "the next request creates a fresh pin."
 msgstr "被钉选的端点抛出任何异常都会丢弃这条记录；回退随即执行；下一个请求会建立新的钉选。"
 
-#: ../developer/routing.md:264
+#: ../developer/routing.md:265
 msgid ""
 "If the pinned endpoint is no longer admissible — weight `0`, or its "
 "circuit is open — the entry is dropped and a fresh weighted pick runs."
 msgstr "如果被钉选的端点不再可用——权重为 `0`，或它的熔断器已打开——这条记录被丢弃，重新做一次加权挑选。"
 
-#: ../developer/routing.md:266
+#: ../developer/routing.md:267
 msgid ""
 "If the pinned endpoint's prefill backlog is above "
 "`ROUTING_PREFILL_AFFINITY_CEILING`, the pin is abandoned for this request"
@@ -730,40 +736,40 @@ msgstr ""
 "如果被钉选端点的 prefill 积压高于 "
 "`ROUTING_PREFILL_AFFINITY_CEILING`，本次请求放弃该钉选，*排除*那个端点重新选路，然后把钉选改到新选中的端点上。钉选是一项缓存局部性优化，不是排队等待的承诺。"
 
-#: ../developer/routing.md:270
+#: ../developer/routing.md:271
 msgid ""
 "After the TTL elapses with no traffic the entry expires. Expired entries "
 "are swept lazily once the table exceeds `AFFINITY_SWEEP_THRESHOLD` "
 "(1000)."
 msgstr "TTL 走完而期间没有流量，这条记录即过期。过期记录会在表规模超过 `AFFINITY_SWEEP_THRESHOLD`（1000）之后被惰性清扫。"
 
-#: ../developer/routing.md:273
+#: ../developer/routing.md:274
 msgid "**Scope and limits:**"
 msgstr "**作用范围与限制：**"
 
-#: ../developer/routing.md:275
+#: ../developer/routing.md:276
 msgid ""
 "State is in-process; each worker keeps its own table, as `key_pool.py` "
 "does."
 msgstr "状态在进程内；每个 worker 各自维护自己的表，`key_pool.py` 也是如此。"
 
-#: ../developer/routing.md:276
+#: ../developer/routing.md:277
 msgid "Affinity does not survive a restart."
 msgstr "亲和关系不会跨重启保留。"
 
-#: ../developer/routing.md:277
+#: ../developer/routing.md:278
 msgid "An explicit `X-Route-Pin` bypasses affinity entirely."
 msgstr "显式的 `X-Route-Pin` 会完全绕过亲和。"
 
-#: ../developer/routing.md:279
+#: ../developer/routing.md:280
 msgid "**Kill switch:** set `ROUTING_AFFINITY_ENABLED=0`."
 msgstr "**关闭开关：** 设 `ROUTING_AFFINITY_ENABLED=0`。"
 
-#: ../developer/routing.md:281
+#: ../developer/routing.md:282
 msgid "Outbound concurrency"
 msgstr "出站并发"
 
-#: ../developer/routing.md:283
+#: ../developer/routing.md:284
 msgid ""
 "The gateway limits how many requests it keeps open at once against each "
 "provider account — one limit per provider label and API key — and queues "
@@ -784,7 +790,7 @@ msgstr ""
 "`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` "
 "秒内拿不到槽位的请求，会转去尝试模型的下一条路由，并且不会记到该端点的熔断器上：provider 根本没见过这个请求。"
 
-#: ../developer/routing.md:293
+#: ../developer/routing.md:294
 msgid ""
 "Servers addressed as `localhost`, `127.0.0.1`, `0.0.0.0` or "
 "`host.docker.internal` are never limited, because they schedule their own"
@@ -850,17 +856,17 @@ msgstr ""
 msgid "Longest a request waits for a slot before failing over"
 msgstr "请求等待槽位的最长时间，超时后转去下一条路由"
 
-#: ../developer/routing.md:305
+#: ../developer/routing.md:306
 msgid ""
 "A model can also send the requests that wait too long to a route reserved"
 " for them; see [Queue-wait offload](#queue-wait-offload)."
 msgstr "模型还可以把等待过久的请求交给一条专门为它们预留的路由；见[排队等待卸载](#queue-wait-offload)。"
 
-#: ../developer/routing.md:308
+#: ../developer/routing.md:309
 msgid "Queue-wait offload"
 msgstr "排队等待卸载"
 
-#: ../developer/routing.md:310
+#: ../developer/routing.md:311
 #, python-brace-format
 msgid ""
 "A model routed by `fixed` can reserve one of its routes as its **offload "
@@ -877,7 +883,7 @@ msgstr ""
 "id 和一个以秒为单位的等待时间，保存在 `site_settings` 的 `model_offload_route:<model_id>` "
 "下。路由机制位于 `apps/backend/routing/offload.py`。"
 
-#: ../developer/routing.md:317
+#: ../developer/routing.md:318
 msgid ""
 "The wait is measured in the gateway's own outbound queue. The concurrency"
 " limiter (`apps/backend/serving/adapters/upstream_limiter.py`) keeps at "
@@ -891,14 +897,14 @@ msgstr ""
 "`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`（默认 "
 "`30`）秒来获取槽位，然后故障转移。有了卸载路由之后："
 
-#: ../developer/routing.md:324
+#: ../developer/routing.md:325
 msgid ""
 "**Selection.** The offload route is never the primary while another route"
 " is admissible: the weighted draw, affinity and a preferred target all "
 "skip it, so it takes no ordinary traffic whatever its weight."
 msgstr "**选择**。只要还有别的路由可以准入，卸载路由就不会成为主路由：加权抽取、亲和与首选目标都会跳过它，所以无论权重多少，它都不接收普通流量。"
 
-#: ../developer/routing.md:327
+#: ../developer/routing.md:328
 msgid ""
 "**Queue wait.** Every other attempt the request makes may wait at most "
 "the configured seconds for an outbound slot. When that runs out the "
@@ -907,21 +913,21 @@ msgid ""
 "timeout counts the same way: the request queued and never got a slot."
 msgstr "**排队等待**。请求的其他每一次尝试，最多为出站槽位等待所配置的秒数。等待耗尽时，请求离开队列，接下来交给卸载路由，排在其余回退顺序之前。由限流器自己的获取超时结束的等待也同样处理：请求排过队，却始终没有拿到槽位。"
 
-#: ../developer/routing.md:332
+#: ../developer/routing.md:333
 msgid ""
 "**Last resort.** The offload route is also the last fallback after every "
 "other route has failed, and the primary when no other route is "
 "admissible."
 msgstr "**兜底**。其他每条路由都失败之后，卸载路由也是最后一个回退；没有其他路由可以准入时，它就是主路由。"
 
-#: ../developer/routing.md:334
+#: ../developer/routing.md:335
 msgid ""
 "**The offload attempt** queues normally, with the full acquire timeout, "
 "since there is nowhere left to send it. A request is offloaded at most "
 "once."
 msgstr "**卸载尝试**本身照常排队，使用完整的获取超时，因为已经没有别处可以再送。一个请求最多被卸载一次。"
 
-#: ../developer/routing.md:337
+#: ../developer/routing.md:338
 msgid ""
 "Cutting a queue wait short is safe because the request has not left the "
 "gateway: giving up its place in line releases nothing upstream, cannot "
@@ -929,11 +935,11 @@ msgid ""
 "breaker or its prefix-cache hints."
 msgstr "提前结束排队等待是安全的，因为请求还没有离开网关：放弃它在队列中的位置不会释放任何上游资源，不会造成重复生成，也不会记到端点的熔断器或它的前缀缓存提示上。"
 
-#: ../developer/routing.md:342
+#: ../developer/routing.md:343
 msgid "Engine waits"
 msgstr "引擎等待"
 
-#: ../developer/routing.md:344
+#: ../developer/routing.md:345
 msgid ""
 "The gateway cannot see an inference engine's own queue. A vLLM or SGLang "
 "server accepts every request and queues what it cannot schedule yet, and "
@@ -948,7 +954,7 @@ msgstr ""
 "token。因此，对于配置了卸载路由的模型，`FixedRouter` 会为该模型其他路由上的每次流式尝试设定一个等待这个 token "
 "的时限（`apps/backend/routing/engine_wait.py`）："
 
-#: ../developer/routing.md:351
+#: ../developer/routing.md:352
 msgid ""
 "**First-token wait.** An attempt whose engine sends no token within the "
 "same wait is cancelled — closing the stream aborts the request at the "
@@ -963,7 +969,7 @@ msgstr ""
 "token，这次尝试会被取消——关闭流会让引擎中止该请求——请求随即被发往卸载路由。等待从请求离开网关时开始计算，因此在网关出站队列中花费的时间由排队等待来约束；本地服务器从不在那里排队，所以能得到完整的等待时间。引擎在首个"
 " token 之前发送的内容（例如只含 role 的 delta）会被暂存，直到 token 到达，因此客户端永远看不到被放弃的那次尝试。"
 
-#: ../developer/routing.md:359
+#: ../developer/routing.md:360
 msgid ""
 "**Per request.** The wait decides for the one request it times. Nothing "
 "is recorded against the engine: the next request is sent to it as usual, "
@@ -971,7 +977,7 @@ msgid ""
 "breaker or the endpoint's prefix-cache hints."
 msgstr "**按请求决定**。等待只为它所计时的那一个请求做决定。引擎不会被记下任何状态：下一个请求照常发往它，并有自己的等待时间；引擎等待也不会计入熔断器，也不会清除该端点的前缀缓存提示。"
 
-#: ../developer/routing.md:363
+#: ../developer/routing.md:364
 msgid ""
 "**Output an adapter holds back counts.** Some adapters hold output until "
 "they can tell what it is: the GLM and Qwen Coder stream processors keep "
@@ -985,7 +991,7 @@ msgstr ""
 " XML 工具调用保留到完整为止，MiniMax 的处理器会整段去掉 `<think>` 块，Claude 的 adapter 会把工具调用的 "
 "JSON 保留到消息结束。它们从上游读到第一段输出时都会告知路由器，此后该请求不再有时限，引擎需要多久就等多久。"
 
-#: ../developer/routing.md:370
+#: ../developer/routing.md:371
 msgid ""
 "Only streaming requests are watched: a non-streaming response arrives "
 "whole, so there is no first token to wait for. The first-token wait "
@@ -1000,7 +1006,7 @@ msgstr ""
 "或更新版本：它的截止时间由 `asyncio.timeout` 实现，能把自己发出的取消与同一时刻挂断的客户端区分开。在 Python 3.10 "
 "上，流式请求从不计时。"
 
-#: ../developer/routing.md:377
+#: ../developer/routing.md:378
 msgid ""
 "A response served by the offload route carries `_routing.offload` beside "
 "the usual `fallback` and `failed_attempts`: `queue_wait` or `engine_wait`"
@@ -1012,11 +1018,11 @@ msgstr ""
 "并列：某次尝试等待过久之后为 `queue_wait` 或 `engine_wait`，其余情况为 "
 "`last_resort`。请求日志的元数据也会保留它，无论是否流式；每次派发到卸载路由还会记一行 `route_offload` 日志。"
 
-#: ../developer/routing.md:383
+#: ../developer/routing.md:384
 msgid "What does not offload:"
 msgstr "以下情况不会卸载："
 
-#: ../developer/routing.md:385
+#: ../developer/routing.md:386
 msgid ""
 "**A non-streaming request the gateway does not queue.** Only the limiter "
 "queues, and it exempts local inference servers (a host in "
@@ -1029,7 +1035,7 @@ msgstr ""
 "中），它们自己调度工作。`UPSTREAM_CONCURRENCY_ENABLED=false` "
 "时根本不排队。在这些情况下，流式请求如果没能及时收到引擎的首个 token，仍然会被卸载，卸载路由也仍然作为兜底。"
 
-#: ../developer/routing.md:391
+#: ../developer/routing.md:392
 msgid ""
 "**A pinned request.** `X-Route-Pin` names one endpoint and never falls "
 "back, so it never offloads either. Nor does an attempt whose caller owns "
@@ -1041,7 +1047,7 @@ msgstr ""
 "指定一个端点且从不回退，所以也从不卸载。由调用方掌控候选顺序的尝试（`allow_fallback` "
 "关闭，混合组合就是这样规划尝试的）同样不会卸载；此外，卸载路由必须位于派发范围之内，并能接受该请求的模态。"
 
-#: ../developer/routing.md:396
+#: ../developer/routing.md:397
 msgid ""
 "**A prompt the offload route cannot fit.** Once a route refuses a prompt "
 "as too long for its context window, fallback passes over every route "
@@ -1052,7 +1058,7 @@ msgstr ""
 "**卸载路由容纳不下的 prompt**。一旦某条路由以超出上下文窗口为由拒绝了某个 prompt，回退就会跳过所有配置的 "
 "`context_length` 不比它更宽的路由，卸载路由也不例外。之后的尝试也不会为了一条会被跳过的卸载路由而放弃自己在队列中的位置。"
 
-#: ../developer/routing.md:400
+#: ../developer/routing.md:401
 msgid ""
 "**`/v1/messages`.** It picks one adapter itself and has no fallback. It "
 "keeps the offload route out of that pick unless nothing else is eligible,"
@@ -1064,7 +1070,7 @@ msgstr ""
 "adapter，并且没有回退。除非别的都不可用，它不会挑中卸载路由，但也不会因为等待而卸载。`/v1/chat/completions` "
 "以及构建在它之上的接口（`/v1/responses`、`/v1/completions` 和管理后台的 playground）会卸载。"
 
-#: ../developer/routing.md:404
+#: ../developer/routing.md:405
 msgid ""
 "**RouteWise.** A `routewise` model plans its own candidates and ignores "
 "offload routes, as does a `fixed` model with `hybrid_composition: true`. "
@@ -1074,7 +1080,7 @@ msgstr ""
 "**RouteWise**。`routewise` 模型自己规划候选，忽略卸载路由；设置了 `hybrid_composition: true` "
 "的 `fixed` 模型也一样。管理 API 拒绝为这两类模型设置卸载路由，也拒绝把已有卸载路由的模型切换到 `routewise`。"
 
-#: ../developer/routing.md:409
+#: ../developer/routing.md:410
 msgid ""
 "The wait must be positive, and may be longer than the acquire timeout: a "
 "request still leaves the gateway's queue at that timeout, which offloads "
@@ -1093,11 +1099,11 @@ msgstr ""
 "`inactive_reason` 报告该策略。路由用它的路由 id 命名，管理员把路由改指向别处之后 id "
 "保持不变；某条运行时路由是模型的卸载路由时，在清除卸载路由之前，删除它会被拒绝。"
 
-#: ../developer/routing.md:419
+#: ../developer/routing.md:420
 msgid "RouteWise"
 msgstr ""
 
-#: ../developer/routing.md:421
+#: ../developer/routing.md:422
 msgid ""
 "`routewise` is the second registered strategy. It keeps the average time "
 "to first token as low as it can while staying within a cost budget: it "
@@ -1112,7 +1118,7 @@ msgstr ""
 "routewise`），每个开启它的模型都有自己的 `RouteWiseRouter` 实例。它如何执行自己选中的路由，见[路由内部机制"
 "](routing-internals.md)。"
 
-#: ../developer/routing.md:429
+#: ../developer/routing.md:430
 msgid ""
 "Its implementation lives in a separate package: the MIT-licensed [`llm-"
 "routewise`](https://github.com/HarvardMadSys/RouteWise), which this "
@@ -1126,16 +1132,17 @@ msgstr ""
 " provider——它不做任何网络 I/O，也不读取任何凭据。设计细节见 *RouteWise: Latency--Cost "
 "Optimization for Multi-Provider LLM Routing*（EuroSys '27）。"
 
-#: ../developer/routing.md:436
+#: ../developer/routing.md:437
 msgid ""
 "If the package is missing — a partial install, or a build that leaves the"
-" strategy out — the gateway still starts. Only a model that selects "
-"`routewise` fails, with a message saying the package is missing."
+" strategy out — the backend still imports, and a gateway whose models do "
+"not use `routewise` starts normally. If any model selects it, startup "
+"stops with a message saying the package is missing."
 msgstr ""
-"即使缺了这个包——比如安装不完整，或者构建时没有带上这个策略——网关照样能启动。只有选用了 `routewise` "
-"的模型会失败，错误消息会说明缺少这个包。"
+"即使缺了这个包——比如安装不完整，或者构建时没有带上这个策略——后端照样能导入，没有模型使用 `routewise` "
+"的网关也能正常启动。但只要有任何模型选用了它，启动就会失败，错误消息会说明缺少这个包。"
 
-#: ../developer/routing.md:440
+#: ../developer/routing.md:442
 msgid ""
 "For a registry you can run unedited against two loopback providers, with "
 "every option annotated, see "
@@ -1144,7 +1151,7 @@ msgstr ""
 "想要一份不用改就能对着两个回环 provider 直接跑、且每个选项都有注释的注册表，见 "
 "[`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml)。"
 
-#: ../developer/routing.md:444
+#: ../developer/routing.md:446
 msgid ""
 "**RouteWise needs latency measurements.** Until it has measured an "
 "endpoint, it cannot tell which one is faster, so it sends everything to "
@@ -1158,7 +1165,7 @@ msgstr ""
 "**RouteWise "
 "需要时延测量数据**。在测过某个端点之前，它分不清哪个更快，于是把所有请求都发给最便宜的那个——结果另一个端点就永远测不到。测量数据来自线上流量、启动时回放的近期请求日志（`db_bootstrap_enabled`，默认开启），以及内置的时延探测器（`routewise_probe_enabled`，默认关闭）；探测器会发送小的测试请求，不需要数据库。新部署没有日志可回放，所以要把探测器打开。"
 
-#: ../developer/routing.md:453
+#: ../developer/routing.md:455
 msgid ""
 "**One probe limit per worker.** `routewise_probe_max_concurrency` "
 "(default `1`) is set per model, but all RouteWise models in a worker "
@@ -1176,11 +1183,11 @@ msgstr ""
 "拒掉多出来的那个时，被拒的可能是一个真实请求。如果在探测进行期间新增了模型，新的上限对所有尚未发出的探测生效。跨 worker "
 "时，由一个数据库租约（`routewise_probe_leases`）防止两个 worker 同时探测同一个模型；它并不限制整个部署的探测流量。"
 
-#: ../developer/routing.md:464
+#: ../developer/routing.md:466
 msgid "Configuration splits by ownership:"
 msgstr "配置按归属拆成两处："
 
-#: ../developer/routing.md:466
+#: ../developer/routing.md:468
 msgid ""
 "**`router_params:` (per model)** — algorithm knobs only. The accepted "
 "keys and their defaults are generated field-for-field from the "
@@ -1195,7 +1202,7 @@ msgstr ""
 " 逐字段生成的，那份 dataclass 才是权威列表：成本预算插值、时延对冲模式、时延 SLO "
 "与窗口、成本包络的分位数/窗口/最小样本数、输出长度预测器，以及前缀缓存开关。"
 
-#: ../developer/routing.md:472
+#: ../developer/routing.md:474
 #, python-brace-format
 msgid ""
 "**Route entries (per provider)** — resource semantics: `provider_type: "
@@ -1208,7 +1215,7 @@ msgstr ""
 "块、`concurrency: {limit}`，以及可选的 `quota_pool:` / `concurrency_pool:` "
 "id，供共享同一份订阅的多条路由使用。"
 
-#: ../developer/routing.md:477
+#: ../developer/routing.md:479
 msgid ""
 "Resource limits used to live in `router_params:`. Those keys are now "
 "rejected at boot with a message naming their route-level replacement, so "
@@ -1217,7 +1224,7 @@ msgstr ""
 "资源上限以前是放在 `router_params:` "
 "里的。那些键现在会在启动时被拒绝，并在消息里指出它们对应的路由级替代项，这样陈旧的注册表会大声失败，而不是悄悄用上默认值。"
 
-#: ../developer/routing.md:481
+#: ../developer/routing.md:483
 msgid ""
 "**Quota sources.** `quota_source:` is a selector, not a fetcher. It names"
 " `provider` / `usage_label` / `unit`, and `_find_usage` matches all three"
@@ -1238,7 +1245,7 @@ msgstr ""
 "`register_quota_fetcher` 为每个 provider 注册一个（见[配额报告](backend-extensions.md"
 "#quota-reporting)）。`usage_label` 是抓取器自己的标签字符串，不是运维人员自己起的名字。"
 
-#: ../developer/routing.md:492
+#: ../developer/routing.md:494
 msgid ""
 "The route's `kind:` chooses its inference protocol; its `provider:` "
 "identifies the deployment's service/account and can differ from the kind."
@@ -1255,7 +1262,7 @@ msgstr ""
 " `kind: openai_compat`、`provider: example_quota` "
 "和与之匹配的已注册来源。它无需真实的服务商账户即可运行；不选择这份独立注册表时，原有双 provider 示例保持不变。"
 
-#: ../developer/routing.md:501
+#: ../developer/routing.md:503
 msgid ""
 "A `provider` with no registered fetcher, or a mistyped label, simply "
 "never resolves. Nothing warns about it — the only quota log lines are a "
@@ -1267,7 +1274,7 @@ msgstr ""
 "`provider`，或者标签拼错，结果就是它永远解析不出来。而且没有任何警告——配额相关的日志只有「刷新失败」和「provider/路由 "
 "limit 不一致」两条——所以这条路由会一直处于未就绪状态，被静默跳过。上线一个新的配额来源之前，请先对着抓取器验证一遍。"
 
-#: ../developer/routing.md:507
+#: ../developer/routing.md:509
 msgid ""
 "The `local` provider you may see on admin-created routes is not a quota "
 "source. It is a simple counter inside the gateway, used for a quota route"
@@ -1288,7 +1295,7 @@ msgstr ""
 "累加，并在服务器本地时间的午夜重置。所以它只能表达每日的请求次数额度。四小时窗口、按月窗口、token 或花费上限，或者由 provider "
 "决定何时重置的套餐，都需要一个真正的 `quota_source`。"
 
-#: ../developer/routing.md:517
+#: ../developer/routing.md:519
 #, python-brace-format
 msgid ""
 "**Endpoint identity.** Latency profiles, availability tracking and "
@@ -1310,7 +1317,7 @@ msgstr ""
 "`{kind}-api`。所以一次改动只要动到了被推导的那一部分——本地换端口、远端换厂商主机名——就会给端点改名并让它的延迟画像重新开始；没动到的（比如在同一端口上的本地主机之间迁移）则会保留。静态"
 " `models.yaml` 里的 `route_id:` 永远不会覆盖它；那个字段属于 admin 的 provider-routes API。"
 
-#: ../developer/routing.md:528
+#: ../developer/routing.md:530
 msgid ""
 "**Cold start.** A quota-bearing route needs a calibrated cost envelope, "
 "built from recent request history. A model whose quota route sits "
@@ -1324,7 +1331,7 @@ msgstr ""
 " `EnvelopeNotCalibratedError`，bootstrap "
 "会把它向上传播，于是整个部署快速失败，而不是对外提供一个根本路由不了的模型。"
 
-#: ../developer/routing.md:535
+#: ../developer/routing.md:537
 msgid ""
 "**Worker scope.** RouteWise decision state, latency profiles, quota and "
 "concurrency reservations, and per-model transition locks are process-"
@@ -1341,13 +1348,13 @@ msgstr ""
 "`stateful_providers_single_worker_only`，默认为 true）。只用 on-demand 路由的 "
 "RouteWise 模型可以跑多个 worker，但每个 worker 仍然各学各的。"
 
-#: ../developer/routing.md:543
+#: ../developer/routing.md:545
 msgid ""
 "**Runtime tuning.** Admin endpoints resolve a model id passed as a query "
 "parameter, because model ids may contain `/`:"
 msgstr "**运行期调参**。管理端点从查询参数里取模型 id，因为模型 id 可能包含 `/`："
 
-#: ../developer/routing.md:552
+#: ../developer/routing.md:554
 msgid ""
 "Settings are model-scoped, and aliases resolve to the canonical model, so"
 " an alias and its canonical model always read and write the same values. "
@@ -1360,11 +1367,11 @@ msgstr ""
 "`GET`/`PATCH /admin/routewise/settings` 端点仍然保留，如今它设定的是一个兜底值，供既没有模型级覆盖、也没有"
 " `router_params:` 取值的模型使用。"
 
-#: ../developer/routing.md:559
+#: ../developer/routing.md:561
 msgid "Reserving upstream keys for a tier"
 msgstr "为某个层级预留上游 key"
 
-#: ../developer/routing.md:561
+#: ../developer/routing.md:563
 msgid ""
 "A provider credential can be reserved for a user role and above, so "
 "premium upstream capacity is not spent by the lowest tier. Reservation "
@@ -1376,7 +1383,7 @@ msgstr ""
 "上而不是模型上：模型目录里的 `required_role` 决定一个用户*能调用什么*，而 key 的 `min_role` "
 "决定*谁的*请求可以花掉这份凭据。"
 
-#: ../developer/routing.md:567
+#: ../developer/routing.md:569
 msgid ""
 "Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) "
 "carries a `min_role`, defaulting to `free` — no reservation. Anything "
@@ -1387,7 +1394,7 @@ msgstr ""
 "`min_role`，默认是 `free`——即不预留。任何更高的取值（`pro`、`internal`、`admin`）都会让这把 key "
 "对层级低于它的调用方不可见："
 
-#: ../developer/routing.md:571
+#: ../developer/routing.md:573
 msgid ""
 "**Selection.** Reserved keys are filtered out for callers that do not "
 "meet `min_role`. Among the keys a caller *may* use, the most-reserved go "
@@ -1397,7 +1404,7 @@ msgstr ""
 "**选取**。对达不到 `min_role` 的调用方，被预留的 key 会被过滤掉。在一个调用方*可以*使用的 key "
 "之中，预留层级最高的排在最前，因此有资格的调用方会先耗尽为它留出的容量，再退回到所有层级共享的那些 key。"
 
-#: ../developer/routing.md:575
+#: ../developer/routing.md:577
 msgid ""
 "**Affinity.** The pool's own five-minute key binding is honoured only for"
 " the role that created it, and any change to what the pool holds — a tier"
@@ -1416,7 +1423,7 @@ msgstr ""
 "key 时，绑定仍然保留，因为那是暂态，`acquire` 会绕开它重新挑选；绑定到已被移除的 key "
 "则一律作废。只有声明发生变化才会触发这件事，所以普通流量不会因此丢掉 prompt 缓存的预热。"
 
-#: ../developer/routing.md:585
+#: ../developer/routing.md:587
 msgid ""
 "**Exhaustion.** A caller whose usable keys are all muted (or who has "
 "none) gets `KeyPoolExhausted`, which the router treats as an upstream "
@@ -1425,7 +1432,7 @@ msgstr ""
 "**耗尽**。如果一个调用方可用的 key 全部被静默（或者它一把也没有），就会得到 `KeyPoolExhausted`；router "
 "把它当作一次上游失败，转而回退到下一条路由。"
 
-#: ../developer/routing.md:588
+#: ../developer/routing.md:590
 msgid ""
 "**Health accounting.** When the pool could still serve an unrestricted "
 "caller, the refusal is a `KeyPoolRoleRestricted` (a `KeyPoolExhausted` "
@@ -1443,7 +1450,7 @@ msgstr ""
 "的层级提供服务；把它计入的话，一波低层级流量的突发就能打开熔断器，把预留容量从它本该服务的调用方手里剥走。一个*谁都*用不了的池仍然是普通的 "
 "`KeyPoolExhausted`，照常计入。"
 
-#: ../developer/routing.md:595
+#: ../developer/routing.md:597
 msgid ""
 "**Single-adapter surfaces.** `/v1/messages` commits to one adapter up "
 "front instead of walking the fallback chain, so it picks the first "
@@ -1454,7 +1461,7 @@ msgstr ""
 "adapter，而不是沿着回退链走下去，因此它会挑第一个持有该调用方可以花掉的 key 的 adapter。否则，一个被预留的首个 adapter"
 " 会让本可由另一条路由服务的请求直接硬失败。"
 
-#: ../developer/routing.md:600
+#: ../developer/routing.md:602
 msgid ""
 "The caller's role reaches the pool through the request context, published"
 " by the API-key auth dependency. Requests with no user identity — health "
@@ -1465,7 +1472,7 @@ msgstr ""
 "调用方的角色经由请求上下文抵达 key 池，由 API key 鉴权依赖项发布。没有用户身份的请求——健康探测、预热、管理员 "
 "playground——不带角色，一律按不受限处理：预留是对更低的*层级*扣住容量，而不是对网关自己的机件。"
 
-#: ../developer/routing.md:606
+#: ../developer/routing.md:608
 msgid ""
 "**Managing it.** Reservation is declared through the admin API rather "
 "than an env var, because pool membership comes from each route's "
@@ -1482,7 +1489,7 @@ msgstr ""
 msgid "Source"
 msgstr "来源"
 
-#: ../developer/routing.md ../developer/routing.md:652
+#: ../developer/routing.md ../developer/routing.md:654
 msgid "Endpoint"
 msgstr "端点"
 
@@ -1515,7 +1522,7 @@ msgstr ""
 msgid "`provider_env_key_min_roles`, keyed by the key's hash"
 msgstr "`provider_env_key_min_roles`，以该 key 的哈希为键"
 
-#: ../developer/routing.md:617
+#: ../developer/routing.md:619
 msgid ""
 "An environment credential has no row of its own, so its reservation is "
 "keyed by hash. Two consequences: the reservation outlives the key leaving"
@@ -1527,7 +1534,7 @@ msgstr ""
 "环境变量里的凭据没有属于自己的数据库行，所以它的预留以哈希为键。这带来两个后果：这把 key "
 "退出轮换之后预留依然存在（把变量恢复回去，它就会以当初预留的层级回来），以及管理列表里可能出现一条凭据在任何地方都没有配置的预留——这样它可以被主动解除，而不是潜伏在那里等着。"
 
-#: ../developer/routing.md:623
+#: ../developer/routing.md:625
 msgid ""
 "`apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, "
 "because pools are built from adapter config (which carries no tier) and "
@@ -1543,7 +1550,7 @@ msgstr ""
 "缓存，并在启动时以及每次管理端改动之后从数据库刷新。同一份凭据被配置了两次时，**最严格的那条声明胜出**：`free` "
 "表示*没有*声明，而不是断言人人都可以花这把 key，因此加一条更宽松的重复声明并不能放宽访问，结果也不依赖配置顺序。"
 
-#: ../developer/routing.md:632
+#: ../developer/routing.md:634
 msgid ""
 "**Limit: a provider with no key pool cannot carry a reservation.** "
 "`min_role` is enforced by `KeyPool`, so it reaches `openai_compat` routes"
@@ -1562,11 +1569,11 @@ msgstr ""
 " adapter 直接持有自己的凭据，从不向 `dynamic_keys` 注册，所以针对这几个 provider "
 "记录下来的预留会被存起来，却永远不会生效。这些模型请改用模型目录里的 `required_role` 来限制。"
 
-#: ../developer/routing.md:642
+#: ../developer/routing.md:644
 msgid "API endpoints"
 msgstr "API 端点"
 
-#: ../developer/routing.md ../developer/routing.md:652
+#: ../developer/routing.md ../developer/routing.md:654
 msgid "Purpose"
 msgstr "用途"
 
@@ -1612,7 +1619,7 @@ msgid ""
 " map."
 msgstr "每个模型当前的权重分布，外加探测循环的 `endpoint_health` 映射。"
 
-#: ../developer/routing.md:653
+#: ../developer/routing.md:655
 msgid ""
 "`GET /routing` requires no authentication and returns, for every "
 "published model, each route's `provider`, **`base_url`**, and weight. On "
@@ -1624,7 +1631,7 @@ msgstr ""
 "和权重。在公网主机上，这等于泄露你的上游拓扑——包括内网地址，以及路由 base URL "
 "里出现的任何内部主机名。把它放到你的反向代理之后，或者干脆不要暴露它。"
 
-#: ../developer/routing.md:659
+#: ../developer/routing.md:661
 msgid ""
 "`GET /health/deep` is unauthenticated on the same terms: its `providers` "
 "keys are `endpoint_id`s (`provider:host:port`), and each "
@@ -1635,26 +1642,26 @@ msgstr ""
 "`endpoint_id`（`provider:host:port`），而每条 `route_exclusions` 记录还带着该路由的 "
 "`base_url`。两个端点都要设防，不是只管 `/routing`。"
 
-#: ../developer/routing.md:664
+#: ../developer/routing.md:666
 msgid ""
 "Runtime administration lives under `/admin/...`, requires admin "
 "authentication, and is backed by the operational store. The routing-"
 "related endpoints:"
 msgstr "运行时管理位于 `/admin/...` 之下，要求管理员鉴权，并以运行时存储（operational store）为后盾。与路由相关的端点："
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`GET /admin/routing`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "The weight distribution, including unpublished routes."
 msgstr "权重分布，包括未发布的路由。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`GET /admin/routing/provider-routes`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid ""
 "Every route the gateway serves, per model, tagged `source: yaml`, "
@@ -1663,58 +1670,58 @@ msgstr ""
 "网关服务的每一条路由，按模型列出，标着 `source: yaml`、`override` 或 "
 "`runtime`；`.../{model_id}` 只看一个模型。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`POST /admin/routing/provider-route-models`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Create a runtime model with its first route."
 msgstr "创建一个运行时模型，连同它的第一条路由。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid "`POST /admin/routing/provider-route-candidates/{model_id}`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid ""
 "Add a route to a model; `PATCH` and `DELETE` on "
 "`.../{model_id}/{route_id}` edit or remove it."
 msgstr "给模型加一条路由；对 `.../{model_id}/{route_id}` 做 `PATCH` 和 `DELETE` 来编辑或删除它。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid "`PUT /admin/routing/provider-routes/{model_id}/{route_id}`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Retarget a registry route; `DELETE` restores the YAML route."
 msgstr "把注册表里的路由改指向别处；`DELETE` 恢复 YAML 路由。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid "`PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Set or clear a weight override."
 msgstr "设置或清除权重覆盖项。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid "`PATCH /admin/routing/provider-route-strategies/{model_id}`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Switch a model's router."
 msgstr "切换模型的路由器。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`GET /admin/routing/offload-routes`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 #, python-brace-format
 msgid ""
 "Every model's offload route and whether routing applies it; `PUT` / "
@@ -1724,15 +1731,15 @@ msgstr ""
 "每个模型的卸载路由，以及路由是否正在应用它；`PUT` / `DELETE .../{model_id}` 设置或清除一个——见 [排队等待卸载"
 "](#queue-wait-offload)。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`/admin/routewise/model-settings`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Per-model RouteWise tuning — see [RouteWise](#routewise)."
 msgstr "按模型的 RouteWise 调参——见 [RouteWise](#routewise)。"
 
-#: ../developer/routing.md:680
+#: ../developer/routing.md:682
 msgid ""
 "Each `POST` or `PUT` that changes a route has a `...-verifications` twin "
 "that tries the upstream without saving anything. Which admin-console tab "
@@ -1745,79 +1752,79 @@ msgstr ""
 "孪生端点，只试上游、什么都不保存。哪个管理控制台标签页驱动哪个端点、各自存什么、已存状态在启动时如何与注册表叠加，见[从管理控制台做运行时配置](configuration.md"
 "#runtime-configuration-from-the-admin-console)。"
 
-#: ../developer/routing.md:686
+#: ../developer/routing.md:688
 msgid "Where the code lives"
 msgstr "代码在哪里"
 
-#: ../developer/routing.md:688
+#: ../developer/routing.md:690
 msgid "Four pieces, all under `apps/backend/routing/`:"
 msgstr "共四个部分，全部位于 `apps/backend/routing/` 下："
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Layer"
 msgstr "层"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Code"
 msgstr "代码"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Responsibility"
 msgstr "职责"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Deployment-wide weight strategy"
 msgstr "部署级权重策略"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`manager.py` + `strategies/weight.py`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid ""
 "Reads the routing file and rewrites each model's per-route weights from a"
 " local/remote split. Optional."
 msgstr "读取路由配置文件，按本地/远端的分流比例重写每个模型各条路由的权重。可选。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Per-model router selection"
 msgstr "按模型选择 router"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`model_router_registry.py` + `strategies/__init__.py`"
 msgstr ""
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid ""
 "Maps each model id to a `RouterProtocol` implementation, chosen by that "
 "model's `router:` field."
 msgstr "把每个模型 id 映射到一个 `RouterProtocol` 实现，由该模型的 `router:` 字段决定选哪个。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`)"
 msgstr "`routers.py`（`FixedRouter`）、`routewise/`、`hybrid.py`（`HybridRouter`）"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid ""
 "Chooses the endpoint for a request, admits it against capacity, walks the"
 " fallback order, and records endpoint health."
 msgstr "为一个请求选定端点、按容量做准入、走完回退顺序，并记录端点健康。"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "Execution"
 msgstr "执行"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid "`backends.py` + `dispatch.py`"
 msgstr "`backends.py` + `dispatch.py`"
 
-#: ../developer/routing.md:652
+#: ../developer/routing.md:654
 msgid ""
 "Runs the one endpoint the router already chose, or delegates the request "
 "to a pool that chooses inside its own declared range."
 msgstr "执行 router 已经选定的那一个端点，或把请求委托给一个只在自身声明范围内选路的池。"
 
-#: ../developer/routing.md:697
+#: ../developer/routing.md:699
 msgid ""
 "`apps/backend/routing/executor.py` is a backward-compatibility shim that "
 "re-exports `FixedRouter` as `RouteExecutor` along with "
@@ -1828,7 +1835,7 @@ msgstr ""
 "`RouteExecutor` 之名重新导出，同时导出 `AllCircuitsOpenError`、`ProviderPinError` 和 "
 "`RouteConfig`。不要改它——要改就改 `routers.py`。"
 
-#: ../developer/routing.md:701
+#: ../developer/routing.md:703
 msgid ""
 "How the router hands a request to the adapter it chose, and the "
 "experimental composition that plans across a local and a cloud pool, are "
@@ -1837,11 +1844,11 @@ msgstr ""
 "router 如何把请求交给它选中的 adapter，以及跨本地池和云端池做规划的实验性组合，见[路由内部机制](routing-"
 "internals.md)。"
 
-#: ../developer/routing.md:705
+#: ../developer/routing.md:707
 msgid "Adding a routing strategy"
 msgstr "添加一个路由策略"
 
-#: ../developer/routing.md:707
+#: ../developer/routing.md:709
 msgid ""
 "A routing strategy is the main extension point of this repository. Adding"
 " one means writing a class that satisfies `RouterProtocol` and "
@@ -1850,11 +1857,11 @@ msgstr ""
 "路由策略是本仓库主要的扩展点。添加一个策略，就是写一个满足 `RouterProtocol` 的类，并以某个名字注册它，好让模型的 "
 "`router:` 字段能选中。"
 
-#: ../developer/routing.md:711
+#: ../developer/routing.md:713
 msgid "1. Understand the contract"
 msgstr "1\\. 理解这份契约"
 
-#: ../developer/routing.md:713
+#: ../developer/routing.md:715
 msgid ""
 "`RouterProtocol` (`apps/backend/routing/protocols.py`) is a runtime-"
 "checkable `Protocol` with four members:"
@@ -1862,7 +1869,7 @@ msgstr ""
 "`RouterProtocol`（`apps/backend/routing/protocols.py`）是一个可在运行时检查的 "
 "`Protocol`，有四个成员："
 
-#: ../developer/routing.md:740
+#: ../developer/routing.md:742
 msgid ""
 "`RoutingRequestOptions` carries the router-owned controls that must never"
 " be forwarded to a provider adapter: `pin_provider` (the caller's hard "
@@ -1888,11 +1895,11 @@ msgstr ""
 "`strategy_metadata` 字典。无状态策略的 `record_observation` 返回 "
 "`None`；在线学习策略则在这里更新模型。"
 
-#: ../developer/routing.md:753
+#: ../developer/routing.md:755
 msgid "Two optional capabilities:"
 msgstr "另有两项可选能力："
 
-#: ../developer/routing.md:755
+#: ../developer/routing.md:757
 msgid ""
 "`RouteTableRefreshable` — implement `refresh_route_table()` if your "
 "router derives state from the route table and must rebuild it after an "
@@ -1903,7 +1910,7 @@ msgstr ""
 "`refresh_route_table()`。`ModelRouterRegistry.refresh_route_tables()` "
 "会调用它。"
 
-#: ../developer/routing.md:758
+#: ../developer/routing.md:760
 msgid ""
 "`ManagedRouter` (`routers.py`) — implement `async start()` / `async "
 "stop()` if your router owns background tasks. Bootstrap drives their "
@@ -1912,11 +1919,11 @@ msgstr ""
 "`ManagedRouter`（`routers.py`）——如果你的 router 拥有后台任务，就实现 `async start()` / "
 "`async stop()`。它们的生命周期由 bootstrap 驱动。"
 
-#: ../developer/routing.md:761
+#: ../developer/routing.md:763
 msgid "2. Get the routes"
 msgstr "2\\. 拿到路由"
 
-#: ../developer/routing.md:763
+#: ../developer/routing.md:765
 msgid ""
 "Your router is not handed the route table in its constructor. The "
 "registry builds it, then calls `attach_route_table(route_table)` on it if"
@@ -1927,7 +1934,7 @@ msgstr ""
 "`attach_route_table(route_table)`——前提是这个方法存在。你收到的对象满足 "
 "`RouteTableView`（`apps/backend/routing/route_table.py`）："
 
-#: ../developer/routing.md:773
+#: ../developer/routing.md:775
 msgid ""
 "Each `EffectiveRoute` is a frozen `(route_key, canonical_model_id, "
 "adapters)` triple where `adapters` is a tuple of `(adapter, weight)` "
@@ -1938,17 +1945,17 @@ msgstr ""
 "三元组，其中 `adapters` 是一串 `(adapter, weight)` 对，运行期的权重覆盖和管理员对 provider "
 "的停用都已经应用过了。给它做个快照；不要在一次派发的全程持有锁。"
 
-#: ../developer/routing.md:778
+#: ../developer/routing.md:780
 msgid ""
 "**A router that never implements `attach_route_table` sees no routes at "
 "all**, so this is not optional in practice."
 msgstr "**一个从不实现 `attach_route_table` 的 router 根本看不到任何路由**，所以实践中这一步并非可选。"
 
-#: ../developer/routing.md:781
+#: ../developer/routing.md:783
 msgid "3. Write the strategy module"
 msgstr "3\\. 写策略模块"
 
-#: ../developer/routing.md:783
+#: ../developer/routing.md:785
 msgid ""
 "Strategies live in `apps/backend/routing/strategies/`. One module per "
 "strategy, each exporting a router class and a Pydantic params model. Here"
@@ -1959,11 +1966,11 @@ msgstr ""
 "Pydantic 参数模型。下面是一个完整的轮询策略——把它保存为 "
 "`apps/backend/routing/strategies/round_robin.py`："
 
-#: ../developer/routing.md:941
+#: ../developer/routing.md:943
 msgid "Points worth copying:"
 msgstr "值得照搬的几点："
 
-#: ../developer/routing.md:943
+#: ../developer/routing.md:945
 msgid ""
 "**`extra=\"forbid\"` on the params model.** A typo in `router_params:` "
 "then fails at boot with a clear message instead of silently using a "
@@ -1972,7 +1979,7 @@ msgstr ""
 "**参数模型上要写 `extra=\"forbid\"`**。这样 `router_params:` "
 "里的拼写错误会在启动时带着一条清晰的消息失败，而不是悄悄用上默认值。"
 
-#: ../developer/routing.md:945
+#: ../developer/routing.md:947
 msgid ""
 "**Accept `health_registry=`.** When the registry passes application-"
 "scoped `RouterBuildDependencies`, it *requires* the constructor to accept"
@@ -1984,7 +1991,7 @@ msgstr ""
 "时，它*要求*构造函数能接受 `health_registry=`（或 `**kwargs`），否则抛出 "
 "`TypeError`。共享进程级的注册表，也正是让某个端点的熔断状态对所有 router 都可见的原因。"
 
-#: ../developer/routing.md:950
+#: ../developer/routing.md:952
 msgid ""
 "**`params` must be the first parameter name.** `build_router` calls "
 "`router_cls(params=validated, ...)`."
@@ -1992,14 +1999,14 @@ msgstr ""
 "**第一个参数必须叫 `params`**。`build_router` 是这样调用的：`router_cls(params=validated,"
 " ...)`。"
 
-#: ../developer/routing.md:952
+#: ../developer/routing.md:954
 msgid ""
 "**Reuse `endpoint_id_for_adapter`.** Endpoint ids are the key for health,"
 " latency profiling, and log attribution; deriving your own would split "
 "them."
 msgstr "**复用 `endpoint_id_for_adapter`**。端点 id 是健康状况、时延画像和日志归属共用的键；自己另造一套会把它们割裂开。"
 
-#: ../developer/routing.md:954
+#: ../developer/routing.md:956
 msgid ""
 "**Execute selected adapters through a leaf.** Follow Fixed and RouteWise:"
 " create a binding with `binding_for_adapter()` and a leaf with "
@@ -2017,11 +2024,11 @@ msgstr ""
 "`ExecuteEndpoint`；让子层选择时使用 `DelegatePool`。子层仍负责准入，因此还要通过 "
 "`RoutingRequestOptions` 传递已解析的 binding，以及目标和 fallback 控制字段。"
 
-#: ../developer/routing.md:963
+#: ../developer/routing.md:965
 msgid "4. Register it at import time"
 msgstr "4\\. 在导入时注册它"
 
-#: ../developer/routing.md:965
+#: ../developer/routing.md:967
 msgid ""
 "Registration happens as an import side effect, so the module must be "
 "imported. Add it at the *bottom* of "
@@ -2031,7 +2038,7 @@ msgstr ""
 "注册是导入的副作用，所以模块必须被导入。把它加到 `apps/backend/routing/strategies/__init__.py` "
 "的*末尾*，紧挨着已有的那些导入："
 
-#: ../developer/routing.md:974
+#: ../developer/routing.md:976
 msgid ""
 "The imports sit at the bottom of that file on purpose: strategy modules "
 "import from `routing.routers` at their top, so the dependency direction "
@@ -2041,7 +2048,7 @@ msgstr ""
 "这些导入放在该文件末尾是有意为之：策略模块在自己文件顶部从 `routing.routers` 导入，依赖方向因此是单向的（`strategies"
 " -> routers`），而在这里写文件顶部的导入会形成循环。"
 
-#: ../developer/routing.md:978
+#: ../developer/routing.md:980
 msgid ""
 "If your strategy depends on an optional package, guard the import and "
 "call `register_missing_strategy(name, reason)` in the `except "
@@ -2053,19 +2060,19 @@ msgstr ""
 "`register_missing_strategy(name, "
 "reason)`。这样选用它时会带着你写的消息在配置校验阶段失败，而不是让所有人的后端导入直接崩掉——`routewise` 正是这么处理的。"
 
-#: ../developer/routing.md:984
+#: ../developer/routing.md:986
 msgid "5. Select it"
 msgstr "5\\. 选用它"
 
-#: ../developer/routing.md:986
+#: ../developer/routing.md:988
 msgid "Per model, in the model registry:"
 msgstr "按模型来，写在模型注册表里："
 
-#: ../developer/routing.md:996
+#: ../developer/routing.md:998
 msgid "Or deployment-wide, in the routing file:"
 msgstr "或者按部署来，写在路由配置文件里："
 
-#: ../developer/routing.md:1002
+#: ../developer/routing.md:1004
 msgid ""
 "Note that `RoutingManager.apply()` only rewrites weights when the "
 "effective `default_router` is `fixed`; setting it to anything else leaves"
@@ -2074,11 +2081,11 @@ msgstr ""
 "注意 `RoutingManager.apply()` 只在生效的 `default_router` 是 `fixed` "
 "时才重写权重；设成别的值，会让每个模型 `route:` 里的权重保持写下来的原样。"
 
-#: ../developer/routing.md:1006
+#: ../developer/routing.md:1008
 msgid "6. Test it"
 msgstr "6\\. 测试它"
 
-#: ../developer/routing.md:1008
+#: ../developer/routing.md:1010
 msgid ""
 "`tests/unit/routing/test_router_contract.py` holds the behavioural "
 "contract every serving router must satisfy — add your class to it. "
@@ -2092,7 +2099,7 @@ msgstr ""
 "覆盖注册表本身：注册、参数校验，以及依赖注入检查。`isinstance(router, RouterProtocol)` "
 "这样的断言是有意义的，因为这个 protocol 标了 `@runtime_checkable`。"
 
-#: ../developer/routing.md:1014
+#: ../developer/routing.md:1016
 msgid "Run the routing tests with:"
 msgstr "用这条命令跑路由相关的测试："
 
@@ -2694,3 +2701,6 @@ msgstr "用这条命令跑路由相关的测试："
 #~ " cap probe traffic for the whole "
 #~ "deployment."
 #~ msgstr ""
+
+#~ msgid "EWMA success floor below which the endpoint counts as unhealthy."
+#~ msgstr "EWMA 成功率下限，低于此值即视该端点为不健康。"

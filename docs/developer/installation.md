@@ -31,28 +31,33 @@ Before the first `make up`, fill in three things in `.env`:
 1. **The database login.** `DB_USER` and `DB_PASSWORD` ship empty, and
    `DB_NAME` is already set to `hybridinference`. Compose refuses to start
    until all three have values.
-2. **Two secrets.** `JWT_SECRET_KEY` signs sign-in tokens and
-   `API_KEY_SECRET` is the key the gateway hashes API keys with. The backend
-   refuses to start without them. Generate each one separately:
+2. **Three secrets.** `JWT_SECRET_KEY` signs sign-in tokens,
+   `API_KEY_SECRET` is the key the gateway hashes API keys with, and
+   `ERASURE_FENCE_SECRET` protects the records of deleted accounts. The backend
+   refuses to start without the first two; left empty, the third quietly takes
+   `API_KEY_SECRET`'s value. Generate each one separately:
 
    ```bash
    python3 -c "import secrets; print(secrets.token_urlsafe(48))"
    ```
 
 3. **A credential for the models it serves.** Out of the box the gateway
-   serves three example models through [OpenRouter](https://openrouter.ai),
-   from `config/examples/models.openrouter.yaml`. Set `OPENROUTER_API_KEY` and
-   they work. To serve your own models instead, see
+   serves the three example models in `config/examples/models.openrouter.yaml`,
+   which all use [OpenRouter](https://openrouter.ai) (one tries a local Ollama
+   server first). Set `OPENROUTER_API_KEY` and they work. To serve your own models instead, see
    [Adding a New Model](adding-models.md).
 
-Store the two secrets with the rest of your deployment's configuration and
-keep them for good: reuse them on every restart and replica, and carry them
-over on upgrades. Changing `JWT_SECRET_KEY` invalidates the access tokens
-already issued, and changing `API_KEY_SECRET` makes every existing API key stop
-working. The gateway never generates or rotates them for you.
+Store the secrets with the rest of your deployment's configuration and keep
+them for good: reuse them on every restart and replica, and carry them over on
+upgrades. Changing `JWT_SECRET_KEY` invalidates the access tokens already
+issued, and changing `API_KEY_SECRET` makes every existing API key stop
+working. Changing `ERASURE_FENCE_SECRET` — or `API_KEY_SECRET`, if it is
+standing in for it — stops the backend from starting at all; see
+[Database](database.md#secrets-for-deleting-accounts). The gateway never
+generates or rotates these secrets for you.
 
 ```{note}
-Only a gateway with no database and no accounts can run without the two
+Only a gateway with no database and no accounts can run without these
 secrets: `DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in Stage 1
 of the [Quickstart](router-tutorial.md). `ADMIN_TOKEN` is optional; leaving it
 blank turns off only the legacy admin-token access.
@@ -152,9 +157,9 @@ need the database and both authentication secrets.
 you start it from the repository root, and Compose passes it to the
 containers.
 
-Beyond the five required variables in the Docker steps above (`DB_NAME`, `DB_USER`,
-`DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`) and the `OPENROUTER_API_KEY`
-the default registry needs, everything in `.env.example` is optional. The ones you are most likely to want:
+Beyond the variables in the Docker steps above (`DB_NAME`, `DB_USER`,
+`DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`, `ERASURE_FENCE_SECRET`) and
+the `OPENROUTER_API_KEY` the default registry needs, everything in `.env.example` is optional. The ones you are most likely to want:
 
 | Variable | Effect |
 |---|---|
@@ -167,7 +172,7 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 | `BASE_URL` | this gateway's own public origin, used to build the absolute links in signup and password-reset emails. Set it: the server does not interpret `X-Forwarded-*`, so a blank value derives `http://…` from the request even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `LOG_LEVEL`, `LOG_FORMAT` | logging verbosity and `json`/text output |
 | `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
-| `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES` | trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the flag has no effect while that list is empty |
+| `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES` | trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the Cloudflare settings below also need the flag |
 | `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for clients that connect directly from a private network; does not authorize forwarding headers |
 | `TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS` | trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs `TRUST_PROXY_HEADERS=1` |
 

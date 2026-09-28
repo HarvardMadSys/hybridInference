@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:04+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -258,21 +258,21 @@ msgstr "API key"
 
 #: ../developer/openrouter.md:122
 msgid ""
-"A route's `api_keys:` is a list. With a single entry — the usual case — "
-"the adapter uses it directly. With several, the inherited key-pool logic "
-"rotates: a key that hits a key-specific or transient failure (429, "
-"401/402/403, 408/425, 5xx, or a timeout) hands the request to the next "
-"key. The failing key is muted only once the request has nowhere left to "
-"rotate to, and then for 20 seconds. Request-scoped failures such as `400`"
-" and `422` fail identically on every key, so they propagate immediately "
-"instead of burning the pool."
+"A route's `api_keys:` is a list, and the adapter treats it as a pool even"
+" when it holds a single key. With several keys the pool rotates: a key "
+"that hits a key-specific or transient failure (429, 401/402/403, 408/425,"
+" 5xx, or a timeout) hands the request to the next key. The failing key is"
+" muted only once the request has nowhere left to rotate to, and then for "
+"20 seconds. Request-scoped failures such as `400` and `422` fail "
+"identically on every key, so they propagate immediately instead of "
+"burning the pool."
 msgstr ""
-"路由的 `api_keys:` 是一个列表。只有一项时——常见情况——adapter "
-"直接用它。有多项时，继承来的密钥池逻辑会轮换：某把密钥遇到与密钥相关的或临时性的失败（429、401/402/403、408/425、5xx "
+"路由的 `api_keys:` 是一个列表，即使里面只有一把密钥，adapter "
+"也把它当作密钥池。有多把密钥时，池会轮换：某把密钥遇到与密钥相关的或临时性的失败（429、401/402/403、408/425、5xx "
 "或超时）时，请求会转交给下一把。只有当请求再无别的密钥可轮换时，出错的那把才会被静默，而且只静默 20 秒。像 `400` 和 `422` "
 "这类与请求本身有关的失败在每把密钥上都会同样失败，所以它们会立刻向上传递，而不是白白耗掉整个池。"
 
-#: ../developer/openrouter.md:130
+#: ../developer/openrouter.md:129
 msgid ""
 "An `api_keys:` entry that expands from an unset environment variable is "
 "treated as absent. A route marked `optional: true` is then skipped with a"
@@ -284,17 +284,17 @@ msgstr ""
 "的路由会被跳过，并打出一条点名模型和 kind 的警告；其他路由则会抛出 "
 "`MissingEnvBackedKeyError`，启动失败。无论哪种情况，都不会注册一条指向自己无法完成鉴权的端点的路由。"
 
-#: ../developer/openrouter.md:136
+#: ../developer/openrouter.md:135
 msgid "Error handling"
 msgstr "错误处理"
 
-#: ../developer/openrouter.md:138
+#: ../developer/openrouter.md:137
 msgid ""
 "OpenRouter errors travel the same path as any other OpenAI-compatible "
 "provider's. Two mechanisms handle them, and they are independent:"
 msgstr "OpenRouter 的错误走的路径和任何其他 OpenAI 兼容 provider 的一样。有两套机制处理它们，而且彼此独立："
 
-#: ../developer/openrouter.md:141
+#: ../developer/openrouter.md:140
 msgid ""
 "**Fallback.** When a request to an OpenRouter leg fails for any reason, "
 "the router records the failure and tries the model's remaining legs in "
@@ -309,7 +309,7 @@ msgstr ""
 "会记下这次失败，并按路由顺序尝试该模型剩下的分支，跳过被管理员禁用的、模态不兼容的和熔断已打开的分支。例外是调用方用 `X-Route-Pin` "
 "显式钉死的请求，它永远不会回退。如果每条分支都失败，客户端看到的是第一个错误。失败的状态码并不决定「回退」还是「向上传递」——那个决定只取决于是否还有另一条分支可用。"
 
-#: ../developer/openrouter.md:149
+#: ../developer/openrouter.md:148
 msgid ""
 "**The circuit breaker.** Failures accumulate per `endpoint_id`; after "
 "`CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 3) the endpoint"
@@ -330,27 +330,30 @@ msgstr ""
 " 过载，计入。401 和 407 表示*网关自己*配置的凭据被拒——401 是 `OPENROUTER_API_KEY`，407 "
 "是出网代理在要它自己的凭据——这是任何调用方都绕不过去的，所以它们既计入，还会额外触发告警。"
 
-#: ../developer/openrouter.md:160
+#: ../developer/openrouter.md:159
 msgid ""
-"402 and 403 do not count against the circuit by themselves, but the "
-"gateway treats them as a problem with the key, as described under [API "
-"keys](#api-keys): it moves on to the next key and, once none is left, "
-"sets the key aside for a while. An account with no credit, which answers "
-"402 to everything, therefore soon has no usable key, and that does open "
-"the circuit. Unlike 401 and 407, 403 does not page, because providers "
-"also use it to refuse single requests — content policy, region blocks — "
-"while the service itself is healthy."
+"402 and 403 do not count against the circuit by themselves. On a route "
+"whose keys are listed under `api_keys:`, though, the gateway treats them "
+"as a problem with the key, as described under [API keys](#api-keys): it "
+"moves on to the next key and, once none is left, sets the key aside for a"
+" while. An account with no credit, which answers 402 to everything, "
+"therefore soon has no usable key, and that does open the circuit. A route"
+" with a single `api_key:` has no pool, so there a 402 never opens it. "
+"Unlike 401 and 407, 403 does not page, because providers also use it to "
+"refuse single requests — content policy, region blocks — while the "
+"service itself is healthy."
 msgstr ""
-"402 和 403 本身不计入熔断，但网关会按 [API key](#api-keys) "
+"402 和 403 本身不计入熔断。不过在用 `api_keys:` 列出密钥的路由上，网关会按 [API key](#api-keys) "
 "一节所述，把它们当作这把密钥的问题来处理：换用下一把密钥；如果已经没有密钥可换，就把这把密钥搁置一段时间。一个没有余额的账号对所有请求都返回 "
-"402，因此很快就会没有可用的密钥，这时熔断确实会被打开。和 401、407 不同，403 不会触发告警，因为 provider "
+"402，因此很快就会没有可用的密钥，这时熔断确实会被打开。只写了单个 `api_key:` 的路由没有密钥池，所以在那里 402 "
+"永远不会打开熔断。和 401、407 不同，403 不会触发告警，因为 provider "
 "在服务本身正常时，也会用它拒绝单个请求，比如出于内容策略或地区封锁。"
 
-#: ../developer/openrouter.md:169
+#: ../developer/openrouter.md:170
 msgid "Troubleshooting"
 msgstr "排查"
 
-#: ../developer/openrouter.md:171
+#: ../developer/openrouter.md:172
 msgid ""
 "**Every OpenRouter request returns 401.** The gateway's key was rejected,"
 " not the caller's. Check `OPENROUTER_API_KEY` in the environment the "
@@ -362,7 +365,7 @@ msgstr ""
 "`OPENROUTER_API_KEY`。完全没设置的密钥根本走不到这一步——如上所述，路由会被跳过，或者启动直接失败——所以 401 "
 "意味着密钥是有的，只是被 OpenRouter 拒了。"
 
-#: ../developer/openrouter.md:177
+#: ../developer/openrouter.md:178
 msgid ""
 "**The model is missing from `/v1/models`.** Confirm the registry the "
 "gateway loaded: the boot log emits `Registered N routes from <path>`, "
@@ -374,7 +377,7 @@ msgstr ""
 "<path>`，那就是解析链选中的文件。如果它不是你改的那个文件，说明有显式的 `MODELS_CONFIG_PATH` 或某个发行版的 "
 "manifest 压过了它——见 [配置](configuration.md)。"
 
-#: ../developer/openrouter.md:183
+#: ../developer/openrouter.md:184
 msgid ""
 "**Requests reach the wrong upstream.** Use `GET /routing` to see the "
 "effective weight distribution per model. Note that this endpoint is "

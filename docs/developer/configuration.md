@@ -226,7 +226,8 @@ the model registry) overrides `default_router` and is documented in
 ## Settings that currently have no effect
 
 The gateway accepts these when it loads its configuration, so setting them
-does not stop it from starting, but they do not change what it does today.
+does not stop it from starting, but today they do nothing — or, in the case of
+the routing file's weight split, nothing on a gateway with a database.
 
 | Setting | Where | What happens |
 |---|---|---|

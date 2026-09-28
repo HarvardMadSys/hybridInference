@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:07+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -105,54 +105,63 @@ msgstr ""
 
 #: ../developer/installation.md:34
 msgid ""
-"**Two secrets.** `JWT_SECRET_KEY` signs sign-in tokens and "
-"`API_KEY_SECRET` is the key the gateway hashes API keys with. The backend"
-" refuses to start without them. Generate each one separately:"
+"**Three secrets.** `JWT_SECRET_KEY` signs sign-in tokens, "
+"`API_KEY_SECRET` is the key the gateway hashes API keys with, and "
+"`ERASURE_FENCE_SECRET` protects the records of deleted accounts. The "
+"backend refuses to start without the first two; left empty, the third "
+"quietly takes `API_KEY_SECRET`'s value. Generate each one separately:"
 msgstr ""
-"**两个密钥**。`JWT_SECRET_KEY` 用来给登录 token 签名，`API_KEY_SECRET` 是网关对 API key "
-"做哈希时用的密钥。没有它们，后端会拒绝启动。两个要分别生成："
+"**三个密钥**。`JWT_SECRET_KEY` 用来给登录 token 签名，`API_KEY_SECRET` 是网关对 API key "
+"做哈希时用的密钥，`ERASURE_FENCE_SECRET` 用来保护已删除账号的记录。没有前两个，后端会拒绝启动；第三个留空时，会悄悄沿用 "
+"`API_KEY_SECRET` 的值。三个要分别生成："
 
-#: ../developer/installation.md:42
+#: ../developer/installation.md:44
 msgid ""
 "**A credential for the models it serves.** Out of the box the gateway "
-"serves three example models through [OpenRouter](https://openrouter.ai), "
-"from `config/examples/models.openrouter.yaml`. Set `OPENROUTER_API_KEY` "
-"and they work. To serve your own models instead, see [Adding a New Model"
-"](adding-models.md)."
+"serves the three example models in "
+"`config/examples/models.openrouter.yaml`, which all use "
+"[OpenRouter](https://openrouter.ai) (one tries a local Ollama server "
+"first). Set `OPENROUTER_API_KEY` and they work. To serve your own models "
+"instead, see [Adding a New Model](adding-models.md)."
 msgstr ""
-"**所提供模型的凭据**。默认情况下，网关通过 [OpenRouter](https://openrouter.ai) 提供 "
-"`config/examples/models.openrouter.yaml` 里的三个示例模型。设置好 "
-"`OPENROUTER_API_KEY`，它们就能用。如果要改为提供你自己的模型，见[添加新模型](adding-models.md)。"
+"**所提供模型的凭据**。默认情况下，网关提供 `config/examples/models.openrouter.yaml` "
+"里的三个示例模型，它们都用到 [OpenRouter](https://openrouter.ai)（其中一个会先尝试本地的 Ollama "
+"服务器）。设置好 `OPENROUTER_API_KEY`，它们就能用。如果要改为提供你自己的模型，见[添加新模型](adding-"
+"models.md)。"
 
-#: ../developer/installation.md:48
+#: ../developer/installation.md:50
 msgid ""
-"Store the two secrets with the rest of your deployment's configuration "
-"and keep them for good: reuse them on every restart and replica, and "
-"carry them over on upgrades. Changing `JWT_SECRET_KEY` invalidates the "
-"access tokens already issued, and changing `API_KEY_SECRET` makes every "
-"existing API key stop working. The gateway never generates or rotates "
-"them for you."
+"Store the secrets with the rest of your deployment's configuration and "
+"keep them for good: reuse them on every restart and replica, and carry "
+"them over on upgrades. Changing `JWT_SECRET_KEY` invalidates the access "
+"tokens already issued, and changing `API_KEY_SECRET` makes every existing"
+" API key stop working. Changing `ERASURE_FENCE_SECRET` — or "
+"`API_KEY_SECRET`, if it is standing in for it — stops the backend from "
+"starting at all; see [Database](database.md#secrets-for-deleting-"
+"accounts). The gateway never generates or rotates these secrets for you."
 msgstr ""
-"把这两个密钥和部署的其他配置放在一起，并且一直保留：每次重启、每个副本都用同一组，升级时也原样带过去。改了 "
+"把这些密钥和部署的其他配置放在一起，并且一直保留：每次重启、每个副本都用同一组，升级时也原样带过去。改了 "
 "`JWT_SECRET_KEY`，已经签发的访问 token 会全部失效；改了 `API_KEY_SECRET`，所有现有的 API key "
-"都将无法使用。网关从不替你生成或轮换它们。"
+"都将无法使用。改了 `ERASURE_FENCE_SECRET`（或者在它留空时代替它的 "
+"`API_KEY_SECRET`），后端会直接拒绝启动，见[数据库](database.md#secrets-for-deleting-"
+"accounts)。网关从不替你生成或轮换这些密钥。"
 
-#: ../developer/installation.md:55
+#: ../developer/installation.md:60
 msgid ""
-"Only a gateway with no database and no accounts can run without the two "
+"Only a gateway with no database and no accounts can run without these "
 "secrets: `DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in "
 "Stage 1 of the [Quickstart](router-tutorial.md). `ADMIN_TOKEN` is "
 "optional; leaving it blank turns off only the legacy admin-token access."
 msgstr ""
-"只有不带数据库、也没有账号体系的网关才能不设这两个密钥：`DB_ENABLED=false` **并且** "
+"只有不带数据库、也没有账号体系的网关才能不设这些密钥：`DB_ENABLED=false` **并且** "
 "`USER_AUTH_ENABLED=false`，就像[快速开始](router-tutorial.md)的阶段 1 "
 "那样。`ADMIN_TOKEN` 是可选的；留空只会关闭旧式的管理员 token 访问方式。"
 
-#: ../developer/installation.md:61
+#: ../developer/installation.md:66
 msgid "Then start the stack:"
 msgstr "然后启动这套服务栈："
 
-#: ../developer/installation.md:69
+#: ../developer/installation.md:74
 msgid ""
 "The first `make up` also creates the Docker volume "
 "`hybridinference_postgres_data`, which holds the database. `docker "
@@ -163,7 +172,7 @@ msgstr ""
 " compose down -v` 不会删除它；如果需要一个干净的数据库，见[重置这套服务栈](deployment.md#resetting-"
 "the-stack)。"
 
-#: ../developer/installation.md:74
+#: ../developer/installation.md:79
 msgid ""
 "If you change `.env` later, run `make up` again rather than `make "
 "restart`. A container reads `.env` when it is created, so a restart keeps"
@@ -172,59 +181,59 @@ msgstr ""
 "之后如果改了 `.env`，要重新运行 `make up`，而不是 `make restart`。容器只在创建时读取 "
 "`.env`，所以重启后用的还是旧值。"
 
-#: ../developer/installation.md:77
+#: ../developer/installation.md:82
 msgid "Three containers start:"
 msgstr "会启动三个容器："
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Service"
 msgstr "服务"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Published on"
 msgstr "发布地址"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Notes"
 msgstr "说明"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`backend`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`127.0.0.1:8080`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "FastAPI gateway; override the bind with `BACKEND_HOST` / `BACKEND_PORT`"
 msgstr "FastAPI 网关；用 `BACKEND_HOST` / `BACKEND_PORT` 覆盖监听地址"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`frontend`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`127.0.0.1:3001`"
 msgstr "`127.0.0.1:3001`"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Next.js console; override with `FRONTEND_HOST` / `FRONTEND_PORT`"
 msgstr "Next.js 控制台；用 `FRONTEND_HOST` / `FRONTEND_PORT` 覆盖"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`postgres`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`127.0.0.1:5432`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "override with `DB_PORT`"
 msgstr "用 `DB_PORT` 覆盖"
 
-#: ../developer/installation.md:85
+#: ../developer/installation.md:90
 msgid ""
 "These ports are reachable from the host by default. A reverse proxy on "
 "the same host can use the loopback address; access from another machine "
@@ -234,15 +243,15 @@ msgstr ""
 "这些端口默认可从宿主机访问。同机运行的反向代理可以使用回环地址；从其他机器访问则需要显式覆盖监听地址。控制台也会转发 API "
 "请求，公开它之前请先阅读[部署指南](deployment.md)。"
 
-#: ../developer/installation.md:90
+#: ../developer/installation.md:95
 msgid "pgAdmin is in the Compose file too, behind the optional `admin` profile."
 msgstr "Compose 文件中也包含 pgAdmin，通过可选的 `admin` profile 启动。"
 
-#: ../developer/installation.md:92
+#: ../developer/installation.md:97
 msgid "Development checkout (no Docker)"
 msgstr "开发用检出（不用 Docker）"
 
-#: ../developer/installation.md:101
+#: ../developer/installation.md:106
 msgid ""
 "`make setup-dev` creates `.venv` on Python 3.12 (and refuses to continue "
 "if an existing `.venv` is on a different minor version), installs the "
@@ -252,17 +261,17 @@ msgstr ""
 "`make setup-dev` 会用 Python 3.12 创建 `.venv`（如果已有的 `.venv` "
 "是别的次版本，它会拒绝继续），以可编辑方式安装本项目，同步 `dev` 依赖组，并装好 pre-commit hooks。手动来做的话："
 
-#: ../developer/installation.md:112
+#: ../developer/installation.md:117
 msgid ""
 "Run the gateway from the repository root, because the default "
 "configuration paths are relative to it:"
 msgstr "在仓库根目录下运行网关，因为默认的配置路径都是相对于这个目录的："
 
-#: ../developer/installation.md:120
+#: ../developer/installation.md:125
 msgid "Run the console in a second terminal:"
 msgstr "在另一个终端里运行控制台："
 
-#: ../developer/installation.md:128
+#: ../developer/installation.md:133
 msgid ""
 "Open `http://localhost:3001`. The console forwards API paths to the "
 "gateway, and `BACKEND_INTERNAL_URL` tells it where that is. Its default, "
@@ -275,13 +284,13 @@ msgstr ""
 "告诉它网关在哪里。它的默认值 `http://backend:8080` 是只在 Docker 内部才存在的地址，而控制台又不读仓库里的 "
 "`.env`，所以每次启动控制台都要设置它。用 `curl http://localhost:3001/health` 检查整条链路。"
 
-#: ../developer/installation.md:134
+#: ../developer/installation.md:139
 msgid ""
 "To develop against Postgres without running the whole stack, start just "
 "the database container:"
 msgstr "想在不启动整套服务栈的情况下对着 Postgres 开发，就只起数据库容器："
 
-#: ../developer/installation.md:142
+#: ../developer/installation.md:147
 msgid ""
 "For a local gateway without accounts or a database, set both "
 "`DB_ENABLED=false` and `USER_AUTH_ENABLED=false` in `.env`. It still "
@@ -293,66 +302,67 @@ msgstr ""
 "`USER_AUTH_ENABLED=false`。它仍能路由请求，`/health` 会报告 `\"database_configured\":"
 " false`。账户、API key 和请求历史需要数据库及两个认证密钥。"
 
-#: ../developer/installation.md:147
+#: ../developer/installation.md:152
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/installation.md:149
+#: ../developer/installation.md:154
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/installation.md:151
+#: ../developer/installation.md:156
 msgid ""
 "`.env` at the repository root is the single file. The backend reads it "
 "when you start it from the repository root, and Compose passes it to the "
 "containers."
 msgstr "只有一个文件：仓库根目录下的 `.env`。从仓库根目录启动后端时，它会读取这个文件；Compose 也会把它传给各个容器。"
 
-#: ../developer/installation.md:155
+#: ../developer/installation.md:160
 msgid ""
-"Beyond the five required variables in the Docker steps above (`DB_NAME`, "
-"`DB_USER`, `DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`) and the "
-"`OPENROUTER_API_KEY` the default registry needs, everything in "
-"`.env.example` is optional. The ones you are most likely to want:"
+"Beyond the variables in the Docker steps above (`DB_NAME`, `DB_USER`, "
+"`DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`, "
+"`ERASURE_FENCE_SECRET`) and the `OPENROUTER_API_KEY` the default registry"
+" needs, everything in `.env.example` is optional. The ones you are most "
+"likely to want:"
 msgstr ""
 "除了上面 Docker "
-"步骤里那五个必填变量（`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`JWT_SECRET_KEY`、`API_KEY_SECRET`），以及默认注册表需要的"
+"步骤里的这些变量（`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`JWT_SECRET_KEY`、`API_KEY_SECRET`、`ERASURE_FENCE_SECRET`），以及默认注册表需要的"
 " `OPENROUTER_API_KEY`，`.env.example` 里的其他变量都是可选的。最可能用得上的是这些："
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Variable"
 msgstr "变量"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "Effect"
 msgstr "作用"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`USER_AUTH_ENABLED`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "`1` (default) requires user API keys for inference requests; `0` allows "
 "anonymous inference but does not disable account login or admin "
 "authentication"
 msgstr "`1`（默认）要求推理请求携带用户 API key；`0` 允许匿名推理，但不会关闭账号登录或管理员鉴权"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`ADMIN_TOKEN`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "optional legacy bearer token for the `/admin/*` endpoints; blank disables"
 " only this access path"
 msgstr "`/admin/*` 端点使用的可选旧式 bearer token；留空只会禁用这一访问方式"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`PROVIDER_ROUTE_TYPES`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "route types the admin console may add per provider, as "
 "`provider=type[|type]` entries separated by commas (e.g. "
@@ -362,19 +372,19 @@ msgstr ""
 "管理控制台可以按 provider 添加的路由类型，写成逗号分隔的 `provider=type[|type]` 条目（例如 "
 "`chutes=quota,openrouter=concurrency|on_demand`）；留空则每个 provider 都不受限"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`DB_ENABLED`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`false` runs the gateway with no database"
 msgstr "`false` 让网关不带数据库运行"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`DB_STORE_FULL_CONTENT`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "`false` (default) does not store prompts or responses at all; `true` "
 "stores them in full. See [Request logging and privacy](database.md"
@@ -383,19 +393,19 @@ msgstr ""
 "`false`（默认）完全不存储 prompt 和响应；`true` 则完整存储。见[请求日志与隐私](database.md#request-"
 "logging-and-privacy)"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`FRONTEND_URL`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "absolute URL your users click in verification and reset emails"
 msgstr "用户在验证邮件和重置邮件里点击的绝对 URL"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`BASE_URL`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "this gateway's own public origin, used to build the absolute links in "
 "signup and password-reset emails. Set it: the server does not interpret "
@@ -407,63 +417,63 @@ msgstr ""
 "`X-Forwarded-*`，所以留空的话，即便在 TLS 反代后面，也会从请求里推导出 `http://…`。见[可信代理与客户端 IP"
 "](trusted-proxies-and-client-ips.md)"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`LOG_LEVEL`, `LOG_FORMAT`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "logging verbosity and `json`/text output"
 msgstr "日志详细程度，以及 `json`/纯文本输出"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "in-process alerting, off by default"
 msgstr "进程内告警，默认关闭"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the"
-" flag has no effect while that list is empty"
-msgstr "信任 `TRUSTED_PROXIES` 中所列代理发来的 `X-Forwarded-For`；这个列表为空时，该开关不起作用"
+" Cloudflare settings below also need the flag"
+msgstr "信任 `TRUSTED_PROXIES` 中所列代理发来的 `X-Forwarded-For`；下面的 Cloudflare 设置也需要打开这个开关"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`TRUSTED_DIRECT_CLIENT_NETWORKS`"
 msgstr "`TRUSTED_DIRECT_CLIENT_NETWORKS`"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "optional CIDRs for clients that connect directly from a private network; "
 "does not authorize forwarding headers"
 msgstr "从私有网络直接连接的客户端所在的可选 CIDR；不会因此信任转发头"
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid "`TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS`"
 msgstr ""
 
-#: ../developer/installation.md:54
+#: ../developer/installation.md:59
 msgid ""
 "trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs "
 "`TRUST_PROXY_HEADERS=1`"
 msgstr "信任所列对端发来的 Cloudflare `CF-Connecting-IP`；还需要同时设置 `TRUST_PROXY_HEADERS=1`"
 
-#: ../developer/installation.md:174
+#: ../developer/installation.md:179
 msgid ""
 "[Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) says "
 "which of the proxy settings above to set for your setup."
 msgstr "按你的部署方式该设上面哪几项代理设置，见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"
 
-#: ../developer/installation.md:177
+#: ../developer/installation.md:182
 msgid "Provider credentials"
 msgstr "Provider 凭据"
 
-#: ../developer/installation.md:179
+#: ../developer/installation.md:184
 #, python-brace-format
 msgid ""
 "A model registry names its own credentials. Its `api_key`, `api_keys`, "
@@ -476,7 +486,7 @@ msgstr ""
 "字段都可以写成 `${VAR}`，在加载注册表时从环境变量中读取。所以一个部署需要哪些 provider "
 "key，就看它的注册表写了哪些变量，变量名随你起。"
 
-#: ../developer/installation.md:193
+#: ../developer/installation.md:198
 #, python-brace-format
 msgid ""
 "Only a whole value is substituted: `${VAR:-default}` and `${VAR}` inside "
@@ -486,7 +496,7 @@ msgstr ""
 "只有整个值才会被替换：`${VAR:-default}`，以及嵌在更长字符串里的 "
 "`${VAR}`，都不会被替换。详见[配置](configuration.md)。"
 
-#: ../developer/installation.md:196
+#: ../developer/installation.md:201
 msgid ""
 "`.env.example` ships blank placeholders for the providers this project "
 "has adapters or examples for; add your own names freely. The bundled "
@@ -495,7 +505,7 @@ msgstr ""
 "`.env.example` 为本项目有 adapter 或示例的那些 provider "
 "提供了空白占位；你也可以随意添加自己的变量名。内置的默认注册表只需要 `OPENROUTER_API_KEY`。"
 
-#: ../developer/installation.md:200
+#: ../developer/installation.md:205
 msgid ""
 "Once a database is configured, keys can also be added from the admin "
 "console (**Providers → Keys**) with no restart; they join the same pool "
@@ -506,11 +516,11 @@ msgstr ""
 "所在的同一个池子。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-"
 "admin-console)。"
 
-#: ../developer/installation.md:205
+#: ../developer/installation.md:210
 msgid "Where the config files live"
 msgstr "配置文件在哪里"
 
-#: ../developer/installation.md:207
+#: ../developer/installation.md:212
 msgid ""
 "The gateway finds its model registry, routing file and alert rules "
 "through environment variables or a distribution's manifest, and falls "
@@ -523,7 +533,7 @@ msgstr ""
 "`config/examples/` 下的示例。具体规则见[网关如何找到自己的配置](configuration.md#how-a"
 "-gateway-finds-its-config)，这一页的其余部分讲的是文件里该写什么。"
 
-#: ../developer/installation.md:213
+#: ../developer/installation.md:218
 msgid ""
 "The Compose file mounts both `config/` and `distributions/` read-only "
 "into the backend, so editing either on the host and restarting the "
@@ -532,7 +542,7 @@ msgstr ""
 "Compose 文件把 `config/` 和 `distributions/` "
 "都以只读方式挂载进后端，所以在宿主机上改了其中任何一个，重启后端就行——不用重新构建镜像。"
 
-#: ../developer/installation.md:218
+#: ../developer/installation.md:223
 msgid ""
 "A backend running directly on the host can reach a host inference server "
 "through `localhost`. A backend in Docker must use a Docker-reachable "
@@ -543,15 +553,15 @@ msgstr ""
 "Docker 能访问到的地址，例如 `host.docker.internal`，并在模型注册表里显式写出来；HybridInference "
 "不会改写 provider 的 URL。"
 
-#: ../developer/installation.md:224
+#: ../developer/installation.md:229
 msgid "Verifying the install"
 msgstr "验证安装"
 
-#: ../developer/installation.md:226
+#: ../developer/installation.md:231
 msgid "Against a running gateway:"
 msgstr "对着运行中的网关执行："
 
-#: ../developer/installation.md:237
+#: ../developer/installation.md:242
 msgid ""
 "Drop the `Authorization` header if you set `USER_AUTH_ENABLED=0`. Use a "
 "model id that `/v1/models` actually listed."
@@ -559,13 +569,13 @@ msgstr ""
 "如果设了 `USER_AUTH_ENABLED=0`，就去掉 `Authorization` 头。模型 id 要用 `/v1/models` "
 "真的列出来的那些。"
 
-#: ../developer/installation.md:240
+#: ../developer/installation.md:245
 msgid ""
 "The same call from the OpenAI Python SDK — the gateway is the `base_url`,"
 " and nothing else about an existing client changes:"
 msgstr "同一个调用，用 OpenAI 的 Python SDK 来发——网关就是那个 `base_url`，现有客户端别的什么都不用改："
 
-#: ../developer/installation.md:255
+#: ../developer/installation.md:260
 msgid ""
 "In a development checkout, `make check` runs the linters and the default "
 "test suite; [Contributing](contributing.md#quality-gates) lists the other"
@@ -574,11 +584,11 @@ msgstr ""
 "在开发用的检出里，`make check` 会运行 linter 和默认测试套件；其他检查见[贡献指南](contributing.md"
 "#quality-gates)。"
 
-#: ../developer/installation.md:258
+#: ../developer/installation.md:263
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/installation.md:260
+#: ../developer/installation.md:265
 msgid ""
 "**`required variable DB_USER is missing a value: DB_USER must be set in "
 ".env file`** — Compose stopped before starting anything. Fill in "
@@ -588,7 +598,7 @@ msgstr ""
 ".env file`**——Compose 还没启动任何东西就停了。按上面第 1 步，在 `.env` 里填上 `DB_USER` 和 "
 "`DB_PASSWORD`。"
 
-#: ../developer/installation.md:264
+#: ../developer/installation.md:269
 msgid ""
 "**`env file ... .env not found`** — create it with `cp .env.example .env`"
 " before `make up`."
@@ -596,7 +606,7 @@ msgstr ""
 "**`env file ... .env not found`**——在 `make up` 之前先用 `cp .env.example "
 ".env` 创建它。"
 
-#: ../developer/installation.md:267
+#: ../developer/installation.md:272
 msgid ""
 "**Import errors when running from source** — run `make setup-dev` (or `uv"
 " sync --group dev`) so the backend is installed into `.venv`, then start "
@@ -605,7 +615,7 @@ msgstr ""
 "**从源码运行时报导入错误**——运行 `make setup-dev`（或 `uv sync --group dev`），把后端装进 "
 "`.venv`，然后用 `uv run` 启动网关，或者先激活 `.venv` 再启动。"
 
-#: ../developer/installation.md:271
+#: ../developer/installation.md:276
 msgid ""
 "**Every request 404s with an empty `/v1/models`** — the registry loaded "
 "nothing. On startup the backend logs either `Registered N routes from "
@@ -618,7 +628,7 @@ msgstr ""
 "<path>`，要么打印一条错误，指出它找不到的注册表路径；把这个路径和[配置](configuration.md#how-a-gateway-"
 "finds-its-config)里的优先级列表对照一下。"
 
-#: ../developer/installation.md:276
+#: ../developer/installation.md:281
 msgid ""
 "**Port already in use** — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT` in `.env`."

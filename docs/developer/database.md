@@ -47,8 +47,9 @@ an SSH tunnel, not by widening that binding.
 
 ## How the schema is created
 
-The application creates and migrates its own schema **at startup**, and it is
-safe to run again and again; there is no separate migration tool to run. Every statement is `CREATE TABLE IF NOT EXISTS`, so the builders
+The application creates and migrates its own schema **at startup**, and a
+restart leaves in place whatever already exists; there is no separate
+migration tool to run. Every statement is `CREATE TABLE IF NOT EXISTS`, so the builders
 below overlap harmlessly where two of them define the same table:
 
 | Code | Creates |
@@ -88,14 +89,15 @@ fingerprint of that account in the `erasure_fence` table, so a request-log
 write that was already on its way cannot put the user's rows back. Two
 settings govern this:
 
-- `ERASURE_FENCE_SECRET` is the key for those fingerprints. Set it to its own
-  random value before the first worker of a version that uses it starts, keep
-  it across restarts and replicas, and never change it: the gateway checks it
-  against the fingerprints already stored and refuses to start on a mismatch.
-  Left empty, it falls back to `API_KEY_SECRET`. That fallback exists only for
-  deployments that already rely on it, because it ties the deletion records to
-  a secret you might one day rotate. If you hit a mismatch, restore the
-  original value; never delete fence rows to get past it.
+- `ERASURE_FENCE_SECRET` is the key for those fingerprints. The first time
+  the gateway starts against a database, it records a fingerprint of this
+  secret — even before anything has been deleted — and from then on it refuses
+  to start if the secret differs. So set it to its own random value before
+  that first start, keep it across restarts and replicas, and never change it.
+  Left empty, it uses `API_KEY_SECRET` instead, and that value is the one
+  recorded; changing `API_KEY_SECRET` later then stops the backend too. If you
+  hit a mismatch, restore the original value; never delete fence rows or their
+  metadata to get past it.
 - `ERASURE_FENCE_PROTOCOL_READY=true` turns permanent deletion on. Leave it
   `false` until every process that writes `api_logs` runs a version that checks
   the fence.

@@ -119,9 +119,8 @@ OpenRouter route when the response carried no cost figure.
 
 ## API keys
 
-A route's `api_keys:` is a list. With a single entry — the usual case — the
-adapter uses it directly. With several, the inherited key-pool logic rotates:
-a key that hits a key-specific or transient failure (429, 401/402/403, 408/425,
+A route's `api_keys:` is a list, and the adapter treats it as a pool even when
+it holds a single key. With several keys the pool rotates: a key that hits a key-specific or transient failure (429, 401/402/403, 408/425,
 5xx, or a timeout) hands the request to the next key. The failing key is muted
 only once the request has nowhere left to rotate to, and then for 20 seconds.
 Request-scoped failures such as `400` and `422` fail identically on
@@ -157,11 +156,13 @@ configured credential was rejected — 401 the `OPENROUTER_API_KEY`, 407 an egre
 proxy demanding its own — which no caller can work around, so they count and
 additionally page.
 
-402 and 403 do not count against the circuit by themselves, but the gateway
-treats them as a problem with the key, as described under
-[API keys](#api-keys): it moves on to the next key and, once none is left, sets
-the key aside for a while. An account with no credit, which answers 402 to
-everything, therefore soon has no usable key, and that does open the circuit.
+402 and 403 do not count against the circuit by themselves. On a route whose
+keys are listed under `api_keys:`, though, the gateway treats them as a problem
+with the key, as described under [API keys](#api-keys): it moves on to the
+next key and, once none is left, sets the key aside for a while. An account
+with no credit, which answers 402 to everything, therefore soon has no usable
+key, and that does open the circuit. A route with a single `api_key:` has no
+pool, so there a 402 never opens it.
 Unlike 401 and 407, 403 does not page, because providers also use it to refuse
 single requests — content policy, region blocks — while the service itself is
 healthy.

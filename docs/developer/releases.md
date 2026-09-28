@@ -85,10 +85,12 @@ commit summaries alone do not explain how an operator should upgrade.
    artifacts available so rollback does not depend on rebuilding them.
 2. Read the target's configuration requirements. Preserve the deployment's
    existing `.env`, overlay and secrets; merge required changes instead of
-   replacing them with fresh example files. Keep `JWT_SECRET_KEY` and
-   `API_KEY_SECRET` stable across replicas and upgrades. Changing the former
-   invalidates access tokens; changing the latter makes existing API-key
-   hashes unverifiable. An upgrade is not a secret-rotation procedure.
+   replacing them with fresh example files. Keep `JWT_SECRET_KEY`,
+   `API_KEY_SECRET` and `ERASURE_FENCE_SECRET` stable across replicas and
+   upgrades. Changing the first invalidates access tokens, changing the second
+   makes existing API-key hashes unverifiable, and changing the third — or the
+   second, while it stands in for the third — stops the backend from starting.
+   An upgrade is not a secret-rotation procedure.
 3. Back up each configured database and check that the backup restores into a
    separate database. Protect a matching copy of the configuration and secrets.
    See [Database backup](database.md#backup) for the standard Postgres commands;

@@ -5,7 +5,7 @@ cannot talk to yet. To serve another model from a provider the gateway already
 supports, you need no code at all; see [Adding a New Model](adding-models.md).
 
 Most providers do not need a new adapter either. If the API is
-OpenAI-compatible, a profile and two small edits to the dispatch are enough, as
+OpenAI-compatible, a profile and a few lines in `registry.py` are enough, as
 Step 1 shows. A dedicated adapter is only for a provider with its own wire format.
 
 ## Step 1: decide whether you need an adapter at all
@@ -39,6 +39,10 @@ if kind in (
 ):
     return OpenAICompatAdapter(model_cfg)
 ```
+
+Add the kind to `RESERVED_PROVIDER_LABELS` in the same module as well, so that
+no route can borrow it as a label of its own; a unit test fails if a
+dispatchable kind is missing from that set.
 
 This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated today: a
 per-provider profile in `apps/backend/serving/adapters/profiles.py` carries the

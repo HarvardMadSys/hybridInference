@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-09-28 16:02+0800\n"
+"POT-Creation-Date: 2026-09-28 16:15+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -545,9 +545,10 @@ msgstr "目前不生效的设置"
 #: ../developer/configuration.md:228
 msgid ""
 "The gateway accepts these when it loads its configuration, so setting "
-"them does not stop it from starting, but they do not change what it does "
-"today."
-msgstr "网关加载配置时会接受这些设置，所以设置了它们也不会导致启动失败，但它们目前不会改变网关的任何行为。"
+"them does not stop it from starting, but today they do nothing — or, in "
+"the case of the routing file's weight split, nothing on a gateway with a "
+"database."
+msgstr "网关加载配置时会接受这些设置，所以设置了它们也不会导致启动失败，但它们目前什么都不做；路由配置文件的权重划分则是在有数据库的网关上什么都不做。"
 
 #: ../developer/configuration.md
 msgid "Setting"
@@ -633,11 +634,11 @@ msgstr ""
 msgid "A label only; does not select a host or build anything"
 msgstr "只是个标签；不会选择主机，也不会构建任何东西"
 
-#: ../developer/configuration.md:241
+#: ../developer/configuration.md:242
 msgid "Runtime configuration from the admin console"
 msgstr "从管理控制台做运行时配置"
 
-#: ../developer/configuration.md:243
+#: ../developer/configuration.md:244
 msgid ""
 "The files above are read once, at startup. Everything else an operator "
 "changes about routing goes through the admin console — or the `/admin/*` "
@@ -650,7 +651,7 @@ msgstr ""
 "端点——并写进运行时存储，因此不用重启就生效，重启之后也还在。当一个模型、一个 provider 或一个 key "
 "必须*现在*就出现在运行中的网关上、又不想改 overlay 再重新部署时，用的就是这一层。"
 
-#: ../developer/configuration.md:250
+#: ../developer/configuration.md:251
 msgid ""
 "It needs a database. `DB_ENABLED` defaults to `true` "
 "([Database](database.md) covers the connection); with `DB_ENABLED=false` "
@@ -664,7 +665,7 @@ msgstr ""
 "configured`，调用它们的控制台标签页也无处可写。每个端点都要求在 `Authorization: Bearer ...` 头里带管理员的"
 " JWT 或 `ADMIN_TOKEN`。"
 
-#: ../developer/configuration.md:256
+#: ../developer/configuration.md:257
 msgid "Providers tab"
 msgstr "Providers 标签页"
 
@@ -801,7 +802,7 @@ msgstr ""
 msgid "`disabled_providers`"
 msgstr ""
 
-#: ../developer/configuration.md:267
+#: ../developer/configuration.md:268
 msgid ""
 "The registry on the Overview tab lists every provider the gateway can "
 "route to, but only *custom* providers are editable there. A provider that"
@@ -818,7 +819,7 @@ msgstr ""
 "provider 只能是 `openai_compat`；通用 adapter 处理不了的协议需要单独写一个 "
 "adapter，这属于代码改动（[编写 provider adapter](provider-adapters.md)）。"
 
-#: ../developer/configuration.md:276
+#: ../developer/configuration.md:277
 #, python-brace-format
 msgid ""
 "A key added here joins the same pool as the keys the registry names "
@@ -829,7 +830,7 @@ msgstr ""
 "在这里添加的 key 会进入注册表用 `${VAR}` 指名的那些 key 所在的同一个池子，并与它们一起轮换。环境变量 key "
 "没有自己的行，所以控制台能禁用它、能把它预留给某个层级，但不能删除它；要删就把变量去掉再重启。"
 
-#: ../developer/configuration.md:281
+#: ../developer/configuration.md:282
 msgid "Routing tab"
 msgstr "Routing 标签页"
 
@@ -974,7 +975,7 @@ msgstr "RouteWise 设置"
 msgid "`/admin/routewise/model-settings` — see [RouteWise](routing.md#routewise)"
 msgstr "`/admin/routewise/model-settings`——见 [RouteWise](routing.md#routewise)"
 
-#: ../developer/configuration.md:293
+#: ../developer/configuration.md:294
 #, python-brace-format
 msgid ""
 "`GET /admin/routing/provider-routes` (or `.../{model_id}`) returns every "
@@ -985,7 +986,7 @@ msgstr ""
 "`.../{model_id}`）返回网关正在服务的每一条路由，每条都标着 `source: yaml`、`override` 或 "
 "`runtime`，这是看两层叠加结果最快的办法。"
 
-#: ../developer/configuration.md:297
+#: ../developer/configuration.md:298
 msgid ""
 "The provider selector on this tab offers every custom provider, plus each"
 " built-in kind that the registry, the live route table or a configured "
@@ -1000,7 +1001,7 @@ msgstr ""
 "vendor 之间的约定，用 `PROVIDER_ROUTE_TYPES` 声明（见[环境变量](#environment-"
 "variables)）；未列出的 provider 三种都可以用。"
 
-#: ../developer/configuration.md:305
+#: ../developer/configuration.md:306
 msgid ""
 "A model created here is a **runtime model**: it exists only in the "
 "database, carries an id, a first route, a pricing table, a router "
@@ -1018,7 +1019,7 @@ msgstr ""
 " `ModelConfig` 的默认值：`context_length` 8192、`max_output_length` "
 "4096、只进出文本、不支持工具。模型需要其中任何一项时，就把它放进注册表。"
 
-#: ../developer/configuration.md:314
+#: ../developer/configuration.md:315
 msgid "Settings tab"
 msgstr "Settings 标签页"
 
@@ -1061,32 +1062,32 @@ msgstr ""
 msgid "`model_concurrency_exemptions`"
 msgstr ""
 
-#: ../developer/configuration.md:321
+#: ../developer/configuration.md:322
 msgid "How the two layers combine"
 msgstr "两层如何叠加"
 
-#: ../developer/configuration.md:323
+#: ../developer/configuration.md:324
 msgid ""
 "The registry is loaded first and the stored state is applied on top of "
 "it, in this order at boot; each admin change is also applied to the "
 "running router the moment it is saved."
 msgstr "先加载注册表，再把已存状态按下面的顺序套在它之上；每个管理改动在保存的那一刻也会被套到运行中的路由器上。"
 
-#: ../developer/configuration.md:327
+#: ../developer/configuration.md:328
 msgid "Custom provider definitions, skipping any slug the code or registry owns."
 msgstr "自定义 provider 定义，跳过代码或注册表已拥有的任何 slug。"
 
-#: ../developer/configuration.md:328
+#: ../developer/configuration.md:329
 msgid ""
 "Stored provider keys, seeded into each provider's pool beside the "
 "environment keys."
 msgstr "已存的 provider key，灌进每个 provider 的池子，与环境变量 key 并列。"
 
-#: ../developer/configuration.md:330
+#: ../developer/configuration.md:331
 msgid "Per-model router strategy overrides."
 msgstr "按模型的路由器策略覆盖项。"
 
-#: ../developer/configuration.md:331
+#: ../developer/configuration.md:332
 msgid ""
 "Runtime routes. A runtime model is restored only if its creation "
 "finished; a stored route whose model is no longer in the registry is "
@@ -1096,11 +1097,11 @@ msgstr ""
 "运行时路由。运行时模型只有在创建过程完整结束后才会被恢复；如果一条已存路由对应的模型已经不在注册表里，它会被跳过并记录警告，所以从 YAML "
 "里删掉一个模型，不会因为一行残留数据又把它带回来。"
 
-#: ../developer/configuration.md:335
+#: ../developer/configuration.md:336
 msgid "Route overrides, retargeting the registry routes they name."
 msgstr "路由覆盖项，把它们指名的注册表路由改指向别处。"
 
-#: ../developer/configuration.md:336
+#: ../developer/configuration.md:337
 msgid ""
 "Key tier reservations, re-read now that every provider is known; then "
 "weight overrides, disabled providers, offload routes and model "
@@ -1109,7 +1110,7 @@ msgstr ""
 "key 的层级预留，此时每个 provider 都已知，于是重读一遍；然后是权重覆盖项、被禁用的 "
 "provider、卸载路由和模型可见性，装进路由器在请求时查询的解析器里。"
 
-#: ../developer/configuration.md:340
+#: ../developer/configuration.md:341
 msgid ""
 "Two rules follow from that order. A stored change never edits the file it"
 " overrides: delete the override and the registry route, weight or "
@@ -1122,11 +1123,11 @@ msgstr ""
 "值就回来了；运行时候选路由是与注册表的路由并列，而不是取代它们。而存储里没有对应行的一切仍以文件为准，所以目录元数据、别名和新的 adapter "
 "kind 还是靠改注册表加重启来变。"
 
-#: ../developer/configuration.md:347
+#: ../developer/configuration.md:348
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:349
+#: ../developer/configuration.md:350
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -1142,15 +1143,15 @@ msgstr ""
 "variables)列出了你最可能要设置的变量。密钥只能放在这里：不要放进模型注册表（在那里用 `${VAR}` 引用），也不要放进 "
 "manifest。"
 
-#: ../developer/configuration.md:356
+#: ../developer/configuration.md:357
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:362
+#: ../developer/configuration.md:363
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:369
+#: ../developer/configuration.md:370
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -1162,7 +1163,7 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:375
+#: ../developer/configuration.md:376
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, the upstream `base_url`, its provider label and its weight — that "

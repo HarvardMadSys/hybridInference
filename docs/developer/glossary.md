@@ -40,8 +40,9 @@ Endpoint
 : The gateway's key for one endpoint of one model, written
   `<model-id>:<location>` — `glm-4.6:local-12003` for a server on local port
   12003, `glm-4.6:zai-api` for a hosted API. Circuit breakers, latency
-  profiles and weight overrides are all keyed on it. The suffix is derived from
-  the host name, so it does not tell you who runs the server.
+  profiles and weight overrides are all keyed on it. The suffix comes from the
+  host and port or from the adapter kind, so it does not tell you who runs the
+  server.
 
 Provider
 : The service behind a route: OpenRouter, DeepSeek, your own vLLM server. In
