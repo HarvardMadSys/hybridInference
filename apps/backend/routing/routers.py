@@ -273,10 +273,14 @@ class _RouteAttempt:
     the exception object, so the ``failed_attempts`` telemetry list it builds
     cannot answer "which of these should the caller actually be told about?".
     This keeps the exceptions themselves, in dispatch order, alongside it.
+
+    ``offload`` is why the attempt went to the model's offload route (the
+    success path's ``_routing["offload"]``), ``None`` for any other route.
     """
 
     adapter: BaseAdapter
     error: BaseException
+    offload: str | None = None
 
 
 def _describes_request(exc: BaseException) -> bool:
@@ -340,6 +344,25 @@ def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
     return attempts[select_surfaced_error([attempt.error for attempt in attempts])]
 
 
+def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) -> None:
+    """Mark a failed request's routing block if it was sent to the offload route.
+
+    The success path marks a response its offload route served. A request that
+    fails after being sent there was offloaded too, but the block its error
+    carries describes the route whose error is reported, which is usually the
+    primary's (``_select_surfaced_error``). So the block gets the attempt's
+    ``offload`` reason, and names the offload route as ``offload_endpoint_id``.
+    Without them the request log reads as a plain failure, and the admin count
+    of offloaded requests misses exactly the ones that failed. ``setdefault``,
+    so a block built further upstream keeps what it already says.
+    """
+    for attempt in attempts:
+        if attempt.offload is not None:
+            routing.setdefault("offload", attempt.offload)
+            routing.setdefault("offload_endpoint_id", endpoint_id_for_adapter(attempt.adapter))
+            return
+
+
 def _raise_surfaced_error(
     attempts: Sequence[_RouteAttempt],
     failed_attempts: list[dict[str, str]],
@@ -389,6 +412,7 @@ def _raise_surfaced_error(
         # had picked this endpoint. ``setdefault`` so a block built further
         # upstream keeps whatever it already decided.
         routing.setdefault("fallback", True)
+    _mark_offload(routing, attempts)
     raise exc
 
 
@@ -2138,7 +2162,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2154,6 +2178,11 @@ class FixedRouter:
                     "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
+            primary_routing = getattr(primary_error, "_routing", None)
+            if isinstance(primary_routing, dict):
+                # A primary that is the offload route was offloaded however
+                # the request ends.
+                _mark_offload(primary_routing, attempts)
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
@@ -2256,7 +2285,7 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error))
+                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error)
                     continue
@@ -2435,7 +2464,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -2463,6 +2492,11 @@ class FixedRouter:
                     "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
+            primary_routing = getattr(primary_error, "_routing", None)
+            if isinstance(primary_routing, dict):
+                # A primary that is the offload route was offloaded however
+                # the request ends.
+                _mark_offload(primary_routing, attempts)
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error
@@ -2582,12 +2616,26 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error))
+                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
                     # another provider into the same response.
                     if chunks_yielded:
+                        # With the block the primary gets for the same
+                        # re-raise, so the error log names this attempt, and
+                        # says so when it was the offload route that broke.
+                        if not hasattr(fallback_error, "_routing"):
+                            fallback_error._routing = {  # type: ignore[attr-defined]
+                                "provider": execution.config.provider,
+                                "base_url": execution.config.base_url,
+                                "endpoint_id": adapter_endpoint_id,
+                                "fallback": True,
+                                "failed_attempts": failed_attempts,
+                            }
+                        fallback_routing = getattr(fallback_error, "_routing", None)
+                        if isinstance(fallback_routing, dict):
+                            _mark_offload(fallback_routing, attempts)
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error)

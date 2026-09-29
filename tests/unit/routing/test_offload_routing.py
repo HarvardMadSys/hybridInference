@@ -723,3 +723,153 @@ async def test_a_fallback_is_armed_only_if_the_offload_route_could_fit_the_promp
         assert isinstance(deadline, float)
     else:
         assert deadline is None
+
+
+# ----------------------------------------------------------- failed offloads
+#
+# The error a failed request raises carries the routing block its log keeps.
+# That block describes the route whose error is reported -- usually the
+# primary's -- so a request that was offloaded and failed says so with the
+# success path's ``offload`` reason and the offload route's endpoint.
+
+
+class _BreaksMidStream(_SlotAdapter):
+    """Stream the first chunk of an answer, then fail."""
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> AsyncGenerator[str, None]:
+        self._record()
+        async with upstream_slot(self.config.provider, KEY, base_url=self.config.base_url):
+            yield self.format_stream_chunk(content=self.config.provider, model=MODEL)
+            raise RuntimeError("upstream reset mid-stream")
+
+
+def _attempted(routing: dict[str, Any]) -> list[str]:
+    return [attempt["endpoint_id"] for attempt in routing["failed_attempts"]]
+
+
+@_PATHS
+async def test_a_request_the_offload_route_failed_is_still_marked_offloaded(limiter, stream):
+    primary = _SlotAdapter("primary")
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 500"))
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    held = await _saturate(limiter, primary)
+
+    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    # The primary's queue wait is the error reported, and its block says where
+    # the request went next and why.
+    assert routing["endpoint_id"] == "m:primary-api"
+    assert routing["offload"] == OFFLOAD_QUEUE_WAIT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api"]
+    held.release(status_code=200)
+
+
+@_PATHS
+async def test_a_last_resort_that_fails_too_is_still_marked_offloaded(limiter, stream):
+    primary = _SlotAdapter("primary", fail_with=RuntimeError("upstream 500"))
+    sibling = _SlotAdapter("sibling", fail_with=RuntimeError("upstream 502"))
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(primary, 1.0), (sibling, 1.0), (offload, 1.0)], _policy())
+
+    with pytest.raises(RuntimeError, match="upstream 500") as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    assert routing["endpoint_id"] == "m:primary-api"
+    assert routing["offload"] == OFFLOAD_LAST_RESORT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert _attempted(routing) == ["m:primary-api", "m:sibling-api", "m:reserved-api"]
+
+
+@_PATHS
+async def test_a_route_tried_after_a_failed_offload_route_keeps_the_mark(limiter, stream):
+    """Offloaded is where the request was sent, whichever route failed last."""
+    primary = _SlotAdapter("primary")
+    sibling = _SlotAdapter("sibling", fail_with=RuntimeError("upstream 502"))
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(primary, 1.0), (sibling, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    held = await _saturate(limiter, primary)
+
+    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api", "m:sibling-api"]
+    assert routing["offload"] == OFFLOAD_QUEUE_WAIT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    held.release(status_code=200)
+
+
+@_PATHS
+async def test_a_primary_chosen_as_last_resort_that_fails_is_marked_offloaded(limiter, stream):
+    ordinary = _SlotAdapter("ordinary")
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(ordinary, 1.0), (offload, 1.0)], _policy())
+    for _ in range(10):
+        router.endpoint_health_registry.record_failure("m:ordinary-api", reason="test")
+
+    with pytest.raises(RuntimeError, match="upstream 503") as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    assert routing["endpoint_id"] == "m:reserved-api"
+    assert routing["offload"] == OFFLOAD_LAST_RESORT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert ordinary.calls == 0
+
+
+@_PATHS
+async def test_a_failure_that_never_reached_the_offload_route_is_not_marked(limiter, stream):
+    primary = _SlotAdapter("primary", fail_with=RuntimeError("upstream 500"))
+    sibling = _SlotAdapter("sibling", fail_with=RuntimeError("upstream 502"))
+    router = _router([(primary, 1.0), (sibling, 1.0)], _policy())
+
+    with pytest.raises(RuntimeError, match="upstream 500") as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    assert "offload" not in routing
+    assert "offload_endpoint_id" not in routing
+
+
+async def test_an_offload_route_that_breaks_mid_stream_is_marked_offloaded(limiter):
+    primary = _SlotAdapter("primary", fail_with=RuntimeError("upstream 500"))
+    offload = _BreaksMidStream("reserved", route_id="offload")
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy())
+
+    chunks: list[str] = []
+    with pytest.raises(RuntimeError, match="mid-stream") as caught:
+        async for chunk in router.stream_chat_completion(MODEL, MESSAGES):
+            chunks.append(chunk)
+
+    # Committed to the offload route: no other route was spliced in, and the
+    # error names the route the client got its bytes from.
+    assert _content(chunks) == "reserved"
+    routing = caught.value._routing
+    assert routing["endpoint_id"] == "m:reserved-api"
+    assert routing["fallback"] is True
+    assert routing["offload"] == OFFLOAD_LAST_RESORT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api"]
+
+
+async def test_a_fallback_that_breaks_mid_stream_is_named_on_its_error(limiter):
+    """The block the primary gets for the same re-raise, without an offload mark."""
+    primary = _SlotAdapter("primary", fail_with=RuntimeError("upstream 500"))
+    sibling = _BreaksMidStream("sibling")
+    router = _router([(primary, 1.0), (sibling, 1.0)])
+
+    with pytest.raises(RuntimeError, match="mid-stream") as caught:
+        await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    routing = caught.value._routing
+    assert routing["provider"] == "sibling"
+    assert routing["endpoint_id"] == "m:sibling-api"
+    assert routing["fallback"] is True
+    assert _attempted(routing) == ["m:primary-api", "m:sibling-api"]
+    assert "offload" not in routing

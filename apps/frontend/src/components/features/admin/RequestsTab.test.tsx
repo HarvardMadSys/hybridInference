@@ -15,6 +15,7 @@ vi.mock('@/lib/api/admin', () => ({
   getRequestMetrics: vi.fn(),
   getRecentRequestContent: vi.fn(),
   getRecentRequestsPerformance: vi.fn(),
+  getRecentRequestOffloads: vi.fn(),
   clearErrorRequests: vi.fn(),
   exportRequests: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock('@/lib/api/admin', () => ({
 import {
   exportRequests,
   getRecentRequestContent,
+  getRecentRequestOffloads,
   getRecentRequestsPerformance,
   getRequestMetrics,
   listRecentRequests,
@@ -117,6 +119,13 @@ describe('RequestsTab row expansion', () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
       days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
       groups: [],
       truncated: false,
     });
@@ -251,6 +260,13 @@ describe('RequestsTab session labelling', () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
       days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
       groups: [],
       truncated: false,
     });
@@ -396,6 +412,13 @@ describe('RequestsTab client disconnect classification', () => {
       groups: [],
       truncated: false,
     });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
+      groups: [],
+      truncated: false,
+    });
     vi.mocked(listRecentRequests).mockResolvedValue({
       requests: [
         makeRequest({
@@ -510,6 +533,13 @@ describe('RequestsTab credential state', () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
       days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
       groups: [],
       truncated: false,
     });
