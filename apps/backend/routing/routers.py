@@ -36,6 +36,7 @@ from routing.offload import (
 )
 from routing.prefill_load import (
     PrefillLoadTracker,
+    _env_int,
     conversation_fingerprint,
     estimate_prefill_tokens,
     priority_for_prefill,
@@ -149,10 +150,15 @@ class RoutingObservation:
 
 @dataclass
 class _Affinity:
-    """Per-user provider pin for one model. TTL is monotonic time."""
+    """Per-user provider pin for one model. Times are monotonic.
+
+    ``expires_at`` slides forward on every honored request, but never past
+    ``created_at + AFFINITY_MAX_AGE_SECONDS`` (see ``_affinity_expiry``).
+    """
 
     endpoint_id: str
     expires_at: float
+    created_at: float = field(default_factory=time.monotonic)
 
 
 # ============================================================================
@@ -173,6 +179,35 @@ def current_affinity_key() -> str | None:
 AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
+
+# Longest a pin may live, however busy its caller. The sliding TTL alone lets a
+# caller that never goes five minutes without a request keep its endpoint
+# indefinitely, so route weights -- an admin override included -- govern only
+# fresh draws: a caller moved by a failover or a backlog re-pick stays where it
+# landed. In production an endpoint overridden to 1% was still serving a third
+# of its model's traffic two days after the last restart. A day bounds how long
+# a pin can outlive the weights that chose it, at the cost of one re-draw per
+# busy caller per day, and a cold prefix only when the draw moves it. Pins age
+# from when they were made, so the re-draws spread across the day instead of
+# landing together. 0 turns the cap off.
+AFFINITY_MAX_AGE_SECONDS: float = float(_env_int("ROUTING_AFFINITY_MAX_AGE_SEC", 24 * 60 * 60))
+
+
+def _affinity_expiry(created_at: float, now: float) -> float:
+    """Return when a pin made at ``created_at`` and used at ``now`` expires.
+
+    Args:
+        created_at: Monotonic time the pin was made.
+        now: Monotonic time of the request that made or renewed it.
+
+    Returns:
+        ``now`` plus the sliding TTL, capped at the pin's maximum age.
+    """
+    expires_at = now + AFFINITY_TTL_SECONDS
+    if AFFINITY_MAX_AGE_SECONDS > 0:
+        expires_at = min(expires_at, created_at + AFFINITY_MAX_AGE_SECONDS)
+    return expires_at
+
 
 # Why a route's effective weight stops matching the weight its configuration
 # asked for. Reported separately, never merged, because each names a different
@@ -1633,7 +1668,7 @@ class FixedRouter:
                             if self._prefill_load.should_keep_affinity(
                                 entry.endpoint_id, affinity_key=affinity_key
                             ):
-                                entry.expires_at = now + AFFINITY_TTL_SECONDS
+                                entry.expires_at = _affinity_expiry(entry.created_at, now)
                                 return adapter
                             avoid_endpoint_id = entry.endpoint_id
                             break
@@ -1694,7 +1729,8 @@ class FixedRouter:
             with self._lock:
                 self._affinity[(affinity_key, model_id)] = _Affinity(
                     endpoint_id=endpoint_id_for_adapter(chosen),
-                    expires_at=now + AFFINITY_TTL_SECONDS,
+                    expires_at=_affinity_expiry(now, now),
+                    created_at=now,
                 )
                 self._maybe_sweep_affinity_locked(now)
         return chosen
