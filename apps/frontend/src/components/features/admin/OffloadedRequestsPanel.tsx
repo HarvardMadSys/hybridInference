@@ -65,7 +65,7 @@ function CountCell({ value, emphasis = false }: { value: number; emphasis?: bool
  * How many requests each model sent to its offload route over the past day,
  * for the Recent Requests tab.
  *
- * One row per model and the route that served its offloaded requests, split by
+ * One row per model and the offload route its requests were sent to, split by
  * why the router offloaded them, with the share of the model's traffic that
  * was offloaded. Follows the tab's user / session / model / type filters, like
  * the performance panel beside it, but always counts over the last
@@ -148,8 +148,8 @@ export function OffloadedRequestsPanel({
         <div>
           <h2 className="text-[14px] font-semibold text-gray-900">Offloaded requests</h2>
           <p className="text-[11px] text-gray-400">
-            Requests sent to a model&apos;s offload route over the last {WINDOW_LABEL}, by the route
-            that served them and why
+            Requests sent to a model&apos;s offload route over the last {WINDOW_LABEL}, by route and
+            reason
             {outcome !== 'all' ? ' (not narrowed by the outcome filter)' : ''}.
           </p>
         </div>

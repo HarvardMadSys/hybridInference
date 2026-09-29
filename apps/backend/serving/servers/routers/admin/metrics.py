@@ -1213,14 +1213,17 @@ async def _load_request_offloads(
     model_id: str | None,
     request_type: str | None,
 ) -> AdminRequestOffloadsResponse:
-    """Count the requests sent to an offload route, per served (model, route).
+    """Count the requests sent to an offload route, per (model, offload route).
 
-    A request was offloaded when its log's ``metadata`` carries ``offload``: the
+    A request was offloaded when its log's ``metadata`` carries ``offload``. The
     router sets it on a response the model's offload route served
-    (``routing.offload``), and both the streamed and the non-streamed logging
-    paths keep it.
+    (``routing.offload``), and on the error of a request that failed after being
+    sent there. Both the streamed and the non-streamed logging paths keep it.
+    A served request's row names the offload route as its served endpoint. A
+    failed one's row names the route whose error was reported, usually the
+    primary, so there the offload route is its ``offload_endpoint_id``.
 
-    One grouped scan over the filtered window, by served route and offload
+    One grouped scan over the filtered window, by model, route and offload
     reason. The rows that were not offloaded are grouped too, under a ``NULL``
     reason, so a window sum over a model's groups is every request it had --
     what the offloaded share is read against -- without a second scan. Callers
@@ -1248,7 +1251,11 @@ async def _load_request_offloads(
             WITH base AS (
                 SELECT
                     COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model,
-                    COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint,
+                    COALESCE(
+                        NULLIF(l.metadata->>'offload_endpoint_id', ''),
+                        NULLIF(l.served_endpoint_id, ''),
+                        l.provider
+                    ) AS route,
                     NULLIF(l.metadata->>'offload', '') AS reason,
                     {failed_sql} AS failed
                 FROM api_logs l
@@ -1257,15 +1264,15 @@ async def _load_request_offloads(
             grouped AS (
                 SELECT
                     served_model,
-                    served_endpoint,
+                    route,
                     reason,
                     COUNT(*) AS request_count,
                     COUNT(*) FILTER (WHERE failed) AS failed_count,
                     SUM(COUNT(*)) OVER (PARTITION BY served_model) AS model_request_count
                 FROM base
-                GROUP BY served_model, served_endpoint, reason
+                GROUP BY served_model, route, reason
             )
-            SELECT served_model, served_endpoint, reason, request_count, failed_count,
+            SELECT served_model, route, reason, request_count, failed_count,
                 model_request_count
             FROM grouped
             WHERE reason IS NOT NULL
@@ -1276,7 +1283,7 @@ async def _load_request_offloads(
     folded: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         group = folded.setdefault(
-            (row["served_model"], row["served_endpoint"]),
+            (row["served_model"], row["route"]),
             {
                 "request_count": 0,
                 "failed_count": 0,
@@ -1360,7 +1367,7 @@ async def admin_recent_requests_offloads(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminRequestOffloadsResponse:
-    """Count the requests each model sent to its offload route, per served route.
+    """Count the requests each model sent to its offload route, per offload route.
 
     Backs the offloaded-requests table on the Recent Requests tab. See
     :func:`_load_request_offloads` for what counts as offloaded.

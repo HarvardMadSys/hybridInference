@@ -695,10 +695,11 @@ class AdminRequestPerfBreakdownResponse(BaseModel):
 class AdminRequestOffloadGroup(BaseModel):
     """Requests one model sent to its offload route (``routing.offload``).
 
-    ``model_id`` / ``endpoint_id`` are the served route, as in
-    :class:`AdminRequestPerfGroup`: the model the router routed, and the route
-    that took the request. A model whose offload route moved during the window
-    has one group per route.
+    ``model_id`` is the served model, as in :class:`AdminRequestPerfGroup`.
+    ``endpoint_id`` is the offload route that took the requests: the served
+    endpoint of the ones it served, and the logged ``offload_endpoint_id`` of the
+    ones that failed after being sent there. A model whose offload route moved
+    during the window has one group per route.
 
     ``reasons`` counts the offloaded requests by the ``offload`` value their log
     carries: ``queue_wait`` and ``engine_wait`` when an earlier attempt waited
@@ -718,7 +719,7 @@ class AdminRequestOffloadGroup(BaseModel):
 
 
 class AdminRequestOffloadsResponse(BaseModel):
-    """Offloaded requests over the window, per served (model, offload route).
+    """Offloaded requests over the window, per (model, offload route).
 
     ``total_offloaded`` counts every offloaded request in the window, including
     any in groups past the cap that ``truncated`` reports.

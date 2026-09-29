@@ -743,9 +743,9 @@ export async function getRecentRequestsPerformance({
 // ----------------------------------------------------------------------------
 
 export interface AdminRequestOffloadGroup {
-  // The *served* model and the route that took the request, as in the
-  // performance summary. A model whose offload route moved during the window
-  // has one group per route.
+  // The *served* model, as in the performance summary, and the offload route
+  // the requests were sent to. A model whose offload route moved during the
+  // window has one group per route.
   model_id: string;
   endpoint_id: string;
   request_count: number;

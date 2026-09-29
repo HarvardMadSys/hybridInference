@@ -57,7 +57,7 @@ def _row(
 ) -> dict[str, Any]:
     return {
         "served_model": model,
-        "served_endpoint": endpoint,
+        "route": endpoint,
         "reason": reason,
         "request_count": count,
         "failed_count": failed,
@@ -128,8 +128,16 @@ async def test_offloaded_rows_are_read_from_the_logged_marker(offloads_client):
     query, _args = calls[0]
     assert "NULLIF(l.metadata->>'offload', '') AS reason" in query
     assert "COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model" in query
-    assert "COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint" in query
-    assert "GROUP BY served_model, served_endpoint, reason" in query
+    # A failed offload's row is the route whose error was reported; the offload
+    # route it was sent to is its ``offload_endpoint_id``.
+    assert (
+        "COALESCE(\n"
+        "                        NULLIF(l.metadata->>'offload_endpoint_id', ''),\n"
+        "                        NULLIF(l.served_endpoint_id, ''),\n"
+        "                        l.provider\n"
+        "                    ) AS route"
+    ) in query
+    assert "GROUP BY served_model, route, reason" in query
     assert "SUM(COUNT(*)) OVER (PARTITION BY served_model) AS model_request_count" in query
     assert "WHERE reason IS NOT NULL" in query
     # Failures are the outcome filter's, client disconnects excluded, and no

@@ -138,6 +138,7 @@ _ids = itertools.count(1)
 def _row(
     *,
     offload: str | None = None,
+    offload_endpoint: str | None = None,
     endpoint: str = ENGINE,
     model: str = MODEL,
     served_model: str | None = MODEL,
@@ -152,6 +153,8 @@ def _row(
     if offload is not None:
         metadata["offload"] = offload
         metadata["fallback"] = offload != "last_resort"
+    if offload_endpoint is not None:
+        metadata["offload_endpoint_id"] = offload_endpoint
     if terminal_state is not None:
         metadata["terminal_state"] = terminal_state
     if request_type is not None:
@@ -259,6 +262,35 @@ async def test_a_failure_on_the_offload_route_counts_but_a_disconnect_does_not(d
 
     assert group.request_count == 4
     assert group.failed_count == 2
+
+
+async def test_a_failed_offload_counts_under_the_route_it_was_sent_to(db_logger):
+    """A failure's row is the route whose error was reported, usually the primary."""
+    await _seed(
+        db_logger.pool,
+        [
+            _row(offload="engine_wait", endpoint=OFFLOAD),
+            # The offload route failed too, and the primary's queue wait was the
+            # error reported: the row is the engine's, the marker names the route.
+            _row(
+                offload="queue_wait",
+                offload_endpoint=OFFLOAD,
+                endpoint=ENGINE,
+                status=503,
+                error="queue wait expired",
+            ),
+            _row(),
+        ],
+    )
+
+    summary = await _summary(db_logger)
+
+    assert summary.total_offloaded == 2
+    (group,) = summary.groups
+    assert (group.model_id, group.endpoint_id) == (MODEL, OFFLOAD)
+    assert group.reasons == {"engine_wait": 1, "queue_wait": 1}
+    assert group.failed_count == 1
+    assert group.model_request_count == 3
 
 
 async def test_only_the_window_counts(db_logger):
