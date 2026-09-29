@@ -344,23 +344,35 @@ def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
     return attempts[select_surfaced_error([attempt.error for attempt in attempts])]
 
 
-def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) -> None:
-    """Mark a failed request's routing block if it was sent to the offload route.
+def _offload_marker(attempts: Sequence[_RouteAttempt]) -> tuple[str | None, str | None]:
+    """Return ``(offload, offload_endpoint_id)`` for an attempt sent to the offload route.
 
-    The success path marks a response its offload route served. A request that
-    fails after being sent there was offloaded too, but the block its error
-    carries describes the route whose error is reported, which is usually the
-    primary's (``_select_surfaced_error``). So the block gets the attempt's
-    ``offload`` reason, and names the offload route as ``offload_endpoint_id``.
-    Without them the request log reads as a plain failure, and the admin count
-    of offloaded requests misses exactly the ones that failed. ``setdefault``,
-    so a block built further upstream keeps what it already says.
+    ``(None, None)`` when no attempt went there. See :func:`_mark_offload`.
     """
     for attempt in attempts:
         if attempt.offload is not None:
-            routing.setdefault("offload", attempt.offload)
-            routing.setdefault("offload_endpoint_id", endpoint_id_for_adapter(attempt.adapter))
-            return
+            return attempt.offload, endpoint_id_for_adapter(attempt.adapter)
+    return None, None
+
+
+def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) -> None:
+    """Mark a routing block if its request was sent to the offload route.
+
+    A request sent to its offload route was offloaded, whichever route answers
+    it. A response the offload route served says so on its own block. When the
+    offload route failed, the block the request ends with describes another
+    route: the one that served it next, or the one whose error is reported,
+    usually the primary's (``_select_surfaced_error``). So the block gets the
+    attempt's ``offload`` reason, and names the offload route as
+    ``offload_endpoint_id``. Without them the request log reads as if the
+    offload route was never tried, and the admin count of offloaded requests
+    misses the request. ``setdefault``, so a block built further upstream keeps
+    what it already says.
+    """
+    reason, endpoint_id = _offload_marker(attempts)
+    if reason is not None:
+        routing.setdefault("offload", reason)
+        routing.setdefault("offload_endpoint_id", endpoint_id)
 
 
 def _raise_surfaced_error(
@@ -2276,6 +2288,8 @@ class FixedRouter:
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     if offload_reason is not None:
                         resp["_routing"].setdefault("offload", offload_reason)
+                    # Or the offload route failed before this route served.
+                    _mark_offload(resp["_routing"], attempts)
                     return resp
                 except Exception as fallback_error:
                     self._on_failure(
@@ -2576,11 +2590,16 @@ class FixedRouter:
                             req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
                         },
                     ):
+                        # This attempt's reason when it is the offload route,
+                        # else that of an offload route that failed before it:
+                        # the request was offloaded whichever route answers.
+                        earlier_offload, earlier_offload_endpoint = _offload_marker(attempts)
                         yield routing_chunk(
                             execution,
                             fallback=True,
                             failed_attempts=failed_attempts,
-                            offload=offload_reason,
+                            offload=offload_reason or earlier_offload,
+                            offload_endpoint_id=earlier_offload_endpoint,
                         )
                         first = True
                         lease = self._prefill_load.acquire(

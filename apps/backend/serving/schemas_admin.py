@@ -696,10 +696,10 @@ class AdminRequestOffloadGroup(BaseModel):
     """Requests one model sent to its offload route (``routing.offload``).
 
     ``model_id`` is the served model, as in :class:`AdminRequestPerfGroup`.
-    ``endpoint_id`` is the offload route that took the requests: the served
+    ``endpoint_id`` is the offload route the requests were sent to: the served
     endpoint of the ones it served, and the logged ``offload_endpoint_id`` of the
-    ones that failed after being sent there. A model whose offload route moved
-    during the window has one group per route.
+    ones it failed, whether a later route served them or they failed. A model
+    whose offload route moved during the window has one group per route.
 
     ``reasons`` counts the offloaded requests by the ``offload`` value their log
     carries: ``queue_wait`` and ``engine_wait`` when an earlier attempt waited

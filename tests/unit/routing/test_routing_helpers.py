@@ -100,6 +100,28 @@ def test_routing_chunk_preserves_raw_nullable_endpoint_and_optional_field_order(
     assert routing["failed_attempts"] == attempts
 
 
+def _chunk_routing(chunk: str) -> dict:
+    return json.loads(chunk.removeprefix("data: ").strip())["_routing"]
+
+
+def test_routing_chunk_names_the_offload_route_a_later_attempt_follows():
+    routing = _chunk_routing(
+        routing_chunk(
+            _adapter(provider="sibling"),
+            fallback=True,
+            offload="queue_wait",
+            offload_endpoint_id="m:reserved-api",
+        )
+    )
+
+    assert routing["offload"] == "queue_wait"
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    # Left out when the attempt is the offload route itself.
+    assert "offload_endpoint_id" not in _chunk_routing(
+        routing_chunk(_adapter(), offload="queue_wait")
+    )
+
+
 @pytest.mark.parametrize(
     "chunk",
     [

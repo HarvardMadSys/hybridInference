@@ -1216,12 +1216,14 @@ async def _load_request_offloads(
     """Count the requests sent to an offload route, per (model, offload route).
 
     A request was offloaded when its log's ``metadata`` carries ``offload``. The
-    router sets it on a response the model's offload route served
-    (``routing.offload``), and on the error of a request that failed after being
-    sent there. Both the streamed and the non-streamed logging paths keep it.
-    A served request's row names the offload route as its served endpoint. A
-    failed one's row names the route whose error was reported, usually the
-    primary, so there the offload route is its ``offload_endpoint_id``.
+    router sets it on a request it sent to the model's offload route
+    (``routing.offload``), whether the offload route served it, a later route
+    did, or the request failed, and both the streamed and the non-streamed
+    logging paths keep it. A row the offload route served
+    names it as its served endpoint. Any other offloaded row names another
+    route -- the one that served it after the offload route failed, or the one
+    whose error was reported -- so there the offload route is its
+    ``offload_endpoint_id``.
 
     One grouped scan over the filtered window, by model, route and offload
     reason. The rows that were not offloaded are grouped too, under a ``NULL``

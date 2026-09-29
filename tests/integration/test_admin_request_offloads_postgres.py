@@ -293,6 +293,27 @@ async def test_a_failed_offload_counts_under_the_route_it_was_sent_to(db_logger)
     assert group.model_request_count == 3
 
 
+async def test_an_offload_a_later_route_served_counts_under_the_route_it_was_sent_to(db_logger):
+    """The offload route failed and another route served: offloaded, not failed."""
+    sibling = f"{MODEL}:sibling-api"
+    await _seed(
+        db_logger.pool,
+        [
+            _row(offload="queue_wait", endpoint=OFFLOAD),
+            _row(offload="queue_wait", offload_endpoint=OFFLOAD, endpoint=sibling),
+            _row(endpoint=sibling),
+        ],
+    )
+
+    summary = await _summary(db_logger)
+
+    (group,) = summary.groups
+    assert (group.model_id, group.endpoint_id) == (MODEL, OFFLOAD)
+    assert group.reasons == {"queue_wait": 2}
+    assert group.failed_count == 0
+    assert group.model_request_count == 3
+
+
 async def test_only_the_window_counts(db_logger):
     await _seed(
         db_logger.pool,
