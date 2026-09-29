@@ -738,6 +738,68 @@ export async function getRecentRequestsPerformance({
   return jsonOrThrow<AdminRequestPerfBreakdownResponse>(resp);
 }
 
+// ----------------------------------------------------------------------------
+// Offloaded requests — requests a model sent to its offload route
+// ----------------------------------------------------------------------------
+
+export interface AdminRequestOffloadGroup {
+  // The *served* model and the route that took the request, as in the
+  // performance summary. A model whose offload route moved during the window
+  // has one group per route.
+  model_id: string;
+  endpoint_id: string;
+  request_count: number;
+  // Offloaded requests that failed anyway. Client disconnects are not counted.
+  failed_count: number;
+  // Offloaded requests by the reason their log carries: `queue_wait`,
+  // `engine_wait` or `last_resort`. Keyed by string so a reason a newer gateway
+  // adds still arrives.
+  reasons: Record<string, number>;
+  // Every request the model had in the window, under the same filters.
+  model_request_count: number;
+}
+
+export interface AdminRequestOffloadsResponse {
+  generated_at: string;
+  days: number;
+  // Every offloaded request in the window, groups past the cap included.
+  total_offloaded: number;
+  groups: AdminRequestOffloadGroup[];
+  truncated: boolean;
+}
+
+export async function getRecentRequestOffloads({
+  days,
+  userId,
+  sessionId,
+  modelId,
+  requestType,
+  refresh = false,
+}: {
+  days?: number;
+  userId?: string;
+  sessionId?: string;
+  modelId?: string;
+  requestType?: 'chat' | 'embedding';
+  // Bypass the backend's short-lived per-filter cache, as for the performance
+  // summary.
+  refresh?: boolean;
+} = {}): Promise<AdminRequestOffloadsResponse> {
+  const params = new URLSearchParams();
+  if (days != null) params.set('days', String(days));
+  if (userId) params.set('user_id', userId);
+  if (sessionId) params.set('session_id', sessionId);
+  if (modelId) params.set('model_id', modelId);
+  if (requestType) params.set('request_type', requestType);
+  if (refresh) params.set('refresh', 'true');
+  const query = params.toString();
+  const resp = await fetchWithAuth(
+    API_BASE,
+    query ? `/admin/recent-requests/offloads?${query}` : '/admin/recent-requests/offloads',
+  );
+  return jsonOrThrow<AdminRequestOffloadsResponse>(resp);
+}
+
 export interface AdminRequestPerfTrendBucket {
   start_time: string;
   request_count: number;

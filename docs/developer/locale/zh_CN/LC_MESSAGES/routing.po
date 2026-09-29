@@ -1036,6 +1036,17 @@ msgstr ""
 "`_routing.offload`：如果之前某次尝试等得太久，值为 `queue_wait` 或 `engine_wait`，否则为 "
 "`last_resort`。不管是不是流式，请求日志的元数据里都会保留它；每次派发到卸载路由，还会记一行 `route_offload` 日志。"
 
+#: ../developer/routing.md
+msgid ""
+"The admin console's **Recent Requests** tab counts these in an **Offloaded "
+"requests** table: the requests each model sent to its offload route over the "
+"last 24 hours, by the route that served them and the reason, with the share "
+"of the model's traffic they were and how many failed anyway (client "
+"disconnects aside). It follows the tab's user, session, model and type "
+"filters, and `GET /admin/recent-requests/offloads` serves it (`days` "
+"defaults to `1`)."
+msgstr "管理后台的 **Recent Requests** 标签页用一张 **Offloaded requests** 表统计这些请求：过去 24 小时内每个模型发往其卸载路由的请求，按实际服务的路由和原因拆分，并给出它们占该模型流量的比例，以及其中仍然失败的数量（客户端断开不计在内）。它跟随该标签页的用户、会话、模型和类型筛选，由 `GET /admin/recent-requests/offloads` 提供数据（`days` 默认为 `1`）。"
+
 #: ../developer/routing.md:391
 msgid "What does not offload:"
 msgstr "以下情况不会卸载："

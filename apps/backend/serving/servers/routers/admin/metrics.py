@@ -21,6 +21,8 @@ from serving.schemas_admin import (
     AdminRequestMetricsBucket,
     AdminRequestMetricsResponse,
     AdminRequestMetricsWindow,
+    AdminRequestOffloadGroup,
+    AdminRequestOffloadsResponse,
     AdminRequestPerfBreakdownResponse,
     AdminRequestPerfDistribution,
     AdminRequestPerfGroup,
@@ -41,6 +43,7 @@ from serving.servers.deps import (
 from serving.servers.routers.admin._common import (
     CLIENT_DISCONNECT_STATUS_CODE,
     CLIENT_DISCONNECT_TERMINAL_STATE,
+    REQUEST_OUTCOME_FILTERS,
     _build_histogram,
     _escape_ilike_substring_term,
     _round_or_none,
@@ -256,6 +259,15 @@ _TREND_BUCKET_MINUTES: tuple[tuple[int, int], ...] = ((1, 60), (7, 360), (30, 14
 # offers can be opened even though the summary lists up to
 # _PERF_BREAKDOWN_MAX_GROUPS of them.
 _PERF_TREND_MAX_SERIES = 12
+
+# The offload summary scans the same window as the breakdown, grouped by served
+# route and offload reason, so it gets the same treatment: its own keyed cache,
+# sharing the TTL, entry cap and lock. The key has the breakdown's shape.
+_OFFLOAD_SUMMARY_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestOffloadsResponse]] = {}
+# Only models with an offload route produce offloaded requests, so a window
+# rarely has more than a few groups; the cap bounds the payload regardless, and
+# keeps the busiest.
+_OFFLOAD_SUMMARY_MAX_GROUPS = 100
 
 
 def _perf_breakdown_lock() -> asyncio.Lock:
@@ -1182,6 +1194,194 @@ async def admin_recent_requests_performance(
         raise HTTPException(500, "Database not configured")
 
     return await _get_cached_request_perf_breakdown(
+        db_logger,
+        days=max(1, min(days, 90)),
+        user_id=user_id,
+        session_id=session_id,
+        model_id=model_id,
+        request_type=request_type,
+        refresh=refresh,
+    )
+
+
+async def _load_request_offloads(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    session_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
+) -> AdminRequestOffloadsResponse:
+    """Count the requests sent to an offload route, per served (model, route).
+
+    A request was offloaded when its log's ``metadata`` carries ``offload``: the
+    router sets it on a response the model's offload route served
+    (``routing.offload``), and both the streamed and the non-streamed logging
+    paths keep it.
+
+    One grouped scan over the filtered window, by served route and offload
+    reason. The rows that were not offloaded are grouped too, under a ``NULL``
+    reason, so a window sum over a model's groups is every request it had --
+    what the offloaded share is read against -- without a second scan. Callers
+    go through :func:`_get_cached_request_offloads`; ``days`` is expected
+    pre-clamped by the handler.
+
+    No outcome is excluded, unlike the performance summary: an offloaded request
+    that failed on the offload route was still offloaded. ``failed_count`` counts
+    those, leaving client disconnects out as the table's outcome filter does.
+    """
+    where_clauses, params, needs_user_join = _build_recent_requests_filters(
+        days=days,
+        user_id=user_id,
+        session_id=session_id,
+        model_id=model_id,
+        request_type=request_type,
+    )
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+    join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
+    failed_sql = REQUEST_OUTCOME_FILTERS["errors_excluding_disconnects"]
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH base AS (
+                SELECT
+                    COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model,
+                    COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint,
+                    NULLIF(l.metadata->>'offload', '') AS reason,
+                    {failed_sql} AS failed
+                FROM api_logs l
+                {join_sql}{where_sql}
+            ),
+            grouped AS (
+                SELECT
+                    served_model,
+                    served_endpoint,
+                    reason,
+                    COUNT(*) AS request_count,
+                    COUNT(*) FILTER (WHERE failed) AS failed_count,
+                    SUM(COUNT(*)) OVER (PARTITION BY served_model) AS model_request_count
+                FROM base
+                GROUP BY served_model, served_endpoint, reason
+            )
+            SELECT served_model, served_endpoint, reason, request_count, failed_count,
+                model_request_count
+            FROM grouped
+            WHERE reason IS NOT NULL
+            """,
+            *params,
+        )
+
+    folded: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        group = folded.setdefault(
+            (row["served_model"], row["served_endpoint"]),
+            {
+                "request_count": 0,
+                "failed_count": 0,
+                "reasons": {},
+                "model_request_count": int(row["model_request_count"] or 0),
+            },
+        )
+        count = int(row["request_count"] or 0)
+        group["request_count"] += count
+        group["failed_count"] += int(row["failed_count"] or 0)
+        group["reasons"][row["reason"]] = count
+
+    ranked = sorted(folded.items(), key=lambda item: (-item[1]["request_count"], item[0]))
+    return AdminRequestOffloadsResponse(
+        generated_at=datetime.now(timezone.utc),
+        days=days,
+        total_offloaded=sum(group["request_count"] for group in folded.values()),
+        groups=[
+            AdminRequestOffloadGroup(model_id=model, endpoint_id=endpoint, **group)
+            for (model, endpoint), group in ranked[:_OFFLOAD_SUMMARY_MAX_GROUPS]
+        ],
+        truncated=len(ranked) > _OFFLOAD_SUMMARY_MAX_GROUPS,
+    )
+
+
+async def _get_cached_request_offloads(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    session_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
+    refresh: bool = False,
+) -> AdminRequestOffloadsResponse:
+    """Load the offload summary, reusing a recent result for these filters."""
+    key: _PerfBreakdownKey = (
+        id(db_logger.pool),
+        days,
+        user_id or None,
+        session_id or None,
+        model_id or None,
+        request_type or None,
+    )
+    if not refresh:
+        cached = _perf_cache_get(_OFFLOAD_SUMMARY_CACHE, key)
+        if cached is not None:
+            return cached
+
+    async with _perf_breakdown_lock():
+        # Re-check inside the lock, as the breakdown does: a request that queued
+        # behind an identical miss takes that result instead of scanning again.
+        if not refresh:
+            cached = _perf_cache_get(_OFFLOAD_SUMMARY_CACHE, key)
+            if cached is not None:
+                return cached
+
+        response = await _load_request_offloads(
+            db_logger,
+            days=days,
+            user_id=user_id,
+            session_id=session_id,
+            model_id=model_id,
+            request_type=request_type,
+        )
+        _perf_cache_put(_OFFLOAD_SUMMARY_CACHE, key, response)
+        return response
+
+
+@router.get(
+    "/recent-requests/offloads",
+    response_model=AdminRequestOffloadsResponse,
+)
+async def admin_recent_requests_offloads(
+    days: int = 1,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    model_id: str | None = None,
+    request_type: str | None = None,
+    refresh: bool = False,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestOffloadsResponse:
+    """Count the requests each model sent to its offload route, per served route.
+
+    Backs the offloaded-requests table on the Recent Requests tab. See
+    :func:`_load_request_offloads` for what counts as offloaded.
+
+    Query Parameters:
+    - days: Lookback window in days (default: 1, clamped to [1, 90])
+    - user_id: Filter by user ID, name, or email (substring match)
+    - session_id: Filter to one session, as on ``/recent-requests``
+    - model_id: Filter by requested model ID (substring match)
+    - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - refresh: Bypass the short-lived per-filter cache (the tab's Refresh)
+
+    ``errors_only``, ``outcome`` and ``status_code`` are not accepted: every
+    offloaded request is counted, and ``failed_count`` says how many failed.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    return await _get_cached_request_offloads(
         db_logger,
         days=max(1, min(days, 90)),
         user_id=user_id,

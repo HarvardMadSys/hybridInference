@@ -388,6 +388,13 @@ attempt that waited too long, and `last_resort` otherwise. The request log's
 metadata keeps it, streamed or not, and every dispatch to an offload route also
 logs a `route_offload` line.
 
+The admin console's **Recent Requests** tab counts these in an **Offloaded
+requests** table: the requests each model sent to its offload route over the
+last 24 hours, by the route that served them and the reason, with the share of
+the model's traffic they were and how many failed anyway (client disconnects
+aside). It follows the tab's user, session, model and type filters, and
+`GET /admin/recent-requests/offloads` serves it (`days` defaults to `1`).
+
 What does not offload:
 
 - **A non-streaming request the gateway does not queue.** Only the limiter

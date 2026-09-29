@@ -692,6 +692,45 @@ class AdminRequestPerfBreakdownResponse(BaseModel):
     truncated: bool = False
 
 
+class AdminRequestOffloadGroup(BaseModel):
+    """Requests one model sent to its offload route (``routing.offload``).
+
+    ``model_id`` / ``endpoint_id`` are the served route, as in
+    :class:`AdminRequestPerfGroup`: the model the router routed, and the route
+    that took the request. A model whose offload route moved during the window
+    has one group per route.
+
+    ``reasons`` counts the offloaded requests by the ``offload`` value their log
+    carries: ``queue_wait`` and ``engine_wait`` when an earlier attempt waited
+    too long, ``last_resort`` when no other route could serve.
+    ``request_count`` is their sum, and ``failed_count`` how many of them failed
+    anyway (client disconnects are not counted as failures).
+    ``model_request_count`` is every request the model had in the window, under
+    the same filters, so the share offloaded can be read against it.
+    """
+
+    model_id: str
+    endpoint_id: str
+    request_count: int
+    failed_count: int
+    reasons: dict[str, int]
+    model_request_count: int
+
+
+class AdminRequestOffloadsResponse(BaseModel):
+    """Offloaded requests over the window, per served (model, offload route).
+
+    ``total_offloaded`` counts every offloaded request in the window, including
+    any in groups past the cap that ``truncated`` reports.
+    """
+
+    generated_at: datetime
+    days: int
+    total_offloaded: int
+    groups: list[AdminRequestOffloadGroup]
+    truncated: bool = False
+
+
 class AdminRequestPerfTrendBucket(BaseModel):
     """One time bucket of a served route's TTFT / decode-throughput trend.
 
@@ -1707,6 +1746,8 @@ __all__ = [
     "AdminRequestMetricsBucket",
     "AdminRequestMetricsResponse",
     "AdminRequestMetricsWindow",
+    "AdminRequestOffloadGroup",
+    "AdminRequestOffloadsResponse",
     "AdminRequestPerfBreakdownResponse",
     "AdminRequestPerfDistribution",
     "AdminRequestPerfGroup",
