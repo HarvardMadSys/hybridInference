@@ -308,6 +308,8 @@ async def test_a_request_queued_past_the_wait_is_sent_to_the_offload_route(limit
     assert routing["offload"] == OFFLOAD_QUEUE_WAIT
     assert routing["fallback"] is True
     assert routing["endpoint_id"] == "m:reserved-api"
+    # The block's own route is the offload route: nothing else to name.
+    assert "offload_endpoint_id" not in routing
     assert [attempt["error_type"] for attempt in routing["failed_attempts"]] == [
         "UpstreamQueueWaitExpired"
     ]
@@ -607,6 +609,7 @@ async def test_a_queued_stream_is_sent_to_the_offload_route(limiter):
     first_attempt, offload_attempt = _routing_chunks(chunks)
     assert "offload" not in first_attempt
     assert offload_attempt["offload"] == OFFLOAD_QUEUE_WAIT
+    assert "offload_endpoint_id" not in offload_attempt
     assert offload_attempt["fallback"] is True
     assert offload_attempt["failed_attempts"][0]["error_type"] == "UpstreamQueueWaitExpired"
     assert isinstance(primary.deadlines[0], float)
@@ -873,3 +876,53 @@ async def test_a_fallback_that_breaks_mid_stream_is_named_on_its_error(limiter):
     assert routing["fallback"] is True
     assert _attempted(routing) == ["m:primary-api", "m:sibling-api"]
     assert "offload" not in routing
+
+
+# ------------------------------------------ an offload another route served
+#
+# The offload route failed and a later route served the request. It was still
+# offloaded, so the response says so and names the offload route.
+
+
+def _served_routing(result: Any, *, stream: bool) -> dict[str, Any]:
+    """The routing block the request's log keeps: a stream's is its last chunk's."""
+    return _routing_chunks(result)[-1] if stream else result["_routing"]
+
+
+@_PATHS
+async def test_a_route_serving_after_the_offload_route_failed_marks_the_offload(limiter, stream):
+    primary = _SlotAdapter("primary")
+    sibling = _SlotAdapter("sibling")
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(primary, 1.0), (sibling, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    held = await _saturate(limiter, primary)
+
+    result = await _dispatch(router, stream=stream)
+
+    if stream:
+        assert _content(result) == "sibling"
+    else:
+        assert result["choices"][0]["message"]["content"] == "sibling"
+    routing = _served_routing(result, stream=stream)
+    assert routing["endpoint_id"] == "m:sibling-api"
+    assert routing["fallback"] is True
+    assert routing["offload"] == OFFLOAD_QUEUE_WAIT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api"]
+    held.release(status_code=200)
+
+
+@_PATHS
+async def test_a_route_serving_after_an_ordinary_failure_is_not_marked(limiter, stream):
+    primary = _SlotAdapter("primary", fail_with=RuntimeError("upstream 500"))
+    sibling = _SlotAdapter("sibling")
+    offload = _SlotAdapter("reserved", route_id="offload")
+    router = _router([(primary, 1.0), (sibling, 1.0), (offload, 1.0)], _policy())
+
+    result = await _dispatch(router, stream=stream)
+
+    routing = _served_routing(result, stream=stream)
+    assert routing["endpoint_id"] == "m:sibling-api"
+    assert "offload" not in routing
+    assert "offload_endpoint_id" not in routing
+    assert offload.calls == 0

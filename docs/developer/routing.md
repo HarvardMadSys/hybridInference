@@ -386,10 +386,11 @@ A response served by the offload route carries `_routing.offload` beside the
 usual `fallback` and `failed_attempts`: `queue_wait` or `engine_wait` after an
 attempt that waited too long, and `last_resort` otherwise. The request log's
 metadata keeps it, streamed or not, and every dispatch to an offload route also
-logs a `route_offload` line. A request that fails after being sent to its
-offload route keeps the marker too. Its error's `_routing` usually describes
-the primary, whose error is the one reported, so it also names the offload
-route as `offload_endpoint_id`.
+logs a `route_offload` line. A request keeps the marker when its offload route
+fails, whether a later route serves it or the request fails. Its `_routing` then
+describes another route: the one that served it, or the one whose error is
+reported, usually the primary. So it also names the offload route as
+`offload_endpoint_id`.
 
 The admin console's **Recent Requests** tab counts these in an **Offloaded
 requests** table: the requests each model sent to its offload route over the

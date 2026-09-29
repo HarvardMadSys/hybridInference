@@ -69,8 +69,9 @@ function CountCell({ value, emphasis = false }: { value: number; emphasis?: bool
  * why the router offloaded them, with the share of the model's traffic that
  * was offloaded. Follows the tab's user / session / model / type filters, like
  * the performance panel beside it, but always counts over the last
- * `WINDOW_LABEL`, and counts every outcome: a request the offload route failed
- * was still offloaded, and the Failed column says how many were.
+ * `WINDOW_LABEL`, and counts every outcome: a request sent to the offload route
+ * was offloaded whatever happened next, and the Failed column says how many
+ * failed anyway.
  */
 export function OffloadedRequestsPanel({
   userFilter,
