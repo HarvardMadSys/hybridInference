@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { login, resendVerification } from '../auth';
+import { endAgentSession, login, resendVerification } from '../auth';
 import { APIError } from '@/lib/utils/errors';
 
 const fetchMock = vi.fn();
@@ -77,5 +77,41 @@ describe('login error mapping', () => {
     const err = await login({ email: 'user@example.com', password: 'pw' }).catch((e) => e);
     expect(err).toBeInstanceOf(APIError);
     expect((err as APIError).code).toBe('UNKNOWN_ERROR');
+  });
+});
+
+describe('endAgentSession', () => {
+  it('POSTs the agent logout endpoint under the same-origin agents proxy', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    await endAgentSession('/agents');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/agents/api/v1/session/logout');
+    expect(init).toMatchObject({ method: 'POST', mode: 'no-cors', credentials: 'include' });
+  });
+
+  it('POSTs the agent logout endpoint on an agent served from its own host', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    await endAgentSession('https://agents.example.test/');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://agents.example.test/api/v1/session/logout');
+    expect(init).toMatchObject({ method: 'POST', mode: 'no-cors', credentials: 'include' });
+  });
+
+  it('does nothing when no agent is deployed', async () => {
+    await endAgentSession('');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never throws, so a sign-out is not blocked by an unreachable agent', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await expect(endAgentSession('https://agents.example.test')).resolves.toBeUndefined();
   });
 });

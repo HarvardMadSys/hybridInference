@@ -78,6 +78,19 @@ export async function logout(): Promise<void> {
   }
 }
 
+export async function endAgentSession(agentsUrl: string): Promise<void> {
+  if (!agentsUrl) return;
+  try {
+    await fetch(`${agentsUrl.replace(/\/+$/, '')}/api/v1/session/logout`, {
+      method: 'POST',
+      mode: 'no-cors',
+      credentials: 'include',
+    });
+  } catch {
+    // Agent unreachable
+  }
+}
+
 export async function verifyEmail(token: string): Promise<{ message: string }> {
   const resp = await safeFetch(`${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`, {
     method: 'GET',
