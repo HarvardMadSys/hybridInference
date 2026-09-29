@@ -78,6 +78,9 @@ export async function logout(): Promise<void> {
   }
 }
 
+// Wait for 3s for request to complete
+export const AGENT_LOGOUT_TIMEOUT_MS = 3_000;
+
 export async function endAgentSession(agentsUrl: string): Promise<void> {
   if (!agentsUrl) return;
   try {
@@ -85,9 +88,10 @@ export async function endAgentSession(agentsUrl: string): Promise<void> {
       method: 'POST',
       mode: 'no-cors',
       credentials: 'include',
+      signal: AbortSignal.timeout(AGENT_LOGOUT_TIMEOUT_MS),
     });
   } catch {
-    // Agent unreachable
+    // Agent unreachable or timed out
   }
 }
 

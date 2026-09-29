@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { endAgentSession, login, resendVerification } from '../auth';
+import { AGENT_LOGOUT_TIMEOUT_MS, endAgentSession, login, resendVerification } from '../auth';
 import { APIError } from '@/lib/utils/errors';
 
 const fetchMock = vi.fn();
@@ -113,5 +113,29 @@ describe('endAgentSession', () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
 
     await expect(endAgentSession('https://agents.example.test')).resolves.toBeUndefined();
+  });
+
+  it('gives up on an agent that never answers, so sign-in and sign-out still finish', async () => {
+    const timeout = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal);
+    try {
+      // Pends until aborted, like an agent that accepts the connection and stalls.
+      fetchMock.mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(new DOMException('Aborted', 'TimeoutError')),
+            );
+          }),
+      );
+
+      const pending = endAgentSession('https://agents.example.test');
+      timeout.abort();
+
+      await expect(pending).resolves.toBeUndefined();
+      expect(timeoutSpy).toHaveBeenCalledWith(AGENT_LOGOUT_TIMEOUT_MS);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 });
