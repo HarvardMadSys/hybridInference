@@ -270,6 +270,13 @@ the admin playground) publishes nothing and shares one anonymous binding.
    picks. A pin is a cache-locality optimisation, not a promise to queue.
 6. After the TTL elapses with no traffic the entry expires. Expired entries are
    swept lazily once the table exceeds `AFFINITY_SWEEP_THRESHOLD` (1000).
+7. However busy its caller, a pin lasts at most one day from when it was made
+   (`ROUTING_AFFINITY_MAX_AGE_SEC`, default `86400`; `0` turns the cap off).
+   Renewals never extend it past that, so the first request after it makes a
+   fresh weighted pick. Without the cap, a caller that never pauses for five
+   minutes keeps its endpoint for good, and a weight change, an admin override
+   included, reaches only callers that go quiet or fail over. Pins age from when
+   they were made, so the re-picks are spread across the day.
 
 **Scope and limits:**
 

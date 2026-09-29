@@ -8,6 +8,7 @@ import pytest
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
+    AFFINITY_MAX_AGE_SECONDS,
     AFFINITY_SWEEP_THRESHOLD,
     AFFINITY_TTL_SECONDS,
     FixedRouter,
@@ -56,6 +57,7 @@ class _FailAdapter(BaseAdapter):
 def test_constants_exposed():
     assert AFFINITY_TTL_SECONDS == 300.0
     assert AFFINITY_SWEEP_THRESHOLD == 1000
+    assert AFFINITY_MAX_AGE_SECONDS == 86400.0
 
 
 @pytest.mark.unit
@@ -173,6 +175,57 @@ def test_expired_entry_repicks():
     chosen = r._select_adapter("m")
     assert chosen is a
     assert r._affinity[("u1", "m")].expires_at > time.monotonic()
+
+
+@pytest.mark.unit
+def test_busy_pin_is_redrawn_once_it_reaches_max_age():
+    """A caller that never pauses is re-drawn by weight once its pin is a day old.
+
+    The sliding TTL alone would keep it wherever a failover or backlog re-pick
+    last moved it, whatever the weights say. The clock is monotonic, so the pin
+    is aged rather than slept through: moving only ``created_at`` back stands in
+    for a day of renewals, which would have kept ``expires_at`` current.
+    """
+    r = FixedRouter()
+    heavy = _EchoAdapter(_cfg("m", provider="HEAVY", base_url="http://HEAVY"))
+    light = _EchoAdapter(_cfg("m", provider="LIGHT", base_url="http://LIGHT"))
+    r.register_route("m", [(heavy, 1.0), (light, 1e-9)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    r._record_affinity_and_return("m", light, "u1")
+    pin = r._affinity[("u1", "m")]
+    pin.created_at -= AFFINITY_MAX_AGE_SECONDS - 10
+
+    # Ten seconds of life left: honored, but the renewal stops at the cap.
+    assert r._select_adapter("m") is light
+    assert pin.expires_at == pin.created_at + AFFINITY_MAX_AGE_SECONDS
+
+    # Eleven seconds later the cap has passed, however busy the caller stayed.
+    pin.created_at -= 11
+    pin.expires_at -= 11
+    assert r._select_adapter("m") is heavy
+    fresh = r._affinity[("u1", "m")]
+    assert fresh is not pin
+    assert fresh.endpoint_id == endpoint_id_for_adapter(heavy)
+    assert fresh.expires_at > time.monotonic()
+
+
+@pytest.mark.unit
+def test_max_age_zero_turns_the_cap_off(monkeypatch):
+    import routing.routers as rr
+
+    monkeypatch.setattr(rr, "AFFINITY_MAX_AGE_SECONDS", 0.0)
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    r.register_route("m", [(a, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    r._record_affinity_and_return("m", a, "u1")
+    pin = r._affinity[("u1", "m")]
+    pin.created_at -= 10 * 86400  # kept busy for ten days
+    before = time.monotonic()
+    assert r._select_adapter("m") is a
+    assert pin.expires_at >= before + AFFINITY_TTL_SECONDS
 
 
 @pytest.mark.unit
