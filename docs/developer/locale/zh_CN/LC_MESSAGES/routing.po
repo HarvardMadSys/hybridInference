@@ -945,6 +945,14 @@ msgid ""
 "once."
 msgstr "**卸载尝试**本身照常排队，使用完整的获取超时，因为已经没有别处可以再送。一个请求最多被卸载一次。"
 
+#: ../developer/routing.md:344
+msgid ""
+"**A failed offload.** If the offload route fails too, the attempt cut short "
+"for it is tried again, once, after every other candidate, and this time "
+"waits for its slot up to the full acquire timeout. An offload can make a "
+"request slower, but never fails one its own route would have served."
+msgstr "**卸载失败**。如果卸载路由也失败了，为它被截断的那次尝试会在其他所有候选之后再试一次，只试一次，这次拿槽位最多等满完整的获取超时。卸载可能让请求变慢，但绝不会让本来能由自己的路由完成的请求失败。"
+
 #: ../developer/routing.md:345
 msgid ""
 "Cutting a queue wait short is safe because the request has not left the "
@@ -986,6 +994,13 @@ msgstr ""
 "**首 token 等待**。如果引擎在同样的等待时间内一个 token "
 "都没发出，这次尝试就会被取消（关闭流会让引擎中止这个请求），请求接着交给卸载路由。计时从请求离开网关开始，所以在出站队列里花的时间由排队等待单独约束；本地服务器从不在那里排队，能用满整段等待时间。引擎在首个"
 " token 之前发来的内容（比如只含 role 的 delta）会先暂存，等 token 到了再放行，所以客户端永远看不到被放弃的那次尝试。"
+
+#: ../developer/routing.md:371
+msgid ""
+"**Back to the engine.** If the offload route fails too, the request goes "
+"back to the engine it left, once, after every other candidate, and this time "
+"waits as long as the engine needs."
+msgstr "**回到原引擎**。如果卸载路由也失败了，请求会在其他所有候选之后回到它离开的那个引擎，只回去一次，这次引擎要多久就等多久。"
 
 #: ../developer/routing.md:367
 msgid ""
@@ -1034,8 +1049,10 @@ msgid ""
 "offload route fails, whether a later route serves it or the request fails. "
 "Its `_routing` then describes another route: the one that served it, or the "
 "one whose error is reported, usually the primary. So it also names the "
-"offload route as `offload_endpoint_id`."
-msgstr "由卸载路由返回的响应，除了常见的 `fallback` 和 `failed_attempts`，还带有 `_routing.offload`：如果之前某次尝试等得太久，值为 `queue_wait` 或 `engine_wait`，否则为 `last_resort`。不管是不是流式，请求日志的元数据里都会保留它；每次派发到卸载路由，还会记一行 `route_offload` 日志。卸载路由失败时，请求依然保留这个标记，不管之后由另一条路由返回，还是整个请求失败。这时它的 `_routing` 描述的是另一条路由：返回响应的那条，或者报告出错的那条（通常是主路由），所以还会用 `offload_endpoint_id` 写明卸载路由。"
+"offload route as `offload_endpoint_id`. An attempt that was cut short and "
+"tried again is reported by its retry's error, not by the wait that cut it "
+"short."
+msgstr "由卸载路由返回的响应，除了常见的 `fallback` 和 `failed_attempts`，还带有 `_routing.offload`：如果之前某次尝试等得太久，值为 `queue_wait` 或 `engine_wait`，否则为 `last_resort`。不管是不是流式，请求日志的元数据里都会保留它；每次派发到卸载路由，还会记一行 `route_offload` 日志。卸载路由失败时，请求依然保留这个标记，不管之后由另一条路由返回，还是整个请求失败。这时它的 `_routing` 描述的是另一条路由：返回响应的那条，或者报告出错的那条（通常是主路由），所以还会用 `offload_endpoint_id` 写明卸载路由。被截断后又重试过的尝试，报告的是重试时的错误，而不是截断它的那次等待。"
 
 #: ../developer/routing.md
 msgid ""

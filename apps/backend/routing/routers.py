@@ -32,6 +32,7 @@ from routing.offload import (
     OFFLOAD_LAST_RESORT,
     FallbackOrder,
     OffloadPolicy,
+    abandoned_for_offload,
     offload_reason_for,
 )
 from routing.prefill_load import (
@@ -276,11 +277,18 @@ class _RouteAttempt:
 
     ``offload`` is why the attempt went to the model's offload route (the
     success path's ``_routing["offload"]``), ``None`` for any other route.
+
+    ``route`` is the route adapter the attempt was dispatched as: the primary,
+    or the candidate ``FallbackOrder`` handed out. A retry shares it with the
+    attempt it retries. ``adapter`` can be a binding's adapter instead, and an
+    admin edit can put a new adapter behind the same endpoint id mid-request,
+    so neither of those identifies a retry.
     """
 
     adapter: BaseAdapter
     error: BaseException
     offload: str | None = None
+    route: BaseAdapter | None = None
 
 
 def _describes_request(exc: BaseException) -> bool:
@@ -344,6 +352,35 @@ def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
     return attempts[select_surfaced_error([attempt.error for attempt in attempts])]
 
 
+def _reported_attempts(attempts: Sequence[_RouteAttempt]) -> list[_RouteAttempt]:
+    """Return ``attempts`` with each one cut short for the offload route replaced by its retry.
+
+    The router abandons an attempt for the offload route (``abandoned_for_offload``)
+    before its route has answered. If the offload route then fails, the fallback
+    loop sends the request back to that route (``FallbackOrder``). That retry is
+    the route's answer, so it takes the abandoned attempt's place in dispatch
+    order. A primary that was cut short and then failed on its retry therefore
+    stays the default error surfaced, with its own error instead of the router's
+    deadline. An abandoned attempt with no retry is left where it is.
+
+    A retry is matched by the route adapter both attempts were dispatched as
+    (``_RouteAttempt.route``), not by endpoint id. A route an admin edit puts in
+    the original's place mid-request can share the endpoint id, and the loop
+    tries it as an ordinary fallback before the retry.
+    """
+    reported: list[_RouteAttempt] = []
+    later = list(attempts)
+    while later:
+        attempt = later.pop(0)
+        if attempt.route is not None and abandoned_for_offload(attempt.error):
+            for position, retry in enumerate(later):
+                if retry.route is attempt.route:
+                    attempt = later.pop(position)
+                    break
+        reported.append(attempt)
+    return reported
+
+
 def _offload_marker(attempts: Sequence[_RouteAttempt]) -> tuple[str | None, str | None]:
     """Return ``(offload, offload_endpoint_id)`` for an attempt sent to the offload route.
 
@@ -399,8 +436,12 @@ def _raise_surfaced_error(
     claim a direct causal link that does not exist (two routes failed
     independently) and, when the primary is the one selected, make it its own
     cause.
+
+    An attempt cut short for the offload route is represented by its retry, if
+    it had one (``_reported_attempts``).
     """
-    selected = _select_surfaced_error(attempts)
+    reported = _reported_attempts(attempts)
+    selected = _select_surfaced_error(reported)
     exc = selected.error
     routing = getattr(exc, "_routing", None)
     if isinstance(routing, dict):
@@ -416,7 +457,7 @@ def _raise_surfaced_error(
             "failed_attempts": failed_attempts,
         }
         exc._routing = routing  # type: ignore[attr-defined]
-    if selected is not attempts[0]:
+    if selected is not reported[0]:
         # Same marker the success path puts on a response served by a fallback,
         # and it matters more here: this block's provider is the route that
         # produced the status being reported, not the route the request was
@@ -2174,7 +2215,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2210,14 +2251,15 @@ class FixedRouter:
             # Every other route in declaration order, bounded by the dispatch
             # scope and the request's modalities exactly as selection was. The
             # model's offload route, if any, is ordered by outcome instead: next
-            # after an attempt that ended in the gateway queue, else last.
+            # after an attempt that ended in the gateway queue, else last. A
+            # route cut short for it is tried once more at the very end.
             order, offload_policy = self._fallback_order(
                 model_id,
                 primary,
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
             )
-            order.record_failure(primary_error)
+            order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
                 adapter, offload_reason = candidate
                 # The offload route included: a window that cannot fit the
@@ -2229,6 +2271,13 @@ class FixedRouter:
                 # costs no admission slot.
                 execution = execution_adapter(adapter, routing_options)
                 leaf = self._leaf_for(self.binding_for(execution, model_id))
+                if adapter is primary:
+                    # The primary's retry, after it was cut short for an offload
+                    # route that failed. Its first attempt is off the wire, so
+                    # the claim it took goes back first; held, a half-open probe
+                    # would refuse this request its own retry.
+                    self._health_registry.end_dispatch(primary_claim)
+                    primary_claim = None
                 # Fallback is still automatic routing, so it must honor the
                 # same shared circuit eligibility as the initial selection.
                 # Explicit pinning returned above and remains the sole circuit
@@ -2299,9 +2348,11 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
+                    attempts.append(
+                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
+                    )
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
-                    order.record_failure(fallback_error)
+                    order.record_failure(fallback_error, adapter)
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
@@ -2309,10 +2360,10 @@ class FixedRouter:
         finally:
             # Every exit, cancellation included: a claim the request keeps is a
             # cooldown the endpoint spends invisible to selection. Released after
-            # the fallback loop rather than inside it because the loop never
-            # revisits ``primary`` -- holding it that long costs nothing, and an
-            # early release would let a second probe start while this one is
-            # still on the wire.
+            # the fallback loop rather than inside it because the loop revisits
+            # ``primary`` only for its retry, which hands the claim back itself --
+            # holding it that long costs nothing, and an early release would let
+            # a second probe start while this one is still on the wire.
             self._health_registry.end_dispatch(primary_claim)
 
     async def stream_chat_completion(
@@ -2478,7 +2529,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -2530,16 +2581,16 @@ class FixedRouter:
             if chunks_yielded:
                 raise primary_error
             refused_window = _widest_refused_window(None, primary, primary_error)
-            # Same candidates, same order, same offload placement and same
-            # context-window skip as the non-streaming loop -- see
-            # ``_fallback_order``.
+            # Same candidates, same order, same offload placement, same retry
+            # of a route cut short for it and same context-window skip as the
+            # non-streaming loop -- see ``_fallback_order``.
             order, offload_policy = self._fallback_order(
                 model_id,
                 primary,
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
             )
-            order.record_failure(primary_error)
+            order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
                 adapter, offload_reason = candidate
                 if _skips_for_context_window(model_id, adapter, refused_window):
@@ -2549,6 +2600,11 @@ class FixedRouter:
                 # non-streaming loop: an unusable binding costs no probe slot.
                 execution = execution_adapter(adapter, routing_options)
                 leaf = self._leaf_for(self.binding_for(execution, model_id))
+                if adapter is primary:
+                    # The primary's retry: its claim goes back first, as in the
+                    # non-streaming loop.
+                    self._health_registry.end_dispatch(primary_claim)
+                    primary_claim = None
                 # Synthetic routing chunks are emitted only after circuit
                 # admission so an open automatic fallback is never exposed as
                 # an attempted upstream. Explicit pinning returned above. The
@@ -2635,7 +2691,9 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
+                    attempts.append(
+                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
+                    )
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
@@ -2657,7 +2715,7 @@ class FixedRouter:
                             _mark_offload(fallback_routing, attempts)
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
-                    order.record_failure(fallback_error)
+                    order.record_failure(fallback_error, adapter)
                     continue
                 finally:
                     # Covers the attempt that never reached a first token.

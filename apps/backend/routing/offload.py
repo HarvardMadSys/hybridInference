@@ -21,6 +21,11 @@ traffic, and :class:`~routing.routers.FixedRouter` uses it in two situations:
 The offload attempt itself queues normally, with no threshold of its own: there
 is nowhere left to offload it to.
 
+An attempt cut short for the offload route got no answer from its own route. So
+when the offload route fails too, the request goes back to that route once, after
+every other candidate, and waits there as long as it needs. An offload can make a
+request slower, but never fails one its own route would have served.
+
 What makes this safe to do on a queue wait is that the wait happens *before*
 dispatch. The request has not reached the provider, so abandoning its place in
 line releases nothing upstream and cannot duplicate a generation; the limiter
@@ -42,7 +47,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from routing.engine_wait import EngineWaitExpired
-from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -56,6 +61,7 @@ __all__ = [
     "FallbackOrder",
     "OffloadPolicy",
     "OffloadPolicySource",
+    "abandoned_for_offload",
     "ended_in_gateway_queue",
     "offload_reason_for",
 ]
@@ -127,6 +133,19 @@ def offload_reason_for(exc: BaseException) -> str | None:
     return None
 
 
+def abandoned_for_offload(exc: BaseException) -> bool:
+    """Return whether the router cut an attempt short to offload its request.
+
+    True for the two deadlines an offload route arms: the engine wait
+    (``EngineWaitExpired``) and the queue wait (``UpstreamQueueWaitExpired``).
+    Neither is the route's answer, because the route was never heard from. A
+    queue wait that ran to the limiter's own acquire timeout (a plain
+    ``UpstreamSaturated``) is not included: that attempt waited as long as it
+    would have with no offload route at all.
+    """
+    return isinstance(exc, (EngineWaitExpired, UpstreamQueueWaitExpired))
+
+
 class FallbackOrder:
     """The order one request tries the rest of its route in after its primary fails.
 
@@ -136,11 +155,16 @@ class FallbackOrder:
     otherwise after every ordinary candidate. It is handed out at most once per
     request.
 
+    An attempt cut short for the offload route (:func:`abandoned_for_offload`)
+    has its route handed out once more, after everything else. By then the
+    offload route is no longer pending, so the caller arms no deadline for it,
+    and the route answers however long it takes.
+
     Callers report each failed attempt through :meth:`record_failure` before
     asking for the next candidate.
     """
 
-    __slots__ = ("_offload", "_offload_next", "_ordinary")
+    __slots__ = ("_offload", "_offload_next", "_ordinary", "_retried", "_retries")
 
     def __init__(
         self,
@@ -152,14 +176,26 @@ class FallbackOrder:
         )
         self._offload = offload
         self._offload_next: str | None = None
+        self._retries: deque[BaseAdapter] = deque()
+        self._retried: set[int] = set()
 
     @property
     def offload_pending(self) -> BaseAdapter | None:
         """Return the offload adapter while it has not been handed out yet."""
         return self._offload
 
-    def record_failure(self, exc: BaseException) -> None:
-        """Fold one failed attempt's error into the order of what comes next."""
+    def record_failure(self, exc: BaseException, adapter: BaseAdapter | None = None) -> None:
+        """Fold one failed attempt's error into the order of what comes next.
+
+        ``adapter`` is the route the attempt was sent to. It is queued for a
+        retry when the attempt was cut short for the offload route, even if the
+        order no longer holds that offload route. Each route is queued at most
+        once per request, whatever its retry raises, so no error can keep a
+        request cycling back to the same route.
+        """
+        if adapter is not None and abandoned_for_offload(exc) and id(adapter) not in self._retried:
+            self._retried.add(id(adapter))
+            self._retries.append(adapter)
         if self._offload is None:
             return
         reason = offload_reason_for(exc)
@@ -169,9 +205,9 @@ class FallbackOrder:
     def next(self) -> tuple[BaseAdapter, str | None] | None:
         """Return the next candidate and, for the offload route, why it is used.
 
-        The second element is ``None`` for an ordinary candidate, and one of the
-        ``OFFLOAD_*`` reasons for the offload route. ``None`` overall means the
-        order is exhausted.
+        The second element is ``None`` for an ordinary candidate or a retry,
+        and one of the ``OFFLOAD_*`` reasons for the offload route. ``None``
+        overall means the order is exhausted.
         """
         if self._offload is not None and (self._offload_next or not self._ordinary):
             adapter = self._offload
@@ -181,4 +217,6 @@ class FallbackOrder:
             return adapter, reason
         if self._ordinary:
             return self._ordinary.popleft(), None
+        if self._retries:
+            return self._retries.popleft(), None
         return None
