@@ -1,9 +1,10 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { login as loginApi, logout as logoutApi } from '@/lib/api/auth';
+import { endAgentSession, login as loginApi, logout as logoutApi } from '@/lib/api/auth';
 import { AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
+import { useSiteConfig } from './SiteConfigProvider';
 
 /**
  * Exported because the host facade re-exports them: a distribution's UI reads
@@ -46,6 +47,7 @@ export function hasRole(userRole: string | undefined, required: string): boolean
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { agentsUrl } = useSiteConfig();
   const [state, setState] = useState<AuthState>({
     isAuthenticated: false,
     loading: true,
@@ -85,21 +87,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   }, []);
 
+  // Sign out from cloud agent
   const login = useCallback(
     async (email: string, password: string) => {
       await loginApi({ email, password });
+      await endAgentSession(agentsUrl);
       await refreshUser();
     },
-    [refreshUser],
+    [agentsUrl, refreshUser],
   );
 
   const logout = useCallback(async () => {
     try {
       await logoutApi();
     } finally {
+      await endAgentSession(agentsUrl);
       setState({ isAuthenticated: false, loading: false, user: null });
     }
-  }, []);
+  }, [agentsUrl]);
 
   const value: AuthContextValue = {
     state,

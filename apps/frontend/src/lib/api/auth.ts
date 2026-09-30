@@ -78,6 +78,23 @@ export async function logout(): Promise<void> {
   }
 }
 
+// Wait for 3s for request to complete
+export const AGENT_LOGOUT_TIMEOUT_MS = 3_000;
+
+export async function endAgentSession(agentsUrl: string): Promise<void> {
+  if (!agentsUrl) return;
+  try {
+    await fetch(`${agentsUrl.replace(/\/+$/, '')}/api/v1/session/logout`, {
+      method: 'POST',
+      mode: 'no-cors',
+      credentials: 'include',
+      signal: AbortSignal.timeout(AGENT_LOGOUT_TIMEOUT_MS),
+    });
+  } catch {
+    // Agent unreachable or timed out
+  }
+}
+
 export async function verifyEmail(token: string): Promise<{ message: string }> {
   const resp = await safeFetch(`${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`, {
     method: 'GET',
