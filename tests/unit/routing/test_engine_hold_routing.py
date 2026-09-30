@@ -21,7 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.offload import OFFLOAD_QUEUE_WAIT, OffloadPolicy
+from routing.offload import OFFLOAD_LAST_RESORT, OFFLOAD_QUEUE_WAIT, OffloadPolicy
+from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.adapters.dispatch_watch import report_first_token
@@ -128,6 +129,7 @@ class _OffloadRoute(BaseAdapter):
         )
         self.fail_with = fail_with
         self.calls = 0
+        self.holds: list[Any] = []
 
     def has_capacity_for_role(self, role: str | None) -> bool:
         return role != "free"
@@ -144,6 +146,7 @@ class _OffloadRoute(BaseAdapter):
         self, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncGenerator[str, None]:
         self.calls += 1
+        self.holds.append(req_ctx.get().get(req_ctx.UPSTREAM_ENGINE_HOLD))
         if self.fail_with is not None:
             raise self.fail_with
         yield _chunk({"content": "offload"})
@@ -199,12 +202,16 @@ async def _collect(stream) -> list[str]:
     return [chunk async for chunk in stream]
 
 
-def _stream(router: FixedRouter, role: str) -> asyncio.Task[list[str]]:
+def _stream(
+    router: FixedRouter, role: str, options: RoutingRequestOptions | None = None
+) -> asyncio.Task[list[str]]:
     """Start one caller's stream in a task of its own, as the serving layer runs one."""
 
     async def run() -> list[str]:
         with req_ctx.push(**{req_ctx.USER_ROLE: role}):
-            return await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+            return await _collect(
+                router.stream_chat_completion(MODEL, MESSAGES, routing_options=options)
+            )
 
     return asyncio.create_task(run())
 
@@ -263,6 +270,47 @@ async def test_a_model_without_an_engine_queue_limit_holds_nothing():
 
     assert engine.holds == [None]
     assert get_upstream_limiter().engine_snapshot() == {}
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param(RoutingRequestOptions(pin_provider=f"{MODEL}:local-18003"), id="pinned"),
+        pytest.param(RoutingRequestOptions(allow_fallback=False), id="caller-owns-the-order"),
+    ],
+)
+async def test_a_stream_that_cannot_be_offloaded_still_takes_its_place_in_line(options):
+    """It reaches the engine all the same, so the line has to count it."""
+    engine = _Engine()
+    router = _router(engine, _OffloadRoute(), limit=1)
+    ahead = _stream(router, "free")
+    await engine.wait_sent(1)
+
+    behind = _stream(router, "pro", options)
+    await _until(lambda: _line().get("waiting") == 1)
+    assert engine.sent_count == 1
+    assert isinstance(engine.holds[-1], EngineHold)
+
+    engine.answer(0)
+    await engine.wait_sent(2)
+    engine.answer(1)
+    assert _content(await ahead) == "engine"
+    assert _content(await behind) == "engine"
+
+
+async def test_the_offload_route_as_the_last_resort_primary_takes_its_place_in_line():
+    engine = _Engine()
+    offload = _OffloadRoute()
+    router = _router(engine, offload, limit=2)
+    for _ in range(10):
+        router.endpoint_health_registry.record_failure(f"{MODEL}:local-18003", reason="test")
+
+    chunks = await _stream(router, "pro")
+
+    assert _content(chunks) == "offload"
+    assert _routing(chunks)[0]["offload"] == OFFLOAD_LAST_RESORT
+    assert isinstance(offload.holds[0], EngineHold)
+    assert offload.holds[0].limit == 2
 
 
 async def test_a_response_that_arrives_whole_is_never_held():

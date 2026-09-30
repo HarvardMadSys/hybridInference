@@ -463,11 +463,13 @@ gateway, in arrival order, one line per engine (`EngineHold` in
   queue (`_routing.offload` is `queue_wait`), before the engine has seen it.
   There is nothing to cancel at the engine and no prefill to lose.
 - **One that cannot waits its turn.** An attempt with nowhere else to go — a
-  caller the offload route holds no key for, a retry after a failed offload,
-  the offload attempt itself — has no deadline of its own. It keeps its place
-  for up to the acquire timeout (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`),
-  and is then sent to the engine anyway, past the limit. The hold decides
-  where a request waits, and never fails one.
+  pinned request, one whose caller owns the candidate order, a caller the
+  offload route holds no key for, a retry after a failed offload, the offload
+  attempt itself — has no deadline of its own, but it still counts. It keeps
+  its place for up to the acquire timeout
+  (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), and is then sent to the engine
+  anyway, past the limit. The hold decides where a request waits, and never
+  fails one.
 - **Only streaming requests to a local server are held.** A non-streaming
   request has no first token to give its place up on and goes straight to the
   engine, and a remote route has the limiter's own queue. The hold applies

@@ -1024,8 +1024,32 @@ class FixedRouter:
             return None
         return FirstTokenWatch(endpoint_id_for_adapter(adapter), wait_seconds=policy.wait_seconds)
 
+    def _engine_queue_limit(self, model_id: str) -> int | None:
+        """Return the engine queue limit the model's stored offload policy sets, or None.
+
+        Read from the policy itself, not from whether this request could be
+        offloaded. A pinned request, one whose caller owns the candidate order,
+        and one whose primary is the offload route still reach the model's
+        engines, and an engine's line only holds its limit if it counts every
+        stream it is sent. Never raises, like ``_primary_offload``: it runs
+        where a stranded claim would cost more than a missing hold.
+        """
+        try:
+            source = self.offload_policy_resolver
+            route = self.routes.get(model_id)
+            if source is None or route is None:
+                return None
+            policy = source.get_offload_policy(route.canonical_model_id or model_id)
+            return policy.engine_queue_limit if policy is not None else None
+        except Exception:
+            logger.error(
+                f"Engine queue limit lookup failed for model {model_id}; routing without it",
+                exc_info=True,
+            )
+            return None
+
     @staticmethod
-    def _hold_for(policy: OffloadPolicy | None) -> EngineHold | None:
+    def _hold_for(engine_queue_limit: int | None) -> EngineHold | None:
         """Return one streaming attempt's place in line for a local engine, or None.
 
         Every streaming attempt of a model whose offload policy sets an engine
@@ -1034,9 +1058,9 @@ class FixedRouter:
         limiter applies it only to a local engine (``upstream_limiter``), and
         the place is this attempt's alone, like its watch.
         """
-        if policy is None or policy.engine_queue_limit is None:
+        if engine_queue_limit is None:
             return None
-        return EngineHold(policy.engine_queue_limit)
+        return EngineHold(engine_queue_limit)
 
     @staticmethod
     async def _await_first_token(stream: AsyncIterator[Any], watch: FirstTokenWatch) -> list[Any]:
@@ -2497,6 +2521,8 @@ class FixedRouter:
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
         )
+        # For every stream of this request, whatever its offload plan says.
+        engine_queue_limit = self._engine_queue_limit(model_id)
         chunks_yielded = False
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
@@ -2512,7 +2538,7 @@ class FixedRouter:
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
-                    req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(primary_plan.policy),
+                    req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                 },
             ):
                 # Emit synthetic _routing chunk so completions.py can recover
@@ -2682,7 +2708,7 @@ class FixedRouter:
                             ),
                             req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
                             req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
-                            req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(offload_policy),
+                            req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                         },
                     ):
                         # This attempt's reason when it is the offload route,

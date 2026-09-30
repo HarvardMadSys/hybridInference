@@ -1171,12 +1171,14 @@ msgstr "**能卸载的排队请求到了等待时间就离开**，和离开任�
 #: ../developer/routing.md:465
 msgid ""
 "**One that cannot waits its turn.** An attempt with nowhere else to go — a "
-"caller the offload route holds no key for, a retry after a failed offload, "
-"the offload attempt itself — has no deadline of its own. It keeps its place "
-"for up to the acquire timeout (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), "
-"and is then sent to the engine anyway, past the limit. The hold decides "
-"where a request waits, and never fails one."
-msgstr "**不能卸载的请求按顺序等**。无处可去的尝试——卸载路由里没有其可用 key 的调用方、卸载失败后的重试、卸载尝试本身——没有自己的截止时间。它最多保留位置到获取超时（`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`），之后无论如何都会超出上限发给引擎。排队只决定请求在哪里等，从不让请求失败。"
+"pinned request, one whose caller owns the candidate order, a caller the "
+"offload route holds no key for, a retry after a failed offload, the offload "
+"attempt itself — has no deadline of its own, but it still counts. It keeps "
+"its place for up to the acquire timeout "
+"(`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), and is then sent to the engine "
+"anyway, past the limit. The hold decides where a request waits, and never "
+"fails one."
+msgstr "**不能卸载的请求按顺序等**。无处可去的尝试——固定路由（pinned）的请求、由调用方决定候选顺序的请求、卸载路由里没有其可用 key 的调用方、卸载失败后的重试、卸载尝试本身——没有自己的截止时间，但同样计数。它最多保留位置到获取超时（`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`），之后无论如何都会超出上限发给引擎。排队只决定请求在哪里等，从不让请求失败。"
 
 #: ../developer/routing.md:471
 msgid ""
