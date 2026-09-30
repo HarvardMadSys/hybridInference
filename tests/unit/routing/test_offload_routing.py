@@ -15,11 +15,15 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from routing.endpoint_health import _CircuitState
+from routing.engine_wait import EngineWaitExpired
 from routing.offload import (
+    OFFLOAD_ENGINE_WAIT,
     OFFLOAD_LAST_RESORT,
     OFFLOAD_QUEUE_WAIT,
     FallbackOrder,
     OffloadPolicy,
+    abandoned_for_offload,
     ended_in_gateway_queue,
 )
 from routing.protocols import RoutingRequestOptions
@@ -190,6 +194,14 @@ def test_only_gateway_queue_refusals_count_as_a_queue_wait():
     assert not ended_in_gateway_queue(asyncio.TimeoutError())
 
 
+def test_only_the_offload_deadlines_cut_an_attempt_short():
+    assert abandoned_for_offload(UpstreamQueueWaitExpired("x"))
+    assert abandoned_for_offload(EngineWaitExpired("m:a-api", 1.0))
+    # A wait that ran to the limiter's own timeout was not cut short.
+    assert not abandoned_for_offload(UpstreamSaturated("x"))
+    assert not abandoned_for_offload(RuntimeError("upstream 500"))
+
+
 def test_fallback_order_without_offload_is_route_order():
     a, b = object(), object()
     order = FallbackOrder([a, b])
@@ -221,6 +233,60 @@ def test_fallback_order_jumps_to_the_offload_route_after_a_queue_wait():
     order.record_failure(UpstreamQueueWaitExpired("x"))
     assert order.next() == (a, None)
     assert order.next() == (b, None)
+    assert order.next() is None
+
+
+@pytest.mark.parametrize(
+    ("cut_short", "reason"),
+    [
+        (UpstreamQueueWaitExpired("x"), OFFLOAD_QUEUE_WAIT),
+        (EngineWaitExpired("m:primary-api", 1.0), OFFLOAD_ENGINE_WAIT),
+    ],
+    ids=["queue-wait", "engine-wait"],
+)
+def test_fallback_order_retries_a_route_cut_short_for_the_offload_route_last(cut_short, reason):
+    primary, b, off = object(), object(), object()
+    order = FallbackOrder([b], off)
+    order.record_failure(cut_short, primary)
+    assert order.next() == (off, reason)
+    order.record_failure(RuntimeError("503"), off)
+    assert order.next() == (b, None)
+    order.record_failure(RuntimeError("502"), b)
+    assert order.next() == (primary, None)
+    assert order.next() is None
+
+
+def test_fallback_order_retries_only_a_route_that_was_cut_short():
+    primary, b, off = object(), object(), object()
+    order = FallbackOrder([b], off)
+    # Ran to the limiter's own acquire timeout: waited as long as it ever would.
+    order.record_failure(UpstreamSaturated("x"), primary)
+    assert order.next() == (off, OFFLOAD_QUEUE_WAIT)
+    order.record_failure(RuntimeError("503"), off)
+    assert order.next() == (b, None)
+    order.record_failure(RuntimeError("502"), b)
+    assert order.next() is None
+
+
+def test_fallback_order_retries_a_route_at_most_once():
+    """Whatever the retry raises, the request does not cycle back to the route."""
+    primary, off = object(), object()
+    order = FallbackOrder([], off)
+    order.record_failure(EngineWaitExpired("m:primary-api", 1.0), primary)
+    assert order.next() == (off, OFFLOAD_ENGINE_WAIT)
+    order.record_failure(RuntimeError("503"), off)
+    assert order.next() == (primary, None)
+    order.record_failure(EngineWaitExpired("m:primary-api", 1.0), primary)
+    assert order.next() is None
+
+
+def test_fallback_order_retries_a_route_cut_short_for_an_offload_route_since_gone():
+    """The request left that route's queue for an offload route it no longer has."""
+    primary, b = object(), object()
+    order = FallbackOrder([b])
+    order.record_failure(EngineWaitExpired("m:primary-api", 1.0), primary)
+    assert order.next() == (b, None)
+    assert order.next() == (primary, None)
     assert order.next() is None
 
 
@@ -752,23 +818,35 @@ def _attempted(routing: dict[str, Any]) -> list[str]:
     return [attempt["endpoint_id"] for attempt in routing["failed_attempts"]]
 
 
+@pytest.fixture
+def short_limiter():
+    """``limiter`` with an acquire timeout a retried attempt runs out of within a test."""
+    installed = UpstreamConcurrencyLimiter(initial_limit=1, max_limit=1, acquire_timeout=0.3)
+    reset_upstream_limiter(installed)
+    yield installed
+    reset_upstream_limiter()
+
+
 @_PATHS
-async def test_a_request_the_offload_route_failed_is_still_marked_offloaded(limiter, stream):
+async def test_a_request_the_offload_route_failed_is_still_marked_offloaded(short_limiter, stream):
     primary = _SlotAdapter("primary")
     offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 500"))
     router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
-    held = await _saturate(limiter, primary)
+    held = await _saturate(short_limiter, primary)
 
-    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+    with pytest.raises(UpstreamSaturated) as caught:
         await _dispatch(router, stream=stream)
 
+    # The primary's retry ran out of the limiter's own timeout. Its answer is the
+    # error reported, not the queue wait that cut its first attempt short, and
+    # its block says where the request went in between and why.
+    assert type(caught.value) is UpstreamSaturated
     routing = caught.value._routing
-    # The primary's queue wait is the error reported, and its block says where
-    # the request went next and why.
     assert routing["endpoint_id"] == "m:primary-api"
+    assert "fallback" not in routing
     assert routing["offload"] == OFFLOAD_QUEUE_WAIT
     assert routing["offload_endpoint_id"] == "m:reserved-api"
-    assert _attempted(routing) == ["m:primary-api", "m:reserved-api"]
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api", "m:primary-api"]
     held.release(status_code=200)
 
 
@@ -790,19 +868,25 @@ async def test_a_last_resort_that_fails_too_is_still_marked_offloaded(limiter, s
 
 
 @_PATHS
-async def test_a_route_tried_after_a_failed_offload_route_keeps_the_mark(limiter, stream):
+async def test_a_route_tried_after_a_failed_offload_route_keeps_the_mark(short_limiter, stream):
     """Offloaded is where the request was sent, whichever route failed last."""
     primary = _SlotAdapter("primary")
     sibling = _SlotAdapter("sibling", fail_with=RuntimeError("upstream 502"))
     offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
     router = _router([(primary, 1.0), (sibling, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
-    held = await _saturate(limiter, primary)
+    held = await _saturate(short_limiter, primary)
 
-    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+    with pytest.raises(UpstreamSaturated) as caught:
         await _dispatch(router, stream=stream)
 
     routing = caught.value._routing
-    assert _attempted(routing) == ["m:primary-api", "m:reserved-api", "m:sibling-api"]
+    # The primary's retry comes last, after the routes the request had not tried.
+    assert _attempted(routing) == [
+        "m:primary-api",
+        "m:reserved-api",
+        "m:sibling-api",
+        "m:primary-api",
+    ]
     assert routing["offload"] == OFFLOAD_QUEUE_WAIT
     assert routing["offload_endpoint_id"] == "m:reserved-api"
     held.release(status_code=200)
@@ -926,3 +1010,92 @@ async def test_a_route_serving_after_an_ordinary_failure_is_not_marked(limiter, 
     assert "offload" not in routing
     assert "offload_endpoint_id" not in routing
     assert offload.calls == 0
+
+
+# ------------------------------------------ a route cut short for the offload
+#
+# An attempt cut short for the offload route got no answer from its route. When
+# the offload route fails too, the request goes back to that route once, after
+# everything else, and waits there as long as it needs.
+
+
+class _FreesThenFails(_SlotAdapter):
+    """An offload route that fails, first freeing ``frees``: another route's held slot."""
+
+    frees: Any = None
+
+    def _record(self) -> None:
+        super()._record()
+        self.frees.release(status_code=200)
+
+
+@_PATHS
+async def test_a_primary_cut_short_serves_its_retry_when_the_offload_route_fails(limiter, stream):
+    primary = _SlotAdapter("primary")
+    offload = _FreesThenFails(
+        "reserved", route_id="offload", fail_with=RuntimeError("upstream 503")
+    )
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    offload.frees = await _saturate(limiter, primary)
+
+    result = await _dispatch(router, stream=stream)
+
+    if stream:
+        assert _content(result) == "primary"
+    else:
+        assert result["choices"][0]["message"]["content"] == "primary"
+    # Armed the first time; the retry had nowhere left to go, so it waited.
+    first, retry = primary.deadlines
+    assert isinstance(first, float)
+    assert retry is None
+    routing = _served_routing(result, stream=stream)
+    assert routing["endpoint_id"] == "m:primary-api"
+    assert routing["offload"] == OFFLOAD_QUEUE_WAIT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert _attempted(routing) == ["m:primary-api", "m:reserved-api"]
+
+
+@_PATHS
+async def test_a_wait_that_ran_to_the_acquire_timeout_is_not_retried(limiter, stream):
+    """It waited as long as it would have with no offload route: nothing was cut short."""
+    short = UpstreamConcurrencyLimiter(initial_limit=1, max_limit=1, acquire_timeout=0.05)
+    reset_upstream_limiter(short)
+    primary = _SlotAdapter("primary")
+    offload = _SlotAdapter("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=60.0))
+    held = await _saturate(short, primary)
+
+    with pytest.raises(UpstreamSaturated) as caught:
+        await _dispatch(router, stream=stream)
+
+    assert type(caught.value) is UpstreamSaturated
+    assert primary.calls == 1
+    assert _attempted(caught.value._routing) == ["m:primary-api", "m:reserved-api"]
+    held.release(status_code=200)
+
+
+@_PATHS
+async def test_a_primary_holding_the_half_open_probe_is_let_through_for_its_retry(limiter, stream):
+    """The request's claim on the primary goes back before its retry claims afresh."""
+    primary = _SlotAdapter("primary")
+    offload = _FreesThenFails(
+        "reserved", route_id="offload", fail_with=RuntimeError("upstream 503")
+    )
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    registry = router.endpoint_health_registry
+    registry.ensure("m:primary-api")
+    circuit = registry._circuits["m:primary-api"]
+    circuit.cooldown_seconds = 30
+    circuit.state = _CircuitState.OPEN
+    circuit.last_opened = time.perf_counter() - 31
+    offload.frees = await _saturate(limiter, primary)
+
+    result = await _dispatch(router, stream=stream)
+
+    if stream:
+        assert _content(result) == "primary"
+    else:
+        assert result["choices"][0]["message"]["content"] == "primary"
+    assert primary.calls == 2
+    # The retry was the probe, and its answer closed the circuit.
+    assert circuit.state == _CircuitState.CLOSED

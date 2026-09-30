@@ -341,6 +341,10 @@ fails over. With one:
   other route has failed, and the primary when no other route is admissible.
 - **The offload attempt** queues normally, with the full acquire timeout, since
   there is nowhere left to send it. A request is offloaded at most once.
+- **A failed offload.** If the offload route fails too, the attempt cut short
+  for it is tried again, once, after every other candidate, and this time waits
+  for its slot up to the full acquire timeout. An offload can make a request
+  slower, but never fails one its own route would have served.
 
 Cutting a queue wait short is safe because the request has not left the
 gateway: giving up its place in line releases nothing upstream, cannot
@@ -364,6 +368,9 @@ that token (`apps/backend/routing/engine_wait.py`):
   whole of it. Anything the engine sends before its first token, such as a
   role-only delta, is held back until the token arrives, so a client never sees
   the attempt that was abandoned.
+- **Back to the engine.** If the offload route fails too, the request goes back
+  to the engine it left, once, after every other candidate, and this time waits
+  as long as the engine needs.
 - **Per request.** The wait decides for the one request it times. Nothing is
   recorded against the engine: the next request is sent to it as usual, with a
   wait of its own, and an engine wait is not charged to the circuit breaker or
@@ -390,7 +397,8 @@ logs a `route_offload` line. A request keeps the marker when its offload route
 fails, whether a later route serves it or the request fails. Its `_routing` then
 describes another route: the one that served it, or the one whose error is
 reported, usually the primary. So it also names the offload route as
-`offload_endpoint_id`.
+`offload_endpoint_id`. An attempt that was cut short and tried again is reported
+by its retry's error, not by the wait that cut it short.
 
 The admin console's **Recent Requests** tab counts these in an **Offloaded
 requests** table: the requests each model sent to its offload route over the

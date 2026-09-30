@@ -442,3 +442,69 @@ async def test_a_client_that_hangs_up_while_waiting_is_not_offloaded():
 
     assert engine.cancelled == 1
     assert reserved.calls == 0
+
+
+# ----------------------------------------- back to an engine that was cut short
+#
+# The offload route failed after the engine's wait cut the stream short. The
+# engine never answered, so the request goes back to it and waits this time.
+
+
+class _SlowThenFailing(_Engine):
+    """An engine too slow to answer in time, that fails outright when retried."""
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> AsyncGenerator[str, None]:
+        if self.calls:
+            self.fail_with = RuntimeError("engine 503")
+        async for chunk in super().stream_chat_completion(messages, **params):
+            yield chunk
+
+
+@needs_timeout
+async def test_a_stream_cut_short_goes_back_to_its_engine_when_the_offload_route_fails():
+    engine = _Engine("engine", answered=True, delay=0.2)
+    reserved = _Engine("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.05))
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    assert _content(chunks) == "engine"
+    assert engine.calls == 2
+    assert engine.cancelled == 1
+    first_watch, retry_watch = engine.watches
+    assert isinstance(first_watch, FirstTokenWatch)
+    # With nowhere left to go, the retry waits as long as the engine needs.
+    assert retry_watch is None
+    served = _routing(chunks)[-1]
+    assert served["endpoint_id"] == "m:engine-api"
+    assert served["fallback"] is True
+    assert served["offload"] == OFFLOAD_ENGINE_WAIT
+    assert served["offload_endpoint_id"] == "m:reserved-api"
+    assert [(a["endpoint_id"], a["error_type"]) for a in served["failed_attempts"]] == [
+        ("m:engine-api", "EngineWaitExpired"),
+        ("m:reserved-api", "RuntimeError"),
+    ]
+
+
+@needs_timeout
+async def test_a_stream_whose_retry_fails_reports_the_engines_own_error():
+    """Not the deadline that cut its first attempt short."""
+    engine = _SlowThenFailing("engine")
+    reserved = _Engine("reserved", route_id="offload", fail_with=RuntimeError("upstream 503"))
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.05))
+
+    with pytest.raises(RuntimeError, match="engine 503") as caught:
+        await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    routing = caught.value._routing
+    assert routing["endpoint_id"] == "m:engine-api"
+    assert "fallback" not in routing
+    assert routing["offload"] == OFFLOAD_ENGINE_WAIT
+    assert routing["offload_endpoint_id"] == "m:reserved-api"
+    assert [a["endpoint_id"] for a in routing["failed_attempts"]] == [
+        "m:engine-api",
+        "m:reserved-api",
+        "m:engine-api",
+    ]
