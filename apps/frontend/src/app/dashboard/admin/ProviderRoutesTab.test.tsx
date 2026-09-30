@@ -274,7 +274,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
 
     await waitFor(() => {
-      expect(setOffloadRoute).toHaveBeenCalledWith('minimax-fast', fixedRoute.route_id, 5);
+      expect(setOffloadRoute).toHaveBeenCalledWith('minimax-fast', fixedRoute.route_id, 5, null);
     });
     // The badge follows the saved route without a reload.
     expect(await screen.findByTestId(`offload-badge-${fixedRoute.route_id}`)).toBeInTheDocument();

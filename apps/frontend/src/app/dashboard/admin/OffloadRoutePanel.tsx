@@ -30,6 +30,19 @@ interface OffloadRoutePanelProps {
   onChange: (modelId: string, offload: OffloadRoute | null) => void;
 }
 
+type ValidatedLimit = { ok: true; value: number | null } | { ok: false; error: string };
+
+function storedLimitText(offload: OffloadRoute | null): string {
+  const limit = offload?.engine_queue_limit ?? null;
+  return limit === null ? '' : String(limit);
+}
+
+// Blank is no limit: every streaming request goes straight to its engine.
+function validateEngineQueueLimit(raw: string): ValidatedLimit {
+  if (raw.trim() === '') return { ok: true, value: null };
+  return validateNumericSettingInput(raw, { min: 1, max: null, integer: true });
+}
+
 // No upper bound: the gateway's queue ends a wait at its own acquire timeout either
 // way, and a longer wait gives an engine longer to send its first token.
 function validateWait(raw: string) {
@@ -58,16 +71,19 @@ export function OffloadRoutePanel({
   const [draftWait, setDraftWait] = useState(
     offload ? String(offload.wait_seconds) : DEFAULT_WAIT_SECONDS,
   );
+  const [draftLimit, setDraftLimit] = useState(storedLimitText(offload));
   const [saving, setSaving] = useState(false);
 
   // Start over whenever the model, or what is stored for it, changes.
   useEffect(() => {
     setDraftRouteId(offload?.route_id ?? '');
     setDraftWait(offload ? String(offload.wait_seconds) : DEFAULT_WAIT_SECONDS);
+    setDraftLimit(storedLimitText(offload));
   }, [modelId, offload]);
 
   const maxWaitSeconds = queue?.maxWaitSeconds ?? null;
   const validatedWait = validateWait(draftWait);
+  const validatedLimit = validateEngineQueueLimit(draftLimit);
   const storedRouteMissing =
     offload !== null && !routes.some((route) => route.route_id === offload.route_id);
   const hasOtherRoute = routes.length >= 2;
@@ -75,17 +91,29 @@ export function OffloadRoutePanel({
     offload === null
       ? draftRouteId !== ''
       : draftRouteId !== offload.route_id ||
-        (validatedWait.ok && validatedWait.value !== offload.wait_seconds);
+        (validatedWait.ok && validatedWait.value !== offload.wait_seconds) ||
+        (validatedLimit.ok && validatedLimit.value !== (offload.engine_queue_limit ?? null));
   const canSave =
-    editable && hasOtherRoute && draftRouteId !== '' && validatedWait.ok && dirty && !saving;
+    editable &&
+    hasOtherRoute &&
+    draftRouteId !== '' &&
+    validatedWait.ok &&
+    validatedLimit.ok &&
+    dirty &&
+    !saving;
 
   const status = offload === null ? null : offload.active ? 'Active' : 'Inactive';
 
   const onSave = async () => {
-    if (!validatedWait.ok || !draftRouteId) return;
+    if (!validatedWait.ok || !validatedLimit.ok || !draftRouteId) return;
     setSaving(true);
     try {
-      const updated = await setOffloadRoute(modelId, draftRouteId, validatedWait.value);
+      const updated = await setOffloadRoute(
+        modelId,
+        draftRouteId,
+        validatedWait.value,
+        validatedLimit.value,
+      );
       onChange(modelId, updated.offload);
       toast.success('Offload route saved');
     } catch (err) {
@@ -154,8 +182,9 @@ export function OffloadRoutePanel({
       {queue && !queue.enabled && (
         <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
           The outbound limiter is disabled (UPSTREAM_CONCURRENCY_ENABLED=false), so no request waits
-          in the gateway&apos;s queue. Streaming requests are still offloaded when their engine
-          sends no first token in time, and the offload route is the last resort.
+          in the gateway&apos;s queue for a remote route. A local engine under an engine queue limit
+          still holds requests there, streaming requests are still offloaded when their engine sends
+          no first token in time, and the offload route is the last resort.
         </div>
       )}
 
@@ -204,6 +233,20 @@ export function OffloadRoutePanel({
                 className="h-9 w-28 rounded-md border border-gray-300 px-2 text-right text-[13px] font-normal text-gray-900 disabled:opacity-50"
               />
             </label>
+            <label className="flex flex-col gap-1 text-[12px] font-medium text-gray-500">
+              Engine queue limit
+              <input
+                aria-label="Engine queue limit"
+                type="number"
+                min={1}
+                step={1}
+                placeholder="Off"
+                value={draftLimit}
+                onChange={(event) => setDraftLimit(event.target.value)}
+                disabled={saving || !hasOtherRoute}
+                className="h-9 w-28 rounded-md border border-gray-300 px-2 text-right text-[13px] font-normal text-gray-900 disabled:opacity-50"
+              />
+            </label>
             <button
               type="button"
               onClick={() => void onSave()}
@@ -232,14 +275,23 @@ export function OffloadRoutePanel({
         </p>
       )}
 
+      {editable && !validatedLimit.ok && (
+        <p className="mt-1 text-[11px] text-red-600" role="alert">
+          Engine queue limit: {validatedLimit.error}
+        </p>
+      )}
+
       {editable && (
         <p className="mt-2 text-[11px] leading-5 text-gray-400">
           {maxWaitSeconds !== null
-            ? `The outbound queue gives up at ${maxWaitSeconds}s, its acquire timeout, and offloads the request then; a longer wait only gives an engine longer to send its first token. `
+            ? `The outbound queue for a remote route gives up at ${maxWaitSeconds}s, its acquire timeout, and offloads the request then; a longer wait gives a local engine longer to start answering. `
             : ''}
-          The engine&apos;s wait starts when the request leaves the gateway&apos;s queue, so a local
-          inference server, which never queues there, gets the whole wait. Only streaming requests
-          are watched for a first token.
+          The engine&apos;s wait starts when the request leaves the gateway&apos;s queue. A local
+          inference server queues there only under an engine queue limit: the gateway then sends it
+          at most that many streaming requests still waiting for a first token and holds the rest in
+          line, where a request that can use the offload route leaves after the wait, before the
+          engine sees it, and one that cannot waits its turn. Leave the limit empty to send every
+          request straight to the engine. Only streaming requests are watched or held.
         </p>
       )}
     </section>

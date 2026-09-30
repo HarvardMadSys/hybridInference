@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 from serving.config.settings import ROUTE_TYPE_ORDER
 
@@ -1689,11 +1689,16 @@ class OffloadRouteItem(BaseModel):
     policy can outlive the conditions it needs -- the model switched to another
     routing policy, the route was removed or weighted to zero -- and
     ``inactive_reason`` then says which.
+
+    ``engine_queue_limit`` is how many streaming requests a local engine of the
+    model may have been sent without a first token before the gateway holds the
+    rest, or ``None`` when every request goes straight to the engine.
     """
 
     model_id: str
     route_id: str
     wait_seconds: float
+    engine_queue_limit: int | None = None
     endpoint_id: str | None = None
     active: bool
     inactive_reason: str | None = None
@@ -1712,8 +1717,10 @@ class ListOffloadRoutesResponse(BaseModel):
     """Every stored offload route plus the queue they are measured against.
 
     ``queue_enabled`` is false while ``UPSTREAM_CONCURRENCY_ENABLED`` is off: no
-    request then waits for an outbound slot, so none is offloaded by waiting in
-    the gateway (a wait for an engine's first token still is).
+    request then waits for an outbound slot on a remote endpoint, so none is
+    offloaded by waiting there. A request held for a local engine under an
+    engine queue limit still is, and so is one whose engine sends no first token
+    in time.
     ``max_wait_seconds`` is the limiter's acquire timeout, the longest wait a
     request can spend in that queue before it fails over anyway.
     """
@@ -1724,10 +1731,15 @@ class ListOffloadRoutesResponse(BaseModel):
 
 
 class UpdateOffloadRouteRequest(BaseModel):
-    """Request payload for designating one model's offload route."""
+    """Request payload for designating one model's offload route.
+
+    The whole policy is replaced: leaving ``engine_queue_limit`` out clears it.
+    It is a strict integer, so neither ``true`` nor ``"4"`` passes for one.
+    """
 
     route_id: str = Field(..., min_length=1, max_length=512)
     wait_seconds: float = Field(..., gt=0, allow_inf_nan=False)
+    engine_queue_limit: StrictInt | None = Field(default=None, ge=1)
 
 
 # Rebuild models to ensure forward references are resolved when imported via FastAPI

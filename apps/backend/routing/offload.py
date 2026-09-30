@@ -34,10 +34,22 @@ deadline, and wait as long as they would with no offload route at all.
 What makes this safe to do on a queue wait is that the wait happens *before*
 dispatch. The request has not reached the provider, so abandoning its place in
 line releases nothing upstream and cannot duplicate a generation; the limiter
-exempts the refusal from endpoint health for the same reason. An endpoint the
-gateway does not queue for -- a local inference server, or any endpoint while the
-limiter is disabled -- never triggers an offload by waiting in that queue, only
-by an engine wait.
+exempts the refusal from endpoint health for the same reason.
+
+A local inference server has no queue in the gateway of its own: it accepts every
+request it is sent and queues what it cannot schedule yet, where the gateway
+cannot see it. The policy can give it one. With an *engine queue limit* of N, a
+local engine of the model is sent at most N streaming requests that have not
+returned a first token yet, and the rest wait in the gateway in arrival order
+(``upstream_limiter.EngineHold``). A request held there is a queue wait like any
+other: one that could be offloaded leaves at the threshold, before the engine has
+seen it, and one that could not waits its turn. A request's place frees the
+moment its engine returns a first token, so the requests an engine is already
+answering do not count, and nothing caps how many it runs at once.
+
+An endpoint the gateway does not queue for -- a local inference server under no
+engine queue limit, or a remote endpoint while the limiter is disabled -- never
+triggers an offload by waiting in that queue, only by an engine wait.
 
 This module holds the parts that are independent of one router's control flow:
 the policy value, the read-only source routers consult, and the per-request
@@ -89,10 +101,15 @@ class OffloadPolicy:
         wait_seconds: How long an attempt on any other route of the model may
             wait for an outbound slot, and then for the engine's first token,
             before the request is offloaded.
+        engine_queue_limit: How many streaming requests a local engine of the
+            model may have been sent without returning a first token before the
+            gateway holds the rest, or ``None`` to send each one straight to the
+            engine.
     """
 
     route_id: str
     wait_seconds: float
+    engine_queue_limit: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -103,6 +120,11 @@ class OffloadPolicy:
         if not math.isfinite(wait) or wait <= 0:
             raise ValueError("offload wait_seconds must be a positive, finite number")
         object.__setattr__(self, "wait_seconds", float(wait))
+        limit = self.engine_queue_limit
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+        ):
+            raise ValueError("offload engine_queue_limit must be a whole number of at least 1")
 
 
 @runtime_checkable

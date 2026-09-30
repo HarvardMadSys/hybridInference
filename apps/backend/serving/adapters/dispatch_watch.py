@@ -13,8 +13,12 @@ the serving layer knows:
   the upstream's answer, before anything it does with that output can hold it
   back from the router.
 
-Each is a no-op when the dispatch has no watch, and a failing watch is logged
-and ignored: the watch only refines routing, and must never cost a request its
+The first-token report also reaches the dispatch's place in line for a local
+engine (``upstream_limiter.EngineHold``, ``req_ctx.UPSTREAM_ENGINE_HOLD``), which
+gives it up so the next held request can go.
+
+Each is a no-op when the dispatch has no watch or hold, and a failing one is
+logged and ignored: both only refine routing, and must never cost a request its
 slot or its answer.
 """
 
@@ -39,24 +43,25 @@ def report_sent() -> None:
 
 
 def report_first_token() -> None:
-    """Tell the watch the upstream has started answering.
+    """Tell the watch, and the engine hold, that the upstream has started answering.
 
     Call it once, at the first frame carrying generated output -- text,
     reasoning, or any part of a tool call -- as read from the upstream, before a
     processor or accumulator can hold that output back.
     """
     _tell("on_first_token")
+    _tell("on_first_token", key=req_ctx.UPSTREAM_ENGINE_HOLD)
 
 
-def _tell(hook: str) -> None:
-    watch = req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH)
-    if watch is None:
+def _tell(hook: str, *, key: str = req_ctx.UPSTREAM_DISPATCH_WATCH) -> None:
+    target = req_ctx.get().get(key)
+    if target is None:
         return
     try:
-        getattr(watch, hook)()
+        getattr(target, hook)()
     except Exception:
         logger.error(
             "upstream_dispatch_watch_failed",
             exc_info=True,
-            extra={"event": "upstream_dispatch_watch_failed", "hook": hook},
+            extra={"event": "upstream_dispatch_watch_failed", "hook": hook, "target": key},
         )

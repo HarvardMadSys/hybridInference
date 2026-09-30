@@ -287,6 +287,63 @@ async def test_put_accepts_a_wait_past_the_acquire_timeout(offload_client):
     assert resolver.get_offload_policy(MODEL).wait_seconds == 90.0
 
 
+async def test_put_stores_an_engine_queue_limit_and_routing_applies_it(offload_client):
+    client, op_store, _router, _registry, resolver, audit = offload_client
+
+    response = await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "engine_queue_limit": 3},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["offload"]["engine_queue_limit"] == 3
+    _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
+    assert json.loads(value) == {
+        "engine_queue_limit": 3,
+        "route_id": RESERVED_ROUTE_ID,
+        "wait_seconds": 4.0,
+    }
+    assert resolver.get_offload_policy(MODEL) == OffloadPolicy(RESERVED_ROUTE_ID, 4.0, 3)
+    details = audit.await_args.args[4]
+    assert details["engine_queue_limit"] == 3
+    assert details["old_engine_queue_limit"] is None
+
+
+async def test_put_without_an_engine_queue_limit_clears_it(offload_client):
+    """The policy is replaced whole, so leaving the limit out turns the hold off."""
+    client, op_store, _router, _registry, resolver, audit = offload_client
+    await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "engine_queue_limit": 3},
+        headers=AUTH,
+    )
+
+    response = await _set(client, wait=4.0)
+
+    assert response.json()["offload"]["engine_queue_limit"] is None
+    _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
+    assert "engine_queue_limit" not in json.loads(value)
+    assert resolver.get_offload_policy(MODEL).engine_queue_limit is None
+    assert audit.await_args.args[4]["old_engine_queue_limit"] == 3
+
+
+@pytest.mark.parametrize("limit", [0, -2, 1.5, True, "3"])
+async def test_put_rejects_an_engine_queue_limit_that_is_not_a_whole_number_of_one_or_more(
+    offload_client, limit
+):
+    client, op_store, *_ = offload_client
+
+    response = await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "engine_queue_limit": limit},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    op_store.set_setting.assert_not_awaited()
+
+
 async def test_put_on_a_routewise_model_is_refused(offload_client):
     client, op_store, _router, registry, *_ = offload_client
     registry.strategies[MODEL] = "routewise"
@@ -357,6 +414,21 @@ async def test_delete_clears_the_policy_and_is_idempotent(offload_client):
     again = await client.delete(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
     assert again.status_code == 200
     audit.assert_not_awaited()
+
+
+async def test_delete_audits_the_engine_queue_limit_it_cleared(offload_client):
+    client, _op_store, _router, _registry, _resolver, audit = offload_client
+    await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "engine_queue_limit": 2},
+        headers=AUTH,
+    )
+
+    response = await client.delete(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
+
+    assert response.status_code == 200
+    assert audit.await_args.args[2] == "routing.offload_routes.clear"
+    assert audit.await_args.args[4]["old_engine_queue_limit"] == 2
 
 
 async def test_delete_works_for_a_model_that_no_longer_exists(offload_client):
@@ -495,6 +567,33 @@ async def test_resolver_loads_valid_rows_and_skips_the_rest():
     assert record is not None
     assert record.policy == OffloadPolicy(RESERVED_ROUTE_ID, 3.0)
     assert record.updated_by == "admin@example.com"
+
+
+async def test_resolver_reads_an_engine_queue_limit_and_skips_a_bad_one():
+    store = MagicMock()
+    store.list_settings = AsyncMock(
+        return_value=[
+            {
+                "key": f"model_offload_route:{MODEL}",
+                "value": encode_offload_policy(OffloadPolicy(RESERVED_ROUTE_ID, 3.0, 2)),
+            },
+            {
+                "key": "model_offload_route:before-the-limit",
+                "value": '{"route_id": "r", "wait_seconds": 1}',
+            },
+            {
+                "key": "model_offload_route:zero",
+                "value": '{"route_id": "r", "wait_seconds": 1, "engine_queue_limit": 0}',
+            },
+        ]
+    )
+    resolver = OffloadRouteResolver(store)
+
+    await resolver.load_all()
+
+    assert resolver.get_offload_policy(MODEL) == OffloadPolicy(RESERVED_ROUTE_ID, 3.0, 2)
+    assert resolver.get_offload_policy("before-the-limit") == OffloadPolicy("r", 1.0)
+    assert resolver.get_offload_policy("zero") is None
 
 
 async def test_a_reload_that_started_before_an_admin_write_cannot_undo_it():
