@@ -46,6 +46,7 @@ from routing.prefill_load import (
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
+from serving.adapters.upstream_limiter import EngineHold
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -1022,6 +1023,20 @@ class FixedRouter:
         if policy is None or deadline is None:
             return None
         return FirstTokenWatch(endpoint_id_for_adapter(adapter), wait_seconds=policy.wait_seconds)
+
+    @staticmethod
+    def _hold_for(policy: OffloadPolicy | None) -> EngineHold | None:
+        """Return one streaming attempt's place in line for a local engine, or None.
+
+        Every streaming attempt of a model whose offload policy sets an engine
+        queue limit gets one, whether or not it could be offloaded itself: one
+        that could not still waits behind the requests that came first. The
+        limiter applies it only to a local engine (``upstream_limiter``), and
+        the place is this attempt's alone, like its watch.
+        """
+        if policy is None or policy.engine_queue_limit is None:
+            return None
+        return EngineHold(policy.engine_queue_limit)
 
     @staticmethod
     async def _await_first_token(stream: AsyncIterator[Any], watch: FirstTokenWatch) -> list[Any]:
@@ -2196,8 +2211,10 @@ class FixedRouter:
                         endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
-                    # A response that arrives whole has no first token to watch.
+                    # A response that arrives whole has no first token to watch,
+                    # nor one to give its place at the engine up on.
                     req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                    req_ctx.UPSTREAM_ENGINE_HOLD: None,
                 },
             ):
                 self._ensure_health(endpoint_id)
@@ -2330,6 +2347,7 @@ class FixedRouter:
                                 )
                             ),
                             req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                            req_ctx.UPSTREAM_ENGINE_HOLD: None,
                         },
                     ):
                         self._ensure_health(endpoint_id)
@@ -2494,6 +2512,7 @@ class FixedRouter:
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
+                    req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(primary_plan.policy),
                 },
             ):
                 # Emit synthetic _routing chunk so completions.py can recover
@@ -2663,6 +2682,7 @@ class FixedRouter:
                             ),
                             req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
                             req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
+                            req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(offload_policy),
                         },
                     ):
                         # This attempt's reason when it is the offload route,

@@ -1,7 +1,8 @@
 """Runtime resolver for per-model queue-offload routes (see ``routing.offload``).
 
 Each policy is one ``site_settings`` row keyed by canonical model id and holding
-``{"route_id": ..., "wait_seconds": ...}`` as JSON. Routing reads the policy on
+``{"route_id": ..., "wait_seconds": ...}`` as JSON, plus ``"engine_queue_limit"``
+when the policy sets one. Routing reads the policy on
 every request, synchronously, so the resolver keeps an in-process snapshot: warmed
 at boot, updated by the admin endpoints after each successful write, and reloaded
 periodically so a change made elsewhere converges.
@@ -42,11 +43,15 @@ def model_id_from_offload_route_setting_key(key: str) -> str | None:
 
 
 def encode_offload_policy(policy: OffloadPolicy) -> str:
-    """Serialize a policy into its stored ``site_settings`` value."""
-    return json.dumps(
-        {"route_id": policy.route_id, "wait_seconds": policy.wait_seconds},
-        sort_keys=True,
-    )
+    """Serialize a policy into its stored ``site_settings`` value.
+
+    ``engine_queue_limit`` is written only when the policy sets one, so a policy
+    without it is stored exactly as it was before the field existed.
+    """
+    value: dict[str, Any] = {"route_id": policy.route_id, "wait_seconds": policy.wait_seconds}
+    if policy.engine_queue_limit is not None:
+        value["engine_queue_limit"] = policy.engine_queue_limit
+    return json.dumps(value, sort_keys=True)
 
 
 def decode_offload_policy(raw: Any) -> OffloadPolicy:
@@ -54,7 +59,7 @@ def decode_offload_policy(raw: Any) -> OffloadPolicy:
 
     Raises:
         ValueError: The value is not a JSON object naming a route and a positive,
-            finite wait.
+            finite wait, or it carries an engine queue limit below 1.
     """
     try:
         payload = json.loads(raw) if isinstance(raw, str) else raw
@@ -62,11 +67,13 @@ def decode_offload_policy(raw: Any) -> OffloadPolicy:
         raise ValueError("offload route setting is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("offload route setting must be a JSON object")
-    # OffloadPolicy validates both fields itself and raises ValueError for a
-    # missing or malformed one.
+    # OffloadPolicy validates every field itself and raises ValueError for a
+    # missing or malformed one. A value written before the engine queue limit
+    # existed has no such key, which reads as no limit.
     return OffloadPolicy(
         route_id=payload.get("route_id"),  # type: ignore[arg-type]
         wait_seconds=payload.get("wait_seconds"),  # type: ignore[arg-type]
+        engine_queue_limit=payload.get("engine_queue_limit"),  # type: ignore[arg-type]
     )
 
 

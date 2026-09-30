@@ -318,8 +318,9 @@ them; see [Queue-wait offload](#queue-wait-offload).
 A model routed by `fixed` can reserve one of its routes as its **offload
 route**: the route that takes the requests its other routes cannot seat. It is
 set per model in the admin console (**Routing → Queue offload**) or with
-`PUT /admin/routing/offload-routes/{model_id}`, as a route id and a wait in
-seconds, and stored in `site_settings` under `model_offload_route:<model_id>`.
+`PUT /admin/routing/offload-routes/{model_id}`, as a route id, a wait in
+seconds and an optional [engine queue limit](#engine-queue-limit), and stored in
+`site_settings` under `model_offload_route:<model_id>`.
 The routing mechanics live in `apps/backend/routing/offload.py`.
 
 The wait is measured in the gateway's own outbound queue. The concurrency
@@ -363,9 +364,9 @@ that token (`apps/backend/routing/engine_wait.py`):
 - **First-token wait.** An attempt whose engine sends no token within the same
   wait is cancelled — closing the stream aborts the request at the engine — and
   the request goes to the offload route next. The wait starts when the request
-  leaves the gateway, so time spent in its outbound queue is bounded by the
-  queue wait instead, and a local server, which never queues there, gets the
-  whole of it. Anything the engine sends before its first token, such as a
+  leaves the gateway, so time it spends queued there, for an outbound slot or
+  held for a local engine, is bounded by the queue wait instead. Anything the
+  engine sends before its first token, such as a
   role-only delta, is held back until the token arrives, so a client never sees
   the attempt that was abandoned.
 - **Back to the engine.** If the offload route fails too, the request goes back
@@ -410,10 +411,11 @@ What does not offload:
 
 - **A non-streaming request the gateway does not queue.** Only the limiter
   queues, and it exempts local inference servers (a host in
-  `registry._LOCAL_HOSTS`), which schedule their own work. Nothing queues at all
-  while `UPSTREAM_CONCURRENCY_ENABLED=false`. A streaming request there is still
-  offloaded when its engine sends no first token in time, and the offload route
-  still serves as the last resort.
+  `registry._LOCAL_HOSTS`), which schedule their own work, except for the
+  streaming requests an [engine queue limit](#engine-queue-limit) holds. Nothing
+  queues for a remote route while `UPSTREAM_CONCURRENCY_ENABLED=false`. A
+  streaming request there is still offloaded when its engine sends no first
+  token in time, and the offload route still serves as the last resort.
 - **A pinned request.** `X-Route-Pin` names one endpoint and never falls back,
   so it never offloads either. Nor does an attempt whose caller owns the
   candidate order (`allow_fallback` off, as the hybrid composition plans them),
@@ -441,6 +443,44 @@ off, and `GET /admin/routing/offload-routes` then reports the policy with
 `active: false` and an `inactive_reason`. The route is named by its route id, which survives an admin
 retarget; deleting a runtime route that is a model's offload route is refused
 until the offload route is cleared.
+
+### Engine queue limit
+
+An engine wait tells the gateway a request has waited only once it is already
+in the engine's queue, and leaving then means aborting it there. The policy can
+keep that queue in the gateway instead. With an **engine queue limit** of N
+(**Engine queue limit** in the console, `engine_queue_limit` in the API), each
+local inference server the model routes to is sent at most N streaming requests
+that have not returned a first token yet. Further streaming requests wait in the
+gateway, in arrival order, one line per engine (`EngineHold` in
+`apps/backend/serving/adapters/upstream_limiter.py`):
+
+- **A place frees at the first token.** A request stops counting the moment its
+  engine sends its first output, or when its attempt ends if that comes first.
+  A request the engine is already answering never counts, so nothing caps how
+  many the engine runs at once: the limit caps how many wait or prefill there.
+- **A held request that can be offloaded leaves at the wait**, as from any
+  queue (`_routing.offload` is `queue_wait`), before the engine has seen it.
+  There is nothing to cancel at the engine and no prefill to lose.
+- **One that cannot waits its turn.** An attempt with nowhere else to go — a
+  caller the offload route holds no key for, a retry after a failed offload,
+  the offload attempt itself — has no deadline of its own. It keeps its place
+  for up to the acquire timeout (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`),
+  and is then sent to the engine anyway, past the limit. The hold decides
+  where a request waits, and never fails one.
+- **Only streaming requests to a local server are held.** A non-streaming
+  request has no first token to give its place up on and goes straight to the
+  engine, and a remote route has the limiter's own queue. The hold applies
+  whether `UPSTREAM_CONCURRENCY_ENABLED` is on or not.
+
+Leave the limit empty to send every request straight to its engine. A limit of
+`1` sends an engine a new request only once the one before it has started
+answering; a higher one lets the engine prefill several prompts at once, so one
+long prompt does not hold up the requests behind it. A new limit applies from the
+next request on, to the requests already waiting as well; an engine two models
+share follows the limit of the latest request sent its way. The count covers the
+requests this gateway process sends, so an engine that other clients also use
+can still queue theirs.
 
 ## RouteWise
 

@@ -2084,6 +2084,12 @@ export interface OffloadRoute {
   model_id: string;
   route_id: string;
   wait_seconds: number;
+  /**
+   * How many streaming requests a local engine of the model may have been sent
+   * without a first token before the gateway holds the rest in line; null sends
+   * every request straight to the engine. Absent from a gateway that predates it.
+   */
+  engine_queue_limit?: number | null;
   endpoint_id: string | null;
   active: boolean;
   inactive_reason: string | null;
@@ -2092,7 +2098,10 @@ export interface OffloadRoute {
 }
 
 export interface ListOffloadRoutesResponse {
-  /** False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues, so nothing waits. */
+  /**
+   * False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues for a remote
+   * route. A local engine under an engine queue limit still holds its requests.
+   */
   queue_enabled: boolean;
   /** The outbound queue's acquire timeout: the longest a request waits in that queue. */
   max_wait_seconds: number;
@@ -2109,10 +2118,15 @@ export async function listOffloadRoutes(): Promise<ListOffloadRoutesResponse> {
   return jsonOrThrow<ListOffloadRoutesResponse>(resp);
 }
 
+/**
+ * Replace one model's offload policy. The policy is replaced whole, so a null
+ * `engineQueueLimit` turns the engine hold off.
+ */
 export async function setOffloadRoute(
   modelId: string,
   routeId: string,
   waitSeconds: number,
+  engineQueueLimit: number | null = null,
 ): Promise<ModelOffloadRouteResponse> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2120,7 +2134,11 @@ export async function setOffloadRoute(
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ route_id: routeId, wait_seconds: waitSeconds }),
+      body: JSON.stringify({
+        route_id: routeId,
+        wait_seconds: waitSeconds,
+        engine_queue_limit: engineQueueLimit,
+      }),
     },
   );
   return jsonOrThrow<ModelOffloadRouteResponse>(resp);

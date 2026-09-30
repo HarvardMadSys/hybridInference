@@ -61,6 +61,16 @@ UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
 # like the deadline above.
 UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
 
+# req_ctx key holding the dispatch's place in line for a local engine
+# (``serving.adapters.upstream_limiter.EngineHold``), or ``None``. FixedRouter
+# pushes one around each streaming attempt of a model whose offload policy sets
+# an engine queue limit, and ``None`` around every other attempt.
+# ``upstream_limiter`` holds such a dispatch in the gateway while its local
+# engine already has that many requests without a first token, and a streaming
+# adapter's first-token report (``serving.adapters.dispatch_watch``) gives the
+# place up for the next request. Only ever pushed, like the watch above.
+UPSTREAM_ENGINE_HOLD = "upstream_engine_hold"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.

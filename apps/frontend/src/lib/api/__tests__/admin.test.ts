@@ -429,9 +429,29 @@ describe('offload route client', () => {
     expect(String(url)).toContain('/admin/routing/offload-routes/org%2Fglm-4.7');
     expect(init.method).toBe('PUT');
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    // The policy is replaced whole, so a caller that sets no limit clears it.
     expect(JSON.parse(init.body as string)).toEqual({
       route_id: 'org/glm-4.7:reserved-api',
       wait_seconds: 5,
+      engine_queue_limit: null,
+    });
+  });
+
+  it('setOffloadRoute sends an engine queue limit with the route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ model_id: 'org/glm-4.7', offload }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await setOffloadRoute('org/glm-4.7', 'org/glm-4.7:reserved-api', 5, 3);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({
+      route_id: 'org/glm-4.7:reserved-api',
+      wait_seconds: 5,
+      engine_queue_limit: 3,
     });
   });
 
