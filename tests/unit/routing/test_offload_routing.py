@@ -1099,3 +1099,51 @@ async def test_a_primary_holding_the_half_open_probe_is_let_through_for_its_retr
     assert primary.calls == 2
     # The retry was the probe, and its answer closed the circuit.
     assert circuit.state == _CircuitState.CLOSED
+
+
+class _ReplacedMidRequest(_SlotAdapter):
+    """A primary an admin edit replaces while its first attempt waits, failing its retry.
+
+    The replacement keeps the endpoint id, so only the adapter tells the
+    original's retry apart from it.
+    """
+
+    router: Any = None
+    replacement: Any = None
+    offload: Any = None
+
+    def _record(self) -> None:
+        super()._record()
+        if self.calls == 1:
+            self.router.register_route(MODEL, [(self.replacement, 1.0), (self.offload, 1.0)])
+        else:
+            self.fail_with = RuntimeError("retry 503")
+
+
+@_PATHS
+async def test_a_retry_is_told_apart_from_a_route_that_replaced_it_mid_request(limiter, stream):
+    """The original's retry is what the request reports, not its replacement's error."""
+    primary = _ReplacedMidRequest("primary")
+    offload = _FreesThenFails(
+        "reserved", route_id="offload", fail_with=RuntimeError("upstream 503")
+    )
+    replacement = _SlotAdapter("primary", fail_with=RuntimeError("replacement 502"))
+    router = _router([(primary, 1.0), (offload, 1.0)], _policy(wait_seconds=0.05))
+    primary.router, primary.replacement, primary.offload = router, replacement, offload
+    offload.frees = await _saturate(limiter, primary)
+
+    with pytest.raises(RuntimeError, match="retry 503") as caught:
+        await _dispatch(router, stream=stream)
+
+    routing = caught.value._routing
+    assert routing["endpoint_id"] == "m:primary-api"
+    assert "fallback" not in routing
+    # The replacement was tried as an ordinary fallback, before the retry.
+    assert replacement.calls == 1
+    assert primary.calls == 2
+    assert _attempted(routing) == [
+        "m:primary-api",
+        "m:reserved-api",
+        "m:primary-api",
+        "m:primary-api",
+    ]

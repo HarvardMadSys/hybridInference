@@ -277,11 +277,18 @@ class _RouteAttempt:
 
     ``offload`` is why the attempt went to the model's offload route (the
     success path's ``_routing["offload"]``), ``None`` for any other route.
+
+    ``route`` is the route adapter the attempt was dispatched as: the primary,
+    or the candidate ``FallbackOrder`` handed out. A retry shares it with the
+    attempt it retries. ``adapter`` can be a binding's adapter instead, and an
+    admin edit can put a new adapter behind the same endpoint id mid-request,
+    so neither of those identifies a retry.
     """
 
     adapter: BaseAdapter
     error: BaseException
     offload: str | None = None
+    route: BaseAdapter | None = None
 
 
 def _describes_request(exc: BaseException) -> bool:
@@ -355,15 +362,19 @@ def _reported_attempts(attempts: Sequence[_RouteAttempt]) -> list[_RouteAttempt]
     order. A primary that was cut short and then failed on its retry therefore
     stays the default error surfaced, with its own error instead of the router's
     deadline. An abandoned attempt with no retry is left where it is.
+
+    A retry is matched by the route adapter both attempts were dispatched as
+    (``_RouteAttempt.route``), not by endpoint id. A route an admin edit puts in
+    the original's place mid-request can share the endpoint id, and the loop
+    tries it as an ordinary fallback before the retry.
     """
     reported: list[_RouteAttempt] = []
     later = list(attempts)
     while later:
         attempt = later.pop(0)
-        if abandoned_for_offload(attempt.error):
-            endpoint_id = endpoint_id_for_adapter(attempt.adapter)
+        if attempt.route is not None and abandoned_for_offload(attempt.error):
             for position, retry in enumerate(later):
-                if endpoint_id_for_adapter(retry.adapter) == endpoint_id:
+                if retry.route is attempt.route:
                     attempt = later.pop(position)
                     break
         reported.append(attempt)
@@ -2204,7 +2215,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2337,7 +2348,9 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
+                    attempts.append(
+                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
+                    )
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
                     continue
@@ -2516,7 +2529,7 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason)]
+            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -2678,7 +2691,9 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(_RouteAttempt(execution, fallback_error, offload_reason))
+                    attempts.append(
+                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
+                    )
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
