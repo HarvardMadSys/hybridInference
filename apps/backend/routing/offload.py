@@ -26,6 +26,11 @@ when the offload route fails too, the request goes back to that route once, afte
 every other candidate, and waits there as long as it needs. An offload can make a
 request slower, but never fails one its own route would have served.
 
+Nor is a request cut short for an offload route that cannot serve it. When the
+route holds no key the caller may spend -- each is reserved above the caller's
+tier (``KeyPool`` ``min_role``), or in cooldown -- the request's attempts get no
+deadline, and wait as long as they would with no offload route at all.
+
 What makes this safe to do on a queue wait is that the wait happens *before*
 dispatch. The request has not reached the provider, so abandoning its place in
 line releases nothing upstream and cannot duplicate a generation; the limiter

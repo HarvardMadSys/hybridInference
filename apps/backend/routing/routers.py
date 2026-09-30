@@ -550,6 +550,22 @@ def _window_cannot_fit(adapter: BaseAdapter, refused_window: int | None) -> bool
     return window is not None and window <= refused_window
 
 
+def _serves_caller(adapter: BaseAdapter) -> bool:
+    """Return whether ``adapter`` holds a key the current caller may spend right now.
+
+    Asked of the adapter itself (``has_capacity_for_role``), with the role its key
+    pool reads when the request is sent (``req_ctx.USER_ROLE``; absent for an
+    unrestricted internal caller), so the answer is the one ``KeyPool.acquire``
+    will give: a key reserved above the caller's tier does not count, and neither
+    does one in cooldown. An adapter without the method reserves nothing.
+    """
+    has_capacity = getattr(adapter, "has_capacity_for_role", None)
+    if not callable(has_capacity):
+        return True
+    role = req_ctx.get().get(req_ctx.USER_ROLE)
+    return bool(has_capacity(role if isinstance(role, str) and role else None))
+
+
 def _skips_for_context_window(
     model_id: str, adapter: BaseAdapter, refused_window: int | None
 ) -> bool:
@@ -869,7 +885,8 @@ class FixedRouter:
 
         ``None`` -- no deadline of its own, so the limiter's acquire timeout
         applies -- unless the request still has an offload route to go to, that
-        route's circuit would admit it, and its context window is wider than
+        route holds a key this caller may spend (``_serves_caller``), its
+        circuit would admit it, and its context window is wider than
         ``refused_window``, the widest one that has already refused this prompt
         as too long. Leaving a queue only helps when the request has somewhere
         to go; abandoning its place in line for an offload route that would
@@ -879,6 +896,8 @@ class FixedRouter:
         if offload is None or policy is None:
             return None
         if _window_cannot_fit(offload, refused_window):
+            return None
+        if not _serves_caller(offload):
             return None
         if not self._health_registry.allow_request(endpoint_id_for_adapter(offload)):
             return None

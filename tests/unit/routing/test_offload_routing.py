@@ -29,6 +29,7 @@ from routing.offload import (
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.upstream_limiter import (
     UpstreamConcurrencyLimiter,
     UpstreamQueueWaitExpired,
@@ -561,6 +562,62 @@ async def test_no_deadline_while_the_offload_routes_circuit_is_open(limiter):
     assert primary.deadlines == [None]
     assert sibling.deadlines == [None]
     assert resp["choices"][0]["message"]["content"] == "sibling"
+
+
+def _pro_only_offload() -> OpenAICompatAdapter:
+    """A real offload route whose only key is reserved for pro callers and up.
+
+    A real adapter rather than a fake, so the question the router asks is the one
+    its key pool answers when the request is sent.
+    """
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id=MODEL,
+            name=MODEL,
+            provider="reserved",
+            base_url="https://reserved.example/v1",
+            api_keys=["pro-only-key"],
+            endpoint_id=f"{MODEL}:reserved-api",
+            route_metadata={"route_id": "offload"},
+        )
+    )
+    adapter._key_pool.set_key_min_role("pro-only-key", "pro")
+    return adapter
+
+
+@pytest.mark.parametrize(
+    ("role", "armed"),
+    [("free", False), ("pro", True), ("admin", True), (None, True)],
+)
+async def test_a_deadline_is_armed_only_for_a_caller_the_offload_route_can_serve(
+    limiter, role, armed
+):
+    primary = _SlotAdapter("primary")
+    router = _router([(primary, 1.0), (_pro_only_offload(), 1.0)], _policy())
+
+    with req_ctx.push(**{req_ctx.USER_ROLE: role}):
+        resp = await router.chat_completion(MODEL, MESSAGES)
+
+    assert resp["choices"][0]["message"]["content"] == "primary"
+    (deadline,) = primary.deadlines
+    # A caller with no role is internal (a probe, a warmup) and may use any key.
+    assert isinstance(deadline, float) is armed
+
+
+async def test_a_caller_the_offload_route_holds_no_key_for_keeps_its_place_in_line(limiter):
+    """It waits for its own route's slot instead of being sent where it is refused."""
+    primary = _SlotAdapter("primary")
+    router = _router([(primary, 1.0), (_pro_only_offload(), 1.0)], _policy(wait_seconds=0.05))
+    held = await _saturate(limiter, primary)
+    asyncio.get_running_loop().call_later(0.2, lambda: held.release(status_code=200))
+
+    with req_ctx.push(**{req_ctx.USER_ROLE: "free"}):
+        resp = await router.chat_completion(MODEL, MESSAGES)
+
+    assert resp["choices"][0]["message"]["content"] == "primary"
+    assert primary.calls == 1
+    assert primary.deadlines == [None]
+    assert "offload" not in resp["_routing"]
 
 
 async def test_an_offload_route_outside_the_dispatch_scope_is_not_used(limiter):

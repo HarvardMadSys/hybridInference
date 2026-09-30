@@ -429,6 +429,37 @@ async def test_with_the_offload_route_unavailable_a_stream_waits_for_its_engine(
     assert engine.watches == [None]
 
 
+async def test_a_caller_the_offload_route_holds_no_key_for_waits_for_its_engine():
+    """A free caller, and an offload route whose only key is reserved for pro and up.
+
+    Cutting the stream short would abort the request at the engine only for the
+    offload route to refuse it before sending anything, and put it back in the
+    engine's queue behind everyone who arrived since.
+    """
+    engine = _Engine("engine", answered=True, delay=0.1)
+    reserved = OpenAICompatAdapter(
+        ModelConfig(
+            id=MODEL,
+            name=MODEL,
+            provider="reserved",
+            base_url="https://reserved.example/v1",
+            api_keys=["pro-only-key"],
+            endpoint_id=f"{MODEL}:reserved-api",
+            route_metadata={"route_id": "offload"},
+        )
+    )
+    reserved._key_pool.set_key_min_role("pro-only-key", "pro")
+    router = _router([(engine, 1.0), (reserved, 1.0)], _policy(wait_seconds=0.02))
+
+    with req_ctx.push(**{req_ctx.USER_ROLE: "free"}):
+        chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    assert _content(chunks) == "engine"
+    assert engine.watches == [None]
+    assert engine.cancelled == 0
+    assert [block.get("offload") for block in _routing(chunks)] == [None]
+
+
 async def test_a_client_that_hangs_up_while_waiting_is_not_offloaded():
     engine = _Engine("engine")
     reserved = _Engine("reserved", route_id="offload", answered=True)
