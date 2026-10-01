@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 MODEL = "m"
 MESSAGES = [{"role": "user", "content": "hi"}]
+#: Estimated at 100 prompt tokens (``estimate_prefill_tokens``).
+LONG_MESSAGES = [{"role": "user", "content": "x" * 400}]
 KEY = "EMPTY"
 ENGINE_URL = "http://localhost:18003/v1"
 ENGINE_ADDRESS = "localhost:18003"
@@ -175,8 +177,14 @@ def _router(
     *,
     limit: int | None = 1,
     wait_seconds: float = 0.1,
+    max_input_tokens: int | None = None,
 ) -> FixedRouter:
-    policy = OffloadPolicy(route_id="offload", wait_seconds=wait_seconds, engine_queue_limit=limit)
+    policy = OffloadPolicy(
+        route_id="offload",
+        wait_seconds=wait_seconds,
+        engine_queue_limit=limit,
+        max_input_tokens=max_input_tokens,
+    )
     router = FixedRouter(offload_policy_resolver=_Policies(policy))
     router.register_route(MODEL, [(engine, 1.0), (offload, 1.0)])
     return router
@@ -203,14 +211,17 @@ async def _collect(stream) -> list[str]:
 
 
 def _stream(
-    router: FixedRouter, role: str, options: RoutingRequestOptions | None = None
+    router: FixedRouter,
+    role: str,
+    options: RoutingRequestOptions | None = None,
+    messages: list[dict[str, str]] = MESSAGES,
 ) -> asyncio.Task[list[str]]:
     """Start one caller's stream in a task of its own, as the serving layer runs one."""
 
     async def run() -> list[str]:
         with req_ctx.push(**{req_ctx.USER_ROLE: role}):
             return await _collect(
-                router.stream_chat_completion(MODEL, MESSAGES, routing_options=options)
+                router.stream_chat_completion(MODEL, messages, routing_options=options)
             )
 
     return asyncio.create_task(run())
@@ -369,6 +380,29 @@ async def test_a_request_that_cannot_be_offloaded_waits_its_turn():
     chunks = await behind
     assert _content(chunks) == "engine"
     assert [block.get("offload") for block in _routing(chunks)] == [None]
+    assert offload.calls == 0
+
+
+async def test_a_request_too_long_to_offload_waits_its_turn():
+    """A pro caller could use the offload route, but not with a prompt over its max input."""
+    engine = _Engine()
+    offload = _OffloadRoute()
+    router = _router(engine, offload, limit=1, wait_seconds=0.05, max_input_tokens=99)
+    ahead = _stream(router, "free")
+    await engine.wait_sent(1)
+
+    behind = _stream(router, "pro", messages=LONG_MESSAGES)
+    await _until(lambda: _line().get("waiting") == 1)
+    await asyncio.sleep(0.1)  # well past the wait: too long to offload, so it stays
+    assert engine.sent_count == 1
+    assert _line() == {"pending": 1, "waiting": 1}
+
+    engine.answer(0)
+    await engine.wait_sent(2)
+    engine.answer(1)
+
+    assert _content(await ahead) == "engine"
+    assert _content(await behind) == "engine"
     assert offload.calls == 0
 
 

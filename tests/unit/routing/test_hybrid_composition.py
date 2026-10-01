@@ -21,11 +21,13 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.hybrid import HybridRouter
 from routing.model_router_registry import ModelRouterRegistry
+from routing.offload import OffloadPolicy
 from routing.policies import FixedPolicy
 from routing.prefill_load import PrefillLoadTracker
 from routing.protocols import RoutingRequestOptions
-from routing.routers import FixedRouter
+from routing.routers import AllCircuitsOpenError, FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.config.offload_routes import AppliedOffloadPolicies
 from serving.servers.hybrid_composition import HybridFixedRouterFactory, local_endpoint_scope
 
 if TYPE_CHECKING:
@@ -1262,3 +1264,61 @@ async def test_provider_label_cloud_scope_still_attributes_cloud_feedback() -> N
             success=True,
         )
     )
+
+
+class _StoredPolicies:
+    """An offload policy stored for the model, as ``OffloadRouteResolver`` reads it."""
+
+    def __init__(self, policy: OffloadPolicy) -> None:
+        self.policy = policy
+
+    def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
+        return self.policy if model_id == _MODEL_ID else None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_policy_stored_before_composition_does_not_steer_the_composed_model() -> None:
+    """A composed model ignores offload routes, including one stored before it was composed.
+
+    The policy names the cloud route and caps it at 10 prompt tokens. With the
+    local circuit open the cloud route is the only one left, and the composed
+    model still sends it a long prompt. A model the shared router routes itself
+    applies the same stored policy and refuses the prompt.
+    """
+    long_prompt = [{"role": "user", "content": "x" * 400}]
+    stored = _StoredPolicies(
+        OffloadPolicy(route_id=_CLOUD_ENDPOINT, wait_seconds=1.0, max_input_tokens=10)
+    )
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local, remote)
+    registry = _registry(shared)
+    shared.offload_policy_resolver = AppliedOffloadPolicies(stored, registry, shared)
+    composed = registry.get_router(_MODEL_ID)
+    assert isinstance(composed, HybridRouter)
+    for _ in range(20):
+        shared.endpoint_health_registry.record_failure(_LOCAL_ENDPOINT, reason="test")
+
+    response = await composed.chat_completion(_MODEL_ID, long_prompt, request_id="stale-policy")
+
+    assert response["_routing"]["endpoint_id"] == _CLOUD_ENDPOINT
+    assert remote.chat_calls == 1
+
+    plain_local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    plain_remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    plain = _shared_router(plain_local, plain_remote)
+    plain_registry = ModelRouterRegistry(
+        models_config={_MODEL_ID: {"router": "fixed"}},
+        default_router_name="fixed",
+        shared_fixed_router=plain,
+    )
+    plain.offload_policy_resolver = AppliedOffloadPolicies(stored, plain_registry, plain)
+    assert plain_registry.get_router(_MODEL_ID) is plain
+    for _ in range(20):
+        plain.endpoint_health_registry.record_failure(_LOCAL_ENDPOINT, reason="test")
+
+    with pytest.raises(AllCircuitsOpenError, match="max input"):
+        await plain.chat_completion(_MODEL_ID, long_prompt)
+    assert plain_remote.chat_calls == 0

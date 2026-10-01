@@ -2090,6 +2090,12 @@ export interface OffloadRoute {
    * every request straight to the engine. Absent from a gateway that predates it.
    */
   engine_queue_limit?: number | null;
+  /**
+   * The largest estimated prompt, in tokens, the offload route may be sent; a
+   * longer request is served only by the model's other routes. Null is no limit.
+   * Absent from a gateway that predates it.
+   */
+  max_input_tokens?: number | null;
   endpoint_id: string | null;
   active: boolean;
   inactive_reason: string | null;
@@ -2118,15 +2124,21 @@ export async function listOffloadRoutes(): Promise<ListOffloadRoutesResponse> {
   return jsonOrThrow<ListOffloadRoutesResponse>(resp);
 }
 
+/** The optional limits of an offload policy. A null or absent one is off. */
+export interface OffloadRouteLimits {
+  engineQueueLimit?: number | null;
+  maxInputTokens?: number | null;
+}
+
 /**
- * Replace one model's offload policy. The policy is replaced whole, so a null
- * `engineQueueLimit` turns the engine hold off.
+ * Replace one model's offload policy. The policy is replaced whole, so a limit
+ * left out of `limits` is turned off.
  */
 export async function setOffloadRoute(
   modelId: string,
   routeId: string,
   waitSeconds: number,
-  engineQueueLimit: number | null = null,
+  limits: OffloadRouteLimits = {},
 ): Promise<ModelOffloadRouteResponse> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2137,7 +2149,8 @@ export async function setOffloadRoute(
       body: JSON.stringify({
         route_id: routeId,
         wait_seconds: waitSeconds,
-        engine_queue_limit: engineQueueLimit,
+        engine_queue_limit: limits.engineQueueLimit ?? null,
+        max_input_tokens: limits.maxInputTokens ?? null,
       }),
     },
   );

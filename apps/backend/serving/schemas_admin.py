@@ -1693,12 +1693,17 @@ class OffloadRouteItem(BaseModel):
     ``engine_queue_limit`` is how many streaming requests a local engine of the
     model may have been sent without a first token before the gateway holds the
     rest, or ``None`` when every request goes straight to the engine.
+
+    ``max_input_tokens`` is the largest estimated prompt the offload route may be
+    sent, or ``None`` for no limit; a longer request is served only by the
+    model's other routes.
     """
 
     model_id: str
     route_id: str
     wait_seconds: float
     engine_queue_limit: int | None = None
+    max_input_tokens: int | None = None
     endpoint_id: str | None = None
     active: bool
     inactive_reason: str | None = None
@@ -1733,13 +1738,15 @@ class ListOffloadRoutesResponse(BaseModel):
 class UpdateOffloadRouteRequest(BaseModel):
     """Request payload for designating one model's offload route.
 
-    The whole policy is replaced: leaving ``engine_queue_limit`` out clears it.
-    It is a strict integer, so neither ``true`` nor ``"4"`` passes for one.
+    The whole policy is replaced: leaving ``engine_queue_limit`` or
+    ``max_input_tokens`` out clears it. Both are strict integers, so neither
+    ``true`` nor ``"4"`` passes for one.
     """
 
     route_id: str = Field(..., min_length=1, max_length=512)
     wait_seconds: float = Field(..., gt=0, allow_inf_nan=False)
     engine_queue_limit: StrictInt | None = Field(default=None, ge=1)
+    max_input_tokens: StrictInt | None = Field(default=None, ge=1)
 
 
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
