@@ -1113,12 +1113,11 @@ msgstr "**`/v1/messages`**。它自己挑选一个 adapter，并且没有回退�
 #: ../developer/routing.md:412
 msgid ""
 "**RouteWise.** A `routewise` model plans its own candidates and ignores "
-"offload routes, as does a `fixed` model with `hybrid_composition: true`. "
-"The admin API refuses to set an offload route on either, and refuses to "
-"switch a model that has one to `routewise`."
-msgstr ""
-"**RouteWise**。`routewise` 模型自己规划候选，忽略卸载路由；设置了 `hybrid_composition: true` "
-"的 `fixed` 模型也一样。管理 API 拒绝为这两类模型设置卸载路由，也拒绝把已有卸载路由的模型切换到 `routewise`。"
+"offload routes, as does a `fixed` model with `hybrid_composition: true`. The "
+"admin API refuses to set an offload route on either, and refuses to switch a "
+"model that has one to `routewise`. A policy stored before a model became "
+"either is listed as inactive, and routing ignores it."
+msgstr "**RouteWise**。`routewise` 模型自己规划候选，忽略卸载路由；设置了 `hybrid_composition: true` 的 `fixed` 模型也一样。管理 API 拒绝为这两类模型设置卸载路由，也拒绝把已有卸载路由的模型切换到 `routewise`。在模型变成这两类之前就存了的策略，会被列为未生效，路由也会忽略它。"
 
 #: ../developer/routing.md:417
 msgid ""

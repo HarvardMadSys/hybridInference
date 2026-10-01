@@ -14,7 +14,11 @@ from routing.offload import OffloadPolicy
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.adapters.upstream_limiter import UpstreamConcurrencyLimiter, reset_upstream_limiter
-from serving.config.offload_routes import OffloadRouteResolver, encode_offload_policy
+from serving.config.offload_routes import (
+    AppliedOffloadPolicies,
+    OffloadRouteResolver,
+    encode_offload_policy,
+)
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import offload_routes
@@ -697,6 +701,42 @@ async def test_resolver_reads_a_max_input_and_skips_a_bad_one():
     assert resolver.get_offload_policy(MODEL) == both
     assert resolver.get_offload_policy("zero") is None
     assert resolver.get_offload_policy("fraction") is None
+
+
+class _RouterRegistry:
+    """The two ``ModelRouterRegistry`` reads ``AppliedOffloadPolicies`` makes."""
+
+    def __init__(self, name: str = "fixed", cached: Any = None) -> None:
+        self.name = name
+        self.cached = cached
+
+    def get_router_name(self, model_id: str) -> str:
+        return self.name
+
+    def get_cached_router(self, model_id: str) -> Any:
+        return self.cached
+
+
+@pytest.mark.parametrize(
+    ("strategy", "cached", "applied"),
+    [
+        pytest.param("fixed", "shared", True, id="fixed-on-the-shared-router"),
+        pytest.param("fixed", None, True, id="fixed-router-not-built-yet"),
+        pytest.param("fixed", "hybrid", False, id="hybrid-composition"),
+        pytest.param("routewise", None, False, id="routewise"),
+    ],
+)
+def test_routing_applies_a_policy_only_where_the_models_router_does(strategy, cached, applied):
+    """What the admin list reports as inactive for its router changes nothing."""
+    shared = object()
+    routers = {"shared": shared, "hybrid": object(), None: None}
+    resolver = OffloadRouteResolver(MagicMock())
+    stored = OffloadPolicy(RESERVED_ROUTE_ID, 3.0, max_input_tokens=1000)
+    resolver.set_policy(MODEL, stored)
+    source = AppliedOffloadPolicies(resolver, _RouterRegistry(strategy, routers[cached]), shared)
+
+    assert source.get_offload_policy(MODEL) == (stored if applied else None)
+    assert source.get_offload_policy("no-policy") is None
 
 
 async def test_a_reload_that_started_before_an_admin_write_cannot_undo_it():

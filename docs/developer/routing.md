@@ -436,7 +436,8 @@ What does not offload:
 - **RouteWise.** A `routewise` model plans its own candidates and ignores offload
   routes, as does a `fixed` model with `hybrid_composition: true`. The admin API
   refuses to set an offload route on either, and refuses to switch a model that
-  has one to `routewise`.
+  has one to `routewise`. A policy stored before a model became either is listed
+  as inactive, and routing ignores it.
 
 The wait must be positive, and may be longer than the acquire timeout: a request
 still leaves the gateway's queue at that timeout, which offloads it as well, and

@@ -27,7 +27,7 @@ from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
-from serving.config.offload_routes import OffloadRouteResolver
+from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
@@ -1344,7 +1344,12 @@ async def initialize() -> AppServices:
                 "Offload route snapshot load failed; retrying in the background",
                 exc_info=True,
             )
-        router.offload_policy_resolver = offload_route_resolver
+        # Routing applies a policy only where the admin list reports it can: a
+        # model routed by RouteWise or by the hybrid composition ignores one
+        # stored before it was.
+        router.offload_policy_resolver = AppliedOffloadPolicies(
+            offload_route_resolver, model_router_registry, router
+        )
         offload_route_refresh_task = asyncio.create_task(
             _refresh_offload_route_snapshots(offload_route_resolver)
         )

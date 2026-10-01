@@ -82,6 +82,39 @@ def decode_offload_policy(raw: Any) -> OffloadPolicy:
     )
 
 
+class AppliedOffloadPolicies:
+    """The offload policies routing applies: those of models the shared router routes.
+
+    The admin API refuses to set an offload route on a model routed by RouteWise or
+    by the hybrid composition, and lists one stored before a model became either as
+    inactive. The shared ``FixedRouter`` still sees those models: the composition
+    drives it one planned attempt at a time, and ``/v1/messages`` and the admin
+    playground call it for every model. So routing reads policies through this
+    instead of the resolver, and a policy the admin list reports inactive for its
+    model's router changes nothing.
+
+    The model's router is read from the registry without building one: a model
+    whose router has not been built yet is routed by its strategy alone.
+    """
+
+    def __init__(self, resolver: OffloadRouteResolver, registry: Any, shared_router: Any) -> None:
+        self._resolver = resolver
+        self._registry = registry
+        self._shared_router = shared_router
+
+    def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
+        """Return the model's stored policy if its router applies one, else None."""
+        policy = self._resolver.get_offload_policy(model_id)
+        if policy is None:
+            return None
+        if self._registry.get_router_name(model_id) != "fixed":
+            return None
+        router = self._registry.get_cached_router(model_id)
+        if router is not None and router is not self._shared_router:
+            return None
+        return policy
+
+
 @dataclass(frozen=True, slots=True)
 class OffloadRouteRecord:
     """A stored policy plus the audit fields of the row it was read from."""
