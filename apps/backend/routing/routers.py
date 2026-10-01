@@ -18,7 +18,7 @@ from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Sequence
 
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
@@ -853,18 +853,20 @@ class FixedRouter:
         pin_provider: str | None,
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
+        prefill_tokens: int,
     ) -> tuple[BaseAdapter, OffloadPolicy] | None:
         """Return the offload target visible to one request's dispatch range.
 
         A pinned request has no offload: the caller named one endpoint and a
         silent switch would be the same misleading result a fallback would be.
+        Nor does a prompt over the route's max input (``OffloadPolicy.takes_input``).
         """
         if pin_provider or self.offload_policy_resolver is None:
             return None
         route = self.routes.get(model_id)
         if route is None:
             return None
-        return self._offload_target(
+        target = self._offload_target(
             model_id,
             route,
             self._dispatch_range(
@@ -874,6 +876,9 @@ class FixedRouter:
                 required_modalities=required_modalities,
             ),
         )
+        if target is None or not target[1].takes_input(prefill_tokens):
+            return None
+        return target
 
     def _queue_deadline(
         self,
@@ -913,6 +918,7 @@ class FixedRouter:
         allow_fallback: bool,
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
+        prefill_tokens: int,
     ) -> _PrimaryOffload:
         """Return how a request's primary attempt relates to its offload route.
 
@@ -921,7 +927,8 @@ class FixedRouter:
         is the queue deadline for a primary that could still be offloaded, and
         ``policy`` the one its stream is watched under. A caller that owns the
         candidate order (``allow_fallback`` off) gets neither: this router will
-        not walk on to the offload route on its behalf.
+        not walk on to the offload route on its behalf. Nor does a prompt over
+        the route's max input, which can never be offloaded.
 
         Never raises. It runs between admission and the attempt, where the
         caller holds a dispatch claim and a prefill lease it has not yet
@@ -934,6 +941,7 @@ class FixedRouter:
                 pin_provider=pin_provider,
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
+                prefill_tokens=prefill_tokens,
             )
             if target is None:
                 return _PrimaryOffload()
@@ -957,13 +965,16 @@ class FixedRouter:
         *,
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
+        prefill_tokens: int,
     ) -> tuple[FallbackOrder, OffloadPolicy | None]:
         """Return the rest of the route, in the order this request should try it.
 
         The same candidates the fallback loop has always walked -- every other
         route in declaration order, minus weight-0 routes and routes outside the
         dispatch scope or the request's modalities -- with the offload route, if
-        the model has a usable one, placed by :class:`FallbackOrder` instead.
+        the model has a usable one, placed by :class:`FallbackOrder` instead. A
+        prompt over the offload route's max input does not get it at all, not
+        even last.
         """
         route = self.routes[model_id]
         candidates = self._dispatch_range(
@@ -973,6 +984,9 @@ class FixedRouter:
             required_modalities=required_modalities,
         )
         target = self._offload_target(model_id, route, candidates)
+        if target is not None and not target[1].takes_input(prefill_tokens):
+            candidates = [entry for entry in candidates if entry[0] is not target[0]]
+            target = None
         offload, policy = target if target is not None else (None, None)
         if offload is primary:
             # The primary already was the offload route: it was chosen because
@@ -1029,10 +1043,11 @@ class FixedRouter:
 
         Read from the policy itself, not from whether this request could be
         offloaded. A pinned request, one whose caller owns the candidate order,
-        and one whose primary is the offload route still reach the model's
-        engines, and an engine's line only holds its limit if it counts every
-        stream it is sent. Never raises, like ``_primary_offload``: it runs
-        where a stranded claim would cost more than a missing hold.
+        one whose primary is the offload route and one too long to offload still
+        reach the model's engines, and an engine's line only holds its limit if
+        it counts every stream it is sent. Never raises, like
+        ``_primary_offload``: it runs where a stranded claim would cost more
+        than a missing hold.
         """
         try:
             source = self.offload_policy_resolver
@@ -1527,6 +1542,7 @@ class FixedRouter:
         model_id: str,
         *,
         endpoint_scope: frozenset[str] | None = None,
+        size_prompt: Callable[[], int] | None = None,
     ) -> list[tuple[BaseAdapter, float]]:
         """Return the adapters automatic routing may dispatch to, in route order.
 
@@ -1544,6 +1560,13 @@ class FixedRouter:
         A model's offload route (``routing.offload``) is moved to the end of the
         list: it takes no ordinary traffic, so a surface taking the first usable
         entry reaches it only when nothing ahead of it can serve.
+
+        ``size_prompt`` returns the request's estimated prompt tokens
+        (``estimate_prefill_tokens``). A prompt over the offload route's max
+        input leaves the route out of the list instead of at its end. It is
+        called only when the route has a max input, so a surface that has not
+        sized its prompt yet pays for it only when the answer matters; without
+        it, the route is listed last whatever the request's size.
         """
         route = self.routes.get(model_id)
         if not route or not route.published or not route.adapters:
@@ -1561,10 +1584,15 @@ class FixedRouter:
         target = self._offload_target(model_id, route, eligible)
         if target is None:
             return eligible
-        offload = target[0]
-        return [entry for entry in eligible if entry[0] is not offload] + [
-            entry for entry in eligible if entry[0] is offload
-        ]
+        offload, policy = target
+        ordinary = [entry for entry in eligible if entry[0] is not offload]
+        if (
+            policy.max_input_tokens is not None
+            and size_prompt is not None
+            and not policy.takes_input(size_prompt())
+        ):
+            return ordinary
+        return ordinary + [entry for entry in eligible if entry[0] is offload]
 
     def select_adapter(
         self,
@@ -1764,12 +1792,19 @@ class FixedRouter:
         # seat, so selection -- the draw, affinity and a preferred target alike --
         # sees it only when it is the last candidate standing. Everything below
         # then works on the reduced list, which is also what drops an affinity
-        # pin left on the offload route by an earlier last-resort pick.
+        # pin left on the offload route by an earlier last-resort pick. A prompt
+        # over the route's max input does not see it even then.
         target = self._offload_target(model_id, route, snapshot)
         if target is not None:
             ordinary = [
                 (adapter, weight) for adapter, weight in allowed if adapter is not target[0]
             ]
+            if not ordinary and not target[1].takes_input(prefill_tokens):
+                raise AllCircuitsOpenError(
+                    f"No route for model {model_id} can take this request: only its offload "
+                    f"route is admissible, and the prompt (about {prefill_tokens} tokens) is "
+                    f"over that route's max input of {target[1].max_input_tokens} tokens"
+                )
             if ordinary:
                 allowed = ordinary
 
@@ -2222,6 +2257,7 @@ class FixedRouter:
             allow_fallback=allow_fallback,
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
+            prefill_tokens=prefill_tokens,
         )
         try:
             endpoint_id = endpoint_id_for_adapter(primary)
@@ -2318,6 +2354,7 @@ class FixedRouter:
                 primary,
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
+                prefill_tokens=prefill_tokens,
             )
             order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
@@ -2520,6 +2557,7 @@ class FixedRouter:
             allow_fallback=allow_fallback,
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
+            prefill_tokens=prefill_tokens,
         )
         # For every stream of this request, whatever its offload plan says.
         engine_queue_limit = self._engine_queue_limit(model_id)
@@ -2653,6 +2691,7 @@ class FixedRouter:
                 primary,
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
+                prefill_tokens=prefill_tokens,
             )
             order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:

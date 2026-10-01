@@ -72,6 +72,8 @@ from serving.utils.session_identity import consume_session_fields, session_ident
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi.exceptions import RequestValidationError
 
 logger = get_logger(__name__)
@@ -406,10 +408,22 @@ def _prefill_inputs(body: dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
     return messages, body.get("tools")
 
 
+def _prompt_tokens(body: dict[str, Any]) -> int:
+    """Return the estimated prompt tokens of an Anthropic body, sized as prefill sizes it."""
+    messages, tools = _prefill_inputs(body)
+    return estimate_prefill_tokens(messages, tools=tools)
+
+
 # --- Model resolution ------------------------------------------------------
 
 
-def _pick_dispatch_adapter(model_id: str, canonical: str, router_exec, user_role: str):
+def _pick_dispatch_adapter(
+    model_id: str,
+    canonical: str,
+    router_exec,
+    user_role: str,
+    size_prompt: Callable[[], int] | None = None,
+):
     """Return the route adapter this request may actually be dispatched to.
 
     This surface forwards an Anthropic-native body, which FixedRouter has no
@@ -435,8 +449,11 @@ def _pick_dispatch_adapter(model_id: str, canonical: str, router_exec, user_role
     the same reason -- the reroute below this can resolve a different model and
     discard this adapter, and a probe spent on an endpoint nothing is sent to is
     a recovery window burned for nothing.
+
+    ``size_prompt`` sizes the request for the model's offload route, which a
+    prompt over its max input may not be sent (``eligible_adapters``).
     """
-    eligible = router_exec.eligible_adapters(canonical)
+    eligible = router_exec.eligible_adapters(canonical, size_prompt=size_prompt)
     if not eligible:
         # Every provider for this model is admin-disabled, has an open circuit,
         # or is already being probed. Same disposition the chat path gives
@@ -455,6 +472,7 @@ async def _resolve(
     model_visibility_resolver=None,
     *,
     for_dispatch: bool = True,
+    size_prompt: Callable[[], int] | None = None,
 ):
     """Return (canonical_model_id, route, adapter).
 
@@ -463,6 +481,8 @@ async def _resolve(
     skipped, and a 503 is raised once none are left. Callers that only need the
     visibility check pass ``for_dispatch=False`` -- count_tokens answers locally
     and never reaches an upstream, so a provider outage must not stop it.
+    ``size_prompt`` returns the request's estimated prompt tokens, for an offload
+    route with a max input (``_pick_dispatch_adapter``).
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -490,7 +510,11 @@ async def _resolve(
     if not for_dispatch:
         adapter, _ = route.adapters[0]
         return canonical, route, adapter
-    return canonical, route, _pick_dispatch_adapter(model_id, canonical, router_exec, user_role)
+    return (
+        canonical,
+        route,
+        _pick_dispatch_adapter(model_id, canonical, router_exec, user_role, size_prompt),
+    )
 
 
 def _pick_adapter_for_role(adapters, user_role: str):
@@ -648,7 +672,11 @@ async def _maybe_reroute_small_reasoning_call(
         return canonical, route, adapter
     try:
         new_canonical, new_route, new_adapter = await _resolve(
-            _SMALL_MAXTOK_REROUTE_TARGET, router_exec, user_ctx, model_visibility_resolver
+            _SMALL_MAXTOK_REROUTE_TARGET,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
+            size_prompt=lambda: _prompt_tokens(body),
         )
     except HTTPException:
         # Target not configured, not visible to this caller, or currently
@@ -1394,6 +1422,10 @@ async def anthropic_messages(
             router_exec,
             user_ctx,
             model_visibility_resolver,
+            # Sized before dispatch rewrites the body, which only strips
+            # Anthropic-only fields from it, and only when the model's offload
+            # route has a max input to hold it to.
+            size_prompt=lambda: _prompt_tokens(body),
         )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log

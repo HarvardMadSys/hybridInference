@@ -230,3 +230,65 @@ async def test_disabled_toggle_skips_reroute(reroute_client, monkeypatch):
     r = await reroute_client.post("/v1/messages", json=body, headers=_auth())
     assert r.status_code == 200
     assert captured["json"]["model"] == REASONING_MODEL
+
+
+@pytest.mark.asyncio
+async def test_the_reroute_target_holds_the_prompt_to_its_offload_routes_max_input(monkeypatch):
+    """The reroute resolves another model for the same prompt, so its offload rules apply.
+
+    The fast model's only admitted route is its offload route. A prompt within that
+    route's max input is rerouted there; a longer one finds no route on the fast
+    model and stays on the model it asked for.
+    """
+    from routing.endpoints import endpoint_id_for_adapter
+    from routing.offload import OffloadPolicy
+    from routing.routers import FixedRouter
+    from serving.adapters import OpenAICompatAdapter
+    from serving.adapters.base import ModelConfig
+    from serving.servers.routers import anthropic_messages
+
+    def adapter(model_id: str, provider: str, params: list[str]) -> OpenAICompatAdapter:
+        return OpenAICompatAdapter(
+            ModelConfig(
+                id=model_id,
+                name=model_id,
+                provider=provider,
+                base_url=f"https://example-{provider}.test",
+                api_key=f"{provider}-test",
+                chat_path="/chat/completions",
+                max_output_length=4096,
+                supported_params=params,
+            )
+        )
+
+    class Policies:
+        def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
+            if model_id != FAST_MODEL:
+                return None
+            return OffloadPolicy(
+                route_id=endpoint_id_for_adapter(offload), wait_seconds=1.0, max_input_tokens=50
+            )
+
+    reasoner = adapter(REASONING_MODEL, "reasoner", ["max_tokens", "thinking"])
+    fast = adapter(FAST_MODEL, "sglang", ["max_tokens"])
+    offload = adapter(FAST_MODEL, "reserved", ["max_tokens"])
+    router = FixedRouter(offload_policy_resolver=Policies())
+    router.register_route(REASONING_MODEL, [(reasoner, 1.0)])
+    router.register_route(FAST_MODEL, [(fast, 1.0), (offload, 1.0)])
+    for _ in range(20):
+        router.endpoint_health_registry.record_failure(endpoint_id_for_adapter(fast), reason="test")
+    _enable_reroute(monkeypatch)
+    route = router.routes[REASONING_MODEL]
+
+    async def rerouted(content: str):
+        body = {
+            "model": REASONING_MODEL,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": content}],
+        }
+        return await anthropic_messages._maybe_reroute_small_reasoning_call(
+            REASONING_MODEL, route, reasoner, body, router, {"role": "internal"}, None, "req-1"
+        )
+
+    assert (await rerouted("hi"))[0::2] == (FAST_MODEL, offload)
+    assert (await rerouted("x" * 400))[0::2] == (REASONING_MODEL, reasoner)

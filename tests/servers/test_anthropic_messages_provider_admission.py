@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.offload import OffloadPolicy
 from serving.adapters import OpenAICompatAdapter
 from serving.adapters.base import ModelConfig
 from serving.servers.routers import anthropic_messages
@@ -137,6 +138,30 @@ def _body(model: str = DUAL_MODEL) -> dict:
     }
 
 
+class _OffloadPolicies:
+    """Minimal offload policy source for the dual-provider model."""
+
+    def __init__(self, policy: OffloadPolicy) -> None:
+        self.policy = policy
+
+    def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
+        return self.policy if model_id == DUAL_MODEL else None
+
+
+def _offload_to_backup(router, *, max_input_tokens: int):
+    """Make the backup the model's offload route, and the only route admitted."""
+    primary, backup = _register_dual_route(router)
+    router.offload_policy_resolver = _OffloadPolicies(
+        OffloadPolicy(
+            route_id=endpoint_id_for_adapter(backup),
+            wait_seconds=1.0,
+            max_input_tokens=max_input_tokens,
+        )
+    )
+    _open_circuit(router, primary)
+    return backup
+
+
 @pytest.mark.asyncio
 async def test_open_circuit_is_not_selected_while_a_healthy_adapter_exists(
     anthropic_test_client, anthropic_compat_router, monkeypatch
@@ -259,6 +284,45 @@ async def test_key_tier_preference_never_resurrects_an_inadmissible_adapter(
     )
 
     assert adapter is serviceable
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_within_the_max_input_can_still_go_to_the_offload_route(
+    anthropic_test_client, anthropic_compat_router, monkeypatch
+):
+    """With nothing else admitted, the offload route is this surface's last resort."""
+    _offload_to_backup(anthropic_compat_router, max_input_tokens=50)
+    urls = _capture_upstream(monkeypatch)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert r.status_code == 200
+    assert urls and urls[0].startswith(BACKUP_URL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("long_field", ["messages", "system"])
+async def test_a_prompt_over_the_max_input_is_never_sent_to_the_offload_route(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, long_field
+):
+    """Over the max input the offload route is not a candidate, so nothing is left.
+
+    The system prompt is part of the prompt the offload route would be sent, so it
+    counts toward the size like the messages do.
+    """
+    _offload_to_backup(anthropic_compat_router, max_input_tokens=50)
+    urls = _capture_upstream(monkeypatch)
+    body = _body()
+    if long_field == "messages":
+        body["messages"] = [{"role": "user", "content": "x" * 400}]
+    else:
+        body["system"] = "x" * 400
+
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+
+    assert r.status_code == 503
+    assert r.json()["error"]["type"] == "overloaded_error"
+    assert urls == []
 
 
 @pytest.mark.asyncio

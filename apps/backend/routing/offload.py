@@ -51,6 +51,16 @@ An endpoint the gateway does not queue for -- a local inference server under no
 engine queue limit, or a remote endpoint while the limiter is disabled -- never
 triggers an offload by waiting in that queue, only by an engine wait.
 
+The policy can also cap what is offloaded by size. With a *max input* of N
+tokens, a request whose prompt is estimated at more than N is never sent to the
+offload route, for any of the three reasons, and is served only by the model's
+other routes, as though the offload route were not on the model at all. Its
+attempts get no deadline, so it waits as long as its own route needs; and when
+none of the other routes is admissible, it fails rather than being offloaded.
+The size is the router's own estimate of the prompt
+(``routing.prefill_load.estimate_prefill_tokens``: everything the request sends
+upstream, at four bytes a token), not an upstream tokenizer's count.
+
 This module holds the parts that are independent of one router's control flow:
 the policy value, the read-only source routers consult, and the per-request
 fallback order. The router owns dispatch, admission and accounting.
@@ -105,11 +115,15 @@ class OffloadPolicy:
             model may have been sent without returning a first token before the
             gateway holds the rest, or ``None`` to send each one straight to the
             engine.
+        max_input_tokens: The largest estimated prompt, in tokens, the offload
+            route may be sent, or ``None`` for no limit. A longer request is
+            served only by the model's other routes (:meth:`takes_input`).
     """
 
     route_id: str
     wait_seconds: float
     engine_queue_limit: int | None = None
+    max_input_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -125,6 +139,18 @@ class OffloadPolicy:
             isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
         ):
             raise ValueError("offload engine_queue_limit must be a whole number of at least 1")
+        max_input = self.max_input_tokens
+        if max_input is not None and (
+            isinstance(max_input, bool) or not isinstance(max_input, int) or max_input < 1
+        ):
+            raise ValueError("offload max_input_tokens must be a whole number of at least 1")
+
+    def takes_input(self, prompt_tokens: int) -> bool:
+        """Return whether a request of ``prompt_tokens`` estimated tokens may be offloaded.
+
+        True up to and including the max input, and always when there is none.
+        """
+        return self.max_input_tokens is None or prompt_tokens <= self.max_input_tokens
 
 
 @runtime_checkable

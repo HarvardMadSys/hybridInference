@@ -434,10 +434,11 @@ describe('offload route client', () => {
       route_id: 'org/glm-4.7:reserved-api',
       wait_seconds: 5,
       engine_queue_limit: null,
+      max_input_tokens: null,
     });
   });
 
-  it('setOffloadRoute sends an engine queue limit with the route', async () => {
+  it('setOffloadRoute sends the limits with the route', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ model_id: 'org/glm-4.7', offload }), {
         status: 200,
@@ -445,13 +446,17 @@ describe('offload route client', () => {
       }),
     );
 
-    await setOffloadRoute('org/glm-4.7', 'org/glm-4.7:reserved-api', 5, 3);
+    await setOffloadRoute('org/glm-4.7', 'org/glm-4.7:reserved-api', 5, {
+      engineQueueLimit: 3,
+      maxInputTokens: 32000,
+    });
 
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(init.body as string)).toEqual({
       route_id: 'org/glm-4.7:reserved-api',
       wait_seconds: 5,
       engine_queue_limit: 3,
+      max_input_tokens: 32000,
     });
   });
 

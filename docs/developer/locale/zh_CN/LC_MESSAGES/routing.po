@@ -890,10 +890,11 @@ msgid ""
 "route**: the route that takes the requests its other routes cannot seat. It "
 "is set per model in the admin console (**Routing → Queue offload**) or with "
 "`PUT /admin/routing/offload-routes/{model_id}`, as a route id, a wait in "
-"seconds and an optional [engine queue limit](#engine-queue-limit), and "
-"stored in `site_settings` under `model_offload_route:<model_id>`. The "
-"routing mechanics live in `apps/backend/routing/offload.py`."
-msgstr "用 `fixed` 路由的模型，可以把自己的一条路由留作**卸载路由**，专门接其他路由安排不下的请求。卸载路由按模型配置，可以在管理控制台（**Routing → Queue offload**）里设置，也可以调用 `PUT /admin/routing/offload-routes/{model_id}`；配置内容是一个路由 id、一个等待秒数，以及可选的[引擎队列上限](#engine-queue-limit)，存在 `site_settings` 的 `model_offload_route:<model_id>` 下。路由逻辑在 `apps/backend/routing/offload.py`。"
+"seconds, an optional [engine queue limit](#engine-queue-limit) and an "
+"optional [max offload input](#max-offload-input), and stored in "
+"`site_settings` under `model_offload_route:<model_id>`. The routing "
+"mechanics live in `apps/backend/routing/offload.py`."
+msgstr "用 `fixed` 路由的模型，可以把自己的一条路由留作**卸载路由**，专门接其他路由安排不下的请求。卸载路由按模型配置，可以在管理控制台（**Routing → Queue offload**）里设置，也可以调用 `PUT /admin/routing/offload-routes/{model_id}`；配置内容是一个路由 id、一个等待秒数，以及可选的[引擎队列上限](#engine-queue-limit)和[最大卸载输入](#max-offload-input)，存在 `site_settings` 的 `model_offload_route:<model_id>` 下。路由逻辑在 `apps/backend/routing/offload.py`。"
 
 #: ../developer/routing.md:325
 msgid ""
@@ -1094,17 +1095,20 @@ msgstr ""
 "**卸载路由装不下的 prompt**。某条路由以超出上下文窗口为由拒绝了一个 prompt 之后，回退会跳过所有配置的 "
 "`context_length` 不比它大的路由，卸载路由也一样。既然卸载路由反正会被跳过，后续的尝试也不会为了它退出排队。"
 
+#: ../developer/routing.md:429
+msgid ""
+"**A prompt over the max offload input.** It is never sent to the offload "
+"route; see [Max offload input](#max-offload-input)."
+msgstr "**超过最大卸载输入的 prompt**。它永远不会被发给卸载路由；见[最大卸载输入](#max-offload-input)。"
+
 #: ../developer/routing.md:408
 msgid ""
 "**`/v1/messages`.** It picks one adapter itself and has no fallback. It "
-"keeps the offload route out of that pick unless nothing else is eligible,"
-" but does not offload on a wait. `/v1/chat/completions` and the surfaces "
-"built on it — `/v1/responses`, `/v1/completions` and the admin playground"
-" — do."
-msgstr ""
-"**`/v1/messages`**。它自己挑选一个 "
-"adapter，并且没有回退。除非别的都不可用，它不会挑中卸载路由，但也不会因为等待而卸载。`/v1/chat/completions` "
-"以及构建在它之上的接口（`/v1/responses`、`/v1/completions` 和管理控制台的 playground）会卸载。"
+"keeps the offload route out of that pick unless nothing else is eligible "
+"(and out of it altogether for a prompt over the max offload input), but does "
+"not offload on a wait. `/v1/chat/completions` and the surfaces built on it — "
+"`/v1/responses`, `/v1/completions` and the admin playground — do."
+msgstr "**`/v1/messages`**。它自己挑选一个 adapter，并且没有回退。除非别的都不可用，它不会挑中卸载路由（prompt 超过最大卸载输入时则完全不会挑中），但也不会因为等待而卸载。`/v1/chat/completions` 以及构建在它之上的接口（`/v1/responses`、`/v1/completions` 和管理控制台的 playground）会卸载。"
 
 #: ../developer/routing.md:412
 msgid ""
@@ -1172,13 +1176,14 @@ msgstr "**能卸载的排队请求到了等待时间就离开**，和离开任�
 msgid ""
 "**One that cannot waits its turn.** An attempt with nowhere else to go — a "
 "pinned request, one whose caller owns the candidate order, a caller the "
-"offload route holds no key for, a retry after a failed offload, the offload "
+"offload route holds no key for, a prompt over the [max offload "
+"input](#max-offload-input), a retry after a failed offload, the offload "
 "attempt itself — has no deadline of its own, but it still counts. It keeps "
 "its place for up to the acquire timeout "
 "(`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), and is then sent to the engine "
 "anyway, past the limit. The hold decides where a request waits, and never "
 "fails one."
-msgstr "**不能卸载的请求按顺序等**。无处可去的尝试——固定路由（pinned）的请求、由调用方决定候选顺序的请求、卸载路由里没有其可用 key 的调用方、卸载失败后的重试、卸载尝试本身——没有自己的截止时间，但同样计数。它最多保留位置到获取超时（`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`），之后无论如何都会超出上限发给引擎。排队只决定请求在哪里等，从不让请求失败。"
+msgstr "**不能卸载的请求按顺序等**。无处可去的尝试——固定路由（pinned）的请求、由调用方决定候选顺序的请求、卸载路由里没有其可用 key 的调用方、prompt 超过[最大卸载输入](#max-offload-input)的请求、卸载失败后的重试、卸载尝试本身——没有自己的截止时间，但同样计数。它最多保留位置到获取超时（`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`），之后无论如何都会超出上限发给引擎。排队只决定请求在哪里等，从不让请求失败。"
 
 #: ../developer/routing.md:471
 msgid ""
@@ -1199,6 +1204,55 @@ msgid ""
 "count covers the requests this gateway process sends, so an engine that "
 "other clients also use can still queue theirs."
 msgstr "上限留空，所有请求都会直接发给各自的引擎。上限为 `1` 时，只有前一个请求开始回答之后，引擎才会收到下一个；更高的上限让引擎可以同时为多个 prompt 做 prefill，这样一个长 prompt 不会卡住排在它后面的请求。新的上限从下一个请求起生效，对已经在排队的请求同样适用；两个模型共用的引擎，按最近一个发给它的请求所带的上限计。计数只覆盖本网关进程发出的请求，所以如果引擎还有其他客户端，它们的请求仍可能在引擎里排队。"
+
+#: ../developer/routing.md:492
+msgid "Max offload input"
+msgstr "最大卸载输入"
+
+#: ../developer/routing.md:494
+msgid ""
+"The policy can also limit what is offloaded by size. With a **max offload "
+"input** of N tokens (**Max offload input (tokens)** in the console, "
+"`max_input_tokens` in the API), a request whose prompt is estimated at more "
+"than N tokens is never sent to the offload route. It is served only by the "
+"model's other routes, as though the model had no offload route:"
+msgstr "卸载策略还可以按大小限制哪些请求能被卸载。设置 N 个 token 的**最大卸载输入**（控制台里的 **Max offload input (tokens)**，API 里的 `max_input_tokens`）之后，prompt 估计超过 N 个 token 的请求永远不会被发给卸载路由，只由该模型的其他路由处理，就像这个模型没有卸载路由一样："
+
+#: ../developer/routing.md:500
+msgid ""
+"**It waits as long as its own route needs.** Its attempts get no queue "
+"deadline and no first-token wait: up to the acquire timeout for an outbound "
+"slot, and as long as the engine needs for its first token. Under an [engine "
+"queue limit](#engine-queue-limit) it still takes its place in line, and "
+"waits its turn."
+msgstr "**它会一直等自己的路由**。它的尝试没有排队截止时间，也没有首 token 等待：等出站槽位最多等到获取超时，等首个 token 则是引擎需要多久就等多久。设置了[引擎队列上限](#engine-queue-limit)时，它照样在队列里占一个位置，按顺序等。"
+
+#: ../developer/routing.md:505
+msgid ""
+"**It has no last resort.** When every other route fails, the request fails "
+"as it would without an offload route. When no other route is admissible at "
+"all, it is refused with `503` instead of being sent to the offload route."
+msgstr "**它没有兜底**。其他每条路由都失败时，请求会像没有卸载路由时一样失败。如果根本没有其他路由可以准入，请求会以 `503` 被拒绝，而不是被发给卸载路由。"
+
+#: ../developer/routing.md:508
+msgid "**A prompt of N tokens or fewer** is offloaded as before."
+msgstr "**不超过 N 个 token 的 prompt** 照常卸载。"
+
+#: ../developer/routing.md:510
+msgid ""
+"The size is the router's own estimate of the prompt, the one [prefill-aware "
+"selection](#prefill-aware-selection) uses (`estimate_prefill_tokens` in "
+"`apps/backend/routing/prefill_load.py`): everything the request sends "
+"upstream — every message with its tool calls and results, the tool "
+"definitions and the response format — at 4 bytes of UTF-8 text a token, plus "
+"a flat 85 tokens per image and 200 per audio input. No tokenizer runs, so "
+"the estimate can differ from the provider's own count; leave some headroom "
+"when the limit stands in for a hard one, such as the offload route's context "
+"window. `/v1/messages` sizes the Anthropic body the same way, system prompt "
+"included, and only for a model whose offload route has a max input. A pinned "
+"request goes where it is pinned, whatever its size. Leave the field empty to "
+"offload requests of any size."
+msgstr "大小是路由器自己对 prompt 的估计，也就是 [prefill 感知的选路](#prefill-aware-selection)所用的那个（`apps/backend/routing/prefill_load.py` 里的 `estimate_prefill_tokens`）：请求发往上游的全部内容——每条消息及其中的工具调用和结果、工具定义和响应格式——按每 4 字节 UTF-8 文本一个 token 计算，另外每张图片固定算 85 个 token，每段音频输入算 200 个。估计时不运行分词器，所以结果可能和服务商自己的计数有出入；如果这个上限是在代替某个硬性限制（比如卸载路由的上下文窗口），请留出一些余量。`/v1/messages` 用同样的方法估计 Anthropic 请求体的大小（包括 system prompt），并且只在模型的卸载路由设置了最大输入时才估计。pin 的请求不论大小，都发往它 pin 的地方。该字段留空，则任何大小的请求都可以卸载。"
 
 #: ../developer/routing.md:427
 msgid "RouteWise"

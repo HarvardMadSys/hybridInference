@@ -319,8 +319,9 @@ A model routed by `fixed` can reserve one of its routes as its **offload
 route**: the route that takes the requests its other routes cannot seat. It is
 set per model in the admin console (**Routing → Queue offload**) or with
 `PUT /admin/routing/offload-routes/{model_id}`, as a route id, a wait in
-seconds and an optional [engine queue limit](#engine-queue-limit), and stored in
-`site_settings` under `model_offload_route:<model_id>`.
+seconds, an optional [engine queue limit](#engine-queue-limit) and an optional
+[max offload input](#max-offload-input), and stored in `site_settings` under
+`model_offload_route:<model_id>`.
 The routing mechanics live in `apps/backend/routing/offload.py`.
 
 The wait is measured in the gateway's own outbound queue. The concurrency
@@ -425,9 +426,12 @@ What does not offload:
   too long for its context window, fallback passes over every route whose
   configured `context_length` is no wider, the offload route included. No later
   attempt leaves its queue for an offload route that would be passed over.
+- **A prompt over the max offload input.** It is never sent to the offload
+  route; see [Max offload input](#max-offload-input).
 - **`/v1/messages`.** It picks one adapter itself and has no fallback. It keeps
-  the offload route out of that pick unless nothing else is eligible, but does
-  not offload on a wait. `/v1/chat/completions` and the surfaces built on it —
+  the offload route out of that pick unless nothing else is eligible (and out of
+  it altogether for a prompt over the max offload input), but does not offload on
+  a wait. `/v1/chat/completions` and the surfaces built on it —
   `/v1/responses`, `/v1/completions` and the admin playground — do.
 - **RouteWise.** A `routewise` model plans its own candidates and ignores offload
   routes, as does a `fixed` model with `hybrid_composition: true`. The admin API
@@ -464,9 +468,10 @@ gateway, in arrival order, one line per engine (`EngineHold` in
   There is nothing to cancel at the engine and no prefill to lose.
 - **One that cannot waits its turn.** An attempt with nowhere else to go — a
   pinned request, one whose caller owns the candidate order, a caller the
-  offload route holds no key for, a retry after a failed offload, the offload
-  attempt itself — has no deadline of its own, but it still counts. It keeps
-  its place for up to the acquire timeout
+  offload route holds no key for, a prompt over the
+  [max offload input](#max-offload-input), a retry after a failed offload, the
+  offload attempt itself — has no deadline of its own, but it still counts. It
+  keeps its place for up to the acquire timeout
   (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), and is then sent to the engine
   anyway, past the limit. The hold decides where a request waits, and never
   fails one.
@@ -483,6 +488,36 @@ next request on, to the requests already waiting as well; an engine two models
 share follows the limit of the latest request sent its way. The count covers the
 requests this gateway process sends, so an engine that other clients also use
 can still queue theirs.
+
+### Max offload input
+
+The policy can also limit what is offloaded by size. With a **max offload
+input** of N tokens (**Max offload input (tokens)** in the console,
+`max_input_tokens` in the API), a request whose prompt is estimated at more than
+N tokens is never sent to the offload route. It is served only by the model's
+other routes, as though the model had no offload route:
+
+- **It waits as long as its own route needs.** Its attempts get no queue
+  deadline and no first-token wait: up to the acquire timeout for an outbound
+  slot, and as long as the engine needs for its first token. Under an
+  [engine queue limit](#engine-queue-limit) it still takes its place in line,
+  and waits its turn.
+- **It has no last resort.** When every other route fails, the request fails as
+  it would without an offload route. When no other route is admissible at all,
+  it is refused with `503` instead of being sent to the offload route.
+- **A prompt of N tokens or fewer** is offloaded as before.
+
+The size is the router's own estimate of the prompt, the one
+[prefill-aware selection](#prefill-aware-selection) uses (`estimate_prefill_tokens`
+in `apps/backend/routing/prefill_load.py`): everything the request sends upstream
+— every message with its tool calls and results, the tool definitions and the
+response format — at 4 bytes of UTF-8 text a token, plus a flat 85 tokens per
+image and 200 per audio input. No tokenizer runs, so the estimate can differ from
+the provider's own count; leave some headroom when the limit stands in for a hard
+one, such as the offload route's context window. `/v1/messages` sizes the
+Anthropic body the same way, system prompt included, and only for a model whose
+offload route has a max input. A pinned request goes where it is pinned, whatever
+its size. Leave the field empty to offload requests of any size.
 
 ## RouteWise
 

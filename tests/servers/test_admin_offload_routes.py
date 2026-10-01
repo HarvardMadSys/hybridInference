@@ -344,6 +344,70 @@ async def test_put_rejects_an_engine_queue_limit_that_is_not_a_whole_number_of_o
     op_store.set_setting.assert_not_awaited()
 
 
+async def test_put_stores_a_max_input_and_routing_applies_it(offload_client):
+    client, op_store, _router, _registry, resolver, audit = offload_client
+
+    response = await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "max_input_tokens": 32000},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    offload = response.json()["offload"]
+    assert offload["max_input_tokens"] == 32000
+    assert offload["engine_queue_limit"] is None
+    _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
+    assert json.loads(value) == {
+        "max_input_tokens": 32000,
+        "route_id": RESERVED_ROUTE_ID,
+        "wait_seconds": 4.0,
+    }
+    assert resolver.get_offload_policy(MODEL) == OffloadPolicy(
+        RESERVED_ROUTE_ID, 4.0, max_input_tokens=32000
+    )
+    details = audit.await_args.args[4]
+    assert details["max_input_tokens"] == 32000
+    assert details["old_max_input_tokens"] is None
+
+    listed = await client.get("/admin/routing/offload-routes", headers=AUTH)
+    assert listed.json()["offload_routes"][0]["max_input_tokens"] == 32000
+
+
+async def test_put_without_a_max_input_clears_it(offload_client):
+    """The policy is replaced whole, so leaving the max input out lifts it."""
+    client, op_store, _router, _registry, resolver, audit = offload_client
+    await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "max_input_tokens": 8000},
+        headers=AUTH,
+    )
+
+    response = await _set(client, wait=4.0)
+
+    assert response.json()["offload"]["max_input_tokens"] is None
+    _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
+    assert "max_input_tokens" not in json.loads(value)
+    assert resolver.get_offload_policy(MODEL).max_input_tokens is None
+    assert audit.await_args.args[4]["old_max_input_tokens"] == 8000
+
+
+@pytest.mark.parametrize("max_input", [0, -2, 1.5, True, "3"])
+async def test_put_rejects_a_max_input_that_is_not_a_whole_number_of_one_or_more(
+    offload_client, max_input
+):
+    client, op_store, *_ = offload_client
+
+    response = await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "max_input_tokens": max_input},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    op_store.set_setting.assert_not_awaited()
+
+
 async def test_put_on_a_routewise_model_is_refused(offload_client):
     client, op_store, _router, registry, *_ = offload_client
     registry.strategies[MODEL] = "routewise"
@@ -429,6 +493,20 @@ async def test_delete_audits_the_engine_queue_limit_it_cleared(offload_client):
     assert response.status_code == 200
     assert audit.await_args.args[2] == "routing.offload_routes.clear"
     assert audit.await_args.args[4]["old_engine_queue_limit"] == 2
+
+
+async def test_delete_audits_the_max_input_it_cleared(offload_client):
+    client, _op_store, _router, _registry, _resolver, audit = offload_client
+    await client.put(
+        f"/admin/routing/offload-routes/{MODEL}",
+        json={"route_id": RESERVED_ROUTE_ID, "wait_seconds": 4.0, "max_input_tokens": 16000},
+        headers=AUTH,
+    )
+
+    await client.delete(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
+
+    assert audit.await_args.args[2] == "routing.offload_routes.clear"
+    assert audit.await_args.args[4]["old_max_input_tokens"] == 16000
 
 
 async def test_delete_works_for_a_model_that_no_longer_exists(offload_client):
@@ -594,6 +672,31 @@ async def test_resolver_reads_an_engine_queue_limit_and_skips_a_bad_one():
     assert resolver.get_offload_policy(MODEL) == OffloadPolicy(RESERVED_ROUTE_ID, 3.0, 2)
     assert resolver.get_offload_policy("before-the-limit") == OffloadPolicy("r", 1.0)
     assert resolver.get_offload_policy("zero") is None
+
+
+async def test_resolver_reads_a_max_input_and_skips_a_bad_one():
+    both = OffloadPolicy(RESERVED_ROUTE_ID, 3.0, engine_queue_limit=2, max_input_tokens=64000)
+    store = MagicMock()
+    store.list_settings = AsyncMock(
+        return_value=[
+            {"key": f"model_offload_route:{MODEL}", "value": encode_offload_policy(both)},
+            {
+                "key": "model_offload_route:zero",
+                "value": '{"route_id": "r", "wait_seconds": 1, "max_input_tokens": 0}',
+            },
+            {
+                "key": "model_offload_route:fraction",
+                "value": '{"route_id": "r", "wait_seconds": 1, "max_input_tokens": 1.5}',
+            },
+        ]
+    )
+    resolver = OffloadRouteResolver(store)
+
+    await resolver.load_all()
+
+    assert resolver.get_offload_policy(MODEL) == both
+    assert resolver.get_offload_policy("zero") is None
+    assert resolver.get_offload_policy("fraction") is None
 
 
 async def test_a_reload_that_started_before_an_admin_write_cannot_undo_it():
