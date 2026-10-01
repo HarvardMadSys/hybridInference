@@ -1542,7 +1542,7 @@ class FixedRouter:
         model_id: str,
         *,
         endpoint_scope: frozenset[str] | None = None,
-        size_prompt: Callable[[], int] | None = None,
+        size_prompt: Callable[[BaseAdapter], int] | None = None,
     ) -> list[tuple[BaseAdapter, float]]:
         """Return the adapters automatic routing may dispatch to, in route order.
 
@@ -1562,11 +1562,13 @@ class FixedRouter:
         entry reaches it only when nothing ahead of it can serve.
 
         ``size_prompt`` returns the request's estimated prompt tokens
-        (``estimate_prefill_tokens``). A prompt over the offload route's max
-        input leaves the route out of the list instead of at its end. It is
-        called only when the route has a max input, so a surface that has not
-        sized its prompt yet pays for it only when the answer matters; without
-        it, the route is listed last whatever the request's size.
+        (``estimate_prefill_tokens``) as the adapter it is given would be sent
+        them: a surface whose body depends on the route's wire format sizes it
+        for the offload route's. A prompt over the offload route's max input
+        leaves the route out of the list instead of at its end. It is called
+        only when the route has a max input, so a surface that has not sized its
+        prompt yet pays for it only when the answer matters; without it, the
+        route is listed last whatever the request's size.
         """
         route = self.routes.get(model_id)
         if not route or not route.published or not route.adapters:
@@ -1589,7 +1591,7 @@ class FixedRouter:
         if (
             policy.max_input_tokens is not None
             and size_prompt is not None
-            and not policy.takes_input(size_prompt())
+            and not policy.takes_input(size_prompt(offload))
         ):
             return ordinary
         return ordinary + [entry for entry in eligible if entry[0] is offload]

@@ -408,10 +408,20 @@ def _prefill_inputs(body: dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
     return messages, body.get("tools")
 
 
-def _prompt_tokens(body: dict[str, Any]) -> int:
-    """Return the estimated prompt tokens of an Anthropic body, sized as prefill sizes it."""
+def _prompt_tokens(body: dict[str, Any], adapter) -> int:
+    """Return the estimated prompt tokens ``adapter`` would be sent for an Anthropic body.
+
+    The inputs prefill accounting sizes (``_prefill_inputs``), plus the
+    structured-output schema in ``output_config.format`` for a native Anthropic
+    adapter, which is forwarded the body as it is. An OpenAI-backed one never
+    sees the schema: ``_sanitize_for_openai_backend`` drops ``output_config``.
+    """
     messages, tools = _prefill_inputs(body)
-    return estimate_prefill_tokens(messages, tools=tools)
+    output_format = None
+    output_config = body.get("output_config")
+    if adapter.native_format != "openai" and isinstance(output_config, dict):
+        output_format = output_config.get("format")
+    return estimate_prefill_tokens(messages, tools=tools, response_format=output_format)
 
 
 # --- Model resolution ------------------------------------------------------
@@ -422,7 +432,7 @@ def _pick_dispatch_adapter(
     canonical: str,
     router_exec,
     user_role: str,
-    size_prompt: Callable[[], int] | None = None,
+    size_prompt: Callable[[Any], int] | None = None,
 ):
     """Return the route adapter this request may actually be dispatched to.
 
@@ -472,7 +482,7 @@ async def _resolve(
     model_visibility_resolver=None,
     *,
     for_dispatch: bool = True,
-    size_prompt: Callable[[], int] | None = None,
+    size_prompt: Callable[[Any], int] | None = None,
 ):
     """Return (canonical_model_id, route, adapter).
 
@@ -481,8 +491,9 @@ async def _resolve(
     skipped, and a 503 is raised once none are left. Callers that only need the
     visibility check pass ``for_dispatch=False`` -- count_tokens answers locally
     and never reaches an upstream, so a provider outage must not stop it.
-    ``size_prompt`` returns the request's estimated prompt tokens, for an offload
-    route with a max input (``_pick_dispatch_adapter``).
+    ``size_prompt`` returns the request's estimated prompt tokens as a given
+    adapter would be sent them, for an offload route with a max input
+    (``_pick_dispatch_adapter``).
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -676,7 +687,7 @@ async def _maybe_reroute_small_reasoning_call(
             router_exec,
             user_ctx,
             model_visibility_resolver,
-            size_prompt=lambda: _prompt_tokens(body),
+            size_prompt=lambda adapter: _prompt_tokens(body, adapter),
         )
     except HTTPException:
         # Target not configured, not visible to this caller, or currently
@@ -1425,7 +1436,7 @@ async def anthropic_messages(
             # Sized before dispatch rewrites the body, which only strips
             # Anthropic-only fields from it, and only when the model's offload
             # route has a max input to hold it to.
-            size_prompt=lambda: _prompt_tokens(body),
+            size_prompt=lambda adapter: _prompt_tokens(body, adapter),
         )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log

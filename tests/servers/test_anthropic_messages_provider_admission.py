@@ -148,6 +148,33 @@ class _OffloadPolicies:
         return self.policy if model_id == DUAL_MODEL else None
 
 
+def _native_adapter(provider: str, base_url: str):
+    """Build a native Anthropic adapter, which is forwarded the Anthropic body as it is."""
+    from serving.adapters import AnthropicAdapter
+
+    return AnthropicAdapter(
+        ModelConfig(
+            id=DUAL_MODEL,
+            name=DUAL_MODEL,
+            provider=provider,
+            base_url=base_url,
+            api_key=f"{provider}-test",
+            provider_model_id="claude-test",
+            max_output_length=1024,
+            pricing=_PRICING,
+        )
+    )
+
+
+def _schema_body() -> dict:
+    """A short prompt with a structured-output schema of about 115 estimated tokens."""
+    body = _body()
+    body["output_config"] = {
+        "format": {"type": "json_schema", "schema": {"type": "object", "description": "x" * 400}}
+    }
+    return body
+
+
 def _offload_to_backup(router, *, max_input_tokens: int):
     """Make the backup the model's offload route, and the only route admitted."""
     primary, backup = _register_dual_route(router)
@@ -323,6 +350,52 @@ async def test_a_prompt_over_the_max_input_is_never_sent_to_the_offload_route(
     assert r.status_code == 503
     assert r.json()["error"]["type"] == "overloaded_error"
     assert urls == []
+
+
+def test_the_prompt_size_counts_the_schema_only_for_a_native_route():
+    """An OpenAI-backed route never sees ``output_config``: the sanitizer drops it."""
+    native = _native_adapter("anthropic", BACKUP_URL)
+    openai = _adapter("zai", PRIMARY_URL)
+
+    assert anthropic_messages._prompt_tokens(_schema_body(), openai) == (
+        anthropic_messages._prompt_tokens(_body(), openai)
+    )
+    assert anthropic_messages._prompt_tokens(_schema_body(), native) > 100
+
+
+@pytest.mark.asyncio
+async def test_a_native_offload_route_counts_the_structured_output_schema(
+    anthropic_test_client, anthropic_compat_router, monkeypatch
+):
+    """It would be forwarded ``output_config.format`` with the body, so the schema counts."""
+    primary = _adapter("zai", PRIMARY_URL)
+    offload = _native_adapter("anthropic", BACKUP_URL)
+    anthropic_compat_router.register_route(DUAL_MODEL, [(primary, 0.9), (offload, 0.1)])
+    anthropic_compat_router.offload_policy_resolver = _OffloadPolicies(
+        OffloadPolicy(
+            route_id=endpoint_id_for_adapter(offload), wait_seconds=1.0, max_input_tokens=50
+        )
+    )
+    _open_circuit(anthropic_compat_router, primary)
+    urls = _capture_upstream(monkeypatch)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_schema_body(), headers=_auth())
+
+    assert r.status_code == 503
+    assert urls == []
+
+
+@pytest.mark.asyncio
+async def test_an_openai_backed_offload_route_is_not_held_to_a_schema_it_never_sees(
+    anthropic_test_client, anthropic_compat_router, monkeypatch
+):
+    _offload_to_backup(anthropic_compat_router, max_input_tokens=50)
+    urls = _capture_upstream(monkeypatch)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_schema_body(), headers=_auth())
+
+    assert r.status_code == 200
+    assert urls and urls[0].startswith(BACKUP_URL)
 
 
 @pytest.mark.asyncio

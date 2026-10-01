@@ -516,8 +516,11 @@ image and 200 per audio input. No tokenizer runs, so the estimate can differ fro
 the provider's own count; leave some headroom when the limit stands in for a hard
 one, such as the offload route's context window. `/v1/messages` sizes the
 Anthropic body the same way, system prompt included, and only for a model whose
-offload route has a max input. A pinned request goes where it is pinned, whatever
-its size. Leave the field empty to offload requests of any size.
+offload route has a max input. For a native Anthropic offload route it also
+counts the structured-output schema in `output_config.format`, which that route
+is forwarded with the body and an OpenAI-backed one never receives. A pinned
+request goes where it is pinned, whatever its size. Leave the field empty to
+offload requests of any size.
 
 ## RouteWise
 

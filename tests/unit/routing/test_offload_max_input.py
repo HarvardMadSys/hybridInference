@@ -225,27 +225,34 @@ def test_a_long_prompt_still_gets_the_other_routes():
 def test_eligible_adapters_leaves_the_offload_route_out_for_a_long_prompt():
     offload = _Route("reserved", route_id="offload")
     a = _Route("a")
-    router = _router([(offload, 1.0), (a, 1.0)], _policy())
+    b = _Route("b")
+    router = _router([(a, 1.0), (offload, 1.0), (b, 1.0)], _policy())
+
+    asked: list[BaseAdapter] = []
 
     def listed(tokens: int) -> list[BaseAdapter]:
-        return [
-            adapter for adapter, _w in router.eligible_adapters(MODEL, size_prompt=lambda: tokens)
-        ]
+        def size_prompt(adapter: BaseAdapter) -> int:
+            asked.append(adapter)
+            return tokens
 
-    assert listed(MAX_INPUT + 1) == [a]
-    assert listed(MAX_INPUT) == [a, offload]
+        return [adapter for adapter, _w in router.eligible_adapters(MODEL, size_prompt=size_prompt)]
+
+    assert listed(MAX_INPUT + 1) == [a, b]
+    assert listed(MAX_INPUT) == [a, b, offload]
+    # Sized for the route the prompt might be sent to.
+    assert asked == [offload, offload]
     # A surface that does not size its prompt keeps the old order.
-    assert [adapter for adapter, _w in router.eligible_adapters(MODEL)] == [a, offload]
+    assert [adapter for adapter, _w in router.eligible_adapters(MODEL)] == [a, b, offload]
 
 
 def test_eligible_adapters_sizes_the_prompt_only_for_a_route_with_a_max_input():
     offload = _Route("reserved", route_id="offload")
     a = _Route("a")
     router = _router([(a, 1.0), (offload, 1.0)], _policy(max_input_tokens=None))
-    sized: list[int] = []
+    sized: list[BaseAdapter] = []
 
-    def size_prompt() -> int:
-        sized.append(1)
+    def size_prompt(adapter: BaseAdapter) -> int:
+        sized.append(adapter)
         return 10**6
 
     eligible = [adapter for adapter, _w in router.eligible_adapters(MODEL, size_prompt=size_prompt)]
