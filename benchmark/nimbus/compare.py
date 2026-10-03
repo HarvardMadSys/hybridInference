@@ -25,11 +25,18 @@ def compare(directory: Path, output: Path) -> list[dict]:
             "config_sha256": manifest["config_sha256"],
             "requests": summary.get("requests", manifest.get("recorded_requests", 0)),
             "successful_requests": summary.get("successful_requests"),
+            "failed_requests": summary.get("failed_requests"),
             "local": summary.get("routes", {}).get("local", 0),
             "cloud": summary.get("routes", {}).get("cloud", 0),
             "truncated_requests": summary.get("truncated_requests"),
             "usage_coverage": summary.get("authoritative_usage_requests"),
             "estimated_cost_cny": summary.get("cost_cny_estimated"),
+            "cost_complete": summary.get("cost_complete"),
+            "unresolved_reserved_cny": summary.get("unresolved_reserved_cny"),
+            "conservative_cost_upper_bound_cny": summary.get("conservative_cost_upper_bound_cny"),
+            "joint_slo_satisfied_fraction_all_requests": summary.get(
+                "joint_slo_satisfied_fraction_all_requests"
+            ),
             "duration_s": summary.get("duration_s"),
         }
         for metric in ("ttft_s", "tpot_s", "e2e_s"):
