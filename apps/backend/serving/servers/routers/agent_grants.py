@@ -276,7 +276,9 @@ def _decode_cursor(cursor: str, *, expected: dict[str, Any]) -> tuple[datetime, 
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
         after_started_at, after_request_id = payload["a"]
-        bound = {key: payload[key] for key in expected}
+        # Pre-correlation cursors had no response selector; they still mean
+        # an unfiltered page, never a page for a particular message.
+        bound = {key: payload.get(key) if key == "r" else payload[key] for key in expected}
         started_at = datetime.fromisoformat(after_started_at)
     except (binascii.Error, ValueError, KeyError, TypeError):
         raise _error(
@@ -309,6 +311,7 @@ def _instant(value: datetime | None) -> str | None:
 def _request_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": row["request_id"],
+        "response_id": row.get("response_id"),
         "request_started_at": _instant(row["request_started_at"]),
         "logged_at": _instant(row["logged_at"]),
         "model": row["model_id"],
@@ -334,6 +337,9 @@ async def grant_usage(
     detail: str | None = Query(None),
     limit: int | None = Query(None),
     cursor: str | None = Query(None),
+    response_id: str | None = Query(
+        None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$"
+    ),
     store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
@@ -366,6 +372,7 @@ async def grant_usage(
         detail: ``totals`` or ``requests``; the latter adds a page of rows.
         limit: Page size for ``requests`` (1..500, default 100).
         cursor: Continuation from a previous ``requests`` page.
+        response_id: Exact delivered message identity; filters request rows only.
         store: Operational store.
         log_store: Billing ledger.
 
@@ -391,7 +398,9 @@ async def grant_usage(
         )
 
     job_id = row["external_job_id"]
-    windowed = any(value is not None for value in (since, until, detail, limit, cursor))
+    windowed = any(
+        value is not None for value in (since, until, detail, limit, cursor, response_id)
+    )
     if not windowed:
         usage = await log_store.get_agent_job_usage(job_id)
         return {
@@ -416,6 +425,8 @@ async def grant_usage(
         raise _invalid_query("`limit` applies to `detail=requests` only.")
     if cursor is not None and detail != "requests":
         raise _invalid_query("`cursor` applies to `detail=requests` only.")
+    if response_id is not None and detail != "requests":
+        raise _invalid_query("`response_id` applies to `detail=requests` only.")
     page_size = USAGE_DEFAULT_LIMIT if limit is None else limit
     if not 1 <= page_size <= USAGE_MAX_LIMIT:
         raise _invalid_query(f"`limit` must be between 1 and {USAGE_MAX_LIMIT}.")
@@ -425,6 +436,7 @@ async def grant_usage(
         "g": grant_id,
         "s": window_since.isoformat(),
         "u": window_until.isoformat(),
+        "r": response_id,
     }
     after = _decode_cursor(cursor, expected=cursor_scope) if cursor is not None else None
 
@@ -467,8 +479,12 @@ async def grant_usage(
             until=window_until,
             limit=page_size + 1,
             after=after,
+            **({"response_id": response_id} if response_id is not None else {}),
         )
         page = rows[:page_size]
+        # Echo the selector so a client can detect an older gateway that
+        # ignores it, including when that gateway returns an empty page.
+        body["response_id"] = response_id
         body["requests"] = [_request_row(r) for r in page]
         body["next_cursor"] = (
             _encode_cursor(
