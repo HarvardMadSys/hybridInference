@@ -647,11 +647,11 @@ class PrefillLoadTracker:
         elephant_limit: int = ELEPHANT_LIMIT,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        # RLock lets a routing transaction hold the tracker while the router
-        # calls the ordinary read/lease methods.  The transaction is short and
-        # contains only local selection/accounting work; provider I/O never
-        # runs while it is held.
+        # The state lock protects the accounting maps.  A separate RLock
+        # serializes route snapshots and reservations without keeping the
+        # accounting lock held through expensive candidate computation.
         self._lock = threading.RLock()
+        self._routing_lock = threading.RLock()
         self._backlog: dict[str, int] = {}
         self._elephants: dict[str, int] = {}
         # Load attributed to one caller on one endpoint, so a caller's own work
@@ -672,7 +672,7 @@ class PrefillLoadTracker:
         local candidate construction/selection and lease acquisition; it must
         not span an upstream request.
         """
-        with self._lock:
+        with self._routing_lock:
             yield
 
     def uncached_estimate(

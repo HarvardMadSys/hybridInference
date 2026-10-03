@@ -2354,10 +2354,11 @@ class RouteWiseRouter:
                 context.get("messages") if isinstance(context, dict) else None,
                 request_params if isinstance(request_params, dict) else None,
             )
-            backup_lease = self._prefill_load.acquire(
-                backup.endpoint_id,
-                tracked_tokens,
-            )
+            with self._prefill_load.routing_transaction():
+                backup_lease = self._prefill_load.acquire(
+                    backup.endpoint_id,
+                    tracked_tokens,
+                )
 
         def _confirm_backup_prefill() -> None:
             self._prefill_load.release(backup_lease, prefill_confirmed=True)
@@ -2625,11 +2626,11 @@ class RouteWiseRouter:
             trace.request_id = str(request_id)
 
         with self._route_commit_lock:
-            # Request-derived preprocessing stays outside the shared tracker
-            # transaction. Once a primary prefill lease is requested, however,
-            # the tracker must remain held from its backlog snapshot through
-            # selection and reservation. Otherwise two router instances that
-            # share one tracker can select from the same stale load view.
+            # The routing lock serializes load snapshot -> selection ->
+            # reservation across selectors so concurrent decisions cannot
+            # commit from the same stale load view. The tracker state lock
+            # remains independent, allowing release and cache/accounting
+            # updates while candidate construction and LP solving run.
             prompt_tokens = self._prompt_tokens_from_context(context)
             prediction = self._predict_output(model_id, prompt_tokens, context)
             pool = self._routewise_pool(model_id)
@@ -2637,24 +2638,32 @@ class RouteWiseRouter:
                 self.envelope.snapshot(pool) if model_id in self._quota_bearing_models else None
             )
             now = time.time()
-            tracker_transaction = (
-                self._prefill_load.routing_transaction()
-                if reserve_prefill
-                else contextlib.nullcontext()
+            if reserve_prefill and self.config.prefill_load_routing_enabled:
+                with self._prefill_load.routing_transaction():
+                    prefill_backlog = self._prefill_backlog_snapshot(model_id)
+                    return self._select_decision_locked(
+                        model_id,
+                        context,
+                        trace,
+                        prompt_tokens=prompt_tokens,
+                        prediction=prediction,
+                        envelope=envelope,
+                        now=now,
+                        prefill_backlog=prefill_backlog,
+                        reserve_prefill=reserve_prefill,
+                    )
+            prefill_backlog = self._prefill_backlog_snapshot(model_id)
+            return self._select_decision_locked(
+                model_id,
+                context,
+                trace,
+                prompt_tokens=prompt_tokens,
+                prediction=prediction,
+                envelope=envelope,
+                now=now,
+                prefill_backlog=prefill_backlog,
+                reserve_prefill=reserve_prefill,
             )
-            with tracker_transaction:
-                prefill_backlog = self._prefill_backlog_snapshot(model_id)
-                return self._select_decision_locked(
-                    model_id,
-                    context,
-                    trace,
-                    prompt_tokens=prompt_tokens,
-                    prediction=prediction,
-                    envelope=envelope,
-                    now=now,
-                    prefill_backlog=prefill_backlog,
-                    reserve_prefill=reserve_prefill,
-                )
 
     def _select_decision_locked(
         self,
@@ -3276,15 +3285,12 @@ class RouteWiseRouter:
             # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
             # _execute_stream_adapter.
             if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
-                tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
+                # Serialize fallback lease acquisition with candidate selection so
+                # the two cannot both reserve from the same stale load snapshot.
+                with self._prefill_load.routing_transaction():
+                    # Use the whole-request estimator, not just message content.
+                    tracked_tokens = self._tracked_prefill_tokens(messages, params)
+                    lease = self._prefill_load.acquire(endpoint_id, tracked_tokens)
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 if isinstance(adapter, HedgedAdapter):
@@ -3362,15 +3368,12 @@ class RouteWiseRouter:
             # whole-request estimation cost. Only the fallback path estimates and
             # acquires here (for direct/internal callers without that lease).
             if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
-                tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
+                # Serialize fallback lease acquisition with candidate selection so
+                # the two cannot both reserve from the same stale load snapshot.
+                with self._prefill_load.routing_transaction():
+                    # Use the whole-request estimator, not just message content.
+                    tracked_tokens = self._tracked_prefill_tokens(messages, params)
+                    lease = self._prefill_load.acquire(endpoint_id, tracked_tokens)
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True
