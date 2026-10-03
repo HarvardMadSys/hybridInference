@@ -1367,6 +1367,31 @@ def test_a_notice_with_no_user_turn_beside_it_becomes_one():
     assert messages[-1] == {"role": "user", "content": _reminder("Be terse.")}
 
 
+def test_a_non_dict_entry_is_no_turn_for_a_system_message_to_follow():
+    """The translator skips a non-dict entry, so placement must not count it either."""
+    body = {
+        "system": "You are Claude Code.",
+        "messages": [
+            "junk",
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "system", "content": "Mind the budget."},
+            7,
+            {"role": "user", "content": "three"},
+        ],
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [
+        {"role": "system", "content": "You are Claude Code.\n\nBe terse."},
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": _reminder("Mind the budget.") + "\n\nthree"},
+    ]
+
+
 def test_a_folded_notice_keeps_the_client_cache_breakpoint():
     """Claude Code marks its last block for caching, and that block is the notice.
 

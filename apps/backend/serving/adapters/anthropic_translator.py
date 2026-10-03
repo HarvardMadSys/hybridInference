@@ -93,28 +93,33 @@ def normalize_inline_system(body: dict[str, Any]) -> dict[str, Any]:
     hoisted: list[dict[str, Any]] = []
     kept: list[Any] = []
     pending: list[dict[str, Any]] = []
+    # Index in `kept` of the latest message. A non-dict entry is kept as it was
+    # sent but is no message: the translator skips it, so it neither ends the
+    # leading run nor stands between a system message and its user turn.
+    previous = -1
     for message in messages:
-        if not _is_system_message(message):
+        if not isinstance(message, dict):
+            kept.append(message)
+            continue
+        if message.get("role") != "system":
             if pending:
-                if isinstance(message, dict) and message.get("role") == "user":
+                if message.get("role") == "user":
                     message = _with_reminders(message, pending, at_end=False)
                 else:
                     kept.append({"role": "user", "content": pending})
                 pending = []
             kept.append(message)
+            previous = len(kept) - 1
             continue
         blocks = _system_text_blocks(message.get("content"))
-        if not kept:
+        if previous < 0:
             hoisted.extend(blocks)
-            continue
-        if not blocks:
-            continue
-        reminders = [_as_system_reminder(b) for b in blocks]
-        previous = kept[-1]
-        if isinstance(previous, dict) and previous.get("role") == "user":
-            kept[-1] = _with_reminders(previous, reminders, at_end=True)
-        else:
-            pending.extend(reminders)
+        elif blocks:
+            reminders = [_as_system_reminder(b) for b in blocks]
+            if kept[previous].get("role") == "user":
+                kept[previous] = _with_reminders(kept[previous], reminders, at_end=True)
+            else:
+                pending.extend(reminders)
     if pending:
         kept.append({"role": "user", "content": pending})
 
