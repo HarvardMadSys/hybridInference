@@ -299,9 +299,39 @@ class OneAttemptHTTP(AsyncHTTPClient):
     it preserves ``_iterate_response_body`` and all adapter normalization.
     """
 
-    def __init__(self, runtime: ExperimentRuntime) -> None:
+    def __init__(self, runtime: ExperimentRuntime, route: str) -> None:
         super().__init__()
         self.runtime = runtime
+        self.route = route
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Honor a configured cloud proxy while keeping local inference direct."""
+        if self._session is None or self._session.closed:
+            trust_env = self.route == "cloud" and self.runtime.config["cloud"].get(
+                "trust_env_proxy", False
+            )
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_connect=15),
+                connector=aiohttp.TCPConnector(limit=200, limit_per_host=50),
+                trust_env=trust_env,
+            )
+        return self._session
+
+    @staticmethod
+    def bounded_timeout(timeout: aiohttp.ClientTimeout | None) -> aiohttp.ClientTimeout:
+        """Bound connecting to 15 seconds without changing existing read/total limits."""
+        current = timeout or aiohttp.ClientTimeout(total=None)
+
+        def limit(value: float | None) -> float:
+            return min(value, 15.0) if value is not None and value > 0 else 15.0
+
+        return aiohttp.ClientTimeout(
+            total=current.total,
+            connect=limit(current.connect),
+            sock_connect=limit(current.sock_connect),
+            sock_read=current.sock_read,
+            ceil_threshold=current.ceil_threshold,
+        )
 
     async def stream_post(
         self,
@@ -327,7 +357,7 @@ class OneAttemptHTTP(AsyncHTTPClient):
             url,
             json=json,
             headers=headers,
-            timeout=timeout or aiohttp.ClientTimeout(total=None),
+            timeout=self.bounded_timeout(timeout),
             allow_redirects=False,
         ) as response:
             attempt.response_status = response.status
@@ -360,7 +390,7 @@ class MeteredAdapter(OpenAICompatAdapter):
             raise ValueError("Nimbus experiments do not permit key-pool rotation")
         self.runtime = runtime
         self.route = route
-        self.http = OneAttemptHTTP(runtime)
+        self.http = OneAttemptHTTP(runtime, route)
         runtime.http_clients.append(self.http)
 
     async def stream_chat_completion(
@@ -427,6 +457,10 @@ def validate_endpoint(endpoint: dict[str, Any], route: str) -> None:
         raise ValueError(f"{route}.base_url must be an HTTP(S) endpoint")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("endpoint URLs must not contain credentials, query strings or fragments")
+    if not isinstance(endpoint.get("trust_env_proxy", False), bool):
+        raise ValueError("trust_env_proxy must be a boolean")
+    if route == "local" and endpoint.get("trust_env_proxy", False):
+        raise ValueError("local inference must not use the environment proxy")
     if (
         route == "cloud"
         and parsed.scheme != "https"

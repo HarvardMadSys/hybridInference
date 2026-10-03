@@ -18,6 +18,10 @@ POST, no connection retry, no redirects, and no key-pool rotation. It reuses the
 repository's SSE reader and OpenAI adapter processing. Raw upstream final usage
 is captured before the adapter can substitute estimated usage. Missing or
 intermediate-only usage retains the reservation, including on a successful stream.
+`cloud.trust_env_proxy: true` explicitly enables the server's HTTP(S) proxy
+environment for cloud calls; local inference always connects directly. Both paths
+bound connection establishment to 15 seconds while preserving configured total
+and stream read timeouts. No proxy URL or credential is written to artifacts.
 
 ## Run one immutable cohort
 
@@ -46,6 +50,11 @@ budget module's exact decimal strings and provenance. `slo` supplies `ttft_s` an
 `max_in_flight`, `max_cloud_attempts`, `max_pending`, `estimated_output_tokens`,
 and `cancel_grace_s`. `generation` accepts `temperature`, `top_p`, and `seed`.
 The router uses the repository's prompt estimator; no trace output label is read.
+`replay.prewarm_tokenizer: true` requires a pre-staged, SHA-256-verified
+`cl100k_base` cache and warms the gateway's fallback tokenizer before measurement
+or any provider request. It never downloads a missing asset. Set
+`TIKTOKEN_CACHE_DIR` to the staged cache directory; a missing or mismatched asset
+leaves a failed run manifest and sends no requests.
 
 Each JSONL row has `id`, `session_id`, `round_index`, `arrival_s`, `messages`,
 `max_tokens`, optional `tools`, and `tool_wait_s`. The wait belongs to the current

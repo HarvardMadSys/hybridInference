@@ -15,6 +15,7 @@ import os
 import secrets
 import socket
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -120,6 +121,35 @@ def source_provenance(require_clean: bool = True) -> dict[str, Any]:
             for folder in (root / "benchmark/nimbus", root / "apps/backend/routing")
             for path in sorted(folder.glob("*.py"))
         },
+    }
+
+
+def prewarm_tokenizer() -> dict[str, Any]:
+    """Warm the gateway's fallback tokenizer from a verified cache, never download."""
+    expected_hash = "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+    cache_key = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+    cache_dir = os.environ.get(
+        "TIKTOKEN_CACHE_DIR",
+        os.environ.get("DATA_GYM_CACHE_DIR", str(Path(tempfile.gettempdir()) / "data-gym-cache")),
+    )
+    if not cache_dir:
+        raise ValueError("tokenizer prewarm requires a cache directory; downloads are forbidden")
+    path = Path(cache_dir) / cache_key
+    if not path.is_file() or sha256_bytes(path.read_bytes()) != expected_hash:
+        raise ValueError(
+            "verified cl100k_base cache is missing; stage the public asset before replay"
+        )
+    import tiktoken
+
+    start = time.monotonic()
+    encoding = tiktoken.get_encoding("cl100k_base")
+    encoding.encode("Nimbus tokenizer warmup", disallowed_special=())
+    return {
+        "encoding": "cl100k_base",
+        "sha256": expected_hash,
+        "cache_path": str(path),
+        "duration_s": time.monotonic() - start,
+        "network_used": False,
     }
 
 
@@ -403,6 +433,9 @@ async def execute_run(
     sock = None
     records: list[dict[str, Any]] = []
     try:
+        if config["replay"].get("prewarm_tokenizer", False):
+            manifest["tokenizer_prewarm"] = prewarm_tokenizer()
+            journal.write_json("manifest.json", manifest)
         app = create_experiment_app(runtime, api_key)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))

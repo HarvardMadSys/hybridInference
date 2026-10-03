@@ -7,11 +7,12 @@ import json
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
+import aiohttp
 import pytest
 from aiohttp import web
 
 from benchmark.nimbus.budget import BudgetLedger
-from benchmark.nimbus.gateway import authoritative_counts
+from benchmark.nimbus.gateway import OneAttemptHTTP, authoritative_counts
 from benchmark.nimbus.report import summarize
 from benchmark.nimbus.runner import execute_run, usable_delta
 from benchmark.nimbus.workload import load_workload
@@ -263,6 +264,53 @@ async def test_zero_cloud_attempt_limit_refuses_before_wire(tmp_path):
     assert records[0]["status"] == "error"
     assert summary["failed_requests"] == 1
     assert not BudgetLedger(tmp_path / "budget.sqlite", "unit-campaign", "1000").export_entries()
+
+
+@pytest.mark.parametrize("policy", ["all_api", "all_local"])
+async def test_explicit_cloud_proxy_is_used_but_local_stays_direct(tmp_path, monkeypatch, policy):
+    async with upstream() as (origin_url, origin_calls), upstream() as (proxy_url, proxy_calls):
+        monkeypatch.setenv("http_proxy", proxy_url.removesuffix("/v1"))
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.setenv("no_proxy", "")
+        monkeypatch.setenv("NO_PROXY", "")
+        cfg = config(origin_url, policy)
+        cfg["cloud"]["trust_env_proxy"] = True
+        summary, _, _ = await run(tmp_path, cfg)
+    assert summary["successful_requests"] == 1
+    assert len(proxy_calls) == (1 if policy == "all_api" else 0)
+    assert len(origin_calls) == (0 if policy == "all_api" else 1)
+
+
+@pytest.mark.parametrize(
+    "timeout", [None, aiohttp.ClientTimeout(total=25, connect=7, sock_connect=30, sock_read=40)]
+)
+def test_connection_timeout_bound_preserves_total_and_read_limits(timeout):
+    bounded = OneAttemptHTTP.bounded_timeout(timeout)
+    assert bounded.connect == (7 if timeout else 15)
+    assert bounded.sock_connect == 15
+    assert bounded.total == (25 if timeout else None)
+    assert bounded.sock_read == (40 if timeout else None)
+
+
+async def test_missing_prewarm_cache_fails_before_cloud_and_keeps_failed_manifest(
+    tmp_path, monkeypatch
+):
+    import tiktoken
+
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path / "empty-cache"))
+
+    def must_not_download(*args, **kwargs):
+        raise AssertionError("cold tokenizer constructor must not run")
+
+    monkeypatch.setattr(tiktoken, "get_encoding", must_not_download)
+    async with upstream() as (url, calls):
+        cfg = config(url)
+        cfg["replay"]["prewarm_tokenizer"] = True
+        with pytest.raises(ValueError, match="cache is missing"):
+            await run(tmp_path, cfg)
+    assert not calls
+    assert json.loads((tmp_path / "run/manifest.json").read_text())["state"] == "failed"
+    assert json.loads((tmp_path / "run/ledger.json").read_text()) == []
 
 
 @pytest.mark.parametrize(
