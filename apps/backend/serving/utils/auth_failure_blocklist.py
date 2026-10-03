@@ -43,7 +43,7 @@ from dataclasses import dataclass
 
 from serving.config.settings import settings
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import normalize_ip_bucket
+from serving.utils.request_ip import ClientIpInfo, normalize_ip_bucket
 
 logger = get_logger(__name__)
 
@@ -55,6 +55,10 @@ _SWEEP_EVERY = 1024
 _failures: dict[str, deque[float]] = {}
 #: Per-bucket wall-clock deadline until which the source is blocked.
 _blocked_until: dict[str, float] = {}
+#: Coarse process-local protection for auth failures without resolved
+#: provenance. This is traffic protection, never a client identity.
+_unresolved_failures: deque[float] = deque()
+_unresolved_blocked_until: float | None = None
 _lock = asyncio.Lock()
 _sweep_counter = 0
 
@@ -126,17 +130,40 @@ def _sweep_inactive(now: float, window_sec: int) -> None:
     for key in list(_blocked_until):
         if _blocked_until[key] <= now:
             del _blocked_until[key]
+    global _unresolved_blocked_until
+    unresolved_cutoff = now - settings.unresolved_auth_failure_block_window_sec
+    while _unresolved_failures and _unresolved_failures[0] < unresolved_cutoff:
+        _unresolved_failures.popleft()
+    if _unresolved_blocked_until is not None and _unresolved_blocked_until <= now:
+        _unresolved_blocked_until = None
 
 
-async def is_ip_blocked(ip: str) -> tuple[bool, int]:
-    """Return ``(blocked, retry_after_seconds)`` for *ip*.
+async def is_ip_blocked(ip_info: ClientIpInfo) -> tuple[bool, int]:
+    """Return ``(blocked, retry_after_seconds) for *ip_info*.
 
     ``(False, 0)`` when the feature is disabled or the IP is clear. A lapsed
     block is cleared lazily on read so an expired entry never lingers as a
     false positive.
+
+    Resolved callers use their client-IP block. Unresolved callers use a
+    separate coarse process-local circuit breaker; it is deliberately global
+    traffic protection rather than a client identity, so it cannot create a
+    false per-client attribution.
     """
     if not settings.auth_failure_block_enabled:
         return False, 0
+    if not ip_info.resolved:
+        global _unresolved_blocked_until
+        now = _now()
+        async with _lock:
+            until = _unresolved_blocked_until
+            if until is None:
+                return False, 0
+            if until <= now:
+                _unresolved_blocked_until = None
+                return False, 0
+            return True, max(1, int(until - now + 0.999))
+    ip = ip_info.client_ip
     # Exemption outranks an existing block: an exempt address inside a blocked
     # /64 bucket must stay reachable, so this is checked before the bucket.
     if _is_exempt(ip):
@@ -154,18 +181,50 @@ async def is_ip_blocked(ip: str) -> tuple[bool, int]:
         return True, max(1, int(until - now + 0.999))
 
 
-async def record_auth_failure(ip: str) -> bool:
-    """Record one auth failure for *ip*; return True if this call blocked it.
+async def record_auth_failure(ip_info: ClientIpInfo) -> bool:
+    """Record one auth failure for *ip_info*; return True if this call blocked it.
 
     Blocks the source for ``auth_failure_block_duration_sec`` once its failure
     count within ``auth_failure_block_window_sec`` reaches
     ``auth_failure_block_threshold``. A no-op returning False when the feature
     is disabled or the source is already blocked (callers reject blocked IPs
     before reaching here, so a True return marks the blocking transition).
+
+    Resolved failures are recorded against the client-IP bucket. Unresolved
+    failures are recorded only in a separate coarse global budget, never under
+    the transport peer or the string ``"unknown"``.
     """
-    global _sweep_counter
+    global _sweep_counter, _unresolved_blocked_until
     if not settings.auth_failure_block_enabled:
         return False
+    if not ip_info.resolved:
+        now = _now()
+        cutoff = now - settings.unresolved_auth_failure_block_window_sec
+        blocked_now = False
+        async with _lock:
+            while _unresolved_failures and _unresolved_failures[0] < cutoff:
+                _unresolved_failures.popleft()
+            if _unresolved_blocked_until is not None and _unresolved_blocked_until > now:
+                return False
+            _unresolved_failures.append(now)
+            if len(_unresolved_failures) >= settings.unresolved_auth_failure_block_threshold:
+                _unresolved_blocked_until = (
+                    now + settings.unresolved_auth_failure_block_duration_sec
+                )
+                _unresolved_failures.clear()
+                blocked_now = True
+        if blocked_now:
+            logger.warning(
+                "unresolved_auth_traffic_blocked",
+                extra={
+                    "event": "unresolved_auth_traffic_blocked",
+                    "threshold": settings.unresolved_auth_failure_block_threshold,
+                    "window_sec": settings.unresolved_auth_failure_block_window_sec,
+                    "block_seconds": settings.unresolved_auth_failure_block_duration_sec,
+                },
+            )
+        return blocked_now
+    ip = ip_info.client_ip
     # An exempt source accrues no history at all: counting it would only
     # produce a block that is_ip_blocked then has to override on every read.
     if _is_exempt(ip):
@@ -249,11 +308,23 @@ async def list_active_blocks() -> list[ActiveBlock]:
     Per process, like every read in this module (see the module docstring): on
     a multi-worker deployment this is one worker's view, not the deployment's.
     """
+    global _unresolved_blocked_until
     if not settings.auth_failure_block_enabled:
         return []
     now = _now()
     blocks: list[ActiveBlock] = []
     async with _lock:
+        if _unresolved_blocked_until is not None:
+            if _unresolved_blocked_until <= now:
+                _unresolved_blocked_until = None
+            else:
+                blocks.append(
+                    ActiveBlock(
+                        ip_bucket="unresolved-global",
+                        blocked_until=_unresolved_blocked_until,
+                        retry_after_sec=max(1, int(_unresolved_blocked_until - now + 0.999)),
+                    )
+                )
         for key in list(_blocked_until):
             until = _blocked_until[key]
             if until <= now:
@@ -300,6 +371,21 @@ async def clear_block(ip: str) -> bool:
         return False
     key = normalize_ip_bucket(ip)
     now = _now()
+
+    if key == "unresolved-global":
+        global _unresolved_blocked_until
+        async with _lock:
+            until = _unresolved_blocked_until
+            _unresolved_blocked_until = None
+            _unresolved_failures.clear()
+            lifted = until is not None and until > now
+        if lifted:
+            logger.warning(
+                "auth_ip_block_cleared",
+                extra={"event": "auth_ip_block_cleared", "ip_bucket": key},
+            )
+        return lifted
+
     async with _lock:
         until = _blocked_until.pop(key, None)
         # Drop the counted history either way: an operator clearing a bucket
@@ -318,8 +404,10 @@ async def clear_block(ip: str) -> bool:
 
 def reset_auth_failure_block_state() -> None:
     """Wipe all recorded failures, blocks and parsed exemptions. Test-only helper."""
-    global _sweep_counter, _exempt_cache
+    global _sweep_counter, _exempt_cache, _unresolved_blocked_until
     _failures.clear()
     _blocked_until.clear()
+    _unresolved_failures.clear()
+    _unresolved_blocked_until = None
     _sweep_counter = 0
     _exempt_cache = None

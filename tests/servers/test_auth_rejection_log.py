@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -171,9 +170,11 @@ def _build_blocked_app(
 
 @pytest.fixture
 def blocked_localhost(monkeypatch):
-    """Yield a coroutine that trips the auth-failure block for a given IP.
+    """Yield a coroutine that trips the unresolved auth-failure guard.
 
-    Threshold 1 so a single recorded failure blocks the ASGI client's peer.
+    Threshold 1 so a single recorded failure blocks the ASGI test request.
+    The request's loopback socket peer remains unresolved, as it should be
+    without an explicit direct-client network configuration.
     The blocklist is per-process module state, so it is wiped either side.
     """
     from serving.config.settings import settings
@@ -183,18 +184,29 @@ def blocked_localhost(monkeypatch):
         record_auth_failure,
         reset_auth_failure_block_state,
     )
+    from serving.utils.request_ip import ClientIpInfo
 
     reset_auth_failure_block_state()
     monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
     monkeypatch.setattr(settings, "auth_failure_block_threshold", 1)
     monkeypatch.setattr(settings, "auth_failure_block_window_sec", 100)
     monkeypatch.setattr(settings, "auth_failure_block_duration_sec", 1000)
-    monkeypatch.setattr(
-        settings,
-        "trusted_direct_client_parsed",
-        (ipaddress.ip_network("127.0.0.1/32"),),
-    )
-    yield record_auth_failure
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 1)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 1000)
+
+    async def record_unresolved_failure(_ip: str) -> bool:
+        return await record_auth_failure(
+            ClientIpInfo(
+                client_ip="unknown",
+                peer_ip="127.0.0.1",
+                source="unknown",
+                trusted_proxy_headers=False,
+                resolved=False,
+            )
+        )
+
+    yield record_unresolved_failure
     reset_auth_failure_block_state()
 
 

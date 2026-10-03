@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from serving.utils import context as req_ctx
+from serving.utils.request_ip import ClientIpInfo, derive_affinity_key
 
 
 def _derive_affinity_key(
@@ -12,11 +13,17 @@ def _derive_affinity_key(
     client_ip: str,
     *,
     grant_id: str | None = None,
-) -> str:
+) -> str | None:
     """Thin wrapper over the shared helper every request surface derives its key with."""
-    from serving.utils.request_ip import derive_affinity_key
-
-    return derive_affinity_key(auth_key_hash, client_ip, grant_id=grant_id)
+    # For backward compat in tests, treat string IP as resolved (unless "unknown")
+    ip_info = ClientIpInfo(
+        client_ip=client_ip,
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=(client_ip != "unknown"),
+    )
+    return derive_affinity_key(auth_key_hash, ip_info, grant_id=grant_id)
 
 
 @pytest.mark.unit
@@ -49,7 +56,15 @@ def test_anonymous_uses_ip_prefix():
 
 @pytest.mark.unit
 def test_anonymous_unknown_ip_falls_back():
-    assert _derive_affinity_key(None, "unknown") == "ip:unknown"
+    """Unknown client IP returns None (no shared proxy IP for affinity)."""
+    ip_info = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    assert derive_affinity_key(None, ip_info) is None
 
 
 @pytest.mark.unit
@@ -75,12 +90,16 @@ def test_anonymous_ipv6_rotation_keeps_one_affinity_key():
 def test_handler_propagates_affinity_key_to_context_authenticated():
     """The handler writes ``affinity_key`` into ``req_ctx`` derived from auth_key_hash."""
     user_ctx: dict[str, Any] = {"user_id": "u-1", "auth_key_hash": "deadbeef"}
-    client_ip = "1.2.3.4"
-
-    from serving.utils.request_ip import derive_affinity_key
+    ip_info = ClientIpInfo(
+        client_ip="1.2.3.4",
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=True,
+    )
 
     req_ctx.set({})
-    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)
+    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), ip_info)
     req_ctx.update(
         {
             "auth_key_hash": user_ctx.get("auth_key_hash") or "_anon",
@@ -95,12 +114,18 @@ def test_handler_propagates_affinity_key_to_context_authenticated():
 def test_handler_propagates_affinity_key_to_context_anonymous():
     """Anonymous users get an ip:-prefixed affinity_key in ``req_ctx``."""
     user_ctx: dict[str, Any] = {"user_id": "u-2"}
-    client_ip = "10.0.0.1"
+    ip_info = ClientIpInfo(
+        client_ip="10.0.0.1",
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=True,
+    )
 
     from serving.utils.request_ip import derive_affinity_key
 
     req_ctx.set({})
-    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)
+    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), ip_info)
     req_ctx.update(
         {
             "auth_key_hash": user_ctx.get("auth_key_hash") or "_anon",
@@ -109,3 +134,29 @@ def test_handler_propagates_affinity_key_to_context_anonymous():
     )
 
     assert req_ctx.get().get("affinity_key") == "ip:10.0.0.1"
+
+
+@pytest.mark.unit
+def test_affinity_key_unresolved_returns_none():
+    """When client provenance is unresolved, affinity key is None (non-sticky)."""
+    ip_info = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    assert derive_affinity_key(None, ip_info) is None
+
+
+@pytest.mark.unit
+def test_affinity_key_unresolved_with_auth_uses_auth():
+    """Auth key hash is preferred even when client IP is unresolved."""
+    ip_info = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    assert derive_affinity_key("mykey", ip_info) == "mykey"
