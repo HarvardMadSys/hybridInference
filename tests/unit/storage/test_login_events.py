@@ -13,10 +13,13 @@ import pytest
 
 from serving.storage.postgres_operational import PostgresOperationalStore
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("PG_TEST_DSN"),
-    reason="PG_TEST_DSN not set; skipping Postgres-fixture tests",
-)
+pytestmark = [
+    pytest.mark.dbtest,
+    pytest.mark.skipif(
+        not os.environ.get("PG_TEST_DSN"),
+        reason="PG_TEST_DSN not set; skipping Postgres-fixture tests",
+    ),
+]
 
 
 @pytest.fixture
@@ -191,7 +194,7 @@ async def test_hard_delete_user_sweeps_login_events(store: PostgresOperationalSt
     claim_token = await store.begin_hard_delete_user("doomed")
     counts = await store.hard_delete_user(
         "doomed",
-        claim_token=claim_token,
+        claim_token=claim_token.token,
         admin_ip="127.0.0.1",
         admin_id="admin1",
         reason="test",

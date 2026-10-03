@@ -18,6 +18,8 @@ from serving.servers.deps import (
 )
 from serving.servers.routers import admin as admin_router
 
+pytestmark = pytest.mark.dbtest
+
 
 def _build_admin_app(db_logger=None) -> FastAPI:
     """Build a minimal FastAPI app with the admin router mounted."""
