@@ -195,6 +195,10 @@ def build_router(
         }
         if dependencies.prefill_load is not None and _accepts_prefill_load(router_cls):
             kwargs["prefill_load"] = dependencies.prefill_load
+        constructor_parameters = inspect.signature(router_cls).parameters
+        for dependency_name in ("nimbus_pools", "nimbus_decision_sink"):
+            if dependency_name in constructor_parameters:
+                kwargs[dependency_name] = getattr(dependencies, dependency_name)
         return router_cls(**kwargs)
     return router_cls(params=validated)
 
@@ -202,7 +206,7 @@ def build_router(
 # Trigger registration of built-in strategies via import side effects.
 # Imports are at the bottom to avoid circular imports: the strategy modules
 # import from routing.routers / routing.routewise at their top.
-from routing.strategies import fixed  # noqa: F401
+from routing.strategies import fixed, nimbus  # noqa: F401
 
 try:
     from routing.strategies import routewise  # noqa: F401
