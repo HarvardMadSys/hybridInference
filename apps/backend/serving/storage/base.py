@@ -1472,11 +1472,14 @@ class LogStore(ABC):
         until: datetime,
         limit: int,
         after: tuple[datetime, str] | None = None,
+        response_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Page through the same rows, ordered by start time then request id.
 
         ``after`` is the ``(request_started_at, request_id)`` of the last row
         already returned; rows sorting at or before it are skipped.
+        ``response_id`` optionally matches the exact delivered response identity,
+        within the same grant and window. It does not filter the window totals.
         """
 
     @abstractmethod

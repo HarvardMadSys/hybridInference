@@ -665,14 +665,17 @@ class FakeWindowLedger(FakeLedger):
         }
 
     async def list_agent_grant_requests(
-        self, *, agent_job_id, grant_id, since, until, limit, after=None
+        self, *, agent_job_id, grant_id, since, until, limit, after=None, response_id=None
     ):
         rows = self._select(agent_job_id, grant_id, since, until)
+        if response_id is not None:
+            rows = [r for r in rows if r.get("response_id") == response_id]
         if after is not None:
             rows = [r for r in rows if (r["started_at"], r["request_id"]) > after]
         return [
             {
                 "request_id": r["request_id"],
+                "response_id": r.get("response_id"),
                 "request_started_at": r["started_at"],
                 "logged_at": r["started_at"] + timedelta(seconds=1),
                 "model_id": "glm-5.1",
@@ -854,6 +857,7 @@ def test_requests_detail_pages_in_start_order_behind_a_bound_cursor(window_clien
     row = first["requests"][0]
     assert set(row) == {
         "request_id",
+        "response_id",
         "request_started_at",
         "logged_at",
         "model",
@@ -983,3 +987,65 @@ def test_a_windowed_report_without_a_ledger_says_so_rather_than_reporting_zero(
     response = _usage(http, grant_id, since=T0.isoformat(), detail="totals")
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "ledger_unavailable"
+
+
+def test_message_identity_filters_only_request_rows_and_binds_cursor(window_client, window_ledger):
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+    for row in window_ledger.window_rows:
+        row["response_id"] = "msg_same"
+    query = {
+        "detail": "requests",
+        "limit": 1,
+        "since": T0.isoformat(),
+        "until": T1.isoformat(),
+        "response_id": "msg_same",
+    }
+    first = _usage(window_client, grant_id, **query).json()
+    assert first["response_id"] == "msg_same"
+    assert len(first["requests"]) == 1
+    assert first["requests"][0]["response_id"] == "msg_same"
+    assert first["totals"]["calls"] == 3
+    assert first["next_cursor"]
+    changed = _usage(
+        window_client,
+        grant_id,
+        **{**query, "response_id": "msg_other", "cursor": first["next_cursor"]},
+    )
+    assert changed.status_code == 422
+    cleared = _usage(
+        window_client, grant_id, **{**query, "response_id": None, "cursor": first["next_cursor"]}
+    )
+    assert cleared.status_code == 422
+    empty = _usage(window_client, grant_id, **{**query, "response_id": "msg_missing"}).json()
+    assert empty["requests"] == []
+    assert empty["response_id"] == "msg_missing"
+    assert empty["totals"]["calls"] == 3
+
+
+def test_response_selector_requires_request_detail(window_client):
+    grant_id = _mint(window_client).json()["grant_id"]
+    response = _usage(
+        window_client, grant_id, detail="totals", since=T0.isoformat(), response_id="msg_1"
+    )
+    assert response.status_code == 422
+
+
+def test_pre_correlation_cursor_only_continues_an_unfiltered_query(window_client, window_ledger):
+    import base64
+    import json
+
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+    query = {"detail": "requests", "limit": 1, "since": T0.isoformat(), "until": T1.isoformat()}
+    token = _usage(window_client, grant_id, **query).json()["next_cursor"]
+    legacy = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+    legacy.pop("r")
+    cursor = agent_grants._encode_cursor(legacy)
+    continued = _usage(window_client, grant_id, **query, cursor=cursor)
+    assert continued.status_code == 200
+    assert continued.json()["requests"][0]["request_id"] == "r-second"
+    assert (
+        _usage(window_client, grant_id, **query, cursor=cursor, response_id="msg_1").status_code
+        == 422
+    )
