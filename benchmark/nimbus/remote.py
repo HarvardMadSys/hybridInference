@@ -91,6 +91,8 @@ if config['policy'] != 'all_api' and config['local'].get('expected_tensor_parall
 root = Path(request['code']).resolve()
 os.chdir(root)
 os.environ['PYTHONPATH'] = str(root / 'apps/backend') + os.pathsep + str(root)
+if request.get('tokenizer_cache_dir'):
+    os.environ['TIKTOKEN_CACHE_DIR'] = request['tokenizer_cache_dir']
 os.environ['NIMBUS_DEEPSEEK_API_KEY'] = request['credentials']['DEEPSEEK_API_KEY']
 args = [sys.executable, '-m', 'benchmark.nimbus.runner', '--config', request['config'],
         '--workload', request['workload'], '--output', request['output'],
@@ -154,6 +156,7 @@ def main() -> None:
             name: getattr(args, name) for name in ("code", "config", "workload", "output", "ledger")
         }
         payload["credentials"] = credentials
+        payload["tokenizer_cache_dir"] = connection.get("tokenizer_cache_dir")
         script = _RUN
     command = shlex.join([connection.get("python", "python3"), "-c", script])
     process = subprocess.run(
