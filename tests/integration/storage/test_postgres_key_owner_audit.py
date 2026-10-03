@@ -79,11 +79,7 @@ async def _seed(
 ) -> None:
     """Create one user and one key for them, in the requested states.
 
-    The key row is inserted directly rather than through ``create_key``: that
-    method writes ``api_key_encrypted``, a column this store's own
-    ``initialize()`` does not create, so going through it would make these
-    tests depend on some other module having built the fuller schema first.
-    Only columns ``initialize()`` creates are touched here.
+    The key row is inserted directly so these tests control its legacy status.
     """
     await store.create_user(
         user_id=user_id,
