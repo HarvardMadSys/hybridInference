@@ -32,43 +32,30 @@ def anthropic_request_to_openai(
         (openai_messages, openai_params) where openai_params holds non-message
         fields like max_tokens, temperature, tools, etc.
     """
+    # An inline `role: "system"` message goes wherever normalize_inline_system
+    # puts it, so this path and the native passthrough place it the same way.
+    body = normalize_inline_system(body)
     messages: list[dict[str, Any]] = []
 
     # System prompt -> system message prepended.
-    system_parts: list[str] = []
     if system_text := _flatten_system(body.get("system")):
-        system_parts.append(system_text)
+        messages.append({"role": "system", "content": system_text})
 
-    conversation: list[dict[str, Any]] = []
     for msg in body.get("messages", []):
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") == "system":
-            # Clients do put `role: "system"` inside `messages`, even though
-            # the Anthropic surface reserves a top-level field for it — Claude
-            # Code 2.1.220 sends its agent-type listing that way. Passing it
-            # through in place puts a system message after a user message, and
-            # strict upstreams reject the whole request ("System message must
-            # be at the beginning"), so every turn fails rather than degrading.
-            # Hoisting keeps the instruction and the ordering rule both intact.
-            if hoisted := _flatten_system(msg.get("content")):
-                system_parts.append(hoisted)
-            continue
-        conversation.extend(_translate_message(msg))
-
-    if system_parts:
-        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
-    messages.extend(conversation)
+        if isinstance(msg, dict):
+            messages.extend(_translate_message(msg))
 
     params = _translate_params(body)
     return messages, params
 
 
 def normalize_inline_system(body: dict[str, Any]) -> dict[str, Any]:
-    """Fold any ``role: "system"`` message into the top-level ``system`` field.
+    """Move every ``role: "system"`` message out of ``messages``.
 
-    Applied on the shared inbound path, before the request is dispatched,
-    because the destination decides how badly this breaks and *every*
+    Clients do put system messages inside ``messages``, even though the
+    Anthropic surface reserves a top-level field for them: Claude Code sends its
+    agent-type listing that way, and some sessions add one on every turn (a
+    remaining-token budget, an environment update). Left in place, every
     destination breaks:
 
     - a native Anthropic upstream is forwarded the body unchanged, and rejects
@@ -77,41 +64,126 @@ def normalize_inline_system(body: dict[str, Any]) -> dict[str, Any]:
       sits after a user message, which strict providers refuse with
       "System message must be at the beginning".
 
+    Where each one goes depends on what precedes it:
+
+    - before the first conversation message, it joins the top-level ``system``
+      field. Nothing has been said yet, so this moves nothing out of order;
+    - later on, it becomes a ``<system-reminder>`` text block in a neighbouring
+      user message: appended to the one just before it, or else put at the head
+      of the one just after it, behind its ``tool_result`` blocks, which must
+      come first. With no user message on either side, it becomes one.
+
+    A later one must not join the ``system`` field. Clients append these at the
+    end of the conversation, and hoisting turns that append into an insertion
+    just ahead of the first message: every turn then misses the upstream's
+    prefix cache for the entire conversation, re-prefilling hundreds of
+    thousands of tokens to add a few dozen. Kept beside the turn it was sent
+    with, it stays where the client put it and the prompt stays append-only. Its
+    block keeps its other keys, so a client's ``cache_control`` breakpoint keeps
+    marking the end of the conversation.
+
     Normalizing once here means neither route has to know about it. Returns the
-    body unchanged (same object) when there is nothing to fold, so the common
+    body unchanged (same object) when there is nothing to move, so the common
     case costs one scan and no copy.
     """
     messages = body.get("messages")
-    if not isinstance(messages, list) or not any(
-        isinstance(m, dict) and m.get("role") == "system" for m in messages
-    ):
+    if not isinstance(messages, list) or not any(_is_system_message(m) for m in messages):
         return body
 
-    blocks: list[dict[str, Any]] = []
-    existing = body.get("system")
-    if isinstance(existing, str):
-        blocks.append({"type": "text", "text": existing})
-    elif isinstance(existing, list):
-        blocks.extend(existing)
-
+    hoisted: list[dict[str, Any]] = []
     kept: list[Any] = []
+    pending: list[dict[str, Any]] = []
     for message in messages:
-        if not (isinstance(message, dict) and message.get("role") == "system"):
+        if not _is_system_message(message):
+            if pending:
+                if isinstance(message, dict) and message.get("role") == "user":
+                    message = _with_reminders(message, pending, at_end=False)
+                else:
+                    kept.append({"role": "user", "content": pending})
+                pending = []
             kept.append(message)
             continue
-        content = message.get("content")
-        if isinstance(content, str):
-            blocks.append({"type": "text", "text": content})
-        elif isinstance(content, list):
-            # Only text survives: an image in a system message has nowhere to
-            # go in either destination's system field.
-            blocks.extend(b for b in content if isinstance(b, dict) and b.get("type") == "text")
+        blocks = _system_text_blocks(message.get("content"))
+        if not kept:
+            hoisted.extend(blocks)
+            continue
+        if not blocks:
+            continue
+        reminders = [_as_system_reminder(b) for b in blocks]
+        previous = kept[-1]
+        if isinstance(previous, dict) and previous.get("role") == "user":
+            kept[-1] = _with_reminders(previous, reminders, at_end=True)
+        else:
+            pending.extend(reminders)
+    if pending:
+        kept.append({"role": "user", "content": pending})
 
     normalized = dict(body)
     normalized["messages"] = kept
-    if blocks:
-        normalized["system"] = blocks
+    if hoisted:
+        existing = body.get("system")
+        if isinstance(existing, str):
+            hoisted.insert(0, {"type": "text", "text": existing})
+        elif isinstance(existing, list):
+            hoisted[:0] = existing
+        normalized["system"] = hoisted
     return normalized
+
+
+def _is_system_message(message: Any) -> bool:
+    return isinstance(message, dict) and message.get("role") == "system"
+
+
+def _system_text_blocks(content: Any) -> list[dict[str, Any]]:
+    """Return a system message's non-empty text as text blocks.
+
+    Only text survives: an image in a system message has nowhere to go in
+    either destination's system field. Empty text is dropped too, since
+    Anthropic rejects an empty text block.
+    """
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if isinstance(content, list):
+        return [
+            b for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+        ]
+    return []
+
+
+def _as_system_reminder(block: dict[str, Any]) -> dict[str, Any]:
+    return {**block, "text": f"<system-reminder>\n{block['text']}\n</system-reminder>"}
+
+
+def _with_reminders(
+    message: dict[str, Any], reminders: list[dict[str, Any]], *, at_end: bool
+) -> dict[str, Any]:
+    """Return a copy of user ``message`` carrying ``reminders``.
+
+    At the end, or else ahead of its content but after any leading
+    ``tool_result`` blocks: Anthropic requires those to open the message that
+    answers a ``tool_use``, and the OpenAI translation emits them as ``tool``
+    messages that must directly follow the assistant's ``tool_calls``.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        blocks: list[Any] = [{"type": "text", "text": content}] if content else []
+    elif isinstance(content, list):
+        blocks = list(content)
+    elif isinstance(content, dict):
+        blocks = [content]
+    else:
+        blocks = []
+    if at_end:
+        split = len(blocks)
+    else:
+        split = 0
+        while split < len(blocks) and _is_tool_result(blocks[split]):
+            split += 1
+    return {**message, "content": [*blocks[:split], *reminders, *blocks[split:]]}
+
+
+def _is_tool_result(block: Any) -> bool:
+    return isinstance(block, dict) and block.get("type") == "tool_result"
 
 
 def _flatten_system(system: Any) -> str | None:

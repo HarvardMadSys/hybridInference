@@ -2354,10 +2354,11 @@ async def test_inline_system_is_normalized_before_native_passthrough(
     assert r.status_code == 200
     roles = [m["role"] for m in captured["messages"]]
     assert "system" not in roles, f"a system role reached the native upstream: {roles}"
-    # And the instruction is not lost — it moved into the top-level field.
-    system_text = " ".join(b.get("text", "") for b in captured["system"])
-    assert "You are Claude Code." in system_text
-    assert "Available agent types" in system_text
+    # And the instruction is not lost — it rides in the user turn it followed,
+    # leaving the system prompt as the client sent it.
+    assert captured["system"] == [{"type": "text", "text": "You are Claude Code."}]
+    turn_text = " ".join(b.get("text", "") for b in captured["messages"][-1]["content"])
+    assert "<system-reminder>\nAvailable agent types…\n</system-reminder>" in turn_text
 
 
 # --- adapter selection under tier-reserved keys -----------------------------

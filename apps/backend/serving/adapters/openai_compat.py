@@ -633,7 +633,8 @@ class OpenAICompatAdapter(BaseAdapter):
         message, or one that is not first, with a 400 (``System message must
         be at the beginning``), so the whole turn fails rather than degrading.
         Both shapes reach here unrewritten: the northbound Anthropic surface
-        folds an inline system message into the top-level field, but a client
+        moves an inline system message out of the list
+        (``anthropic_translator.normalize_inline_system``), but a client
         posting straight to ``/v1/chat/completions`` can send several system
         messages, or leave one mid-transcript when it re-sends a transcript.
 

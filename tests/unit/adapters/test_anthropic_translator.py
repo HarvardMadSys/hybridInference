@@ -5,6 +5,7 @@ Covers Anthropic Messages format -> OpenAI Chat Completions format translation.
 
 from __future__ import annotations
 
+import copy
 import json as _json
 import logging
 
@@ -12,6 +13,7 @@ from serving.adapters.anthropic_translator import (
     OpenAIToAnthropicStreamTranslator,
     anthropic_request_to_openai,
     extract_anthropic_usage_from_sse,
+    normalize_inline_system,
 )
 
 
@@ -1196,7 +1198,11 @@ def test_stream_tool_call_dict_arguments_serialized_to_string():
     assert all(isinstance(x, str) for x in pj)
 
 
-def test_an_inline_system_message_is_hoisted_to_the_front():
+def _reminder(text: str) -> str:
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def test_an_inline_system_message_joins_the_user_turn_it_follows():
     """Clients send `role: "system"` inside `messages`, and upstreams reject it.
 
     Claude Code 2.1.220 sends its agent-type listing that way, in addition to
@@ -1216,24 +1222,173 @@ def test_an_inline_system_message_is_hoisted_to_the_front():
 
     messages, _ = anthropic_request_to_openai(body)
 
-    roles = [m["role"] for m in messages]
-    assert roles == ["system", "user", "assistant"], f"system must lead, got {roles}"
-    # Both instructions survive — hoisting must not drop what it moves.
-    assert "You are Claude Code." in messages[0]["content"]
-    assert "Available agent types" in messages[0]["content"]
-    assert sum(r == "system" for r in roles) == 1
+    assert messages == [
+        {"role": "system", "content": "You are Claude Code."},
+        {"role": "user", "content": "hello\n\n" + _reminder("Available agent types: …")},
+        {"role": "assistant", "content": "hi"},
+    ]
 
 
-def test_an_inline_system_message_works_without_a_top_level_one():
-    """The hoist must create the leading system message when there is none."""
+def test_an_inline_system_message_needs_no_top_level_one():
+    """No system message is invented to carry it."""
     body = {
         "messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": "Be terse."}]
     }
 
     messages, _ = anthropic_request_to_openai(body)
 
-    assert [m["role"] for m in messages] == ["system", "user"]
-    assert messages[0]["content"] == "Be terse."
+    assert messages == [{"role": "user", "content": "hi\n\n" + _reminder("Be terse.")}]
+
+
+def test_a_leading_inline_system_message_joins_the_system_prompt():
+    """Ahead of the first turn there is no conversation for it to be moved past."""
+    body = {
+        "system": "You are Claude Code.",
+        "messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [
+        {"role": "system", "content": "You are Claude Code.\n\nBe terse."},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_per_turn_system_notices_keep_the_prompt_append_only():
+    """Each turn's prompt must extend the previous one, or the prefix cache misses.
+
+    A Claude Code session can end every turn's `messages` with a system notice
+    (a remaining token budget, an environment update). Hoisting each into the
+    system prompt inserted it just ahead of the first message, so consecutive
+    turns diverged there: a 212k-token turn read 20k tokens from the upstream's
+    prefix cache and re-prefilled the other 192k, on every turn.
+    """
+
+    def notice(tokens_left: int) -> dict:
+        text = f"<total_tokens>{tokens_left} tokens left</total_tokens>"
+        return {"role": "system", "content": [{"type": "text", "text": text}]}
+
+    def tool_round(call_id: str) -> list[dict]:
+        return [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": call_id, "name": "Bash", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "ok"}],
+            },
+        ]
+
+    system = [{"type": "text", "text": "You are Claude Code."}]
+    earlier = [
+        {"role": "user", "content": "fix the bug"},
+        notice(900),
+        *tool_round("t1"),
+        notice(800),
+    ]
+    later = [*earlier, *tool_round("t2"), notice(700)]
+
+    before, _ = anthropic_request_to_openai({"system": system, "messages": earlier})
+    after, _ = anthropic_request_to_openai({"system": system, "messages": later})
+
+    assert after[: len(before)] == before
+    # A native Anthropic upstream is forwarded the normalized body itself.
+    native_before = normalize_inline_system({"system": system, "messages": earlier})
+    native_after = normalize_inline_system({"system": system, "messages": later})
+    assert native_before["system"] == native_after["system"] == system
+    assert native_after["messages"][: len(native_before["messages"])] == native_before["messages"]
+
+
+def test_a_notice_between_a_tool_call_and_its_result_lands_behind_the_result():
+    """`tool_result` blocks must open the message that answers a `tool_use`.
+
+    Anthropic rejects a user message whose text precedes its tool results, and
+    the translation must emit the `tool` message straight after the assistant's
+    `tool_calls`; the reminder goes after the results, ahead of the text.
+    """
+    body = {
+        "messages": [
+            {"role": "user", "content": "run it"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}],
+            },
+            {"role": "system", "content": "Be terse."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                    {"type": "text", "text": "and now?"},
+                ],
+            },
+        ]
+    }
+
+    native = normalize_inline_system(body)
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert native["messages"][-1]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+        {"type": "text", "text": _reminder("Be terse.")},
+        {"type": "text", "text": "and now?"},
+    ]
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "user"]
+    assert messages[-1]["content"] == _reminder("Be terse.") + "\n\nand now?"
+
+
+def test_a_notice_after_an_assistant_turn_opens_the_next_user_turn():
+    body = {
+        "messages": [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "three"},
+        ]
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages[-1] == {"role": "user", "content": _reminder("Be terse.") + "\n\nthree"}
+
+
+def test_a_notice_with_no_user_turn_beside_it_becomes_one():
+    body = {
+        "messages": [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "system", "content": "Be terse."},
+        ]
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages[-1] == {"role": "user", "content": _reminder("Be terse.")}
+
+
+def test_a_folded_notice_keeps_the_client_cache_breakpoint():
+    """Claude Code marks its last block for caching, and that block is the notice.
+
+    A native Anthropic upstream caches up to the marked block, so dropping the
+    marker, or leaving it in the system prompt, caches none of the conversation.
+    The client's own body is not modified on the way.
+    """
+    marked = {"type": "text", "text": "Be terse.", "cache_control": {"type": "ephemeral"}}
+    body = {
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": [marked]}],
+    }
+    sent = copy.deepcopy(body)
+
+    native = normalize_inline_system(body)
+
+    assert native["messages"][-1]["content"][-1] == {
+        "type": "text",
+        "text": _reminder("Be terse."),
+        "cache_control": {"type": "ephemeral"},
+    }
+    assert body == sent
 
 
 def test_conversation_order_is_otherwise_untouched():
