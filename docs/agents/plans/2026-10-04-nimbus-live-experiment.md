@@ -1,5 +1,7 @@
 # Nimbus live gateway experiment, 2026-10-04
 
+> Historical plan. Algorithm framing and production strategy integration are superseded by [Greedy and knapsack live baseline experiments](2026-10-04-greedy-knapsack-baselines.md). Earlier measurements remain unchanged at their pinned commits.
+
 The user approved continuing live experimentation after aligning three repository roles:
 HybridInference owns the actual online runtime; realtmxi/nimbus supplies prior online
 prototype research; glenliu21/nimbus supplies the offline model/solver. User authorization
