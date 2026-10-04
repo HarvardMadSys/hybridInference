@@ -25,6 +25,7 @@ from typing import Any
 import aiohttp
 import uvicorn
 
+from benchmark.nimbus.baselines import SOURCE_PROVENANCE, BaselineProfile
 from benchmark.nimbus.budget import BudgetLedger
 from benchmark.nimbus.gateway import (
     ExperimentRuntime,
@@ -52,21 +53,30 @@ def _number(value: Any, label: str, *, positive: bool = False) -> float:
 
 def validate_config(config: dict[str, Any]) -> None:
     """Refuse unsafe or ambiguous campaign settings before initializing a listener."""
-    if config.get("schema_version") != 1:
-        raise ValueError("schema_version must be 1")
+    if config.get("schema_version") != 2:
+        raise ValueError("schema_version must be 2; reproduce older runs with their pinned commit")
     if config["policy"] not in {
         "all_local",
         "all_api",
         "concurrency",
         "greedy",
-        "fifo",
-        "density",
-        "knapsack",
+        "rolling_knapsack_v1",
     }:
-        raise ValueError("unknown Nimbus policy")
+        raise ValueError("unknown baseline policy")
     for route in ("local", "cloud"):
         validate_endpoint(config[route], route)
+    if "profile" in config or "estimated_output_tokens" in config["replay"]:
+        raise ValueError("schema 2 requires baseline_profile and its fixed max_tokens")
+    profile = BaselineProfile(**config["baseline_profile"])
+    if profile.slo_s != config["slo"]["ttft_s"]:
+        raise ValueError("baseline_profile.slo_s must equal the reported slo.ttft_s")
     replay = config["replay"]
+    slots = replay.get("local_max_inflight")
+    if isinstance(slots, bool) or not isinstance(slots, int) or slots < 1:
+        raise ValueError("replay.local_max_inflight must be a positive integer")
+    window = replay.get("knapsack_window", 12)
+    if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 16:
+        raise ValueError("replay.knapsack_window must be an integer in [1, 16]")
     for key in ("arrival_speedup", "request_timeout_s"):
         _number(replay.get(key, 1 if key == "arrival_speedup" else 180), key, positive=True)
     _number(replay.get("dispatch_window_s", 0), "dispatch_window_s")
@@ -143,7 +153,7 @@ def prewarm_tokenizer() -> dict[str, Any]:
 
     start = time.monotonic()
     encoding = tiktoken.get_encoding("cl100k_base")
-    encoding.encode("Nimbus tokenizer warmup", disallowed_special=())
+    encoding.encode("Baseline tokenizer warmup", disallowed_special=())
     return {
         "encoding": "cl100k_base",
         "sha256": expected_hash,
@@ -201,7 +211,7 @@ async def _one_request(
     }
     output = {"content": [], "reasoning": [], "tool_call_deltas": []}
     body = {
-        "model": runtime.config.get("model_id", "nimbus-dsv41"),
+        "model": runtime.config.get("model_id", "baseline-dsv41"),
         "messages": request.messages,
         "max_tokens": request.max_tokens,
         "stream": True,
@@ -220,7 +230,7 @@ async def _one_request(
                 json=body,
                 headers={
                     "Authorization": "Bearer " + runtime.gateway_token,
-                    "X-Nimbus-Request-ID": request.request_id,
+                    "X-Experiment-Request-ID": request.request_id,
                     "X-Request-ID": request.request_id,
                     "X-Session-ID": request.session_id,
                 },
@@ -379,11 +389,17 @@ async def execute_run(
     validate_config(config)
     requests = load_workload(workload_path)
     for request in requests:
+        if request.max_tokens > config["baseline_profile"]["max_tokens"]:
+            raise ValueError("a workload output cap exceeds baseline_profile.max_tokens")
         if any(
             request.max_tokens > config[route]["max_output_tokens"] for route in ("local", "cloud")
         ):
             raise ValueError("a workload output cap exceeds an endpoint limit")
-    if config["policy"] != "all_local" and not api_key:
+    if (
+        config["policy"] != "all_local"
+        and config["replay"].get("max_cloud_attempts") != 0
+        and not api_key
+    ):
         raise ValueError("cloud-capable policies require the configured API key environment")
     source = source_provenance(require_clean)
     directory = Path(output)
@@ -403,7 +419,7 @@ async def execute_run(
         config, run_id, ledger, journal, {r.request_id for r in requests}, secrets.token_urlsafe(32)
     )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "state": "running",
         "started_at": _utc_now(),
@@ -414,15 +430,23 @@ async def execute_run(
         "session_count": len(group_sessions(requests)),
         "policy": config["policy"],
         "budget_before": ledger.snapshot(),
-        "transport": "loopback HTTP -> real completions handler -> ModelRouterRegistry -> Nimbus RouterProtocol -> LeafBackend -> OpenAICompatAdapter -> single POST; experiment HTTP seam disables connect retries and redirects but reuses existing SSE parser",
+        "transport": "loopback HTTP -> real completions handler -> experiment-local ModelRouterRegistry subclass -> BaselineRouter (RouterProtocol) -> LeafBackend -> OpenAICompatAdapter -> single POST; experiment HTTP seam disables connect retries and redirects but reuses existing SSE parser",
         "bypasses": [
             "production bootstrap",
+            "private ModelRouterRegistry construction hook for baseline_experiment; no production strategy registration or Admin support",
             "Postgres/account billing",
             "production user auth (per-run loopback token instead)",
             "production alerts and unrelated HTTP endpoints",
         ],
+        "baseline_source_provenance": SOURCE_PROVENANCE,
+        "baseline_observation_adaptations": [
+            "prompt tokens use the repository UTF-8 byte estimate including tools/response schema, not the source deployment tokenizer",
+            "fixed generation cap is known before dispatch; actual output labels are excluded",
+            "first usable output observes one token; remaining decode estimate stays fixed at (max_tokens-1)*tpot until terminal, with no elapsed-time decrement or chunk-to-token inference",
+            "canceled local work retains physical slot and peak KV through configured grace; a closed transport is not engine cancellation acknowledgement",
+        ],
         "fixed_history_replay": True,
-        "audit_policy": "SQLite and attempt/request boundaries fsynced; raw SSE chunks buffered and fsynced on close. Synchronous accounting overhead remains in measured latency.",
+        "audit_policy": "SQLite and decision/attempt/request boundaries fsynced; raw SSE chunks buffered and fsynced on close. Synchronous accounting and audit overhead remain in measured latency.",
         "tools_executed": False,
         "arrivals": "first round per session scheduled; later rounds previous completion plus predecessor tool_wait_s",
         "multi_round_arrival_note": "closed-loop arrivals are policy-dependent; cohort rates are not matched exogenous offered RPS",

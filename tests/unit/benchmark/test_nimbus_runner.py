@@ -14,7 +14,7 @@ from aiohttp import web
 from benchmark.nimbus.budget import BudgetLedger
 from benchmark.nimbus.gateway import OneAttemptHTTP, authoritative_counts
 from benchmark.nimbus.report import summarize
-from benchmark.nimbus.runner import execute_run, usable_delta
+from benchmark.nimbus.runner import execute_run, usable_delta, validate_config
 from benchmark.nimbus.workload import load_workload
 
 
@@ -102,7 +102,7 @@ def config(url, policy="all_api"):
         "provider_profile": "deepseek",
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "campaign_id": "unit-campaign",
         "budget_cap_cny": "1000",
         "policy": policy,
@@ -114,25 +114,28 @@ def config(url, policy="all_api"):
             "output_cny_per_million": "9.6",
         },
         "slo": {"ttft_s": 10, "tpot_s": 1},
-        "profile": {
-            "prefill_tokens_per_s": 10000,
-            "decode_tokens_per_s": 1000,
-            "max_running_requests": 4,
-            "max_reserved_tokens": 10000,
-            "max_work_s": 10,
+        "baseline_profile": {
+            "kv_capacity_tokens": 10000,
+            "max_tokens": 64,
+            "prefill_tput": 10000,
+            "tpot_s": 0.001,
+            "first_token_overhead_s": 0,
+            "slo_s": 10,
+            "ttft_guard_s": 0,
+            "kv_block_size": 16,
         },
         "replay": {
             "arrival_speedup": 1,
             "request_timeout_s": 2,
             "dispatch_window_s": 0.01,
-            "estimated_output_tokens": 16,
+            "local_max_inflight": 4,
             "cancel_grace_s": 0,
         },
         "generation": {"temperature": 0},
     }
 
 
-async def run(tmp_path, cfg, rows=None, output_name="run"):
+async def run(tmp_path, cfg, rows=None, output_name="run", *, api_key="unit-test-secret-not-real"):
     if rows is None:
         rows = [
             {
@@ -154,7 +157,7 @@ async def run(tmp_path, cfg, rows=None, output_name="run"):
         workload_path,
         tmp_path / output_name,
         tmp_path / "budget.sqlite",
-        api_key="unit-test-secret-not-real",
+        api_key=api_key,
         require_clean=False,
     )
     records = [
@@ -166,7 +169,7 @@ async def run(tmp_path, cfg, rows=None, output_name="run"):
 
 
 @pytest.mark.parametrize(
-    "policy", ["all_api", "all_local", "concurrency", "greedy", "density", "knapsack"]
+    "policy", ["all_api", "all_local", "concurrency", "greedy", "rolling_knapsack_v1"]
 )
 async def test_real_gateway_registry_adapter_path_and_final_usage(tmp_path, policy):
     async with upstream() as (url, calls):
@@ -212,8 +215,11 @@ async def test_concurrent_ids_sessions_and_fixed_online_estimates(tmp_path):
     assert {r["id"] for r in records} == {"first", "second", "third"}
     assert len({r["gateway_request_id"] for r in records}) == 3
     assert all(len(r["attempt_ids"]) == 1 for r in records)
+    assert all(r["decision_records"][0]["profile"]["max_tokens"] == 64 for r in records)
     assert all(
-        r["decision_records"][0]["candidate"]["estimated_output_tokens"] == 16 for r in records
+        set(r["decision_records"][0]["candidate"])
+        == {"request_id", "arrival_s", "prompt_tokens", "estimated_remote_cost"}
+        for r in records
     )
 
 
@@ -375,3 +381,45 @@ def test_summary_keeps_failed_and_undefined_requests_in_denominator():
     assert summary["joint_slo_satisfied_fraction_all_requests"] == 0
     assert summary["ttft_s"]["count"] == 1
     assert summary["tpot_s"]["count"] == 0
+
+
+@pytest.mark.parametrize("policy", ["density", "fifo", "knapsack", "nimbus"])
+def test_schema2_rejects_retired_policy_names(policy):
+    with pytest.raises(ValueError, match="unknown baseline policy"):
+        validate_config(config("http://127.0.0.1:12345/v1", policy))
+
+
+def test_schema2_refuses_historical_schema_and_ambiguous_profile():
+    cfg = config("http://127.0.0.1:12345/v1")
+    cfg["schema_version"] = 1
+    with pytest.raises(ValueError, match="pinned commit"):
+        validate_config(cfg)
+    cfg["schema_version"] = 2
+    cfg["profile"] = {}
+    with pytest.raises(ValueError, match="baseline_profile"):
+        validate_config(cfg)
+
+
+async def test_workload_cap_exceeding_fixed_profile_is_refused_before_listener(tmp_path):
+    cfg = config("http://127.0.0.1:12345/v1")
+    cfg["baseline_profile"]["max_tokens"] = 16
+    with pytest.raises(ValueError, match=r"baseline_profile\.max_tokens"):
+        await run(tmp_path, cfg)
+    assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("policy", ["greedy", "rolling_knapsack_v1"])
+@pytest.mark.parametrize("local_fits", [True, False])
+async def test_zero_cloud_attempt_cap_runs_without_api_key_and_never_posts_cloud(
+    tmp_path, policy, local_fits
+):
+    async with upstream() as (url, calls):
+        cfg = config(url, policy)
+        cfg["replay"]["max_cloud_attempts"] = 0
+        cfg["baseline_profile"]["kv_capacity_tokens"] = 10000 if local_fits else 1
+        summary, records, _ = await run(tmp_path, cfg, api_key=None)
+    assert len(calls) == int(local_fits)
+    assert summary["successful_requests"] == int(local_fits)
+    assert records[0]["route"] == ("local" if local_fits else "cloud")
+    entries = json.loads((tmp_path / "run" / "ledger.json").read_text())
+    assert not entries

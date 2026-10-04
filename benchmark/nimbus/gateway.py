@@ -1,4 +1,4 @@
-"""Experiment composition of the real HTTP completion handler and Nimbus router.
+"""Experiment composition of the real HTTP completion handler and baseline router.
 
 Only composition is experimental: the request schema, ModelRouterRegistry,
 RouterProtocol, LeafBackend, OpenAI adapter and StreamSession are the repository's
@@ -24,10 +24,11 @@ import aiohttp
 from fastapi import FastAPI, HTTPException, Request
 
 from benchmark.nimbus.budget import BudgetExceeded, BudgetLedger, TokenPrices
+from benchmark.nimbus.registry import BaselineModelRouterRegistry
+from benchmark.nimbus.router import BaselinePoolRegistry
 from benchmark.nimbus.workload import canonical_json, sha256_bytes
 from routing.dependencies import RouterBuildDependencies
 from routing.endpoint_health import EndpointHealthRegistry
-from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
@@ -43,8 +44,8 @@ if TYPE_CHECKING:
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-_client_request: ContextVar[str | None] = ContextVar("nimbus_client_request", default=None)
-_attempt: ContextVar[Attempt | None] = ContextVar("nimbus_wire_attempt", default=None)
+_client_request: ContextVar[str | None] = ContextVar("baseline_client_request", default=None)
+_attempt: ContextVar[Attempt | None] = ContextVar("baseline_wire_attempt", default=None)
 
 
 def parse_sse(frame: str) -> dict[str, Any] | None:
@@ -222,7 +223,7 @@ class ExperimentRuntime:
     def reserve_and_dispatch(self, attempt: Attempt) -> None:
         """Fail closed before one cloud POST and record its dispatch durably."""
         if attempt.wire_calls:
-            raise RuntimeError("a Nimbus attempt may issue only one HTTP POST")
+            raise RuntimeError("an experiment attempt may issue only one HTTP POST")
         if attempt.route == "cloud":
             limit = self.config.get("replay", {}).get("max_cloud_attempts")
             if limit is not None and self.cloud_wire_count >= limit:
@@ -345,7 +346,7 @@ class OneAttemptHTTP(AsyncHTTPClient):
         """Open exactly one budgeted response and inspect raw authoritative usage."""
         attempt = _attempt.get()
         if attempt is None:
-            raise RuntimeError("Nimbus HTTP POST lacks attempt ownership")
+            raise RuntimeError("experiment HTTP POST lacks attempt ownership")
         if not isinstance(json, dict) or json.get("max_tokens") != attempt.max_tokens:
             raise RuntimeError("wire output cap does not match its budget reservation")
         if json.get("n", 1) != 1 or "max_completion_tokens" in json:
@@ -387,7 +388,7 @@ class MeteredAdapter(OpenAICompatAdapter):
     def __init__(self, config: ModelConfig, runtime: ExperimentRuntime, route: str) -> None:
         super().__init__(config)
         if config.api_keys:
-            raise ValueError("Nimbus experiments do not permit key-pool rotation")
+            raise ValueError("baseline experiments do not permit key-pool rotation")
         self.runtime = runtime
         self.route = route
         self.http = OneAttemptHTTP(runtime, route)
@@ -427,7 +428,7 @@ class MeteredAdapter(OpenAICompatAdapter):
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
         """Refuse an unmetered alternate execution surface."""
-        raise ValueError("Nimbus campaign supports streaming completions only")
+        raise ValueError("experiment harness supports streaming completions only")
 
 
 class ExperimentContextMiddleware:
@@ -442,7 +443,7 @@ class ExperimentContextMiddleware:
             await self.app(scope, receive, send)
             return
         headers = dict(scope.get("headers", []))
-        identifier = headers.get(b"x-nimbus-request-id", b"").decode("utf-8")
+        identifier = headers.get(b"x-experiment-request-id", b"").decode("utf-8")
         token = _client_request.set(identifier or None)
         try:
             await self.app(scope, receive, send)
@@ -477,10 +478,8 @@ def validate_endpoint(endpoint: dict[str, Any], route: str) -> None:
 
 def create_experiment_app(runtime: ExperimentRuntime, api_key: str | None) -> FastAPI:
     """Compose the real completion router with explicitly scoped experiment services."""
-    from routing.nimbus import NimbusPoolRegistry
-
     config = runtime.config
-    model_id = config.get("model_id", "nimbus-dsv41")
+    model_id = config.get("model_id", "baseline-dsv41")
     health = EndpointHealthRegistry()
     fixed = FixedRouter(health_registry=health)
     adapters = []
@@ -491,7 +490,7 @@ def create_experiment_app(runtime: ExperimentRuntime, api_key: str | None) -> Fa
             id=model_id,
             name=model_id,
             provider=route,
-            endpoint_id=f"nimbus-{route}",
+            endpoint_id=f"baseline-{route}",
             base_url=endpoint["base_url"],
             api_key=api_key if route == "cloud" else None,
             provider_model_id=endpoint["model"],
@@ -508,45 +507,42 @@ def create_experiment_app(runtime: ExperimentRuntime, api_key: str | None) -> Fa
         adapters.append((MeteredAdapter(adapter_config, runtime, route), 1.0))
     fixed.register_route(model_id, adapters)
     params = {
-        "local_endpoint_id": "nimbus-local",
-        "cloud_endpoint_id": "nimbus-cloud",
-        "pool_id": "nimbus-tp4",
+        "local_endpoint_id": "baseline-local",
+        "cloud_endpoint_id": "baseline-cloud",
+        "pool_id": "baseline-tp4",
         "policy": config["policy"],
-        "profile": config["profile"],
-        "ttft_slo_s": config["slo"]["ttft_s"],
-        "estimated_output_tokens": config["replay"].get("estimated_output_tokens", 128),
+        "profile": config["baseline_profile"],
+        "local_max_inflight": config["replay"]["local_max_inflight"],
+        "max_candidates": config["replay"].get("knapsack_window", 12),
         "remote_input_cost_per_million": float(runtime.prices.input_cny_per_million),
         "remote_output_cost_per_million": float(runtime.prices.output_cny_per_million),
         "batch_window_s": config["replay"].get("dispatch_window_s", 0),
         "max_pending": config["replay"].get("max_pending", 4096),
         "cancel_grace_s": config["replay"].get("cancel_grace_s", 5),
     }
-    dependencies = RouterBuildDependencies(
-        health_registry=health,
-        nimbus_pools=NimbusPoolRegistry(),
-        nimbus_decision_sink=runtime.decision_sink,
-    )
-    registry = ModelRouterRegistry(
-        {model_id: {"router": "nimbus", "router_params": params}},
+    registry = BaselineModelRouterRegistry(
+        {model_id: {"router": "baseline_experiment", "router_params": params}},
         shared_fixed_router=fixed,
-        dependencies=dependencies,
+        dependencies=RouterBuildDependencies(health_registry=health),
+        baseline_pools=BaselinePoolRegistry(),
+        baseline_decision_sink=runtime.decision_sink,
     )
     registry.get_router(model_id)  # Fail before serving if the strategy cannot bind.
-    app = FastAPI(title="Nimbus experiment gateway", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Baseline experiment gateway", docs_url=None, redoc_url=None)
     app.state.services = AppServices(router=fixed, model_router_registry=registry)
 
     async def experiment_identity(request: Request) -> dict[str, Any]:
         expected = "Bearer " + runtime.gateway_token
         if not hmac.compare_digest(request.headers.get("authorization", ""), expected):
             raise HTTPException(401, "run credential required")
-        identifier = request.headers.get("x-nimbus-request-id")
+        identifier = request.headers.get("x-experiment-request-id")
         if identifier not in runtime.allowed_requests:
             raise HTTPException(400, "request is outside the immutable workload")
         if identifier in runtime.claimed_requests:
             raise HTTPException(409, "replay request IDs may not be reused")
         runtime.claimed_requests.add(identifier)
         return {
-            "user_id": "nimbus-experiment",
+            "user_id": "baseline-experiment",
             "role": "admin",
             "is_admin": True,
             "authenticated": True,
