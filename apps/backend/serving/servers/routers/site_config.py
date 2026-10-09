@@ -28,6 +28,19 @@ _NEUTRAL: dict[str, Any] = {
 }
 
 
+def _public_features(features: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``public_stats`` unless it is enabled.
+
+    Consoles parse ``features`` strictly, so an older console would reject the
+    whole document over a key it does not know. Omitting the opt-in flag while
+    it is off keeps such a console working; it only ever sees the key on a
+    deployment that turned the feature on, which needs this release anyway.
+    """
+    if features.get("public_stats") is not True:
+        features = {k: v for k, v in features.items() if k != "public_stats"}
+    return features
+
+
 @router.get("/site-config")
 async def get_site_config() -> dict[str, Any]:
     """Return the active distribution and its resolved public site identity.
@@ -60,7 +73,10 @@ async def get_site_config() -> dict[str, Any]:
             "public_base_url": site_identity.public_base_url,
             "support_email": site_identity.support_email,
         },
-        "features": {**config.features.model_dump(), "public_signup": public_signup},
+        "features": {
+            **_public_features(config.features.model_dump()),
+            "public_signup": public_signup,
+        },
         "branding": (
             branding.public_payload(docs_url=site_identity.docs_url)
             if branding is not None
