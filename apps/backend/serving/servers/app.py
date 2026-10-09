@@ -32,6 +32,7 @@ from .routers import (
     internal_lookups,
     models,
     playground,
+    public_stats,
     qdrant_proxy,
     rag,
     responses,
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(qdrant_proxy.router)
     app.include_router(site_config.router)
     app.include_router(site_updates.router)
+    app.include_router(public_stats.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)

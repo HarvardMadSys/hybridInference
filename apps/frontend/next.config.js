@@ -173,6 +173,8 @@ const nextConfig = {
         { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
         // Public distribution identity consumed by SiteConfigProvider.
         { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
+        // Daily aggregate usage snapshot rendered by the public /stats page.
+        { source: '/public-stats', destination: `${BACKEND_INTERNAL_URL}/public-stats` },
       ],
     };
   },

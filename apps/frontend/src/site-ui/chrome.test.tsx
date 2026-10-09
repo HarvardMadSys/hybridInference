@@ -35,7 +35,7 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useSiteConfig: () => ({
     branding: { appName: 'Test Console', logoUrl: '', orgName: '' },
     distribution: { id: 'test', release: '' },
-    features: { publicSignup: true, rag: false, agents: false },
+    features: { publicSignup: true, rag: false, agents: false, publicStats: false },
   }),
   useBranding: () => ({ appName: 'Test Console', logoUrl: '', orgName: '' }),
 }));

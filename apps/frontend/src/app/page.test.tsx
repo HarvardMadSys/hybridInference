@@ -75,7 +75,7 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useSiteConfig: () => ({
     branding,
     distribution: { id: distributionId, release: '' },
-    features: { publicSignup, rag: false, agents: false },
+    features: { publicSignup, rag: false, agents: false, publicStats: false },
   }),
 }));
 

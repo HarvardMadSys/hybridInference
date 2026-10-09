@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-09-28 16:15+0800\n"
+"POT-Creation-Date: 2026-10-09 18:11-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -402,10 +402,40 @@ msgstr ""
 "`SIGNUP_ENABLED`，并在五秒后再试。在管理控制台里保存一次这个开关，错误会立即消除。"
 
 #: ../developer/distribution-customization.md:150
+msgid ""
+"**Public usage stats.** `features.public_stats: true` publishes aggregate"
+" traffic figures at `/stats`: tokens served per day, countries, the "
+"languages people write in and the agent clients that call the API. The "
+"page reads `GET /public-stats`, which serves the newest snapshot from the"
+" `public_stats_snapshots` table and answers 404 when the flag is off or "
+"unset. Snapshots are written by a job you schedule once a day, for "
+"example from cron or a systemd timer:"
+msgstr ""
+"**公开用量统计**。`features.public_stats: true` 会在 `/stats` 发布汇总的流量数据："
+"每日处理的 token 数、国家和地区、用户书写所用的语言，以及调用 API 的智能体客户端。"
+"该页面读取 `GET /public-stats`，它返回 `public_stats_snapshots` 表中最新的快照；"
+"开关关闭或未设置时返回 404。快照由你每天调度一次的任务写入，例如通过 cron 或 "
+"systemd timer："
+
+#: ../developer/distribution-customization.md:162
+msgid ""
+"Add `--dry-run` to print the snapshot instead of storing it, and `--weeks"
+" N` to change the 26-week window. The job reads `api_logs` and the hourly"
+" country rollup and stores aggregates only. Per-item account counts below"
+" 3 are withheld. The language section needs message text, so it is left "
+"out unless `DB_STORE_FULL_CONTENT=true`. A snapshot over 10 weeks of a "
+"busy gateway takes about a minute. The job keeps the 30 newest snapshots."
+msgstr ""
+"加上 `--dry-run` 只打印快照而不写入，`--weeks N` 可修改默认 26 周的时间窗口。"
+"该任务读取 `api_logs` 和每小时的国家汇总表，只存储汇总数据。低于 3 个账户的单项计数"
+"不会公开。语言部分需要消息原文，因此只有在 `DB_STORE_FULL_CONTENT=true` 时才会生成。"
+"在繁忙的网关上统计 10 周数据约需一分钟。任务只保留最新的 30 个快照。"
+
+#: ../developer/distribution-customization.md:169
 msgid "Activating a manifest"
 msgstr "启用 manifest"
 
-#: ../developer/distribution-customization.md:152
+#: ../developer/distribution-customization.md:171
 msgid ""
 "Setting `DISTRIBUTION_CONFIG_PATH` alone changes nothing. By default the "
 "gateway only does a dry run: it loads and checks the manifest and logs "
@@ -417,7 +447,7 @@ msgstr ""
 "manifest，在日志里记下它会改动什么，但继续沿用原来的配置。控制这一点的设置是 "
 "`DISTRIBUTION_CONFIG_MODE`，它的默认值 `dark` 就表示试运行："
 
-#: ../developer/distribution-customization.md:163
+#: ../developer/distribution-customization.md:182
 msgid ""
 "Read those lines, then set `DISTRIBUTION_CONFIG_MODE=active` to apply the"
 " manifest. If an active manifest fails to load — a missing mount, a YAML "
@@ -429,7 +459,7 @@ msgstr ""
 " 如果加载失败（比如挂载缺失、YAML 写错），网关会记一条 `CRITICAL` "
 "日志，然后在没有任何模型的状态下运行，而不会拿一份不是你指定的模型注册表来提供服务。试运行时，同样的失败只会记进日志。"
 
-#: ../developer/distribution-customization.md:169
+#: ../developer/distribution-customization.md:188
 msgid ""
 "Leave the mode unset or set it to exactly `dark` or `active`. Any other "
 "value, an empty one, or `active` without a manifest path is treated as a "
@@ -444,7 +474,7 @@ msgstr ""
 "503。这条警告只会在启动日志里出现一次，所以看到这些错误时，请检查 `DISTRIBUTION_CONFIG_MODE` 和 "
 "`DISTRIBUTION_CONFIG_PATH`，改正后重启后端。"
 
-#: ../developer/distribution-customization.md:176
+#: ../developer/distribution-customization.md:195
 msgid ""
 "**Check a manifest before you activate or upgrade it.** Unknown keys at "
 "the top level and under `features` are rejected, so a misspelled feature "
@@ -458,7 +488,7 @@ msgstr ""
 "signup`）或错放到顶层的功能会直接报错。运维人员自己的备注请另放一个文件。把 `DISTRIBUTION_CONFIG_PATH` "
 "设为你要部署的 manifest，然后用即将部署的那个版本运行："
 
-#: ../developer/distribution-customization.md:194
+#: ../developer/distribution-customization.md:213
 msgid ""
 "The `paths`, `site`, `distribution` and `deployment` sections still "
 "ignore keys they do not know, so a misspelled path key silently falls "
@@ -469,11 +499,11 @@ msgstr ""
 "这几节仍会忽略不认识的键，所以拼错的路径键会悄悄回退到默认的模型注册表。启用之后，请确认启动日志里 `Registered N routes "
 "from <path>` 这一行指向的是你想要的文件。"
 
-#: ../developer/distribution-customization.md:199
+#: ../developer/distribution-customization.md:218
 msgid "Identity, and what the manifest must not contain"
 msgstr "站点信息，以及 manifest 里不能放什么"
 
-#: ../developer/distribution-customization.md:201
+#: ../developer/distribution-customization.md:220
 msgid ""
 "The manifest's `site:` and `features:` sections are public: `GET /site-"
 "config` serves them to every visitor once the manifest is active. The "
@@ -491,7 +521,7 @@ msgstr ""
 "`SITE_SUPPORT_EMAIL`，其次是已启用的 manifest，最后是中立的默认值。你不设置时，标准 Compose 文件会把 "
 "`SITE_NAME` 设为 `HybridInference`，所以请把它设成你的站点名称，或者设为空值，改用 manifest 里的名称。"
 
-#: ../developer/distribution-customization.md:210
+#: ../developer/distribution-customization.md:229
 msgid ""
 "Manifests must not contain secrets. Credentials stay in the environment, "
 "and `schema_version: 1` deliberately does not interpolate environment "
@@ -500,11 +530,11 @@ msgstr ""
 "manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 特意不支持在 manifest "
 "的值里插入环境变量。"
 
-#: ../developer/distribution-customization.md:214
+#: ../developer/distribution-customization.md:233
 msgid "Runtime branding"
 msgstr "运行时品牌配置"
 
-#: ../developer/distribution-customization.md:216
+#: ../developer/distribution-customization.md:235
 msgid ""
 "Copy the complete `config/examples/branding.example.yaml`, set its public"
 " values, and point `site.branding` at it. The path is relative to the "
@@ -648,7 +678,7 @@ msgid ""
 " `height`"
 msgstr "默认首页的赞助商图片：`name`、`alt`、`src`、`class_name`、`width`、`height`"
 
-#: ../developer/distribution-customization.md:239
+#: ../developer/distribution-customization.md:258
 msgid ""
 "Use the template and the schema in `serving/config/branding.py` for "
 "permitted values. Branding rejects unknown keys; required fields cannot "
@@ -662,7 +692,7 @@ msgstr ""
 "为准。品牌配置会拒绝未知键；必填字段不能直接省略。可选内容不需要时，按文档写空字符串或空列表。赞助商的 `class_name` 只接受 "
 "schema 支持的图片尺寸类名，不能写任意 CSS。没有哪个品牌字段能设置全局配色、字体或页面布局。自定义页面组件自己决定渲染哪些运行时品牌值。"
 
-#: ../developer/distribution-customization.md:246
+#: ../developer/distribution-customization.md:265
 msgid ""
 "Serve local branding images through the mounted site-assets directory and"
 " `/site-assets/*`, or use permitted public asset URLs. Check the URLs "
@@ -674,11 +704,11 @@ msgstr ""
 "HTTP 实际请求一下这些 URL 来确认。如果 `/site-config` "
 "请求失败或返回无效内容，页面会报配置错误，而不会悄悄换一套默认值，显示一个看似正常的站点。"
 
-#: ../developer/distribution-customization.md:251
+#: ../developer/distribution-customization.md:270
 msgid "Feature settings and their limits"
 msgstr "功能设置及其限制"
 
-#: ../developer/distribution-customization.md:253
+#: ../developer/distribution-customization.md:272
 msgid ""
 "`features.rag: false` in an active manifest disables the RAG UI and "
 "backend access. Allowing RAG still requires the service's configuration; "
@@ -687,7 +717,7 @@ msgstr ""
 "在已启用的 manifest 里设置 `features.rag: false`，会同时关掉 RAG 的界面和后端访问。开启 RAG "
 "仍然需要把服务本身配置好；见[文档 RAG 助手](rag-chat.md)。"
 
-#: ../developer/distribution-customization.md:256
+#: ../developer/distribution-customization.md:275
 msgid ""
 "`AGENT_PUBLIC_URL`, or the internal agent service destinations, configure"
 " the existing agent link/proxy integration. They do not install an agent "
@@ -696,7 +726,7 @@ msgstr ""
 "`AGENT_PUBLIC_URL`，或者内部 agent 服务的目标地址，用来配置现有的 agent 链接／代理集成；它们不会替你安装 "
 "agent 服务。见[公开路径表](public-path-table.md)。"
 
-#: ../developer/distribution-customization.md:259
+#: ../developer/distribution-customization.md:278
 msgid ""
 "`features.routers`, `paths.mcp`, `site.terms_document`, "
 "`site.privacy_document` and `deployment.target` are accepted but have no "
@@ -709,14 +739,14 @@ msgstr ""
 "#settings-that-currently-have-no-effect)。要发布自己的条款，请使用 [Site UI 模块](site-"
 "ui-modules.md)。"
 
-#: ../developer/distribution-customization.md:265
+#: ../developer/distribution-customization.md:284
 msgid ""
 "A public branding hint or hidden navigation item is not a substitute for "
 "backend authorization. The registration rules above remain effective with"
 " a custom UI module."
 msgstr "在公开的品牌配置里加个提示、或者把导航项藏起来，都代替不了后端授权。用了自定义 UI 模块，上面的注册规则照样生效。"
 
-#: ../developer/distribution-customization.md:269
+#: ../developer/distribution-customization.md:288
 msgid ""
 "Model/provider changes made through supported admin APIs take effect on "
 "the running gateway and are persisted in its database. They do not "
@@ -730,18 +760,18 @@ msgstr ""
 "之上。排查配置不一致时，这两层都要看。见[运行时配置](configuration.md#runtime-configuration-from-"
 "the-admin-console)。"
 
-#: ../developer/distribution-customization.md:275
+#: ../developer/distribution-customization.md:294
 msgid "When changes take effect"
 msgstr "变更何时生效"
 
-#: ../developer/distribution-customization.md:277
+#: ../developer/distribution-customization.md:296
 msgid ""
 "Restart the backend after changing mounted manifest, branding, "
 "model/routing or alert files. Reload the page to check presentation; the "
 "backend serves the branding snapshot loaded at startup."
 msgstr "改了挂载的 manifest、品牌、模型／路由或告警文件，要重启后端。刷新页面看展示效果；后端提供的是启动时加载的那份品牌配置快照。"
 
-#: ../developer/distribution-customization.md:280
+#: ../developer/distribution-customization.md:299
 msgid ""
 "Replace mounted site-assets files without rebuilding an image. The route "
 "allows five minutes of browser caching, so verify the served URL and "
@@ -751,20 +781,20 @@ msgstr ""
 "替换挂载的 site-assets 文件不需要重新构建镜像。这个路由允许浏览器缓存五分钟，所以要直接请求实际的 URL "
 "来确认，并把浏览器和代理的缓存考虑进去。改 `SITE_ASSETS_DIR` 本身则需要重新创建前端容器。"
 
-#: ../developer/distribution-customization.md:284
+#: ../developer/distribution-customization.md:303
 msgid ""
 "Recreate the affected container after changing runtime environment "
 "values. A plain container restart retains its old environment. Server-"
 "only agent destinations are runtime values."
 msgstr "改了运行时环境变量，要重新创建受影响的容器；只重启容器的话，用的还是原来的环境变量。只在服务端使用的 agent 目标地址也属于运行时值。"
 
-#: ../developer/distribution-customization.md:287
+#: ../developer/distribution-customization.md:306
 msgid ""
 "Use the admin console/API for supported live edits, and check effective "
 "values and any feature-specific caching."
 msgstr "支持在线修改的设置，通过管理控制台或 API 来改，然后确认实际生效的值，以及这个功能有没有自己的缓存。"
 
-#: ../developer/distribution-customization.md:289
+#: ../developer/distribution-customization.md:308
 msgid ""
 "Rebuild the frontend after changing true build-only `NEXT_PUBLIC_*` "
 "values or the backend network target compiled from "
@@ -774,7 +804,7 @@ msgstr ""
 "如果改的是真正只在构建时生效的 `NEXT_PUBLIC_*` 值，或者由 `BACKEND_INTERNAL_URL` "
 "编译进去的后端网络地址，就要重新构建前端。这些值和运行时品牌配置不同，重启后端不会改变它们。"
 
-#: ../developer/distribution-customization.md:293
+#: ../developer/distribution-customization.md:312
 msgid ""
 "Use runtime branding for identity rather than introducing new build-time "
 "branding variables. The precise Compose commands are in "
@@ -785,11 +815,11 @@ msgstr ""
 "站点信息请用运行时品牌配置来设置，不要再引入新的构建时品牌变量。具体的 Compose 命令见[部署](deployment.md#what-a"
 "-change-actually-requires)。配置或资源如果是打包进镜像、而不是挂载进去的，改了之后要重新构建对应的镜像。"
 
-#: ../developer/distribution-customization.md:298
+#: ../developer/distribution-customization.md:317
 msgid "The example distribution"
 msgstr "示例发行版"
 
-#: ../developer/distribution-customization.md:300
+#: ../developer/distribution-customization.md:319
 msgid ""
 "`distributions/example/` is a complete, runnable distribution kept in the"
 " repository as an example: a manifest, a one-model registry pointing at a"
@@ -800,13 +830,13 @@ msgstr ""
 "manifest、一份只含单个模型的注册表（指向仓库自带、无需凭据的假 provider）、Compose "
 "overlay，以及冒烟脚本。可以跟着[快速开始](router-tutorial.md)走一遍："
 
-#: ../developer/distribution-customization.md:311
+#: ../developer/distribution-customization.md:330
 msgid ""
 "It carries a marker file, `EXAMPLE_OVERLAY`, whose presence keeps it out "
 "of automatic discovery. The Makefile picks a distribution like this:"
 msgstr "它带着一个标记文件 `EXAMPLE_OVERLAY`，只要这个文件在，它就不会被自动发现选中。Makefile 挑选发行版的规则是这样的："
 
-#: ../developer/distribution-customization.md:314
+#: ../developer/distribution-customization.md:333
 msgid ""
 "Overlays are discovered from `distributions/*/deploy/*.env`, minus any "
 "directory containing `EXAMPLE_OVERLAY`."
@@ -814,23 +844,23 @@ msgstr ""
 "根据 `distributions/*/deploy/*.env` 发现 overlay，但排除所有含有 `EXAMPLE_OVERLAY` "
 "的目录。"
 
-#: ../developer/distribution-customization.md:316
+#: ../developer/distribution-customization.md:335
 msgid ""
 "Exactly one candidate: it is selected automatically, and `make` prints "
 "which identity it is compiling in."
 msgstr "恰好一个候选：自动选中它，`make` 会打印出它要编译进去的是哪个站点的信息。"
 
-#: ../developer/distribution-customization.md:318
+#: ../developer/distribution-customization.md:337
 msgid "Several candidates: `make` fails and asks you to name one."
 msgstr "有多个候选：`make` 失败，并要求你指定其中一个。"
 
-#: ../developer/distribution-customization.md:319
+#: ../developer/distribution-customization.md:338
 msgid ""
 "None (the state of a fresh clone of this repository): no overlay is "
 "selected, and the stack is neutral."
 msgstr "一个都没有（刚克隆本仓库时就是这个状态）：不选任何 overlay，整套服务保持中立。"
 
-#: ../developer/distribution-customization.md:322
+#: ../developer/distribution-customization.md:341
 msgid ""
 "`DISTRIBUTION=<name>` selects one by name — including the example, which "
 "is only ever selected explicitly. `DISTRIBUTION=none` opts out."
@@ -838,18 +868,18 @@ msgstr ""
 "`DISTRIBUTION=<name>` 按名字选择一个，示例发行版也可以这样选，而且只能这样选。`DISTRIBUTION=none` "
 "表示不选任何发行版。"
 
-#: ../developer/distribution-customization.md:325
+#: ../developer/distribution-customization.md:344
 msgid "Custom public pages and backend code"
 msgstr "自定义公开页面和后端代码"
 
-#: ../developer/distribution-customization.md:327
+#: ../developer/distribution-customization.md:346
 msgid ""
 "Configuration covers the site's identity, its branding, its models and "
 "its feature switches. Two further interfaces go beyond that, each with a "
 "build or deployment cost of its own:"
 msgstr "配置能覆盖的是站点信息、品牌、模型和功能开关。超出这个范围，还有两个接口可用，各自有额外的构建或部署成本："
 
-#: ../developer/distribution-customization.md:331
+#: ../developer/distribution-customization.md:350
 msgid ""
 "[Site UI Modules](site-ui-modules.md) replace the public pages — the home"
 " page, the frame around the account pages, the terms — with the "
@@ -858,7 +888,7 @@ msgstr ""
 "[Site UI 模块](site-ui-modules.md)用发行版自己的 React "
 "组件替换公开页面（首页、账号页面的外壳、条款页），这些组件会编译进发行版的控制台镜像。"
 
-#: ../developer/distribution-customization.md:334
+#: ../developer/distribution-customization.md:353
 msgid ""
 "[Backend Extensions](backend-extensions.md) load trusted Python code at "
 "startup to add an adapter, a Cloud Agent access rule or a quota source."
@@ -866,11 +896,11 @@ msgstr ""
 "[后端扩展](backend-extensions.md)在启动时加载可信的 Python 代码，用来添加 adapter、云端 Agent "
 "访问规则或配额来源。"
 
-#: ../developer/distribution-customization.md:337
+#: ../developer/distribution-customization.md:356
 msgid "Upgrade checklist"
 msgstr "升级检查清单"
 
-#: ../developer/distribution-customization.md:339
+#: ../developer/distribution-customization.md:358
 msgid ""
 "This repository maintains the application and the interfaces it "
 "publishes: configuration, Site UI modules and backend extensions. Each "
@@ -880,17 +910,17 @@ msgstr ""
 "本仓库维护应用本身，以及它对外发布的接口：配置、Site UI 模块和后端扩展。每个发行版自己维护自己的配置、模块、部署以及可能有的 "
 "fork，并自己决定什么时候升级。"
 
-#: ../developer/distribution-customization.md:344
+#: ../developer/distribution-customization.md:363
 msgid "An existing source fork"
 msgstr "已有的源码 fork"
 
-#: ../developer/distribution-customization.md:346
+#: ../developer/distribution-customization.md:365
 msgid ""
 "Inventory local changes by route and behavior. Separate branding values, "
 "public-page presentation, shared-console changes and backend logic."
 msgstr "按路由和行为盘点本地修改，区分品牌值、公开页面展示、共享控制台修改和后端逻辑。"
 
-#: ../developer/distribution-customization.md:348
+#: ../developer/distribution-customization.md:367
 msgid ""
 "Where they fit, move values into runtime configuration and public-page "
 "presentation into a Site UI module. Migration is optional; you can keep "
@@ -900,52 +930,52 @@ msgstr ""
 "能迁的就迁：配置值迁到运行时配置，公开页面的展示迁到 Site UI 模块。迁移不是必须的；也可以继续保留 "
 "fork，但要一直承担合并和验证的工作。用 UI 模块时，认证控制器仍然是共用的。"
 
-#: ../developer/distribution-customization.md:352
+#: ../developer/distribution-customization.md:371
 msgid ""
 "Identify remaining source changes explicitly. Console redesigns, extra "
 "routes and new authentication behavior do not become supported module "
 "features merely by moving files into the module directory."
 msgstr "把剩下的源码改动明确列出来。重新设计控制台、增加路由、新的认证行为，不会因为文件挪进了模块目录，就变成受支持的模块功能。"
 
-#: ../developer/distribution-customization.md:355
+#: ../developer/distribution-customization.md:374
 msgid ""
 "Merge the intended upstream version in an isolated branch, resolve "
 "conflicts against your required behavior, and build the exact "
 "frontend/backend pair."
 msgstr "在单独的分支里合并要升级到的上游版本，按你需要的行为解决冲突，然后构建出要发布的那一对前端／后端。"
 
-#: ../developer/distribution-customization.md:357
+#: ../developer/distribution-customization.md:376
 msgid ""
 "Verify the distribution in staging before promoting it. A successful "
 "merge or upstream CI result alone does not verify a fork's presentation "
 "or flows."
 msgstr "上线前，先在 staging 环境验证发行版。合并成功、上游 CI 通过，都不能说明 fork 的页面展示和流程没问题。"
 
-#: ../developer/distribution-customization.md:360
+#: ../developer/distribution-customization.md:379
 msgid ""
 "Adopting Site UI can reduce future conflicts; it does not automatically "
 "migrate an existing fork or make arbitrary upstream source paths stable "
 "interfaces."
 msgstr "改用 Site UI 可以减少以后的冲突，但它不会自动迁移已有的 fork，也不会让上游任意一条源码路径变成稳定接口。"
 
-#: ../developer/distribution-customization.md:363
+#: ../developer/distribution-customization.md:382
 msgid "Before promotion"
 msgstr "上线前"
 
-#: ../developer/distribution-customization.md:365
+#: ../developer/distribution-customization.md:384
 msgid ""
 "Pin the upstream version and, for custom UI, the module version and "
 "produced image digest. Keep the matching configuration and asset versions"
 " recoverable."
 msgstr "锁定上游版本；用了自定义 UI 的，还要锁定模块版本和构建出的镜像摘要（digest）。确保与之匹配的配置和资源版本都能找回来。"
 
-#: ../developer/distribution-customization.md:367
+#: ../developer/distribution-customization.md:386
 msgid ""
 "Read configuration/API migration notes and validate against the selected "
 "version. Unsupported module API revisions must stop the build."
 msgstr "阅读配置和 API 的迁移说明，并针对选定的版本做校验。遇到不受支持的模块 API 版本，构建必须中止。"
 
-#: ../developer/distribution-customization.md:369
+#: ../developer/distribution-customization.md:388
 msgid ""
 "Inspect the actual image's `/app/site-ui-manifest.json` to confirm the "
 "intended standard or custom build; test packaged and mounted assets over "
@@ -954,21 +984,21 @@ msgstr ""
 "检查实际镜像中的 `/app/site-ui-manifest.json`，确认构建结果使用的是预期的标准 UI 或自定义 UI；通过 HTTP "
 "测试打包资源和挂载资源。"
 
-#: ../developer/distribution-customization.md:371
+#: ../developer/distribution-customization.md:390
 msgid ""
 "Check public routes, configured links, narrow/wide layouts, keyboard "
 "access, form validation/loading/errors, login/logout and the registration"
 " policy."
 msgstr "检查公开路由、配置的链接、窄屏／宽屏布局、键盘操作、表单校验／加载／错误状态、登录／退出和注册策略。"
 
-#: ../developer/distribution-customization.md:373
+#: ../developer/distribution-customization.md:392
 msgid ""
 "Check the authenticated console, user/admin permissions and an inference "
 "request against the deployed candidate, including any local fork "
 "behavior."
 msgstr "在部署好的候选版本上，检查登录后的控制台、用户和管理员权限，并发一次推理请求；fork 里的本地行为也要覆盖到。"
 
-#: ../developer/distribution-customization.md:375
+#: ../developer/distribution-customization.md:394
 msgid ""
 "Promote only the tested image/configuration combination and retain the "
 "prior combination for rollback."

@@ -827,6 +827,11 @@ class DatabaseLogger:
 
             await ensure_geo_rollup_schema(conn)
 
+            # Daily aggregate snapshots served by GET /public-stats.
+            from serving.analytics.public_stats import ensure_public_stats_schema
+
+            await ensure_public_stats_schema(conn)
+
     async def log_request(
         self,
         request_id: str,

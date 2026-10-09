@@ -120,7 +120,12 @@ describe('resolveRuntimeSiteConfig', () => {
       },
     ]);
     expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
-    expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
+    expect(resolved.features).toEqual({
+      publicSignup: false,
+      rag: false,
+      agents: false,
+      publicStats: false,
+    });
   });
 
   it('preserves build-time branding exactly when v1 branding is null', () => {
@@ -174,7 +179,12 @@ describe('resolveRuntimeSiteConfig', () => {
       contactEmail: 'support@example.test',
     });
     expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
-    expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
+    expect(resolved.features).toEqual({
+      publicSignup: false,
+      rag: false,
+      agents: false,
+      publicStats: false,
+    });
   });
 
   it('keeps legacy feature gates when its optional identity URL is malformed', () => {
@@ -191,7 +201,12 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.branding.exampleApiBase).toBe(buildTimeSiteConfig.branding.exampleApiBase);
     expect(resolved.branding.siteHost).toBe(buildTimeSiteConfig.branding.siteHost);
     expect(resolved.branding.appName).toBe('Example Inference');
-    expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
+    expect(resolved.features).toEqual({
+      publicSignup: false,
+      rag: false,
+      agents: false,
+      publicStats: false,
+    });
   });
 
   it('rejects unsafe or malformed branding without silently replacing operator settings', () => {

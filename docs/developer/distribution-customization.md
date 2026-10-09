@@ -147,6 +147,25 @@ second, it treats sign-up as closed rather than falling back to
 `SIGNUP_ENABLED`, and tries again after five seconds. Saving the switch in the
 admin console clears the error at once.
 
+**Public usage stats.** `features.public_stats: true` publishes aggregate
+traffic figures at `/stats`: tokens served per day, countries, the languages
+people write in and the agent clients that call the API. The page reads
+`GET /public-stats`, which serves the newest snapshot from the
+`public_stats_snapshots` table and answers 404 when the flag is off or unset.
+Snapshots are written by a job you schedule once a day, for example from cron
+or a systemd timer:
+
+```bash
+docker exec <backend-container> python -m serving.analytics.public_stats
+```
+
+Add `--dry-run` to print the snapshot instead of storing it, and `--weeks N` to
+change the 26-week window. The job reads `api_logs` and the hourly country
+rollup and stores aggregates only. Per-item account counts below 3 are withheld.
+The language section needs message text, so it is left out unless
+`DB_STORE_FULL_CONTENT=true`. A snapshot over 10 weeks of a busy gateway takes
+about a minute. The job keeps the 30 newest snapshots.
+
 ### Activating a manifest
 
 Setting `DISTRIBUTION_CONFIG_PATH` alone changes nothing. By default the

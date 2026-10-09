@@ -101,6 +101,9 @@ class DistributionFeatures(_ManifestModel):
     # True/None defer to the effective runtime/environment signup setting.
     public_signup: bool | None = None
     rag: bool | None = None
+    # Opt-in: publish aggregate usage stats at /stats (GET /public-stats).
+    # None and False keep them private.
+    public_stats: bool | None = None
 
 
 class DistributionPaths(_ManifestModel):

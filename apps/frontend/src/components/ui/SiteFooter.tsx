@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { Fragment } from 'react';
 import { BuildInfo } from '@/components/ui/BuildInfo';
-import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useBranding, useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export function SiteFooter(): JSX.Element {
   const branding = useBranding();
+  const { features } = useSiteConfig();
 
   // Built as a list so a deployment that has no operating organization, docs
   // site or status page simply shows fewer entries — rendering an empty href
@@ -71,6 +72,17 @@ export function SiteFooter(): JSX.Element {
       </Link>
     ),
   });
+
+  if (features.publicStats) {
+    entries.push({
+      key: 'stats',
+      node: (
+        <Link href="/stats" prefetch={false} className="hover:text-crimson">
+          Stats
+        </Link>
+      ),
+    });
+  }
 
   if (branding.team.length > 0) {
     entries.push({

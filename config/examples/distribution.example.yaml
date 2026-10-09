@@ -46,6 +46,9 @@ features:
   # runtime signup_enabled / SIGNUP_ENABLED setting decide instead.
   public_signup: false
   rag: false
+  # Publish aggregate usage stats at /stats. Needs the daily snapshot job;
+  # see docs/developer/distribution-customization.md.
+  # public_stats: true
 
 paths:
   models: ./models.openrouter.yaml

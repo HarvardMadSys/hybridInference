@@ -23,15 +23,28 @@ const configuredBranding = {
 };
 
 let brandingOverride: Record<string, unknown> = configuredBranding;
+let publicStats = false;
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => brandingOverride,
+  useSiteConfig: () => ({ features: { publicStats } }),
 }));
 
 describe('SiteFooter', () => {
   afterEach(() => {
     cleanup();
     brandingOverride = configuredBranding;
+    publicStats = false;
+  });
+
+  it('links the public stats page only when the deployment enables it', () => {
+    render(<SiteFooter />);
+    expect(screen.queryByRole('link', { name: 'Stats' })).not.toBeInTheDocument();
+    cleanup();
+
+    publicStats = true;
+    render(<SiteFooter />);
+    expect(screen.getByRole('link', { name: 'Stats' })).toHaveAttribute('href', '/stats');
   });
 
   it('includes an external status link', () => {
