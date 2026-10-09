@@ -364,3 +364,37 @@ async def test_database_logger_handles_json_string_and_none_payloads() -> None:
     db2, conn2 = _db_logger_with_capture()
     await db2.log_request(**base, request_payload=None)
     assert conn2.execute.await_args.args[REQUEST_PAYLOAD_ARG] is None
+
+
+@pytest.mark.asyncio
+async def test_response_identity_survives_privacy_mode_without_content_or_metadata_spoofing():
+    store, conn = _store_with_capture()
+    metadata = {"agent_job_id": "thread:1", "response_id": "spoofed"}
+    await _log(
+        store,
+        store_full_content=False,
+        metadata=metadata,
+        response={"id": "msg_123", "content": "private response"},
+    )
+    args = conn.execute.await_args.args
+    assert args[PROMPT_ARG] is None
+    assert args[19] is None
+    assert args[REQUEST_PAYLOAD_ARG] is None
+    assert json.loads(args[METADATA_ARG])["response_id"] == "msg_123"
+    assert "private response" not in args[METADATA_ARG]
+    assert metadata["response_id"] == "spoofed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_id", [None, "", "a" * 257, "id\x00suffix", {"secret": "value"}, "with space"]
+)
+async def test_invalid_response_identity_is_never_reconstructed_or_truncated(response_id):
+    store, conn = _store_with_capture()
+    await _log(
+        store,
+        store_full_content=False,
+        metadata={"response_id": "spoofed"},
+        response={"id": response_id},
+    )
+    assert "response_id" not in json.loads(conn.execute.await_args.args[METADATA_ARG] or "{}")
