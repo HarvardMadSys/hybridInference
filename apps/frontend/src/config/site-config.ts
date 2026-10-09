@@ -149,6 +149,9 @@ const featuresSchema = z
     routers: z.array(z.string()),
     public_signup: z.boolean().nullable(),
     rag: z.boolean().nullable(),
+    // The gateway only sends this key when the deployment enables public
+    // stats, so a document without it means "off".
+    public_stats: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -197,6 +200,7 @@ export interface RuntimeSiteConfig {
     publicSignup: boolean;
     rag: boolean;
     agents: boolean;
+    publicStats: boolean;
   };
 }
 
@@ -204,7 +208,7 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
-  features: { publicSignup: true, rag: true, agents: false },
+  features: { publicSignup: true, rag: true, agents: false, publicStats: false },
 };
 
 function resolveBranding(input: unknown, displayName: string, supportEmail: string): Branding {
@@ -319,6 +323,8 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       // Only the server-side loader may enable the entry point, from an
       // explicit public URL or a configured local proxy.
       agents: false,
+      // Opt-in only: publishing usage stats needs an explicit true.
+      publicStats: document.features.public_stats === true,
     },
   };
 }
