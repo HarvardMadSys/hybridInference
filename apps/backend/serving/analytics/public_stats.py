@@ -1,10 +1,10 @@
-"""Daily public usage snapshot: tokens, countries, languages and agent clients.
+"""Daily public usage snapshot: accounts, tokens, countries, languages and agent clients.
 
 An offline job (``python -m serving.analytics.public_stats``, run once a day by
-the deployment's scheduler) reads ``api_logs`` and the hourly country rollup,
-reduces them to aggregates, and stores the result as one JSON document in
-``public_stats_snapshots``. ``GET /public-stats`` serves the newest document
-when the distribution opts in with ``features.public_stats``.
+the deployment's scheduler) reads ``api_logs``, the hourly country rollup and
+account statuses, reduces them to aggregates, and stores the result as one JSON
+document in ``public_stats_snapshots``. ``GET /public-stats`` serves the newest
+document when the distribution opts in with ``features.public_stats``.
 
 Only aggregates leave this module: no account ids, IP addresses, message text
 or raw User-Agent strings. Per-item account counts below
@@ -153,6 +153,15 @@ JOIN api_logs l ON l.id = p.id
 WHERE l.prompt IS NOT NULL
   AND left(l.prompt, 1) = '['
   AND jsonb_typeof(CASE WHEN {{valid_json}} THEN l.prompt::jsonb END) = 'array'
+"""
+
+# Accounts as of the run: approved (active) and waiting for review, whatever
+# their role or email verification.
+REGISTRATIONS_SQL = """
+SELECT
+  COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS approved,
+  COUNT(*) FILTER (WHERE status = 'pending_approval')::BIGINT AS waiting
+FROM users
 """
 
 INSERT_SNAPSHOT_SQL = "INSERT INTO public_stats_snapshots (payload) VALUES ($1::jsonb)"
@@ -397,6 +406,7 @@ def build_payload(
     country_rows: Iterable[Mapping[str, Any]],
     languages_by_week: Mapping[date, Mapping[str, set[str]]] | None,
     messages_sampled: int,
+    registrations_row: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the public snapshot document."""
     daily_rows = list(daily_rows)
@@ -422,6 +432,14 @@ def build_payload(
             # Providers that never report cache reads count as uncached, so this is a floor.
             "cached_input_share": _share(cached, input_tokens),
         },
+        "registrations": (
+            {
+                "approved": int(registrations_row["approved"]),
+                "waiting": int(registrations_row["waiting"]),
+            }
+            if registrations_row is not None
+            else None
+        ),
         "daily": daily,
         "countries": build_countries(country_rows, weeks),
         "languages": (
@@ -476,7 +494,7 @@ async def _sample_languages(
 async def compute_snapshot(
     conn: Any, *, now: datetime | None = None, lookback_weeks: int = LOOKBACK_WEEKS
 ) -> dict[str, Any]:
-    """Read the logs and the country rollup and build the snapshot."""
+    """Read the logs, the country rollup and account statuses and build the snapshot."""
     now = now or datetime.now(timezone.utc)
     end = now.replace(minute=0, second=0, microsecond=0)
     first_log = await conn.fetchval(FIRST_LOG_SQL)
@@ -500,6 +518,7 @@ async def compute_snapshot(
         for row in await conn.fetch(CLIENTS_SQL, start, end)
     ]
     country_rows = await conn.fetch(COUNTRIES_SQL, start, end)
+    registrations_row = await conn.fetchrow(REGISTRATIONS_SQL)
     languages, messages = await _sample_languages(conn, weeks_between(start, end), start, end)
     return build_payload(
         generated_at=now,
@@ -510,6 +529,7 @@ async def compute_snapshot(
         country_rows=country_rows,
         languages_by_week=languages,
         messages_sampled=messages,
+        registrations_row=registrations_row,
     )
 
 
@@ -547,14 +567,18 @@ async def _main(args: argparse.Namespace) -> int:
             await store_snapshot(conn, payload)
         totals = payload["totals"]
         languages = payload["languages"]
+        registrations = payload["registrations"]
         logger.info(
-            "public_stats: %s snapshot for %s days: %s tokens, %s countries, %s languages, %s clients",
+            "public_stats: %s snapshot for %s days: %s tokens, %s countries, %s languages, "
+            "%s clients; %s approved accounts, %s waiting",
             "computed" if args.dry_run else "stored",
             payload["window"]["days"],
             totals["tokens"],
             payload["countries"]["total"],
             languages["total"] if languages else "no",
             payload["agents"]["clients_total"],
+            registrations["approved"],
+            registrations["waiting"],
         )
     finally:
         await conn.close()

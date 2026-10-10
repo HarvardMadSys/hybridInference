@@ -141,6 +141,7 @@ def test_payload_is_aggregate_only():
         country_rows=[{"week": W2, "country_code": "USA", "continent_code": "NA", "requests": 4}],
         languages_by_week=None,
         messages_sampled=0,
+        registrations_row={"approved": 12, "waiting": 7},
     )
     assert payload["schema_version"] == 1
     assert payload["weeks"] == ["2026-07-27", "2026-08-03", "2026-08-10"]
@@ -154,10 +155,33 @@ def test_payload_is_aggregate_only():
         "accounts": 1,
         "cached_input_share": 0.9,
     }
+    assert payload["registrations"] == {"approved": 12, "waiting": 7}
     assert payload["languages"] is None
     text = json.dumps(payload)
     assert "secret-user-id" not in text
     assert "secret-host" not in text
+
+
+def test_registrations_count_every_active_and_pending_account():
+    sql = " ".join(ps.REGISTRATIONS_SQL.split())
+    assert "status = 'active'" in sql
+    assert "status = 'pending_approval'" in sql
+    # No role or email-verification filter: every account counts.
+    assert sql.endswith("FROM users")
+
+
+def test_payload_without_registrations_publishes_null():
+    payload = ps.build_payload(
+        generated_at=END,
+        start=START,
+        end=END,
+        daily_rows=[],
+        client_rows=[],
+        country_rows=[],
+        languages_by_week=None,
+        messages_sampled=0,
+    )
+    assert payload["registrations"] is None
 
 
 @pytest.mark.asyncio
@@ -210,9 +234,14 @@ def _fake_conn(*, server_version="160004", sample_texts=None):
         assert sql is ps.FIRST_LOG_SQL
         return START
 
+    async def fetchrow(sql, *args):
+        assert sql is ps.REGISTRATIONS_SQL
+        return {"approved": 40, "waiting": 9}
+
     conn = MagicMock()
     conn.fetch = AsyncMock(side_effect=fetch)
     conn.fetchval = AsyncMock(side_effect=fetchval)
+    conn.fetchrow = AsyncMock(side_effect=fetchrow)
     return conn
 
 
@@ -228,6 +257,7 @@ async def test_compute_snapshot_reads_from_the_first_log_to_the_hour():
     assert payload["window"]["start"] == START.isoformat()
     assert payload["window"]["end"] == "2026-08-12T14:00:00+00:00"
     assert payload["countries"]["total"] == 1
+    assert payload["registrations"] == {"approved": 40, "waiting": 9}
     assert payload["agents"]["products"][0]["name"] == "Claude Code"
     assert payload["languages"]["items"] == [{"code": "fr", "accounts": None}]
     sample_calls = [c for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]]
