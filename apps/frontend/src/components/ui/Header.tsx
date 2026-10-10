@@ -57,6 +57,15 @@ export function Header() {
             Status
           </a>
         )}
+        {features.publicStats && (
+          <Link
+            href="/stats"
+            prefetch={false}
+            className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+          >
+            Stats
+          </Link>
+        )}
         {branding.navLinks.map((link) => (
           <a
             key={link.url}
