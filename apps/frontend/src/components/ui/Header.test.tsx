@@ -31,9 +31,10 @@ const configuredBranding = {
 };
 
 let brandingOverride: Record<string, unknown> = configuredBranding;
+let featuresOverride: Record<string, unknown> = { rag: true, publicStats: false };
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
-  useSiteConfig: () => ({ branding: brandingOverride, features: { rag: true } }),
+  useSiteConfig: () => ({ branding: brandingOverride, features: featuresOverride }),
 }));
 
 describe('Header', () => {
@@ -44,6 +45,7 @@ describe('Header', () => {
   beforeEach(() => {
     replace.mockClear();
     brandingOverride = configuredBranding;
+    featuresOverride = { rag: true, publicStats: false };
     authState = {
       isAuthenticated: false,
     };
@@ -111,6 +113,36 @@ describe('Header', () => {
       .filter((label) => ['Status', 'Example Project', 'Example Forum'].includes(label ?? ''));
 
     expect(labels).toEqual(['Status', 'Example Project', 'Example Forum']);
+  });
+
+  it('hides the stats link unless the deployment publishes stats', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'Stats' })).not.toBeInTheDocument();
+  });
+
+  it('shows guests a same-tab stats link when the deployment publishes stats', () => {
+    featuresOverride = { rag: true, publicStats: true };
+
+    render(<Header />);
+
+    const statsLink = screen.getByRole('link', { name: 'Stats' });
+
+    expect(statsLink).toHaveAttribute('href', '/stats');
+    expect(statsLink).not.toHaveAttribute('target');
+  });
+
+  it('places the stats link between Status and the distribution nav links', () => {
+    featuresOverride = { rag: true, publicStats: true };
+
+    render(<Header />);
+
+    const labels = screen
+      .getAllByRole('link')
+      .map((node) => node.textContent?.trim())
+      .filter((label) => ['Status', 'Stats', 'Example Project'].includes(label ?? ''));
+
+    expect(labels).toEqual(['Status', 'Stats', 'Example Project']);
   });
 
   it('renders no extra header links when the distribution lists none', () => {
