@@ -442,6 +442,7 @@ class TestHedgedAdapterNonStreaming:
         lease = tracker.acquire("test:primary", 100)
         primary_started = asyncio.Event()
         prefill_released = asyncio.Event()
+        primary_cleanup_started = asyncio.Event()
         allow_primary_cleanup = asyncio.Event()
         events: list[str] = []
         primary = _make_fake_adapter(provider="primary", endpoint_id="test:primary")
@@ -452,6 +453,7 @@ class TestHedgedAdapterNonStreaming:
                 await asyncio.Event().wait()
             finally:
                 events.append("primary-cancellation-started")
+                primary_cleanup_started.set()
                 await allow_primary_cleanup.wait()
             raise AssertionError("primary unexpectedly completed")
 
@@ -486,9 +488,12 @@ class TestHedgedAdapterNonStreaming:
         )
         await primary_started.wait()
         await asyncio.wait_for(prefill_released.wait(), timeout=0.2)
+        await asyncio.wait_for(primary_cleanup_started.wait(), timeout=0.2)
 
         assert tracker.backlog("test:primary") == 0
-        assert events == ["capacity", "prefill"]
+        assert events == ["capacity", "prefill", "primary-cancellation-started"]
+        assert not allow_primary_cleanup.is_set()
+        assert not request.done()
 
         allow_primary_cleanup.set()
         result = await request
@@ -1039,6 +1044,8 @@ class TestHedgedAdapterStreaming:
     async def test_stream_losing_backup_releases_after_cancellation_finishes(self):
         """A losing backup keeps its reservation until its stream is closed."""
         sink = _FakeEventSink()
+        tracker = PrefillLoadTracker(elephant_tokens=50)
+        backup_lease = tracker.acquire("test:backup", 100)
         backup_started = asyncio.Event()
         backup_cancelled = asyncio.Event()
         release_saw_cancellation: list[bool] = []
@@ -1062,10 +1069,15 @@ class TestHedgedAdapterStreaming:
                 yield "unreachable"
 
         backup.stream_chat_completion = _backup_stream
+
+        def release_backup() -> None:
+            release_saw_cancellation.append(backup_cancelled.is_set())
+            tracker.release(backup_lease)
+
         dispatch = CheckpointBackupDispatch(
             backup=backup,
             elapsed_sec=0.0,
-            release=lambda: release_saw_cancellation.append(backup_cancelled.is_set()),
+            release=release_backup,
         )
         hedged = HedgedAdapter(
             primary=primary,
@@ -1082,9 +1094,13 @@ class TestHedgedAdapterStreaming:
         await cleanup_task
         assert backup_cancelled.is_set()
         assert release_saw_cancellation == [True]
+        assert tracker.backlog("test:backup") == 0
+        assert tracker.elephants("test:backup") == 0
 
         await stream.aclose()
         assert release_saw_cancellation == [True]
+        assert tracker.backlog("test:backup") == 0
+        assert tracker.elephants("test:backup") == 0
 
     @pytest.mark.asyncio
     async def test_stream_losing_backup_releases_prefill_before_capacity(self):
