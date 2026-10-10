@@ -13,10 +13,13 @@ import pytest
 
 from serving.storage.postgres_operational import PostgresOperationalStore
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("PG_TEST_DSN"),
-    reason="PG_TEST_DSN not set; skipping Postgres-fixture tests",
-)
+pytestmark = [
+    pytest.mark.dbtest,
+    pytest.mark.skipif(
+        not os.environ.get("PG_TEST_DSN"),
+        reason="PG_TEST_DSN not set; skipping Postgres-fixture tests",
+    ),
+]
 
 
 @pytest.fixture

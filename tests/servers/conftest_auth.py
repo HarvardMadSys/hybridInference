@@ -34,7 +34,9 @@ from tests.fixtures.auth_helpers import (
 @pytest.fixture
 def auth_env(monkeypatch):
     """Set up environment variables for auth testing."""
+    from serving.config import settings as settings_module
     from serving.config.settings import get_settings
+    from serving.servers.routers import auth_routes
 
     get_settings.cache_clear()
 
@@ -44,10 +46,16 @@ def auth_env(monkeypatch):
             "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
         }
     )
+    # auth_test_env assigns DB_NAME to this xdist worker's database while
+    # retaining TEST_DB_NAME as the unsuffixed base used by direct DB fixtures.
+    test_env["DB_NAME"] = os.environ.get("DB_NAME", test_env["DB_NAME"])
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
 
     get_settings.cache_clear()
+    test_settings = get_settings()
+    monkeypatch.setattr(settings_module, "settings", test_settings)
+    monkeypatch.setattr(auth_routes, "settings", test_settings)
 
     return test_env
 
@@ -62,7 +70,10 @@ async def _init_pg_backend():
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    test_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
+    # The server fixture's DB_NAME is the concrete xdist-worker database.
+    # TEST_DB_NAME intentionally remains the unsuffixed base for direct
+    # integration fixtures that append the worker id themselves.
+    test_db_name = os.getenv("DB_NAME", os.getenv("TEST_DB_NAME", "hybridinference_test_db"))
     assert_test_db_name(test_db_name, context="auth_backend init")
 
     db_config = {
@@ -216,6 +227,9 @@ async def auth_test_app(auth_app_services):
 
     app = FastAPI(title="Auth Test API", version="1.0.0", lifespan=lifespan)
     app.state.services = auth_app_services
+    from serving.servers.middleware.exception_handler import install_exception_handlers
+
+    install_exception_handlers(app)
 
     from serving.servers.routers import auth_routes, user_routes
 
@@ -233,6 +247,16 @@ async def auth_app_client(auth_test_app):
     transport = ASGITransport(app=auth_test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _reset_signup_rate_limit_for_auth_plugins():
+    """Keep signup attempts isolated for tests using this fixture module."""
+    from serving.utils.signup_rate_limit import reset_signup_rate_limit_state
+
+    reset_signup_rate_limit_state()
+    yield
+    reset_signup_rate_limit_state()
 
 
 @pytest.fixture
