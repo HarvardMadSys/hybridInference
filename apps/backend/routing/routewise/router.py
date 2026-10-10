@@ -2943,6 +2943,11 @@ class RouteWiseRouter:
         if not request_id:
             return
 
+        # Emit the expected-versus-observed record up front so it is published on
+        # every path, including terminal failures where no scope is resolved and
+        # nothing is committed. Diagnosing this incident required knowing what
+        # the router expected even for requests that changed no state.
+
         # Record authoritative cache evidence BEFORE the success/warming gate
         # so that a streamed empty-completion path (success=False) still
         # learns from an observed cache hit or miss.
@@ -2997,25 +3002,27 @@ class RouteWiseRouter:
         if scope is None:
             return
         generation = stashed.generations.get(obs.endpoint_id)
-        if not self.prefix_cache.remember(
-            scope,
-            stashed.blocks,
+
+        # Gate prefix WARMING on evidence that real work happened, not on
+        # transport success. A provider warmup notice is a well-formed HTTP 200
+        # containing text, so ``obs.success`` is True for it; treating that as
+        # warming replaced the stored blocks with the stub's own few blocks and
+        # collapsed every later estimate to zero for the rest of the session.
+        #
+        # A non-progressing outcome still refreshes liveness, so a transient
+        # hiccup cannot age strong existing evidence out through the TTL, but it
+        # must not overwrite what the entry asserts.
+        # record_outcome re-derives the gate from the outcome itself, so the
+        # invariant holds even if this router-level check is bypassed. It
+        # performs the warming write and the authoritative evidence recording in
+        # the one place that owns the outcome gate.
+        self.prefix_cache.record_outcome(
+            scope=scope,
+            blocks=stashed.blocks,
+            outcome=obs.outcome,
+            observed_cached_tokens=cached_tokens,
             generation=generation,
-        ):
-            return
-        # Record authoritative observed cache usage as evidence.
-        if cached_tokens is not None:
-            self.prefix_cache.record_evidence(
-                scope,
-                cached_tokens,
-                generation=generation,
-                blocks=stashed.blocks,
-                materialization_candidate=True,
-            )
-        else:
-            # No authoritative observation: successful dispatch may still
-            # establish potential warming.
-            self.prefix_cache.record_dispatch(scope, generation=generation)
+        )
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:

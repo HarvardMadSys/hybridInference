@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import CompletionOutcome
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
@@ -148,6 +149,40 @@ class RoutingObservation:
     leave it as ``None``. ``None`` and ``0`` MUST remain distinct.
     """
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
+
+    outcome: CompletionOutcome | None = field(default=None)
+    """Typed semantic result of the completed request.
+
+    Defaults to ``None`` so every existing construction site keeps working and
+    stays back-compatible. ``None`` means "not classified"; it is deliberately
+    NOT treated as evidence of useful work. See
+    :class:`routing.completion_outcome.CompletionOutcome`.
+    """
+
+    @property
+    def admits_real_work(self) -> bool:
+        """Whether this observation may be used as evidence that real work happened.
+
+        Transport success (``success=True``) is not sufficient: a provider warmup
+        notice is a well-formed HTTP 200 containing text, so it scores
+        ``success=True`` while being no work at all. Only an outcome that admits
+        real work qualifies. ``__post_init__`` guarantees ``outcome`` is never
+        ``None``, so an unclassified observation reads as ``UNKNOWN`` and does
+        not admit.
+        """
+        return bool(self.outcome.admits_real_work)
+
+    def __post_init__(self) -> None:
+        """Default an unset outcome to ``UNKNOWN``, never to a positive claim.
+
+        An observation that was not classified carries no evidence that work
+        happened, so it must not admit real work. Defaulting to ``PROGRESS``
+        whenever ``success`` is true would reintroduce the exact defect this
+        type exists to prevent: a warmup notice is a 200 with text, and would be
+        read as evidence of useful serving.
+        """
+        if self.outcome is None:
+            self.outcome = CompletionOutcome.UNKNOWN
 
 
 @dataclass
