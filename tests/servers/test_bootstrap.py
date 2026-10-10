@@ -166,6 +166,9 @@ class TestBootstrapInitialization:
         monkeypatch.setenv("DB_PASSWORD", "testpass")
 
         with (
+            # The configuration load has its own coverage; here there is no
+            # database to load it from.
+            patch("serving.servers.bootstrap._load_app_config", new=AsyncMock()),
             patch(
                 "serving.servers.bootstrap._init_router_and_models",
                 new=AsyncMock(return_value=({}, [])),

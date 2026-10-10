@@ -461,9 +461,19 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert 'EXAMPLE_UPSTREAM_API_KEY="local-placeholder"' in stage3
     assert 'EXAMPLE_UPSTREAM_MODEL="host-fixture-model"' in stage3
     assert 'EXAMPLE_EXPECTED_CONTENT="STAGE3_HOST_FIXTURE_OK"' in stage3
+    # Stage 2 stored the upstream settings in the example database, where they
+    # outrank the environment: Stage 3 changes the stored values, then
+    # recreates the backend so the model registry reads them, then smokes.
+    assert "--configure-upstream" in stage3
     assert "make demo DISTRIBUTION=example" in stage3
+    assert '"http://localhost:${BACKEND_PORT}/routing"' in stage3
     assert "EXAMPLE_DEMO_EXPECT_EXISTING=1" in stage3
     assert "make demo-smoke DISTRIBUTION=example" in stage3
+    assert (
+        stage3.index("--configure-upstream")
+        < stage3.index("make demo DISTRIBUTION=example")
+        < stage3.index("make demo-smoke DISTRIBUTION=example")
+    )
     assert "make demo-down DISTRIBUTION=example" in resume_smoke
     assert resume_smoke.index("tutorial-provider.log") < resume_smoke.index(
         "make demo-down DISTRIBUTION=example"

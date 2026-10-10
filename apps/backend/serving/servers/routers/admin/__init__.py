@@ -1,9 +1,9 @@
 """Admin router package.
 
 Aggregates domain-focused sub-routers (alerts, analytics,
-api_keys, auth_blocks, broadcast, export, login_events, metrics, model_concurrency,
+api_keys, auth_blocks, broadcast, config, export, login_events, metrics, model_concurrency,
 model_visibility, offload_routes, providers, settings, signup_domains, site_updates,
-stats, upstream_concurrency, usage_insights, users) into a single ``router``
+stats, system, upstream_concurrency, usage_insights, users) into a single ``router``
 exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
@@ -16,6 +16,7 @@ from serving.servers.routers.admin import (
     api_keys,
     auth_blocks,
     broadcast,
+    config,
     export,
     login_events,
     metrics,
@@ -32,6 +33,7 @@ from serving.servers.routers.admin import (
     signup_domains,
     site_updates,
     stats,
+    system,
     upstream_concurrency,
     usage_insights,
     users,
@@ -50,6 +52,7 @@ router.include_router(analytics.router)
 router.include_router(api_keys.router)
 router.include_router(auth_blocks.router)
 router.include_router(broadcast.router)
+router.include_router(config.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)
@@ -68,6 +71,7 @@ router.include_router(settings.router)
 router.include_router(signup_domains.router)
 router.include_router(site_updates.router)
 router.include_router(stats.router)
+router.include_router(system.router)
 router.include_router(upstream_concurrency.router)
 router.include_router(usage_insights.router)
 router.include_router(users.router)

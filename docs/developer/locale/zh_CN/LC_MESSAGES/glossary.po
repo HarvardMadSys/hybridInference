@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:15+0800\n"
+"POT-Creation-Date: 2026-10-10 14:42-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -310,20 +310,53 @@ msgid ""
 msgstr "Postgres 里存放账号、API key 以及管理控制台上所有改动的那些表。"
 
 #: ../developer/glossary.md:119
+msgid "Setting"
+msgstr "设置项（setting）"
+
+#: ../developer/glossary.md:120
+#, python-brace-format
+msgid ""
+"A value the gateway reads by name, such as `SMTP_PASSWORD` or a `${VAR}` "
+"the model registry names. A gateway with a database stores its settings "
+"there, and an administrator edits them on the admin console's "
+"Configuration tab; the environment only supplies their starting values. "
+"See [Settings stored in the database](configuration.md#settings-stored-"
+"in-the-database)."
+msgstr ""
+"网关按名字读取的一个值，比如 `SMTP_PASSWORD`，或者模型注册表里引用的某个 "
+"`${VAR}`。有数据库的网关把设置项存在数据库里，由管理员在管理控制台的 Configuration "
+"标签页上编辑；环境变量只提供它们的初始值。见[存储在数据库中的设置项](configuration.md#settings-stored-in-"
+"the-database)。"
+
+#: ../developer/glossary.md:126
+msgid "First-run setup"
+msgstr "首次运行设置（first-run setup）"
+
+#: ../developer/glossary.md:127
+msgid ""
+"How a new deployment gets its first administrator: the backend prints a "
+"one-time setup code in its log, and whoever enters it on the console's "
+"`/setup` page creates the account. See [First-run setup](installation.md"
+"#first-run-setup)."
+msgstr ""
+"新部署产生第一个管理员的方式：后端在日志里打印一个一次性的设置码，谁在控制台的 `/setup` "
+"页面上输入它，谁就创建这个账号。见[首次运行设置](installation.md#first-run-setup)。"
+
+#: ../developer/glossary.md:132
 msgid "Runtime model"
 msgstr "运行时模型（runtime model）"
 
-#: ../developer/glossary.md:120
+#: ../developer/glossary.md:133
 msgid ""
 "A model created from the admin console instead of the model registry. It "
 "exists only in the operational store."
 msgstr "在管理控制台里创建、而不是写在模型注册表里的模型。它只存在于运行数据存储中。"
 
-#: ../developer/glossary.md:123
+#: ../developer/glossary.md:136
 msgid "Console"
 msgstr "控制台（console）"
 
-#: ../developer/glossary.md:124
+#: ../developer/glossary.md:137
 msgid ""
 "The Next.js web app: sign-up and sign-in, the user dashboard, the "
 "playground and the admin console. It also forwards API paths to the "
@@ -332,21 +365,21 @@ msgstr ""
 "Next.js 网页应用：注册和登录、用户仪表盘、对话调试页（playground）和管理控制台。它还会把 API 路径转发给网关，见[公开路径表"
 "](public-path-table.md)。"
 
-#: ../developer/glossary.md:128
+#: ../developer/glossary.md:141
 msgid "Site UI module"
 msgstr "Site UI 模块（Site UI module）"
 
-#: ../developer/glossary.md:129
+#: ../developer/glossary.md:142
 msgid ""
 "A distribution's own React components for the public pages, compiled into"
 " its console image. See [Site UI Modules](site-ui-modules.md)."
 msgstr "发行版为公开页面编写的 React 组件，编译进它自己的控制台镜像。见 [Site UI 模块](site-ui-modules.md)。"
 
-#: ../developer/glossary.md:132
+#: ../developer/glossary.md:145
 msgid "Backend extension"
 msgstr "后端扩展（后端 extension）"
 
-#: ../developer/glossary.md:133
+#: ../developer/glossary.md:146
 msgid ""
 "A trusted Python module a deployment loads at startup to add an adapter, "
 "an agent-access rule or a quota source. See [Backend Extensions](backend-"

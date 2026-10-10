@@ -1,7 +1,6 @@
 """User dashboard routes for API key management and usage statistics."""
 
 import json
-import os
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -9,6 +8,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving.config.runtime_settings import get_runtime_settings_instance
+from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 
 if TYPE_CHECKING:
@@ -202,9 +202,9 @@ async def get_default_daily_quota_for_role(
     """Return the default daily USD quota seeded onto a new API key.
 
     Reads the ``user_daily_quota_<role>`` runtime setting if present.
-    Falls back to ``SIGNUP_DEFAULT_DAILY_QUOTA_USD`` env var (default 100.00)
-    if the role is unknown or runtime settings are unavailable (e.g. early
-    bootstrap).
+    Falls back to the ``SIGNUP_DEFAULT_DAILY_QUOTA_USD`` setting (default
+    100.00) if the role is unknown or runtime settings are unavailable (e.g.
+    early bootstrap).
     """
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
@@ -213,9 +213,11 @@ async def get_default_daily_quota_for_role(
         if key in RUNTIME_SETTINGS_REGISTRY:
             val = await runtime_settings.get_float(key)
             return Decimal(str(val))
-        logger.warning("No quota runtime setting for role %r — falling back to env var", role)
-    quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
-    return Decimal(quota_str)
+        logger.warning(
+            "No quota runtime setting for role %r — falling back to SIGNUP_DEFAULT_DAILY_QUOTA_USD",
+            role,
+        )
+    return Decimal(str(get_settings().signup_default_daily_quota_usd))
 
 
 async def get_user_concurrency_for_role(
@@ -277,6 +279,7 @@ async def get_current_user_info(
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
+        login_name=user_row.get("login_name"),
         user_name=user_row["user_name"],
         role=user_row["role"] or "free",
         status=user_row["status"],
@@ -383,7 +386,7 @@ async def create_api_key(
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Check if email is verified
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = get_settings().signup_require_email_verification
     try:
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
@@ -817,6 +820,7 @@ async def update_profile(
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
+        login_name=user_row.get("login_name"),
         user_name=user_row["user_name"],
         role=user_row["role"] or "free",
         status=user_row["status"],

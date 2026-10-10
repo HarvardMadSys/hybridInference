@@ -281,7 +281,9 @@ async def get_current_user(
         op_store: Operational store instance.
 
     Returns:
-        User context dictionary with user_id, email, role, etc.
+        User context dictionary with user_id, email, login_name, role, etc.
+        ``email`` is None for an account created without one (the first-run
+        setup administrator), whose token carries an empty ``email`` claim.
 
     Raises:
         HTTPException: 401 if token is missing, invalid, or expired.
@@ -309,11 +311,11 @@ async def get_current_user(
             detail="Invalid authentication token.",
         ) from None
 
-    # Extract user info from token
+    # Only the subject is needed: the email and role come from the database
+    # below, and an account without an email has an empty ``email`` claim.
     user_id = payload.get("sub")
-    email = payload.get("email")
 
-    if not user_id or not email:
+    if not user_id:
         raise HTTPException(
             status_code=401,
             detail="Invalid token payload.",
@@ -359,6 +361,7 @@ async def get_current_user(
     return {
         "user_id": user_id,
         "email": user_row["email"],
+        "login_name": user_row.get("login_name"),
         "role": user_role,
         "is_admin": user_role == "admin",
         "email_verified": user_row["email_verified"],
@@ -405,9 +408,13 @@ async def verify_admin_access(
 
     This dependency allows admin endpoints to be called from both the
     frontend dashboard (JWT) and scripts/legacy admin UI (ADMIN_TOKEN).
+    For a JWT admin it also records the account's user id on the request,
+    readable through :func:`get_admin_user_id`.
 
     Returns:
-        Admin identifier string (email for JWT auth, IP for token auth).
+        Admin identifier string: for JWT auth the admin's email, or its login
+        name when the account has no email (the first-run setup
+        administrator); for token auth the client IP.
     """
     from serving.utils.jwt import verify_access_token
 
@@ -422,7 +429,6 @@ async def verify_admin_access(
     try:
         payload = verify_access_token(token)
         user_id = payload.get("sub")
-        email = payload.get("email", "")
 
         if op_store and user_id:
             user_row = await op_store.get_user_by_id(user_id)
@@ -441,9 +447,10 @@ async def verify_admin_access(
                     status_code=403,
                     detail="Email not verified. Please verify your email to continue.",
                 )
-            email = user_row["email"]
             if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
+            request.state.admin_user_id = user_id
+            admin_identity = user_row["email"] or user_row.get("login_name") or user_id
         else:
             # DB unavailable — fail closed.  Admin endpoints require
             # authoritative role verification from the database.
@@ -455,7 +462,7 @@ async def verify_admin_access(
                 detail="Database unavailable; cannot verify admin role. Try again later.",
             )
 
-        return email
+        return admin_identity
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         pass
 
@@ -477,3 +484,13 @@ async def verify_admin_access(
 
     client_ip = get_client_ip(request)
     return client_ip if client_ip != "unknown" else "admin-token"
+
+
+def get_admin_user_id(request: Request) -> str | None:
+    """Return the user id of the admin account ``verify_admin_access`` admitted.
+
+    The identity string that dependency returns is for display and audit; use
+    this to compare against a user id (it is None for an ``ADMIN_TOKEN``
+    caller, which has no account).
+    """
+    return getattr(request.state, "admin_user_id", None)

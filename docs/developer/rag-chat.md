@@ -50,8 +50,9 @@ on requests made with `RAG_API_KEY`, and ignores it on every other key.
 ## Setting it up
 
 Set `RAG_API_KEY` to a valid user API key, and point `RAG_API_BASE_URL` at the
-gateway's own address. The default, `http://localhost:8080/v1`, matches the
-port the Compose backend listens on; a deployment that binds the backend
+gateway's own address; both are settings under **Integrations** on the admin
+console's Configuration tab. The default, `http://localhost:8080/v1`, matches
+the port the Compose backend listens on; a deployment that binds the backend
 somewhere else must set it, or every RAG request fails at the self-call.
 
 ### Rebuilding the index
@@ -62,6 +63,11 @@ embedding model through a gateway:
 ```bash
 RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
 ```
+
+When the `DB_*` settings in `.env` reach the gateway's database, the indexer
+reads the stored settings first, so a value stored on the Configuration tab
+wins over one set on the command line. When they do not, it warns and uses the
+environment alone.
 
 `RAG_CORPUS_DIR` is only needed when your corpus is not the active overlay's
 `content/docs/docs/source`; without an overlay, ingest fails with a message
@@ -132,8 +138,10 @@ The general model APIs are not affected either way.
 ## Configuration
 
 Only `RAG_API_KEY` is required. The path defaults point inside the active distribution.
+Each of these is a [setting](configuration.md#settings-stored-in-the-database),
+under **Integrations** on the Configuration tab.
 
-| Env var | Default | Purpose |
+| Setting | Default | Purpose |
 |---|---|---|
 | `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
 | `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |

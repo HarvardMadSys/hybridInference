@@ -17,6 +17,11 @@ gateway:
 | Cloudflare, then your own proxy, then the gateway | As above, but `TRUSTED_CLOUDFLARE_NETWORKS=<your proxy's address>/32`, and only if that proxy accepts connections from Cloudflare alone and handles the header correctly |
 | Clients on a private network (such as `10.x`) connecting directly | `TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>` |
 
+Each of these is a setting under **Network** on the admin console's
+**Configuration** tab; the `NAME=value` forms on this page are how they look
+in the environment, from which a new deployment's first start copies them. See
+[Settings stored in the database](configuration.md#settings-stored-in-the-database).
+
 The rest of this page explains each setting, how the address is resolved, and
 what is logged and stored. `apps/backend/serving/utils/request_ip.py` is the one
 place in the code that makes this decision.
@@ -46,8 +51,9 @@ process manager, pass `--no-proxy-headers` there too: leaving out
 Two consequences of the server never interpreting forwarded headers:
 
 - `request.url.scheme` is always `http` behind a TLS-terminating proxy. Set
-  `BASE_URL` (see `.env.example`) so absolute URLs — signup verification and
-  password-reset email links — do not fall back to the request scheme.
+  `BASE_URL` (under **General** on the **Configuration** tab) so absolute
+  URLs — signup verification and password-reset email links — do not fall
+  back to the request scheme.
 - `peer_ip` below is the genuine TCP peer again, which is what makes it usable
   as the un-forgeable anchor the rest of this page treats it as.
 
@@ -73,7 +79,8 @@ terminate connections from the internet and forward to the gateway should be
 trusted. Do not trust broad internal subnets — that would allow any host
 within that subnet to assert client identity on any request.
 
-An invalid CIDR stops the gateway at startup.
+An invalid CIDR is refused: the **Configuration** tab will not save it, and in
+the environment it stops the gateway at startup.
 
 ### Direct private client networks
 
@@ -116,7 +123,7 @@ authorize attacker-supplied Cloudflare headers.
 
 ### Trust flags
 
-Three environment variables control header processing:
+Three settings control header processing:
 
 - `TRUST_PROXY_HEADERS=1`: enables processing of `X-Forwarded-For` and
   `X-Real-IP` headers, but **only** when the immediate peer is in
@@ -130,7 +137,8 @@ All three flags default to `0` (disabled). Setting a flag alone does nothing if 
 corresponding network list is empty — this is the fail-closed default.
 `TRUST_CLOUDFLARE_HEADERS=1` additionally requires the master
 `TRUST_PROXY_HEADERS=1` flag and a non-empty Cloudflare-authorized network list;
-these combinations fail configuration at startup.
+these combinations are refused, both on save in the **Configuration** tab and
+at startup from the environment.
 `TRUST_X_REAL_IP=1` likewise requires `TRUST_PROXY_HEADERS=1` and uses the same
 trusted-proxy network list, but it is consulted only when XFF is completely
 absent.

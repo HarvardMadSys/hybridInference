@@ -46,7 +46,7 @@ from .claude_format import (
     parse_usage,
 )
 from .dispatch_watch import report_first_token
-from .openai_compat import _COMPLETION_TIMEOUT_S, _key_pool_provider_label
+from .openai_compat import _key_pool_provider_label, completion_timeout_s
 from .upstream_limiter import UpstreamSlot, upstream_slot
 
 logger = get_logger(__name__)
@@ -213,7 +213,7 @@ class AnthropicAdapter(BaseAdapter):
                 self._upstream_url(),
                 json=payload,
                 headers=self._upstream_headers(streaming=False),
-                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
 
@@ -396,7 +396,7 @@ class AnthropicAdapter(BaseAdapter):
                 self._upstream_url(),
                 json=forward,
                 headers=self._upstream_headers(streaming=False, extra_headers=extra_headers),
-                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
 

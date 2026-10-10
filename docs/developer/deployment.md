@@ -6,7 +6,8 @@ operate it, and how to reset it without losing (or accidentally keeping)
 data. A staging or scratch instance is the same stack; the sections on keeping
 it private and on the first admin account matter most there.
 
-First-time setup — cloning, filling in `.env`, and the first `make up` — is in
+First-time setup — cloning, the database login in `.env`, the first `make up`
+and the console's setup page — is in
 [Installation](installation.md#running-with-docker). This page assumes the
 stack already comes up.
 
@@ -152,7 +153,9 @@ taking effect:
 
 | You changed | Do this |
 |---|---|
-| A value in `.env` | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
+| A setting on the admin **Configuration** tab | Nothing, unless it is marked **Restart required**: then select **Restart backend** on that tab, or run `make restart s=backend` |
+| A value in `.env` that stays in the environment — the database connection, ports, config paths, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
+| Any other value in `.env` | Nothing happens once the database has the setting: change it on the **Configuration** tab instead. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
 | A model registry or routing YAML | `make restart s=backend` — `config/` and `distributions/` are bind-mounted read-only, so no rebuild is needed |
 | A distribution branding YAML | `make restart s=backend` — `/site-config` serves the validated snapshot loaded at backend startup |
 | A file in the mounted site-assets directory | No image rebuild; replace the file in the deployment overlay |
@@ -182,11 +185,42 @@ browser bundle and needs `make build s=frontend`; see
 
 ### Environment
 
-Everything is in `.env` at the repository root; `.env.example` is the annotated
-list. Compose is invoked with `--env-file .env` and the backend service also
-loads it as `env_file`. The variables Compose itself requires, and the two
-secrets you should not leave blank, are in
-[Installation](installation.md#running-with-docker).
+`.env` at the repository root holds the database connection and the container
+settings; `.env.example` is the annotated list. Compose is invoked with
+`--env-file .env` and the backend service also loads it as `env_file`. The
+variables Compose itself requires are in
+[Installation](installation.md#running-with-docker). Everything else is a
+setting stored in the database and edited on the admin console's
+**Configuration** tab; see
+[Settings stored in the database](configuration.md#settings-stored-in-the-database).
+
+### Upgrading a deployment that kept its settings in `.env`
+
+Nothing has to change before the upgrade. At its first start the new backend
+copies every setting that has a value in its environment into the database —
+from `.env`, from an overlay's `deploy/*.env`, and from the values the Compose
+file passes through — and logs
+`Imported N setting(s) from the environment into the database`. The switches
+on the **Settings** tab are copied into their own store the same way. The
+existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
+sessions and API keys keep working, and a database that already has accounts
+never shows the setup page. If the console then reports missing settings for
+credentials the deployment leaves unset on purpose, mark those routes
+`optional: true` in the model registry; see
+[Missing settings](configuration.md#missing-settings).
+
+From then on the database value wins. Editing such a line in `.env` changes
+nothing — the **Configuration** tab marks it **Environment ignored** — so make
+changes on the tab and delete the lines from `.env` when convenient. Keep a
+copy until a rollback is no longer possible: a release from before the
+settings moved into the database reads them only from the environment.
+
+The `environment:` passthroughs in `deploy/docker/docker-compose.yml` work the
+same way: they carry an overlay's values into the container, where they are
+imported once. Their built-in defaults are imported too, so on a new
+deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `SITE_NAME` and the sender
+address of outgoing mail start out as those defaults until you change them on
+the tab.
 
 ### Config file resolution
 
@@ -294,12 +328,13 @@ the routing-observation and `X-Provider` behaviour is unchanged.
 ## Alerting
 
 The backend has an in-process alert engine that posts to a Slack webhook. It is
-off unless you turn it on:
+off unless you turn it on, with two settings under **Alerts** on the
+**Configuration** tab:
 
-```bash
-ALERTS_ENABLED=true
-SLACK_ALERTS_WEBHOOK_URL=https://hooks.slack.com/services/...
-```
+| Setting | Value |
+|---|---|
+| `ALERTS_ENABLED` | on; applies after a backend restart |
+| `SLACK_ALERTS_WEBHOOK_URL` | `https://hooks.slack.com/services/...` |
 
 If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to `SLACK_WEBHOOK_URL`, so
 one webhook can serve both code paths.
@@ -373,13 +408,95 @@ your alerts file instead.
 
 ## The first admin account
 
-Every deployment needs one administrator to start with. Choose how you create
-it with care:
+A new deployment creates its first administrator on the console's setup page.
+Until then the backend refuses sign-ups, so nobody else can claim the account:
+
+1. Read the setup code from the backend's log. The code is kept in the
+   database and stays the same, across restarts and worker processes, until
+   setup is complete; every start logs it again, whatever `LOG_LEVEL` is set
+   to:
+
+   ```bash
+   docker logs hybridinference-backend 2>&1 | grep 'setup code'
+   ```
+
+2. Open the console. While setup is pending, every page sends you to `/setup`.
+3. Enter the code and choose a username and a password. This administrator has
+   no email address and signs in with the username.
+
+Whoever can read the backend log, or the database that holds the code, can
+create this account, so keep both as private as the host. Wrong codes are
+rate limited per client address, ten in 15 minutes; the right code is never
+refused.
+
+**Choose a username that is hard to guess.** Sign-in allows five attempts per
+username in 15 minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), and counts each attempt
+before it checks the password, so anyone who knows a username can keep that
+account locked out — and `admin` is the first name anyone tries. A lockout
+lasts as long as the attempts keep coming and ends 15 minutes after they stop,
+or when the backend restarts, because the counts are held in memory. Nothing
+below needs a sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API,
+and the command-line tools work on the database directly.
+
+**Without the browser.** `ops/admin/create_admin.py` writes the account
+directly: it creates it with `role='admin'`, `status='active'`,
+`email_verified=TRUE`, or promotes an existing account with the same address.
+Run it from the repository root once the backend has started at least once
+(the backend creates the schema):
+
+```bash
+python ops/admin/create_admin.py --email you@example.com
+```
+
+Run it inside the project environment (`source .venv/bin/activate` after
+`make setup-dev`) so the `serving` package is importable. It reads `DB_HOST`,
+`DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, and Postgres
+publishes on `127.0.0.1:5432`, so it works from the host shell. Omit
+`--password` and it prompts, keeping the password out of your shell history.
+Creating any account this way also completes first-run setup: a database that
+has accounts never shows the setup page.
+
+**A forgotten password.** The setup administrator has no email address, so
+there is no reset link to send. Reset its password where the backend runs:
+
+```bash
+docker exec -it hybridinference-backend python -m serving.auth.reset_password <username>
+```
+
+It reads only the `DB_*` settings, asks twice for the new password — or, with
+`--generate`, prints a strong one — and revokes the account's sessions, so
+every browser must sign in again. It takes an email address as well, for any
+other account. From a source checkout, run
+`uv run python -m serving.auth.reset_password <username>` in the repository
+root.
+
+**A setting that breaks the console.** Settings live in the database, so a
+value that stops sign-in from working cannot be fixed by editing `.env`, nor
+from a console nobody can sign in to. Change it back from the command line:
+
+```bash
+docker exec -it hybridinference-backend python -m serving.config.manage reset JWT_ALGORITHM
+```
+
+`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the
+Configuration tab, with its validation, and never print a secret's value; see
+[Without the console](configuration.md#without-the-console). The running
+backend picks the change up within about ten seconds, or after a restart for a
+setting marked **Restart required**.
+
+With an administrator in place the instance can run with signup closed: turn
+off `signup_enabled` on the **Settings** tab.
+
+### Promoting accounts with `ADMIN_EMAILS`
+
+`ADMIN_EMAILS`, under **Security** on the **Configuration** tab, makes a
+listed address an administrator when that account signs in. It is not needed
+for the first administrator, and it is unsafe without email verification:
 
 ```{warning}
-Do not combine `SIGNUP_ENABLED=1`, `SIGNUP_REQUIRE_EMAIL_VERIFICATION=0` and
-`ADMIN_EMAILS` on an instance anyone else can reach. Together they are a
-privilege-escalation recipe:
+Do not combine open signup (`signup_enabled`), disabled email verification
+(`signup_require_email_verification` off) and `ADMIN_EMAILS` on an instance
+anyone else can reach. Together they are a privilege-escalation recipe:
 
 - with verification disabled, `POST /auth/signup` marks any address as
   verified without sending mail to it;
@@ -391,48 +508,22 @@ So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up with that
 address and is an admin on their first login.
 ```
 
-Pick one of these instead.
-
-**Preferred — create the admin out of band and leave `ADMIN_EMAILS` unset.**
-`ops/admin/create_admin.py` writes the row directly: it creates the account with
-`role='admin'`, `status='active'`, `email_verified=TRUE`, or promotes an
-existing account with the same address. Run it from the repository root once the
-backend has started at least once (the backend creates the schema):
-
-```bash
-python ops/admin/create_admin.py --email you@example.com
-```
-
-Run it inside the project environment (`source .venv/bin/activate` after
-`make setup-dev`) so the `serving` package is importable. It reads `DB_HOST`,
-`DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, and Postgres
-publishes on `127.0.0.1:5432`, so it works from the host shell. Omit
-`--password` and it prompts, keeping the password out of your shell history.
-With this in place the instance can run with signup closed:
-
-```bash
-USER_AUTH_ENABLED=1
-SIGNUP_ENABLED=0
-```
-
-**Alternative — keep signup open, but leave verification on.**
-`SIGNUP_REQUIRE_EMAIL_VERIFICATION` defaults to `true`, and with it on an
-account cannot log in until it has followed a link sent to the address, which
-restores the ownership check that `ADMIN_EMAILS` itself does not perform. This
-needs working SMTP; without it nobody can complete a signup.
+Email verification is on by default, and with it on an account cannot log in
+until it has followed a link sent to the address, which restores the
+ownership check that `ADMIN_EMAILS` itself does not perform. This needs working
+SMTP; without it nobody can complete a signup, and the console reports
+`SMTP_USER` and `SMTP_PASSWORD` as missing settings.
 
 `ADMIN_EMAILS` also picks the default recipients for signup approval mail. To
 narrow the notification list without changing who holds the admin role, set
 `SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is empty, notifications fall
 back to `ADMIN_EMAILS`.
 
-```bash
-SIGNUP_NOTIFY_EMAILS=you@example.com
-```
-
-Both `signup_enabled` and `signup_require_email_verification` can also be
-flipped at runtime through the settings store, and the runtime value wins over
-the environment. A `.env` line is the starting point, not a guarantee.
+Both `signup_enabled` and `signup_require_email_verification` are runtime
+settings on the **Settings** tab. A `SIGNUP_ENABLED` or
+`SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that store
+at startup while it has no value of its own, and the stored value wins
+afterwards.
 
 ## Database
 
@@ -444,6 +535,16 @@ docker exec -it hybridinference-postgres psql -U "${DB_USER}" -d "${DB_NAME}"
 ```
 
 Schema details are in [Database](database.md).
+
+```{warning}
+The database holds every setting in plaintext: provider keys, the SMTP
+password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that
+sign sessions and protect API keys. A `pg_dump`, a backup, or a psql or
+pgAdmin session therefore reveals all of them, and lets its holder call your
+providers, decrypt users' stored API keys and sign administrator tokens.
+Protect database backups and database access as you would a `.env` that held
+those credentials.
+```
 
 ### pgAdmin (optional)
 
@@ -479,6 +580,10 @@ make ps
   greppable part of the line.
 - Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
 - Database connection failed — check `make ps` for the `postgres` health status.
+- `Configuration load failed after 3 attempts`, then
+  `Authentication configuration incomplete` — the backend could not read its
+  settings from the database and fell back to the environment, which holds no
+  secrets. Fix the database connection rather than adding secrets to `.env`.
 
 ### A monitor or service account is suddenly getting 429s
 
@@ -555,9 +660,13 @@ docker volume rm hybridinference_postgres_data
 make up   # docker-volumes recreates it empty; Postgres re-initialises
 ```
 
+The backend then starts as on a new deployment: it generates new secrets
+unless `.env` supplies them, imports whatever settings `.env` still holds, and
+prints a setup code for a new administrator.
+
 ```{warning}
-`docker volume rm` is irreversible and takes every account, API key and request
-log with it. Take a `pg_dump` first if any of it matters.
+`docker volume rm` is irreversible and takes every account, API key, request
+log and stored setting with it. Take a `pg_dump` first if any of it matters.
 ```
 
 pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary local

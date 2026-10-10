@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import time
 from collections import defaultdict
@@ -17,6 +16,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
+from serving.config.app_config import config_value
 from serving.config.distribution import resolve_config_path
 from serving.config.provider_labels import BUILT_IN_DISPLAY_NAMES, humanize_provider
 from serving.schemas_admin import (
@@ -112,7 +112,7 @@ def _expand_config_string(value: Any) -> str:
     if match is None:
         return raw
     var_name, fallback = match.groups()
-    return (os.getenv(var_name) or fallback or "").strip()
+    return (config_value(var_name) or fallback or "").strip()
 
 
 def _provider_spec_from_route_kind(

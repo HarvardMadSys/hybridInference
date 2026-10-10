@@ -10,6 +10,7 @@ import type {
   UserTurnAverages,
 } from '@/lib/api/admin';
 import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
+import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
 import { UserDetailPanel } from './UserDetailPanel';
@@ -244,7 +245,12 @@ export function UserTable(props: UserTableProps) {
   const [deleteReason, setDeleteReason] = useState('');
   const [hardDeleteTarget, setHardDeleteTarget] = useState<AdminUser | null>(null);
   const [hardDeleteReason, setHardDeleteReason] = useState('');
+  // What the admin types to confirm a permanent delete: the account's email,
+  // or its login name when it has none (the first-run administrator), or as a
+  // last resort its id. The backend does not see it; it is a typo guard.
   const [hardDeleteEmailConfirm, setHardDeleteEmailConfirm] = useState('');
+  const hardDeleteConfirmTarget = hardDeleteTarget ? userAccountLabel(hardDeleteTarget) : '';
+  const hardDeleteConfirmKind = userAccountLabelKind(hardDeleteTarget);
   // Reject modal state — replaces window.prompt (UX consistency + a11y).
   const [rejectTarget, setRejectTarget] = useState<UserRowType | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -302,7 +308,7 @@ export function UserTable(props: UserTableProps) {
 
   const doHardDelete = async () => {
     if (!hardDeleteTarget) return;
-    if (hardDeleteEmailConfirm !== hardDeleteTarget.email) return;
+    if (!hardDeleteConfirmTarget || hardDeleteEmailConfirm !== hardDeleteConfirmTarget) return;
     setBusy(hardDeleteTarget.id);
     try {
       await props.onHardDelete(hardDeleteTarget.id, hardDeleteReason.trim());
@@ -415,6 +421,7 @@ export function UserTable(props: UserTableProps) {
               const asAdminUser: AdminUser = {
                 id: u.id,
                 email: u.email,
+                login_name: u.login_name ?? null,
                 user_name: u.user_name,
                 role: u.role,
                 status: u.status,
@@ -524,7 +531,9 @@ export function UserTable(props: UserTableProps) {
             }}
           />
           <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
-            <h3 className="text-[15px] font-semibold text-gray-900">Delete {deleteTarget.email}</h3>
+            <h3 className="text-[15px] font-semibold text-gray-900">
+              Delete {userAccountLabel(deleteTarget)}
+            </h3>
             <p className="mt-1 text-[12px] text-gray-400">
               This will revoke API keys, purge sessions, and set the account to deleted.
             </p>
@@ -569,7 +578,9 @@ export function UserTable(props: UserTableProps) {
             }}
           />
           <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
-            <h3 className="text-[15px] font-semibold text-gray-900">Reject {rejectTarget.email}</h3>
+            <h3 className="text-[15px] font-semibold text-gray-900">
+              Reject {userAccountLabel(rejectTarget)}
+            </h3>
             <p className="mt-1 text-[12px] text-gray-400">
               The user will see this reason in their pending-approval state.
             </p>
@@ -669,7 +680,7 @@ export function UserTable(props: UserTableProps) {
           />
           <div className="relative mx-4 w-full max-w-md rounded-xl border border-red-200 bg-white p-5 shadow-2xl">
             <h3 className="text-[15px] font-semibold text-red-700">
-              Permanently delete {hardDeleteTarget.email}
+              Permanently delete {hardDeleteConfirmTarget}
             </h3>
             <p className="mt-2 text-[12px] text-gray-600">
               This will <span className="font-semibold text-red-700">permanently wipe</span> the
@@ -677,13 +688,26 @@ export function UserTable(props: UserTableProps) {
               action <span className="font-semibold">cannot be undone</span>.
             </p>
             <p className="mt-3 text-[12px] text-gray-500">
-              Type the user&apos;s email address (
-              <span className="font-mono text-gray-700">{hardDeleteTarget.email}</span>) to confirm:
+              Type the user&apos;s{' '}
+              {hardDeleteConfirmKind === 'email'
+                ? 'email address'
+                : hardDeleteConfirmKind === 'login_name'
+                  ? 'username'
+                  : 'user ID'}{' '}
+              (<span className="font-mono text-gray-700">{hardDeleteConfirmTarget}</span>) to
+              confirm:
             </p>
             <input
               type="text"
               className="mt-2 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono placeholder:text-gray-300 focus:border-red-400 focus:outline-none"
-              placeholder="email@example.com"
+              aria-label="Confirmation"
+              placeholder={
+                hardDeleteConfirmKind === 'email'
+                  ? 'email@example.com'
+                  : hardDeleteConfirmKind === 'login_name'
+                    ? 'username'
+                    : 'user ID'
+              }
               value={hardDeleteEmailConfirm}
               onChange={(e) => setHardDeleteEmailConfirm(e.target.value)}
               autoFocus
@@ -709,7 +733,9 @@ export function UserTable(props: UserTableProps) {
               <button
                 onClick={doHardDelete}
                 disabled={
-                  hardDeleteEmailConfirm !== hardDeleteTarget.email || busy === hardDeleteTarget.id
+                  !hardDeleteConfirmTarget ||
+                  hardDeleteEmailConfirm !== hardDeleteConfirmTarget ||
+                  busy === hardDeleteTarget.id
                 }
                 className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
               >

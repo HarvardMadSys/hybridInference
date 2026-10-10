@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig, withAgentsUrl } from '@/config/site-config';
+import { getAccessToken, setAccessToken } from '@/lib/api/client';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
 
@@ -85,5 +86,30 @@ describe('AuthProvider agent session', () => {
     await act(() => controller.login('user@example.test', 'wrong').catch(() => undefined));
 
     expect(endAgentSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthProvider adopted session', () => {
+  it('signs in with a token the backend issued outside login(), as first-run setup does', async () => {
+    await renderWithAgents('/agents');
+    getMe.mockResolvedValueOnce({
+      id: 'admin-1',
+      email: null,
+      login_name: 'admin',
+      user_name: 'admin',
+      role: 'admin',
+      is_admin: true,
+    });
+
+    await act(() => controller.adoptSession('setup-token'));
+
+    expect(getAccessToken()).toBe('setup-token');
+    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+    expect(loginApi).not.toHaveBeenCalled();
+    expect(controller.state).toMatchObject({
+      isAuthenticated: true,
+      user: { id: 'admin-1', email: null, login_name: 'admin', is_admin: true },
+    });
+    setAccessToken(null);
   });
 });

@@ -209,7 +209,8 @@ async def test_list_user_filter_matches_id_name_and_email(admin_client_capture):
     expected = (
         "(l.user_id ILIKE '%' || $2 || '%' ESCAPE '\\' "
         "OR u.user_name ILIKE '%' || $2 || '%' ESCAPE '\\' "
-        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\')"
+        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.login_name ILIKE '%' || $2 || '%' ESCAPE '\\')"
     )
     assert expected in count_query
     assert expected in select_query
@@ -857,7 +858,8 @@ async def test_perf_summary_reuses_list_filters(admin_client_capture):
     assert (
         "(l.user_id ILIKE '%' || $2 || '%' ESCAPE '\\' "
         "OR u.user_name ILIKE '%' || $2 || '%' ESCAPE '\\' "
-        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\')"
+        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.login_name ILIKE '%' || $2 || '%' ESCAPE '\\')"
     ) in query
     assert "l.model_id ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
     assert _CHAT_PREDICATE in query

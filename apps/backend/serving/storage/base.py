@@ -125,8 +125,10 @@ class OperationalStore(ABC):
     async def get_user_by_id(self, user_id: str) -> Row | None:
         """Fetch a single user row by primary key.
 
-        Returns columns: id, email, user_name, role, status, email_verified,
-        created_at, last_login_at, password_hash, preferences.
+        Returns columns: id, email, login_name, user_name, role, status,
+        email_verified, created_at, last_login_at, password_hash, preferences.
+        ``email`` is None for an account created without one (the first-run
+        setup administrator), which signs in with ``login_name`` instead.
         """
 
     @abstractmethod
@@ -137,21 +139,76 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_user_by_login_name(self, login_name: str) -> Row | None:
+        """Fetch a single user row by login name, compared case-insensitively.
+
+        Returns the same columns as ``get_user_by_id``.
+        """
+
+    @abstractmethod
     async def create_user(
         self,
         *,
         user_id: str,
-        email: str,
+        email: str | None,
         password_hash: str,
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
         signup_reason: str | None = None,
+        login_name: str | None = None,
     ) -> None:
         """Insert a new user row.
 
         ``signup_reason`` captures the free-text use case the user submitted at
         registration; surfaced in the admin user list to aid manual approval.
+        ``email`` may be None only for an account that has a ``login_name``.
+        """
+
+    @abstractmethod
+    async def get_or_create_setup_code(
+        self,
+        *,
+        marker_key: str,
+        code_key: str,
+        completed_at: str,
+        candidate_code: str,
+    ) -> str | None:
+        """Return the code that completes first-run setup, or None once it is complete.
+
+        Setup is complete when the ``site_settings`` marker *marker_key*
+        exists. Without it, a users table that already has rows means the
+        deployment predates first-run setup (or got an account another way):
+        the marker is recorded with *completed_at*, any stored code is
+        deleted, and the result is None. Otherwise setup is pending, and the
+        code stored under *code_key* is returned, *candidate_code* being
+        stored first when there is none, so every process and every restart
+        uses the same code until setup completes. Serialized with
+        :meth:`create_first_admin`, so a code is never stored once setup has
+        completed.
+        """
+
+    @abstractmethod
+    async def create_first_admin(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        marker_key: str,
+        marker_value: str,
+        code_key: str,
+        admin_ip: str,
+    ) -> bool:
+        """Create the deployment's first administrator, at most once.
+
+        In one transaction, serialized across processes: re-check that the
+        users table is empty and the setup marker *marker_key* absent, insert
+        an active, verified ``admin`` without an email address, write the
+        marker, delete the setup code stored under *code_key* and audit
+        ``setup.admin_created``. Returns False, writing nothing, when setup
+        has already been completed.
         """
 
     @abstractmethod
@@ -540,7 +597,9 @@ class OperationalStore(ABC):
 
         Best-effort for callers — callers may catch + log on exception so
         audit failures don't break login. ``outcome`` must be one of
-        ``'success'`` | ``'failure'``.
+        ``'success'`` | ``'failure'``. ``email`` is the identifier the client
+        signed in with: an email address or, for an account without one, a
+        login name.
         """
 
     @abstractmethod

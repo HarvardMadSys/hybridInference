@@ -68,6 +68,8 @@ async def test_neutral_fallback_without_manifest(client):
         "site",
         "features",
         "branding",
+        "setup",
+        "configuration",
     }
 
 
@@ -233,3 +235,48 @@ async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     assert "terms.md" not in text
     assert str(tmp_path) not in text
     assert set(body["site"]) == {"public_base_url", "support_email"}
+
+
+@pytest.mark.asyncio
+async def test_deployment_state_defaults(client):
+    body = (await client.get("/site-config")).json()
+
+    assert body["setup"] == {"required": False}
+    assert body["configuration"] == {"incomplete": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_manifest", [False, True], ids=["neutral", "manifest"])
+async def test_reports_pending_setup_and_incomplete_configuration(
+    client, monkeypatch, tmp_path, with_manifest
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from serving.config.app_config import ConfigHealth
+    from serving.setup_state import init_setup_state
+
+    if with_manifest:
+        manifest = tmp_path / "distribution.yaml"
+        manifest.write_text(MANIFEST)
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+        get_settings.cache_clear()
+        get_distribution_config.cache_clear()
+    store = MagicMock()
+    store.get_or_create_setup_code = AsyncMock(return_value="ABCDEFGHJKLM")
+    await init_setup_state(store)
+    monkeypatch.setattr(
+        site_config,
+        "get_config_health",
+        lambda: ConfigHealth(missing=("SMTP_PASSWORD",), pending_restart=("CORS_ALLOWED_ORIGINS",)),
+    )
+
+    body = (await client.get("/site-config")).json()
+
+    assert body["setup"] == {"required": True}
+    assert body["configuration"] == {"incomplete": True}
+    # Public document: whether something is missing, never which setting,
+    # and never the setup code.
+    assert "SMTP_PASSWORD" not in str(body)
+    assert "CORS_ALLOWED_ORIGINS" not in str(body)
+    assert "ABCD" not in str(body)

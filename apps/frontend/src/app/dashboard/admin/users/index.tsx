@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 import {
   approveUser,
   deleteUser,
@@ -207,7 +208,7 @@ export default function UsersTab() {
       try {
         const user = users.find((u) => u.id === id);
         await approveUser(id);
-        toast.success(`Approved ${user?.email ?? id}`);
+        toast.success(`Approved ${userAccountLabel(user) || id}`);
         refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
@@ -217,7 +218,7 @@ export default function UsersTab() {
       try {
         const user = users.find((u) => u.id === id);
         await rejectUser(id, reason);
-        toast.success(`Rejected ${user?.email ?? id}`);
+        toast.success(`Rejected ${userAccountLabel(user) || id}`);
         refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
@@ -250,7 +251,7 @@ export default function UsersTab() {
       try {
         const user = users.find((u) => u.id === id);
         await resumeUser(id);
-        toast.success(`Resumed ${user?.email ?? id}`);
+        toast.success(`Resumed ${userAccountLabel(user) || id}`);
         refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
@@ -260,7 +261,7 @@ export default function UsersTab() {
       try {
         const user = users.find((u) => u.id === id);
         await deleteUser(id, reason);
-        toast.success(`Deleted ${user?.email ?? id}`);
+        toast.success(`Deleted ${userAccountLabel(user) || id}`);
         refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
@@ -270,7 +271,7 @@ export default function UsersTab() {
       try {
         const user = users.find((u) => u.id === id);
         await hardDeleteUser(id, reason || undefined);
-        toast.success(`Permanently deleted ${user?.email ?? id}`);
+        toast.success(`Permanently deleted ${userAccountLabel(user) || id}`);
         refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));

@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import hmac
-import os
 import secrets
 from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
@@ -13,6 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving import grants, quota
+from serving.config.app_config import config_value
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 from serving.grant_auth import (
@@ -440,7 +440,7 @@ def _impersonation_service_key_hashes() -> frozenset[str]:
     yields an empty set, disabling impersonation entirely. Recomputed per call (a
     cheap HMAC) so key rotation / env changes take effect without a restart.
     """
-    rag_key = os.getenv("RAG_API_KEY", "").strip()
+    rag_key = (config_value("RAG_API_KEY") or "").strip()
     if not rag_key:
         return frozenset()
     try:

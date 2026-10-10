@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
+from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
@@ -144,20 +144,40 @@ def _frame_has_output(choices: Any) -> bool:
 # A non-streaming response arrives as one body at the end, so an idle/sock_read
 # timeout can't distinguish "still generating" from "hung" -- only a generous
 # total bound works. A persistent timeout still rotates onto another key, so
-# raising the ceiling doesn't weaken failover. Override via env for slow local
-# backends. Streaming requests are unaffected (they set their own timeout).
+# raising the ceiling doesn't weaken failover. Override with
+# UPSTREAM_COMPLETION_TIMEOUT_S for slow local backends. Streaming requests are
+# unaffected (they set their own timeout).
 _DEFAULT_COMPLETION_TIMEOUT_S = 600.0
-try:
-    _COMPLETION_TIMEOUT_S = float(
-        os.environ.get("UPSTREAM_COMPLETION_TIMEOUT_S", _DEFAULT_COMPLETION_TIMEOUT_S)
-    )
-except (TypeError, ValueError):
-    logger.warning(
-        "Invalid UPSTREAM_COMPLETION_TIMEOUT_S=%r; falling back to %.0fs",
-        os.environ.get("UPSTREAM_COMPLETION_TIMEOUT_S"),
-        _DEFAULT_COMPLETION_TIMEOUT_S,
-    )
-    _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
+_COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
+
+
+def _load_completion_timeout() -> None:
+    """Read ``UPSTREAM_COMPLETION_TIMEOUT_S``, falling back to the default on bad input."""
+    global _COMPLETION_TIMEOUT_S
+    raw = config_value("UPSTREAM_COMPLETION_TIMEOUT_S")
+    try:
+        _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S if raw is None else float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid UPSTREAM_COMPLETION_TIMEOUT_S=%r; falling back to %.0fs",
+            raw,
+            _DEFAULT_COMPLETION_TIMEOUT_S,
+        )
+        _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
+
+
+_load_completion_timeout()
+on_change(_load_completion_timeout)
+
+
+def completion_timeout_s() -> float:
+    """Return the current non-streaming completion timeout, in seconds.
+
+    Other adapters call this rather than importing ``_COMPLETION_TIMEOUT_S``: an
+    imported name keeps the value it had at import, before the configuration
+    loaded and through every later change.
+    """
+    return _COMPLETION_TIMEOUT_S
 
 
 async def _iter_with_idle_timeout(

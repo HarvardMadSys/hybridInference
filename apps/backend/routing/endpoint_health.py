@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
 from collections import Counter
@@ -15,6 +14,7 @@ from routing.engine_wait import EngineWaitExpired
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.config.app_config import config_value
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import (
@@ -278,7 +278,7 @@ class _ProviderHealth:
 
     def __init__(self, provider: str, alpha: float | None = None) -> None:
         self.provider = provider
-        env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
+        env_alpha = config_value("ROUTER_HEALTH_EWMA_ALPHA")
         self.alpha = (
             float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
         )
@@ -397,22 +397,25 @@ class _CircuitBreaker:
         self.provider = provider
         self.state = _CircuitState.CLOSED
         self.failure_threshold = int(
-            os.getenv(
+            config_value(
                 "CIRCUIT_FAILURE_THRESHOLD",
                 str(failure_threshold if failure_threshold is not None else 3),
             )
+            or ""
         )
         self.cooldown_seconds = float(
-            os.getenv(
+            config_value(
                 "CIRCUIT_COOLDOWN_SECONDS",
                 str(cooldown_seconds if cooldown_seconds is not None else 30.0),
             )
+            or ""
         )
         self.min_availability = float(
-            os.getenv(
+            config_value(
                 "CIRCUIT_MIN_AVAILABILITY",
                 str(min_availability if min_availability is not None else 0.7),
             )
+            or ""
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None

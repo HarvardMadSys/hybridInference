@@ -149,11 +149,13 @@ class RevokeAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 class UserListItem(BaseModel):
     """Single user item in admin user list.
 
-    Includes API key status and usage data via LEFT JOIN.
+    Includes API key status and usage data via LEFT JOIN. ``email`` is None
+    for the account created by first-run setup, which has a ``login_name``.
     """
 
     id: str
-    email: str
+    email: str | None
+    login_name: str | None = None
     user_name: str | None
     role: str = "free"
     status: str
@@ -310,7 +312,8 @@ class SummaryUserItem(BaseModel):
     """User entry inside a summary card (sub-set of UserListItem)."""
 
     id: str
-    email: str
+    email: str | None
+    login_name: str | None = None
     user_name: str | None = None
     role: str = "free"
     today_cost_usd: Decimal = Field(default=Decimal("0"))
@@ -345,7 +348,7 @@ class ApproveUserResponse(BaseModel):
     """Response payload for successful user approval."""
 
     user_id: str
-    email: str
+    email: str | None
     status: str
     message: str
 
@@ -362,16 +365,21 @@ class RejectUserResponse(BaseModel):
     """Response payload for successful user rejection."""
 
     user_id: str
-    email: str
+    email: str | None
     status: str
     message: str
 
 
 class UserDetailResponse(BaseModel):
-    """Detailed user info including usage analytics."""
+    """Detailed user info including usage analytics.
+
+    ``email`` is None for the account created by first-run setup, which has a
+    ``login_name``.
+    """
 
     id: str
-    email: str
+    email: str | None
+    login_name: str | None = None
     user_name: str | None
     role: str = "free"
     status: str
@@ -489,7 +497,7 @@ class DeleteUserResponse(BaseModel):
     """Response payload for successful user deletion."""
 
     user_id: str
-    email: str
+    email: str | None
     status: str
     message: str
 
@@ -504,7 +512,7 @@ class ResumeUserResponse(BaseModel):
     """Response payload for successful user resume."""
 
     user_id: str
-    email: str
+    email: str | None
     status: str
     message: str
 
@@ -525,7 +533,7 @@ class HardDeleteUserResponse(BaseModel):
     """Response payload for successful permanent deletion."""
 
     user_id: str
-    email: str
+    email: str | None
     message: str
 
 
@@ -886,9 +894,13 @@ class SparklineBucket(BaseModel):
 
 
 class AnalyticsUserEntry(BaseModel):
-    """One row in the top-users horizontal bar chart."""
+    """One row in the top-users horizontal bar chart.
 
-    email: str
+    ``email`` is a display label: the email, else the login name, else the
+    user id (a hard-deleted account), so in practice never None.
+    """
+
+    email: str | None
     user_id: str
     requests: int
     fraction: float  # share of user-attributed requests in the period (0.0-1.0)
@@ -903,9 +915,12 @@ class AnalyticsBreakdownEntry(BaseModel):
 
 
 class AnalyticsModelUserEntry(BaseModel):
-    """One user's usage of a single model in the period."""
+    """One user's usage of a single model in the period.
 
-    email: str
+    ``email`` is a display label, as in :class:`AnalyticsUserEntry`.
+    """
+
+    email: str | None
     user_id: str
     requests: int
     tokens: int  # prompt + completion tokens attributed to this user + model
@@ -1940,7 +1955,7 @@ class ListBroadcastsResponse(BaseModel):
 
 class BroadcastRecipientItem(BaseModel):
     user_id: str
-    email: str
+    email: str | None
     status: str
     error: str | None
     sent_at: datetime | None

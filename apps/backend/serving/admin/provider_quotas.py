@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +27,7 @@ from http.cookies import SimpleCookie
 from typing import Any
 
 from serving.adapters import dynamic_keys
+from serving.config.app_config import config_value
 from serving.schemas_admin import ProviderQuotaResult
 
 logger = logging.getLogger(__name__)
@@ -50,20 +50,21 @@ _MAX_KEYS = 20
 
 
 def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
-    """Discover all configured API keys via numbered env var suffixes.
+    """Discover all configured API keys via numbered setting suffixes.
 
     Returns list of ``(index, value)``.  ``index=1`` for *base_var*,
     ``index=N`` for ``{numbered_prefix}{N}``.  Numbered suffixes are
     only scanned when the base var is set.  Stops at the first missing
-    numbered var.
+    numbered var. Each name resolves through ``config_value``: the
+    database-backed setting, then the environment.
     """
     keys: list[tuple[int, str]] = []
-    val = os.getenv(base_var, "")
+    val = config_value(base_var, "") or ""
     if not val:
         return keys
     keys.append((1, val))
     for i in range(2, _MAX_KEYS + 1):
-        val = os.getenv(f"{numbered_prefix}{i}", "")
+        val = config_value(f"{numbered_prefix}{i}", "") or ""
         if not val:
             break
         keys.append((i, val))
