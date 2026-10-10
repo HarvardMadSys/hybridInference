@@ -121,7 +121,7 @@ function SectionHeading({
 
 function StatsBody({ stats }: { stats: PublicStats }) {
   const [metric, setMetric] = useState<'tokens' | 'requests'>('tokens');
-  const { totals, countries, languages, agents, thresholds } = stats;
+  const { totals, registrations, countries, languages, agents, thresholds } = stats;
   const lastPartial = stats.last_week_partial;
   const withheld = `fewer than ${thresholds.min_public_accounts}`;
   const continents = Object.entries(CONTINENTS)
@@ -136,7 +136,27 @@ function StatsBody({ stats }: { stats: PublicStats }) {
 
   return (
     <div className="space-y-12">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        className={`grid gap-4 sm:grid-cols-2 ${registrations ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}
+      >
+        {registrations && (
+          <>
+            <Tile
+              label="Approved users"
+              value={fmtWhole(registrations.approved)}
+              note="Accounts with access to the API"
+            />
+            <Tile
+              label="Waiting list"
+              value={fmtWhole(registrations.waiting)}
+              note={
+                registrations.waiting > 0
+                  ? 'Sign-ups waiting for review'
+                  : 'No sign-ups are waiting for review'
+              }
+            />
+          </>
+        )}
         <Tile
           label="Tokens served"
           value={fmtCompact(totals.tokens)}
@@ -459,6 +479,13 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           How these numbers are counted
         </h2>
         <div className="grid gap-6 text-sm text-gray-600 md:grid-cols-2">
+          {registrations && (
+            <p>
+              <span className="font-semibold text-gray-900">Accounts.</span> Approved users are
+              accounts that have been let in; the waiting list is sign-ups still waiting for review.
+              Both are counted when the snapshot is made.
+            </p>
+          )}
           <p>
             <span className="font-semibold text-gray-900">Tokens.</span> Successful requests only,
             excluding our own health checks. Input counts the whole prompt, including cached
@@ -514,8 +541,8 @@ export function StatsContent(): JSX.Element {
           {branding.appName} usage stats
         </h1>
         <p className="max-w-3xl text-gray-600">
-          How much we serve, where requests come from, which languages people write in, and which
-          agents send them. Aggregates only, refreshed daily.
+          Who has access, how much we serve, where requests come from, which languages people write
+          in, and which agents send them. Aggregates only, refreshed daily.
         </p>
         {stats && (
           <p className="text-sm text-gray-500">

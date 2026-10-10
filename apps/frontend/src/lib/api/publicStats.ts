@@ -21,6 +21,8 @@ export interface PublicStats {
     accounts: number;
     cached_input_share: number;
   };
+  /** Accounts at snapshot time; absent from snapshots made before it was added. */
+  registrations?: { approved: number; waiting: number } | null;
   daily: { date: string; input_tokens: number; output_tokens: number; requests: number }[];
   countries: {
     total: number;
