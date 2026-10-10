@@ -35,6 +35,12 @@ services:
     # Production keeps using the repo-root .env. A public, secret-free example
     # may point BACKEND_ENV_FILE at its checked-in local defaults instead.
     env_file: ${BACKEND_ENV_FILE:-../../.env}
+    # Most names below are application settings, which live in the database
+    # and are edited under Admin > Configuration. These lines carry an overlay's
+    # values into the container, where the backend copies each one into the
+    # database at startup when the database has none yet; after that the stored
+    # value wins. The database connection, the GeoIP paths and the config-file
+    # paths stay environment-only.
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only

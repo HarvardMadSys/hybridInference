@@ -39,13 +39,13 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from serving.config.app_config import config_value, on_change
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -55,16 +55,17 @@ logger = get_logger(__name__)
 
 
 def _env_int(name: str, default: int) -> int:
-    """Read a non-negative int from the environment, falling back on bad input.
+    """Read a non-negative int setting, falling back on bad input.
 
     Args:
-        name: Environment variable name.
+        name: Setting (environment variable) name, resolved through
+            ``config_value``: the database-backed value, then the environment.
         default: Value to use when unset, unparseable, or negative.
 
     Returns:
         The configured integer, or ``default``.
     """
-    raw = os.environ.get(name)
+    raw = config_value(name)
     if raw is None:
         return default
     try:
@@ -78,30 +79,34 @@ def _env_int(name: str, default: int) -> int:
     return value
 
 
-# Default-on with an env kill switch, matching ROUTING_AFFINITY_ENABLED.
-PREFILL_AWARE_ENABLED: bool = os.environ.get("ROUTING_PREFILL_AWARE_ENABLED", "1") != "0"
+# The knobs below are module constants on the routing path, re-read from the
+# configuration at import and after every change (_load_settings), so a change
+# applies to the next routing decision.
+
+# Default-on with a kill switch, matching ROUTING_AFFINITY_ENABLED.
+PREFILL_AWARE_ENABLED: bool = True
 
 # A prompt at or above this many estimated tokens is an "elephant": large enough
 # that its prefill alone can stall an endpoint for other callers. 200k is drawn
 # from the production distribution, where p95 prompt size sits far below it and
 # the requests that caused multi-minute TTFT sat well above.
-ELEPHANT_TOKENS: int = _env_int("ROUTING_PREFILL_ELEPHANT_TOKENS", 200_000)
+ELEPHANT_TOKENS: int = 200_000
 
 # How many elephants one endpoint may prefill concurrently. Two stacked
 # mega-prefills are what turns a slow request into a timed-out one, so the
 # default keeps them serialized across replicas rather than piled onto one.
-ELEPHANT_LIMIT: int = _env_int("ROUTING_PREFILL_ELEPHANT_LIMIT", 1)
+ELEPHANT_LIMIT: int = 1
 
 # Backlog at which the load tie-break starts overriding a weighted draw. Below
 # this an endpoint is merely busy, not blocked, and route weights (which encode
 # cost and provider preference, not just capacity) should keep deciding. Sized
 # well above an ordinary prompt so normal traffic never trips it.
-INTERVENE_TOKENS: int = _env_int("ROUTING_PREFILL_INTERVENE_TOKENS", 50_000)
+INTERVENE_TOKENS: int = 50_000
 
 # Session affinity is a cache-locality optimization, not a correctness
 # guarantee. Above this in-flight backlog the pin costs more (queueing behind a
 # mega-prefill) than the prefix-cache hit it buys, so selection is re-run.
-AFFINITY_BACKLOG_CEILING: int = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150_000)
+AFFINITY_BACKLOG_CEILING: int = 150_000
 
 # Scheduling priority stamped on requests to endpoints that run sglang priority
 # scheduling. sglang schedules the *higher* integer first and preempts a running
@@ -118,9 +123,9 @@ AFFINITY_BACKLOG_CEILING: int = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150
 # Retraction is not free even though the radix cache keeps the prefix, which is
 # why only the elephant tier is exposed to it: it is the one tier whose prefill
 # is long enough that waiting it out is worse than restarting it.
-PRIORITY_INTERACTIVE: int = _env_int("ROUTING_PRIORITY_INTERACTIVE", 20)
-PRIORITY_LARGE: int = _env_int("ROUTING_PRIORITY_LARGE", 15)
-PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
+PRIORITY_INTERACTIVE: int = 20
+PRIORITY_LARGE: int = 15
+PRIORITY_ELEPHANT: int = 0
 
 # Bounds on the per-(caller, endpoint) prompt-size memory used to discount a
 # warm continuation.
@@ -142,8 +147,28 @@ PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
 # match. No setting makes the hint a promise -- only the backend knows what it
 # still holds -- so the value is chosen to fail in the direction that forgoes a
 # discount rather than the one that grants a preemption.
-_PREFIX_HINT_TTL_SEC: float = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
+_PREFIX_HINT_TTL_SEC: float = float(20 * 60)
 _PREFIX_HINT_MAX_ENTRIES: int = 50_000
+
+
+def _load_settings() -> None:
+    """Read the ``ROUTING_PREFILL_*`` and ``ROUTING_PRIORITY_*`` settings."""
+    global PREFILL_AWARE_ENABLED, ELEPHANT_TOKENS, ELEPHANT_LIMIT, INTERVENE_TOKENS
+    global AFFINITY_BACKLOG_CEILING, PRIORITY_INTERACTIVE, PRIORITY_LARGE, PRIORITY_ELEPHANT
+    global _PREFIX_HINT_TTL_SEC
+    PREFILL_AWARE_ENABLED = config_value("ROUTING_PREFILL_AWARE_ENABLED", "1") != "0"
+    ELEPHANT_TOKENS = _env_int("ROUTING_PREFILL_ELEPHANT_TOKENS", 200_000)
+    ELEPHANT_LIMIT = _env_int("ROUTING_PREFILL_ELEPHANT_LIMIT", 1)
+    INTERVENE_TOKENS = _env_int("ROUTING_PREFILL_INTERVENE_TOKENS", 50_000)
+    AFFINITY_BACKLOG_CEILING = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150_000)
+    PRIORITY_INTERACTIVE = _env_int("ROUTING_PRIORITY_INTERACTIVE", 20)
+    PRIORITY_LARGE = _env_int("ROUTING_PRIORITY_LARGE", 15)
+    PRIORITY_ELEPHANT = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
+    _PREFIX_HINT_TTL_SEC = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
+
+
+_load_settings()
+on_change(_load_settings)
 
 # Bytes per token for the cheap estimator. Deliberately coarse -- see
 # estimate_prefill_tokens for why precision is not worth the CPU here -- but
@@ -635,16 +660,17 @@ class PrefillLoadTracker:
 
     Args:
         elephant_tokens: Un-cached prefill at which a request counts as an
-            elephant.
-        elephant_limit: Concurrent elephants permitted per endpoint.
+            elephant. ``None`` follows ``ROUTING_PREFILL_ELEPHANT_TOKENS``.
+        elephant_limit: Concurrent elephants permitted per endpoint. ``None``
+            follows ``ROUTING_PREFILL_ELEPHANT_LIMIT``.
         clock: Monotonic time source, injectable for tests.
     """
 
     def __init__(
         self,
         *,
-        elephant_tokens: int = ELEPHANT_TOKENS,
-        elephant_limit: int = ELEPHANT_LIMIT,
+        elephant_tokens: int | None = None,
+        elephant_limit: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         # RLock lets a routing transaction hold the tracker while the router
@@ -659,8 +685,8 @@ class PrefillLoadTracker:
         self._by_caller: dict[tuple[str, str], int] = {}
         # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
         self._prefix_hints: OrderedDict[tuple[str, str], _PrefixHint] = OrderedDict()
-        self._elephant_tokens = max(int(elephant_tokens), 1)
-        self._elephant_limit = max(int(elephant_limit), 1)
+        self._fixed_elephant_tokens = elephant_tokens
+        self._fixed_elephant_limit = elephant_limit
         self._clock = clock
 
     @contextlib.contextmanager
@@ -736,16 +762,18 @@ class PrefillLoadTracker:
     @property
     def elephant_tokens(self) -> int:
         """Prompt size at or above which a request is an elephant."""
-        return self._elephant_tokens
+        tokens = self._fixed_elephant_tokens
+        return max(int(ELEPHANT_TOKENS if tokens is None else tokens), 1)
 
     @property
     def elephant_limit(self) -> int:
         """Concurrent elephants permitted per endpoint."""
-        return self._elephant_limit
+        limit = self._fixed_elephant_limit
+        return max(int(ELEPHANT_LIMIT if limit is None else limit), 1)
 
     def is_elephant(self, tokens: int) -> bool:
         """Return True when a prompt of ``tokens`` counts as an elephant."""
-        return tokens >= self._elephant_tokens
+        return tokens >= self.elephant_tokens
 
     def backlog(self, endpoint_id: str) -> int:
         """Return in-flight prefill tokens currently charged to an endpoint."""
@@ -932,7 +960,7 @@ class PrefillLoadTracker:
         endpoint_id: str,
         *,
         affinity_key: str | None = None,
-        ceiling: int = AFFINITY_BACKLOG_CEILING,
+        ceiling: int | None = None,
     ) -> bool:
         """Return True when a pinned endpoint is idle enough to keep using.
 
@@ -947,7 +975,7 @@ class PrefillLoadTracker:
             endpoint_id: The endpoint the caller is currently pinned to.
             affinity_key: Caller identity, whose own load is discounted.
             ceiling: Foreign backlog above which the pin is dropped for this
-                request.
+                request. ``None`` follows ``ROUTING_PREFILL_AFFINITY_CEILING``.
 
         Returns:
             False when the pin should be ignored and selection re-run. The pin
@@ -956,6 +984,8 @@ class PrefillLoadTracker:
         """
         if not PREFILL_AWARE_ENABLED:
             return True
+        if ceiling is None:
+            ceiling = AFFINITY_BACKLOG_CEILING
         with self._lock:
             total = self._backlog.get(endpoint_id, 0)
             own = (
@@ -1042,7 +1072,7 @@ class PrefillLoadTracker:
                         i
                         for i in eligible
                         if not elephant_here[i]
-                        or self._elephants.get(keys[i], 0) < self._elephant_limit
+                        or self._elephants.get(keys[i], 0) < self.elephant_limit
                     ]
                 if unsaturated:
                     eligible = unsaturated

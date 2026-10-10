@@ -234,6 +234,8 @@ async def admin_get_analytics(
             else None
         )
 
+        # ``email`` is the user's display label: the email, else the login name
+        # of an account created without one, else the id of a deleted account.
         top_users_rows = await conn.fetch(
             """
             WITH totals AS (
@@ -245,13 +247,13 @@ async def admin_get_analytics(
             ranked AS (
                 SELECT
                     l.user_id,
-                    COALESCE(u.email, l.user_id) AS email,
+                    COALESCE(u.email, u.login_name, l.user_id) AS email,
                     COUNT(*) AS req_count
                 FROM api_logs l
                 LEFT JOIN users u ON u.id = l.user_id
                 WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
                   AND l.user_id IS NOT NULL
-                GROUP BY l.user_id, u.email
+                GROUP BY l.user_id, u.email, u.login_name
                 ORDER BY req_count DESC
                 LIMIT 10
             )
@@ -347,7 +349,7 @@ async def admin_get_analytics(
                 SELECT
                     l.model_id,
                     l.user_id,
-                    COALESCE(u.email, l.user_id) AS email,
+                    COALESCE(u.email, u.login_name, l.user_id) AS email,
                     COUNT(*) AS req_count,
                     COALESCE(
                         SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
@@ -357,7 +359,7 @@ async def admin_get_analytics(
                 LEFT JOIN users u ON u.id = l.user_id
                 WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
                   AND l.user_id IS NOT NULL
-                GROUP BY l.model_id, l.user_id, u.email
+                GROUP BY l.model_id, l.user_id, u.email, u.login_name
             ),
             model_totals AS (
                 -- SUM(bigint) returns numeric (asyncpg Decimal); cast back to int.

@@ -16,7 +16,8 @@ For distribution manifests, branding, UI modules and backend extensions, see
 | `models` | The model registry: every model id the gateway serves and the upstream routes behind it |
 | `routing` | Optional deployment-wide settings: health probing and a local/remote weight split |
 | `alerts` | Alert rules and thresholds |
-| Environment | Everything secret or host-specific: credentials, database connection, feature switches |
+| Settings | Credentials, SMTP, proxy trust, logging, routing tuning and every other application setting, stored in the database and edited in the admin console |
+| Environment | The database connection, the paths to the files above, and how the containers are wired |
 
 Only the model registry is required to serve traffic. Without it the gateway
 starts, serves `/health`, and answers `GET /v1/models` with an empty list.
@@ -28,7 +29,9 @@ console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded
 registry at every start.
 [Runtime configuration from the admin console](#runtime-configuration-from-the-admin-console)
-covers that layer.
+covers that layer, and
+[Settings stored in the database](#settings-stored-in-the-database) covers the
+settings.
 
 ## Where configuration lives
 
@@ -97,9 +100,13 @@ key expands to empty — and the gateway says so before serving anything:
 
 ```text
 No models are available: every model in config/examples/models.openrouter.yaml was
-skipped because its credential is unset. Set OPENROUTER_API_KEY and restart.
-/v1/models will stay empty until then, and requests will report the model as not found.
+skipped because its credential is unset. Set OPENROUTER_API_KEY (Admin > Configuration)
+and restart. /v1/models will stay empty until then, and requests will report the
+model as not found.
 ```
+
+With a database, set it on the admin console's **Configuration** tab instead,
+which lists it as missing, and restart the backend.
 
 This is the fastest way to a gateway that routes real traffic. Replace the file
 with your own registry once you know what you want to serve.
@@ -133,10 +140,12 @@ are OpenAI-compatible kinds that differ only in their provider label and usage
 handling. Any other kind fails registry loading with
 `ValueError: Unknown adapter kind: <kind>`.
 
-**Environment interpolation in the registry is whole-value only.** In
+**`${VAR}` interpolation in the registry is whole-value only.** In
 `models.yaml`, only `base_url`, `api_key`, `api_keys`, `provider_model_id` and a
 route's `embeddings_path` are expanded, and only when the entire value is
-exactly `${VAR}`. There is no `${VAR:-default}` and no embedded substitution:
+exactly `${VAR}`. The value is the [setting](#settings-stored-in-the-database)
+of that name: its database value, else the environment variable. There is no
+`${VAR:-default}` and no embedded substitution:
 
 ```yaml
 base_url: ${LOCAL_BASE_URL}                  # expanded
@@ -275,9 +284,12 @@ cannot speak needs an adapter, which is a code change
 ([Writing a Provider Adapter](provider-adapters.md)).
 
 A key added here joins the same pool as the keys the registry names through
-`${VAR}` and rotates with them. An environment key has no row of its own, so
-the console can disable it or reserve it for a tier but cannot delete it; unset
-the variable and restart for that.
+`${VAR}` and rotates with them. A key the registry names — an *environment
+key* on this tab, whose value comes from the
+[settings](#settings-stored-in-the-database) — has no row in this table, so
+this tab can disable it or reserve it for a tier but cannot delete it. To
+remove it, clear the variable on the **Configuration** tab and restart the
+backend.
 
 ### Routing tab
 
@@ -299,7 +311,7 @@ The provider selector on this tab offers every custom provider, plus each
 built-in kind that the registry, the live route table or a configured
 credential already names. Which route types a provider may be added as — `on_demand`,
 `quota` or `concurrency` — is the deployment's contract with that vendor and
-is declared with `PROVIDER_ROUTE_TYPES` (see
+is declared with the `PROVIDER_ROUTE_TYPES` setting (see
 [Environment variables](installation.md#environment-variables)); an unlisted provider may
 use any of the three.
 
@@ -345,14 +357,156 @@ than replacing them. And the file still wins for anything the store has no row
 for, so a registry edit plus restart is how catalog metadata, aliases and new
 adapter kinds change.
 
+## Settings stored in the database
+
+Everything the gateway reads that is not one of the files above, the database
+connection or container wiring is a *setting*: provider keys, SMTP, Slack
+webhooks, proxy trust, browser origins, logging, routing and timeout tuning,
+the cloud-agent contract, and the secrets that sign sessions and protect API
+keys. A gateway with a database keeps them in its `app_config` table, and an
+administrator edits them on the admin console's **Configuration** tab. A
+gateway with `DB_ENABLED=false` has no stored settings and reads the
+environment and the built-in defaults only.
+
+### Where a value comes from
+
+Each setting resolves in this order:
+
+1. its row in the database — even an empty one, which is how a setting is
+   cleared;
+2. the environment variable of the same name;
+3. the built-in default.
+
+The environment is a starting point. At every start, a setting that has a
+non-empty value in the environment and no row in the database is copied into
+the database, and from then on the row wins. That is how an existing `.env`
+carries over on an upgrade, and why editing the variable afterwards changes
+nothing: the tab marks it **Environment ignored**. Change the value on the tab
+instead, or **Reset** it to delete the row, so that the environment, and then
+the default, applies again. The switches on the **Settings** tab —
+`USER_AUTH_ENABLED`, `SIGNUP_ENABLED` and the others — are copied from the
+environment the same way.
+
+On the first start against an empty database the backend also generates the
+two secrets it cannot run without, `JWT_SECRET_KEY` and `API_KEY_SECRET`,
+unless the environment supplies them. `API_KEY_SECRET` and
+`ERASURE_FENCE_SECRET` cannot be changed once set, because records depend on
+them; see [Database](database.md#secrets-for-deleting-accounts). The backend
+refuses to start rather than generate `API_KEY_SECRET` for a database that
+already holds API keys, since a new secret would invalidate every one of them.
+
+### The Configuration tab
+
+The tab groups the settings by category, describes each one and shows where
+its value comes from. Besides every setting the gateway reads itself, it lists:
+
+- every `${VAR}` the active model registry and routing file name, under
+  **Providers**, with the models that use it, and those of the alert rules
+  under **Alerts**;
+- numbered extra keys for a provider's key pool, such as `MINIMAX_API_KEY2`,
+  once one is set;
+- variables added with **Add variable**, for a `${VAR}` reference the gateway
+  cannot see yet, such as one in a registry you are about to switch to.
+
+Secrets are write-only: the tab shows whether one is set, never its value, and
+the admin audit log records only that it changed. A save is checked as a
+whole, so settings that depend on each other — `TRUST_CLOUDFLARE_HEADERS`
+needs `TRUST_PROXY_HEADERS` — can change together. The names that stay in the
+environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
+Behind the tab are `GET` and `PATCH /admin/config` and
+`DELETE /admin/config/{key}`.
+
+### When a change applies
+
+Most settings apply as soon as they are saved: at once in the backend process
+that served the save, and within ten seconds in every other one. A setting
+marked **Restart required** is read only at startup, and the process keeps the
+value it started with until it restarts. Provider credentials and every
+variable the registry names are among them, as are the circuit-breaker and
+outbound-concurrency tuning, alerting and `DB_STORE_FULL_CONTENT`.
+
+While such a change is waiting, the tab shows a **Restart pending** notice with
+a **Restart backend** button. The button (`POST /admin/system/restart`) makes
+the backend exit so that its supervisor starts it again: Docker, through the
+bundled Compose file's `restart: unless-stopped`, or systemd, through the
+bundled units' `Restart=on-failure`. Under anything else, and whenever several
+worker processes serve the backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS`
+above 1, where the button would restart only one of them), the tab shows a
+command to run yourself instead, such as `docker restart hybridinference-backend`.
+A restart cuts off requests in flight, streams included.
+
+### Without the console
+
+A setting can break the console that edits it — a value that stops sign-in
+from working, say. `python -m serving.config.manage` changes stored settings
+from the command line instead, with the console's own validation:
+
+```bash
+docker exec -it hybridinference-backend python -m serving.config.manage list
+docker exec -it hybridinference-backend python -m serving.config.manage reset JWT_ALGORITHM
+```
+
+`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores a
+value — add `--secret` when it creates a custom variable that holds one — and
+`reset KEY` deletes the stored value, so that the environment or the default
+applies again. It talks to the database directly with the `DB_*` connection
+settings, so it needs no sign-in, and it never prints a secret's value. When
+the backend container is not running, run it in the repository root of a
+source checkout instead (`uv run python -m serving.config.manage ...`), where
+`.env` reaches Postgres on `127.0.0.1:5432`. A running backend picks the
+change up within about ten seconds, or at its next restart for a setting
+marked **Restart required**. The command that resets an administrator's
+password works the same way; see
+[The first admin account](deployment.md#the-first-admin-account).
+
+### Missing settings
+
+Some settings are required: the two generated secrets, every variable a model
+route needs to load (unless the route is `optional: true`), and `SMTP_USER`
+and `SMTP_PASSWORD` while public signup requires email verification. When one
+of them has no value, the console shows a banner to signed-in users.
+Administrators get a link to the Configuration tab, where **Missing only**
+lists what to fill in; everyone else is told that some features may not work
+and to contact the administrator. A model whose credential is missing is not
+loaded, and a request for it is answered with a `404` that says the
+deployment's configuration is incomplete.
+
+A deployment that leaves a model's credential unset on purpose — a route it
+does not use yet, or a canary it enables elsewhere — should mark that route
+`optional: true` in the model registry. The route is then skipped quietly,
+and its variable is not reported as missing.
+
+```{warning}
+Settings are stored in plaintext. Anyone who can read the database — a
+`pg_dump`, a backup, a `psql` or pgAdmin session — can read every provider
+key, decrypt users' stored API keys and sign administrator tokens. Protect
+database access and backups as you would the credentials themselves.
+```
+
 ## Environment variables
 
+The environment keeps what the backend needs before it can reach its database
+and what describes the containers rather than the application:
+
+- the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
+  `DB_PASSWORD`, `DB_ENABLED`;
+- the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`,
+  `ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`,
+  `DISTRIBUTION_CONFIG_MODE`;
+- the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, `GEOIP_COUNTRY_DB`,
+  `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, and
+  `REFRESH_TOKEN_COOKIE_NAME`, which the console reads too;
+- Compose and the console: host ports and bind addresses, the console's build
+  values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`.
+
 The gateway reads a `.env` file from its working directory and the process
-environment, case-insensitively; the process environment wins. `.env.example`
-in the repository root is the annotated list — copy it to `.env` and edit.
-[Installation](installation.md#environment-variables) lists the variables you
-are most likely to set. Secrets belong here and only here: not in the model
-registry (reference them as `${VAR}`), not in the manifest.
+environment; the process environment wins. `.env.example` in the repository
+root is the annotated list — copy it to `.env` and edit.
+[Installation](installation.md#environment-variables) lists the settings you
+are most likely to set. A value in the environment for any other setting is
+imported into the database at startup, as described above. Never write a
+secret into the model registry or the manifest: reference it there as
+`${VAR}`.
 
 ## Running with your configuration
 

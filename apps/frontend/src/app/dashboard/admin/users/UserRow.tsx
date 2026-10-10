@@ -9,6 +9,7 @@ import type {
   UserTurnAverages,
 } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, UserRow as User } from './types';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 
 interface UserRowProps {
   user: User;
@@ -97,8 +98,8 @@ export function UserRow({
       </td>
       <td className="max-w-[12rem] px-2">
         <div className="flex items-center gap-1 font-medium text-gray-900">
-          <span className="truncate" title={user.email}>
-            {user.email}
+          <span className="truncate" title={userAccountLabel(user)}>
+            {userAccountLabel(user)}
           </span>
           {user.admin_note && (
             <span

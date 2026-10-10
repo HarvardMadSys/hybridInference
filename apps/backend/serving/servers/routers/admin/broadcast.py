@@ -7,7 +7,7 @@ import json as _json
 import uuid as _uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
     BroadcastDetailResponse,
@@ -20,7 +20,7 @@ from serving.schemas_admin import (
     ListBroadcastsResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.deps import get_admin_user_id, get_db_logger, verify_admin_access
 from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
@@ -40,9 +40,15 @@ def _recipient_where(
     Shared by the preview COUNT and the create-time snapshot so the audience an
     admin previews can't drift from who actually gets the email. The optional
     spend gate reads today's (UTC) cost from the ``user_daily_cost`` counter
-    table; users with no row today count as $0 and are filtered out.
+    table; users with no row today count as $0 and are filtered out. An
+    account without an email address (the first-run setup administrator) is
+    never a recipient.
     """
-    clauses = ["role = ANY($1::text[])", "status = ANY($2::text[])"]
+    clauses = [
+        "role = ANY($1::text[])",
+        "status = ANY($2::text[])",
+        "email IS NOT NULL",
+    ]
     params: list[Any] = [target_roles or [], target_statuses or []]
     if min_spend_today_usd is not None:
         # EXISTS lets Postgres treat the spend gate as a semi-join instead of a
@@ -109,6 +115,7 @@ async def preview_broadcast(
 
 @router.post("/broadcast-email/test")
 async def test_broadcast_email(
+    request: Request,
     req: BroadcastPreviewRequest,
     admin: str = Depends(verify_admin_access),
     db=Depends(get_db_logger),
@@ -121,13 +128,23 @@ async def test_broadcast_email(
     if not rendered["subject"] or not rendered["body_html"]:
         raise HTTPException(status_code=422, detail="subject and body_html are required")
 
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT email FROM users WHERE email = $1", admin)
+    # Resolve the address from the signed-in account rather than the identity
+    # string, which is a login name for an admin without an email.
+    admin_user_id = get_admin_user_id(request)
+    row = None
+    if admin_user_id is not None:
+        async with db.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT email FROM users WHERE id = $1", admin_user_id)
     if not row:
         raise HTTPException(
             status_code=400, detail="Admin user not found — cannot resolve email address"
         )
     admin_email = row["email"]
+    if not admin_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Your account has no email address, so there is nowhere to send a test email.",
+        )
 
     # smtplib is sync; offload to a thread so we don't block the event loop
     # while waiting on the SMTP server.

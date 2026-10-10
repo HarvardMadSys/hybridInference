@@ -426,7 +426,30 @@ async def auth_app(auth_test_env):
         db_logger = getattr(getattr(app.state, "services", None), "db_logger", None)
         if db_logger and getattr(db_logger, "pool", None):
             await assert_test_db_from_pool(db_logger.pool, context="auth_app fixture")
+        await _complete_first_run_setup(app)
         yield app
+
+
+async def _complete_first_run_setup(app: FastAPI) -> None:
+    """Record the test deployment as set up.
+
+    On a test database without users, bootstrap leaves first-run setup
+    pending, and ``/auth/signup`` answers 503 until it completes. These tests
+    exercise accounts, not setup.
+    """
+    from datetime import datetime, timezone
+
+    from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY, mark_setup_completed
+
+    op_store = getattr(getattr(app.state, "services", None), "operational_store", None)
+    if op_store is not None:
+        if await op_store.get_setting(SETUP_MARKER_KEY) is None:
+            await op_store.set_setting(
+                SETUP_MARKER_KEY, datetime.now(timezone.utc).isoformat(), "str", "tests"
+            )
+        # Completing setup deletes the code; do the same here.
+        await op_store.delete_setting(SETUP_CODE_KEY)
+    mark_setup_completed()
 
 
 @pytest_asyncio.fixture

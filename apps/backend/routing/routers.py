@@ -8,7 +8,6 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import re
 import threading
@@ -47,6 +46,7 @@ from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.adapters.upstream_limiter import EngineHold
+from serving.config.app_config import config_value, on_change
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -180,7 +180,7 @@ def current_affinity_key() -> str | None:
 
 AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
-AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
+AFFINITY_ENABLED: bool = True
 
 # Longest a pin may live, however busy its caller. The sliding TTL alone lets a
 # caller that never goes five minutes without a request keep its endpoint
@@ -192,7 +192,22 @@ AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 # busy caller per day, and a cold prefix only when the draw moves it. Pins age
 # from when they were made, so the re-draws spread across the day instead of
 # landing together. 0 turns the cap off.
-AFFINITY_MAX_AGE_SECONDS: float = float(_env_int("ROUTING_AFFINITY_MAX_AGE_SEC", 24 * 60 * 60))
+AFFINITY_MAX_AGE_SECONDS: float = float(24 * 60 * 60)
+
+
+def _load_affinity_settings() -> None:
+    """Read ``ROUTING_AFFINITY_ENABLED`` and ``ROUTING_AFFINITY_MAX_AGE_SEC``.
+
+    Run at import and again after every configuration change, so both apply
+    to the next routing decision.
+    """
+    global AFFINITY_ENABLED, AFFINITY_MAX_AGE_SECONDS
+    AFFINITY_ENABLED = config_value("ROUTING_AFFINITY_ENABLED", "1") != "0"
+    AFFINITY_MAX_AGE_SECONDS = float(_env_int("ROUTING_AFFINITY_MAX_AGE_SEC", 24 * 60 * 60))
+
+
+_load_affinity_settings()
+on_change(_load_affinity_settings)
 
 
 def _affinity_expiry(created_at: float, now: float) -> float:

@@ -481,8 +481,14 @@ def _parse_admin_emails(raw: str) -> list[str]:
     return [e.lower() for e in _split_email_list(raw)]
 
 
-def is_admin_email(email: str) -> bool:
-    """Check if the given email is in the admin list."""
+def is_admin_email(email: str | None) -> bool:
+    """Check if the given email is in the admin list.
+
+    An account without an email address (the first-run setup administrator
+    signs in with a login name) is never on it.
+    """
+    if not email or not email.strip():
+        return False
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
 
 

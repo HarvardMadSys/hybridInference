@@ -119,6 +119,22 @@ describe('auth schemas', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('accepts a login name where the email goes, and holds each to its own rule', () => {
+    const parse = (email: string) => loginSchema.safeParse({ email, password: 'pw' });
+
+    // The first-run administrator signs in with a login name.
+    expect(parse('admin').success).toBe(true);
+    expect(parse('Ops.Team_1-x').success).toBe(true);
+    expect(parse(' admin ').data?.email).toBe('admin');
+    // 3–32 characters, starting with a letter or digit.
+    expect(parse('ab').success).toBe(false);
+    expect(parse('_admin').success).toBe(false);
+    expect(parse('a'.repeat(33)).success).toBe(false);
+    // With an `@`, it is an email address and must be a valid one.
+    expect(parse('admin@').error?.issues[0]?.message).toBe('Please enter a valid email address');
+    expect(parse('').error?.issues[0]?.message).toBe('Please enter your email or username');
+  });
 });
 
 describe('auth schema distribution messages', () => {
@@ -149,6 +165,19 @@ describe('auth schema distribution messages', () => {
         })
         .error?.flatten().fieldErrors.confirmPassword,
     ).toEqual(['<auth.validation.passwords_differ>']);
+  });
+
+  it('resolves the login field\u2019s messages through the translator too', () => {
+    const { loginSchema: runtimeLogin } = createAuthSchemas((slot, fallback) =>
+      slot.startsWith('auth.validation.') ? `<${slot}>` : fallback,
+    );
+
+    expect(runtimeLogin.safeParse({ email: '', password: 'pw' }).error?.issues[0]?.message).toBe(
+      '<auth.validation.identifier_required>',
+    );
+    expect(runtimeLogin.safeParse({ email: 'x', password: 'pw' }).error?.issues[0]?.message).toBe(
+      '<auth.validation.login_name_invalid>',
+    );
   });
 
   it('keeps today’s English for a deployment that fills no slot', () => {

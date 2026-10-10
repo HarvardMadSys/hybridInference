@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:04+0800\n"
+"POT-Creation-Date: 2026-10-10 14:42-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -364,6 +364,30 @@ msgstr ""
 
 #: ../developer/translations.md
 msgid "运行数据存储"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "setting"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "设置项"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "first-run setup"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "首次运行设置"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "setup code"
+msgstr ""
+
+#: ../developer/translations.md
+msgid "设置码"
 msgstr ""
 
 #: ../developer/translations.md

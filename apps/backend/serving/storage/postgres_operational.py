@@ -8,12 +8,11 @@ user_routes.py, internal.py, and user_stats.py.
 from __future__ import annotations
 
 import json
-import os
 import secrets
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
-from serving.config.settings import ROLE_RANK, VALID_ROLES
+from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.log_schema import (
@@ -36,6 +35,18 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = get_logger(__name__)
+
+# Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name).
+_USER_COLUMNS = (
+    "id, email, login_name, user_name, role, status, email_verified, "
+    "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
+    "signup_reason, admin_note, suspension_message"
+)
+
+# Serializes first-run setup claims across every process sharing the database.
+_FIRST_RUN_SETUP_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtext('hybridinference:first-run-setup'))"
+)
 
 
 class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
@@ -139,10 +150,14 @@ class PostgresOperationalStore(OperationalStore):
         import asyncpg as _asyncpg
 
         # --- users ---
+        # ``email`` admits NULL for the one account created without an address
+        # (the first-run setup administrator), which signs in with
+        # ``login_name``; keep in step with the copy in ``database.py``.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
-                email TEXT NOT NULL UNIQUE,
+                email TEXT UNIQUE,
+                login_name TEXT,
                 password_hash TEXT NOT NULL,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -243,7 +258,21 @@ class PostgresOperationalStore(OperationalStore):
                     "suspension_message",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
                 ),
+                # Sign-in name of an account created without an email address.
+                ("login_name", "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT"),
             ],
+        )
+
+        # Databases created before email-less accounts have email NOT NULL.
+        # DROP NOT NULL takes ACCESS EXCLUSIVE, so it is gated on the catalog
+        # like the role column below. UNIQUE still admits any number of NULLs.
+        email_meta = await column_metadata(conn, "users", "email")
+        if email_meta is not None and email_meta["not_null"]:
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name "
+            "ON users (lower(login_name)) WHERE login_name IS NOT NULL"
         )
 
         # Status constraint rebuild — only when the CHECK does not admit
@@ -362,8 +391,10 @@ class PostgresOperationalStore(OperationalStore):
             )
             raise
 
-        # Seed admin roles from ADMIN_EMAILS
-        admin_emails = _parse_admin_emails(os.getenv("ADMIN_EMAILS", ""))
+        # Seed admin roles from ADMIN_EMAILS. Read through settings, which
+        # carry the database-backed configuration; an account without an
+        # email (NULL) never matches.
+        admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
         if admin_emails:
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
@@ -940,10 +971,7 @@ class PostgresOperationalStore(OperationalStore):
         """Fetch a single user row by primary key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason, admin_note, suspension_message "
-                "FROM users WHERE id = $1",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE id = $1",
                 user_id,
             )
         return _coerce_user_row(row)
@@ -952,11 +980,19 @@ class PostgresOperationalStore(OperationalStore):
         """Fetch a single user row by lowercased email."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason, admin_note, suspension_message "
-                "FROM users WHERE email = $1",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE email = $1",
                 email.lower(),
+            )
+        return _coerce_user_row(row)
+
+    async def get_user_by_login_name(self, login_name: str) -> Row | None:
+        """Fetch a single user row by login name, compared case-insensitively."""
+        async with self._pool.acquire() as conn:
+            # Matches the expression and predicate of idx_users_login_name.
+            row = await conn.fetchrow(
+                f"SELECT {_USER_COLUMNS} FROM users "
+                "WHERE lower(login_name) = $1 AND login_name IS NOT NULL",
+                login_name.strip().lower(),
             )
         return _coerce_user_row(row)
 
@@ -964,27 +1000,135 @@ class PostgresOperationalStore(OperationalStore):
         self,
         *,
         user_id: str,
-        email: str,
+        email: str | None,
         password_hash: str,
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
         signup_reason: str | None = None,
+        login_name: str | None = None,
     ) -> None:
         """Insert a new user row."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
-                "email_verified, status, signup_reason) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "email_verified, status, signup_reason, login_name) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 user_id,
-                email.lower(),
+                email.lower() if email is not None else None,
                 password_hash,
                 user_name,
                 email_verified,
                 status,
                 signup_reason,
+                login_name.lower() if login_name is not None else None,
             )
+
+    async def get_or_create_setup_code(
+        self,
+        *,
+        marker_key: str,
+        code_key: str,
+        completed_at: str,
+        candidate_code: str,
+    ) -> str | None:
+        """Return the shared first-run setup code, or None once setup is complete.
+
+        Everything after the marker check runs under the first-run setup lock,
+        so it cannot interleave with :meth:`create_first_admin`: a code is
+        never stored after the claim committed, and a code stored before it is
+        deleted by it.
+        """
+        async with self._pool.acquire() as conn:
+            # A settled deployment reads one row and takes no lock.
+            if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
+                return None
+            async with conn.transaction():
+                await conn.execute(_FIRST_RUN_SETUP_LOCK_SQL)
+                if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
+                    return None
+                if await conn.fetchval("SELECT EXISTS (SELECT 1 FROM users)"):
+                    # Accounts but no marker: a deployment from before
+                    # first-run setup, or an account an operator script
+                    # inserted. Either way it is set up.
+                    await conn.execute(
+                        "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                        "VALUES ($1, $2, 'str', NOW(), 'existing-users') "
+                        "ON CONFLICT (key) DO NOTHING",
+                        marker_key,
+                        completed_at,
+                    )
+                    await conn.execute("DELETE FROM site_settings WHERE key = $1", code_key)
+                    logger.info(
+                        "First-run setup marked complete: the database already has user accounts."
+                    )
+                    return None
+                await conn.execute(
+                    "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                    "VALUES ($1, $2, 'str', NOW(), 'first-run-setup') "
+                    "ON CONFLICT (key) DO NOTHING",
+                    code_key,
+                    candidate_code,
+                )
+                return await conn.fetchval(
+                    "SELECT value FROM site_settings WHERE key = $1", code_key
+                )
+
+    async def create_first_admin(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        marker_key: str,
+        marker_value: str,
+        code_key: str,
+        admin_ip: str,
+    ) -> bool:
+        """Create the first administrator unless setup has already completed.
+
+        The transaction-scoped advisory lock serializes concurrent claims, in
+        this process or another, and :meth:`get_or_create_setup_code`. Under
+        READ COMMITTED (asyncpg's default) every statement after the lock takes
+        a fresh snapshot, so a claim that waited on the lock sees the winner's
+        committed user and marker and backs out.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(_FIRST_RUN_SETUP_LOCK_SQL)
+            if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
+                return False
+            if await conn.fetchval("SELECT EXISTS (SELECT 1 FROM users)"):
+                return False
+            await conn.execute(
+                "INSERT INTO users (id, email, login_name, password_hash, user_name, "
+                "role, status, email_verified) "
+                "VALUES ($1, NULL, $2, $3, $4, 'admin', 'active', TRUE)",
+                user_id,
+                login_name.lower(),
+                password_hash,
+                user_name,
+            )
+            await conn.execute(
+                "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                "VALUES ($1, $2, 'str', NOW(), $3)",
+                marker_key,
+                marker_value,
+                login_name.lower(),
+            )
+            # The code has done its job; it must not outlive the setup it guards.
+            await conn.execute("DELETE FROM site_settings WHERE key = $1", code_key)
+            await conn.execute(
+                "INSERT INTO admin_audit_log "
+                "(admin_ip, action, target_user_id, details, success) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5)",
+                admin_ip,
+                "setup.admin_created",
+                user_id,
+                json.dumps({"login_name": login_name.lower(), "user_name": user_name}),
+                True,
+            )
+        return True
 
     async def update_user_fields(self, user_id: str, **fields: Any) -> None:
         """Update one or more columns on the users table for *user_id*."""
@@ -1319,12 +1463,14 @@ class PostgresOperationalStore(OperationalStore):
             where_clauses.append(f"u.status = ${len(filter_params) + 1}")
             filter_params.append(status)
         if search:
-            # Search now also matches user.id prefix and active key_prefix.
+            # Search matches email, login name and display name as substrings,
+            # plus a user.id prefix and an active key_prefix prefix.
             substr_idx = len(filter_params) + 1  # %search%
             id_idx = len(filter_params) + 2  # search% (id prefix)
             kp_idx = len(filter_params) + 3  # search% (key prefix)
             where_clauses.append(
                 f"(u.email ILIKE ${substr_idx} "
+                f"OR u.login_name ILIKE ${substr_idx} "
                 f"OR u.user_name ILIKE ${substr_idx} "
                 f"OR u.id::text LIKE ${id_idx} "
                 f"OR EXISTS (SELECT 1 FROM api_keys k2 "
@@ -1500,7 +1646,7 @@ class PostgresOperationalStore(OperationalStore):
             # share the WHERE clause and join optional cost CTEs uniformly.
             cte_parts = [
                 f"filtered_users AS ("
-                f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
+                f"  SELECT u.id, u.email, u.login_name, u.user_name, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                 f"  u.signup_reason, u.admin_note, "
                 f"  u.created_at, u.last_login_at, "
@@ -3410,7 +3556,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             # 1. Pending count + top
             pending_rows = await conn.fetch(
-                "SELECT id, email, user_name, role, created_at "
+                "SELECT id, email, login_name, user_name, role, created_at "
                 "FROM users WHERE status = 'pending_approval' "
                 "ORDER BY created_at DESC LIMIT $1",
                 top_n,
@@ -3437,7 +3583,7 @@ class PostgresOperationalStore(OperationalStore):
                     WHERE day BETWEEN $2 AND $3
                     GROUP BY user_id
                 )
-                SELECT u.id, u.email, u.user_name, u.role,
+                SELECT u.id, u.email, u.login_name, u.user_name, u.role,
                        COALESCE(t.today_cost, 0) AS today_cost,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
@@ -3467,6 +3613,7 @@ class PostgresOperationalStore(OperationalStore):
                 base_item = {
                     "id": r["id"],
                     "email": r["email"],
+                    "login_name": r.get("login_name"),
                     "user_name": r["user_name"],
                     "role": r["role"] or "free",
                     "today_cost_usd": today,
@@ -3513,6 +3660,7 @@ class PostgresOperationalStore(OperationalStore):
                     {
                         "id": r["id"],
                         "email": r["email"],
+                        "login_name": r.get("login_name"),
                         "user_name": r["user_name"],
                         "role": r["role"] or "free",
                         "today_cost_usd": _Decimal("0"),

@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import context as req_ctx
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _STRUCTURED_LOG_KEYS = (
     "event",
@@ -266,13 +269,27 @@ def attach_quiet_access_filter() -> None:
         uvicorn_access.addFilter(_QuietPathFilter())
 
 
+# Resolves LOG_LEVEL and LOG_FORMAT: the environment until the database-backed
+# configuration loads and installs its own resolver (serving.config.app_config),
+# which this module cannot import because everything imports it. LOG_FILE is
+# read from the environment only: it decides where logging goes before any
+# configuration can load.
+_setting_resolver: Callable[[str, str], str | None] = os.getenv
+
+
+def use_setting_resolver(resolver: Callable[[str, str], str | None]) -> None:
+    """Resolve LOG_LEVEL and LOG_FORMAT through *resolver* from now on."""
+    global _setting_resolver
+    _setting_resolver = resolver
+
+
 def _env_level() -> int:
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = (_setting_resolver("LOG_LEVEL", "INFO") or "").upper()
     return getattr(logging, level, logging.INFO)
 
 
 def _env_is_json() -> bool:
-    return os.getenv("LOG_FORMAT", "plain").lower() == "json"
+    return (_setting_resolver("LOG_FORMAT", "plain") or "").lower() == "json"
 
 
 def setup_logging() -> None:
@@ -320,4 +337,5 @@ __all__ = [
     "attach_quiet_access_filter",
     "get_logger",
     "setup_logging",
+    "use_setting_resolver",
 ]

@@ -6,11 +6,11 @@ import asyncio
 import ipaddress
 import json
 import math
-import os
 import re
 import socket
 import time
-from dataclasses import asdict, dataclass, fields, is_dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
@@ -24,6 +24,7 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
+from serving.config.app_config import config_value
 from serving.config.offload_routes import offload_route_setting_key
 from serving.config.settings import (
     ROUTE_TYPE_ORDER,
@@ -67,7 +68,7 @@ from serving.servers.routewise_rebuild import (
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from routing.model_router_registry import ModelRouterRegistry
 
@@ -116,7 +117,7 @@ class OpenRouterEndpointPricing:
 
 
 def _env_default(name: str, fallback: str) -> str:
-    return (os.getenv(name) or fallback).strip()
+    return (config_value(name) or fallback).strip()
 
 
 BLOCKED_BASE_URL_HOSTS = {
@@ -126,27 +127,63 @@ BLOCKED_BASE_URL_HOSTS = {
     "metadata.google.internal",
 }
 
-PROVIDER_TARGETS: dict[str, ProviderTarget] = {
+# Built-in targets whose default base URL a deployment may override, with the
+# setting that overrides it and the built-in fallback.
+_BASE_URL_SETTINGS: dict[str, tuple[str, str]] = {
+    "chutes": ("CHUTES_BASE_URL", "https://llm.chutes.ai/v1"),
+    "featherless": ("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1"),
+    "minimax": ("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+}
+
+
+class _ProviderTargets(Mapping[str, ProviderTarget]):
+    """The built-in targets, with each overridable base URL read at lookup.
+
+    A changed ``*_BASE_URL`` setting therefore applies to the next admin
+    request instead of waiting for a restart.
+    """
+
+    def __init__(self, targets: dict[str, ProviderTarget]) -> None:
+        self._targets = targets
+
+    def __getitem__(self, provider: str) -> ProviderTarget:
+        target = self._targets[provider]
+        setting = _BASE_URL_SETTINGS.get(provider)
+        if setting is None:
+            return target
+        return replace(target, default_base_url=_env_default(*setting))
+
+    def __contains__(self, provider: object) -> bool:
+        return provider in self._targets
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._targets)
+
+    def __len__(self) -> int:
+        return len(self._targets)
+
+
+_BUILT_IN_TARGETS: dict[str, ProviderTarget] = {
     "chutes": ProviderTarget(
         provider="chutes",
         label="Chutes",
         kind="chutes",
         key_provider="chutes",
-        default_base_url=_env_default("CHUTES_BASE_URL", "https://llm.chutes.ai/v1"),
+        default_base_url=_BASE_URL_SETTINGS["chutes"][1],
     ),
     "featherless": ProviderTarget(
         provider="featherless",
         label="Featherless",
         kind="featherless",
         key_provider="featherless",
-        default_base_url=_env_default("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1"),
+        default_base_url=_BASE_URL_SETTINGS["featherless"][1],
     ),
     "minimax": ProviderTarget(
         provider="minimax",
         label="MiniMax",
         kind="minimax",
         key_provider="minimax",
-        default_base_url=_env_default("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+        default_base_url=_BASE_URL_SETTINGS["minimax"][1],
     ),
     "openrouter": ProviderTarget(
         provider="openrouter",
@@ -170,6 +207,8 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
         default_base_url=OPENROUTER_API_BASE_URL,
     ),
 }
+
+PROVIDER_TARGETS: Mapping[str, ProviderTarget] = _ProviderTargets(_BUILT_IN_TARGETS)
 
 RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
 

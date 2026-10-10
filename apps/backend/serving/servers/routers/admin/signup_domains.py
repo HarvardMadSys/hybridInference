@@ -15,7 +15,7 @@ from serving.schemas_admin import (
     SignupAllowedDomain,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_admin_user_id, get_operational_store, verify_admin_access
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -129,13 +129,10 @@ async def add_signup_allowed_domain_endpoint(
 
     domain, is_wildcard = _normalize_signup_domain(payload.domain)
 
-    # Resolve admin user id when JWT auth was used (admin_id is the email
-    # in that case). Fall back to None for ADMIN_TOKEN where there's no
-    # corresponding users row.
-    created_by: str | None = None
-    user_row = await op_store.get_user_by_email(admin_id) if "@" in admin_id else None
-    if user_row:
-        created_by = user_row["id"]
+    # The signed-in admin's account id, from verify_admin_access. None for
+    # ADMIN_TOKEN, which has no users row. (``admin_id`` is no key to look the
+    # account up by: it is a login name for an admin without an email.)
+    created_by = get_admin_user_id(request)
 
     # Translate dup-key violations to 409. We rely solely on asyncpg's typed
     # UniqueViolationError so unrelated DB errors (FK violations, syntax

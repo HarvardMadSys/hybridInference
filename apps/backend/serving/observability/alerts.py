@@ -10,7 +10,6 @@ import asyncio
 import datetime as dt
 import enum
 import logging
-import os
 import platform
 import socket
 import threading
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+from serving.config.app_config import config_value
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
@@ -128,13 +128,14 @@ def _static_host_facts() -> tuple[str, str, str, str]:
 def _base_url() -> tuple[str, bool]:
     """Resolve the gateway's public base URL and whether it was set explicitly.
 
-    Prefers a per-call ``BASE_URL`` environment read so runtime changes are
-    picked up, then falls back to settings. The boolean is ``True`` only when
-    the value came from an explicit source (env var or ``.env``) rather than the
-    built-in field default — which is needed to tell a real production deploy
-    apart from a local run that inherits the default URL.
+    Prefers a per-call ``BASE_URL`` read (database row, then environment) so
+    runtime changes are picked up, then falls back to settings. The boolean is
+    ``True`` only when the value came from an explicit source (stored setting,
+    env var or ``.env``) rather than the built-in field default — which is
+    needed to tell a real production deploy apart from a local run that
+    inherits the default URL.
     """
-    env_url = os.environ.get("BASE_URL")
+    env_url = config_value("BASE_URL")
     if env_url:
         return env_url, True
     try:
@@ -159,7 +160,7 @@ def _detect_environment(base_url: str, *, explicit: bool) -> str:
     was configured (vs the built-in default); an unconfigured base URL is
     treated as a local run rather than assumed to be production.
     """
-    override = (os.environ.get("DEPLOYMENT_ENV") or os.environ.get("ENVIRONMENT") or "").strip()
+    override = (config_value("DEPLOYMENT_ENV") or config_value("ENVIRONMENT") or "").strip()
     if override:
         return override
     try:
@@ -414,7 +415,7 @@ async def alert_slack(
 
     Returns True if a message was actually sent, False otherwise.
     """
-    webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "") or os.environ.get(
+    webhook_url = config_value("SLACK_ALERTS_WEBHOOK_URL", "") or config_value(
         "SLACK_WEBHOOK_URL", ""
     )
     if not webhook_url:

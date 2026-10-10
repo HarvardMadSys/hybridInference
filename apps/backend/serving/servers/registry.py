@@ -8,7 +8,6 @@ configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -25,6 +24,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
+from serving.config.app_config import config_value
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
@@ -59,8 +59,30 @@ class ModelRegistrationInfo:
     router_params: dict[str, Any] | None = None
 
 
+@dataclass
+class ModelLoadReport:
+    """What :func:`register_from_models_yaml` had to leave out, for callers to surface.
+
+    Attributes:
+        skipped_models: Models skipped because a setting their routes need is
+            unset, each with its aliases.
+        unset_env_vars: The settings those models were waiting for, where the
+            template names one.
+    """
+
+    skipped_models: dict[str, list[str]] = field(default_factory=dict)
+    unset_env_vars: set[str] = field(default_factory=set)
+
+
 class MissingEnvBackedKeyError(ValueError):
     """Raised when an env-backed route value (api_key/api_keys/base_url) resolves blank."""
+
+
+def _template_var(value: object) -> str | None:
+    """Return ``VAR`` for a whole-value ``${VAR}`` template, else ``None``."""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        return value[2:-1]
+    return None
 
 
 class EmbeddingsPathConfigError(ValueError):
@@ -383,6 +405,7 @@ def register_from_models_yaml(
     embedding_adapters: dict[str, Any] | None = None,
     *,
     continue_on_missing_env: bool = False,
+    report: ModelLoadReport | None = None,
 ) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register models and routes from a YAML configuration file.
 
@@ -411,6 +434,10 @@ def register_from_models_yaml(
     Args:
         router: Executor to receive registered routes.
         path: Path to the YAML configuration file.
+        embedding_adapters: Receives the embedding models' adapters.
+        continue_on_missing_env: Skip a model whose required setting is unset
+            instead of raising.
+        report: Receives the models skipped that way.
 
     Returns:
         Tuple of (count of registered route identifiers including aliases,
@@ -441,11 +468,11 @@ def register_from_models_yaml(
                     "not on the model (including shorthand models without a route list)"
                 )
 
-            # Environment expansion for base_url/api_key in both top-level and route entries
+            # ${VAR} expansion for base_url/api_key in both top-level and route
+            # entries: the database-backed setting, then the environment.
             def expand_env(val: str | None) -> str | None:
-                if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-                    return os.getenv(val[2:-1])
-                return val
+                var = _template_var(val)
+                return config_value(var) if var is not None else val
 
             # Build primary config
             # Only carry keys the YAML actually sets: `m.get(k)` would inject
@@ -578,6 +605,8 @@ def register_from_models_yaml(
                                 raw_base_url,
                             )
                             continue
+                        if (var := _template_var(raw_base_url)) is not None:
+                            unset_env_vars.add(var)
                         raise MissingEnvBackedKeyError(
                             f"base_url for {top_cfg.get('id')!r} resolved to "
                             f"unset/empty/host-less after env expansion "
@@ -655,6 +684,8 @@ def register_from_models_yaml(
                                 top_cfg.get("id"),
                             )
                             continue
+                        if (var := _template_var(raw_api_key)) is not None:
+                            unset_env_vars.add(var)
                         raise MissingEnvBackedKeyError(
                             f"api_key for {top_cfg.get('id')!r} resolved to "
                             f"empty/None after env expansion"
@@ -921,15 +952,22 @@ def register_from_models_yaml(
                 raise
             logger.warning("Skipping model %r from %s: %s", m.get("id"), path, exc)
             skipped_for_missing_env.append(str(m.get("id")))
+            if report is not None:
+                report.skipped_models[str(m.get("id"))] = [
+                    str(alias) for alias in (m.get("aliases") or [])
+                ]
             continue
 
+    if report is not None:
+        report.unset_env_vars.update(unset_env_vars)
     if skipped_for_missing_env:
         missing = ", ".join(sorted(unset_env_vars)) or "the referenced environment variables"
         dropped = ", ".join(skipped_for_missing_env)
         if count == 0:
             logger.error(
                 "No models are available: every model in %s was skipped because "
-                "its credential is unset. Set %s and restart. /v1/models will "
+                "its credential is unset. Set %s (Admin > Configuration) and "
+                "restart. /v1/models will "
                 "stay empty until then, and requests will report the model as "
                 "not found. Skipped: %s",
                 path,

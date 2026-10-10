@@ -39,6 +39,7 @@ from serving.servers.deps import (
     get_pricing_lookup,
     get_router,
 )
+from serving.servers.model_availability import model_not_found_detail
 from serving.servers.routers.completions_stream import StreamSession, ToolCallAccumulator
 from serving.servers.routers.routing_info import (
     RoutingInfo,
@@ -660,13 +661,13 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, f"Model '{model}' not found")
+        raise HTTPException(404, model_not_found_detail(model))
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
     route = router_exec.routes[model]
     if not route.published:
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, f"Model '{model}' not found")
+        raise HTTPException(404, model_not_found_detail(model))
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
     if model_visibility_resolver is not None:
@@ -699,7 +700,7 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, f"Model '{model}' not found")
+        raise HTTPException(404, model_not_found_detail(model))
     # Two different reasons, one answer. The owner disabled this model, or a
     # grant-authenticated caller was not given it — either way the caller is
     # told it does not exist, so a sandbox cannot enumerate what is outside its
@@ -728,7 +729,7 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, f"Model '{model}' not found")
+        raise HTTPException(404, model_not_found_detail(model))
 
     # Extract parameters
     params: dict[str, Any] = {"stream": effective_stream}

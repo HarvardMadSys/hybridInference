@@ -9,11 +9,11 @@ Pure utility functions (``calculate_cost``, etc.) have been moved to
 """
 
 import json
-import os
 from typing import Any
 
 import asyncpg
 
+from serving.config.settings import get_settings
 from serving.storage.log_schema import (
     ErasureFenceUnavailable,
     apply_column_migrations,
@@ -216,11 +216,15 @@ class DatabaseLogger:
                 conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
             )
 
-            # Users table for self-service registration
+            # Users table for self-service registration. ``email`` admits NULL
+            # for the account created without an address (the first-run setup
+            # administrator), which signs in with ``login_name``; keep in step
+            # with the copy in ``postgres_operational.py``.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE,
+                    email TEXT UNIQUE,
+                    login_name TEXT,
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -275,8 +279,24 @@ class DatabaseLogger:
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
                         "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
                     ),
+                    (
+                        "login_name",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT",
+                    ),
                 ],
             )
+
+            # Databases created before email-less accounts have email NOT NULL;
+            # DROP NOT NULL takes ACCESS EXCLUSIVE, so gate it on the catalog.
+            email_meta = await column_metadata(conn, "users", "email")
+            if email_meta is not None and email_meta["not_null"]:
+                async with bounded_ddl(conn):
+                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
+
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name
+                ON users (lower(login_name)) WHERE login_name IS NOT NULL
+            """)
 
             # Expand status CHECK constraint to include pending_approval and rejected.
             # Rebuild inside a transaction so a failed ADD does not leave the table
@@ -431,7 +451,9 @@ class DatabaseLogger:
                 )
                 raise
 
-            admin_emails = _parse_admin_emails(os.getenv("ADMIN_EMAILS", ""))
+            # Read through settings, which carry the database-backed
+            # configuration; an account without an email never matches.
+            admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
             if admin_emails:
                 seeded_admins_tag = await conn.execute(
                     """

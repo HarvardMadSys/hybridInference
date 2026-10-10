@@ -33,6 +33,7 @@ import sys
 from itertools import zip_longest
 from pathlib import Path
 
+from serving.config.manage import load_stored_configuration
 from serving.rag.chunker import Chunk, chunk_markdown
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
 from serving.rag.embedder import build_ingest_embedder, recorded_dim, recorded_model_name
@@ -235,6 +236,13 @@ def build_index(settings: RagSettings) -> VectorStore:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: build the index and write it to disk."""
+    # The gateway's address and key may be stored settings rather than
+    # environment variables, so read them from the database before the defaults
+    # are taken. Not for --check, which promises never to call out.
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--check", action="store_true")
+    if not probe.parse_known_args(argv)[0].check:
+        load_stored_configuration()
     defaults = load_rag_settings()
     parser = argparse.ArgumentParser(description="Build the docs RAG index.")
     parser.add_argument("--corpus", type=Path, default=defaults.corpus_dir)

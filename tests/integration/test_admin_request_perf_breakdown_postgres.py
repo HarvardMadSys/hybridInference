@@ -126,8 +126,9 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
             """
             CREATE TABLE users (
                 id TEXT PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                user_name TEXT
+                email TEXT UNIQUE,
+                user_name TEXT,
+                login_name TEXT
             )
             """
         )

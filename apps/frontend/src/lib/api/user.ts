@@ -5,7 +5,9 @@ const API_BASE = config.apiBase;
 
 export interface User {
   id: string;
-  email: string;
+  /** `null` for an account that signs in with a login name instead. */
+  email: string | null;
+  login_name?: string | null;
   user_name?: string;
   role: string;
   status: string;

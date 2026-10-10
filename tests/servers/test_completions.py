@@ -875,6 +875,25 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_a_model_skipped_for_missing_configuration_says_so(
+    completions_client: AsyncClient,
+):
+    from serving.servers.model_availability import record_skipped_models
+    from serving.servers.registry import ModelLoadReport
+
+    record_skipped_models(ModelLoadReport(skipped_models={"needs-key": []}))
+
+    resp = await completions_client.post(
+        "/v1/chat/completions",
+        json={"model": "needs-key", "messages": [{"role": "user", "content": "Hi"}]},
+    )
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    assert "configuration is incomplete" in resp.text
+    assert "Contact the administrator" in resp.text
+
+
+@pytest.mark.asyncio
 async def test_unpublished_model_returns_404_before_routewise_router_lookup(
     completions_app: FastAPI,
 ):

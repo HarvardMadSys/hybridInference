@@ -23,6 +23,8 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.config import app_config
+from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -38,6 +40,7 @@ from serving.servers.routewise_compat import (
     RouteWiseSettingsResolver,
     apply_routewise_settings_to_router,
 )
+from serving.setup_state import init_setup_state
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
@@ -52,7 +55,13 @@ from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices, database_enabled
-from .registry import EmbeddingsPathConfigError, ModelRegistrationInfo, register_from_models_yaml
+from .model_availability import record_skipped_models
+from .registry import (
+    EmbeddingsPathConfigError,
+    ModelLoadReport,
+    ModelRegistrationInfo,
+    register_from_models_yaml,
+)
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
 if TYPE_CHECKING:
@@ -75,6 +84,10 @@ _BACKGROUND_TASKS: set = set()
 _SCHEMA_RETRY_INITIAL_DELAY = 30  # seconds
 _SCHEMA_RETRY_MAX_DELAY = 600  # seconds
 _SCHEMA_RETRY_MAX_ATTEMPTS = 60
+
+# The boot-time configuration load retries like the database logger does.
+_CONFIG_LOAD_ATTEMPTS = 3
+_CONFIG_LOAD_RETRY_DELAY = 2  # seconds
 
 
 def _describe_exc(exc: BaseException) -> str:
@@ -555,6 +568,52 @@ async def _bootstrap_routewise_from_probe_samples(
             )
 
 
+async def _load_app_config() -> None:
+    """Load the database-backed configuration before anything reads a setting.
+
+    Runs on a short-lived connection of its own, ahead of the database logger,
+    because the logger itself is configured from it (``DB_STORE_FULL_CONTENT``,
+    the erasure-fence secret). Retried like the logger's own startup; a database
+    that stays unreachable leaves the gateway on its environment values, as it
+    ran before the configuration moved into the database.
+
+    Raises:
+        app_config.ConfigBootstrapError: The stored configuration cannot be
+            made safe to start on.
+    """
+    if not database_enabled():
+        app_config.use_environment(database_enabled=False)
+        return
+
+    settings = get_settings()
+    max_retries = _CONFIG_LOAD_ATTEMPTS
+    retry_delay = _CONFIG_LOAD_RETRY_DELAY
+    for attempt in range(max_retries):
+        try:
+            conn = await connect_app_config(settings)
+            try:
+                await app_config.load(AppConfigStore(conn))
+            finally:
+                await conn.close()
+            logger.info("Configuration loaded from the database")
+            return
+        except app_config.ConfigBootstrapError:
+            raise
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Configuration load failed (attempt {attempt + 1}/{max_retries}): "
+                    f"{_describe_exc(exc)}. Retrying in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"Configuration load failed after {max_retries} attempts: "
+                    f"{_describe_exc(exc)}. Continuing on environment values."
+                )
+    app_config.use_environment(database_enabled=True)
+
+
 def _init_db_logger() -> DatabaseLogger | None:
     """Initialize PostgreSQL database logger from environment configuration.
 
@@ -629,12 +688,16 @@ async def _init_router_and_models(
                 f"Models config not found: {models_path} (source={resolved_models.source})"
             )
         elif models_path.exists():
+            load_report = ModelLoadReport()
             registered, model_infos = register_from_models_yaml(
                 router,
                 models_path,
                 embedding_adapters=embedding_adapters,
                 continue_on_missing_env=True,
+                report=load_report,
             )
+            # A request for a skipped model says why it is missing.
+            record_skipped_models(load_report)
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
             if embedding_adapters:
@@ -770,6 +833,22 @@ async def initialize() -> AppServices:
             "the flag was removed; fallback routing is now always on."
         )
 
+    # The database-backed configuration comes before everything that reads a
+    # setting, and it re-applies LOG_LEVEL/LOG_FORMAT from what it loaded.
+    await _load_app_config()
+    # Checked only now: the secrets may come from the database (or have just
+    # been generated into it). Still before any store opens or task starts.
+    try:
+        get_settings().validate_auth_secrets(database_enabled=database_enabled())
+    except ValueError as exc:
+        if database_enabled() and not app_config.loaded_from_database():
+            # "Set JWT_SECRET_KEY" would send the operator to the wrong place.
+            raise ValueError(
+                f"{exc} The database could not be reached, and these secrets are kept "
+                "there: start the gateway once the database is available."
+            ) from exc
+        raise
+
     endpoint_health_registry = EndpointHealthRegistry()
     router = RouteExecutor(health_registry=endpoint_health_registry)
     router_dependencies = RouterBuildDependencies(
@@ -895,6 +974,10 @@ async def initialize() -> AppServices:
                         f"{_describe_exc(exc)}. Service will start without database logging."
                     )
                     db_logger = None
+
+    # Administrator writes and the refresh loop use the logger's pool.
+    if db_logger and db_logger.pool:
+        app_config.attach(AppConfigStore(db_logger.pool))
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -1218,27 +1301,38 @@ async def initialize() -> AppServices:
         routewise_model_ids_by_router,
     )
 
-    # Runtime settings (DB-backed feature flags with TTL cache)
+    # Runtime settings (DB-backed feature flags with an in-memory cache)
     runtime_settings = None
     if operational_store:
         try:
             from serving.config.runtime_settings import (
-                RUNTIME_SETTINGS_REGISTRY,
+                import_environment_values,
                 init_runtime_settings,
             )
 
+            if db_logger and db_logger.pool:
+                try:
+                    await import_environment_values(db_logger.pool)
+                except Exception:
+                    logger.warning("Runtime settings environment import failed", exc_info=True)
             runtime_settings = init_runtime_settings(operational_store)
             logger.info("Runtime settings initialized")
 
-            for _key in RUNTIME_SETTINGS_REGISTRY:
-                try:
-                    await runtime_settings.get_bool(_key)
-                except Exception:
-                    logger.warning(
-                        f"Runtime settings cache warmup failed for {_key!r}", exc_info=True
-                    )
+            try:
+                await runtime_settings.refresh()
+            except Exception:
+                logger.warning("Runtime settings cache warmup failed", exc_info=True)
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
+
+    # First-run setup; a database-free deployment (no store) has none.
+    try:
+        await init_setup_state(operational_store)
+    except Exception:
+        logger.exception("First-run setup state could not be initialized")
+
+    # The required-settings rules read runtime settings, now loaded.
+    app_config.refresh_health()
 
     model_visibility_resolver = None
     model_concurrency_resolver = None
@@ -1456,6 +1550,12 @@ async def initialize() -> AppServices:
         _BACKGROUND_TASKS.add(routewise_settings_refresh_task)
         routewise_settings_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+    # Every worker re-reads the stored configuration and the runtime settings,
+    # so a write made through one of them reaches the others.
+    app_config.start_refresh()
+    if runtime_settings is not None:
+        runtime_settings.start_refresh()
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -1496,6 +1596,11 @@ async def shutdown(services: AppServices) -> None:
         services.routewise_settings_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.routewise_settings_refresh_task
+
+    await app_config.stop_refresh()
+    if services.runtime_settings is not None:
+        with contextlib.suppress(Exception):
+            await services.runtime_settings.stop_refresh()
 
     # Agent attempt reaper: stop before the stores it writes to are torn down.
 

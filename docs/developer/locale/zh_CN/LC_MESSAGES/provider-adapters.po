@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:15+0800\n"
+"POT-Creation-Date: 2026-10-10 14:42-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -122,14 +122,22 @@ msgid "Step 3: add the model to your registry"
 msgstr "第 3 步：把模型加进注册表"
 
 #: ../developer/provider-adapters.md:271
-msgid "Step 4: configure environment variables"
-msgstr "第 4 步：配置环境变量"
+msgid "Step 4: set the variables"
+msgstr "第 4 步：设置变量"
 
 #: ../developer/provider-adapters.md:273
-msgid "Add to `.env`:"
-msgstr "加进 `.env`："
+msgid ""
+"On a gateway with a database, add both on the admin console's "
+"**Configuration** tab with **Add variable**, marking the key secret, and "
+"restart the backend. Without a database, add them to `.env`; a gateway "
+"with a database also copies them from there into the database at startup,"
+" unless it already has a value of that name:"
+msgstr ""
+"有数据库的网关上，在管理控制台的 **Configuration** 标签页里用 **Add variable** 添加这两个变量，把 key "
+"标为 secret，然后重启后端。没有数据库时，把它们加进 "
+"`.env`；有数据库的网关启动时也会把那里的值复制进数据库，除非数据库里已经有同名的值："
 
-#: ../developer/provider-adapters.md:280
+#: ../developer/provider-adapters.md:284
 #, python-brace-format
 msgid ""
 "A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` "
@@ -142,11 +150,11 @@ msgstr ""
 "解析为空，这条路由就不会注册。默认情况下整个模型都会被丢弃，后端日志会写明跳过了哪些模型、哪些变量没设置。给路由加上 `optional: "
 "true`，就只跳过这一条路由，模型的其他路由照常注册。"
 
-#: ../developer/provider-adapters.md:286
+#: ../developer/provider-adapters.md:290
 msgid "Step 5: verify it"
 msgstr "第 5 步：验证"
 
-#: ../developer/provider-adapters.md:288
+#: ../developer/provider-adapters.md:292
 msgid ""
 "Start the gateway with a registry that uses the new kind, then check it "
 "as described in [Verify it through the gateway](adding-models.md#verify-"
@@ -155,18 +163,18 @@ msgstr ""
 "用包含新 kind 的注册表启动网关，再按[通过网关验证](adding-models.md#verify-it-through-the-"
 "gateway)里的方法检查。"
 
-#: ../developer/provider-adapters.md:291
+#: ../developer/provider-adapters.md:295
 msgid "Deployment-local adapters"
 msgstr "部署自带的 adapter"
 
-#: ../developer/provider-adapters.md:293
+#: ../developer/provider-adapters.md:297
 msgid ""
 "A deployment can register a local factory without editing the built-in "
 "dispatch. Its module exposes a synchronous, no-argument `register()` "
 "function:"
 msgstr "部署可以注册自己的 adapter 工厂，不用改内置的分派逻辑。做法是在一个模块里提供一个同步、无参数的 `register()` 函数："
 
-#: ../developer/provider-adapters.md:309
+#: ../developer/provider-adapters.md:313
 msgid ""
 "Set `BACKEND_EXTENSIONS` to this module's import name and use `kind: "
 "example_service` in the model registry. The factory receives the route's "
@@ -183,11 +191,11 @@ msgstr ""
 "`register_adapter_factory(kind, factory, "
 "override=True)`，并且会记一条日志。启动和部署方面的要求见[后端扩展](backend-extensions.md)。"
 
-#: ../developer/provider-adapters.md:318
+#: ../developer/provider-adapters.md:322
 msgid "BaseAdapter API reference"
 msgstr "BaseAdapter API 参考"
 
-#: ../developer/provider-adapters.md:320
+#: ../developer/provider-adapters.md:324
 msgid ""
 "All adapters inherit from `BaseAdapter` "
 "(`apps/backend/serving/adapters/base.py`) and implement:"
@@ -195,27 +203,27 @@ msgstr ""
 "所有 adapter 都继承自 "
 "`BaseAdapter`（`apps/backend/serving/adapters/base.py`），并实现："
 
-#: ../developer/provider-adapters.md:335
+#: ../developer/provider-adapters.md:339
 msgid "Utility methods provided by the base class:"
 msgstr "基类提供的工具方法："
 
-#: ../developer/provider-adapters.md:365
+#: ../developer/provider-adapters.md:369
 msgid "Available attributes:"
 msgstr "可用的属性："
 
-#: ../developer/provider-adapters.md:372
+#: ../developer/provider-adapters.md:376
 msgid "Advanced features"
 msgstr "进阶功能"
 
-#: ../developer/provider-adapters.md:374
+#: ../developer/provider-adapters.md:378
 msgid "Multi-modal support"
 msgstr "多模态支持"
 
-#: ../developer/provider-adapters.md:376
+#: ../developer/provider-adapters.md:380
 msgid "For models accepting images:"
 msgstr "对于接受图像输入的模型："
 
-#: ../developer/provider-adapters.md:382
+#: ../developer/provider-adapters.md:386
 msgid ""
 "Handle the image content blocks in your adapter's `chat_completion`. A "
 "route may declare narrower `input_modalities` than the model, so a text-"
@@ -224,27 +232,27 @@ msgstr ""
 "在 adapter 的 `chat_completion` 里处理图像内容块。单条路由可以声明比模型更窄的 "
 "`input_modalities`，这样纯文本的回退路由就永远不会收到媒体内容。"
 
-#: ../developer/provider-adapters.md:386
+#: ../developer/provider-adapters.md:390
 msgid "Tool / function calling"
 msgstr "工具 / function calling"
 
-#: ../developer/provider-adapters.md:392
+#: ../developer/provider-adapters.md:396
 msgid "Parse the provider's tool calls into OpenAI shape and pass them through:"
 msgstr "把 provider 返回的工具调用解析成 OpenAI 的结构再透传出去："
 
-#: ../developer/provider-adapters.md:414
+#: ../developer/provider-adapters.md:418
 msgid "Structured output (JSON mode)"
 msgstr "结构化输出（JSON mode）"
 
-#: ../developer/provider-adapters.md:420
+#: ../developer/provider-adapters.md:424
 msgid "Handle the `response_format` parameter:"
 msgstr "处理 `response_format` 参数："
 
-#: ../developer/provider-adapters.md:427
+#: ../developer/provider-adapters.md:431
 msgid "Limiting concurrent requests"
 msgstr "限制并发请求"
 
-#: ../developer/provider-adapters.md:429
+#: ../developer/provider-adapters.md:433
 msgid ""
 "An adapter does not need its own limiter. The gateway already caps how "
 "many requests it keeps open against each provider key, and lowers the cap"
@@ -258,11 +266,11 @@ msgstr ""
 "adapter 那样，把对上游的调用包在从 `apps/backend/serving/adapters/upstream_limiter.py`"
 " 获取的槽位里，就能纳入这套机制。"
 
-#: ../developer/provider-adapters.md:436
+#: ../developer/provider-adapters.md:440
 msgid "Examples"
 msgstr "示例"
 
-#: ../developer/provider-adapters.md:438
+#: ../developer/provider-adapters.md:442
 msgid ""
 "**OpenAI-compatible provider.** DeepSeek has no adapter file. "
 "`_make_adapter` in `apps/backend/serving/servers/registry.py` sets "
@@ -274,7 +282,7 @@ msgstr ""
 "`provider_profile = \"deepseek\"` 并返回 `OpenAICompatAdapter`；profile 本身在 "
 "`apps/backend/serving/adapters/profiles.py`。"
 
-#: ../developer/provider-adapters.md:442
+#: ../developer/provider-adapters.md:446
 msgid ""
 "**Custom API format.** See `apps/backend/serving/adapters/gemini.py` for "
 "message conversion against a non-OpenAI wire format."
@@ -282,7 +290,7 @@ msgstr ""
 "**自定义 API 格式**。按非 OpenAI 协议格式转换消息的做法，可以参考 "
 "`apps/backend/serving/adapters/gemini.py`。"
 
-#: ../developer/provider-adapters.md:444
+#: ../developer/provider-adapters.md:448
 msgid ""
 "**Local deployment.** vLLM and SGLang reuse "
 "`apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang`"
@@ -293,62 +301,62 @@ msgstr ""
 "`apps/backend/serving/adapters/openai_compat.py`。`vllm` 和 `sglang` 这两个 "
 "kind 分发到同一个类；本地与远程的行为差异来自 `base_url` 和路由层，而不是来自专门的 adapter。"
 
-#: ../developer/provider-adapters.md:449
+#: ../developer/provider-adapters.md:453
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/provider-adapters.md:451
+#: ../developer/provider-adapters.md:455
 msgid "Response format errors"
 msgstr "响应格式错误"
 
-#: ../developer/provider-adapters.md:453
+#: ../developer/provider-adapters.md:457
 msgid "Ensure `format_response()` returns the OpenAI-compatible structure."
 msgstr "确保 `format_response()` 返回 OpenAI 兼容的结构。"
 
-#: ../developer/provider-adapters.md:454
+#: ../developer/provider-adapters.md:458
 msgid "Validate that `UsageInfo` fields are integers."
 msgstr "校验 `UsageInfo` 的各字段都是整数。"
 
-#: ../developer/provider-adapters.md:455
+#: ../developer/provider-adapters.md:459
 msgid ""
 "Check `finish_reason` is one of `stop`, `length`, `content_filter`, "
 "`tool_calls`."
 msgstr "检查 `finish_reason` 是 `stop`、`length`、`content_filter`、`tool_calls` 之一。"
 
-#: ../developer/provider-adapters.md:457
+#: ../developer/provider-adapters.md:461
 msgid ""
 "For streaming, emit the first non-empty content chunk as soon as it is "
 "available so time-to-first-token is recorded accurately."
 msgstr "流式场景下，第一个非空内容分片一可用就立刻发出，这样首 token 时延（time-to-first-token）才会被准确记录。"
 
-#: ../developer/provider-adapters.md:460
+#: ../developer/provider-adapters.md:464
 msgid "Streaming issues"
 msgstr "流式问题"
 
-#: ../developer/provider-adapters.md:462
+#: ../developer/provider-adapters.md:466
 #, python-brace-format
 msgid "Ensure chunks are SSE-formatted: `data: {json}\\n\\n`."
 msgstr "确保分片是 SSE 格式：`data: {json}\\n\\n`。"
 
-#: ../developer/provider-adapters.md:463
+#: ../developer/provider-adapters.md:467
 msgid "Send the final usage chunk before `data: [DONE]`."
 msgstr "在 `data: [DONE]` 之前发送最后那个 usage 分片。"
 
-#: ../developer/provider-adapters.md:464
+#: ../developer/provider-adapters.md:468
 msgid "Handle JSON parsing errors gracefully."
 msgstr "妥善处理 JSON 解析错误。"
 
-#: ../developer/provider-adapters.md:466
+#: ../developer/provider-adapters.md:470
 msgid "Best practices"
 msgstr "最佳实践"
 
-#: ../developer/provider-adapters.md:468
+#: ../developer/provider-adapters.md:472
 msgid ""
 "**Error handling** — use `self.http.json_post_with_retry()` and surface "
 "provider faults with useful messages."
 msgstr "**错误处理**——使用 `self.http.json_post_with_retry()`；provider 出错时，要给出有用的错误信息。"
 
-#: ../developer/provider-adapters.md:470
+#: ../developer/provider-adapters.md:474
 msgid ""
 "**Usage accounting** — prefer provider-reported usage; fall back to "
 "`estimate_prompt_tokens()` / `estimate_text_tokens()`."
@@ -356,7 +364,7 @@ msgstr ""
 "**用量记账**——优先采用 provider 上报的 usage；拿不到再回退到 `estimate_prompt_tokens()` / "
 "`estimate_text_tokens()`。"
 
-#: ../developer/provider-adapters.md:472
+#: ../developer/provider-adapters.md:476
 msgid ""
 "**Streaming helpers** — use `format_stream_chunk()`, "
 "`make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE."
@@ -364,44 +372,47 @@ msgstr ""
 "**流式辅助函数**——用 `format_stream_chunk()`、`make_final_usage_chunk()` 和 "
 "`done_sentinel()` 保证 SSE 输出一致。"
 
-#: ../developer/provider-adapters.md:474
+#: ../developer/provider-adapters.md:478
 msgid ""
 "**Type safety** — full type hints, and keep request/response shapes "
 "aligned with `apps/backend/serving/schemas.py`."
 msgstr "**类型安全**——写完整的类型标注，并让请求/响应的结构与 `apps/backend/serving/schemas.py` 保持一致。"
 
-#: ../developer/provider-adapters.md:476
+#: ../developer/provider-adapters.md:480
 msgid ""
 "**Testing** — exercise both streaming and non-streaming paths, and try "
 "large prompts to validate token clamping."
 msgstr "**测试**——流式和非流式两条路径都要测到，并用大 prompt 验证 token 数会被正确截断。"
 
-#: ../developer/provider-adapters.md:478
+#: ../developer/provider-adapters.md:482
 msgid ""
 "**Docs & style** — Google-style docstrings in English; keep provider-"
 "specific logic out of shared code."
 msgstr "**文档与风格**——用英文写 Google 风格的 docstring；不要把 provider 专属的逻辑塞进共享代码。"
 
-#: ../developer/provider-adapters.md:480
+#: ../developer/provider-adapters.md:484
 #, python-brace-format
 msgid ""
 "**Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or "
-"endpoints, and keep the values in `.env`."
-msgstr "**密钥**——在 YAML 里用 `${ENV_VAR}`，不要硬编码 key 或端点，取值放在 `.env` 中。"
+"endpoints, and keep the values in the gateway's settings "
+"(**Configuration** tab), or in `.env` for a gateway without a database."
+msgstr ""
+"**密钥**——在 YAML 里用 `${ENV_VAR}`，不要硬编码 key "
+"或端点；取值放在网关的设置项里（**Configuration** 标签页），没有数据库的网关则放在 `.env` 中。"
 
-#: ../developer/provider-adapters.md:483
+#: ../developer/provider-adapters.md:488
 msgid "See also"
 msgstr "另见"
 
-#: ../developer/provider-adapters.md:485
+#: ../developer/provider-adapters.md:490
 msgid "[Adding a New Model](adding-models.md) — every field a model entry accepts"
 msgstr "[添加新模型](adding-models.md)——模型条目接受的全部字段"
 
-#: ../developer/provider-adapters.md:486
+#: ../developer/provider-adapters.md:491
 msgid "[Architecture](architecture.md#adapters) — where adapters sit in a request"
 msgstr "[架构](architecture.md#adapters)——adapter 在一次请求中所处的位置"
 
-#: ../developer/provider-adapters.md:487
+#: ../developer/provider-adapters.md:492
 msgid ""
 "[Backend Extensions](backend-extensions.md) — registering an adapter from"
 " outside the source tree"
@@ -416,3 +427,6 @@ msgstr "[后端扩展](backend-extensions.md)——在源码树之外注册 adap
 #~ "adapter is only for a provider "
 #~ "with its own wire format."
 #~ msgstr ""
+
+#~ msgid "Add to `.env`:"
+#~ msgstr "加进 `.env`："

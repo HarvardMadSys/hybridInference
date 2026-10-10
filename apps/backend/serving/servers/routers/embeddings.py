@@ -25,6 +25,7 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.servers.model_availability import model_not_found_detail
 from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -265,7 +266,7 @@ async def create_embeddings(
             error=f"Embedding model '{model}' not found",
         )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, f"Embedding model '{model}' not found")
+        raise HTTPException(404, model_not_found_detail(model, noun="Embedding model"))
 
     adapter = embedding_adapters[model]
     adapter_config = getattr(adapter, "config", None)
