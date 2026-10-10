@@ -380,6 +380,7 @@ class PostgresOperationalStore(OperationalStore):
             CREATE TABLE IF NOT EXISTS api_keys (
                 id BIGSERIAL PRIMARY KEY,
                 key_hash TEXT NOT NULL UNIQUE,
+                api_key_encrypted TEXT,
                 key_prefix TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 user_name TEXT,
@@ -420,6 +421,10 @@ class PostgresOperationalStore(OperationalStore):
                     "quota_monthly_cost_usd",
                     "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
                     "quota_monthly_cost_usd DECIMAL(10, 4)",
+                ),
+                (
+                    "api_key_encrypted",
+                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
                 ),
                 ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
             ],
