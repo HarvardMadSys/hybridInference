@@ -27,6 +27,13 @@ MODEL_NOT_FOUND = "model_not_found"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
+# Request-local online traffic classification. These are routing hints, not
+# durable user attributes; keeping them in the scope reset list prevents a
+# request handled by the same task from inheriting the prior request's signal.
+TRAFFIC_CLASSIFICATION = "traffic_classification"
+TRAFFIC_AUTOMATION_SCORE = "traffic_automation_score"
+TRAFFIC_CONFIDENCE = "traffic_confidence"
+TRAFFIC_REASONS = "traffic_reasons"
 # UTC datetime captured once at the HTTP request boundary. Scheduled pricing
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
@@ -100,6 +107,10 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    TRAFFIC_CLASSIFICATION,
+    TRAFFIC_AUTOMATION_SCORE,
+    TRAFFIC_CONFIDENCE,
+    TRAFFIC_REASONS,
     PRICING_TIME,
     CLIENT_ERROR_KIND,
     PROVIDER,
@@ -210,6 +221,10 @@ __all__ = [
     "PROVIDER",
     "REQUEST_SCOPED_KEYS",
     "ROUTER_PROVIDER_SENTINEL",
+    "TRAFFIC_AUTOMATION_SCORE",
+    "TRAFFIC_CLASSIFICATION",
+    "TRAFFIC_CONFIDENCE",
+    "TRAFFIC_REASONS",
     "USER_ROLE",
     "get",
     "mark_model_not_found",
