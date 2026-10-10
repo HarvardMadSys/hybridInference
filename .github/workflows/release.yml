@@ -1,0 +1,129 @@
+name: Release
+
+# Publishes a dated GitHub release each time `main` moves.
+#
+# `main` is a fast-forward mirror of `dev`, and branch protection lets only
+# repository admins update it. A maintainer cuts a release by moving `main` to
+# a commit on `dev`:
+#
+#   git fetch origin && git push origin origin/dev:main
+#
+# and this workflow tags that commit and publishes the release with generated
+# notes. It used to push `main` itself and no longer does: the workflow token
+# cannot update a protected branch, and a credential that could would let
+# anyone able to start a workflow here move `main`.
+
+on:
+  push:
+    branches: [main]
+  # Retry path: releases whatever `main` points at now, and is a no-op when
+  # that commit already has a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialize runs so two quick pushes can't race on choosing the same date tag.
+# Runs queue rather than cancel, so every queued release still completes.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release main
+    # Self-hosted rather than a GitHub-hosted runner: hosted jobs are refused
+    # outright when the account's Actions billing lapses or hits its spending
+    # limit, which once stalled this pipeline silently (run 31068821298 left
+    # main 29 commits behind dev). The `trusted-automation` label already
+    # provides the `gh` CLI the release step needs.
+    runs-on: [self-hosted, Linux, trusted-automation]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the commit is on dev
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # A push pins the release to exactly the commit pushed. A dispatch
+          # runs on the default branch, where github.sha is dev's tip, so it
+          # releases whatever main points at instead.
+          if [ "${EVENT_NAME}" = "push" ]; then
+            target="${PUSHED_SHA}"
+          else
+            target="$(git rev-parse origin/main)"
+          fi
+          # A release is a dated snapshot of dev. A commit dev does not have
+          # (a pull request merged into main, say) would publish code that
+          # never went through dev and block the next fast-forward, so refuse.
+          if ! git merge-base --is-ancestor "${target}" origin/dev; then
+            echo "::error title=main is not on dev::${target} is not on dev. Move main back to a commit on dev, then re-run this workflow."
+            exit 1
+          fi
+          echo "target=${target}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent on the target commit: skip only if an actual GitHub
+          # *release* already points at it. A re-run, or a dispatch with nothing
+          # new on main, is then a no-op, while a re-run after a release that
+          # failed still creates the missing one. We resolve each release's tag
+          # to its commit rather than using `git tag --points-at`, because a
+          # bare tag without a release (a failed or deleted release that left
+          # its tag) must NOT count as already released.
+          target="${TARGET}"
+          # Fail closed: tag discovery below (and the uniqueness loop) rely on a
+          # complete, up-to-date set of local tags. If the fetch fails we could
+          # miss an existing remote tag and let `gh release create` attach to a
+          # stale tag at the wrong commit, so abort rather than continue with
+          # stale refs (errexit propagates the failure).
+          git fetch --tags --force origin
+          released_tag=""
+          # Fail closed here too: if the release list cannot be read, the check
+          # below would see no releases and publish a duplicate.
+          release_tags="$(gh release list --limit 200 --json tagName --jq '.[].tagName')"
+          for rtag in ${release_tags}; do
+            rcommit="$(git rev-list -n 1 "refs/tags/${rtag}" 2>/dev/null || true)"
+            if [ "${rcommit}" = "${target}" ]; then
+              released_tag="${rtag}"
+              break
+            fi
+          done
+          if [ -n "${released_tag}" ]; then
+            echo "Commit ${target} already released as ${released_tag}; nothing to do."
+            exit 0
+          fi
+
+          # Date-based tag (YYYYMMDD), matching the existing release convention.
+          # If the name is already taken, append an incrementing suffix so the
+          # tag stays unique. Reject a name if EITHER a release or a bare tag
+          # already uses it: an existing tag without a release (e.g. a deleted
+          # or failed same-day release) would otherwise make `gh release create`
+          # attach to that stale tag instead of creating a new one at `target`,
+          # publishing the wrong commit. Tags are refreshed above via fetch.
+          base="$(date -u +%Y%m%d)"
+          tag="${base}"
+          suffix=1
+          while git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1 \
+            || gh release view "${tag}" >/dev/null 2>&1; do
+            tag="${base}.${suffix}"
+            suffix=$((suffix + 1))
+          done
+
+          # Pin the release to the target commit rather than `main`, so a later
+          # push advancing main can't make us tag the wrong commit.
+          echo "Creating release ${tag} from ${target}"
+          gh release create "${tag}" \
+            --target "${target}" \
+            --title "${tag}" \
+            --generate-notes
