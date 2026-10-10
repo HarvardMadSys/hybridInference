@@ -31,6 +31,7 @@ const stats: PublicStats = {
     accounts: 471,
     cached_input_share: 0.9288,
   },
+  registrations: { approved: 1466, waiting: 1066 },
   daily: [{ date: '2026-07-31', input_tokens: 10, output_tokens: 1, requests: 2 }],
   countries: {
     total: 83,
@@ -92,7 +93,7 @@ describe('StatsPage', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the four headline figures and their breakdowns', async () => {
+  it('renders the headline figures and their breakdowns', async () => {
     mockFetch({ json: async () => stats });
     render(<StatsPage />);
 
@@ -103,6 +104,8 @@ describe('StatsPage', () => {
     expect(screen.getByText('83')).toBeInTheDocument();
     expect(screen.getByText('23')).toBeInTheDocument();
     expect(screen.getByText('157')).toBeInTheDocument();
+    expect(screen.getByText('Approved users').nextElementSibling).toHaveTextContent('1,466');
+    expect(screen.getByText('Waiting list').nextElementSibling).toHaveTextContent('1,066');
     expect(screen.getAllByText('United States').length).toBeGreaterThan(0);
     expect(screen.getByText('Hermes Agent')).toBeInTheDocument();
     // Chat apps are listed apart from the agent table.
@@ -123,6 +126,22 @@ describe('StatsPage', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     render(<StatsPage />);
     expect(await screen.findByText(/could not be loaded/)).toBeInTheDocument();
+  });
+
+  it('leaves out account tiles for snapshots made before they were counted', async () => {
+    const { registrations: _omitted, ...older } = stats;
+    mockFetch({ json: async () => older });
+    render(<StatsPage />);
+    expect(await screen.findByText('832B')).toBeInTheDocument();
+    expect(screen.queryByText('Approved users')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waiting list')).not.toBeInTheDocument();
+    expect(screen.queryByText('Accounts.')).not.toBeInTheDocument();
+  });
+
+  it('says nobody is waiting when the waiting list is empty', async () => {
+    mockFetch({ json: async () => ({ ...stats, registrations: { approved: 20, waiting: 0 } }) });
+    render(<StatsPage />);
+    expect(await screen.findByText('No sign-ups are waiting for review')).toBeInTheDocument();
   });
 
   it('omits the language section when the snapshot has none', async () => {
