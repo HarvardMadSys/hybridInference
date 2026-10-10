@@ -10,14 +10,14 @@ service commands are in [Deployment](deployment.md).
 Releases are [GitHub releases](https://github.com/HarvardMadSys/hybridInference/releases)
 tagged with the UTC date, `YYYYMMDD`; another release on the same date gets
 `.1`, `.2`, and so on. They are dated snapshots, not semantic-version
-compatibility promises. A maintainer cuts one by running the `Sync dev to main`
-workflow, which moves `main` up to `dev` and publishes the release with
-generated change notes.
+compatibility promises. A maintainer cuts one by moving `main` up to a commit
+on `dev`; the `Release` workflow then publishes the release with generated
+change notes.
 
 | Identifier | What it tells you |
 |---|---|
 | A published date tag | A fixed source snapshot with GitHub release notes |
-| `main` | The branch advanced by the release workflow; it moves over time |
+| `main` | The branch maintainers move up to `dev` for each release; it moves over time |
 | `dev` or a feature branch | Development work that may be newer than the latest release |
 | A full commit SHA | The exact source revision; include local modifications separately |
 | An image digest, `image@sha256:…` | The exact container artifact, which may differ from the host checkout |
