@@ -33,6 +33,12 @@ in a well-known shape.
 | D6 | Model scope | **Mixed models** allowed within one batch; the scheduler groups items by model. |
 | D7 | DELETE | `DELETE /v1/batches/{id}` **purges** the batch and all its items from our stores so nothing further is processed. |
 | D8 | First deliverable | This design spec, reviewed before code. |
+| D9 | Gate scope | **Per model.** Batch is a scavenger: any non-batch traffic on the model makes it yield fully. |
+| D10 | Headroom | Batch may consume up to **80%** of the model's normal (interactive baseline) load. |
+| D11 | Processing slice | **15 min** of processing per grant, then a **one-tick (~10 min) cooldown** before the next slice. |
+| D12 | Bounds | Cap batch **size** and **duration** (items expire 24h after creation). |
+| D13 | Attribution | Add `api_logs.batch_job_id` (mirrors `agent_job_id`). |
+| D14 | No DB | Batch surface returns **404**, worker does not start. |
 
 ## 4. Architecture
 
@@ -114,76 +120,87 @@ graceful degradation) and the worker does not start.
 undecided: item grouping? cache-affinity `session_id`? results layout (per-item
 rows vs one output blob)? retention/cleanup policy? per-user row cap?
 
-## 7. Load gate (D4)
+## 7. Load gate and per-model lease (D4)
 
-Fresh tokens = `prompt_tokens - cache_read_tokens` over a recent window, read
-from `api_logs`. Batch runs only while the recent rate sits below a baseline.
+Fresh tokens = `prompt_tokens - cache_read_tokens` (a request count would
+misread load: one cold 700k prompt costs a replica for minutes, a cache hit
+costs milliseconds). The gate is **per model** and batch is a *scavenger* of
+spare capacity, never a first-class consumer.
 
-**OPEN:**
-- Baseline window: same-hour-of-day vs trailing 24h vs weekly (weekday/weekend split).
-- Scope: global fleet / per-model / per-endpoint (note hourly rollups are per
-  `(provider, model_id)`, not per endpoint — per-endpoint needs raw `api_logs`).
-- Local-only, or remote endpoints too (remote has no observable idle state).
-- Hysteresis thresholds + sustain window (avoid flapping).
-- Starvation escape when the line is never crossed (run-anyway after max age vs
-  expire at a deadline).
-- Batch traffic must be **excluded** from the baseline (see §9 attribution).
+Two sides of the comparison, deliberately asymmetric:
+
+- **Baseline** = interactive-only fresh tokens/hour for this model at this hour
+  of day (batch rows excluded), so a batch cannot inflate its own bar.
+- **Recent** is split: non-batch recent usage decides whether *someone else* is
+  on the model; batch recent usage is capped against the baseline.
+
+Per-model lease, evaluated each tick:
+
+- **Others present** (any non-batch traffic on the model in the window) -> the
+  batch yields fully; no new items launch.
+- **No others** -> a slice of **15 min** opens; the batch runs at up to **80%**
+  of the model's normal load.
+- **Slice ends** -> a cooldown of **one tick** (~10 min) releases the model
+  before the next slice, so a real user can take it and the decision is
+  re-evaluated.
+
+This bounds how long a batch can occupy a model and guarantees interactive
+callers win the model the moment they appear. A zero baseline (no history) is
+treated as idle with no cap.
 
 ## 8. Availability mapping
 
-Batch items for model X are released only when X is "up". Source: recent gateway
-traffic for X.
+v1 default: optimistic in-process availability. A model is available until it
+fails a few times in a row, then cools down; a success clears the streak. Each
+item attempt is the live signal, and the tick is the coarse fallback.
 
-**OPEN:** what "200 requests through the gateway" means — rolling window vs
-consecutive-success streak vs success-only; storage (DB table vs in-memory);
-whether the existing circuit-breaker / `HealthMonitor` state feeds it (note
-`routing/health.py` is advisory-only today and never gates dispatch).
+**OPEN:** the "N recent gateway successes -> up" mapping from the original ask
+(rolling window vs consecutive-success streak; DB-backed vs in-memory) is not
+implemented; the optimistic-plus-cooldown heuristic stands in for it.
 
 ## 9. Dispatch & attribution
 
 - Synthetic `Request` per item, then `chat_completions(request, ...)` in-process
   (D2). The worker acquires the user's concurrency slot itself (D5).
-- **OPEN:** add `batch_job_id` to `api_logs` for attribution and so the load
-  baseline can exclude batch traffic.
+- `api_logs.batch_job_id` is added for attribution, mirroring `agent_job_id`;
+  it also lets the gate exclude batch traffic from the interactive baseline.
 - Batch items are non-streaming (OpenAI rejects `stream=true` in batches), so
   `ttft_ms` is not available for batch items.
 
 ## 10. Backoff & cold start
 
-- Exponential backoff with jitter on per-item failure and on model-unavailable.
-- Cold start / warm-up: wait for the first successful 200 before streaming the
-  batch at width (detect "starting" vs "failed").
-- **OPEN:** base/cap/jitter values; warm-up wait length / give-up; per-item
-  failure policy (mark failed and continue vs fail batch); retry count.
+- Exponential backoff with jitter: base 2s, cap 60s, up to 5 attempts per item;
+  a failed item is marked failed and the batch continues (partial success).
+- Cold start / warm-up is handled by the same retry loop: the first item on a
+  cold model may fail; backoff retries until it succeeds, then the batch runs
+  at width. Repeated failures cool the model down (see §8).
 
 ## 11. Concurrency
 
-Run 4 requests at a time (D5/TBD).
-
-**OPEN:** scope of "4" — per batch, per model, or global across all batches;
-configurable; whether batch yields to interactive load and only pauses at item
-boundaries (a running generation cannot be preempted).
+Run **4 requests at a time per model**, configurable. Batch shares the owner's
+normal per-user concurrency (D5) and only pauses at item boundaries -- a running
+generation cannot be preempted.
 
 ## 12. Webhooks
 
 Completion callbacks are a **separate** issue + PR, filed on
-`HarvardMadSys/hybridInference`, split out to keep this surface reviewable.
-See that issue for payload/signing/retry design.
+`HarvardMadSys/hybridInference` (#1509), split out to keep this surface
+reviewable. See that issue for payload/signing/retry design.
 
 ## 13. Non-goals
 
 - A Files API / `.jsonl` upload (D1 uses inline `requests[]`).
 - Streaming batch items.
 - A separate batch quota (D5).
-- **OPEN:** whether to apply a 50% batch discount and honor a `completion_window`
-  / expiry.
+- Embeddings / Responses targets (v1 is chat-completions only).
+- A 50% batch discount (v1 has no discount).
 
-## 14. Open decisions (summary)
+## 14. Remaining open decisions
 
-Everything marked **OPEN** above is undecided and is the maintainer's call:
-status vocabulary + exact routes + list/cancel routes; `acc_id` and `sessions`
-semantics; results layout + retention; availability definition; load-gate
-baseline/scope/hysteresis/starvation; backoff + cold-start parameters;
-concurrency scope; `batch_job_id` attribution; discount/expiry; deployment
-process count (determines whether the worker needs a `pg_try_advisory_lock`
-guard — see `provider_stats_rollup.py:182`).
+- The "N recent gateway successes" availability mapping (§8).
+- Embeddings / Responses as batch targets.
+- Pricing discount and a configurable completion window (v1 caps at 24h).
+- Deployment process count (determines whether the worker needs a
+  `pg_try_advisory_lock` guard -- see `provider_stats_rollup.py:182`).
+- Retention (v1 keeps batches until DELETE).
+
