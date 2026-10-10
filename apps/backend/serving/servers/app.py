@@ -23,6 +23,7 @@ from .routers import (
     agent_grants,
     anthropic_messages,
     auth_routes,
+    batches,
     compat,
     completions,
     embeddings,
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
 
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
+    bootstrap.start_batch_worker(app, services)
     try:
         yield
     finally:
@@ -108,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
+    app.include_router(batches.router)
     app.include_router(rag.router)
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)

@@ -329,7 +329,7 @@ class PostgresLogStore(LogStore):
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
                     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id
+                    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
                 )
                 VALUES (
                     $1, $2, $3,
@@ -342,7 +342,7 @@ class PostgresLogStore(LogStore):
                     $26::jsonb, $27,
                     $28, $29, $30,
                     $31, $32, $33,
-                    $34, $35, $36
+                    $34, $35, $36, $37
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -382,6 +382,7 @@ class PostgresLogStore(LogStore):
                 served_model,
                 served_endpoint,
                 (sanitized_metadata or {}).get("agent_job_id"),
+                (sanitized_metadata or {}).get("batch_job_id"),
             )
 
     # -- usage / cost queries ------------------------------------------------
