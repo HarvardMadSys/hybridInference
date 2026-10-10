@@ -155,16 +155,13 @@ WHERE l.prompt IS NOT NULL
   AND jsonb_typeof(CASE WHEN {{valid_json}} THEN l.prompt::jsonb END) = 'array'
 """
 
-# Accounts as of the run: approved (may sign in and call the API) and waiting
-# for review. Both count only confirmed email addresses, which leaves out
-# sign-ups that never finished, and neither counts team (admin/internal) roles.
+# Accounts as of the run: approved (active) and waiting for review, whatever
+# their role or email verification.
 REGISTRATIONS_SQL = """
 SELECT
   COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS approved,
   COUNT(*) FILTER (WHERE status = 'pending_approval')::BIGINT AS waiting
 FROM users
-WHERE email_verified
-  AND role NOT IN ('admin', 'internal')
 """
 
 INSERT_SNAPSHOT_SQL = "INSERT INTO public_stats_snapshots (payload) VALUES ($1::jsonb)"

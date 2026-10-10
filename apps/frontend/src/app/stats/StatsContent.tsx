@@ -144,7 +144,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             <Tile
               label="Approved users"
               value={fmtWhole(registrations.approved)}
-              note="Accounts that can sign in and call the API"
+              note="Accounts with access to the API"
             />
             <Tile
               label="Waiting list"
@@ -481,10 +481,9 @@ function StatsBody({ stats }: { stats: PublicStats }) {
         <div className="grid gap-6 text-sm text-gray-600 md:grid-cols-2">
           {registrations && (
             <p>
-              <span className="font-semibold text-gray-900">Accounts.</span> Approved users can sign
-              in and call the API; the waiting list is sign-ups still waiting for review. Both count
-              only accounts that confirmed their email address, leave out our own team&apos;s
-              accounts, and are counted when the snapshot is made.
+              <span className="font-semibold text-gray-900">Accounts.</span> Approved users are
+              accounts that have been let in; the waiting list is sign-ups still waiting for review.
+              Both are counted when the snapshot is made.
             </p>
           )}
           <p>

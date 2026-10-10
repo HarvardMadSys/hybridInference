@@ -162,13 +162,12 @@ def test_payload_is_aggregate_only():
     assert "secret-host" not in text
 
 
-def test_registrations_count_confirmed_non_team_accounts_only():
+def test_registrations_count_every_active_and_pending_account():
     sql = " ".join(ps.REGISTRATIONS_SQL.split())
-    assert "FROM users" in sql
     assert "status = 'active'" in sql
     assert "status = 'pending_approval'" in sql
-    assert "WHERE email_verified" in sql
-    assert "role NOT IN ('admin', 'internal')" in sql
+    # No role or email-verification filter: every account counts.
+    assert sql.endswith("FROM users")
 
 
 def test_payload_without_registrations_publishes_null():

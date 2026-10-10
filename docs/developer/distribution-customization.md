@@ -161,9 +161,8 @@ docker exec <backend-container> python -m serving.analytics.public_stats
 
 Add `--dry-run` to print the snapshot instead of storing it, and `--weeks N` to
 change the 26-week window. The job reads `api_logs`, the hourly country rollup
-and account statuses, and stores aggregates only. The account figures count
-confirmed email addresses and leave out admin and internal roles. Per-item
-account counts below 3 are withheld.
+and account statuses, and stores aggregates only. Per-item account counts
+below 3 are withheld.
 The language section needs message text, so it is left out unless
 `DB_STORE_FULL_CONTENT=true`. A snapshot over 10 weeks of a busy gateway takes
 about a minute. The job keeps the 30 newest snapshots.
