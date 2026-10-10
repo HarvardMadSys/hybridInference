@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoints import endpoint_id_for_adapter
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -44,8 +45,12 @@ class ProviderEventSink(Protocol):
     checks against the registry's canonical outcome API.
     """
 
-    def record_success(self, endpoint_id: str) -> None:
-        """Record a successful request for *endpoint_id*."""
+    def record_liveness(self, endpoint_id: str) -> None:
+        """Record that *endpoint_id* emitted bytes, without claiming it served."""
+        ...
+
+    def record_success(self, endpoint_id: str, *, outcome: CompletionOutcome) -> None:
+        """Record a classified request outcome for *endpoint_id*."""
         ...
 
     def record_failure(
@@ -430,14 +435,28 @@ class HedgedAdapter(BaseAdapter):
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
                         if task is primary_task:
-                            self.event_sink.record_success(primary_endpoint)
+                            self.event_sink.record_success(
+                                primary_endpoint,
+                                outcome=(
+                                    CompletionOutcome.PROGRESS
+                                    if has_non_empty_content(str(winner_result))
+                                    else CompletionOutcome.EMPTY
+                                ),
+                            )
                             # self.config stays as primary.config (already correct).
                             if backup_task in pending:
                                 _release_backup_prefill()
                             backup_task.cancel()
                             await _safe_await_task(backup_task)
                         else:
-                            self.event_sink.record_success(_endpoint_id_from_adapter(self.backup))
+                            self.event_sink.record_success(
+                                _endpoint_id_from_adapter(self.backup),
+                                outcome=(
+                                    CompletionOutcome.PROGRESS
+                                    if has_non_empty_content(str(winner_result))
+                                    else CompletionOutcome.EMPTY
+                                ),
+                            )
                             # Swap config so RouteWise attributes to the real winner.
                             assert self.backup is not None
                             self.config = self.backup.config
@@ -770,7 +789,10 @@ class HedgedAdapter(BaseAdapter):
                 # Decide winner.
                 if primary_has_content and backup_has_content:
                     # Tiebreaker: primary wins.
-                    self.event_sink.record_success(primary_endpoint)
+                    self.event_sink.record_success(
+                        primary_endpoint,
+                        outcome=CompletionOutcome.PROGRESS,
+                    )
                     # self.config stays as primary.config (already correct).
                     self._schedule_stream_backup_cleanup(
                         next_task=backup_next_task,
@@ -780,7 +802,10 @@ class HedgedAdapter(BaseAdapter):
                     _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif primary_has_content:
-                    self.event_sink.record_success(primary_endpoint)
+                    self.event_sink.record_success(
+                        primary_endpoint,
+                        outcome=CompletionOutcome.PROGRESS,
+                    )
                     self._schedule_stream_backup_cleanup(
                         next_task=backup_next_task,
                         close_generator=True,
@@ -792,7 +817,10 @@ class HedgedAdapter(BaseAdapter):
                     if backup_content:
                         self._confirm_backup_prefill(self._stream_backup_dispatch)
                     endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
-                    self.event_sink.record_success(endpoint)
+                    self.event_sink.record_success(
+                        endpoint,
+                        outcome=CompletionOutcome.PROGRESS,
+                    )
                     # Swap config so RouteWise attributes to the real winner.
                     assert self.backup is not None
                     self.config = self.backup.config
@@ -843,7 +871,7 @@ class HedgedAdapter(BaseAdapter):
                 raise primary_error  # type: ignore[misc]
 
             # Return primary's buffer (even if empty -- no content from either).
-            self.event_sink.record_success(primary_endpoint)
+            self.event_sink.record_liveness(primary_endpoint)
             _cancel_task(race_deadline_task)
             return primary_gen, backup_gen, primary_buffer
 

@@ -29,6 +29,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from routing.completion_outcome import classify_completion_outcome
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
@@ -179,6 +180,21 @@ def _map_upstream_status(status: int) -> tuple[int, str]:
     if status in (401, 402, 403):
         return 502, "api_error"
     return status, _ERROR_TYPE_BY_STATUS.get(status, "api_error")
+
+
+def _anthropic_completion_text(response: Any) -> str | None:
+    """Extract generated Anthropic content, including text and tool use."""
+    if not isinstance(response, dict):
+        return None
+    text_parts = []
+    for block in response.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            text_parts.append(block["text"])
+        elif block.get("type") == "tool_use" and block.get("input") is not None:
+            text_parts.append(json.dumps(block["input"], sort_keys=True))
+    return "\n".join(text_parts) if text_parts else None
 
 
 _ANTHROPIC_PATHS = ("/v1/messages", "/anthropic/")
@@ -1775,7 +1791,14 @@ async def anthropic_messages(
                             # delta that carries content, not the mere fact
                             # that the upstream accepted the connection.
                             health_success_recorded = True
-                            health_registry.record_success(dispatch_endpoint_id)
+                            health_registry.record_success(
+                                dispatch_endpoint_id,
+                                outcome=classify_completion_outcome(
+                                    content=_anthropic_completion_text(response_acc),
+                                    http_status=200,
+                                    terminal=True,
+                                ),
+                            )
                             # Prefill is done once content flows; the prompt
                             # is resident, so the endpoint is decoding and
                             # its prefix is safe to remember.
@@ -2074,6 +2097,15 @@ async def anthropic_messages(
     try:
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
         prefill_load.release(prefill_lease, prefill_confirmed=True)
+        health_registry.record_success(
+            dispatch_endpoint_id,
+            outcome=classify_completion_outcome(
+                content=_anthropic_completion_text(resp),
+                usage=resp.get("usage") if isinstance(resp, dict) else None,
+                http_status=200,
+                terminal=True,
+            ),
+        )
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
         # contract text), one raised from inside adapter.messages() is an
@@ -2270,7 +2302,15 @@ async def anthropic_messages(
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the
     # recovery signal that closes an open circuit.
-    health_registry.record_success(dispatch_endpoint_id)
+    health_registry.record_success(
+        dispatch_endpoint_id,
+        outcome=classify_completion_outcome(
+            content=_anthropic_completion_text(resp),
+            usage=resp.get("usage") if isinstance(resp, dict) else None,
+            http_status=200,
+            terminal=True,
+        ),
+    )
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {

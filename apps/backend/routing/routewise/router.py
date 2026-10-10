@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import classify_completion_outcome
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
@@ -400,6 +401,22 @@ def _configured_worker_count() -> int | None:
     return None
 
 
+def _response_text(response: Any) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    choices = response.get("choices") or [{}]
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content") or message.get("reasoning_content")
+    return content if isinstance(content, str) else None
+
+
+def _response_usage(response: Any) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    usage = response.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
 class RouteWiseRouter:
     """RouteWise router.
 
@@ -522,8 +539,29 @@ class RouteWiseRouter:
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
 
-    def _on_success(self, endpoint_id: str) -> None:
-        self._health_registry.record_success(endpoint_id)
+    def _on_success(self, endpoint_id: str, response: Any = None) -> None:
+        """Record a semantic serving success, which requires a real response.
+
+        A transport-level 200 is not sufficient. The response is classified here
+        so endpoint health and prefix locality judge it by the same rule; with no
+        response to classify there is no evidence of useful work, so this records
+        liveness only and leaves serving state alone.
+        """
+        if response is None:
+            self._health_registry.record_liveness(endpoint_id)
+            return
+        self._health_registry.record_success(
+            endpoint_id,
+            outcome=classify_completion_outcome(
+                content=_response_text(response),
+                usage=_response_usage(response),
+                http_status=200,
+                terminal=True,
+            ),
+        )
+
+    def _on_liveness(self, endpoint_id: str) -> None:
+        self._health_registry.record_liveness(endpoint_id)
 
     def _on_failure(
         self,
@@ -2943,6 +2981,11 @@ class RouteWiseRouter:
         if not request_id:
             return
 
+        # Emit the expected-versus-observed record up front so it is published on
+        # every path, including terminal failures where no scope is resolved and
+        # nothing is committed. Diagnosing this incident required knowing what
+        # the router expected even for requests that changed no state.
+
         # Record authoritative cache evidence BEFORE the success/warming gate
         # so that a streamed empty-completion path (success=False) still
         # learns from an observed cache hit or miss.
@@ -2997,25 +3040,27 @@ class RouteWiseRouter:
         if scope is None:
             return
         generation = stashed.generations.get(obs.endpoint_id)
-        if not self.prefix_cache.remember(
-            scope,
-            stashed.blocks,
+
+        # Gate prefix WARMING on evidence that real work happened, not on
+        # transport success. A provider warmup notice is a well-formed HTTP 200
+        # containing text, so ``obs.success`` is True for it; treating that as
+        # warming replaced the stored blocks with the stub's own few blocks and
+        # collapsed every later estimate to zero for the rest of the session.
+        #
+        # A non-progressing outcome still refreshes liveness, so a transient
+        # hiccup cannot age strong existing evidence out through the TTL, but it
+        # must not overwrite what the entry asserts.
+        # record_outcome re-derives the gate from the outcome itself, so the
+        # invariant holds even if this router-level check is bypassed. It
+        # performs the warming write and the authoritative evidence recording in
+        # the one place that owns the outcome gate.
+        self.prefix_cache.record_outcome(
+            scope=scope,
+            blocks=stashed.blocks,
+            outcome=obs.outcome,
+            observed_cached_tokens=cached_tokens,
             generation=generation,
-        ):
-            return
-        # Record authoritative observed cache usage as evidence.
-        if cached_tokens is not None:
-            self.prefix_cache.record_evidence(
-                scope,
-                cached_tokens,
-                generation=generation,
-                blocks=stashed.blocks,
-                materialization_candidate=True,
-            )
-        else:
-            # No authoritative observation: successful dispatch may still
-            # establish potential warming.
-            self.prefix_cache.record_dispatch(scope, generation=generation)
+        )
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:
@@ -3306,7 +3351,7 @@ class RouteWiseRouter:
                 if not getattr(adapter, "reports_leg_outcomes", False):
                     # A composite adapter may replace its config with the leg
                     # that actually served, so resolve the endpoint after the call.
-                    self._on_success(endpoint_id_for_adapter(adapter))
+                    self._on_success(endpoint_id_for_adapter(adapter), result)
             if getattr(adapter, "config", None) is not original_config:
                 # Backup won: primary did not complete prefill. Release the
                 # primary lease without confirmation rather than confirming a
@@ -3402,7 +3447,7 @@ class RouteWiseRouter:
                             # other adapters, resolve the endpoint after first output
                             # in case the adapter swapped its serving config.
                             if not getattr(adapter, "reports_leg_outcomes", False):
-                                self._on_success(endpoint_id_for_adapter(adapter))
+                                self._on_liveness(endpoint_id_for_adapter(adapter))
                         yield chunk
                 else:
                     async for chunk in adapter.stream_chat_completion(messages, **params):
@@ -3423,7 +3468,7 @@ class RouteWiseRouter:
                             # other adapters, resolve the endpoint after first output
                             # in case the adapter swapped its serving config.
                             if not getattr(adapter, "reports_leg_outcomes", False):
-                                self._on_success(endpoint_id_for_adapter(adapter))
+                                self._on_liveness(endpoint_id_for_adapter(adapter))
                         yield chunk
         finally:
             # Release prefill lease if it was acquired. Idempotent: no-op if

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
@@ -114,6 +115,22 @@ class RouteConfig:
     published: bool = True
 
 
+def _response_text(response: Any) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    choices = response.get("choices") or [{}]
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content") or message.get("reasoning_content")
+    return content if isinstance(content, str) else None
+
+
+def _response_usage(response: Any) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    usage = response.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
 @dataclass(kw_only=True)
 class RoutingObservation:
     """Observation from a completed request, for online learning routers.
@@ -148,6 +165,40 @@ class RoutingObservation:
     leave it as ``None``. ``None`` and ``0`` MUST remain distinct.
     """
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
+
+    outcome: CompletionOutcome | None = field(default=None)
+    """Typed semantic result of the completed request.
+
+    Defaults to ``None`` so every existing construction site keeps working and
+    stays back-compatible. ``None`` means "not classified"; it is deliberately
+    NOT treated as evidence of useful work. See
+    :class:`routing.completion_outcome.CompletionOutcome`.
+    """
+
+    @property
+    def admits_real_work(self) -> bool:
+        """Whether this observation may be used as evidence that real work happened.
+
+        Transport success (``success=True``) is not sufficient: a provider warmup
+        notice is a well-formed HTTP 200 containing text, so it scores
+        ``success=True`` while being no work at all. Only an outcome that admits
+        real work qualifies. ``__post_init__`` guarantees ``outcome`` is never
+        ``None``, so an unclassified observation reads as ``UNKNOWN`` and does
+        not admit.
+        """
+        return bool(self.outcome.admits_real_work)
+
+    def __post_init__(self) -> None:
+        """Default an unset outcome to ``UNKNOWN``, never to a positive claim.
+
+        An observation that was not classified carries no evidence that work
+        happened, so it must not admit real work. Defaulting to ``PROGRESS``
+        whenever ``success`` is true would reintroduce the exact defect this
+        type exists to prevent: a warmup notice is a 200 with text, and would be
+        read as evidence of useful serving.
+        """
+        if self.outcome is None:
+            self.outcome = CompletionOutcome.UNKNOWN
 
 
 @dataclass
@@ -738,8 +789,29 @@ class FixedRouter:
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
 
-    def _on_success(self, endpoint_id: str) -> None:
-        self._health_registry.record_success(endpoint_id)
+    def _on_success(self, endpoint_id: str, response: Any = None) -> None:
+        """Record a semantic serving success, which requires a real response.
+
+        A transport-level 200 is not sufficient. The response is classified here
+        so endpoint health and prefix locality judge it by the same rule; with no
+        response to classify there is no evidence of useful work, so this records
+        liveness only and leaves serving state alone.
+        """
+        if response is None:
+            self._health_registry.record_liveness(endpoint_id)
+            return
+        self._health_registry.record_success(
+            endpoint_id,
+            outcome=classify_completion_outcome(
+                content=_response_text(response),
+                usage=_response_usage(response),
+                http_status=200,
+                terminal=True,
+            ),
+        )
+
+    def _on_liveness(self, endpoint_id: str) -> None:
+        self._health_registry.record_liveness(endpoint_id)
 
     def _on_failure(
         self,
@@ -2288,7 +2360,7 @@ class FixedRouter:
                     self._prefill_load.release(lease, prefill_confirmed=True)
                 finally:
                     self._prefill_load.release(lease)
-                self._on_success(endpoint_id)
+                self._on_success(endpoint_id, resp)
             # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
             if "_routing" not in resp:
@@ -2426,7 +2498,7 @@ class FixedRouter:
                             self._prefill_load.release(lease, prefill_confirmed=True)
                         finally:
                             self._prefill_load.release(lease)
-                        self._on_success(endpoint_id)
+                        self._on_success(endpoint_id, resp)
                     if "_routing" not in resp:
                         resp["_routing"] = {
                             "provider": execution.config.provider,
@@ -2599,7 +2671,7 @@ class FixedRouter:
                         # The loop below's first-token bookkeeping, for a
                         # first token that arrived while it was being awaited.
                         first = False
-                        self._on_success(primary_endpoint_id)
+                        self._on_liveness(primary_endpoint_id)
                         self._prefill_load.release(lease, prefill_confirmed=True)
                     for chunk in held:
                         yield chunk
@@ -2609,7 +2681,7 @@ class FixedRouter:
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
                         # Consider first non-empty token as a success signal for availability.
-                        self._on_success(primary_endpoint_id)
+                        self._on_liveness(primary_endpoint_id)
                         # First token means the prompt is resident and this
                         # endpoint is decoding, not prefilling. Holding the
                         # lease for the whole stream would let a long cheap
@@ -2776,7 +2848,7 @@ class FixedRouter:
                             held = await self._await_first_token(stream, fallback_watch)
                             if held and has_non_empty_content(held[-1]):
                                 first = False
-                                self._on_success(adapter_endpoint_id)
+                                self._on_liveness(adapter_endpoint_id)
                                 self._prefill_load.release(lease, prefill_confirmed=True)
                             for chunk in held:
                                 yield chunk
@@ -2784,7 +2856,7 @@ class FixedRouter:
                         async for chunk in stream:
                             if first and has_non_empty_content(chunk):
                                 first = False
-                                self._on_success(adapter_endpoint_id)
+                                self._on_liveness(adapter_endpoint_id)
                                 self._prefill_load.release(lease, prefill_confirmed=True)
                             yield chunk
                             chunks_yielded = True

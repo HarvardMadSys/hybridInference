@@ -317,7 +317,11 @@ async def test_streaming_success_recorded_once_per_stream(
     """Many content deltas must not inflate the endpoint's success count."""
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
 
     async def _iter():
         yield _MESSAGE_START
@@ -350,7 +354,11 @@ async def test_streaming_without_content_records_no_success(
     registry = anthropic_compat_router.endpoint_health_registry
     success_calls: list[str] = []
     failure_calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
 
     empty_delta = (
@@ -500,7 +508,11 @@ async def test_streaming_client_disconnect_is_not_an_upstream_failure(
     failure_calls: list[str] = []
     success_calls: list[str] = []
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
 
     async def _iter():
         yield _MESSAGE_START + _TEXT_DELTA

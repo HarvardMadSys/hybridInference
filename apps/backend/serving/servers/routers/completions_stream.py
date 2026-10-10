@@ -954,6 +954,10 @@ class StreamSession:
                 # model for a response the user got nothing out of.
                 success=not is_empty_completion,
                 cached_tokens=cached_tokens,
+                # response_for_db is built just above and carries the same content
+                # the emptiness check reads, so classify from it rather than from
+                # token counts alone.
+                response_body=response_for_db,
             )
 
     async def _finalize_failure(self, exc: BaseException) -> None:

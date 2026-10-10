@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitBreaker, _CircuitState
 from routing.routers import AllCircuitsOpenError, FixedRouter
 from routing.routewise.config import RouteWiseConfig
@@ -169,7 +170,7 @@ async def test_a_successful_probe_closes_the_circuit_and_readmits_everyone() -> 
     claim = registry.begin_dispatch(_RECOVERING_ENDPOINT)
     assert claim is not None
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
-        registry.record_success(_RECOVERING_ENDPOINT)
+        registry.record_success(_RECOVERING_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await asyncio.sleep(0)
     registry.end_dispatch(claim)
 

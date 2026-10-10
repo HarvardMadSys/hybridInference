@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from routing import endpoint_health
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import (
     _AUTH_ALERT_SCHEDULE_INTERVAL_SEC,
     EndpointHealthRegistry,
@@ -165,7 +166,7 @@ async def test_local_401_records_unavailability_and_trips_breaker(monkeypatch):
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
-    registry.record_success(_LOCAL_ENDPOINT)
+    registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[_LOCAL_ENDPOINT]["availability"]
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
@@ -195,7 +196,7 @@ async def test_ordinary_client_error_still_skips_the_breaker(monkeypatch, caplog
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
-    registry.record_success(_LOCAL_ENDPOINT)
+    registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[_LOCAL_ENDPOINT]
 
     with (
@@ -234,7 +235,7 @@ async def test_403_still_skips_the_breaker_on_any_endpoint(monkeypatch, endpoint
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
@@ -260,7 +261,7 @@ async def test_a_success_clears_the_auth_rejection_run(monkeypatch):
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
         assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 1
 
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 0
         # ``last_error_status`` is a sticky diagnostic breadcrumb, not liveness.
         assert registry.snapshot()[_LOCAL_ENDPOINT]["last_error_status"] == 401
@@ -411,7 +412,7 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
         await _drain_alerts()
 
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain_alerts()
 
         resolutions = _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
@@ -421,7 +422,7 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
         assert _STATE_TRANSITIONS.is_firing(key) is False
 
         # Exactly once per outage: further successes are not transitions.
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain_alerts()
         assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
 
@@ -566,7 +567,7 @@ async def test_a_success_still_closes_an_incident_that_outlived_other_failures(m
         await _drain_alerts()
         assert _STATE_TRANSITIONS.is_firing(key) is True
 
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain_alerts()
 
         assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
@@ -587,7 +588,7 @@ async def test_one_endpoints_recovery_does_not_close_anothers_incident(monkeypat
         registry.record_failure(_REMOTE_ENDPOINT, reason="chat_exception", exc=_StatusError(401))
         await _drain_alerts()
 
-        registry.record_success(_REMOTE_ENDPOINT)
+        registry.record_success(_REMOTE_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain_alerts()
 
     assert len(_auth_resolutions(mock_alert, _REMOTE_ENDPOINT)) == 1
@@ -650,7 +651,7 @@ async def test_remote_401_also_escalates(monkeypatch):
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
-    registry.record_success(_REMOTE_ENDPOINT)
+    registry.record_success(_REMOTE_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[_REMOTE_ENDPOINT]["availability"]
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
@@ -718,7 +719,7 @@ async def test_recovery_cannot_overtake_the_page_it_closes(monkeypatch):
         assert not posted, "the page must still be mid-delivery for this to be the race"
 
         # The operator fixes the key while that page is in flight.
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain_alerts()
         assert posted != ["resolved"], "the recovery was delivered before the page it closes"
 
@@ -751,7 +752,7 @@ async def test_a_recovery_scheduled_before_the_page_runs_still_closes_it(monkeyp
     with patch("serving.observability.alerts.alert_slack", new=_record):
         # No loop turn in between, so neither delivery has started yet.
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
-        registry.record_success(_LOCAL_ENDPOINT)
+        registry.record_success(_LOCAL_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _post_until(lambda: len(statuses) >= 2)
 
     assert statuses == ["firing", "resolved"]

@@ -1194,6 +1194,9 @@ async def chat_completions(
                 completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
                 success=True,
                 cached_tokens=cached_tokens,
+                # The classifier needs the body: without it a warmup notice that
+                # reports output tokens reads as progress, which is the incident.
+                response_body=response,
             )
 
         if is_synthetic_probe and provider != "router":
