@@ -23,23 +23,10 @@ jobs:
     # `gh` CLI this job's release step needs.
     runs-on: [self-hosted, Linux, trusted-automation]
     steps:
-      # main requires a pull request, and GITHUB_TOKEN cannot bypass that rule
-      # (run 38013224097 was rejected with GH006). The hybridinference-automation
-      # app is on main's bypass list, so the push below authenticates as the app.
-      # Unlike a GITHUB_TOKEN push, a push made with the app token triggers CI
-      # on main.
-      - name: Mint automation token
-        id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.BUMP_APP_ID }}
-          private-key: ${{ secrets.BUMP_APP_PRIVATE_KEY }}
-          permission-contents: write
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fast-forward main to dev
         id: sync
