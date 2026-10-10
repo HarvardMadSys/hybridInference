@@ -205,8 +205,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
       <section className="space-y-4" aria-labelledby="stats-countries">
         <SectionHeading id="stats-countries" title="Countries and territories">
           Requests came from {countries.total} countries and territories on {countries.continents}{' '}
-          continents. Location comes from the client&apos;s IP address, so traffic from cloud
-          servers and VPNs counts where the server is.
+          continents.
         </SectionHeading>
         <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card>
