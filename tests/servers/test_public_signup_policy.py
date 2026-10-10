@@ -16,6 +16,7 @@ from serving.config.runtime_settings import init_runtime_settings
 from serving.config.settings import get_settings
 from serving.servers.deps import get_db_logger, get_operational_store
 from serving.servers.routers import auth_routes, site_config
+from serving.utils.request_ip import ClientIpInfo
 from tests.fixtures.auth_factories import create_signup_request
 
 
@@ -130,6 +131,34 @@ async def test_signup_policy_without_runtime_settings(signup_client, monkeypatch
     assert response.status_code == (201 if enabled else 403)
     assert configuration.json()["features"]["public_signup"] is enabled
     assert store.create_user.await_count == int(enabled)
+
+
+@pytest.mark.asyncio
+async def test_signup_turnstile_omits_unresolved_remote_ip(signup_client, monkeypatch):
+    """Unresolved provenance must not be sent as Turnstile's ``remoteip``."""
+    client, _store = signup_client
+    monkeypatch.setattr(
+        auth_routes,
+        "get_client_ip_info",
+        lambda _request: ClientIpInfo(
+            client_ip="unknown",
+            peer_ip="10.0.0.2",
+            source="unknown",
+            trusted_proxy_headers=False,
+            resolved=False,
+        ),
+    )
+    verify = AsyncMock(return_value=True)
+    monkeypatch.setattr(auth_routes, "verify_turnstile_token", verify)
+
+    response = await client.post(
+        "/auth/signup",
+        json=create_signup_request(turnstile_token="valid-token"),
+    )
+
+    assert response.status_code == 201
+    verify.assert_awaited_once_with("valid-token", None)
+    assert auth_routes.log_admin_action.await_args.args[1] == "unknown"
 
 
 @pytest.mark.asyncio

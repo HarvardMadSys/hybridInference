@@ -26,8 +26,20 @@ from serving.utils.auth_failure_blocklist import (
     reset_auth_failure_block_state,
 )
 from serving.utils.logging import JsonFormatter
+from serving.utils.request_ip import ClientIpInfo
 
 AUTH = {"Authorization": "Bearer test-admin"}
+
+
+def _resolved_ip(ip: str) -> ClientIpInfo:
+    """Create resolved provenance for direct blocklist unit calls."""
+    return ClientIpInfo(
+        client_ip=ip,
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -84,8 +96,8 @@ async def test_list_is_empty_when_nothing_is_blocked(admin_client, small_limits)
 @pytest.mark.asyncio
 async def test_list_reports_an_active_block(admin_client, small_limits):
     client, _ = admin_client
-    await record_auth_failure("203.0.113.77")
-    await record_auth_failure("203.0.113.77")
+    await record_auth_failure(_resolved_ip("203.0.113.77"))
+    await record_auth_failure(_resolved_ip("203.0.113.77"))
 
     response = await client.get("/admin/auth-blocks", headers=AUTH)
 
@@ -113,9 +125,9 @@ async def test_list_reports_the_feature_being_off(admin_client, monkeypatch):
 @pytest.mark.asyncio
 async def test_clear_lifts_the_block_and_is_audited(admin_client, small_limits):
     client, audit = admin_client
-    await record_auth_failure("203.0.113.78")
-    await record_auth_failure("203.0.113.78")
-    assert (await is_ip_blocked("203.0.113.78"))[0] is True
+    await record_auth_failure(_resolved_ip("203.0.113.78"))
+    await record_auth_failure(_resolved_ip("203.0.113.78"))
+    assert (await is_ip_blocked(_resolved_ip("203.0.113.78")))[0] is True
 
     response = await client.post(
         "/admin/auth-blocks/clear",
@@ -125,13 +137,43 @@ async def test_clear_lifts_the_block_and_is_audited(admin_client, small_limits):
 
     assert response.status_code == 200
     assert response.json() == {"ip_bucket": "203.0.113.78", "cleared": True}
-    assert await is_ip_blocked("203.0.113.78") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("203.0.113.78")) == (False, 0)
 
     audit.assert_awaited_once()
     action = audit.await_args.args[2]
     details = audit.await_args.args[4]
     assert action == "auth_blocks.clear"
     assert details == {"ip": "203.0.113.78", "ip_bucket": "203.0.113.78", "cleared": True}
+
+
+@pytest.mark.asyncio
+async def test_clear_lifts_the_unresolved_global_block(admin_client, monkeypatch):
+    """The admin endpoint can clear the coarse unresolved-traffic guard."""
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 2)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 1000)
+    unresolved = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="172.19.0.1",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    await record_auth_failure(unresolved)
+    await record_auth_failure(unresolved)
+    assert (await is_ip_blocked(unresolved))[0] is True
+
+    client, _audit = admin_client
+    response = await client.post(
+        "/admin/auth-blocks/clear",
+        json={"ip": "unresolved-global"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ip_bucket": "unresolved-global", "cleared": True}
+    assert await is_ip_blocked(unresolved) == (False, 0)
 
 
 @pytest.mark.asyncio
@@ -154,8 +196,8 @@ async def test_clear_of_an_unblocked_source_is_200_not_404(admin_client, small_l
 async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_limits):
     """An IPv6 source is reported as its /64, and that key clears it."""
     client, _ = admin_client
-    await record_auth_failure("2001:db8:1234::11")
-    await record_auth_failure("2001:db8:1234::22")  # same /64, so same bucket
+    await record_auth_failure(_resolved_ip("2001:db8:1234::11"))
+    await record_auth_failure(_resolved_ip("2001:db8:1234::22"))  # same /64, so same bucket
 
     listed = (await client.get("/admin/auth-blocks", headers=AUTH)).json()["blocks"]
     assert [b["ip_bucket"] for b in listed] == ["2001:db8:1234::/64"]
@@ -168,7 +210,7 @@ async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_l
 
     assert response.status_code == 200
     assert response.json() == {"ip_bucket": "2001:db8:1234::/64", "cleared": True}
-    assert await is_ip_blocked("2001:db8:1234::11") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("2001:db8:1234::11")) == (False, 0)
 
 
 @pytest.mark.asyncio
@@ -184,9 +226,9 @@ async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, smal
     client, audit = admin_client
     audit.side_effect = RuntimeError("connection pool exhausted")
 
-    await record_auth_failure("203.0.113.81")
-    await record_auth_failure("203.0.113.81")
-    assert (await is_ip_blocked("203.0.113.81"))[0] is True
+    await record_auth_failure(_resolved_ip("203.0.113.81"))
+    await record_auth_failure(_resolved_ip("203.0.113.81"))
+    assert (await is_ip_blocked(_resolved_ip("203.0.113.81")))[0] is True
 
     with caplog.at_level(logging.ERROR, logger="serving.servers.routers.admin.auth_blocks"):
         response = await client.post(
@@ -198,7 +240,7 @@ async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, smal
     assert response.status_code == 200
     assert response.json() == {"ip_bucket": "203.0.113.81", "cleared": True}
     # The lift stands, so a retry does not report a confusing `cleared: false`.
-    assert await is_ip_blocked("203.0.113.81") == (False, 0)
+    assert await is_ip_blocked(_resolved_ip("203.0.113.81")) == (False, 0)
     audit.assert_awaited_once()
 
     # With the row lost, this log is the only server-side record of the clear,

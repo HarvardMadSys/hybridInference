@@ -706,7 +706,12 @@ async def anthropic_test_app(anthropic_app_services):
             token = x_api_key
         if token != ANTHROPIC_TEST_API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        return {"authenticated": True, "user_id": "test-user", "role": "internal"}
+        return {
+            "authenticated": True,
+            "user_id": "test-user",
+            "role": "internal",
+            "auth_key_hash": "anthropic-test-key-hash",
+        }
 
     app.dependency_overrides[verify_api_key] = fake_verify
 

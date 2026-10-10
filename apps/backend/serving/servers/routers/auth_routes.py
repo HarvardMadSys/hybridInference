@@ -47,7 +47,7 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
@@ -122,8 +122,9 @@ async def signup(
     Creates a new user with email and password. Sends verification email if SMTP is configured.
     User must verify email before they can generate an API key.
 
-    Per-IP signup rate limits are configurable via
+    Resolved-client signup rate limits are configurable via
     settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
+    Unresolved traffic uses separate coarse global budgets.
     """
     if not await is_public_signup_enabled():
         raise HTTPException(
@@ -132,9 +133,32 @@ async def signup(
         )
 
     # Record on entry so probing with varied payloads cannot bypass the limit.
-    client_ip = get_client_ip(request)
-    allowed, reason = await check_and_record_signup(client_ip)
+    # Per-IP rate limiting is applied only when client provenance is resolved.
+    # Unresolved clients never share a proxy bucket; deployments may fail
+    # closed for public signup with SIGNUP_REQUIRE_RESOLVED_CLIENT_IP=1.
+    client_ip_info = get_client_ip_info(request)
+    client_ip = client_ip_info.client_ip if client_ip_info.resolved else None
+    # Turnstile receives ``None`` for unresolved provenance, but the audit
+    # schema requires a non-null diagnostic value.  Keep the two contracts
+    # separate: ``unknown`` records what the gateway knows, not an identity
+    # that may be used for enforcement or affinity.
+    audit_ip = client_ip if client_ip_info.resolved else "unknown"
+    allowed, reason = await check_and_record_signup(request)
     if not allowed:
+        if reason == "unresolved":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Signup is temporarily unavailable because client network "
+                    "provenance could not be verified."
+                ),
+            )
+        if reason in {"unresolved_hour", "unresolved_day"}:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many unresolved signup attempts. Please try again later.",
+                headers={"Retry-After": ("86400" if reason == "unresolved_day" else "3600")},
+            )
         retry_after = "3600" if reason == "hour" else "86400"
         raise HTTPException(
             status_code=429,
@@ -238,7 +262,7 @@ async def signup(
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
     await log_admin_action(
         db_logger,
-        client_ip,
+        audit_ip,
         "create_user",
         user_id,
         {
@@ -284,11 +308,15 @@ async def login(
     settings.login_rate_limit_per_hour_per_ip):
     - 5 attempts per 15 minutes per email
     - 20 attempts per hour per IP
+    - unresolved callers use a separate coarse global hourly budget
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Record on entry so probing varied passwords cannot bypass the limit.
+    # Per-IP rate limiting is applied only when client provenance is resolved.
+    # Unresolved clients emit a warning and skip the per-IP bucket rather than
+    # sharing a proxy bucket; per-email limiting still applies.
     client_ip = get_client_ip(request)
 
     async def _record(
@@ -318,13 +346,20 @@ async def login(
                 failure_reason or "-",
             )
 
-    allowed, reason = await check_and_record_login(body.email, client_ip)
+    allowed, reason = await check_and_record_login(body.email, request)
     if not allowed:
-        retry_after = "3600" if reason == "ip" else "900"
-        await _record("failure", failure_reason="rate_limited", user_id=None)
+        retry_after = "3600" if reason in {"ip", "unresolved"} else "900"
+        failure_reason = (
+            "unresolved_traffic_rate_limited" if reason == "unresolved" else "rate_limited"
+        )
+        await _record("failure", failure_reason=failure_reason, user_id=None)
         raise HTTPException(
             status_code=429,
-            detail="Too many login attempts. Please try again later.",
+            detail=(
+                "Too many unresolved login attempts. Please try again later."
+                if reason == "unresolved"
+                else "Too many login attempts. Please try again later."
+            ),
             headers={"Retry-After": retry_after},
         )
 
