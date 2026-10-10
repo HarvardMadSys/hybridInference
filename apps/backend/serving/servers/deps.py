@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
+    from serving.storage.batch_store import BatchStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.responses_store import ResponseStore
 
@@ -108,6 +109,8 @@ class AppServices:
     pricing_lookup: PricingLookup | None = None
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
+    batch_store: BatchStore | None = None
+    batch_worker_task: Any | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -168,6 +171,13 @@ def get_response_store(
 ) -> ResponseStore | None:
     """Dependency to obtain the Responses API store (if configured)."""
     return getattr(services, "responses_store", None)
+
+
+def get_batch_store(
+    services: AppServices = Depends(get_services),
+) -> BatchStore | None:
+    """Dependency to obtain the batch processing store (if configured)."""
+    return getattr(services, "batch_store", None)
 
 
 def get_user_concurrency_limiter(

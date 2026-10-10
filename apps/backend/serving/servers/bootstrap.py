@@ -38,6 +38,7 @@ from serving.servers.routewise_compat import (
     RouteWiseSettingsResolver,
     apply_routewise_settings_to_router,
 )
+from serving.storage.batch_store import BatchStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
@@ -992,6 +993,7 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
     responses_store = None
+    batch_store = None
 
     if db_logger and db_logger.pool:
         # Resolve the erasure-fence derivation secret. Fail closed: if no
@@ -1026,6 +1028,9 @@ async def initialize() -> AppServices:
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
         )
+        batch_store = BatchStore(db_logger.pool)
+        await batch_store.initialize()
+        logger.info("Batch store initialized (Postgres)")
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
 
@@ -1479,11 +1484,28 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        batch_store=batch_store,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
+
+
+def start_batch_worker(app: Any, services: AppServices) -> None:
+    """Start the in-process batch scheduler when a batch store is configured.
+
+    Called from the app lifespan after ``app.state.services`` is set, so the
+    worker can synthesise requests whose scope carries the live app.
+    """
+    if getattr(services, "batch_store", None) is None:
+        return
+    from serving.batch_scheduler import BatchScheduler
+
+    scheduler = BatchScheduler(app=app, services=services, store=services.batch_store)
+    scheduler.start()
+    services.batch_worker_task = scheduler
+    logger.info("Batch scheduler started (in-process)")
 
 
 async def shutdown(services: AppServices) -> None:
@@ -1492,6 +1514,14 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Batch scheduler: stop before the stores it reads/writes are torn down.
+    batch_worker = getattr(services, "batch_worker_task", None)
+    if batch_worker is not None:
+        try:
+            await batch_worker.stop()
+        except Exception:
+            logger.exception("Batch scheduler shutdown failed")
+
     if services.routewise_settings_refresh_task is not None:
         services.routewise_settings_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
