@@ -282,6 +282,10 @@ _API_LOGS_COLUMN_MIGRATIONS = [
     # that bills everything else — no need to trust an agent's self-reported
     # usage. NULL for all ordinary traffic.
     ("agent_job_id", "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS agent_job_id TEXT"),
+    # Batch processing (#1503): the batch whose item produced this request, so
+    # a batch's spend is attributable and its own traffic can be excluded from
+    # the load gate's baseline. NULL for all non-batch traffic.
+    ("batch_job_id", "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS batch_job_id TEXT"),
 ]
 
 # ``(name, ddl)`` per index. Created after the column migrations so a predicate /
@@ -337,6 +341,13 @@ _API_LOGS_INDEXES = [
         # makes) is keyed purely on job id.
         "CREATE INDEX IF NOT EXISTS idx_api_logs_agent_job "
         "ON api_logs(agent_job_id) WHERE agent_job_id IS NOT NULL",
+    ),
+    (
+        "idx_api_logs_batch_job",
+        # Partial: batch traffic is a small slice; the load gate excludes it by
+        # this column and per-batch spend is summed on the same key.
+        "CREATE INDEX IF NOT EXISTS idx_api_logs_batch_job "
+        "ON api_logs(batch_job_id) WHERE batch_job_id IS NOT NULL",
     ),
     (
         "idx_api_logs_credential_owner",
@@ -445,7 +456,8 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
             last_user_msg_hash BIGINT,
             served_model_id TEXT,
             served_endpoint_id TEXT,
-            agent_job_id TEXT
+            agent_job_id TEXT,
+            batch_job_id TEXT
         )
     """)
 
