@@ -139,6 +139,11 @@ function StatsBody({ stats }: { stats: PublicStats }) {
       <div
         className={`grid gap-4 sm:grid-cols-2 ${registrations ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}
       >
+        <Tile
+          label="Tokens served"
+          value={fmtCompact(totals.tokens)}
+          note={`${fmtCompact(totals.requests)} requests from ${fmtWhole(totals.accounts)} accounts`}
+        />
         {registrations && (
           <>
             <Tile
@@ -157,11 +162,6 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             />
           </>
         )}
-        <Tile
-          label="Tokens served"
-          value={fmtCompact(totals.tokens)}
-          note={`${fmtCompact(totals.requests)} requests from ${fmtWhole(totals.accounts)} accounts`}
-        />
         <Tile
           label="Countries & territories"
           value={fmtWhole(countries.total)}
