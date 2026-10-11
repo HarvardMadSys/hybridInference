@@ -377,7 +377,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             <div className="mb-2 mt-1">
               <Legend
                 items={[
-                  { label: 'Clients (User-Agent)', color: KIND_COLORS.coding },
+                  { label: 'All agents', color: KIND_COLORS.coding },
                   { label: 'Known agent products', color: SECOND_SERIES },
                 ]}
               />
@@ -389,7 +389,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
               series={[
                 {
                   key: 'clients',
-                  name: 'Clients',
+                  name: 'All agents',
                   color: KIND_COLORS.coding,
                   values: agents.weekly.map((w) => w.clients),
                 },
