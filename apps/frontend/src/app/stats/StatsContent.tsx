@@ -139,6 +139,11 @@ function StatsBody({ stats }: { stats: PublicStats }) {
       <div
         className={`grid gap-4 sm:grid-cols-2 ${registrations ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}
       >
+        <Tile
+          label="Tokens served"
+          value={fmtCompact(totals.tokens)}
+          note={`${fmtCompact(totals.requests)} requests from ${fmtWhole(totals.accounts)} accounts`}
+        />
         {registrations && (
           <>
             <Tile
@@ -157,11 +162,6 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             />
           </>
         )}
-        <Tile
-          label="Tokens served"
-          value={fmtCompact(totals.tokens)}
-          note={`${fmtCompact(totals.requests)} requests from ${fmtWhole(totals.accounts)} accounts`}
-        />
         <Tile
           label="Countries & territories"
           value={fmtWhole(countries.total)}
@@ -377,7 +377,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             <div className="mb-2 mt-1">
               <Legend
                 items={[
-                  { label: 'Clients (User-Agent)', color: KIND_COLORS.coding },
+                  { label: 'All agents', color: KIND_COLORS.coding },
                   { label: 'Known agent products', color: SECOND_SERIES },
                 ]}
               />
@@ -389,7 +389,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
               series={[
                 {
                   key: 'clients',
-                  name: 'Clients',
+                  name: 'All agents',
                   color: KIND_COLORS.coding,
                   values: agents.weekly.map((w) => w.clients),
                 },
