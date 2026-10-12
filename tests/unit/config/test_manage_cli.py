@@ -98,7 +98,10 @@ def test_reset_falls_back_to_the_default(store, capsys) -> None:
 
     assert manage.main(["reset", "JWT_ALGORITHM"]) == 0
 
-    assert "JWT_ALGORITHM" not in store.rows
+    # A reset row, which stores no value, so the environment and then the
+    # default apply from now on.
+    assert store.rows["JWT_ALGORITHM"].source == "reset"
+    assert store.resets == ["JWT_ALGORITHM"]
     out = capsys.readouterr().out
     assert "JWT_ALGORITHM=HS256" in out
     assert "source: default" in out

@@ -72,6 +72,71 @@ async def test_a_deleted_row_falls_back_to_the_environment(config_env, monkeypat
     assert app_config.config_value("SITE_NAME") == "From env"
 
 
+async def _restart(store: FakeAppConfigStore) -> None:
+    """Boot again on *store*, as a new process reading today's environment."""
+    app_config.reset_state()
+    get_settings.cache_clear()
+    await _boot(store)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_keeps_following_the_environment_across_restarts(
+    config_env, monkeypatch
+) -> None:
+    monkeypatch.setenv("SITE_NAME", "First")
+    monkeypatch.setenv("FRONTEND_URL", "https://first.example")
+    store = FakeAppConfigStore()
+    await _boot(store)
+    assert store.rows["SITE_NAME"].source == "env_import"
+
+    await app_config.delete("SITE_NAME", updated_by="admin")
+    await app_config.delete("FRONTEND_URL", updated_by="admin")
+
+    # The next boot must not import today's environment value as if it had been
+    # set here: a later change to the environment still applies.
+    monkeypatch.setenv("SITE_NAME", "Second")
+    monkeypatch.setenv("FRONTEND_URL", "https://second.example")
+    await _restart(store)
+
+    assert app_config.config_value("SITE_NAME") == "Second"
+    assert get_settings().frontend_url == "https://second.example"
+    assert "SITE_NAME" not in await store.fetch_all()
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+    assert entries["SITE_NAME"]["source"] == "environment"
+    assert entries["SITE_NAME"]["environment_ignored"] is False
+
+    # And the change after that, which a re-imported row would have hidden.
+    monkeypatch.setenv("SITE_NAME", "Third")
+    await _restart(store)
+    assert app_config.config_value("SITE_NAME") == "Third"
+
+    # Set here again, the stored value wins as before, restarts included.
+    await app_config.update({"SITE_NAME": "From admin"}, updated_by="admin")
+    await _restart(store)
+    assert app_config.config_value("SITE_NAME") == "From admin"
+
+
+@pytest.mark.asyncio
+async def test_a_reset_secret_is_generated_again_only_without_an_environment_value(
+    config_env, monkeypatch
+) -> None:
+    from_env = "e" * 64
+    monkeypatch.setenv("JWT_SECRET_KEY", from_env)
+    store = FakeAppConfigStore()
+    await _boot(store)
+    await app_config.delete("JWT_SECRET_KEY", updated_by="admin")
+
+    await _restart(store)
+    assert store.rows["JWT_SECRET_KEY"].source == "reset"
+    assert get_settings().jwt_secret_key == from_env
+
+    # Nothing sets it any more: it is generated, in place of the reset row.
+    monkeypatch.delenv("JWT_SECRET_KEY")
+    await _restart(store)
+    assert store.rows["JWT_SECRET_KEY"].source == "generated"
+    assert get_settings().jwt_secret_key == store.rows["JWT_SECRET_KEY"].value != from_env
+
+
 # --- boot: import and generation ---------------------------------------------
 
 
@@ -699,6 +764,13 @@ async def test_delete_refusals(config_env) -> None:
     store = FakeAppConfigStore()
     await _boot(store)
 
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.delete("SITE_NAME", updated_by="admin")
+    assert excinfo.value.status_code == 404
+
+    # A reset stores nothing, so there is nothing left to reset a second time.
+    await app_config.update({"SITE_NAME": "x"}, updated_by="admin")
+    await app_config.delete("SITE_NAME", updated_by="admin")
     with pytest.raises(app_config.ConfigUpdateError) as excinfo:
         await app_config.delete("SITE_NAME", updated_by="admin")
     assert excinfo.value.status_code == 404

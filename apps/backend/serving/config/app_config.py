@@ -630,7 +630,11 @@ async def load(
 async def _import_environment(
     store: AppConfigStore, rows: dict[str, ConfigRow]
 ) -> dict[str, ConfigRow]:
-    """Store every registered setting the environment sets and the table lacks."""
+    """Store every registered setting the environment sets and the table lacks.
+
+    A setting an administrator reset is left out by the store: it keeps
+    following the environment instead of taking today's value for good.
+    """
     imports = []
     for key, entry in _build_entries(rows).items():
         value = _environ_value(key, entry)
@@ -653,7 +657,11 @@ async def _import_environment(
 async def _generate_secrets(
     store: AppConfigStore, rows: dict[str, ConfigRow]
 ) -> dict[str, ConfigRow]:
-    """Generate the secrets nothing has set.
+    """Generate the secrets nothing has set: neither a row nor the environment.
+
+    A secret an administrator reset to its environment value is generated
+    again only once the environment no longer has one, and then replaces the
+    reset row.
 
     Raises:
         ConfigBootstrapError: ``API_KEY_SECRET`` would have to be generated
@@ -662,7 +670,7 @@ async def _generate_secrets(
     entries = _build_entries(rows)
     generated: list[ConfigRow] = []
     for key, entry in entries.items():
-        if not entry.generated or key in rows:
+        if not entry.generated or key in rows or (_environ_value(key, entry) or "").strip():
             continue
         if key == "API_KEY_SECRET" and await store.api_keys_exist():
             raise ConfigBootstrapError(
@@ -682,7 +690,7 @@ async def _generate_secrets(
         )
     if not generated:
         return rows
-    added = await store.insert_missing(generated)
+    added = await store.insert_missing(generated, replace_reset=True)
     if added:
         logger.info("Generated %s into the database", ", ".join(sorted(added)))
     # Another worker may have won the race; re-read whichever value stuck.
@@ -984,7 +992,11 @@ async def update(
 
 
 async def delete(key: str, *, updated_by: str) -> ConfigChange:
-    """Remove *key*'s stored value; it falls back to the environment, then its default.
+    """Reset *key*: it follows the environment, then its default, from now on.
+
+    The stored value is replaced by a reset row, which keeps the next boot from
+    importing the environment value as if it had been set here, so a later
+    change to the environment still applies. A custom variable is removed.
 
     Raises:
         ConfigUpdateError: 403 for an environment-only name, 409 for an
@@ -1015,7 +1027,10 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
         old_value=None if secret else _typed(entry, row.value),
         new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
     )
-    await store.delete(key)
+    if entry.origin == "custom":
+        await store.delete(key)
+    else:
+        await store.reset(key, secret=secret, updated_by=updated_by)
     await _reload(store)
     logger.info("Configuration %s reset by %s", key, updated_by)
     return change

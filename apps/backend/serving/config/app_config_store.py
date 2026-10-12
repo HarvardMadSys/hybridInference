@@ -5,6 +5,12 @@ environment variable takes (``true``, ``8``, ``a,b,c``), so importing the
 environment is lossless and one coercion path serves both sources. It is
 created here rather than with the logging or operational schemas because the
 configuration is read before either of those stores exists.
+
+A row whose ``source`` is :data:`RESET_SOURCE` stores no value. It records that
+an administrator reset the setting, which follows the environment, then its
+default, from then on: :meth:`AppConfigStore.fetch_all` leaves it out, and its
+key blocks the boot-time import, which would otherwise store the environment
+value again and stop the setting following later changes to the environment.
 """
 
 from __future__ import annotations
@@ -38,15 +44,39 @@ CREATE TABLE IF NOT EXISTS app_config (
 )
 """
 
-SELECT_ALL_SQL = "SELECT key, value, secret, source, updated_at, updated_by FROM app_config"
+#: The ``source`` of a row that marks a reset instead of storing a value.
+RESET_SOURCE = "reset"
+
+SELECT_ALL_SQL = (
+    "SELECT key, value, secret, source, updated_at, updated_by FROM app_config "
+    f"WHERE source <> '{RESET_SOURCE}'"
+)
 
 # Rows that do not exist yet, and only those: several workers booting at once
 # all try the same import, and an administrator's value must never be
-# overwritten by an environment one. RETURNING names the rows this call added.
+# overwritten by an environment one. A reset row conflicts too, which is what
+# keeps a reset setting following the environment. RETURNING names the rows
+# this call added.
 INSERT_MISSING_SQL = """
 INSERT INTO app_config (key, value, secret, source, updated_by)
 SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[])
 ON CONFLICT (key) DO NOTHING
+RETURNING key
+"""
+
+# The same, except that a reset row is replaced: for a generated secret, which
+# must exist once neither the table nor the environment holds one. The row lock
+# makes a concurrent worker re-check the condition against the winner's row.
+INSERT_MISSING_OR_RESET_SQL = f"""
+INSERT INTO app_config (key, value, secret, source, updated_by)
+SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[])
+ON CONFLICT (key) DO UPDATE SET
+    value = EXCLUDED.value,
+    secret = EXCLUDED.secret,
+    source = EXCLUDED.source,
+    updated_at = NOW(),
+    updated_by = EXCLUDED.updated_by
+WHERE app_config.source = '{RESET_SOURCE}'
 RETURNING key
 """
 
@@ -58,6 +88,17 @@ ON CONFLICT (key) DO UPDATE SET
     secret = EXCLUDED.secret,
     source = EXCLUDED.source,
     updated_at = EXCLUDED.updated_at,
+    updated_by = EXCLUDED.updated_by
+"""
+
+RESET_SQL = f"""
+INSERT INTO app_config (key, value, secret, source, updated_at, updated_by)
+VALUES ($1, '', $2, '{RESET_SOURCE}', NOW(), $3)
+ON CONFLICT (key) DO UPDATE SET
+    value = '',
+    secret = EXCLUDED.secret,
+    source = '{RESET_SOURCE}',
+    updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
 """
 
@@ -97,7 +138,7 @@ class AppConfigStore:
             await conn.execute(CREATE_TABLE_SQL)
 
     async def fetch_all(self) -> dict[str, ConfigRow]:
-        """Return every stored setting, keyed by name."""
+        """Return every stored setting, keyed by name; a reset row stores none."""
         async with self._connection() as conn:
             records = await conn.fetch(SELECT_ALL_SQL)
         return {
@@ -112,13 +153,21 @@ class AppConfigStore:
             for record in records
         }
 
-    async def insert_missing(self, rows: Sequence[ConfigRow]) -> list[str]:
-        """Insert the rows whose keys are not stored yet; return the keys added."""
+    async def insert_missing(
+        self, rows: Sequence[ConfigRow], *, replace_reset: bool = False
+    ) -> list[str]:
+        """Insert the rows whose keys are not stored yet; return the keys added.
+
+        Args:
+            rows: The rows to add.
+            replace_reset: Also replace a reset row. Without it, a key an
+                administrator reset is left alone.
+        """
         if not rows:
             return []
         async with self._connection() as conn:
             records = await conn.fetch(
-                INSERT_MISSING_SQL,
+                INSERT_MISSING_OR_RESET_SQL if replace_reset else INSERT_MISSING_SQL,
                 [row.key for row in rows],
                 [row.value for row in rows],
                 [row.secret for row in rows],
@@ -137,8 +186,13 @@ class AppConfigStore:
                 [(row.key, row.value, row.secret, row.source, row.updated_by) for row in rows],
             )
 
+    async def reset(self, key: str, *, secret: bool, updated_by: str) -> None:
+        """Replace *key*'s stored value with a reset row, so it follows the environment."""
+        async with self._connection() as conn:
+            await conn.execute(RESET_SQL, key, secret, updated_by)
+
     async def delete(self, key: str) -> bool:
-        """Remove one stored setting; return whether a row existed."""
+        """Remove one stored setting outright; return whether a row existed."""
         async with self._connection() as conn:
             status = await conn.execute(DELETE_SQL, key)
         return status.rsplit(" ", 1)[-1] != "0"

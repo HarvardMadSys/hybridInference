@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import asyncpg
@@ -91,6 +92,60 @@ async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> N
         assert set(await single.fetch_all()) == {"SITE_NAME", "SMTP_PASSWORD"}
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> None:
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    await store.insert_missing(
+        [
+            ConfigRow("SITE_NAME", "Imported", source="env_import"),
+            ConfigRow("JWT_SECRET_KEY", "from-env", secret=True, source="env_import"),
+        ]
+    )
+
+    await store.reset("SITE_NAME", secret=False, updated_by="admin@example.com")
+    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com")
+    await store.reset("SITE_NAME", secret=False, updated_by="admin@example.com")  # idempotent
+    assert await store.fetch_all() == {}
+
+    # The boot-time import leaves a reset key alone, so it keeps following the
+    # environment...
+    assert await store.insert_missing([ConfigRow("SITE_NAME", "Again", source="env_import")]) == []
+    assert await store.fetch_all() == {}
+    # ...a secret that has to be generated replaces the reset row...
+    generated = ConfigRow("JWT_SECRET_KEY", "generated", secret=True, source="generated")
+    assert await store.insert_missing([generated], replace_reset=True) == ["JWT_SECRET_KEY"]
+    # ...but never a stored value.
+    newer = ConfigRow("JWT_SECRET_KEY", "newer", secret=True, source="generated")
+    assert await store.insert_missing([newer], replace_reset=True) == []
+    assert (await store.fetch_all())["JWT_SECRET_KEY"].value == "generated"
+
+    # An administrator's value replaces a reset row.
+    await store.write([ConfigRow("SITE_NAME", "By admin", updated_by="admin@example.com")])
+    assert (await store.fetch_all())["SITE_NAME"].value == "By admin"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_workers_replace_a_reset_secret_once(pool) -> None:
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com")
+
+    results = await asyncio.gather(
+        *(
+            store.insert_missing(
+                [ConfigRow("JWT_SECRET_KEY", value, secret=True, source="generated")],
+                replace_reset=True,
+            )
+            for value in ("worker-a", "worker-b")
+        )
+    )
+
+    assert sorted(len(added) for added in results) == [0, 1]
+    winner = "worker-a" if results[0] else "worker-b"
+    assert (await store.fetch_all())["JWT_SECRET_KEY"].value == winner
 
 
 @pytest.mark.asyncio
