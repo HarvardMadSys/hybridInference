@@ -661,13 +661,13 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model))
+        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
     route = router_exec.routes[model]
     if not route.published:
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model))
+        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
     if model_visibility_resolver is not None:
@@ -700,7 +700,7 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model))
+        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
     # Two different reasons, one answer. The owner disabled this model, or a
     # grant-authenticated caller was not given it — either way the caller is
     # told it does not exist, so a sandbox cannot enumerate what is outside its
@@ -729,7 +729,7 @@ async def chat_completions(
                 },
             )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model))
+        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
 
     # Extract parameters
     params: dict[str, Any] = {"stream": effective_stream}

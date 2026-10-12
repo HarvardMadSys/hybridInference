@@ -266,7 +266,9 @@ async def create_embeddings(
             error=f"Embedding model '{model}' not found",
         )
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model, noun="Embedding model"))
+        raise HTTPException(
+            404, model_not_found_detail(model, user_ctx=user_ctx, noun="Embedding model")
+        )
 
     adapter = embedding_adapters[model]
     adapter_config = getattr(adapter, "config", None)

@@ -875,22 +875,73 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_a_model_skipped_for_missing_configuration_says_so(
-    completions_client: AsyncClient,
+async def test_a_model_skipped_for_missing_configuration_says_so_to_an_admin(
+    completions_app: FastAPI, completions_client: AsyncClient
 ):
-    from serving.servers.model_availability import record_skipped_models
+    from serving.servers.auth import verify_api_key
+    from serving.servers.model_availability import record_skipped_models, reset
     from serving.servers.registry import ModelLoadReport
 
     record_skipped_models(ModelLoadReport(skipped_models={"needs-key": []}))
-
-    resp = await completions_client.post(
-        "/v1/chat/completions",
-        json={"model": "needs-key", "messages": [{"role": "user", "content": "Hi"}]},
-    )
+    completions_app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": "u-admin",
+        "role": "admin",
+        "authenticated": True,
+    }
+    try:
+        resp = await completions_client.post(
+            "/v1/chat/completions",
+            json={"model": "needs-key", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+    finally:
+        reset()
 
     assert resp.status_code == status.HTTP_404_NOT_FOUND
     assert "configuration is incomplete" in resp.text
     assert "Contact the administrator" in resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caller",
+    [
+        {"user_id": "u-free", "role": "free", "authenticated": True},
+        # A sandbox holding an administrator's grant for another model.
+        {
+            "user_id": "u-admin",
+            "role": "admin",
+            "authenticated": True,
+            "agent_allowed_models": ["gpt-4"],
+        },
+    ],
+)
+async def test_a_skipped_model_looks_unknown_to_everyone_else(
+    completions_app: FastAPI, completions_client: AsyncClient, caller
+):
+    """Only the uniform 404: a grant-scoped caller must not enumerate defined models."""
+    from serving.servers.auth import verify_api_key
+    from serving.servers.model_availability import record_skipped_models, reset
+    from serving.servers.registry import ModelLoadReport
+
+    record_skipped_models(ModelLoadReport(skipped_models={"needs-key": []}))
+    completions_app.dependency_overrides[verify_api_key] = lambda: caller
+    try:
+        skipped = await completions_client.post(
+            "/v1/chat/completions",
+            json={"model": "needs-key", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        unknown = await completions_client.post(
+            "/v1/chat/completions",
+            json={"model": "never-defined", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+    finally:
+        reset()
+
+    assert skipped.status_code == unknown.status_code == status.HTTP_404_NOT_FOUND
+    assert "configuration is incomplete" not in skipped.text
+    assert skipped.text.replace("needs-key", "MODEL") == unknown.text.replace(
+        "never-defined", "MODEL"
+    )
 
 
 @pytest.mark.asyncio

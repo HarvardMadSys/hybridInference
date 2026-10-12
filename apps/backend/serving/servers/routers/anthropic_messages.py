@@ -513,14 +513,14 @@ async def _resolve(
     route = router_exec.routes.get(canonical)
     if route is None or not route.published:
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model_id, canonical))
+        raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
     if model_visibility_resolver is not None:
         required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model_id, canonical))
+        raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
     # Same answer for "the owner disabled it" and "your grant does not name
     # it". Checked on the canonical id, which the alias resolution above has
     # already produced — a grant stores canonical ids, so scoping on the
@@ -529,7 +529,7 @@ async def _resolve(
         canonical, user_ctx
     ):
         req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model_id, canonical))
+        raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")
     if not for_dispatch:
