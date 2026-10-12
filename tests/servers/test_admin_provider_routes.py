@@ -33,6 +33,39 @@ from serving.servers.routers.admin.provider_routes import (
 from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
+
+
+def test_extensions_can_register_replace_and_remove_provider_targets(monkeypatch):
+    targets = provider_routes.PROVIDER_TARGETS
+    target = provider_routes.ProviderTarget(
+        provider="extension",
+        label="Extension",
+        kind="openai_compat",
+        key_provider="extension",
+        default_base_url="https://extension.example/v1",
+    )
+    monkeypatch.setitem(targets, "extension", target)
+    assert targets["extension"] == target
+    assert dict(targets)["extension"] == target
+    replacement = provider_routes.replace(target, label="Updated")
+    targets.update({"extension": replacement})
+    assert targets["extension"] == replacement
+    del targets["extension"]
+    assert "extension" not in targets
+
+
+def test_extension_target_overrides_keep_dynamic_base_url_settings(monkeypatch):
+    targets = provider_routes.PROVIDER_TARGETS
+    custom = provider_routes.replace(
+        targets["minimax"], default_base_url="https://extension.example/v1"
+    )
+    monkeypatch.setattr(provider_routes, "config_value", lambda key: None)
+    monkeypatch.setitem(targets, "minimax", custom)
+    assert targets["minimax"] == custom
+    monkeypatch.setattr(provider_routes, "config_value", lambda key: "https://db.example/v1")
+    assert targets["minimax"].default_base_url == "https://db.example/v1"
+
+
 NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
 # Inside the scheduled peak window, after its activation timestamp.
 _PEAK_INSTANT = datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc)

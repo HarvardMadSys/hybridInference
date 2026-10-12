@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -9,7 +11,7 @@ from typing import TYPE_CHECKING
 from serving.config.app_config_store import RESET_SOURCE, ConfigRow
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import AsyncIterator, Iterable, Sequence
 
 
 class FakeAppConfigStore:
@@ -26,6 +28,17 @@ class FakeAppConfigStore:
         self.writes: list[list[ConfigRow]] = []
         self.deleted: list[str] = []
         self.resets: list[str] = []
+        self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[FakeAppConfigStore]:
+        async with self._lock:
+            before = self.rows.copy()
+            try:
+                yield self
+            except BaseException:
+                self.rows = before
+                raise
 
     @staticmethod
     def _stamped(row: ConfigRow) -> ConfigRow:

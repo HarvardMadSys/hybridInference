@@ -104,6 +104,10 @@ ON CONFLICT (key) DO UPDATE SET
 
 DELETE_SQL = "DELETE FROM app_config WHERE key = $1"
 
+# Shared by boot import, API updates/resets and the recovery CLI. The lock is
+# database-wide, so separate workers also validate against the preceding write.
+CONFIG_WRITE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hybridinference:app-config'))"
+
 
 @dataclass(frozen=True)
 class ConfigRow:
@@ -136,6 +140,18 @@ class AppConfigStore:
         """Create the table when it is missing."""
         async with self._connection() as conn:
             await conn.execute(CREATE_TABLE_SQL)
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncIterator[AppConfigStore]:
+        """Serialize a read/validate/write operation on one database connection.
+
+        Acquire the lock before reading. READ COMMITTED then sees the previous
+        writer's commit, even when this transaction waited for it. Release both
+        the transaction and the lock before reloading the process's cache.
+        """
+        async with self._connection() as conn, conn.transaction(isolation="read_committed"):
+            await conn.execute(CONFIG_WRITE_LOCK_SQL)
+            yield AppConfigStore(conn)
 
     async def fetch_all(self) -> dict[str, ConfigRow]:
         """Return every stored setting, keyed by name; a reset row stores none."""

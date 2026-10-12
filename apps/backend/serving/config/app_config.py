@@ -619,7 +619,14 @@ def _current_settings() -> Settings:
 
 
 def _requirement_context() -> registry.RequirementContext:
+    from serving.utils import email
+
     settings = _current_settings()
+    try:
+        email_enabled = email.is_email_enabled()
+    except ValidationError:
+        # The recovery CLI must also work before Settings can be constructed.
+        email_enabled = False
     signup_open = _manifest_allows_signup() and _runtime_flag(
         "signup_enabled", settings.signup_enabled
     )
@@ -631,6 +638,7 @@ def _requirement_context() -> registry.RequirementContext:
             "signup_require_email_verification", settings.signup_require_email_verification
         ),
         value=_configured,
+        email_enabled=email_enabled,
     )
 
 
@@ -747,10 +755,13 @@ async def load(
     _STATE.database_enabled = database_enabled
     _STATE.discovered = _discover()
     await store.ensure_schema()
-    rows = await store.fetch_all()
     if bootstrap:
-        rows = await _import_environment(store, rows)
-        rows = await _generate_secrets(store, rows)
+        async with store.transaction() as transaction:
+            rows = await transaction.fetch_all()
+            rows = await _import_environment(transaction, rows)
+            rows = await _generate_secrets(transaction, rows)
+    else:
+        rows = await store.fetch_all()
     _STATE.loaded = True
     _apply(rows, boot=True)
 
@@ -1254,30 +1265,35 @@ async def update(
     if not values:
         return []
     store = await _writable_store()
-    rows = await store.fetch_all()
-    pending: list[ConfigRow] = []
-    changes: list[ConfigChange] = []
-    for key, value in values.items():
-        is_new = key not in rows
-        entry = _writable_entry(key, rows, new_secret=bool((new_secrets or {}).get(key)) and is_new)
-        reason = _immutable_reason(entry, rows)
-        if reason is not None:
-            raise ConfigUpdateError(409, reason)
-        raw = _stored_form(entry, value)
-        secret = entry.secret or (not is_new and rows[key].secret)
-        pending.append(ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by))
-        changes.append(
-            ConfigChange(
-                key,
-                secret,
-                old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
-                new_value=None if secret else _typed(entry, raw),
+    async with store.transaction() as transaction:
+        rows = await transaction.fetch_all()
+        pending: list[ConfigRow] = []
+        changes: list[ConfigChange] = []
+        for key, value in values.items():
+            is_new = key not in rows
+            entry = _writable_entry(
+                key, rows, new_secret=bool((new_secrets or {}).get(key)) and is_new
             )
-        )
-    damage = _damage(rows, {**rows, **{row.key: row for row in pending}}, list(values))
-    if damage is not None:
-        raise ConfigUpdateError(400, damage.saving())
-    await store.write(pending)
+            reason = _immutable_reason(entry, rows)
+            if reason is not None:
+                raise ConfigUpdateError(409, reason)
+            raw = _stored_form(entry, value)
+            secret = entry.secret or (not is_new and rows[key].secret)
+            pending.append(
+                ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
+            )
+            changes.append(
+                ConfigChange(
+                    key,
+                    secret,
+                    old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
+                    new_value=None if secret else _typed(entry, raw),
+                )
+            )
+        damage = _damage(rows, {**rows, **{row.key: row for row in pending}}, list(values))
+        if damage is not None:
+            raise ConfigUpdateError(400, damage.saving())
+        await transaction.write(pending)
     await _reload(store)
     return changes
 
@@ -1301,32 +1317,33 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
             403, f"{key} stays in the environment ({registry.ENVIRONMENT_ONLY[key]})."
         )
     store = await _writable_store()
-    rows = await store.fetch_all()
-    entry = _entry_for(key, rows)
-    if entry is not None and entry.immutable:
-        raise ConfigUpdateError(409, f"{key} cannot be changed.")
-    row = rows.get(key)
-    if row is None or entry is None:
-        raise ConfigUpdateError(404, f"{key} has no stored value.")
-    if entry.generated and not (_environ_value(key, entry) or "").strip():
-        raise ConfigUpdateError(
-            409, f"{key} has no environment value to fall back to; replace it instead."
+    async with store.transaction() as transaction:
+        rows = await transaction.fetch_all()
+        entry = _entry_for(key, rows)
+        if entry is not None and entry.immutable:
+            raise ConfigUpdateError(409, f"{key} cannot be changed.")
+        row = rows.get(key)
+        if row is None or entry is None:
+            raise ConfigUpdateError(404, f"{key} has no stored value.")
+        if entry.generated and not (_environ_value(key, entry) or "").strip():
+            raise ConfigUpdateError(
+                409, f"{key} has no environment value to fall back to; replace it instead."
+            )
+        secret = entry.secret or row.secret
+        remaining = {name: stored for name, stored in rows.items() if name != key}
+        damage = _damage(rows, remaining, [key])
+        if damage is not None:
+            raise ConfigUpdateError(409, damage.resetting())
+        change = ConfigChange(
+            key,
+            secret,
+            old_value=None if secret else _typed(entry, row.value),
+            new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
         )
-    secret = entry.secret or row.secret
-    remaining = {name: stored for name, stored in rows.items() if name != key}
-    damage = _damage(rows, remaining, [key])
-    if damage is not None:
-        raise ConfigUpdateError(409, damage.resetting())
-    change = ConfigChange(
-        key,
-        secret,
-        old_value=None if secret else _typed(entry, row.value),
-        new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
-    )
-    if entry.origin == "custom":
-        await store.delete(key)
-    else:
-        await store.reset(key, secret=secret, updated_by=updated_by)
+        if entry.origin == "custom":
+            await transaction.delete(key)
+        else:
+            await transaction.reset(key, secret=secret, updated_by=updated_by)
     await _reload(store)
     logger.info("Configuration %s reset by %s", key, updated_by)
     return change

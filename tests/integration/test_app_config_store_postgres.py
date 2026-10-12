@@ -15,6 +15,113 @@ from serving.config.runtime_settings import import_environment_values
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_operation", ["save", "reset"])
+async def test_concurrent_config_changes_validate_the_previous_commit(
+    pool, pg_dsn, monkeypatch, tmp_path, first_operation
+) -> None:
+    """Two database connections must not approve an invalid combined change."""
+    from serving.config import app_config
+    from serving.config.app_config_registry import static_entries
+    from serving.config.settings import get_settings
+
+    for entry in static_entries():
+        monkeypatch.delenv(entry.key, raising=False)
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "false")
+    monkeypatch.setenv("TRUST_X_REAL_IP", "false")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "false")
+    for name in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    get_settings.cache_clear()
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    await store.write(
+        [
+            ConfigRow("TRUST_PROXY_HEADERS", "true"),
+            ConfigRow("TRUST_X_REAL_IP", "false"),
+        ]
+    )
+    await app_config.load(store, bootstrap=False)
+    app_config.attach(store)
+
+    # Hold the first write after validation. The second request can now either
+    # wait for it or (without serialization) validate the same stale snapshot.
+    blocker = await asyncpg.connect(pg_dsn)
+    transaction = blocker.transaction()
+    await transaction.start()
+    tasks = []
+    released = False
+
+    async def wait_for_write(*, second=None):
+        async def waiting():
+            while True:
+                await blocker.execute("SELECT pg_stat_clear_snapshot()")
+                waiters = await blocker.fetch(
+                    "SELECT query, wait_event FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+                if second is None:
+                    if any("INSERT INTO app_config" in row["query"] for row in waiters):
+                        return
+                elif second.done() or any(row["wait_event"] == "advisory" for row in waiters):
+                    return
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(waiting(), timeout=5)
+
+    try:
+        await blocker.fetchrow(
+            "SELECT key FROM app_config WHERE key = 'TRUST_PROXY_HEADERS' FOR UPDATE"
+        )
+        first = asyncio.create_task(
+            app_config.update({"TRUST_PROXY_HEADERS": False}, updated_by="first")
+            if first_operation == "save"
+            else app_config.delete("TRUST_PROXY_HEADERS", updated_by="first")
+        )
+        tasks.append(first)
+        await wait_for_write()
+        second = asyncio.create_task(
+            app_config.update({"TRUST_X_REAL_IP": True}, updated_by="second")
+        )
+        tasks.append(second)
+        await wait_for_write(second=second)
+        await transaction.commit()
+        released = True
+        results = await asyncio.wait_for(
+            asyncio.gather(first, second, return_exceptions=True), timeout=5
+        )
+        assert not isinstance(results[0], Exception), results[0]
+        assert isinstance(results[1], app_config.ConfigUpdateError), results
+        assert results[1].status_code == 400
+        assert "TRUST_PROXY_HEADERS" in results[1].detail
+        rows = await store.fetch_all()
+        assert rows["TRUST_X_REAL_IP"].value == "false"
+        assert not get_settings().trust_proxy_headers
+        assert not get_settings().trust_x_real_ip
+    finally:
+        if not released:
+            await transaction.rollback()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await blocker.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_config_transaction_rolls_back_and_releases_the_lock(pool) -> None:
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    with pytest.raises(ValueError, match="abort"):
+        async with store.transaction() as transaction:
+            await transaction.write([ConfigRow("SITE_NAME", "rolled back")])
+            raise ValueError("abort")
+    assert await store.fetch_all() == {}
+    async with store.transaction() as transaction:
+        await transaction.write([ConfigRow("SITE_NAME", "committed")])
+    assert (await store.fetch_all())["SITE_NAME"].value == "committed"
+
+
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
     dsn = os.getenv("TEST_PG_DSN")

@@ -583,6 +583,25 @@ def test_smtp_is_required_only_while_signup_needs_verification(
     assert "SMTP_USER" not in missing
 
 
+@pytest.mark.parametrize("email_enabled", [True, False])
+def test_smtp_health_uses_the_deployments_mail_transport(
+    config_env, monkeypatch, email_enabled
+) -> None:
+    from serving.utils import email
+
+    monkeypatch.setenv("SMTP_USER", "")
+    monkeypatch.setenv("SMTP_PASSWORD", "")
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "true")
+    monkeypatch.setattr(email, "is_email_enabled", lambda: email_enabled)
+    get_settings.cache_clear()
+    app_config.use_environment(database_enabled=True)
+
+    missing = app_config.get_config_health().missing
+    assert ("SMTP_USER" in missing) is not email_enabled
+    assert ("SMTP_PASSWORD" in missing) is not email_enabled
+
+
 def test_a_variable_a_route_needs_is_missing_until_set(config_env, monkeypatch) -> None:
     _write_models(
         config_env,

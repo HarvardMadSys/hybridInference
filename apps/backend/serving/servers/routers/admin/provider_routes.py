@@ -9,7 +9,7 @@ import math
 import re
 import socket
 import time
-from collections.abc import Mapping
+from collections.abc import MutableMapping
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -136,22 +136,28 @@ _BASE_URL_SETTINGS: dict[str, tuple[str, str]] = {
 }
 
 
-class _ProviderTargets(Mapping[str, ProviderTarget]):
-    """The built-in targets, with each overridable base URL read at lookup.
+class _ProviderTargets(MutableMapping[str, ProviderTarget]):
+    """Extension-writable targets, with each overridable base URL read at lookup.
 
     A changed ``*_BASE_URL`` setting therefore applies to the next admin
     request instead of waiting for a restart.
     """
 
     def __init__(self, targets: dict[str, ProviderTarget]) -> None:
-        self._targets = targets
+        self._targets = targets.copy()
 
     def __getitem__(self, provider: str) -> ProviderTarget:
         target = self._targets[provider]
         setting = _BASE_URL_SETTINGS.get(provider)
         if setting is None:
             return target
-        return replace(target, default_base_url=_env_default(*setting))
+        return replace(target, default_base_url=_env_default(setting[0], target.default_base_url))
+
+    def __setitem__(self, provider: str, target: ProviderTarget) -> None:
+        self._targets[provider] = target
+
+    def __delitem__(self, provider: str) -> None:
+        del self._targets[provider]
 
     def __contains__(self, provider: object) -> bool:
         return provider in self._targets
@@ -208,7 +214,7 @@ _BUILT_IN_TARGETS: dict[str, ProviderTarget] = {
     ),
 }
 
-PROVIDER_TARGETS: Mapping[str, ProviderTarget] = _ProviderTargets(_BUILT_IN_TARGETS)
+PROVIDER_TARGETS: MutableMapping[str, ProviderTarget] = _ProviderTargets(_BUILT_IN_TARGETS)
 
 RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
 

@@ -109,6 +109,8 @@ class RequirementContext:
     email_verification_needed: bool
     #: Configured value of a key — database row, environment, default — or "".
     value: Callable[[str], str]
+    #: The active transport can send mail, including one installed by an extension.
+    email_enabled: bool = False
 
 
 Requirement = bool | Callable[[RequirementContext], bool]
@@ -167,7 +169,7 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 
 def _smtp_required(context: RequirementContext) -> bool:
     # Without mail, a new account can never verify its address.
-    return context.email_verification_needed
+    return context.email_verification_needed and not context.email_enabled
 
 
 def _env_string(value: Any) -> str | None:
