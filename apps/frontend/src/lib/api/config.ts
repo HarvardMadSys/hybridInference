@@ -156,6 +156,12 @@ export async function checkBackendHealth(): Promise<boolean> {
 
 export type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
 
+/** What the waits for one restart have seen so far. */
+export interface RestartProgress {
+  /** The health check has failed since the restart was requested. */
+  sawDown: boolean;
+}
+
 export interface WaitForRestartOptions {
   /** Give up after this long. Default two minutes. */
   timeoutMs?: number;
@@ -166,6 +172,12 @@ export interface WaitForRestartOptions {
   check?: () => Promise<boolean>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Shared by every wait for the same restart. A wait that resumes after a
+   * timeout ("Keep waiting") must remember that the backend already went down,
+   * or a backend that came back in between would never count as restarted.
+   */
+  progress?: RestartProgress;
 }
 
 export const RESTART_TIMEOUT_MS = 120_000;
@@ -180,7 +192,8 @@ function delay(ms: number): Promise<void> {
  *
  * Seeing it fail first is the point. The restart request is answered before
  * the process exits, so the first probes usually reach the old process, and
- * "healthy" on its own would declare the restart done before it began.
+ * "healthy" on its own would declare the restart done before it began. Pass the
+ * same `progress` to a wait that resumes an earlier one for the same restart.
  */
 export async function waitForBackendRestart(
   options: WaitForRestartOptions = {},
@@ -192,17 +205,17 @@ export async function waitForBackendRestart(
     check = checkBackendHealth,
     now = Date.now,
     sleep = delay,
+    progress = { sawDown: false },
   } = options;
   const deadline = now() + timeoutMs;
-  let sawDown = false;
 
   while (now() < deadline) {
     if (signal?.aborted) return 'aborted';
     const up = await check();
     if (signal?.aborted) return 'aborted';
     if (!up) {
-      sawDown = true;
-    } else if (sawDown) {
+      progress.sawDown = true;
+    } else if (progress.sawDown) {
       return 'restarted';
     }
     await sleep(intervalMs);

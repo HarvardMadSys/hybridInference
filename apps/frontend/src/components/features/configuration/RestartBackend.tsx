@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { restartBackend, waitForBackendRestart } from '@/lib/api/config';
+import { restartBackend, waitForBackendRestart, type RestartProgress } from '@/lib/api/config';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 import { ConfirmDialog } from './ConfirmDialog';
@@ -30,6 +30,8 @@ export function RestartBackendButton({
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // One per accepted restart request, so "Keep waiting" resumes that wait.
+  const progressRef = useRef<RestartProgress>({ sawDown: false });
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -38,7 +40,10 @@ export function RestartBackendButton({
     const controller = new AbortController();
     abortRef.current = controller;
     setPhase('waiting');
-    const result = await waitForBackendRestart({ signal: controller.signal });
+    const result = await waitForBackendRestart({
+      signal: controller.signal,
+      progress: progressRef.current,
+    });
     if (result === 'restarted') {
       setPhase('back');
       onRestarted();
@@ -59,6 +64,7 @@ export function RestartBackendButton({
       setPhase('confirm');
       return;
     }
+    progressRef.current = { sawDown: false };
     await waitForBackend();
   };
 

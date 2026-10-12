@@ -162,6 +162,33 @@ describe('restart polling', () => {
     expect(result).toBe('timeout');
   });
 
+  it('resumes a timed-out wait for the same restart', async () => {
+    // The first wait sees the outage but times out before the backend is back.
+    let clock = 0;
+    const progress = { sawDown: false };
+    const down = vi.fn(async () => {
+      clock += 1_000;
+      return false;
+    });
+    await expect(
+      waitForBackendRestart({
+        check: down,
+        timeoutMs: 3_000,
+        now: () => clock,
+        sleep: async () => undefined,
+        progress,
+      }),
+    ).resolves.toBe('timeout');
+    expect(progress.sawDown).toBe(true);
+
+    // "Keep waiting": the backend already answers again, which is the restart.
+    const up = vi.fn(async () => true);
+    await expect(
+      waitForBackendRestart({ check: up, sleep: async () => undefined, progress }),
+    ).resolves.toBe('restarted');
+    expect(up).toHaveBeenCalledTimes(1);
+  });
+
   it('stops when aborted', async () => {
     const controller = new AbortController();
     const check = vi.fn(async () => {

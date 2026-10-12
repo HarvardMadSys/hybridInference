@@ -445,6 +445,29 @@ describe('restart', () => {
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
+  it('keeps waiting for the same restart after a timeout', async () => {
+    // The backend went down during the first wait and was not back in time.
+    vi.mocked(waitForBackendRestart).mockImplementationOnce(async (options) => {
+      if (options?.progress) options.progress.sawDown = true;
+      return 'timeout';
+    });
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Restart backend' }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep waiting' }));
+
+    await waitFor(() =>
+      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/configuration'),
+    );
+    const [first, second] = vi.mocked(waitForBackendRestart).mock.calls;
+    expect(second[0]?.progress).toBe(first[0]?.progress);
+    expect(second[0]?.progress).toEqual({ sawDown: true });
+    expect(restartBackend).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the dialog open with the reason when the restart is refused', async () => {
     vi.mocked(restartBackend).mockRejectedValueOnce(
       new APIError('HTTP_409', 'Restart is not supported here', 409),
