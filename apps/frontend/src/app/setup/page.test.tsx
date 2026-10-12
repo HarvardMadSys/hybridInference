@@ -287,7 +287,13 @@ describe('step 1: create administrator', () => {
 
     fillAdmin();
 
-    expect(await screen.findByText(/That setup code is not correct/)).toBeInTheDocument();
+    // The code survives restarts, so the message must not send anyone looking
+    // for a newer one.
+    expect(
+      await screen.findByText(
+        /That setup code is not correct.*stays the same until setup is complete/,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Setup code')).toHaveAttribute('aria-invalid', 'true');
     expect(adoptSession).not.toHaveBeenCalled();
   });

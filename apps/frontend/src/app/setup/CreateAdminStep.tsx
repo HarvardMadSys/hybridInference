@@ -112,7 +112,7 @@ export function CreateAdminStep({ onCreated }: { onCreated: () => void }) {
         case 403:
           setError('setupCode', {
             message:
-              'That setup code is not correct. Use the most recent code in the backend log — a new one is printed every time the backend starts.',
+              'That setup code is not correct. Copy it from the backend log — it stays the same until setup is complete, so restarting does not change it.',
           });
           return;
         case 409:
