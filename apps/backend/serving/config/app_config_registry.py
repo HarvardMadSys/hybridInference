@@ -28,10 +28,16 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import AliasChoices
 
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
-from serving.config.settings import Settings
+
+# settings_init_name is re-exported: callers map a registry entry's field to
+# its Settings keyword through this module.
+from serving.config.settings import (
+    Settings,
+    settings_env_name,
+    settings_init_name as settings_init_name,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -162,33 +168,6 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 def _smtp_required(context: RequirementContext) -> bool:
     # Without mail, a new account can never verify its address.
     return context.email_verification_needed
-
-
-def _declared_alias(field_name: str) -> str | None:
-    """Return a field's ``alias``, or the first spelling of its validation alias."""
-    info = Settings.model_fields[field_name]
-    if info.alias:
-        return info.alias
-    alias = info.validation_alias
-    if isinstance(alias, AliasChoices):
-        first = alias.choices[0]
-        return first if isinstance(first, str) else None
-    return alias if isinstance(alias, str) else None
-
-
-def settings_env_name(field_name: str) -> str:
-    """Return the canonical environment-variable name of a ``Settings`` field."""
-    return _declared_alias(field_name) or field_name.upper()
-
-
-def settings_init_name(field_name: str) -> str:
-    """Return the keyword ``Settings(...)`` accepts for a field.
-
-    A field declared with ``alias=`` takes only its alias, and an ``AliasChoices``
-    field its canonical spelling; every other field takes its own name, because
-    the environment's case-insensitive matching does not extend to init kwargs.
-    """
-    return _declared_alias(field_name) or field_name
 
 
 def _env_string(value: Any) -> str | None:

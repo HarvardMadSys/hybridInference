@@ -837,6 +837,10 @@ async def initialize() -> AppServices:
     # The database-backed configuration comes before everything that reads a
     # setting, and it re-applies LOG_LEVEL/LOG_FORMAT from what it loaded.
     await _load_app_config()
+    # A setting whose environment value is not valid was left at its default
+    # rather than failing before the database could be read; with the stored
+    # configuration in force, startup can tell whether a valid value replaces it.
+    app_config.require_valid_environment()
     # Checked only now: the secrets may come from the database (or have just
     # been generated into it). Still before any store opens or task starts.
     try:

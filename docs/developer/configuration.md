@@ -389,6 +389,16 @@ switches on the **Settings** tab —
 `USER_AUTH_ENABLED`, `SIGNUP_ENABLED` and the others — are copied from the
 environment the same way.
 
+An environment value that is not valid on its own — a CIDR range that does not
+parse, a number that is not one — is not copied in. The backend then starts
+only if the database holds a valid value for that setting, which applies, with
+a warning in the log; otherwise it stops and names the variable. Fix or remove
+the variable, or store a valid value with `python -m serving.config.manage set`
+(see *Without the console* below), which works while the environment is
+invalid. The database connection settings (`DB_HOST`, `DB_PORT` and the
+others) are the exception: they are needed to read the database, so an invalid
+one always stops the backend.
+
 On the first start against an empty database the backend also generates the
 two secrets it cannot run without, `JWT_SECRET_KEY` and `API_KEY_SECRET`,
 unless the environment supplies them. `API_KEY_SECRET` and

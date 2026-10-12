@@ -181,6 +181,14 @@ Entries come from four places:
    with an explicit message — when the `api_keys` table exists and has rows:
    a new secret would silently invalidate every key. Unreachable database →
    continue on environment values, as today.
+
+   An environment value that fails validation on its own (a field-level
+   error) does not stop `get_settings()` before the database is read: that
+   setting starts at its default, is listed by `invalid_environment()`, and is
+   not imported. After the load, `require_valid_environment()` lets startup
+   continue only when a valid stored value for it is in force, and otherwise
+   fails naming the variable. The `DB_*` connection settings, and rules between
+   settings, still fail at once.
 3. `validate_auth_secrets` (moved here from the lifespan, so it sees database
    values), re-apply `LOG_LEVEL`/`LOG_FORMAT`.
 4. Database logger (now receiving the database-backed

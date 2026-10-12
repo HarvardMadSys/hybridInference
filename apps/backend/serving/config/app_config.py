@@ -40,7 +40,12 @@ from pydantic import ValidationError
 
 from serving.config import app_config_registry as registry
 from serving.config.app_config_store import AppConfigStore, ConfigRow, connect
-from serving.config.settings import DatabaseSettings, Settings, get_settings
+from serving.config.settings import (
+    DatabaseSettings,
+    Settings,
+    get_settings,
+    invalid_environment,
+)
 from serving.utils import logging as logging_utils
 
 if TYPE_CHECKING:
@@ -128,6 +133,8 @@ class _State:
     loaded: bool = False
     #: A database value has been overlaid on ``Settings`` at least once.
     overlaid: bool = False
+    #: Stored ``Settings``-backed values the boot-time overlay put in force.
+    applied_at_boot: frozenset[str] = frozenset()
     #: Bumped by every apply, so a slower read never replaces a newer one.
     generation: int = 0
     store: AppConfigStore | None = None
@@ -446,6 +453,8 @@ def _overlay_settings(*, boot: bool, refused: Mapping[str, str]) -> dict[str, st
     ]
     _copy_settings(candidate, [*targets, *registry.DERIVED_SETTINGS_FIELDS])
     state.overlaid = True
+    if boot:
+        state.applied_at_boot = frozenset(key for key in stored if key not in invalid)
     for key, message in invalid.items():
         logger.warning("Ignoring stored %s: %s", key, message)
     return invalid
@@ -633,12 +642,15 @@ async def _import_environment(
     """Store every registered setting the environment sets and the table lacks.
 
     A setting an administrator reset is left out by the store: it keeps
-    following the environment instead of taking today's value for good.
+    following the environment instead of taking today's value for good. So is
+    a value ``Settings`` cannot accept at all: stored, it would win over the
+    environment once that was corrected, and could only ever be refused.
     """
+    unusable = {registry.settings_env_name(name) for name in invalid_environment()}
     imports = []
     for key, entry in _build_entries(rows).items():
         value = _environ_value(key, entry)
-        if entry.origin == "custom" or key in rows or not (value or "").strip():
+        if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
         imports.append(
             ConfigRow(key, value, secret=entry.secret, source="env_import", updated_by="env-import")
@@ -695,6 +707,47 @@ async def _generate_secrets(
         logger.info("Generated %s into the database", ", ".join(sorted(added)))
     # Another worker may have won the race; re-read whichever value stuck.
     return await store.fetch_all()
+
+
+def require_valid_environment() -> None:
+    """Refuse to start on an environment value that is not valid, unless the database replaces it.
+
+    :func:`~serving.config.settings.get_settings` leaves such a setting at its
+    default instead of failing before the database could be read. Called once
+    the stored configuration is in force: a valid stored value for the setting
+    applies, and the gateway starts with a warning; without one it must not.
+
+    Raises:
+        ConfigBootstrapError: Naming each such setting, what is wrong with its
+            value, and how to fix it.
+    """
+    unresolved: dict[str, str] = {}
+    for name, problem in invalid_environment().items():
+        key = registry.settings_env_name(name)
+        if key in _STATE.applied_at_boot:
+            logger.warning(
+                "Ignoring %s from the environment, which is not valid (%s): the value "
+                "stored in the database applies",
+                key,
+                problem,
+            )
+        else:
+            unresolved[key] = problem
+    if not unresolved:
+        return
+    listed = "; ".join(f"{key}: {problem}" for key, problem in unresolved.items())
+    remedy = "Fix or remove the variable"
+    # Only a registered setting can be stored here; a runtime switch
+    # (USER_AUTH_ENABLED, say) belongs to the Settings tab instead.
+    storable = [key for key in unresolved if key in _STATE.entries]
+    if _STATE.database_enabled and storable:
+        remedy += f", or store a valid value with `python -m serving.config.manage set {storable[0]} VALUE`"
+        if not _STATE.loaded:
+            remedy += " once the database can be reached"
+    raise ConfigBootstrapError(
+        "The environment holds settings that are not valid, and the database has no "
+        f"valid value in their place ({listed}). {remedy}, then start the gateway again."
+    )
 
 
 def use_environment(*, database_enabled: bool) -> None:

@@ -5,11 +5,21 @@ All environment variables are centralized here for easy tracking and testing.
 """
 
 import ipaddress
+import logging
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # Resource models a provider route can be added under. ``quota`` and
 # ``concurrency`` are the stateful kinds RouteWise accounts for; ``on_demand``
@@ -47,6 +57,22 @@ def parse_provider_route_types(raw: str) -> dict[str, frozenset[str]]:
             )
         policy[provider] = allowed
     return policy
+
+
+def _parse_networks(
+    raw: str, name: str
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse comma-separated CIDR ranges; an invalid entry raises, naming *name*."""
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=True))
+        except ValueError as exc:
+            raise ValueError(f"{name} entry {entry!r} is not a valid CIDR range: {exc}") from exc
+    return tuple(networks)
 
 
 class Settings(BaseSettings):
@@ -320,52 +346,39 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ALERTS_CONFIG_PATH", "alerts_config_path"),
     )
 
+    @field_validator(
+        "trusted_proxies", "trusted_cloudflare_networks", "trusted_direct_client_networks"
+    )
+    @classmethod
+    def _check_networks(cls, value: str, info: ValidationInfo) -> str:
+        """Refuse an entry that is not a CIDR range, as an error of its own field.
+
+        Each field accepts comma-separated CIDR strings; an empty string is
+        valid (nothing trusted). An invalid entry raises so the operator is
+        notified at startup rather than silently weakening identity resolution,
+        and naming the field lets a valid stored value stand in for it (see
+        :func:`get_settings`).
+        """
+        _parse_networks(value, info.field_name or "network")
+        return value
+
     @model_validator(mode="after")
     def _parse_trusted_proxies(self) -> "Settings":
         """Parse trusted client, proxy, and Cloudflare network CIDRs.
 
-        Both fields accept comma-separated CIDR strings. An empty string is
-        valid (means no proxies trusted). Each entry must be a parseable CIDR
-        range. Invalid entries raise ValueError so the operator is notified
-        at startup rather than silently weakening identity resolution.
+        Every entry has passed :meth:`_check_networks`. The rules below tie the
+        trust switches to one another and to the networks they need.
         """
-        proxy_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-        for entry in self.trusted_proxies.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            try:
-                proxy_networks.append(ipaddress.ip_network(entry, strict=True))
-            except ValueError as exc:
-                raise ValueError(
-                    f"trusted_proxies entry {entry!r} is not a valid CIDR range: {exc}"
-                ) from exc
-        cf_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-        for entry in self.trusted_cloudflare_networks.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            try:
-                cf_networks.append(ipaddress.ip_network(entry, strict=True))
-            except ValueError as exc:
-                raise ValueError(
-                    f"trusted_cloudflare_networks entry {entry!r} is not a valid CIDR range: {exc}"
-                ) from exc
-        object.__setattr__(self, "trusted_proxies_parsed", tuple(proxy_networks))
-        direct_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-        for entry in self.trusted_direct_client_networks.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            try:
-                direct_networks.append(ipaddress.ip_network(entry, strict=True))
-            except ValueError as exc:
-                raise ValueError(
-                    "trusted_direct_client_networks entry "
-                    f"{entry!r} is not a valid CIDR range: {exc}"
-                ) from exc
-        object.__setattr__(self, "trusted_direct_client_parsed", tuple(direct_networks))
-        object.__setattr__(self, "trusted_cloudflare_parsed", tuple(cf_networks))
+        proxy_networks = _parse_networks(self.trusted_proxies, "trusted_proxies")
+        cf_networks = _parse_networks(
+            self.trusted_cloudflare_networks, "trusted_cloudflare_networks"
+        )
+        direct_networks = _parse_networks(
+            self.trusted_direct_client_networks, "trusted_direct_client_networks"
+        )
+        object.__setattr__(self, "trusted_proxies_parsed", proxy_networks)
+        object.__setattr__(self, "trusted_direct_client_parsed", direct_networks)
+        object.__setattr__(self, "trusted_cloudflare_parsed", cf_networks)
         if self.trust_cloudflare_headers and not self.trust_proxy_headers:
             raise ValueError("TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS")
         if self.trust_cloudflare_headers and not cf_networks:
@@ -442,6 +455,75 @@ class Settings(BaseSettings):
             )
 
 
+def _declared_alias(field_name: str) -> str | None:
+    """Return a field's ``alias``, or the first spelling of its validation alias."""
+    info = Settings.model_fields[field_name]
+    if info.alias:
+        return info.alias
+    alias = info.validation_alias
+    if isinstance(alias, AliasChoices):
+        first = alias.choices[0]
+        return first if isinstance(first, str) else None
+    return alias if isinstance(alias, str) else None
+
+
+def settings_env_name(field_name: str) -> str:
+    """Return the canonical environment-variable name of a ``Settings`` field."""
+    return _declared_alias(field_name) or field_name.upper()
+
+
+def settings_init_name(field_name: str) -> str:
+    """Return the keyword ``Settings(...)`` accepts for a field.
+
+    A field declared with ``alias=`` takes only its alias, and an ``AliasChoices``
+    field its canonical spelling; every other field takes its own name, because
+    the environment's case-insensitive matching does not extend to init kwargs.
+    """
+    return _declared_alias(field_name) or field_name
+
+
+def _field_named(location: object) -> str | None:
+    """Return the field a validation error's location names, by name or by alias."""
+    if not isinstance(location, str):
+        return None
+    if location in Settings.model_fields:
+        return location
+    folded = location.lower()
+    for name, info in Settings.model_fields.items():
+        spellings: list[object] = [name, info.alias]
+        alias = info.validation_alias
+        spellings.extend(alias.choices if isinstance(alias, AliasChoices) else [alias])
+        if any(isinstance(spelling, str) and spelling.lower() == folded for spelling in spellings):
+            return name
+    return None
+
+
+def invalid_fields(error: ValidationError) -> dict[str, str]:
+    """Return each field *error* blames, with its message.
+
+    Empty when any part of the error names no single field: a rule between
+    settings, which no one value can be blamed for.
+    """
+    blamed: dict[str, str] = {}
+    for item in error.errors():
+        location = item.get("loc") or ()
+        name = _field_named(location[0]) if location else None
+        if name is None:
+            return {}
+        message = str(item.get("msg") or "invalid value").removeprefix("Value error, ")
+        blamed.setdefault(name, message)
+    return blamed
+
+
+#: The settings that reach the database. A valid value for any other setting
+#: may be stored there; these can never be replaced from it, so an invalid one
+#: always stops whoever reads the settings.
+CONNECTION_FIELDS = frozenset({"db_host", "db_port", "db_name", "db_user", "db_password"})
+
+#: What :func:`get_settings` set aside: field name -> why its value is not valid.
+_invalid_environment: dict[str, str] = {}
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Get settings instance.
@@ -449,13 +531,71 @@ def get_settings() -> Settings:
     This function is cached to return the same instance across the application.
     For testing, use pytest's monkeypatch or clear the cache with get_settings.cache_clear().
 
+    A setting whose environment value is not valid on its own -- a CIDR range
+    that does not parse, a number that is not one -- is left at its default and
+    logged, not raised: the database-backed configuration may hold a valid
+    value for it, and only the gateway's startup can tell, once it has read the
+    database. Startup refuses to continue unless it does
+    (``app_config.require_valid_environment``); :func:`invalid_environment`
+    lists what was set aside. The database connection settings are never set
+    aside, and a rule between settings, which blames no single one, still
+    raises.
+
     Returns:
         Settings: Validated settings object.
 
     Raises:
-        ValidationError: If required settings are missing or invalid.
+        ValidationError: If the environment does not validate even with the
+            invalid settings at their defaults.
     """
-    return Settings()
+    _invalid_environment.clear()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        error = exc
+    set_aside: dict[str, str] = {}
+    current = error
+    while True:
+        blamed = invalid_fields(current)
+        if not blamed or not blamed.keys().isdisjoint(set_aside.keys() | CONNECTION_FIELDS):
+            raise error
+        if any(Settings.model_fields[name].is_required() for name in blamed):
+            raise error
+        set_aside.update(blamed)
+        defaults = {
+            settings_init_name(name): Settings.model_fields[name].get_default(
+                call_default_factory=True
+            )
+            for name in set_aside
+        }
+        try:
+            settings = Settings(**defaults)
+        except ValidationError as again:
+            current = again
+            continue
+        break
+    # The defaults stand in for values nobody chose; they were not explicitly set.
+    object.__setattr__(
+        settings, "__pydantic_fields_set__", set(settings.model_fields_set) - set(set_aside)
+    )
+    _invalid_environment.update(set_aside)
+    for name, problem in set_aside.items():
+        logger.warning(
+            "%s in the environment is not valid (%s); its default applies unless the "
+            "database holds a valid value",
+            settings_env_name(name),
+            problem,
+        )
+    return settings
+
+
+def invalid_environment() -> dict[str, str]:
+    """Return the settings :func:`get_settings` left at their default, with the reason.
+
+    Keyed by field name; empty when the environment validated as it is.
+    """
+    get_settings()
+    return dict(_invalid_environment)
 
 
 # The shared ``Settings`` instance, as ``from serving.config.settings import

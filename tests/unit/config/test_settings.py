@@ -227,20 +227,63 @@ def test_importing_the_module_does_not_validate_the_environment() -> None:
 
     script = (
         "import serving.config.settings as m\n"
-        "assert m.DatabaseSettings().db_host == 'db.internal'\n"
-        "try:\n"
-        "    m.settings\n"
-        "except Exception as exc:\n"
-        "    print(type(exc).__name__)\n"
+        "for read in (lambda: m.settings, m.DatabaseSettings):\n"
+        "    try:\n"
+        "        read()\n"
+        "        print('read')\n"
+        "    except Exception as exc:\n"
+        "        print(type(exc).__name__)\n"
     )
-    env = {**os.environ, "TRUSTED_PROXIES": "not-a-network", "DB_HOST": "db.internal"}
+    # A database connection setting is never set aside: reading it raises, as
+    # it always has, though importing the module does not.
+    env = {**os.environ, "DB_PORT": "not-a-port"}
     result = subprocess.run(
         [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60
     )
 
     assert result.returncode == 0, result.stderr
-    # Whoever reads ``settings`` still gets the validation error, as before.
-    assert result.stdout.strip() == "ValidationError"
+    assert result.stdout.split() == ["ValidationError", "ValidationError"]
+
+
+def test_an_invalid_environment_value_is_set_aside_until_the_database_answers(
+    monkeypatch, caplog
+) -> None:
+    """Left at its default, reported, never counted as explicitly set."""
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    monkeypatch.setenv("SMTP_PORT", "not-a-number")
+    monkeypatch.setenv("BASE_URL", "https://still.read")
+
+    with caplog.at_level("WARNING", logger="serving.config.settings"):
+        settings = get_settings()
+
+    assert settings.trusted_proxies == ""
+    assert settings.trusted_proxies_parsed == ()
+    assert settings.smtp_port == Settings.model_fields["smtp_port"].default
+    assert settings.base_url == "https://still.read"
+    assert {"trusted_proxies", "smtp_port"}.isdisjoint(settings.model_fields_set)
+    invalid = settings_module.invalid_environment()
+    assert set(invalid) == {"trusted_proxies", "smtp_port"}
+    assert "not a valid CIDR range" in invalid["trusted_proxies"]
+    assert "TRUSTED_PROXIES in the environment is not valid" in caplog.text
+    # Settings itself is as strict as ever.
+    with pytest.raises(ValueError, match="trusted_proxies entry"):
+        Settings()
+
+
+def test_a_rule_between_settings_still_raises(monkeypatch) -> None:
+    """No single value can be blamed, so nothing is set aside."""
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+
+    with pytest.raises(ValueError, match="TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS"):
+        get_settings()
+
+
+def test_the_environment_validates_as_it_is_when_it_can(monkeypatch) -> None:
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+    assert get_settings().trusted_proxies == "10.0.0.0/8"
+    assert settings_module.invalid_environment() == {}
 
 
 def test_the_module_global_is_created_once() -> None:

@@ -170,3 +170,95 @@ async def test_database_free_boot_still_initializes_setup_state(boot_env, monkey
 
     init_setup_state.assert_awaited_once_with(None)
     assert app_config._STATE.refresh_task is None
+
+
+# --- an environment value that is not valid ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_valid_stored_value_lets_startup_past_an_invalid_environment_value(
+    boot_env, monkeypatch, caplog
+) -> None:
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUSTED_PROXIES", "10.0.0.0/8")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        app_config.require_valid_environment()
+
+    assert get_settings().trusted_proxies == "10.0.0.0/8"
+    assert [str(network) for network in get_settings().trusted_proxies_parsed] == ["10.0.0.0/8"]
+    assert "Ignoring TRUSTED_PROXIES from the environment" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,reachable,remedy",
+    [
+        ([], True, "manage set TRUSTED_PROXIES VALUE`, then"),
+        ([row("TRUSTED_PROXIES", "also-not-a-cidr")], True, "manage set TRUSTED_PROXIES"),
+        ([], False, "once the database can be reached"),
+    ],
+)
+async def test_startup_refuses_an_invalid_environment_value_nothing_replaces(
+    boot_env, monkeypatch, stored, reachable, remedy
+) -> None:
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(stored)
+    connect = AsyncMock(return_value=_connection()) if reachable else AsyncMock(side_effect=OSError)
+    monkeypatch.setattr(bootstrap, "connect_app_config", connect)
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    assert "TRUSTED_PROXIES: trusted_proxies entry 'not-a-cidr'" in str(excinfo.value)
+    assert remedy in str(excinfo.value)
+    # Never imported: stored, it would outlive a corrected environment.
+    assert store.rows.get("TRUSTED_PROXIES") == (stored[0] if stored else None)
+
+
+@pytest.mark.asyncio
+async def test_a_database_free_gateway_refuses_an_invalid_environment_value(
+    boot_env, monkeypatch
+) -> None:
+    monkeypatch.setenv("DB_ENABLED", "false")
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    get_settings.cache_clear()
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError, match="Fix or remove the variable, then"):
+        app_config.require_valid_environment()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_switch_is_not_offered_to_the_manage_command(boot_env, monkeypatch) -> None:
+    """USER_AUTH_ENABLED lives on the Settings tab: the command would refuse it."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "maybe")
+    get_settings.cache_clear()
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: FakeAppConfigStore())
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    assert "USER_AUTH_ENABLED:" in str(excinfo.value)
+    assert "manage" not in str(excinfo.value)
+
+
+def test_startup_checks_the_environment_right_after_loading_the_configuration() -> None:
+    """Pins the wiring: before the auth secrets, and before anything else starts."""
+    import inspect
+
+    source = inspect.getsource(bootstrap.initialize)
+    load = source.index("await _load_app_config()")
+    check = source.index("app_config.require_valid_environment()")
+    secrets = source.index("validate_auth_secrets")
+    assert load < check < secrets
+    assert source[load:check].count("\n") <= 4
