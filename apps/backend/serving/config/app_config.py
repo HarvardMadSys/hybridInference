@@ -41,10 +41,12 @@ from pydantic import ValidationError
 from serving.config import app_config_registry as registry
 from serving.config.app_config_store import AppConfigStore, ConfigRow, connect
 from serving.config.settings import (
+    CONNECTION_FIELDS,
     DatabaseSettings,
     Settings,
     get_settings,
     invalid_environment,
+    invalid_fields,
 )
 from serving.utils import logging as logging_utils
 
@@ -343,10 +345,39 @@ def _blame(exc: ValidationError, candidates: Iterable[str]) -> dict[str, str]:
     return blamed
 
 
+def _unusable_environment(
+    exc: ValidationError, values: Mapping[str, str], already: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return defaults for the environment values *exc* blames that *values* do not replace.
+
+    Keyed by ``Settings`` keyword, and only for field-level errors: a value
+    that is not valid on its own (the error names its field) and that no stored
+    or proposed value stands in for. Never a database connection setting, and
+    never one already set aside in *already*.
+    """
+    found: dict[str, Any] = {}
+    for name in invalid_fields(exc):
+        info = Settings.model_fields[name]
+        keyword = registry.settings_init_name(name)
+        if (
+            registry.settings_env_name(name) in values
+            or name in CONNECTION_FIELDS
+            or keyword in already
+            or info.is_required()
+        ):
+            continue
+        found[keyword] = info.get_default(call_default_factory=True)
+    return found
+
+
 def _settings_candidate(
     fixed: Mapping[str, str], proposed: Mapping[str, str]
 ) -> tuple[Settings | None, dict[str, str]]:
     """Build ``Settings`` from *fixed* values plus every proposed value that validates.
+
+    An environment value that is not valid on its own, and that neither set
+    replaces, is left at its default here rather than refusing every value: it
+    says nothing about them (``get_settings`` sets it aside the same way).
 
     Args:
         fixed: Values known to be valid together; never rejected.
@@ -358,17 +389,25 @@ def _settings_candidate(
     """
     rejected: dict[str, str] = {}
     pending = dict(proposed)
-    # Field-level errors name their field: drop those values and try again.
+    set_aside: dict[str, Any] = {}
+
+    def build(values: Mapping[str, str]) -> Settings:
+        return Settings(**{**set_aside, **_init_kwargs(values)})
+
+    # Field-level errors name their field: drop those values, set aside an
+    # invalid environment value, and try again.
     while True:
         try:
-            return Settings(**_init_kwargs({**fixed, **pending})), rejected
+            return build({**fixed, **pending}), rejected
         except ValidationError as exc:
             blamed = _blame(exc, pending)
-            if not blamed:
+            unusable = _unusable_environment(exc, {**fixed, **pending}, set_aside)
+            if not blamed and not unusable:
                 break
             for key, message in blamed.items():
                 rejected[key] = message
                 pending.pop(key)
+            set_aside.update(unusable)
     # What remains breaks a cross-field rule (TRUST_CLOUDFLARE_HEADERS needs
     # TRUST_PROXY_HEADERS, say), which names no field. Accept values one at a
     # time, retrying the refused ones after each acceptance so that the order of
@@ -381,7 +420,7 @@ def _settings_candidate(
         for key in list(pending):
             trial = {**accepted, key: pending[key]}
             try:
-                Settings(**_init_kwargs({**fixed, **trial}))
+                build({**fixed, **trial})
             except ValidationError as exc:
                 errors = exc.errors()
                 reasons[key] = _error_message(errors[0]) if errors else "invalid value"
@@ -392,7 +431,7 @@ def _settings_candidate(
     for key in pending:
         rejected[key] = reasons.get(key, "invalid value")
     try:
-        return Settings(**_init_kwargs({**fixed, **accepted})), rejected
+        return build({**fixed, **accepted}), rejected
     except ValidationError:
         return None, rejected
 

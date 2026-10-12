@@ -41,6 +41,23 @@ def store(tmp_path, monkeypatch) -> FakeAppConfigStore:
     return fake
 
 
+def test_set_works_while_an_unrelated_environment_value_is_invalid(
+    store, monkeypatch, capsys
+) -> None:
+    """The way back in must not depend on the environment being right."""
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    get_settings.cache_clear()
+
+    assert manage.main(["set", "SMTP_PORT", "2525"]) == 0
+    assert store.rows["SMTP_PORT"].value == "2525"
+    # Storing a valid value for the broken one is how startup gets past it.
+    assert manage.main(["set", "TRUSTED_PROXIES", "10.0.0.0/8"]) == 0
+    assert store.rows["TRUSTED_PROXIES"].value == "10.0.0.0/8"
+    # A value that is itself invalid is still refused, under its own name.
+    assert manage.main(["set", "TRUSTED_PROXIES", "also-not-a-cidr"]) == 1
+    assert "Refused: TRUSTED_PROXIES: trusted_proxies entry" in capsys.readouterr().err
+
+
 def test_set_stores_a_value_parsed_by_its_type(store, capsys) -> None:
     assert manage.main(["set", "SMTP_PORT", "2525"]) == 0
 

@@ -782,6 +782,28 @@ async def test_delete_refusals(config_env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_invalid_environment_value_refuses_only_itself(config_env, monkeypatch) -> None:
+    """An environment value that is not valid says nothing about other values."""
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore()
+    await _boot(store)
+    # Not imported: stored, it would outlive a corrected environment.
+    assert "TRUSTED_PROXIES" not in store.rows
+
+    await app_config.update({"SMTP_PORT": 2525}, updated_by="admin")
+    assert store.rows["SMTP_PORT"].value == "2525"
+
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.update({"TRUSTED_PROXIES": "also-not-a-cidr"}, updated_by="admin")
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail.startswith("TRUSTED_PROXIES: trusted_proxies entry")
+
+    await app_config.update({"TRUSTED_PROXIES": "10.0.0.0/8"}, updated_by="admin")
+    assert store.rows["TRUSTED_PROXIES"].value == "10.0.0.0/8"
+
+
+@pytest.mark.asyncio
 async def test_writes_need_the_database(config_env) -> None:
     app_config.use_environment(database_enabled=False)
 
