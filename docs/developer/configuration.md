@@ -382,8 +382,10 @@ non-empty value in the environment and no row in the database is copied into
 the database, and from then on the row wins. That is how an existing `.env`
 carries over on an upgrade, and why editing the variable afterwards changes
 nothing: the tab marks it **Environment ignored**. Change the value on the tab
-instead, or **Reset** it to delete the row, so that the environment, and then
-the default, applies again. The switches on the **Settings** tab —
+instead, or **Reset** it, so that the environment, and then the default,
+applies again. A reset lasts: the database remembers it, so the next start does
+not copy the variable in again, and later edits to it take effect. The
+switches on the **Settings** tab —
 `USER_AUTH_ENABLED`, `SIGNUP_ENABLED` and the others — are copied from the
 environment the same way.
 
@@ -429,11 +431,16 @@ While such a change is waiting, the tab shows a **Restart pending** notice with
 a **Restart backend** button. The button (`POST /admin/system/restart`) makes
 the backend exit so that its supervisor starts it again: Docker, through the
 bundled Compose file's `restart: unless-stopped`, or systemd, through the
-bundled units' `Restart=on-failure`. Under anything else, and whenever several
-worker processes serve the backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS`
-above 1, where the button would restart only one of them), the tab shows a
-command to run yourself instead, such as `docker restart hybridinference-backend`.
-A restart cuts off requests in flight, streams included.
+bundled units' `Restart=on-failure`. Nothing inside the process can see that
+policy, so the deployment declares it: the bundled Compose file and units set
+`SUPERVISOR_RESTARTS_BACKEND=1` next to it, and a deployment that starts the
+backend some other way sets it only if its supervisor restarts the process
+when it exits. Without it, and whenever several worker processes serve the
+backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS` above 1, or
+`uvicorn --workers`, where the button would restart only one of them), the tab
+shows a command to run yourself instead, such as
+`docker restart hybridinference-backend`. A restart cuts off requests in
+flight, streams included.
 
 ### Without the console
 
@@ -448,9 +455,10 @@ docker exec -it hybridinference-backend python -m serving.config.manage reset JW
 
 `list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores a
 value — add `--secret` when it creates a custom variable that holds one — and
-`reset KEY` deletes the stored value, so that the environment or the default
-applies again. It talks to the database directly with the `DB_*` connection
-settings, so it needs no sign-in, and it never prints a secret's value. When
+`reset KEY` resets it as the tab's **Reset** does, so that the environment or
+the default applies again. It talks to the database directly with the `DB_*`
+connection settings alone, so it needs no sign-in and still runs when another
+setting in the environment is invalid, and it never prints a secret's value. When
 the backend container is not running, run it in the repository root of a
 source checkout instead (`uv run python -m serving.config.manage ...`), where
 `.env` reaches Postgres on `127.0.0.1:5432`. A running backend picks the
@@ -468,8 +476,11 @@ of them has no value, the console shows a banner to signed-in users.
 Administrators get a link to the Configuration tab, where **Missing only**
 lists what to fill in; everyone else is told that some features may not work
 and to contact the administrator. A model whose credential is missing is not
-loaded, and a request for it is answered with a `404` that says the
-deployment's configuration is incomplete.
+loaded, and a request for it is answered with a `404`. When an administrator
+sends it with their own API key, the `404` says the deployment's configuration
+is incomplete; anyone else gets the same "not found" as for a model the
+deployment does not define, so the difference reveals nothing beyond what
+they may use.
 
 A deployment that leaves a model's credential unset on purpose — a route it
 does not use yet, or a canary it enables elsewhere — should mark that route
@@ -494,8 +505,8 @@ and what describes the containers rather than the application:
   `ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`,
   `DISTRIBUTION_CONFIG_MODE`;
 - the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, `GEOIP_COUNTRY_DB`,
-  `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, and
-  `REFRESH_TOKEN_COOKIE_NAME`, which the console reads too;
+  `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, `SUPERVISOR_RESTARTS_BACKEND`,
+  and `REFRESH_TOKEN_COOKIE_NAME`, which the console reads too;
 - Compose and the console: host ports and bind addresses, the console's build
   values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`.
 

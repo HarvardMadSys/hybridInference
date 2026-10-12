@@ -211,8 +211,12 @@ and cached; it is recomputed after load, after every write, and by the refresh
 loop.
 
 A request for a model that was skipped at load because its credential was
-missing keeps its 404, but the message says the model is unavailable because
-the deployment's configuration is incomplete and to contact the administrator.
+missing keeps its 404. When an administrator makes it with their own
+credentials, the message says the model is unavailable because the
+deployment's configuration is incomplete; everyone else, a grant-scoped caller
+included, gets the plain "not found" an unknown model gets. A skipped model
+never reaches the role, visibility and grant gates, so a different message
+would let any caller list models defined beyond what it may reach.
 
 ### Runtime settings
 
@@ -239,11 +243,12 @@ page (even one that has no admin and relies on `ADMIN_TOKEN`).
 
 While setup is required:
 
-- At boot the backend generates a setup code (12 characters from an
-  unambiguous alphabet, shown as `XXXX-XXXX-XXXX`), keeps only its hash in
-  process memory, and logs at WARNING:
+- The first process to boot generates a setup code (12 characters from an
+  unambiguous alphabet, shown as `XXXX-XXXX-XXXX`) and stores it in
+  `site_settings` (`setup_code`), so every worker accepts the same code and a
+  restart keeps it; setup deletes it. Each process keeps only its hash in
+  memory and logs at WARNING:
   `First-run setup is pending. Open <console>/setup and enter setup code XXXX-XXXX-XXXX`.
-  A new code is generated on every boot until setup completes.
 - `POST /auth/signup` answers `503 {"detail": "This deployment has not been set up yet."}`
   so a stranger cannot create the first account (which would also complete
   setup by the rule above).
@@ -358,9 +363,11 @@ environment-only name; `409` for an immutable key that is already set.
 
 ### `DELETE /admin/config/{key}`
 
-Removes the database row; the setting falls back to the environment, then its
-default (and the environment value is re-imported on the next boot, which
-does not change the effective value). Custom keys disappear. Returns the full
+Replaces the database row with a reset marker (`source='reset'`, no value):
+the setting falls back to the environment, then its default, and keeps doing so
+across restarts, since the marker keeps the boot-time import from storing the
+environment value again. A generated secret replaces the marker only once the
+environment no longer supplies one. Custom keys disappear. Returns the full
 `GET /admin/config` body. `409` for immutable keys.
 
 ### `POST /admin/system/restart`
@@ -368,8 +375,12 @@ does not change the effective value). Custom keys disappear. Returns the full
 `202 {"restarting": true}` then, after the response is sent, the process
 signals itself `SIGTERM`; uvicorn shuts down gracefully, and the process exits
 with status 75 so systemd's `Restart=on-failure` also restarts it. A watchdog
-forces the exit after 30 s. `409` when `restart_supported` is false (no
-`/.dockerenv` and no systemd `INVOCATION_ID`). Audited.
+forces the exit after 30 s. `409` when `restart_supported` is false: the
+deployment has not declared `SUPERVISOR_RESTARTS_BACKEND=1` (set by the bundled
+Compose file and systemd units beside their restart policy; `/.dockerenv` and
+`INVOCATION_ID` do not show the policy), or several workers serve it
+(`WEB_CONCURRENCY`/`UVICORN_WORKERS` above 1, or a worker `uvicorn --workers`
+spawned). Audited.
 
 ### `GET /site-config` additions (public, top level)
 

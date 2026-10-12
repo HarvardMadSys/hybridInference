@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-10 17:52-0400\n"
+"POT-Creation-Date: 2026-10-12 02:21-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1203,17 +1203,20 @@ msgid ""
 "into the database, and from then on the row wins. That is how an existing"
 " `.env` carries over on an upgrade, and why editing the variable "
 "afterwards changes nothing: the tab marks it **Environment ignored**. "
-"Change the value on the tab instead, or **Reset** it to delete the row, "
-"so that the environment, and then the default, applies again. The "
-"switches on the **Settings** tab — `USER_AUTH_ENABLED`, `SIGNUP_ENABLED` "
-"and the others — are copied from the environment the same way."
+"Change the value on the tab instead, or **Reset** it, so that the "
+"environment, and then the default, applies again. A reset lasts: the "
+"database remembers it, so the next start does not copy the variable in "
+"again, and later edits to it take effect. The switches on the "
+"**Settings** tab — `USER_AUTH_ENABLED`, `SIGNUP_ENABLED` and the others —"
+" are copied from the environment the same way."
 msgstr ""
 "环境变量只是起点。每次启动时，凡是在环境变量里有非空值、而数据库里还没有对应行的设置项，都会被复制进数据库，此后以数据库里的行为准。升级时现有的 "
 "`.env` 就是这样延续下来的；也正因为如此，之后再改这个环境变量不会有任何效果：标签页会把它标为 **Environment "
-"ignored**。要改就在标签页上改值，或者用 **Reset** 删除那一行，让环境变量、再往后是默认值重新生效。**Settings** "
-"标签页上的开关（`USER_AUTH_ENABLED`、`SIGNUP_ENABLED` 等）也以同样的方式从环境变量复制过去。"
+"ignored**。要改就在标签页上改值，或者用 **Reset** "
+"重置它，让环境变量、再往后是默认值重新生效。重置是持久的：数据库会记住这次重置，下次启动时不会再把这个变量复制进来，之后对它的修改也会生效。**Settings**"
+" 标签页上的开关（`USER_AUTH_ENABLED`、`SIGNUP_ENABLED` 等）也以同样的方式从环境变量复制过去。"
 
-#: ../developer/configuration.md:390
+#: ../developer/configuration.md:392
 msgid ""
 "On the first start against an empty database the backend also generates "
 "the two secrets it cannot run without, `JWT_SECRET_KEY` and "
@@ -1230,18 +1233,18 @@ msgstr ""
 "accounts)。如果数据库里已经有 API key，后端宁可拒绝启动，也不会为它生成新的 "
 "`API_KEY_SECRET`，因为新密钥会让所有这些 key 失效。"
 
-#: ../developer/configuration.md:398
+#: ../developer/configuration.md:400
 msgid "The Configuration tab"
 msgstr "Configuration 标签页"
 
-#: ../developer/configuration.md:400
+#: ../developer/configuration.md:402
 msgid ""
 "The tab groups the settings by category, describes each one and shows "
 "where its value comes from. Besides every setting the gateway reads "
 "itself, it lists:"
 msgstr "这个标签页把设置项按类别分组，逐个说明用途，并标出每个值的来源。除了网关自己读取的所有设置项，它还列出："
 
-#: ../developer/configuration.md:403
+#: ../developer/configuration.md:405
 #, python-brace-format
 msgid ""
 "every `${VAR}` the active model registry and routing file name, under "
@@ -1251,13 +1254,13 @@ msgstr ""
 "当前模型注册表和路由配置文件引用的每一个 `${VAR}`，列在 **Providers** 下，并注明用到它的模型；告警规则引用的则列在 "
 "**Alerts** 下；"
 
-#: ../developer/configuration.md:406
+#: ../developer/configuration.md:408
 msgid ""
 "numbered extra keys for a provider's key pool, such as "
 "`MINIMAX_API_KEY2`, once one is set;"
 msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
 
-#: ../developer/configuration.md:408
+#: ../developer/configuration.md:410
 #, python-brace-format
 msgid ""
 "variables added with **Add variable**, for a `${VAR}` reference the "
@@ -1265,7 +1268,7 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
-#: ../developer/configuration.md:411
+#: ../developer/configuration.md:413
 #, python-brace-format
 msgid ""
 "Secrets are write-only: the tab shows whether one is set, never its "
@@ -1281,11 +1284,11 @@ msgstr ""
 "`DB_PASSWORD` 或 `MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH "
 "/admin/config`，以及 `DELETE /admin/config/{key}`。"
 
-#: ../developer/configuration.md:419
+#: ../developer/configuration.md:421
 msgid "When a change applies"
 msgstr "改动何时生效"
 
-#: ../developer/configuration.md:421
+#: ../developer/configuration.md:423
 msgid ""
 "Most settings apply as soon as they are saved: at once in the backend "
 "process that served the save, and within ten seconds in every other one. "
@@ -1299,31 +1302,38 @@ msgstr ""
 "的设置项只在启动时读取，进程会一直用启动时的值，直到重启。provider "
 "凭据和注册表引用的每个变量都属于这一类，熔断器和出站并发的调优、告警以及 `DB_STORE_FULL_CONTENT` 也是。"
 
-#: ../developer/configuration.md:428
+#: ../developer/configuration.md:430
 msgid ""
 "While such a change is waiting, the tab shows a **Restart pending** "
 "notice with a **Restart backend** button. The button (`POST "
 "/admin/system/restart`) makes the backend exit so that its supervisor "
 "starts it again: Docker, through the bundled Compose file's `restart: "
 "unless-stopped`, or systemd, through the bundled units' `Restart=on-"
-"failure`. Under anything else, and whenever several worker processes "
-"serve the backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS` above 1, where "
-"the button would restart only one of them), the tab shows a command to "
-"run yourself instead, such as `docker restart hybridinference-backend`. A"
-" restart cuts off requests in flight, streams included."
+"failure`. Nothing inside the process can see that policy, so the "
+"deployment declares it: the bundled Compose file and units set "
+"`SUPERVISOR_RESTARTS_BACKEND=1` next to it, and a deployment that starts "
+"the backend some other way sets it only if its supervisor restarts the "
+"process when it exits. Without it, and whenever several worker processes "
+"serve the backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS` above 1, or "
+"`uvicorn --workers`, where the button would restart only one of them), "
+"the tab shows a command to run yourself instead, such as `docker restart "
+"hybridinference-backend`. A restart cuts off requests in flight, streams "
+"included."
 msgstr ""
 "有这类改动在等待时，标签页会显示 **Restart pending** 提示和一个 **Restart backend** "
 "按钮。这个按钮（`POST /admin/system/restart`）会让后端退出，由它的守护进程重新拉起：Docker 靠仓库自带 "
 "Compose 文件里的 `restart: unless-stopped`，systemd 靠自带 unit 里的 `Restart=on-"
-"failure`。在其他环境下，以及后端由多个 worker 进程提供服务时（`WEB_CONCURRENCY` 或 "
-"`UVICORN_WORKERS` 大于 1，这时按钮只能重启其中一个进程），标签页会改为给出一条让你自己运行的命令，比如 `docker "
-"restart hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。"
+"failure`。进程内部看不到这项重启策略，所以要由部署来声明：自带的 Compose 文件和 unit 在重启策略旁边设置了 "
+"`SUPERVISOR_RESTARTS_BACKEND=1`；用其他方式启动后端的部署，只有当它的守护进程会在进程退出后把它重新拉起时，才应设置这个变量。没有设置它时，以及后端由多个"
+" worker 进程提供服务时（`WEB_CONCURRENCY` 或 `UVICORN_WORKERS` 大于 1，或者用了 `uvicorn "
+"--workers`，这时按钮只能重启其中一个进程），标签页会改为给出一条让你自己运行的命令，比如 `docker restart "
+"hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。"
 
-#: ../developer/configuration.md:438
+#: ../developer/configuration.md:445
 msgid "Without the console"
 msgstr "不通过控制台"
 
-#: ../developer/configuration.md:440
+#: ../developer/configuration.md:447
 msgid ""
 "A setting can break the console that edits it — a value that stops sign-"
 "in from working, say. `python -m serving.config.manage` changes stored "
@@ -1333,36 +1343,38 @@ msgstr ""
 "某个设置项可能把用来编辑它的控制台本身弄坏——比如一个让登录失效的值。这时可以用 `python -m "
 "serving.config.manage` 在命令行里修改已存储的设置项，校验规则和控制台完全一样："
 
-#: ../developer/configuration.md:449
+#: ../developer/configuration.md:456
 msgid ""
 "`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores"
 " a value — add `--secret` when it creates a custom variable that holds "
-"one — and `reset KEY` deletes the stored value, so that the environment "
-"or the default applies again. It talks to the database directly with the "
-"`DB_*` connection settings, so it needs no sign-in, and it never prints a"
-" secret's value. When the backend container is not running, run it in the"
-" repository root of a source checkout instead (`uv run python -m "
-"serving.config.manage ...`), where `.env` reaches Postgres on "
-"`127.0.0.1:5432`. A running backend picks the change up within about ten "
-"seconds, or at its next restart for a setting marked **Restart "
+"one — and `reset KEY` resets it as the tab's **Reset** does, so that the "
+"environment or the default applies again. It talks to the database "
+"directly with the `DB_*` connection settings alone, so it needs no sign-"
+"in and still runs when another setting in the environment is invalid, and"
+" it never prints a secret's value. When the backend container is not "
+"running, run it in the repository root of a source checkout instead (`uv "
+"run python -m serving.config.manage ...`), where `.env` reaches Postgres "
+"on `127.0.0.1:5432`. A running backend picks the change up within about "
+"ten seconds, or at its next restart for a setting marked **Restart "
 "required**. The command that resets an administrator's password works the"
 " same way; see [The first admin account](deployment.md#the-first-admin-"
 "account)."
 msgstr ""
 "`list` 列出所有设置项，`get KEY` 查看其中一项，`set KEY VALUE` "
-"存入一个值（如果它新建的是一个存放密钥的自定义变量，就加上 `--secret`），`reset KEY` "
-"删除存储的值，让环境变量或默认值重新生效。它用 `DB_*` "
-"连接设置直接访问数据库，所以不需要登录，也从不打印密钥的值。后端容器没在运行时，改在源码 checkout 的仓库根目录下运行它（`uv run "
-"python -m serving.config.manage ...`），那里的 `.env` 可以通过 `127.0.0.1:5432` 连上"
-" Postgres。正在运行的后端会在大约十秒内读到这个改动；标着 **Restart required** "
+"存入一个值（如果它新建的是一个存放密钥的自定义变量，就加上 `--secret`），`reset KEY` 则像标签页上的 **Reset** "
+"一样重置它，让环境变量或默认值重新生效。它只用 `DB_*` "
+"连接设置直接访问数据库，所以不需要登录，环境变量里别的设置项无效时也照样能运行，而且从不打印密钥的值。后端容器没在运行时，改在源码 "
+"checkout 的仓库根目录下运行它（`uv run python -m serving.config.manage ...`），那里的 "
+"`.env` 可以通过 `127.0.0.1:5432` 连上 Postgres。正在运行的后端会在大约十秒内读到这个改动；标着 "
+"**Restart required** "
 "的设置项则要等下次重启。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md#the-first-admin-"
 "account)。"
 
-#: ../developer/configuration.md:462
+#: ../developer/configuration.md:470
 msgid "Missing settings"
 msgstr "缺失的设置项"
 
-#: ../developer/configuration.md:464
+#: ../developer/configuration.md:472
 msgid ""
 "Some settings are required: the two generated secrets, every variable a "
 "model route needs to load (unless the route is `optional: true`), and "
@@ -1372,17 +1384,20 @@ msgid ""
 "where **Missing only** lists what to fill in; everyone else is told that "
 "some features may not work and to contact the administrator. A model "
 "whose credential is missing is not loaded, and a request for it is "
-"answered with a `404` that says the deployment's configuration is "
-"incomplete."
+"answered with a `404`. When an administrator sends it with their own API "
+"key, the `404` says the deployment's configuration is incomplete; anyone "
+"else gets the same \"not found\" as for a model the deployment does not "
+"define, so the difference reveals nothing beyond what they may use."
 msgstr ""
 "有些设置项是必填的：那两个自动生成的密钥、模型路由加载时需要的每个变量（路由标了 `optional: true` "
 "的除外），以及公开注册要求邮箱验证时的 `SMTP_USER` 和 "
 "`SMTP_PASSWORD`。其中任何一个没有值时，控制台会给已登录的用户显示一条横幅。管理员看到的是指向 Configuration "
 "标签页的链接，在那里勾选 **Missing only** "
-"就能列出要填的项；其他人看到的则是部分功能可能无法使用、请联系管理员。缺少凭据的模型不会被加载，对它的请求会得到一个 "
-"`404`，说明部署的配置不完整。"
+"就能列出要填的项；其他人看到的则是部分功能可能无法使用、请联系管理员。缺少凭据的模型不会被加载，对它的请求会得到一个 `404`。管理员用自己的 "
+"API key 发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，都是“not "
+"found”，所以从这个差别里看不出任何超出其可用范围的信息。"
 
-#: ../developer/configuration.md:474
+#: ../developer/configuration.md:485
 msgid ""
 "A deployment that leaves a model's credential unset on purpose — a route "
 "it does not use yet, or a canary it enables elsewhere — should mark that "
@@ -1392,7 +1407,7 @@ msgstr ""
 "如果部署有意不设置某个模型的凭据——比如一条暂时不用的路由，或者在别处才启用的 canary——就应该在模型注册表里给那条路由标上 "
 "`optional: true`。这样这条路由会被悄悄跳过，它的变量也不会被报告为缺失。"
 
-#: ../developer/configuration.md:480
+#: ../developer/configuration.md:491
 msgid ""
 "Settings are stored in plaintext. Anyone who can read the database — a "
 "`pg_dump`, a backup, a `psql` or pgAdmin session — can read every "
@@ -1403,45 +1418,46 @@ msgstr ""
 "设置项以明文存储。任何能读到数据库的人——通过 `pg_dump`、备份，或者 `psql`、pgAdmin 会话——都能读到每一个 "
 "provider key，解密用户存下的 API key，并签发管理员 token。要像保护这些凭据本身那样，保护数据库的访问权限和备份。"
 
-#: ../developer/configuration.md:486
+#: ../developer/configuration.md:497
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:488
+#: ../developer/configuration.md:499
 msgid ""
 "The environment keeps what the backend needs before it can reach its "
 "database and what describes the containers rather than the application:"
 msgstr "环境变量里留下的，是后端连上数据库之前就需要的东西，以及描述容器而不是应用本身的东西："
 
-#: ../developer/configuration.md:491
+#: ../developer/configuration.md:502
 msgid ""
 "the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, "
 "`DB_PASSWORD`, `DB_ENABLED`;"
 msgstr "数据库连接：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_ENABLED`；"
 
-#: ../developer/configuration.md:493
+#: ../developer/configuration.md:504
 msgid ""
 "the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`, "
 "`ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`, "
 "`DISTRIBUTION_CONFIG_MODE`;"
 msgstr "配置文件：`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`；"
 
-#: ../developer/configuration.md:496
+#: ../developer/configuration.md:507
 msgid ""
 "the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, "
-"`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, and "
-"`REFRESH_TOKEN_COOKIE_NAME`, which the console reads too;"
+"`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, "
+"`SUPERVISOR_RESTARTS_BACKEND`, and `REFRESH_TOKEN_COOKIE_NAME`, which the"
+" console reads too;"
 msgstr ""
-"后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`，以及控制台也会读取的"
+"后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`、`SUPERVISOR_RESTARTS_BACKEND`，以及控制台也会读取的"
 " `REFRESH_TOKEN_COOKIE_NAME`；"
 
-#: ../developer/configuration.md:499
+#: ../developer/configuration.md:510
 msgid ""
 "Compose and the console: host ports and bind addresses, the console's "
 "build values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`."
 msgstr "Compose 和控制台：宿主机端口和绑定地址，控制台的构建期取值，以及 `AGENT_WEB_INTERNAL_URL` 这类运行期取值。"
 
-#: ../developer/configuration.md:502
+#: ../developer/configuration.md:513
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -1458,15 +1474,15 @@ msgstr ""
 "variables)列出了你最可能要设置的设置项。其他设置项如果在环境变量里有值，会按上文所述在启动时导入数据库。永远不要把密钥写进模型注册表或 "
 "manifest：在那里用 `${VAR}` 引用它。"
 
-#: ../developer/configuration.md:511
+#: ../developer/configuration.md:522
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:517
+#: ../developer/configuration.md:528
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:524
+#: ../developer/configuration.md:535
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -1478,7 +1494,7 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:530
+#: ../developer/configuration.md:541
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, the upstream `base_url`, its provider label and its weight — that "
