@@ -400,15 +400,18 @@ that is not valid on its own.
 
 ### `POST /admin/system/restart`
 
-`202 {"restarting": true}` then, after the response is sent, the process
-signals itself `SIGTERM`; uvicorn shuts down gracefully, and the process exits
+`202 {"restarting": true, "instance": "<id>"}` then, after the response is
+sent, the process signals itself `SIGTERM`; uvicorn shuts down gracefully, and the process exits
 with status 75 so systemd's `Restart=on-failure` also restarts it. A watchdog
 forces the exit after 30 s. `409` when `restart_supported` is false: the
 deployment has not declared `SUPERVISOR_RESTARTS_BACKEND=1` (set by the bundled
 Compose file and systemd units beside their restart policy; `/.dockerenv` and
 `INVOCATION_ID` do not show the policy), or several workers serve it
 (`WEB_CONCURRENCY`/`UVICORN_WORKERS` above 1, or a worker `uvicorn --workers`
-spawned). Audited.
+spawned). Audited. `instance` names the exiting process; `/health` reports
+the answering process's `instance` too (random, new at every start), and the
+console counts the restart done when a different one answers. Waiting to see
+`/health` fail first misses a restart quicker than the one-second poll.
 
 ### `GET /site-config` additions (public, top level)
 
@@ -434,7 +437,8 @@ exposed publicly.
   category, plus the signup toggles (`signup_enabled`,
   `signup_require_email_verification`) via `PATCH /admin/settings/{key}`.
   Step 3 *Finish*: when anything is `pending_restart`, offer **Restart backend**
-  (poll `/health` until it answers again), then a full-page navigation to the
+  (poll `/health` until a process other than the restarted `instance` answers),
+  then a full-page navigation to the
   admin Configuration tab. Visiting `/setup` when setup is not required
   redirects to `/dashboard`.
 - **Setup gate**: when site-config says `setup.required`, every route except

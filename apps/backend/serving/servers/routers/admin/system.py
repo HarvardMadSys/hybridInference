@@ -20,8 +20,10 @@ async def restart_backend(
 ) -> RestartResponse:
     """Exit the process so its supervisor starts it again.
 
-    The 202 is sent first; the shutdown begins once the response is out.
-    Answers 409 when nothing would start the process again.
+    The 202 is sent first; the shutdown begins once the response is out. It
+    names this process (``instance``): the restart is over once ``/health``
+    answers with a different one. Answers 409 when nothing would start the
+    process again.
     """
     if not restart.restart_supported():
         raise HTTPException(
@@ -34,4 +36,4 @@ async def restart_backend(
         )
     await log_admin_action(op_store, admin_id, "system.restart", None, {"restarting": True})
     background_tasks.add_task(restart.request_restart)
-    return RestartResponse(restarting=True)
+    return RestartResponse(restarting=True, instance=restart.INSTANCE_ID)

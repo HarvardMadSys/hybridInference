@@ -295,7 +295,7 @@ async def test_restart_answers_202_then_signals(config_client, monkeypatch) -> N
     response = await client.post("/admin/system/restart", headers=AUTH)
 
     assert response.status_code == 202
-    assert response.json() == {"restarting": True}
+    assert response.json() == {"restarting": True, "instance": restart.INSTANCE_ID}
     assert kills == [(os.getpid(), signal.SIGTERM)]
     assert restart.restart_requested()
     assert exits == []  # the watchdog has not fired

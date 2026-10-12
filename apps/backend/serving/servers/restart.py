@@ -8,12 +8,18 @@ process signals itself ``SIGTERM`` so uvicorn shuts down gracefully, and the
 lifespan then exits with :data:`RESTART_EXIT_STATUS` — non-zero, because
 ``Restart=on-failure`` ignores a clean exit. A watchdog forces that exit if the
 graceful shutdown hangs, say on a stream that never ends.
+
+The restart request answers with :data:`INSTANCE_ID`, and ``/health`` reports
+it too, so the console knows the restart is over once a different process
+answers. Waiting to see the backend down first misses a restart quicker than
+the console's polling interval.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import secrets
 import signal
 import threading
 import time
@@ -39,6 +45,11 @@ WATCHDOG_SECONDS = 30.0
 SUPERVISED_RESTART_ENV = "SUPERVISOR_RESTARTS_BACKEND"
 
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+
+#: Names this process, and changes with every start. ``/health`` reports it, so
+#: the console can tell the process that came back from the one it asked to
+#: exit however short the outage between them, which polling cannot see.
+INSTANCE_ID = secrets.token_hex(8)
 
 _requested = threading.Event()
 

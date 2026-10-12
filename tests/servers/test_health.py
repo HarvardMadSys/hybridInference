@@ -45,6 +45,20 @@ async def test_health_both_stores_ok_returns_healthy(test_client, app_services) 
     assert body["database_connected"] is True
 
 
+async def test_health_names_the_process_that_answers(test_client, app_services) -> None:
+    """The console tells a restarted backend from the one it asked to exit by this."""
+    from serving.servers import restart
+
+    await _set_store_health(app_services.operational_store, True)
+    await _set_store_health(app_services.log_store, True)
+
+    first = (await test_client.get("/health")).json()["instance"]
+    second = (await test_client.get("/health")).json()["instance"]
+
+    assert first == second == restart.INSTANCE_ID
+    assert len(first) == 16
+
+
 async def test_health_op_only_up_returns_200_degraded(test_client, app_services) -> None:
     """log_store down, op_store up → 200 with degraded body.
 

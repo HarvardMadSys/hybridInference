@@ -148,7 +148,7 @@ async function renderTab(config = makeConfig(), props: { initialMissingOnly?: bo
 beforeEach(() => {
   vi.mocked(patchConfig).mockImplementation(async () => makeConfig());
   vi.mocked(resetConfigKey).mockImplementation(async () => makeConfig());
-  vi.mocked(restartBackend).mockResolvedValue({ restarting: true });
+  vi.mocked(restartBackend).mockResolvedValue({ restarting: true, instance: 'old-process' });
   vi.mocked(waitForBackendRestart).mockResolvedValue('restarted');
 });
 
@@ -464,7 +464,8 @@ describe('restart', () => {
     );
     const [first, second] = vi.mocked(waitForBackendRestart).mock.calls;
     expect(second[0]?.progress).toBe(first[0]?.progress);
-    expect(second[0]?.progress).toEqual({ sawDown: true });
+    // The process asked to restart, which only a different one ends.
+    expect(second[0]?.progress).toEqual({ sawDown: true, from: 'old-process' });
     expect(restartBackend).toHaveBeenCalledTimes(1);
   });
 

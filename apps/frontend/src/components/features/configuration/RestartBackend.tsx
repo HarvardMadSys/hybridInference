@@ -15,8 +15,8 @@ export const MANUAL_RESTART_COMMAND = 'docker restart hybridinference-backend';
 /**
  * "Restart backend", with the confirmation and the wait.
  *
- * After the backend accepts the request this polls `/health` until it has gone
- * down and come back, then calls `onRestarted` — which should load a fresh
+ * After the backend accepts the request this polls `/health` until a new process
+ * answers, then calls `onRestarted` — which should load a fresh
  * page, because the server-rendered site configuration (the setup gate, the
  * configuration banner) was read before the restart.
  */
@@ -55,8 +55,9 @@ export function RestartBackendButton({
   const confirm = async () => {
     setPhase('requesting');
     setError(null);
+    let restarting;
     try {
-      await restartBackend();
+      restarting = await restartBackend();
     } catch (e) {
       // Keep the dialog open with the reason — typically 409: no supervisor is
       // declared to start the process again, so it would not come back.
@@ -64,7 +65,7 @@ export function RestartBackendButton({
       setPhase('confirm');
       return;
     }
-    progressRef.current = { sawDown: false };
+    progressRef.current = { sawDown: false, from: restarting.instance ?? null };
     await waitForBackend();
   };
 

@@ -89,9 +89,9 @@ describe('configuration client', () => {
   });
 
   it('asks for a restart with POST /admin/system/restart', async () => {
-    fetchMock.mockResolvedValueOnce(json({ restarting: true }, 202));
+    fetchMock.mockResolvedValueOnce(json({ restarting: true, instance: 'abc123' }, 202));
 
-    await expect(restartBackend()).resolves.toEqual({ restarting: true });
+    await expect(restartBackend()).resolves.toEqual({ restarting: true, instance: 'abc123' });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toMatch(/\/admin\/system\/restart$/);
     expect(init.method).toBe('POST');
@@ -114,13 +114,15 @@ describe('configuration client', () => {
 });
 
 describe('restart polling', () => {
-  function sequence(...answers: boolean[]) {
-    const check = vi.fn(async () => answers.shift() ?? true);
-    return check;
+  const up = (instance: string | null = null) => ({ up: true, instance });
+  const down = { up: false, instance: null };
+
+  function sequence(...answers: { up: boolean; instance: string | null }[]) {
+    return vi.fn(async () => answers.shift() ?? up());
   }
 
   it('waits for the health check to fail and then answer again', async () => {
-    const check = sequence(true, true, false, false, true);
+    const check = sequence(up(), up(), down, down, up());
 
     const result = await waitForBackendRestart({ check, sleep: async () => undefined });
 
@@ -128,11 +130,56 @@ describe('restart polling', () => {
     expect(check).toHaveBeenCalledTimes(5);
   });
 
+  it('counts a different process answering as the restart, without seeing it down', async () => {
+    // Back within one polling interval: every probe found it up.
+    const check = sequence(up('old'), up('old'), up('new'));
+
+    const result = await waitForBackendRestart({
+      check,
+      sleep: async () => undefined,
+      progress: { sawDown: false, from: 'old' },
+    });
+
+    expect(result).toBe('restarted');
+    expect(check).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not count the same process answering after a failed probe', async () => {
+    let clock = 0;
+    const answers = [down, up('old'), up('old')];
+    const check = vi.fn(async () => {
+      clock += 1_000;
+      return answers.shift() ?? up('old');
+    });
+
+    const result = await waitForBackendRestart({
+      check,
+      timeoutMs: 5_000,
+      now: () => clock,
+      sleep: async () => undefined,
+      progress: { sawDown: false, from: 'old' },
+    });
+
+    expect(result).toBe('timeout');
+  });
+
+  it('falls back to seeing it down when the backend that comes back names no process', async () => {
+    const check = sequence(up('old'), down, up());
+
+    const result = await waitForBackendRestart({
+      check,
+      sleep: async () => undefined,
+      progress: { sawDown: false, from: 'old' },
+    });
+
+    expect(result).toBe('restarted');
+  });
+
   it('gives up at the deadline when the backend never comes back', async () => {
     let clock = 0;
     const check = vi.fn(async () => {
       clock += 1_000;
-      return false;
+      return down;
     });
 
     const result = await waitForBackendRestart({
@@ -149,7 +196,7 @@ describe('restart polling', () => {
     let clock = 0;
     const check = vi.fn(async () => {
       clock += 1_000;
-      return true;
+      return up();
     });
 
     const result = await waitForBackendRestart({
@@ -166,13 +213,13 @@ describe('restart polling', () => {
     // The first wait sees the outage but times out before the backend is back.
     let clock = 0;
     const progress = { sawDown: false };
-    const down = vi.fn(async () => {
+    const failing = vi.fn(async () => {
       clock += 1_000;
-      return false;
+      return down;
     });
     await expect(
       waitForBackendRestart({
-        check: down,
+        check: failing,
         timeoutMs: 3_000,
         now: () => clock,
         sleep: async () => undefined,
@@ -182,18 +229,18 @@ describe('restart polling', () => {
     expect(progress.sawDown).toBe(true);
 
     // "Keep waiting": the backend already answers again, which is the restart.
-    const up = vi.fn(async () => true);
+    const answering = vi.fn(async () => up());
     await expect(
-      waitForBackendRestart({ check: up, sleep: async () => undefined, progress }),
+      waitForBackendRestart({ check: answering, sleep: async () => undefined, progress }),
     ).resolves.toBe('restarted');
-    expect(up).toHaveBeenCalledTimes(1);
+    expect(answering).toHaveBeenCalledTimes(1);
   });
 
   it('stops when aborted', async () => {
     const controller = new AbortController();
     const check = vi.fn(async () => {
       controller.abort();
-      return false;
+      return down;
     });
 
     const result = await waitForBackendRestart({
@@ -207,13 +254,16 @@ describe('restart polling', () => {
 
   it('counts a refused connection or an error status as down', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('connection refused'));
-    await expect(checkBackendHealth()).resolves.toBe(false);
+    await expect(checkBackendHealth()).resolves.toEqual(down);
 
     fetchMock.mockResolvedValueOnce(new Response('bad gateway', { status: 502 }));
-    await expect(checkBackendHealth()).resolves.toBe(false);
+    await expect(checkBackendHealth()).resolves.toEqual(down);
 
     fetchMock.mockResolvedValueOnce(json({ status: 'healthy' }));
-    await expect(checkBackendHealth()).resolves.toBe(true);
+    await expect(checkBackendHealth()).resolves.toEqual(up());
     expect(String(fetchMock.mock.calls[2][0])).toMatch(/\/health$/);
+
+    fetchMock.mockResolvedValueOnce(json({ status: 'healthy', instance: 'abc123' }));
+    await expect(checkBackendHealth()).resolves.toEqual(up('abc123'));
   });
 });

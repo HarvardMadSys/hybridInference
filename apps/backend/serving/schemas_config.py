@@ -76,3 +76,7 @@ class RestartResponse(BaseModel):
     """Acknowledgement that the backend is restarting."""
 
     restarting: bool
+    instance: str = Field(
+        ...,
+        description="The process that is exiting; /health reports another once it is back",
+    )

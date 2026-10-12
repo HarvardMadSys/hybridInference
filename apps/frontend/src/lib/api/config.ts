@@ -78,6 +78,8 @@ export interface ConfigPatchRequest {
 
 export interface RestartResponse {
   restarting: boolean;
+  /** The process that is exiting; `/health` names a different one once it is back. */
+  instance?: string;
 }
 
 /**
@@ -137,29 +139,49 @@ export async function restartBackend(): Promise<RestartResponse> {
 /** Per-attempt deadline, so a connection the dying process holds open counts as down. */
 const HEALTH_ATTEMPT_TIMEOUT_MS = 5_000;
 
+/** What one liveness probe found. */
+export interface BackendHealth {
+  up: boolean;
+  /** The process that answered, when it says (an older backend does not). */
+  instance: string | null;
+}
+
 /**
  * One liveness probe. Any failure — refused, timed out, or a non-2xx such as
  * the proxy's 502 while the backend is gone — is "down"; it never throws.
  */
-export async function checkBackendHealth(): Promise<boolean> {
+export async function checkBackendHealth(): Promise<BackendHealth> {
   try {
     const resp = await fetch(`${API_BASE}/health`, {
       cache: 'no-store',
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(HEALTH_ATTEMPT_TIMEOUT_MS),
     });
-    return resp.ok;
+    if (!resp.ok) return { up: false, instance: null };
+    let instance: string | null = null;
+    try {
+      const body: unknown = await resp.json();
+      if (body && typeof body === 'object' && 'instance' in body) {
+        const value = (body as { instance: unknown }).instance;
+        if (typeof value === 'string' && value) instance = value;
+      }
+    } catch {
+      // An answer without a readable body is still an answer.
+    }
+    return { up: true, instance };
   } catch {
-    return false;
+    return { up: false, instance: null };
   }
 }
 
 export type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
 
-/** What the waits for one restart have seen so far. */
+/** What the waits for one restart know about it. */
 export interface RestartProgress {
   /** The health check has failed since the restart was requested. */
   sawDown: boolean;
+  /** The process asked to restart (`RestartResponse.instance`), when the backend named it. */
+  from?: string | null;
 }
 
 export interface WaitForRestartOptions {
@@ -169,7 +191,7 @@ export interface WaitForRestartOptions {
   intervalMs?: number;
   signal?: AbortSignal;
   /** The probe; `checkBackendHealth` unless a test supplies one. */
-  check?: () => Promise<boolean>;
+  check?: () => Promise<BackendHealth>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /**
@@ -187,13 +209,16 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Wait for a restart to finish: the health check has to fail at least once and
- * then answer again.
+ * Wait for a restart to finish: a different process answers the health check.
  *
- * Seeing it fail first is the point. The restart request is answered before
- * the process exits, so the first probes usually reach the old process, and
- * "healthy" on its own would declare the restart done before it began. Pass the
- * same `progress` to a wait that resumes an earlier one for the same restart.
+ * The restart request is answered before the process exits, so the first
+ * probes usually reach the old process, and "healthy" on its own would declare
+ * the restart done before it began. When the backend names its process
+ * (`progress.from`, and the probe's `instance`), the restart is over once
+ * another one answers, however short the outage: a backend back within one
+ * polling interval is never seen down. Otherwise the health check has to fail
+ * at least once and then answer again. Pass the same `progress` to a wait that
+ * resumes an earlier one for the same restart.
  */
 export async function waitForBackendRestart(
   options: WaitForRestartOptions = {},
@@ -211,10 +236,12 @@ export async function waitForBackendRestart(
 
   while (now() < deadline) {
     if (signal?.aborted) return 'aborted';
-    const up = await check();
+    const probe = await check();
     if (signal?.aborted) return 'aborted';
-    if (!up) {
+    if (!probe.up) {
       progress.sawDown = true;
+    } else if (progress.from && probe.instance) {
+      if (probe.instance !== progress.from) return 'restarted';
     } else if (progress.sawDown) {
       return 'restarted';
     }

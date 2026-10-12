@@ -463,7 +463,9 @@ backend (`WEB_CONCURRENCY` or `UVICORN_WORKERS` above 1, or
 `uvicorn --workers`, where the button would restart only one of them), the tab
 shows a command to run yourself instead, such as
 `docker restart hybridinference-backend`. A restart cuts off requests in
-flight, streams included.
+flight, streams included. The console knows the restart is over once `/health`
+names a different process in its `instance` field, however quickly the backend
+came back.
 
 ### Without the console
 
