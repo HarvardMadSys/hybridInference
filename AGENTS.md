@@ -289,3 +289,32 @@ invariants, edit rules, or verification contract changes.
 | Path | Purpose |
 |---|---|
 | [`apps/backend/routing/`](apps/backend/routing/AGENTS.md) | Pilot guidance for the routing ownership boundary |
+
+## 9. Cursor Cloud specific instructions
+
+The image has Python 3.12, Node.js 22, and uv 0.5.0 (the version CI pins).
+Docker Engine 28.5.2 is installed with the `fuse-overlayfs` storage driver and
+legacy iptables, which is what this nested VM needs. Boot runs
+`sudo service docker start` and does not launch Compose.
+
+- `make setup-dev` is the checkout setup. On a Cloud Agent VM `core.hooksPath`
+  is already set, and `pre-commit install` then refuses to run, so that target
+  exits at the hook step even when the venv is fine. `uv sync --group dev` is
+  enough for `make lint` and `make test`.
+- Frontend dependencies: `npm ci --prefix apps/frontend`. From `apps/frontend`,
+  `npm run lint`, `npm run type-check`, and `npm run test`.
+- A shell opened before the `ubuntu` user was added to the `docker` group cannot
+  see the socket. New logins can run `docker` directly. Until then,
+  `sg docker -c '...'`.
+- The example overlay is not auto-selected. `make up DISTRIBUTION=example` then
+  `make smoke DISTRIBUTION=example` proves the gateway on
+  `http://127.0.0.1:18080`. `make demo DISTRIBUTION=example` adds Postgres and
+  the console on `http://127.0.0.1:13001`. `make demo-smoke DISTRIBUTION=example`
+  signs up, creates an API key, and checks a completion through that console.
+  `make demo-down DISTRIBUTION=example` stops it and keeps the database volume.
+- Those Compose services use `restart: unless-stopped`, so the next Docker
+  daemon start brings them back after the first successful `make up` /
+  `make demo`.
+- A console process on the host, outside Compose, must set
+  `BACKEND_INTERNAL_URL` to the gateway. `http://backend:8080` resolves only on
+  the Compose network.
