@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
     from datetime import datetime
 
-    from serving.config.settings import Settings
+    from serving.config.settings import DatabaseSettings, Settings
 
 #: Connect and statement deadlines for the short-lived boot connection. The
 #: pool's 60 s defaults would let one unreachable host hold startup for minutes
@@ -151,8 +151,12 @@ class AppConfigStore:
             return bool(await conn.fetchval("SELECT EXISTS (SELECT 1 FROM api_keys)"))
 
 
-async def connect(settings: Settings) -> asyncpg.Connection:
-    """Open the short-lived connection the boot-time configuration load uses."""
+async def connect(settings: Settings | DatabaseSettings) -> asyncpg.Connection:
+    """Open the short-lived connection the boot-time configuration load uses.
+
+    Reads only the ``db_*`` fields, so a command-line tool can pass
+    :class:`~serving.config.settings.DatabaseSettings`.
+    """
     return await asyncpg.connect(
         host=settings.db_host,
         port=settings.db_port,

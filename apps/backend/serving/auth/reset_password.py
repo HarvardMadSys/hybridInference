@@ -135,14 +135,14 @@ async def _reset_with_database(identifier: str, new_password: str) -> dict[str, 
     import asyncpg
     from pydantic import ValidationError
 
-    from serving.config.settings import Settings
+    from serving.config.settings import DatabaseSettings
     from serving.storage.postgres_operational import PostgresOperationalStore
 
     try:
-        settings = Settings()
+        settings = DatabaseSettings()
     except ValidationError as exc:
         raise ResetPasswordError(
-            f"The configuration in the environment is invalid: {exc}\nNothing was changed."
+            f"The database settings in the environment are invalid: {exc}\nNothing was changed."
         ) from exc
 
     where = f"{settings.db_user}@{settings.db_host}:{settings.db_port}/{settings.db_name}"

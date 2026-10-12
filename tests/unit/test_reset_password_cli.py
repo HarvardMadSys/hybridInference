@@ -176,3 +176,23 @@ class TestMain:
         assert cli.main(["admin"]) == 1
         assert calls == []
         assert "Nothing was changed" in capsys.readouterr().err
+
+
+async def test_the_database_is_reached_with_the_db_settings_alone(monkeypatch):
+    """An invalid unrelated setting must not stop the recovery tool."""
+    import asyncpg
+
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-network")
+    monkeypatch.setenv("DB_HOST", "db.internal")
+    monkeypatch.setenv("DB_PORT", "6543")
+    seen: dict[str, Any] = {}
+
+    async def _refused(**kwargs: Any):
+        seen.update(kwargs)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(asyncpg, "create_pool", _refused)
+
+    with pytest.raises(cli.ResetPasswordError, match=r"Could not connect to the database"):
+        await cli._reset_with_database("admin", "a-new-Passw0rd")
+    assert (seen["host"], seen["port"]) == ("db.internal", 6543)

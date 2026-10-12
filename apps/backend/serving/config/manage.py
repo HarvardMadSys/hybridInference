@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 from serving.config import app_config, app_config_registry as registry
-from serving.config.settings import get_settings
+from serving.config.settings import DatabaseSettings
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -54,7 +54,7 @@ def _database_enabled() -> bool:
 
 
 def _where() -> str:
-    settings = get_settings()
+    settings = DatabaseSettings()
     return f"{settings.db_user}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
 
 

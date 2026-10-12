@@ -40,7 +40,7 @@ from pydantic import ValidationError
 
 from serving.config import app_config_registry as registry
 from serving.config.app_config_store import AppConfigStore, ConfigRow, connect
-from serving.config.settings import Settings, get_settings
+from serving.config.settings import DatabaseSettings, Settings, get_settings
 from serving.utils import logging as logging_utils
 
 if TYPE_CHECKING:
@@ -471,12 +471,27 @@ def _manifest_allows_signup() -> bool:
 
     try:
         return distribution_allows_public_signup()
-    except DistributionConfigError:
+    except (DistributionConfigError, ValidationError):
+        # No manifest to read: a broken one, or an environment that does not
+        # validate (a command-line tool can run on one).
         return False
 
 
+def _current_settings() -> Settings:
+    """Return the live settings, or the built-in defaults when the environment is invalid.
+
+    Only a command-line tool runs on an environment that does not validate (the
+    gateway does not start on one), and it must still list and change the
+    stored settings; which settings are required then follows the defaults.
+    """
+    try:
+        return get_settings()
+    except ValidationError:
+        return Settings.model_construct()
+
+
 def _requirement_context() -> registry.RequirementContext:
-    settings = get_settings()
+    settings = _current_settings()
     signup_open = _manifest_allows_signup() and _runtime_flag(
         "signup_enabled", settings.signup_enabled
     )
@@ -749,12 +764,13 @@ async def _reload(store: AppConfigStore) -> None:
 async def command_line_session() -> AsyncIterator[None]:
     """Load the stored configuration for a command-line tool, on its own connection.
 
-    Connects with the ``DB_*`` settings and loads read-only (``bootstrap=False``:
-    no environment import, no generated secrets), so it works where startup
-    refuses to. The connection serves :func:`update` and :func:`delete` until the
+    Connects with the ``DB_*`` settings alone and loads read-only
+    (``bootstrap=False``: no environment import, no generated secrets), so it
+    works where startup refuses to, an invalid setting in the environment
+    included. The connection serves :func:`update` and :func:`delete` until the
     block ends; what was loaded stays applied afterwards.
     """
-    connection = await connect(get_settings())
+    connection = await connect(DatabaseSettings())
     try:
         store = AppConfigStore(connection)
         await load(store, bootstrap=False)

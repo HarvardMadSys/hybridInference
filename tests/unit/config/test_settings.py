@@ -213,3 +213,62 @@ def test_has_role_treats_unknown_user_role_as_lowest() -> None:
     assert has_role("typo-role", "free") is True
     assert has_role("typo-role", "pro") is False
     assert has_role("typo-role", "internal") is False
+
+
+# =============================================================================
+# Importing never validates; the recovery tools read the database settings alone
+# =============================================================================
+
+
+def test_importing_the_module_does_not_validate_the_environment() -> None:
+    """The recovery CLIs import it, and must run while an unrelated value is invalid."""
+    import subprocess
+    import sys
+
+    script = (
+        "import serving.config.settings as m\n"
+        "assert m.DatabaseSettings().db_host == 'db.internal'\n"
+        "try:\n"
+        "    m.settings\n"
+        "except Exception as exc:\n"
+        "    print(type(exc).__name__)\n"
+    )
+    env = {**os.environ, "TRUSTED_PROXIES": "not-a-network", "DB_HOST": "db.internal"}
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Whoever reads ``settings`` still gets the validation error, as before.
+    assert result.stdout.strip() == "ValidationError"
+
+
+def test_the_module_global_is_created_once() -> None:
+    """One object for the process, as when it was created at import."""
+    shared = settings_module.settings
+    get_settings.cache_clear()
+
+    assert settings_module.settings is shared
+    from serving.config.settings import settings
+
+    assert settings is shared
+    with pytest.raises(AttributeError):
+        settings_module.no_such_attribute  # noqa: B018
+
+
+def test_database_settings_read_only_the_connection(monkeypatch) -> None:
+    monkeypatch.setenv("DB_HOST", "db.internal")
+    monkeypatch.setenv("DB_PORT", "6543")
+    monkeypatch.setenv("db_name", "lower-case-works-too")
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-network")
+
+    database = settings_module.DatabaseSettings()
+
+    assert (database.db_host, database.db_port, database.db_name) == (
+        "db.internal",
+        6543,
+        "lower-case-works-too",
+    )
+    assert database.db_user == Settings.model_fields["db_user"].default
+    with pytest.raises(ValueError, match="trusted_proxies"):
+        Settings()

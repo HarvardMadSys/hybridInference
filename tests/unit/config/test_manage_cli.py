@@ -8,7 +8,7 @@ import pytest
 
 from serving.config import app_config, manage
 from serving.config.app_config_registry import static_entries
-from serving.config.settings import get_settings
+from serving.config.settings import DatabaseSettings, get_settings
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 
@@ -165,6 +165,28 @@ def test_an_unreachable_database_is_reported(monkeypatch, capsys) -> None:
 
     assert manage.main(["list"]) == 1
     assert "Could not use the database" in capsys.readouterr().err
+
+
+def test_an_invalid_unrelated_setting_does_not_stop_the_tool(monkeypatch, capsys) -> None:
+    """It connects with the DB_* settings alone, and reports where it connected."""
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-network")
+    monkeypatch.setenv("DB_HOST", "db.internal")
+    get_settings.cache_clear()
+    targets = []
+
+    async def refused(settings):
+        targets.append(settings)
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(app_config, "connect", refused)
+    monkeypatch.setattr(manage, "_database_enabled", lambda: True)
+    try:
+        assert manage.main(["list"]) == 1
+    finally:
+        get_settings.cache_clear()
+
+    assert [type(target) for target in targets] == [DatabaseSettings]
+    assert "Could not use the database postgres@db.internal:" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

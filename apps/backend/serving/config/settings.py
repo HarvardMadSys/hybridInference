@@ -9,7 +9,7 @@ from functools import lru_cache
 from typing import Annotated
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Resource models a provider route can be added under. ``quota`` and
 # ``concurrency`` are the stateful kinds RouteWise accounts for; ``on_demand``
@@ -458,10 +458,47 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Global settings instance
-# Note: This is created at import time. Tests should use get_settings() or
-# reload the module to pick up environment changes.
-settings = get_settings()
+# The shared ``Settings`` instance, as ``from serving.config.settings import
+# settings``. Created on first use rather than when this module is imported, so
+# importing it never validates the environment: the command-line recovery tools
+# (``serving.auth.reset_password``, ``serving.config.manage``) import it and must
+# still reach the database when an unrelated setting in the environment is
+# invalid. Otherwise it is what it was: the ``get_settings()`` instance, created
+# once and kept for the life of the process, and an invalid environment raises
+# for whoever reads it first.
+settings: Settings
+
+
+def _shared_settings() -> Settings:
+    """Return ``settings``, creating it on first use."""
+    shared = globals().get("settings")
+    if shared is None:
+        shared = globals()["settings"] = get_settings()
+    return shared
+
+
+def __getattr__(name: str) -> Settings:
+    if name == "settings":
+        return _shared_settings()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class DatabaseSettings(BaseSettings):
+    """The database connection settings alone, read the way ``Settings`` reads them.
+
+    For the command-line recovery tools: they connect with these and nothing
+    else, so a setting that keeps the gateway from validating its configuration
+    cannot keep them from repairing it.
+    """
+
+    db_host: str = Settings.model_fields["db_host"].default
+    db_port: int = Settings.model_fields["db_port"].default
+    db_name: str = Settings.model_fields["db_name"].default
+    db_user: str = Settings.model_fields["db_user"].default
+    db_password: str = Settings.model_fields["db_password"].default
+
+    # Read like ``Settings``: the same ``.env`` file and case rules.
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
 
 def _split_email_list(raw: str) -> list[str]:
@@ -489,7 +526,7 @@ def is_admin_email(email: str | None) -> bool:
     """
     if not email or not email.strip():
         return False
-    return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
+    return email.strip().lower() in _parse_admin_emails(_shared_settings().admin_emails)
 
 
 def get_signup_notify_emails() -> list[str]:
@@ -499,10 +536,11 @@ def get_signup_notify_emails() -> list[str]:
     ``admin_emails`` so that recipients can be narrowed without altering who
     holds the admin role. Recipient casing is preserved for SMTP delivery.
     """
-    notify = _split_email_list(settings.signup_notify_emails)
+    current = _shared_settings()
+    notify = _split_email_list(current.signup_notify_emails)
     if notify:
         return notify
-    return _split_email_list(settings.admin_emails)
+    return _split_email_list(current.admin_emails)
 
 
 ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
