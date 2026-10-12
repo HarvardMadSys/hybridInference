@@ -269,6 +269,68 @@ async def test_startup_refuses_a_rule_no_stored_value_satisfies(boot_env, monkey
 
 
 @pytest.mark.asyncio
+async def test_a_stored_value_satisfies_a_rule_the_environment_alone_breaks(
+    boot_env, monkeypatch
+) -> None:
+    """TRUST_PROXY_HEADERS was imported, then removed from the environment."""
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUST_PROXY_HEADERS", "true"), row("TRUST_X_REAL_IP", "true")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    app_config.require_valid_environment()
+
+    assert get_settings().trust_proxy_headers is True
+    assert get_settings().trust_x_real_ip is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored",
+    [[], [row("TRUST_PROXY_HEADERS", "false")]],
+    ids=["nothing stored", "stored value breaks it too"],
+)
+async def test_startup_refuses_a_rule_the_configuration_in_force_breaks(
+    boot_env, monkeypatch, stored
+) -> None:
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(stored)
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    message = str(excinfo.value)
+    assert "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS" in message
+    assert "Correct TRUST_PROXY_HEADERS, TRUST_X_REAL_IP" in message
+    assert "manage set" in message
+    # Neither side was imported: which one is wrong is the operator's call.
+    assert "TRUST_X_REAL_IP" not in store.rows
+
+
+@pytest.mark.asyncio
+async def test_a_database_free_gateway_refuses_a_broken_rule(boot_env, monkeypatch) -> None:
+    monkeypatch.setenv("DB_ENABLED", "false")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    get_settings.cache_clear()
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    assert "TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS" in str(excinfo.value)
+    assert "manage" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
 async def test_a_database_free_gateway_refuses_an_invalid_environment_value(
     boot_env, monkeypatch
 ) -> None:

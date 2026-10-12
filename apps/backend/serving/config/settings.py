@@ -367,10 +367,11 @@ class Settings(BaseSettings):
     def _parse_trusted_proxies(self) -> "Settings":
         """Parse trusted client, proxy, and Cloudflare network CIDRs.
 
-        Every entry has passed :meth:`_check_networks`. The rules below tie the
-        trust switches to one another and to the networks they need. A rule
-        waits while :func:`get_settings` builds without one of its settings
-        (see :func:`_rule_waits`).
+        Every entry has passed :meth:`_check_networks`. The rules between the
+        trust settings (:meth:`broken_rules`) apply here, except while
+        :func:`get_settings` builds: the database may still replace either
+        side of a rule, so startup judges it once the stored configuration is
+        in force.
         """
         proxy_networks = _parse_networks(self.trusted_proxies, "trusted_proxies")
         cf_networks = _parse_networks(
@@ -382,25 +383,33 @@ class Settings(BaseSettings):
         object.__setattr__(self, "trusted_proxies_parsed", proxy_networks)
         object.__setattr__(self, "trusted_direct_client_parsed", direct_networks)
         object.__setattr__(self, "trusted_cloudflare_parsed", cf_networks)
-        if (
-            self.trust_cloudflare_headers
-            and not self.trust_proxy_headers
-            and not _rule_waits("trust_cloudflare_headers", "trust_proxy_headers")
-        ):
-            raise ValueError("TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS")
-        if (
-            self.trust_cloudflare_headers
-            and not cf_networks
-            and not _rule_waits("trust_cloudflare_headers", "trusted_cloudflare_networks")
-        ):
-            raise ValueError("TRUST_CLOUDFLARE_HEADERS requires TRUSTED_CLOUDFLARE_NETWORKS")
-        if (
-            self.trust_x_real_ip
-            and not self.trust_proxy_headers
-            and not _rule_waits("trust_x_real_ip", "trust_proxy_headers")
-        ):
-            raise ValueError("TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS")
+        broken = self.broken_rules()
+        if broken and not _deferring_rules.get():
+            raise ValueError(next(iter(broken)))
         return self
+
+    def broken_rules(self) -> dict[str, tuple[str, ...]]:
+        """Return each rule between settings these values break, with the fields it ties.
+
+        Keyed by the rule's message. Empty when the values satisfy every rule.
+        """
+        broken: dict[str, tuple[str, ...]] = {}
+        if self.trust_cloudflare_headers and not self.trust_proxy_headers:
+            broken["TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS"] = (
+                "trust_cloudflare_headers",
+                "trust_proxy_headers",
+            )
+        if self.trust_cloudflare_headers and not self.trusted_cloudflare_parsed:
+            broken["TRUST_CLOUDFLARE_HEADERS requires TRUSTED_CLOUDFLARE_NETWORKS"] = (
+                "trust_cloudflare_headers",
+                "trusted_cloudflare_networks",
+            )
+        if self.trust_x_real_ip and not self.trust_proxy_headers:
+            broken["TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"] = (
+                "trust_x_real_ip",
+                "trust_proxy_headers",
+            )
+        return broken
 
     @model_validator(mode="after")
     def _alerts_webhook_fallback(self) -> "Settings":
@@ -538,21 +547,12 @@ CONNECTION_FIELDS = frozenset({"db_host", "db_port", "db_name", "db_user", "db_p
 #: What :func:`get_settings` set aside: field name -> why its value is not valid.
 _invalid_environment: dict[str, str] = {}
 
-#: The settings :func:`get_settings` is building without, while it builds.
-_building_without: ContextVar[frozenset[str]] = ContextVar("_building_without", default=frozenset())
+#: The rules between settings :func:`get_settings` left for startup to judge:
+#: message -> the fields the rule ties.
+_deferred_rules: dict[str, tuple[str, ...]] = {}
 
-
-def _rule_waits(*field_names: str) -> bool:
-    """Whether a rule between *field_names* must wait for the database.
-
-    True only while :func:`get_settings` builds with one of them set aside: its
-    stand-in default was chosen by no one, so a rule it breaks says nothing yet.
-    The configuration load builds ``Settings`` again from the environment and
-    the stored values, outside :func:`get_settings`, and every rule applies
-    there; startup refuses to continue unless a valid stored value replaced
-    each setting set aside (``app_config.require_valid_environment``).
-    """
-    return not _building_without.get().isdisjoint(field_names)
+#: True while :func:`get_settings` builds: rules between settings wait.
+_deferring_rules: ContextVar[bool] = ContextVar("_deferring_rules", default=False)
 
 
 @lru_cache
@@ -569,9 +569,13 @@ def get_settings() -> Settings:
     database. Startup refuses to continue unless it does
     (``app_config.require_valid_environment``); :func:`invalid_environment`
     lists what was set aside. The database connection settings are never set
-    aside. A rule between settings, which blames no single one, still raises,
-    unless one of its settings was set aside: the rule is judged once the
-    database has been read (:func:`_rule_waits`).
+    aside.
+
+    A rule between settings (``Settings.broken_rules``) is not judged here
+    either: the database may replace either side of it, so startup judges it
+    against the configuration in force once the database has been read, and
+    refuses to continue if that still breaks it. :func:`deferred_rules` lists
+    the rules the environment alone breaks.
 
     Returns:
         Settings: Validated settings object.
@@ -581,6 +585,18 @@ def get_settings() -> Settings:
             invalid settings at their defaults.
     """
     _invalid_environment.clear()
+    _deferred_rules.clear()
+    deferring = _deferring_rules.set(True)
+    try:
+        settings = _settings_without_invalid_environment()
+    finally:
+        _deferring_rules.reset(deferring)
+    _deferred_rules.update(settings.broken_rules())
+    return settings
+
+
+def _settings_without_invalid_environment() -> Settings:
+    """Build ``Settings``, setting aside each environment value that fails on its own."""
     try:
         return Settings()
     except ValidationError as exc:
@@ -600,14 +616,11 @@ def get_settings() -> Settings:
             )
             for name in set_aside
         }
-        building = _building_without.set(frozenset(set_aside))
         try:
             settings = Settings(**defaults)
         except ValidationError as again:
             current = again
             continue
-        finally:
-            _building_without.reset(building)
         break
     # The defaults stand in for values nobody chose; they were not explicitly set.
     object.__setattr__(
@@ -622,6 +635,17 @@ def get_settings() -> Settings:
             problem,
         )
     return settings
+
+
+def deferred_rules() -> dict[str, tuple[str, ...]]:
+    """Return the rules between settings the environment alone breaks, with their fields.
+
+    :func:`get_settings` builds without judging them; startup judges them once
+    the stored configuration is in force. Empty when the environment satisfies
+    every rule.
+    """
+    get_settings()
+    return dict(_deferred_rules)
 
 
 def invalid_environment() -> dict[str, str]:

@@ -188,11 +188,16 @@ Entries come from four places:
    not imported. After the load, `require_valid_environment()` lets startup
    continue only when a valid stored value for it is in force, and otherwise
    fails naming the variable. The `DB_*` connection settings still fail at
-   once, and so does a rule between settings — unless the rule involves a
-   setting set aside (`TRUST_CLOUDFLARE_HEADERS` with an invalid
-   `TRUSTED_CLOUDFLARE_NETWORKS`, say). That rule is judged after the load,
-   against the stored value, and refuses startup if that value does not
-   satisfy it either.
+   once.
+
+   A rule between settings (`TRUST_X_REAL_IP` requires `TRUST_PROXY_HEADERS`,
+   say) is not judged by `get_settings()` either: a stored value may replace
+   either side. `require_valid_environment()` judges every rule against the
+   configuration in force, stored values over the environment, and refuses
+   startup if it still breaks one. So removing an environment variable whose
+   value the database already holds does not stop the gateway. Neither side of
+   a rule the environment alone breaks is imported: which one is wrong is the
+   operator's call.
 3. `validate_auth_secrets` (moved here from the lifespan, so it sees database
    values), re-apply `LOG_LEVEL`/`LOG_FORMAT`.
 4. Database logger (now receiving the database-backed

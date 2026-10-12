@@ -11,7 +11,6 @@ import os
 from collections.abc import Callable
 
 import pytest
-from pydantic import ValidationError
 
 import serving.config.settings as settings_module
 from serving.config.settings import Settings, get_settings, get_signup_notify_emails, has_role
@@ -271,13 +270,21 @@ def test_an_invalid_environment_value_is_set_aside_until_the_database_answers(
         Settings()
 
 
-def test_a_rule_between_settings_still_raises(monkeypatch) -> None:
-    """No single value can be blamed, so nothing is set aside."""
-    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+def test_a_rule_between_settings_waits_for_the_database(monkeypatch) -> None:
+    """The database may replace either side of it; startup judges it after the load."""
+    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
     monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
 
-    with pytest.raises(ValueError, match="TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS"):
-        get_settings()
+    settings = get_settings()
+
+    assert settings.trust_x_real_ip is True
+    assert settings_module.deferred_rules() == {
+        "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS": ("trust_x_real_ip", "trust_proxy_headers")
+    }
+    assert settings_module.invalid_environment() == {}
+    # Every build outside get_settings() applies the rule as before.
+    with pytest.raises(ValueError, match="TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"):
+        Settings()
 
 
 @pytest.mark.parametrize(
@@ -297,13 +304,14 @@ def test_a_rule_between_settings_still_raises(monkeypatch) -> None:
 def test_a_rule_on_a_set_aside_setting_waits_for_the_database(
     monkeypatch, environment, set_aside
 ) -> None:
-    """Its default stands in for a value nobody chose, so the rule cannot judge it yet."""
+    """The default standing in for it breaks a rule, which waits like any other."""
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
 
     settings = get_settings()
 
     assert set(settings_module.invalid_environment()) == {set_aside}
+    assert len(settings_module.deferred_rules()) == 1
     # Nothing is trusted on the strength of the stand-in.
     assert settings.trusted_cloudflare_parsed == ()
     # The rule applies as before to every build outside get_settings().
@@ -315,21 +323,6 @@ def test_a_rule_on_a_set_aside_setting_waits_for_the_database(
                 ].get_default()
             }
         )
-
-
-def test_a_rule_on_settings_left_as_they_are_still_raises(monkeypatch) -> None:
-    """Setting another value aside does not excuse a rule it plays no part in."""
-    monkeypatch.setenv("SMTP_PORT", "not-a-number")
-    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
-    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
-
-    # Raised with the environment's own error, as any refused environment is.
-    with pytest.raises(ValidationError, match="smtp_port"):
-        get_settings()
-    # The rule is what refused it: without it, SMTP_PORT alone is set aside.
-    monkeypatch.delenv("TRUST_X_REAL_IP")
-    get_settings.cache_clear()
-    assert set(settings_module.invalid_environment()) == {"smtp_port"}
 
 
 def test_the_environment_validates_as_it_is_when_it_can(monkeypatch) -> None:

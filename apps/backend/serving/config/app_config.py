@@ -44,6 +44,7 @@ from serving.config.settings import (
     CONNECTION_FIELDS,
     DatabaseSettings,
     Settings,
+    deferred_rules,
     get_settings,
     invalid_environment,
     invalid_fields,
@@ -686,6 +687,12 @@ async def _import_environment(
     environment once that was corrected, and could only ever be refused.
     """
     unusable = {registry.settings_env_name(name) for name in invalid_environment()}
+    # Nor a value on either side of a rule the environment breaks on its own:
+    # which side is wrong is the operator's call, and a stored side would
+    # outlive the environment's correction.
+    unusable.update(
+        registry.settings_env_name(name) for fields in deferred_rules().values() for name in fields
+    )
     imports = []
     for key, entry in _build_entries(rows).items():
         value = _environ_value(key, entry)
@@ -749,16 +756,21 @@ async def _generate_secrets(
 
 
 def require_valid_environment() -> None:
-    """Refuse to start on an environment value that is not valid, unless the database replaces it.
+    """Refuse to start on a configuration that is not valid once the database has been read.
 
-    :func:`~serving.config.settings.get_settings` leaves such a setting at its
-    default instead of failing before the database could be read. Called once
-    the stored configuration is in force: a valid stored value for the setting
-    applies, and the gateway starts with a warning; without one it must not.
+    :func:`~serving.config.settings.get_settings` judges two things only here,
+    called once the stored configuration is in force, instead of failing before
+    the database could be read:
+
+    - An environment value that is not valid on its own, left at its default:
+      a valid stored value for the setting applies, and the gateway starts with
+      a warning; without one it must not.
+    - The rules between settings: the configuration in force, stored values
+      over the environment, must satisfy every one.
 
     Raises:
-        ConfigBootstrapError: Naming each such setting, what is wrong with its
-            value, and how to fix it.
+        ConfigBootstrapError: Naming each such setting or broken rule, what is
+            wrong, and how to fix it.
     """
     unresolved: dict[str, str] = {}
     for name, problem in invalid_environment().items():
@@ -773,6 +785,7 @@ def require_valid_environment() -> None:
         else:
             unresolved[key] = problem
     if not unresolved:
+        _require_rules()
         return
     listed = "; ".join(f"{key}: {problem}" for key, problem in unresolved.items())
     remedy = "Fix or remove the variable"
@@ -786,6 +799,29 @@ def require_valid_environment() -> None:
     raise ConfigBootstrapError(
         "The environment holds settings that are not valid, and the database has no "
         f"valid value in their place ({listed}). {remedy}, then start the gateway again."
+    )
+
+
+def _require_rules() -> None:
+    """Refuse to start on a configuration in force that breaks a rule between settings."""
+    broken = get_settings().broken_rules()
+    if not broken:
+        return
+    keys = sorted(
+        {registry.settings_env_name(name) for fields in broken.values() for name in fields}
+    )
+    remedy = "Correct " + ", ".join(keys)
+    storable = [key for key in keys if key in _STATE.entries]
+    if _STATE.database_enabled and storable:
+        remedy += (
+            " (a value stored in the database wins over the environment; change it with "
+            "`python -m serving.config.manage set`"
+        )
+        remedy += " once the database can be reached)" if not _STATE.loaded else ")"
+    raise ConfigBootstrapError(
+        "The configuration in force, from the database and the environment together, "
+        f"breaks a rule between settings ({'; '.join(broken)}). {remedy}, then start the "
+        "gateway again."
     )
 
 
