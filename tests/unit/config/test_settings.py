@@ -278,7 +278,7 @@ def test_a_rule_between_settings_waits_for_the_database(monkeypatch) -> None:
     settings = get_settings()
 
     assert settings.trust_x_real_ip is True
-    assert settings_module.deferred_rules() == {
+    assert settings.broken_rules() == {
         "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS": ("trust_x_real_ip", "trust_proxy_headers")
     }
     assert settings_module.invalid_environment() == {}
@@ -311,7 +311,7 @@ def test_a_rule_on_a_set_aside_setting_waits_for_the_database(
     settings = get_settings()
 
     assert set(settings_module.invalid_environment()) == {set_aside}
-    assert len(settings_module.deferred_rules()) == 1
+    assert len(settings.broken_rules()) == 1
     # Nothing is trusted on the strength of the stand-in.
     assert settings.trusted_cloudflare_parsed == ()
     # The rule applies as before to every build outside get_settings().

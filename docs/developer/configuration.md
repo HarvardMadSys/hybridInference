@@ -399,6 +399,13 @@ invalid. The database connection settings (`DB_HOST`, `DB_PORT` and the
 others) are the exception: they are needed to read the database, so an invalid
 one always stops the backend.
 
+Settings that depend on each other — `TRUST_X_REAL_IP` needs
+`TRUST_PROXY_HEADERS` — are judged together, the database's values over the
+environment's. A variable whose partner is already stored is copied in like any
+other, so it survives the variable's removal. When the two sources together
+still break such a rule, neither side is copied in and the backend stops,
+naming the rule, until one side is corrected.
+
 On the first start against an empty database the backend also generates the
 two secrets it cannot run without, `JWT_SECRET_KEY` and `API_KEY_SECRET`,
 unless the environment supplies them. `API_KEY_SECRET` and
@@ -422,8 +429,14 @@ its value comes from. Besides every setting the gateway reads itself, it lists:
 
 Secrets are write-only: the tab shows whether one is set, never its value, and
 the admin audit log records only that it changed. A save is checked as a
-whole, so settings that depend on each other — `TRUST_CLOUDFLARE_HEADERS`
-needs `TRUST_PROXY_HEADERS` — can change together. The names that stay in the
+whole, against everything it leaves in force, so settings that depend on each
+other — `TRUST_CLOUDFLARE_HEADERS` needs `TRUST_PROXY_HEADERS` — can change
+together. A save or a **Reset** that would leave another setting unable to
+apply is refused and names it: turning `TRUST_PROXY_HEADERS` off while
+`TRUST_X_REAL_IP` is on, for example, or clearing the Cloudflare networks while
+`TRUST_CLOUDFLARE_HEADERS` is on. Change both in one save. A **Reset** is also
+refused when the environment value it would fall back to is not valid. A
+setting that was already invalid never blocks an unrelated change. The names that stay in the
 environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
 `DELETE /admin/config/{key}`.

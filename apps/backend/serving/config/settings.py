@@ -6,6 +6,8 @@ All environment variables are centralized here for easy tracking and testing.
 
 import ipaddress
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from typing import Annotated
@@ -368,10 +370,9 @@ class Settings(BaseSettings):
         """Parse trusted client, proxy, and Cloudflare network CIDRs.
 
         Every entry has passed :meth:`_check_networks`. The rules between the
-        trust settings (:meth:`broken_rules`) apply here, except while
-        :func:`get_settings` builds: the database may still replace either
-        side of a rule, so startup judges it once the stored configuration is
-        in force.
+        trust settings (:meth:`broken_rules`) apply here, except inside
+        :func:`rules_deferred`: the database may still replace either side of
+        a rule, so the configuration in force is judged once it is known.
         """
         proxy_networks = _parse_networks(self.trusted_proxies, "trusted_proxies")
         cf_networks = _parse_networks(
@@ -547,12 +548,23 @@ CONNECTION_FIELDS = frozenset({"db_host", "db_port", "db_name", "db_user", "db_p
 #: What :func:`get_settings` set aside: field name -> why its value is not valid.
 _invalid_environment: dict[str, str] = {}
 
-#: The rules between settings :func:`get_settings` left for startup to judge:
-#: message -> the fields the rule ties.
-_deferred_rules: dict[str, tuple[str, ...]] = {}
-
-#: True while :func:`get_settings` builds: rules between settings wait.
+#: True inside :func:`rules_deferred`: rules between settings wait.
 _deferring_rules: ContextVar[bool] = ContextVar("_deferring_rules", default=False)
+
+
+@contextmanager
+def rules_deferred() -> Iterator[None]:
+    """Build ``Settings`` without judging the rules between settings.
+
+    For a caller that judges them itself, with :meth:`Settings.broken_rules`,
+    once it knows the configuration in force: the database may replace either
+    side of a rule. Every other build applies them.
+    """
+    deferring = _deferring_rules.set(True)
+    try:
+        yield
+    finally:
+        _deferring_rules.reset(deferring)
 
 
 @lru_cache
@@ -574,8 +586,8 @@ def get_settings() -> Settings:
     A rule between settings (``Settings.broken_rules``) is not judged here
     either: the database may replace either side of it, so startup judges it
     against the configuration in force once the database has been read, and
-    refuses to continue if that still breaks it. :func:`deferred_rules` lists
-    the rules the environment alone breaks.
+    refuses to continue if that still breaks it. The environment alone breaking
+    one says nothing until then.
 
     Returns:
         Settings: Validated settings object.
@@ -585,14 +597,8 @@ def get_settings() -> Settings:
             invalid settings at their defaults.
     """
     _invalid_environment.clear()
-    _deferred_rules.clear()
-    deferring = _deferring_rules.set(True)
-    try:
-        settings = _settings_without_invalid_environment()
-    finally:
-        _deferring_rules.reset(deferring)
-    _deferred_rules.update(settings.broken_rules())
-    return settings
+    with rules_deferred():
+        return _settings_without_invalid_environment()
 
 
 def _settings_without_invalid_environment() -> Settings:
@@ -635,17 +641,6 @@ def _settings_without_invalid_environment() -> Settings:
             problem,
         )
     return settings
-
-
-def deferred_rules() -> dict[str, tuple[str, ...]]:
-    """Return the rules between settings the environment alone breaks, with their fields.
-
-    :func:`get_settings` builds without judging them; startup judges them once
-    the stored configuration is in force. Empty when the environment satisfies
-    every rule.
-    """
-    get_settings()
-    return dict(_deferred_rules)
 
 
 def invalid_environment() -> dict[str, str]:

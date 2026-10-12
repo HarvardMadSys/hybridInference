@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-12 03:16-0400\n"
+"POT-Creation-Date: 2026-10-12 10:53-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1237,6 +1237,19 @@ msgstr ""
 
 #: ../developer/configuration.md:402
 msgid ""
+"Settings that depend on each other — `TRUST_X_REAL_IP` needs "
+"`TRUST_PROXY_HEADERS` — are judged together, the database's values over "
+"the environment's. A variable whose partner is already stored is copied "
+"in like any other, so it survives the variable's removal. When the two "
+"sources together still break such a rule, neither side is copied in and "
+"the backend stops, naming the rule, until one side is corrected."
+msgstr ""
+"相互依赖的设置项（比如 `TRUST_X_REAL_IP` 需要 "
+"`TRUST_PROXY_HEADERS`）会放在一起判断，数据库里的值覆盖环境变量里的值。如果一个变量依赖的另一项已经存进了数据库，它会像其他变量一样被复制进去，"
+"之后删掉这个变量也不会丢。如果两边合起来仍然违反这类规则，两边都不会被复制，后端会停止并指出是哪条规则，直到其中一边被改正。"
+
+#: ../developer/configuration.md:409
+msgid ""
 "On the first start against an empty database the backend also generates "
 "the two secrets it cannot run without, `JWT_SECRET_KEY` and "
 "`API_KEY_SECRET`, unless the environment supplies them. `API_KEY_SECRET` "
@@ -1252,18 +1265,18 @@ msgstr ""
 "accounts)。如果数据库里已经有 API key，后端宁可拒绝启动，也不会为它生成新的 "
 "`API_KEY_SECRET`，因为新密钥会让所有这些 key 失效。"
 
-#: ../developer/configuration.md:410
+#: ../developer/configuration.md:417
 msgid "The Configuration tab"
 msgstr "Configuration 标签页"
 
-#: ../developer/configuration.md:412
+#: ../developer/configuration.md:419
 msgid ""
 "The tab groups the settings by category, describes each one and shows "
 "where its value comes from. Besides every setting the gateway reads "
 "itself, it lists:"
 msgstr "这个标签页把设置项按类别分组，逐个说明用途，并标出每个值的来源。除了网关自己读取的所有设置项，它还列出："
 
-#: ../developer/configuration.md:415
+#: ../developer/configuration.md:422
 #, python-brace-format
 msgid ""
 "every `${VAR}` the active model registry and routing file name, under "
@@ -1273,13 +1286,13 @@ msgstr ""
 "当前模型注册表和路由配置文件引用的每一个 `${VAR}`，列在 **Providers** 下，并注明用到它的模型；告警规则引用的则列在 "
 "**Alerts** 下；"
 
-#: ../developer/configuration.md:418
+#: ../developer/configuration.md:425
 msgid ""
 "numbered extra keys for a provider's key pool, such as "
 "`MINIMAX_API_KEY2`, once one is set;"
 msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
 
-#: ../developer/configuration.md:420
+#: ../developer/configuration.md:427
 #, python-brace-format
 msgid ""
 "variables added with **Add variable**, for a `${VAR}` reference the "
@@ -1287,27 +1300,37 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
-#: ../developer/configuration.md:423
+#: ../developer/configuration.md:430
 #, python-brace-format
 msgid ""
 "Secrets are write-only: the tab shows whether one is set, never its "
 "value, and the admin audit log records only that it changed. A save is "
-"checked as a whole, so settings that depend on each other — "
-"`TRUST_CLOUDFLARE_HEADERS` needs `TRUST_PROXY_HEADERS` — can change "
-"together. The names that stay in the environment, such as `DB_PASSWORD` "
-"or `MODELS_CONFIG_PATH`, cannot be set here. Behind the tab are `GET` and"
-" `PATCH /admin/config` and `DELETE /admin/config/{key}`."
+"checked as a whole, against everything it leaves in force, so settings "
+"that depend on each other — `TRUST_CLOUDFLARE_HEADERS` needs "
+"`TRUST_PROXY_HEADERS` — can change together. A save or a **Reset** that "
+"would leave another setting unable to apply is refused and names it: "
+"turning `TRUST_PROXY_HEADERS` off while `TRUST_X_REAL_IP` is on, for "
+"example, or clearing the Cloudflare networks while "
+"`TRUST_CLOUDFLARE_HEADERS` is on. Change both in one save. A **Reset** is"
+" also refused when the environment value it would fall back to is not "
+"valid. A setting that was already invalid never blocks an unrelated "
+"change. The names that stay in the environment, such as `DB_PASSWORD` or "
+"`MODELS_CONFIG_PATH`, cannot be set here. Behind the tab are `GET` and "
+"`PATCH /admin/config` and `DELETE /admin/config/{key}`."
 msgstr ""
-"密钥只能写不能读：标签页只显示它有没有设置，从不显示它的值，管理审计日志也只记录它被改过。一次保存会作为整体校验，所以相互依赖的设置项（比如 "
-"`TRUST_CLOUDFLARE_HEADERS` 需要 `TRUST_PROXY_HEADERS`）可以一起修改。留在环境变量里的名字，比如 "
+"密钥只能写不能读：标签页只显示它有没有设置，从不显示它的值，管理审计日志也只记录它被改过。一次保存会作为整体校验，并按保存后实际生效的全部配置来判断，所以相互依赖的设置项（比如 "
+"`TRUST_CLOUDFLARE_HEADERS` 需要 `TRUST_PROXY_HEADERS`）可以一起修改。如果一次保存或 **Reset** "
+"会让另一个设置项无法生效，它会被拒绝，并指出是哪一项：例如在 `TRUST_X_REAL_IP` 开着时关掉 "
+"`TRUST_PROXY_HEADERS`，或者在 `TRUST_CLOUDFLARE_HEADERS` 开着时清空 Cloudflare 网段。把两项放在同一次保存里修改即可。如果 "
+"**Reset** 后要回落到的环境变量值本身不合法，Reset 也会被拒绝。原本就无效的设置项不会挡住无关的修改。留在环境变量里的名字，比如 "
 "`DB_PASSWORD` 或 `MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH "
 "/admin/config`，以及 `DELETE /admin/config/{key}`。"
 
-#: ../developer/configuration.md:431
+#: ../developer/configuration.md:444
 msgid "When a change applies"
 msgstr "改动何时生效"
 
-#: ../developer/configuration.md:433
+#: ../developer/configuration.md:446
 msgid ""
 "Most settings apply as soon as they are saved: at once in the backend "
 "process that served the save, and within ten seconds in every other one. "
@@ -1321,7 +1344,7 @@ msgstr ""
 "的设置项只在启动时读取，进程会一直用启动时的值，直到重启。provider "
 "凭据和注册表引用的每个变量都属于这一类，熔断器和出站并发的调优、告警以及 `DB_STORE_FULL_CONTENT` 也是。"
 
-#: ../developer/configuration.md:440
+#: ../developer/configuration.md:453
 msgid ""
 "While such a change is waiting, the tab shows a **Restart pending** "
 "notice with a **Restart backend** button. The button (`POST "
@@ -1348,11 +1371,11 @@ msgstr ""
 "--workers`，这时按钮只能重启其中一个进程），标签页会改为给出一条让你自己运行的命令，比如 `docker restart "
 "hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。"
 
-#: ../developer/configuration.md:455
+#: ../developer/configuration.md:470
 msgid "Without the console"
 msgstr "不通过控制台"
 
-#: ../developer/configuration.md:457
+#: ../developer/configuration.md:472
 msgid ""
 "A setting can break the console that edits it — a value that stops sign-"
 "in from working, say. `python -m serving.config.manage` changes stored "
@@ -1362,7 +1385,7 @@ msgstr ""
 "某个设置项可能把用来编辑它的控制台本身弄坏——比如一个让登录失效的值。这时可以用 `python -m "
 "serving.config.manage` 在命令行里修改已存储的设置项，校验规则和控制台完全一样："
 
-#: ../developer/configuration.md:466
+#: ../developer/configuration.md:481
 msgid ""
 "`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores"
 " a value — add `--secret` when it creates a custom variable that holds "
@@ -1389,11 +1412,11 @@ msgstr ""
 "的设置项则要等下次重启。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md#the-first-admin-"
 "account)。"
 
-#: ../developer/configuration.md:480
+#: ../developer/configuration.md:495
 msgid "Missing settings"
 msgstr "缺失的设置项"
 
-#: ../developer/configuration.md:482
+#: ../developer/configuration.md:497
 msgid ""
 "Some settings are required: the two generated secrets, every variable a "
 "model route needs to load (unless the route is `optional: true`), and "
@@ -1416,7 +1439,7 @@ msgstr ""
 "API key 发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，都是“not "
 "found”，所以从这个差别里看不出任何超出其可用范围的信息。"
 
-#: ../developer/configuration.md:495
+#: ../developer/configuration.md:510
 msgid ""
 "A deployment that leaves a model's credential unset on purpose — a route "
 "it does not use yet, or a canary it enables elsewhere — should mark that "
@@ -1426,7 +1449,7 @@ msgstr ""
 "如果部署有意不设置某个模型的凭据——比如一条暂时不用的路由，或者在别处才启用的 canary——就应该在模型注册表里给那条路由标上 "
 "`optional: true`。这样这条路由会被悄悄跳过，它的变量也不会被报告为缺失。"
 
-#: ../developer/configuration.md:501
+#: ../developer/configuration.md:516
 msgid ""
 "Settings are stored in plaintext. Anyone who can read the database — a "
 "`pg_dump`, a backup, a `psql` or pgAdmin session — can read every "
@@ -1437,30 +1460,30 @@ msgstr ""
 "设置项以明文存储。任何能读到数据库的人——通过 `pg_dump`、备份，或者 `psql`、pgAdmin 会话——都能读到每一个 "
 "provider key，解密用户存下的 API key，并签发管理员 token。要像保护这些凭据本身那样，保护数据库的访问权限和备份。"
 
-#: ../developer/configuration.md:507
+#: ../developer/configuration.md:522
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:509
+#: ../developer/configuration.md:524
 msgid ""
 "The environment keeps what the backend needs before it can reach its "
 "database and what describes the containers rather than the application:"
 msgstr "环境变量里留下的，是后端连上数据库之前就需要的东西，以及描述容器而不是应用本身的东西："
 
-#: ../developer/configuration.md:512
+#: ../developer/configuration.md:527
 msgid ""
 "the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, "
 "`DB_PASSWORD`, `DB_ENABLED`;"
 msgstr "数据库连接：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_ENABLED`；"
 
-#: ../developer/configuration.md:514
+#: ../developer/configuration.md:529
 msgid ""
 "the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`, "
 "`ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`, "
 "`DISTRIBUTION_CONFIG_MODE`;"
 msgstr "配置文件：`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`；"
 
-#: ../developer/configuration.md:517
+#: ../developer/configuration.md:532
 msgid ""
 "the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, "
 "`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, "
@@ -1470,13 +1493,13 @@ msgstr ""
 "后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`、`SUPERVISOR_RESTARTS_BACKEND`，以及控制台也会读取的"
 " `REFRESH_TOKEN_COOKIE_NAME`；"
 
-#: ../developer/configuration.md:520
+#: ../developer/configuration.md:535
 msgid ""
 "Compose and the console: host ports and bind addresses, the console's "
 "build values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`."
 msgstr "Compose 和控制台：宿主机端口和绑定地址，控制台的构建期取值，以及 `AGENT_WEB_INTERNAL_URL` 这类运行期取值。"
 
-#: ../developer/configuration.md:523
+#: ../developer/configuration.md:538
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -1493,15 +1516,15 @@ msgstr ""
 "variables)列出了你最可能要设置的设置项。其他设置项如果在环境变量里有值，会按上文所述在启动时导入数据库。永远不要把密钥写进模型注册表或 "
 "manifest：在那里用 `${VAR}` 引用它。"
 
-#: ../developer/configuration.md:532
+#: ../developer/configuration.md:547
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:538
+#: ../developer/configuration.md:553
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:545
+#: ../developer/configuration.md:560
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -1513,7 +1536,7 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:551
+#: ../developer/configuration.md:566
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, the upstream `base_url`, its provider label and its weight — that "

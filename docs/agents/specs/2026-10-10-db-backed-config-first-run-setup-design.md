@@ -195,9 +195,14 @@ Entries come from four places:
    either side. `require_valid_environment()` judges every rule against the
    configuration in force, stored values over the environment, and refuses
    startup if it still breaks one. So removing an environment variable whose
-   value the database already holds does not stop the gateway. Neither side of
-   a rule the environment alone breaks is imported: which one is wrong is the
-   operator's call.
+   value the database already holds does not stop the gateway. The import
+   judges rules the same way: a value whose rule a stored value satisfies is
+   imported (importing changes nothing in force), and neither side of a rule
+   the configuration in force breaks is: which one is wrong is the operator's
+   call. One function (`app_config._in_force`) computes the configuration in
+   force for the overlay, the import and every write; a stored value that
+   would break a rule holding without it is refused, so a rule the result
+   still breaks is one only the environment breaks.
 3. `validate_auth_secrets` (moved here from the lifespan, so it sees database
    values), re-apply `LOG_LEVEL`/`LOG_FORMAT`.
 4. Database logger (now receiving the database-backed
@@ -374,7 +379,11 @@ Request `{"values": {"KEY": value, ...}, "secrets": {"CUSTOM_KEY": true}}`.
 otherwise. Validates the whole batch together (so cross-field rules such as
 `TRUST_CLOUDFLARE_HEADERS` requiring `TRUST_PROXY_HEADERS` can be satisfied in
 one save), writes it in one transaction, applies live entries, and returns the
-full `GET /admin/config` body. `secrets` sets the secret flag for new custom
+full `GET /admin/config` body. The batch is judged by what it leaves in force,
+compared with what is in force now: it is refused when a written value cannot
+apply, when another stored value that applies now would not (its rule needs
+the value being changed), or when it breaks a rule an environment value relies
+on. What is already wrong never blocks an unrelated batch. `secrets` sets the secret flag for new custom
 keys only. Errors: `400 {"detail": "KEY: reason"}`; `403` for an
 environment-only name; `409` for an immutable key that is already set.
 
@@ -385,7 +394,9 @@ the setting falls back to the environment, then its default, and keeps doing so
 across restarts, since the marker keeps the boot-time import from storing the
 environment value again. A generated secret replaces the marker only once the
 environment no longer supplies one. Custom keys disappear. Returns the full
-`GET /admin/config` body. `409` for immutable keys.
+`GET /admin/config` body. `409` for immutable keys, and for a reset that the
+batch rule above would refuse, or that would bring back an environment value
+that is not valid on its own.
 
 ### `POST /admin/system/restart`
 

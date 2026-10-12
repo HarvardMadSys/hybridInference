@@ -316,6 +316,30 @@ async def test_startup_refuses_a_rule_the_configuration_in_force_breaks(
 
 
 @pytest.mark.asyncio
+async def test_startup_names_only_the_rule_the_stored_values_leave_broken(
+    boot_env, monkeypatch
+) -> None:
+    """The stored TRUST_PROXY_HEADERS satisfies two rules; the third is still broken."""
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUST_PROXY_HEADERS", "true")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    message = str(excinfo.value)
+    assert "(TRUST_CLOUDFLARE_HEADERS requires TRUSTED_CLOUDFLARE_NETWORKS)" in message
+    assert "Correct TRUSTED_CLOUDFLARE_NETWORKS, TRUST_CLOUDFLARE_HEADERS (" in message
+    # The value whose rule holds is imported; neither side of the broken one is.
+    assert store.rows["TRUST_X_REAL_IP"].value == "true"
+    assert "TRUST_CLOUDFLARE_HEADERS" not in store.rows
+
+
+@pytest.mark.asyncio
 async def test_a_database_free_gateway_refuses_a_broken_rule(boot_env, monkeypatch) -> None:
     monkeypatch.setenv("DB_ENABLED", "false")
     monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")

@@ -177,6 +177,54 @@ async def test_import_is_idempotent(config_env, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,environment,imported",
+    [
+        # The rule holds because of the stored side, not the environment's.
+        ([row("TRUST_PROXY_HEADERS", "true")], {"TRUST_X_REAL_IP": "true"}, "TRUST_X_REAL_IP"),
+        (
+            [row("TRUST_PROXY_HEADERS", "true")],
+            {"TRUST_CLOUDFLARE_HEADERS": "true", "TRUSTED_CLOUDFLARE_NETWORKS": "10.1.0.0/16"},
+            "TRUST_CLOUDFLARE_HEADERS",
+        ),
+        # A valid stored value stands in for the environment's invalid one.
+        (
+            [row("TRUSTED_CLOUDFLARE_NETWORKS", "10.1.0.0/16")],
+            {
+                "TRUST_PROXY_HEADERS": "true",
+                "TRUST_CLOUDFLARE_HEADERS": "true",
+                "TRUSTED_CLOUDFLARE_NETWORKS": "not-a-cidr",
+            },
+            "TRUST_CLOUDFLARE_HEADERS",
+        ),
+    ],
+    ids=["x-real-ip", "cloudflare", "cloudflare-networks-stored"],
+)
+async def test_a_value_the_database_completes_is_imported_and_outlives_the_variable(
+    config_env, monkeypatch, stored, environment, imported
+) -> None:
+    """The rule is judged on the configuration in force, not on the environment alone."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(stored)
+
+    await _boot(store)
+    app_config.require_valid_environment()
+    field = imported.lower()
+    assert getattr(get_settings(), field) is True
+    assert store.rows[imported].value == "true"
+
+    # The upgrade notes say to delete the lines from .env once imported.
+    for name in environment:
+        monkeypatch.delenv(name)
+    await _restart(store)
+    app_config.require_valid_environment()
+
+    assert getattr(get_settings(), field) is True
+
+
+@pytest.mark.asyncio
 async def test_boot_imports_numbered_and_discovered_variables(config_env, monkeypatch) -> None:
     _write_models(
         config_env,
@@ -402,6 +450,29 @@ async def test_a_stale_refresh_never_replaces_a_newer_apply(config_env) -> None:
     app_config.attach(slow)
     await app_config.refresh()
 
+    assert app_config.config_value("SITE_NAME") == "new"
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_breaks_a_rule_keeps_the_values_in_force(
+    config_env, monkeypatch, caplog
+) -> None:
+    """Only a row changed outside these writes can do it; startup would refuse the result."""
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUST_PROXY_HEADERS", "true"), row("SITE_NAME", "old")])
+    await _boot(store)
+
+    # Deleted by hand, with another change.
+    del store.rows["TRUST_PROXY_HEADERS"]
+    store.rows["SITE_NAME"] = row("SITE_NAME", "new")
+    with caplog.at_level("ERROR", logger="serving.config.app_config"):
+        await app_config.refresh()
+
+    assert get_settings().trust_proxy_headers is True
+    assert get_settings().trust_x_real_ip is True
+    assert "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS" in caplog.text
+    # A setting outside Settings still follows the table.
     assert app_config.config_value("SITE_NAME") == "new"
 
 
@@ -697,6 +768,200 @@ async def test_a_batch_may_satisfy_a_cross_field_rule_together(config_env) -> No
         {"TRUST_X_REAL_IP": True, "TRUST_PROXY_HEADERS": True}, updated_by="admin"
     )
     assert get_settings().trust_x_real_ip is True
+
+
+_ALL_TRUSTED = (
+    row("TRUST_PROXY_HEADERS", "true"),
+    row("TRUSTED_CLOUDFLARE_NETWORKS", "10.1.0.0/16"),
+    row("TRUST_CLOUDFLARE_HEADERS", "true"),
+    row("TRUST_X_REAL_IP", "true"),
+)
+
+
+#: TRUST_PROXY_HEADERS stored; TRUST_X_REAL_IP reset, so it follows the environment.
+_FOLLOWS_THE_ENVIRONMENT = (
+    row("TRUST_PROXY_HEADERS", "true"),
+    row("TRUST_X_REAL_IP", "", source="reset"),
+)
+
+
+def _in_force_trust() -> tuple[bool, bool, bool]:
+    settings = get_settings()
+    return (
+        settings.trust_proxy_headers,
+        settings.trust_cloudflare_headers,
+        settings.trust_x_real_ip,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values,detail",
+    [
+        (
+            {"TRUST_PROXY_HEADERS": False},
+            "TRUST_PROXY_HEADERS: TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS; "
+            "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; change TRUST_CLOUDFLARE_HEADERS, "
+            "TRUST_X_REAL_IP in the same save",
+        ),
+        (
+            {"TRUSTED_CLOUDFLARE_NETWORKS": ""},
+            "TRUSTED_CLOUDFLARE_NETWORKS: TRUST_CLOUDFLARE_HEADERS requires "
+            "TRUSTED_CLOUDFLARE_NETWORKS; change TRUST_CLOUDFLARE_HEADERS in the same save",
+        ),
+    ],
+)
+async def test_a_save_that_would_stop_another_stored_value_applying_is_refused(
+    config_env, values, detail
+) -> None:
+    """The batch is judged with what it leaves in force, its dependents included."""
+    store = FakeAppConfigStore(_ALL_TRUSTED)
+    await _boot(store)
+    before = dict(store.rows)
+
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.update(values, updated_by="admin")
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == detail
+    assert store.rows == before
+    assert _in_force_trust() == (True, True, True)
+
+
+@pytest.mark.asyncio
+async def test_values_that_depend_on_each_other_may_change_together(config_env) -> None:
+    store = FakeAppConfigStore(_ALL_TRUSTED)
+    await _boot(store)
+
+    await app_config.update(
+        {"TRUST_PROXY_HEADERS": False, "TRUST_CLOUDFLARE_HEADERS": False, "TRUST_X_REAL_IP": False},
+        updated_by="admin",
+    )
+
+    assert _in_force_trust() == (False, False, False)
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+    assert all(entries[row.key]["invalid"] is None for row in _ALL_TRUSTED)
+
+
+@pytest.mark.asyncio
+async def test_a_save_may_not_break_a_rule_an_environment_value_relies_on(
+    config_env, monkeypatch
+) -> None:
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(_FOLLOWS_THE_ENVIRONMENT)
+    await _boot(store)
+    assert "TRUST_X_REAL_IP" not in await store.fetch_all()
+
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.update({"TRUST_PROXY_HEADERS": False}, updated_by="admin")
+    assert excinfo.value.detail == (
+        "TRUST_PROXY_HEADERS: TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; "
+        "change TRUST_X_REAL_IP in the same save"
+    )
+    assert get_settings().trust_proxy_headers is True
+
+    # A stored value replaces the environment's, so the two can change together.
+    await app_config.update(
+        {"TRUST_PROXY_HEADERS": False, "TRUST_X_REAL_IP": False}, updated_by="admin"
+    )
+    assert _in_force_trust() == (False, False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_rule_already_broken_blocks_only_what_makes_it_worse(
+    config_env, monkeypatch
+) -> None:
+    """Where startup refuses, the manage command still stores what repairs it."""
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore()
+    await _boot(store)
+    with pytest.raises(app_config.ConfigBootstrapError):
+        app_config.require_valid_environment()
+
+    await app_config.update({"SMTP_PORT": 2525}, updated_by="admin")
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.update({"TRUST_CLOUDFLARE_HEADERS": True}, updated_by="admin")
+    assert excinfo.value.detail.startswith(
+        "TRUST_CLOUDFLARE_HEADERS: TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS"
+    )
+    await app_config.update({"TRUST_PROXY_HEADERS": True}, updated_by="admin")
+
+    app_config.require_valid_environment()
+    assert _in_force_trust() == (True, False, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "environment,stored,key,detail",
+    [
+        (
+            {},
+            _ALL_TRUSTED,
+            "TRUST_PROXY_HEADERS",
+            "TRUST_PROXY_HEADERS cannot be reset: TRUST_CLOUDFLARE_HEADERS requires "
+            "TRUST_PROXY_HEADERS; TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; change "
+            "TRUST_CLOUDFLARE_HEADERS, TRUST_X_REAL_IP first",
+        ),
+        (
+            {},
+            _ALL_TRUSTED,
+            "TRUSTED_CLOUDFLARE_NETWORKS",
+            "TRUSTED_CLOUDFLARE_NETWORKS cannot be reset: TRUST_CLOUDFLARE_HEADERS requires "
+            "TRUSTED_CLOUDFLARE_NETWORKS; change TRUST_CLOUDFLARE_HEADERS first",
+        ),
+        (
+            {"TRUST_X_REAL_IP": "true"},
+            _FOLLOWS_THE_ENVIRONMENT,
+            "TRUST_PROXY_HEADERS",
+            "TRUST_PROXY_HEADERS cannot be reset: TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; "
+            "change TRUST_X_REAL_IP first",
+        ),
+        (
+            {"TRUSTED_PROXIES": "not-a-cidr"},
+            (row("TRUSTED_PROXIES", "10.0.0.0/8"),),
+            "TRUSTED_PROXIES",
+            "TRUSTED_PROXIES cannot be reset: its environment value is not valid "
+            "(trusted_proxies entry 'not-a-cidr' is not a valid CIDR range",
+        ),
+    ],
+    ids=["dependents", "cloudflare-networks", "environment-dependent", "invalid-environment"],
+)
+async def test_a_reset_that_would_leave_the_configuration_worse_is_refused(
+    config_env, monkeypatch, environment, stored, key, detail
+) -> None:
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(stored)
+    await _boot(store)
+    before = dict(store.rows)
+
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.delete(key, updated_by="admin")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail.startswith(detail)
+    assert store.resets == []
+    assert store.rows == before
+
+
+@pytest.mark.asyncio
+async def test_a_reset_to_an_environment_value_that_keeps_every_rule_is_allowed(
+    config_env, monkeypatch
+) -> None:
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(_ALL_TRUSTED)
+    await _boot(store)
+
+    await app_config.delete("TRUST_PROXY_HEADERS", updated_by="admin")
+    # Nothing depends on a dependent value: it resets on its own.
+    await app_config.delete("TRUST_X_REAL_IP", updated_by="admin")
+
+    assert store.resets == ["TRUST_PROXY_HEADERS", "TRUST_X_REAL_IP"]
+    assert _in_force_trust() == (True, True, False)
 
 
 @pytest.mark.asyncio
