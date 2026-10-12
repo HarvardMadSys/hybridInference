@@ -223,6 +223,51 @@ async def test_startup_refuses_an_invalid_environment_value_nothing_replaces(
     assert store.rows.get("TRUSTED_PROXIES") == (stored[0] if stored else None)
 
 
+def _cloudflare_environment(monkeypatch) -> None:
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "true")
+    monkeypatch.setenv("TRUSTED_CLOUDFLARE_NETWORKS", "not-a-cidr")
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_a_stored_value_a_rule_depends_on_lets_startup_past_the_environment(
+    boot_env, monkeypatch, caplog
+) -> None:
+    """Cloudflare trust needs its networks; the stored ones apply before the rule is judged."""
+    _cloudflare_environment(monkeypatch)
+    store = FakeAppConfigStore([row("TRUSTED_CLOUDFLARE_NETWORKS", "173.245.48.0/20")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        app_config.require_valid_environment()
+
+    settings = get_settings()
+    assert settings.trust_cloudflare_headers is True
+    assert settings.trusted_cloudflare_networks == "173.245.48.0/20"
+    assert [str(network) for network in settings.trusted_cloudflare_parsed] == ["173.245.48.0/20"]
+    assert "Ignoring TRUSTED_CLOUDFLARE_NETWORKS from the environment" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_startup_refuses_a_rule_no_stored_value_satisfies(boot_env, monkeypatch) -> None:
+    _cloudflare_environment(monkeypatch)
+    store = FakeAppConfigStore([row("SITE_NAME", "Stored")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    await bootstrap._load_app_config()
+    with pytest.raises(app_config.ConfigBootstrapError) as excinfo:
+        app_config.require_valid_environment()
+
+    assert "TRUSTED_CLOUDFLARE_NETWORKS: trusted_cloudflare_networks entry 'not-a-cidr'" in str(
+        excinfo.value
+    )
+    assert "manage set TRUSTED_CLOUDFLARE_NETWORKS VALUE" in str(excinfo.value)
+
+
 @pytest.mark.asyncio
 async def test_a_database_free_gateway_refuses_an_invalid_environment_value(
     boot_env, monkeypatch

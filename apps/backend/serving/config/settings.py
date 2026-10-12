@@ -6,6 +6,7 @@ All environment variables are centralized here for easy tracking and testing.
 
 import ipaddress
 import logging
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Annotated
 
@@ -367,7 +368,9 @@ class Settings(BaseSettings):
         """Parse trusted client, proxy, and Cloudflare network CIDRs.
 
         Every entry has passed :meth:`_check_networks`. The rules below tie the
-        trust switches to one another and to the networks they need.
+        trust switches to one another and to the networks they need. A rule
+        waits while :func:`get_settings` builds without one of its settings
+        (see :func:`_rule_waits`).
         """
         proxy_networks = _parse_networks(self.trusted_proxies, "trusted_proxies")
         cf_networks = _parse_networks(
@@ -379,11 +382,23 @@ class Settings(BaseSettings):
         object.__setattr__(self, "trusted_proxies_parsed", proxy_networks)
         object.__setattr__(self, "trusted_direct_client_parsed", direct_networks)
         object.__setattr__(self, "trusted_cloudflare_parsed", cf_networks)
-        if self.trust_cloudflare_headers and not self.trust_proxy_headers:
+        if (
+            self.trust_cloudflare_headers
+            and not self.trust_proxy_headers
+            and not _rule_waits("trust_cloudflare_headers", "trust_proxy_headers")
+        ):
             raise ValueError("TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS")
-        if self.trust_cloudflare_headers and not cf_networks:
+        if (
+            self.trust_cloudflare_headers
+            and not cf_networks
+            and not _rule_waits("trust_cloudflare_headers", "trusted_cloudflare_networks")
+        ):
             raise ValueError("TRUST_CLOUDFLARE_HEADERS requires TRUSTED_CLOUDFLARE_NETWORKS")
-        if self.trust_x_real_ip and not self.trust_proxy_headers:
+        if (
+            self.trust_x_real_ip
+            and not self.trust_proxy_headers
+            and not _rule_waits("trust_x_real_ip", "trust_proxy_headers")
+        ):
             raise ValueError("TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS")
         return self
 
@@ -523,6 +538,22 @@ CONNECTION_FIELDS = frozenset({"db_host", "db_port", "db_name", "db_user", "db_p
 #: What :func:`get_settings` set aside: field name -> why its value is not valid.
 _invalid_environment: dict[str, str] = {}
 
+#: The settings :func:`get_settings` is building without, while it builds.
+_building_without: ContextVar[frozenset[str]] = ContextVar("_building_without", default=frozenset())
+
+
+def _rule_waits(*field_names: str) -> bool:
+    """Whether a rule between *field_names* must wait for the database.
+
+    True only while :func:`get_settings` builds with one of them set aside: its
+    stand-in default was chosen by no one, so a rule it breaks says nothing yet.
+    The configuration load builds ``Settings`` again from the environment and
+    the stored values, outside :func:`get_settings`, and every rule applies
+    there; startup refuses to continue unless a valid stored value replaced
+    each setting set aside (``app_config.require_valid_environment``).
+    """
+    return not _building_without.get().isdisjoint(field_names)
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -538,8 +569,9 @@ def get_settings() -> Settings:
     database. Startup refuses to continue unless it does
     (``app_config.require_valid_environment``); :func:`invalid_environment`
     lists what was set aside. The database connection settings are never set
-    aside, and a rule between settings, which blames no single one, still
-    raises.
+    aside. A rule between settings, which blames no single one, still raises,
+    unless one of its settings was set aside: the rule is judged once the
+    database has been read (:func:`_rule_waits`).
 
     Returns:
         Settings: Validated settings object.
@@ -568,11 +600,14 @@ def get_settings() -> Settings:
             )
             for name in set_aside
         }
+        building = _building_without.set(frozenset(set_aside))
         try:
             settings = Settings(**defaults)
         except ValidationError as again:
             current = again
             continue
+        finally:
+            _building_without.reset(building)
         break
     # The defaults stand in for values nobody chose; they were not explicitly set.
     object.__setattr__(

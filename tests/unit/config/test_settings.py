@@ -11,6 +11,7 @@ import os
 from collections.abc import Callable
 
 import pytest
+from pydantic import ValidationError
 
 import serving.config.settings as settings_module
 from serving.config.settings import Settings, get_settings, get_signup_notify_emails, has_role
@@ -277,6 +278,58 @@ def test_a_rule_between_settings_still_raises(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="TRUST_CLOUDFLARE_HEADERS requires TRUST_PROXY_HEADERS"):
         get_settings()
+
+
+@pytest.mark.parametrize(
+    "environment,set_aside",
+    [
+        (
+            {
+                "TRUST_PROXY_HEADERS": "true",
+                "TRUST_CLOUDFLARE_HEADERS": "true",
+                "TRUSTED_CLOUDFLARE_NETWORKS": "not-a-cidr",
+            },
+            "trusted_cloudflare_networks",
+        ),
+        ({"TRUST_PROXY_HEADERS": "maybe", "TRUST_X_REAL_IP": "true"}, "trust_proxy_headers"),
+    ],
+)
+def test_a_rule_on_a_set_aside_setting_waits_for_the_database(
+    monkeypatch, environment, set_aside
+) -> None:
+    """Its default stands in for a value nobody chose, so the rule cannot judge it yet."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    settings = get_settings()
+
+    assert set(settings_module.invalid_environment()) == {set_aside}
+    # Nothing is trusted on the strength of the stand-in.
+    assert settings.trusted_cloudflare_parsed == ()
+    # The rule applies as before to every build outside get_settings().
+    with pytest.raises(ValueError, match="requires"):
+        Settings(
+            **{
+                settings_module.settings_init_name(set_aside): Settings.model_fields[
+                    set_aside
+                ].get_default()
+            }
+        )
+
+
+def test_a_rule_on_settings_left_as_they_are_still_raises(monkeypatch) -> None:
+    """Setting another value aside does not excuse a rule it plays no part in."""
+    monkeypatch.setenv("SMTP_PORT", "not-a-number")
+    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+
+    # Raised with the environment's own error, as any refused environment is.
+    with pytest.raises(ValidationError, match="smtp_port"):
+        get_settings()
+    # The rule is what refused it: without it, SMTP_PORT alone is set aside.
+    monkeypatch.delenv("TRUST_X_REAL_IP")
+    get_settings.cache_clear()
+    assert set(settings_module.invalid_environment()) == {"smtp_port"}
 
 
 def test_the_environment_validates_as_it_is_when_it_can(monkeypatch) -> None:
