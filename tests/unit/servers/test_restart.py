@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import signal
 import threading
@@ -17,21 +18,42 @@ from serving.servers import app as app_module, restart
 def _one_worker(monkeypatch):
     for name in ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(restart.SUPERVISED_RESTART_ENV, raising=False)
 
 
-def test_supported_under_systemd(monkeypatch) -> None:
-    monkeypatch.setattr(restart.Path, "exists", lambda self: False)
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    assert restart.restart_supported() is False
+@pytest.mark.parametrize(
+    "declared,supported",
+    [(None, False), ("", False), ("0", False), ("false", False), ("1", True), ("true", True)],
+)
+def test_supported_only_where_the_deployment_declares_a_supervisor(
+    monkeypatch, declared, supported
+) -> None:
+    """Being in a container or a unit says nothing about its restart policy.
 
+    ``docker run`` without ``--restart`` still has ``/.dockerenv``, and systemd
+    sets ``INVOCATION_ID`` under ``Restart=no`` too: exiting there would leave
+    the gateway down.
+    """
     monkeypatch.setenv("INVOCATION_ID", "0123abcd")
-    assert restart.restart_supported() is True
+    if declared is not None:
+        monkeypatch.setenv(restart.SUPERVISED_RESTART_ENV, declared)
+
+    assert restart.restart_supported() is supported
 
 
-def test_supported_in_a_docker_container(monkeypatch) -> None:
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    monkeypatch.setattr(restart.Path, "exists", lambda self: str(self) == "/.dockerenv")
-    assert restart.restart_supported() is True
+def test_the_bundled_deployments_declare_their_supervisor() -> None:
+    """Each declaration sits beside the restart policy that makes it true."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    compose = (root / "deploy/docker/docker-compose.yml").read_text()
+    backend = compose[compose.index("  backend:") : compose.index("\n  frontend:")]
+    assert "restart: unless-stopped" in backend
+    assert 'SUPERVISOR_RESTARTS_BACKEND: "1"' in backend
+    for unit in ("hybrid_inference.service", "hybrid_inference.staging.service"):
+        text = (root / "deploy/systemd" / unit).read_text()
+        assert "Restart=on-failure" in text, unit
+        assert "Environment=SUPERVISOR_RESTARTS_BACKEND=1" in text, unit
 
 
 def test_request_restart_signals_this_process_once() -> None:
@@ -118,7 +140,36 @@ async def test_lifespan_exits_for_a_requested_restart_after_shutdown(
 )
 def test_several_workers_mean_a_manual_restart(monkeypatch, variable, count, supported) -> None:
     """The signal reaches only the worker that served the request."""
-    monkeypatch.setenv("INVOCATION_ID", "0123abcd")
+    monkeypatch.setenv(restart.SUPERVISED_RESTART_ENV, "1")
     monkeypatch.setenv(variable, count)
 
     assert restart.restart_supported() is supported
+
+
+def test_a_worker_a_process_manager_started_means_a_manual_restart(monkeypatch) -> None:
+    """``uvicorn --workers 2`` sets no variable; its workers are spawned children."""
+    monkeypatch.setenv(restart.SUPERVISED_RESTART_ENV, "1")
+    monkeypatch.setattr(restart, "spawned_by_worker_manager", lambda: True)
+
+    assert restart.restart_supported() is False
+
+
+def _report_spawned(queue) -> None:
+    from serving.utils.workers import spawned_by_worker_manager
+
+    queue.put(spawned_by_worker_manager())
+
+
+def test_a_spawned_worker_knows_it() -> None:
+    """The way uvicorn starts each of several workers: a ``spawn`` child process."""
+    from serving.utils.workers import spawned_by_worker_manager
+
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    child = context.Process(target=_report_spawned, args=(queue,))
+    child.start()
+    try:
+        assert queue.get(timeout=60) is True
+    finally:
+        child.join(timeout=60)
+    assert spawned_by_worker_manager() is False

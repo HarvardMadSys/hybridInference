@@ -2,9 +2,10 @@
 
 Settings captured at startup apply only after a restart, so the console can ask
 the process to exit and let its supervisor start it again: Docker with
-``restart: unless-stopped``, or systemd with ``Restart=on-failure``. The process
-signals itself ``SIGTERM`` so uvicorn shuts down gracefully, and the lifespan
-then exits with :data:`RESTART_EXIT_STATUS` — non-zero, because
+``restart: unless-stopped``, or systemd with ``Restart=on-failure``. The
+deployment declares that supervisor with :data:`SUPERVISED_RESTART_ENV`. The
+process signals itself ``SIGTERM`` so uvicorn shuts down gracefully, and the
+lifespan then exits with :data:`RESTART_EXIT_STATUS` — non-zero, because
 ``Restart=on-failure`` ignores a clean exit. A watchdog forces that exit if the
 graceful shutdown hangs, say on a stream that never ends.
 """
@@ -16,11 +17,10 @@ import os
 import signal
 import threading
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
-from serving.utils.workers import configured_worker_count
+from serving.utils.workers import configured_worker_count, spawned_by_worker_manager
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -33,22 +33,35 @@ RESTART_EXIT_STATUS = 75
 #: Longest the graceful shutdown may take before the process is ended anyway.
 WATCHDOG_SECONDS = 30.0
 
+#: Set to ``1`` by a deployment whose supervisor starts the backend again when
+#: it exits. The bundled Compose file and systemd units set it beside their
+#: restart policy; it stays in the environment, since it describes the process.
+SUPERVISED_RESTART_ENV = "SUPERVISOR_RESTARTS_BACKEND"
+
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+
 _requested = threading.Event()
 
 
 def restart_supported() -> bool:
     """Return whether a supervisor will start this process again after it exits.
 
-    True inside a Docker container (``/.dockerenv``) or a systemd unit, which
-    sets ``INVOCATION_ID`` for the processes it starts — unless several worker
-    processes serve the deployment: the signal reaches only the worker that
-    took the request, so the others would keep the old settings, and the
-    console offers the manual restart instead.
+    Only the deployment knows that, so it has to say so with
+    :data:`SUPERVISED_RESTART_ENV`: from inside, a container started without a
+    restart policy, or a systemd unit left at ``Restart=no``, looks exactly like
+    one that restarts, and exiting under either leaves the gateway down. False
+    as well when several worker processes serve the deployment, whether the
+    count comes from the environment or from ``uvicorn --workers``: the signal
+    reaches only the worker that took the request, its manager starts that one
+    again, and the others keep the old settings, so the console offers the
+    manual restart instead.
     """
+    if os.environ.get(SUPERVISED_RESTART_ENV, "").strip().lower() not in _TRUE_WORDS:
+        return False
     workers = configured_worker_count()
     if workers is not None and workers > 1:
         return False
-    return Path("/.dockerenv").exists() or bool(os.environ.get("INVOCATION_ID"))
+    return not spawned_by_worker_manager()
 
 
 def restart_requested() -> bool:

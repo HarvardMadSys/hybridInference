@@ -53,8 +53,8 @@ export function RestartBackendButton({
     try {
       await restartBackend();
     } catch (e) {
-      // Keep the dialog open with the reason — typically 409, the process is
-      // not under Docker or systemd and would not come back.
+      // Keep the dialog open with the reason — typically 409: no supervisor is
+      // declared to start the process again, so it would not come back.
       setError(getErrorMessage(e));
       setPhase('confirm');
       return;
@@ -139,8 +139,9 @@ export function RestartBackendButton({
 export function ManualRestartHint() {
   return (
     <p className="text-[12px] text-gray-600">
-      This backend cannot restart itself (it is not running under Docker or systemd, or it runs
-      several worker processes). Restart it to apply these settings, for example with{' '}
+      This backend cannot restart itself (its deployment does not declare a supervisor that starts
+      it again, or several worker processes serve it). Restart it to apply these settings, for
+      example with{' '}
       <code className="rounded bg-gray-100 px-1 font-mono text-gray-800">
         {MANUAL_RESTART_COMMAND}
       </code>

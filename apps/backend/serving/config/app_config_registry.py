@@ -1063,6 +1063,7 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "WEB_CONCURRENCY": "process wiring",
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",
+    "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
 }
 

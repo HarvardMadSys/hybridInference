@@ -27,8 +27,9 @@ async def restart_backend(
         raise HTTPException(
             status_code=409,
             detail=(
-                "This backend cannot restart itself: it is not running under Docker or "
-                "systemd. Restart it the way it was started."
+                "This backend cannot restart itself: its deployment does not declare a "
+                "supervisor that starts it again (SUPERVISOR_RESTARTS_BACKEND), or several "
+                "worker processes serve it. Restart it the way it was started."
             ),
         )
     await log_admin_action(op_store, admin_id, "system.restart", None, {"restarting": True})

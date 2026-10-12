@@ -39,11 +39,15 @@ services:
     # and are edited under Admin > Configuration. These lines carry an overlay's
     # values into the container, where the backend copies each one into the
     # database at startup when the database has none yet; after that the stored
-    # value wins. The database connection, the GeoIP paths and the config-file
-    # paths stay environment-only.
+    # value wins. The database connection, the GeoIP paths, the config-file
+    # paths and the restart declaration stay environment-only.
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
+      # `restart: unless-stopped` above starts the backend again when it exits,
+      # which is what lets Admin > Configuration offer "Restart backend". An
+      # override that drops the policy must drop this line with it.
+      SUPERVISOR_RESTARTS_BACKEND: "1"
       # Fail closed: the compose default does NOT trust forwarding headers.
       # Proxy-header processing is inert without a non-empty TRUSTED_PROXIES /
       # TRUSTED_CLOUDFLARE_NETWORKS authorizing the socket peer; set both in
