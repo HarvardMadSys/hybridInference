@@ -15,22 +15,38 @@ import pytest
 
 from serving.config.settings import get_settings
 from serving.storage.database import DatabaseLogger
-from serving.storage.postgres_operational import PostgresOperationalStore
+from serving.storage.log_schema import SchemaLockUnavailable
+from serving.storage.postgres_operational import (
+    PostgresOperationalStore,
+    RequiredOperationalSchemaUnavailable,
+)
 
 _EMAIL_DROP_NOT_NULL = "ALTER TABLE users ALTER COLUMN email DROP NOT NULL"
+_LOGIN_NAME_ADD = "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT"
 
 
-def _recording_pool(*, email_not_null: bool) -> tuple[MagicMock, list[tuple[str, tuple]]]:
+class _LockTimeout(Exception):
+    """What asyncpg raises when ``lock_timeout`` expires."""
+
+    sqlstate = "55P03"
+
+
+def _recording_pool(
+    *, email_not_null: bool, locked: str | None = None
+) -> tuple[MagicMock, list[tuple[str, tuple]]]:
     """A pool whose connection records statements and simulates the catalog.
 
     The column catalog is empty (every ``ADD COLUMN`` migration runs) and the
-    only column with metadata is ``users.email``, NOT NULL or not.
+    only column with metadata is ``users.email``, NOT NULL or not. The
+    statement *locked* times out on its lock, as it would behind ``pg_dump``.
     """
     statements: list[tuple[str, tuple]] = []
     conn = MagicMock()
 
     async def _execute(sql: str, *args: Any) -> str:
         statements.append((sql, args))
+        if locked is not None and " ".join(sql.split()) == locked:
+            raise _LockTimeout(f"canceling statement due to lock timeout: {locked}")
         return "UPDATE 0"
 
     async def _fetchrow(sql: str, *args: Any) -> dict[str, Any] | None:
@@ -124,3 +140,30 @@ async def test_no_admin_emails_no_seeding(builder, monkeypatch):
     await _run_builder(builder, pool)
 
     assert not any("SET role = 'admin'" in " ".join(sql.split()) for sql, _ in statements)
+
+
+@pytest.mark.parametrize("locked", [_LOGIN_NAME_ADD, _EMAIL_DROP_NOT_NULL])
+async def test_the_operational_store_refuses_to_serve_without_the_sign_in_schema(locked):
+    """Every account lookup selects login_name: a deferred migration would break sign-in."""
+    pool, _statements = _recording_pool(email_not_null=True, locked=locked)
+
+    with pytest.raises(RequiredOperationalSchemaUnavailable):
+        await PostgresOperationalStore(pool).initialize()
+
+
+async def test_a_deferred_users_migration_cannot_strand_login_name():
+    """A later, deferrable column may wait; the sign-in columns land before it."""
+    pool, statements = _recording_pool(
+        email_not_null=True,
+        locked="ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT",
+    )
+
+    with pytest.raises(SchemaLockUnavailable) as excinfo:
+        await PostgresOperationalStore(pool).initialize()
+
+    # Deferred, not refused: bootstrap retries it in the background.
+    assert not isinstance(excinfo.value, RequiredOperationalSchemaUnavailable)
+    sql = _sql(statements)
+    assert _LOGIN_NAME_ADD in sql
+    assert _EMAIL_DROP_NOT_NULL in sql
+    assert any("idx_users_login_name" in statement for statement in sql)

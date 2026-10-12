@@ -185,11 +185,12 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)"
         )
-        # This column is part of the hard-delete state machine. Install it
-        # before any other deferrable operational migration. If the upgrade
-        # cannot acquire the lock, refuse to expose the store rather than
-        # letting bootstrap defer a migration while hard-delete/resume queries
-        # would fail with UndefinedColumnError.
+        # The hard-delete columns are part of the hard-delete state machine, and
+        # every single-user lookup (_USER_COLUMNS: sign-in, token refresh, the
+        # auth dependency) selects login_name. Install them before any other
+        # deferrable operational migration. If the upgrade cannot acquire the
+        # lock, refuse to expose the store rather than letting bootstrap defer a
+        # migration while those queries would fail with UndefinedColumnError.
         try:
             await apply_column_migrations(
                 conn,
@@ -204,13 +205,28 @@ class PostgresOperationalStore(OperationalStore):
                         "hard_delete_claim_token",
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hard_delete_claim_token TEXT",
                     ),
+                    # Sign-in name of an account created without an email address.
+                    ("login_name", "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT"),
                 ],
             )
+            # Databases created before email-less accounts have email NOT NULL,
+            # and first-run setup inserts its administrator without one. DROP NOT
+            # NULL takes ACCESS EXCLUSIVE, so it is gated on the catalog like the
+            # role column below. UNIQUE still admits any number of NULLs.
+            email_meta = await column_metadata(conn, "users", "email")
+            if email_meta is not None and email_meta["not_null"]:
+                async with bounded_ddl(conn):
+                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
         except SchemaLockUnavailable as exc:
             raise RequiredOperationalSchemaUnavailable(
-                "hard-delete claim columns are required before the operational store "
-                "can serve; refusing deferred startup while its migration is locked"
+                "the users columns every account lookup reads (hard-delete claim, login "
+                "name, nullable email) are required before the operational store can "
+                "serve; refusing deferred startup while their migration is locked"
             ) from exc
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name "
+            "ON users (lower(login_name)) WHERE login_name IS NOT NULL"
+        )
 
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
@@ -258,21 +274,7 @@ class PostgresOperationalStore(OperationalStore):
                     "suspension_message",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
                 ),
-                # Sign-in name of an account created without an email address.
-                ("login_name", "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT"),
             ],
-        )
-
-        # Databases created before email-less accounts have email NOT NULL.
-        # DROP NOT NULL takes ACCESS EXCLUSIVE, so it is gated on the catalog
-        # like the role column below. UNIQUE still admits any number of NULLs.
-        email_meta = await column_metadata(conn, "users", "email")
-        if email_meta is not None and email_meta["not_null"]:
-            async with bounded_ddl(conn):
-                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name "
-            "ON users (lower(login_name)) WHERE login_name IS NOT NULL"
         )
 
         # Status constraint rebuild — only when the CHECK does not admit

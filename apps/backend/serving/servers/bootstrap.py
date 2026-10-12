@@ -162,8 +162,9 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
         await pg_operational.initialize()
     except RequiredOperationalSchemaUnavailable:
         logger.error(
-            "Operational store cannot start until the hard-delete claim column "
-            "is installed; refusing to serve against an unsafe schema."
+            "Operational store cannot start until the required users columns "
+            "(hard-delete claim, login name) are installed; refusing to serve "
+            "against an unsafe schema."
         )
         raise
     except SchemaLockUnavailable as lock_exc:
