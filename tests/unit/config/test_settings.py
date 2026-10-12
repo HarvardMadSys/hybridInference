@@ -213,3 +213,151 @@ def test_has_role_treats_unknown_user_role_as_lowest() -> None:
     assert has_role("typo-role", "free") is True
     assert has_role("typo-role", "pro") is False
     assert has_role("typo-role", "internal") is False
+
+
+# =============================================================================
+# Importing never validates; the recovery tools read the database settings alone
+# =============================================================================
+
+
+def test_importing_the_module_does_not_validate_the_environment() -> None:
+    """The recovery CLIs import it, and must run while an unrelated value is invalid."""
+    import subprocess
+    import sys
+
+    script = (
+        "import serving.config.settings as m\n"
+        "for read in (lambda: m.settings, m.DatabaseSettings):\n"
+        "    try:\n"
+        "        read()\n"
+        "        print('read')\n"
+        "    except Exception as exc:\n"
+        "        print(type(exc).__name__)\n"
+    )
+    # A database connection setting is never set aside: reading it raises, as
+    # it always has, though importing the module does not.
+    env = {**os.environ, "DB_PORT": "not-a-port"}
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["ValidationError", "ValidationError"]
+
+
+def test_an_invalid_environment_value_is_set_aside_until_the_database_answers(
+    monkeypatch, caplog
+) -> None:
+    """Left at its default, reported, never counted as explicitly set."""
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+    monkeypatch.setenv("SMTP_PORT", "not-a-number")
+    monkeypatch.setenv("BASE_URL", "https://still.read")
+
+    with caplog.at_level("WARNING", logger="serving.config.settings"):
+        settings = get_settings()
+
+    assert settings.trusted_proxies == ""
+    assert settings.trusted_proxies_parsed == ()
+    assert settings.smtp_port == Settings.model_fields["smtp_port"].default
+    assert settings.base_url == "https://still.read"
+    assert {"trusted_proxies", "smtp_port"}.isdisjoint(settings.model_fields_set)
+    invalid = settings_module.invalid_environment()
+    assert set(invalid) == {"trusted_proxies", "smtp_port"}
+    assert "not a valid CIDR range" in invalid["trusted_proxies"]
+    assert "TRUSTED_PROXIES in the environment is not valid" in caplog.text
+    # Settings itself is as strict as ever.
+    with pytest.raises(ValueError, match="trusted_proxies entry"):
+        Settings()
+
+
+def test_a_rule_between_settings_waits_for_the_database(monkeypatch) -> None:
+    """The database may replace either side of it; startup judges it after the load."""
+    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+
+    settings = get_settings()
+
+    assert settings.trust_x_real_ip is True
+    assert settings.broken_rules() == {
+        "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS": ("trust_x_real_ip", "trust_proxy_headers")
+    }
+    assert settings_module.invalid_environment() == {}
+    # Every build outside get_settings() applies the rule as before.
+    with pytest.raises(ValueError, match="TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    "environment,set_aside",
+    [
+        (
+            {
+                "TRUST_PROXY_HEADERS": "true",
+                "TRUST_CLOUDFLARE_HEADERS": "true",
+                "TRUSTED_CLOUDFLARE_NETWORKS": "not-a-cidr",
+            },
+            "trusted_cloudflare_networks",
+        ),
+        ({"TRUST_PROXY_HEADERS": "maybe", "TRUST_X_REAL_IP": "true"}, "trust_proxy_headers"),
+    ],
+)
+def test_a_rule_on_a_set_aside_setting_waits_for_the_database(
+    monkeypatch, environment, set_aside
+) -> None:
+    """The default standing in for it breaks a rule, which waits like any other."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    settings = get_settings()
+
+    assert set(settings_module.invalid_environment()) == {set_aside}
+    assert len(settings.broken_rules()) == 1
+    # Nothing is trusted on the strength of the stand-in.
+    assert settings.trusted_cloudflare_parsed == ()
+    # The rule applies as before to every build outside get_settings().
+    with pytest.raises(ValueError, match="requires"):
+        Settings(
+            **{
+                settings_module.settings_init_name(set_aside): Settings.model_fields[
+                    set_aside
+                ].get_default()
+            }
+        )
+
+
+def test_the_environment_validates_as_it_is_when_it_can(monkeypatch) -> None:
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+    assert get_settings().trusted_proxies == "10.0.0.0/8"
+    assert settings_module.invalid_environment() == {}
+
+
+def test_the_module_global_is_created_once() -> None:
+    """One object for the process, as when it was created at import."""
+    shared = settings_module.settings
+    get_settings.cache_clear()
+
+    assert settings_module.settings is shared
+    from serving.config.settings import settings
+
+    assert settings is shared
+    with pytest.raises(AttributeError):
+        settings_module.no_such_attribute  # noqa: B018
+
+
+def test_database_settings_read_only_the_connection(monkeypatch) -> None:
+    monkeypatch.setenv("DB_HOST", "db.internal")
+    monkeypatch.setenv("DB_PORT", "6543")
+    monkeypatch.setenv("db_name", "lower-case-works-too")
+    monkeypatch.setenv("TRUSTED_PROXIES", "not-a-network")
+
+    database = settings_module.DatabaseSettings()
+
+    assert (database.db_host, database.db_port, database.db_name) == (
+        "db.internal",
+        6543,
+        "lower-case-works-too",
+    )
+    assert database.db_user == Settings.model_fields["db_user"].default
+    with pytest.raises(ValueError, match="trusted_proxies"):
+        Settings()

@@ -38,12 +38,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 from typing import Any
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+from serving.config.app_config import config_value
 
 #: Below this an RSA signature is not worth the bytes it travels in.
 MIN_KEY_SIZE_BITS = 2048
@@ -211,7 +212,7 @@ def _load_signing() -> tuple[rsa.RSAPrivateKey, dict[str, Any]]:
         IdentityKeyUnavailable: If no key is configured.
         IdentityKeyMisconfigured: If the configured key is unusable.
     """
-    pem = _normalize(os.environ.get(ENV_PRIVATE_KEY, ""))
+    pem = _normalize(config_value(ENV_PRIVATE_KEY) or "")
     if not pem:
         raise IdentityKeyUnavailable(f"{ENV_PRIVATE_KEY} is not set")
 
@@ -232,7 +233,7 @@ def _load_retiring() -> list[dict[str, Any]]:
             a rotation that quietly stopped working.
     """
     jwks: list[dict[str, Any]] = []
-    for pem in _split_pems(os.environ.get(ENV_RETIRING_PUBLIC_KEYS, "")):
+    for pem in _split_pems(config_value(ENV_RETIRING_PUBLIC_KEYS) or ""):
         digest = hashlib.sha256(pem.encode()).hexdigest()
         cached = _PUBLIC_CACHE.get(digest)
         if cached is None:

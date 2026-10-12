@@ -26,6 +26,10 @@ ExecStart=__REPO_ROOT__/.venv/bin/uvicorn serving.servers.app:app \
 
 Restart=on-failure
 RestartSec=5s
+# Restart=on-failure starts the backend again after it exits, which is what
+# lets Admin > Configuration offer "Restart backend". Remove this line with
+# that policy.
+Environment=SUPERVISOR_RESTARTS_BACKEND=1
 LimitNOFILE=65536
 
 NoNewPrivileges=true

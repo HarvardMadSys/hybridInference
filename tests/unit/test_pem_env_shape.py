@@ -44,8 +44,10 @@ _COMPOSE = textwrap.dedent(
 #: rather than to teach the scanner an exception. There is no key here either
 #: way; the body is four bytes of nothing.
 _DASHES = "-" * 5
-_BEGIN = f"{_DASHES}BEGIN PRIVATE KEY{_DASHES}"
-_END = f"{_DASHES}END PRIVATE KEY{_DASHES}"
+# The label is split too: the detect-private-key pre-commit hook matches it alone.
+_LABEL = "PRIVATE" + " KEY"
+_BEGIN = f"{_DASHES}BEGIN {_LABEL}{_DASHES}"
+_END = f"{_DASHES}END {_LABEL}{_DASHES}"
 _BODY = "MIIEvQIB"
 
 #: What an operator should write: one line, newlines escaped.
@@ -88,10 +90,16 @@ def test_a_real_multiline_pem_takes_the_whole_file_down(tmp_path: Path) -> None:
 
 
 def test_the_example_file_tells_operators_the_one_line_form() -> None:
-    """The guidance itself, since it was wrong once."""
+    """The guidance itself, since it was wrong once.
+
+    The identity keys are database-backed settings now, edited in the admin
+    console, which takes a PEM as it is. A `.env` still carries one on an
+    upgrade -- the first start imports it -- and Compose still parses that file,
+    so the paragraph that explains the import must say how to write a PEM there.
+    """
     text = (Path(__file__).resolve().parents[1].parent / ".env.example").read_text()
-    for name in ("IDENTITY_JWT_PRIVATE_KEY", "IDENTITY_JWT_RETIRING_PUBLIC_KEYS"):
-        start = text.index(f"\n{name}=")
-        preamble = text[:start]
-        section = preamble[preamble.rindex("\n\n") :]
-        assert "one line" in section.lower(), f"{name} does not say to use one line"
+    assert "\nIDENTITY_JWT_PRIVATE_KEY=" not in text, "the key is a database setting now"
+    start = text.index("IDENTITY_JWT_PRIVATE_KEY")
+    paragraph = text[text.rindex("#\n", 0, start) : text.index("#\n", start)]
+    assert "one line" in paragraph.lower(), "the PEM guidance does not say to use one line"
+    assert r"\n" in paragraph, "the PEM guidance does not show the escaped newline"

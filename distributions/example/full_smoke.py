@@ -5,6 +5,11 @@ Compose command used to recreate backend; credentials remain in this process's
 memory during the ordinary smoke. CI may explicitly request a private,
 outside-checkout reset-proof file so a later process can prove destructive
 reset invalidates the old password and API key.
+
+A fresh example database has no account. The backend then logs a one-time
+setup code, and this check reads the newest one from the backend container's
+log to create the administrator through first-run setup, as a person does on
+the console's /setup page. The code is never printed.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import contextlib
 import hmac
 import json
 import os
+import re
 import stat
 import subprocess
 import time
@@ -24,15 +30,34 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any
 
-ADMIN_EMAIL = "admin@local.dev"
+# First-run setup creates the administrator with a login name and no email.
+ADMIN_LOGIN_NAME = "admin"
+ADMIN_DISPLAY_NAME = "Local Admin"
 DEFAULT_ADMIN_PASSWORD = "LOCAL-ONLY-example-admin-password-2026"
 NON_ADMIN_EMAIL = "viewer@local.dev"
 NON_ADMIN_PASSWORD = "LOCAL-ONLY-example-viewer-password-2026"
 EXPECTED_REFRESH_COOKIE = "hybridinference_example_refresh"
 EXPECTED_MODEL = "example-chat"
 EXPECTED_CONTENT = os.getenv("EXAMPLE_EXPECTED_CONTENT", "RUNNABLE_EXAMPLE_OK")
+DEFAULT_BACKEND_CONTAINER = "hybridinference-example-backend"
+# The backend logs "... enter setup code ABCD-EFGH-JKLM" at every start until
+# setup is complete, whatever LOG_LEVEL says. Plain and JSON log lines both
+# carry it verbatim. The code is kept in the database, so it repeats across
+# restarts; the last one in a log is the current one even when the log
+# predates a database reset.
+SETUP_CODE_PATTERN = re.compile(r"(?i:setup code):? ([A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4})")
+SETUP_ATTEMPTS = 3
+# The settings Stage 3 changes. The first Stage 2 start stores the bundled
+# provider's values in the example database, where they outrank the
+# environment, so pointing the model elsewhere is a configuration change.
+UPSTREAM_SETTINGS = (
+    "EXAMPLE_UPSTREAM_BASE_URL",
+    "EXAMPLE_UPSTREAM_API_KEY",
+    "EXAMPLE_UPSTREAM_MODEL",
+)
 SUCCESS_MARKER = "EXAMPLE_FULL_SMOKE_OK"
 RESET_SUCCESS_MARKER = "EXAMPLE_RESET_SMOKE_OK"
+CONFIGURE_SUCCESS_MARKER = "EXAMPLE_CONFIGURE_OK"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -271,6 +296,10 @@ def _check_public_surface(base_url: str) -> None:
         raise SmokeError("the example demo manifest does not expose signup")
     if site.get("site", {}).get("public_base_url", "").rstrip("/") != base_url.rstrip("/"):
         raise SmokeError("the example demo publishes the wrong frontend URL")
+    # The demo needs no settings beyond the ones its first start stores, so the
+    # console must not show the missing-configuration banner.
+    if site.get("configuration", {}).get("incomplete") is not False:
+        raise SmokeError("the example demo reports missing required settings")
 
     _, models = _request_json(base_url, "/v1/models")
     served = {item.get("id") for item in models.get("data", [])}
@@ -281,6 +310,7 @@ def _check_public_surface(base_url: str) -> None:
         "/",
         "/login",
         "/signup",
+        "/setup",
         "/dashboard/admin",
         "/dashboard/playground",
     ):
@@ -320,17 +350,131 @@ def _login(
     return status, data
 
 
-def _login_or_signup(
+def _setup_required(base_url: str) -> bool:
+    """Return whether the deployment still waits for first-run setup."""
+    _, status = _request_json(base_url, "/auth/setup/status")
+    required = status.get("setup_required") if isinstance(status, dict) else None
+    if not isinstance(required, bool):
+        raise SmokeError("setup status returned an invalid response")
+    return required
+
+
+def _assert_setup_complete(base_url: str) -> None:
+    if _setup_required(base_url):
+        raise SmokeError("first-run setup is still pending")
+
+
+def _backend_log(container: str) -> str:
+    """Return the backend container's log, which carries the setup code."""
+    try:
+        proc = subprocess.run(
+            ["docker", "logs", container],
+            stdout=subprocess.PIPE,
+            # The backend logs to stderr; `docker logs` replays both streams.
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise SmokeError(
+            "reading the setup code from the backend log needs the docker CLI"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeError("reading the backend log timed out") from exc
+    if proc.returncode != 0:
+        # Keep the output out of this secret-safe smoke; it quotes log lines.
+        raise SmokeError(
+            f"could not read the log of container {container}; name the backend "
+            "container with --backend-container or EXAMPLE_BACKEND_CONTAINER_NAME"
+        )
+    return proc.stdout
+
+
+def _newest_setup_code(log_text: str) -> str | None:
+    """Return the last setup code in a backend log, the only one still valid."""
+    codes = SETUP_CODE_PATTERN.findall(log_text)
+    return codes[-1] if codes else None
+
+
+def _wait_for_setup_code(container: str, deadline: float) -> str:
+    while True:
+        code = _newest_setup_code(_backend_log(container))
+        if code is not None:
+            return code
+        if time.monotonic() >= deadline:
+            raise SmokeError(f"the log of container {container} has no setup code")
+        time.sleep(1)
+
+
+def _create_setup_admin(
+    base_url: str,
+    password: str,
+    *,
+    backend_container: str,
+    cookie_jar: CookieJar,
+    deadline: float,
+) -> dict[str, Any]:
+    """Create the demo admin through first-run setup; return its login response."""
+    for _ in range(SETUP_ATTEMPTS):
+        code = _wait_for_setup_code(backend_container, deadline)
+        status, created = _request_json(
+            base_url,
+            "/auth/setup/admin",
+            method="POST",
+            payload={
+                "setup_code": code,
+                "login_name": ADMIN_LOGIN_NAME,
+                "password": password,
+                "display_name": ADMIN_DISPLAY_NAME,
+            },
+            cookie_jar=cookie_jar,
+            expected_statuses=(200, 403, 409, 422),
+        )
+        if status == 200:
+            if not isinstance(created, dict):
+                raise SmokeError("first-run setup returned an invalid response")
+            return created
+        if status == 409:
+            # Someone completed setup meanwhile, perhaps in a browser.
+            login_status, login = _login(
+                base_url,
+                ADMIN_LOGIN_NAME,
+                password,
+                cookie_jar=cookie_jar,
+            )
+            if login_status != 200:
+                raise SmokeError(
+                    "first-run setup was completed by someone else, and the demo "
+                    "admin cannot log in with this password"
+                )
+            return login
+        if status == 422:
+            raise SmokeError(
+                "first-run setup rejected the demo admin; EXAMPLE_DEMO_ADMIN_PASSWORD "
+                "needs eight characters with an uppercase letter, a lowercase letter "
+                "and a number"
+            )
+        # 403: not the stored code -- a log can outlive the database it was
+        # printed for. Read the log again; the current code is printed last.
+        time.sleep(1)
+    raise SmokeError("first-run setup refused every setup code in the backend log")
+
+
+def _login_or_setup(
     base_url: str,
     password: str,
     *,
     expect_existing: bool,
     cookie_jar: CookieJar,
+    backend_container: str,
+    deadline: float,
 ) -> tuple[dict[str, Any], bool]:
-    """Login first; bootstrap only the absent deterministic local account."""
+    """Log in first; on a fresh database, create the admin through first-run setup."""
     status, login = _login(
         base_url,
-        ADMIN_EMAIL,
+        ADMIN_LOGIN_NAME,
         password,
         cookie_jar=cookie_jar,
     )
@@ -339,36 +483,23 @@ def _login_or_signup(
     if expect_existing:
         raise SmokeError("the persisted demo admin could not log in")
 
-    # Login deliberately returns the same 401 for an absent user and a wrong
-    # password. With the checked-in deterministic default, 401 means first run;
-    # a changed override against an existing account is caught by signup's 409
-    # and reported without echoing either credential.
-    signup_status, _ = _request_json(
-        base_url,
-        "/auth/signup",
-        method="POST",
-        payload={
-            "email": ADMIN_EMAIL,
-            "password": password,
-            "user_name": "Local Admin",
-            "use_case": "Full local example",
-            "accepted_tos": True,
-        },
-        expected_statuses=(201, 409),
-    )
-    if signup_status == 409:
+    # Login deliberately returns the same 401 for an absent account and a
+    # wrong password. Only a pending setup means the account does not exist
+    # yet; otherwise it exists with another password, or setup created the
+    # administrator under a different login name.
+    if not _setup_required(base_url):
         raise SmokeError(
-            "the demo admin already exists but login failed; use its original "
-            "EXAMPLE_DEMO_ADMIN_PASSWORD or run make demo-reset"
+            "the demo admin could not log in and first-run setup is already "
+            "complete; set EXAMPLE_DEMO_ADMIN_PASSWORD to the password of the "
+            f"'{ADMIN_LOGIN_NAME}' account, or run make demo-reset"
         )
-    status, login = _login(
+    login = _create_setup_admin(
         base_url,
-        ADMIN_EMAIL,
         password,
+        backend_container=backend_container,
         cookie_jar=cookie_jar,
+        deadline=deadline,
     )
-    if status != 200:
-        raise SmokeError("the new demo admin could not log in")
     return login, False
 
 
@@ -378,7 +509,7 @@ def _assert_example_refresh_cookie(cookie_jar: CookieJar) -> None:
 
 
 def _check_non_admin_account(base_url: str, *, expect_existing: bool) -> None:
-    """Prove the example's ADMIN_EMAILS wiring does not elevate other users."""
+    """Prove an account from public signup after setup is not an administrator."""
     cookie_jar = CookieJar()
     status, login = _login(
         base_url,
@@ -420,7 +551,7 @@ def _check_non_admin_account(base_url: str, *, expect_existing: bool) -> None:
     if user.get("email") != NON_ADMIN_EMAIL:
         raise SmokeError("non-admin login returned the wrong user")
     if user.get("role") == "admin" or user.get("is_admin") is not False:
-        raise SmokeError("a non-configured demo email was promoted to admin")
+        raise SmokeError("a demo account from public signup was promoted to admin")
     _assert_example_refresh_cookie(cookie_jar)
 
     admin_status, _ = _request_json(
@@ -441,10 +572,10 @@ def _validate_admin_login(login: dict[str, Any]) -> tuple[str, str]:
         raise SmokeError("login did not return an access token")
     if not isinstance(user_id, str) or not user_id:
         raise SmokeError("login did not return a user id")
-    if user.get("email") != ADMIN_EMAIL:
+    if user.get("login_name") != ADMIN_LOGIN_NAME:
         raise SmokeError("login returned the wrong demo user")
     if user.get("role") != "admin" or user.get("is_admin") is not True:
-        raise SmokeError("the first demo account was not promoted to admin")
+        raise SmokeError("the demo admin account is not an administrator")
     return access_token, user_id
 
 
@@ -460,7 +591,7 @@ def _check_current_admin(
         raise SmokeError("/user/me returned no user id")
     if expected_user_id is not None and user_id != expected_user_id:
         raise SmokeError("/user/me returned a different demo account")
-    if user.get("email") != ADMIN_EMAIL:
+    if user.get("login_name") != ADMIN_LOGIN_NAME:
         raise SmokeError("/user/me returned the wrong demo user")
     if user.get("role") != "admin" or user.get("is_admin") is not True:
         raise SmokeError("/user/me does not report the demo account as admin")
@@ -617,17 +748,21 @@ def _prepare(
     deadline: float,
     *,
     expect_existing: bool,
+    backend_container: str,
 ) -> DemoState:
     _wait_for_public_surface(base_url, deadline)
     _assert_anonymous_is_rejected(base_url)
     refresh_cookies = CookieJar()
-    login, _ = _login_or_signup(
+    login, _ = _login_or_setup(
         base_url,
         password,
         expect_existing=expect_existing,
         cookie_jar=refresh_cookies,
+        backend_container=backend_container,
+        deadline=deadline,
     )
     _assert_example_refresh_cookie(refresh_cookies)
+    _assert_setup_complete(base_url)
     access_token, user_id = _validate_admin_login(login)
     _check_current_admin(
         base_url,
@@ -688,9 +823,14 @@ def _verify_after_recreate(
     deadline: float,
 ) -> None:
     _wait_for_public_surface(base_url, deadline)
+    # The setup marker lives in the database too: a recreated backend must not
+    # ask for first-run setup again.
+    _assert_setup_complete(base_url)
 
     # The original access JWT must still authorize a DB-backed request after
-    # process replacement, proving the JWT secret and account rows persisted.
+    # process replacement. The JWT and API-key secrets were generated into the
+    # database on its first start, so this proves they persisted along with
+    # the account rows.
     _, listed = _request_json(
         base_url,
         "/user/api-keys/all",
@@ -725,7 +865,7 @@ def _verify_after_recreate(
         expected_user_id=state.user_id,
     )
 
-    login_status, login = _login(base_url, ADMIN_EMAIL, password)
+    login_status, login = _login(base_url, ADMIN_LOGIN_NAME, password)
     if login_status != 200:
         raise SmokeError("the demo admin could not log in after backend recreate")
     new_access_token, user_id = _validate_admin_login(login)
@@ -863,7 +1003,10 @@ def _verify_after_reset(base_url: str, raw_path: str, deadline: float) -> None:
     state = _read_reset_state(raw_path)
     try:
         _wait_for_public_surface(base_url, deadline)
-        login_status, _ = _login(base_url, ADMIN_EMAIL, state.password)
+        # A fresh database has no account, so it waits for first-run setup.
+        if not _setup_required(base_url):
+            raise SmokeError("first-run setup is not pending after destructive reset")
+        login_status, _ = _login(base_url, ADMIN_LOGIN_NAME, state.password)
         if login_status != 401:
             raise SmokeError("the old demo account survived destructive reset")
         status, _ = _request_json(
@@ -887,6 +1030,41 @@ def _verify_after_reset(base_url: str, raw_path: str, deadline: float) -> None:
         )
 
 
+def _configure_upstream(base_url: str, password: str, deadline: float) -> None:
+    """Store this environment's EXAMPLE_UPSTREAM_* values as the admin console does.
+
+    The values take effect when the backend next starts; the caller restarts it.
+    """
+    values: dict[str, str] = {}
+    for name in UPSTREAM_SETTINGS:
+        value = os.getenv(name, "").strip()
+        if not value:
+            raise SmokeError(f"{name} must be set to configure the upstream")
+        values[name] = value
+
+    _wait_for_public_surface(base_url, deadline)
+    status, login = _login(base_url, ADMIN_LOGIN_NAME, password)
+    if status != 200:
+        raise SmokeError("the demo admin could not log in to configure the upstream")
+    access_token, _ = _validate_admin_login(login)
+    _, config = _request_json(
+        base_url,
+        "/admin/config",
+        method="PATCH",
+        payload={"values": values},
+        bearer=access_token,
+    )
+    entries = config.get("entries") if isinstance(config, dict) else None
+    if not isinstance(entries, list):
+        raise SmokeError("the configuration API returned an invalid response")
+    sources = {
+        entry.get("key"): entry.get("source") for entry in entries if isinstance(entry, dict)
+    }
+    for name in UPSTREAM_SETTINGS:
+        if sources.get(name) != "database":
+            raise SmokeError(f"{name} was not stored in the gateway's configuration")
+
+
 def main() -> None:
     """Run the two-phase full-demo smoke without exposing credentials."""
     parser = argparse.ArgumentParser()
@@ -895,10 +1073,39 @@ def main() -> None:
     parser.add_argument("--write-reset-state")
     parser.add_argument("--expect-existing-state")
     parser.add_argument("--verify-reset-state")
+    parser.add_argument(
+        "--backend-container",
+        default=os.getenv("EXAMPLE_BACKEND_CONTAINER_NAME") or DEFAULT_BACKEND_CONTAINER,
+        help="container whose log carries the first-run setup code",
+    )
+    parser.add_argument(
+        "--configure-upstream",
+        action="store_true",
+        help="store this environment's EXAMPLE_UPSTREAM_* values in the gateway's "
+        "configuration as the demo admin, then exit; restart the backend to apply them",
+    )
     parser.add_argument("--recreate-command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
     deadline = time.monotonic() + args.timeout
+    if args.configure_upstream:
+        if (
+            args.write_reset_state
+            or args.expect_existing_state
+            or args.verify_reset_state
+            or args.recreate_command
+        ):
+            parser.error("--configure-upstream cannot be combined with smoke options")
+        try:
+            _configure_upstream(
+                args.base_url,
+                os.getenv("EXAMPLE_DEMO_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD),
+                deadline,
+            )
+        except (OSError, SmokeError, ValueError) as exc:
+            raise SystemExit(f"full example configuration failed: {exc}") from None
+        print(CONFIGURE_SUCCESS_MARKER)
+        return
     if args.verify_reset_state:
         if args.write_reset_state or args.expect_existing_state or args.recreate_command:
             parser.error("--verify-reset-state cannot be combined with smoke options")
@@ -928,6 +1135,7 @@ def main() -> None:
             password,
             deadline,
             expect_existing=expect_existing,
+            backend_container=args.backend_container,
         )
         if expected_state is not None and not hmac.compare_digest(
             state.api_key,

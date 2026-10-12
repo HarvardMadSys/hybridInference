@@ -1,5 +1,19 @@
 # Stage 2 of the runnable example: add the production Postgres/frontend
 # services to the existing Stage 1 project and recreate only backend.
+#
+# There is no administrator account and no JWT or API-key secret here. The
+# backend generates both secrets into the example database on its first start
+# (so sessions and encrypted API keys survive a backend recreate, and
+# `make demo-reset` discards them with the data), and the console's first-run
+# setup page creates the administrator with the setup code from the backend
+# log.
+#
+# The first start also copies the application settings below into that
+# database -- all but DB_ENABLED, the DISTRIBUTION_CONFIG_* lines and
+# REFRESH_TOKEN_COOKIE_NAME, which stay in the environment. From then on the
+# stored values win over this file: change them in Admin -> Configuration
+# (USER_AUTH_ENABLED and the SIGNUP_* switches are on the Settings tab), or
+# reset the example to start over.
 services:
   backend:
     environment:
@@ -8,19 +22,15 @@ services:
       USER_AUTH_ENABLED: "true"
       DISTRIBUTION_CONFIG_PATH: /app/distributions/example/distribution.demo.yaml
       DISTRIBUTION_CONFIG_MODE: active
+      # Verification off keeps SMTP out of this loopback-only demo: with it on,
+      # the SMTP settings would be required before anyone could sign up.
       SIGNUP_ENABLED: "true"
       SIGNUP_REQUIRE_EMAIL_VERIFICATION: "false"
       SIGNUP_ADMIN_NOTIFY_ENABLED: "false"
-      ADMIN_EMAILS: admin@local.dev
       COOKIE_SECURE: "false"
       # Cookies ignore ports. A distinct name keeps this localhost demo from
       # overwriting the session of another HybridInference stack.
       REFRESH_TOKEN_COOKIE_NAME: hybridinference_example_refresh
-      # Stable by design so sessions and encrypted API keys survive an in-place
-      # backend recreate. These conspicuous defaults are for this local demo
-      # only; scoped shell variables can replace them without touching a file.
-      JWT_SECRET_KEY: ${EXAMPLE_DEMO_JWT_SECRET:-LOCAL-ONLY-example-jwt-secret-never-use-in-production}
-      API_KEY_SECRET: ${EXAMPLE_DEMO_API_KEY_SECRET:-LOCAL-ONLY-example-api-key-secret-never-use-in-production}
       SITE_PUBLIC_BASE_URL: http://localhost:${FRONTEND_PORT:-13001}
       BASE_URL: http://localhost:${FRONTEND_PORT:-13001}
       FRONTEND_URL: http://localhost:${FRONTEND_PORT:-13001}

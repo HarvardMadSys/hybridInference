@@ -268,9 +268,13 @@ models:
         api_key: ${YOUR_PROVIDER_API_KEY}
 ```
 
-## Step 4: configure environment variables
+## Step 4: set the variables
 
-Add to `.env`:
+On a gateway with a database, add both on the admin console's
+**Configuration** tab with **Add variable**, marking the key secret, and
+restart the backend. Without a database, add them to `.env`; a gateway with a
+database also copies them from there into the database at startup, unless it
+already has a value of that name:
 
 ```bash
 YOUR_PROVIDER_BASE_URL=https://api.yourprovider.example/v1
@@ -478,7 +482,8 @@ do.
 6. **Docs & style** — Google-style docstrings in English; keep provider-specific
    logic out of shared code.
 7. **Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or
-   endpoints, and keep the values in `.env`.
+   endpoints, and keep the values in the gateway's settings
+   (**Configuration** tab), or in `.env` for a gateway without a database.
 
 ## See also
 

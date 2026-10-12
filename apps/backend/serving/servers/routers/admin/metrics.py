@@ -782,16 +782,18 @@ def _build_recent_requests_filters(
     needs_user_join = False
 
     if user_id:
-        # Substring match across the user id and the joined user's name/email so
-        # admins can search by any of the identifiers shown in the table, not
-        # just an exact user id. Matching runs server-side across the full
-        # lookback window, so it isn't limited to the current page of results.
+        # Substring match across the user id and the joined user's name, email
+        # and login name (the first-run administrator has no email) so admins
+        # can search by any of the identifiers shown in the table, not just an
+        # exact user id. Matching runs server-side across the full lookback
+        # window, so it isn't limited to the current page of results.
         params.append(_escape_ilike_substring_term(user_id))
         idx = len(params)
         clauses.append(
             f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
-            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.login_name ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
         )
         needs_user_join = True
 

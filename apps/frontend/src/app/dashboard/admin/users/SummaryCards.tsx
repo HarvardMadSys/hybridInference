@@ -2,6 +2,7 @@
 
 import { useUsersSummary } from './hooks/useUsersSummary';
 import type { SummaryCard as SummaryCardData } from './types';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 
 export type SummaryCardId = 'pending' | 'top-spenders-today' | 'anomalies' | 'near-quota';
 
@@ -84,7 +85,7 @@ function Card({ title, accent, card, loading, showCost, onClick }: CardProps) {
       <ul className="mt-2 space-y-1 text-sm text-gray-700">
         {(card?.top ?? []).slice(0, 3).map((u) => (
           <li key={u.id} className="flex justify-between gap-2 truncate">
-            <span className="truncate">{u.email}</span>
+            <span className="truncate">{userAccountLabel(u)}</span>
             {showCost && (
               <span className="font-mono text-xs">${Number(u.today_cost_usd).toFixed(2)}</span>
             )}

@@ -154,4 +154,7 @@ English in the Chinese text too.
 | dry run | 试运行 |
 | console | 控制台 |
 | operational store | 运行数据存储 |
+| setting | 设置项 |
+| first-run setup | 首次运行设置 |
+| setup code | 设置码 |
 | provider, kind, adapter, router, overlay, manifest | provider、kind、adapter、router、overlay、manifest |

@@ -45,14 +45,24 @@ same project now contains:
 example-provider + postgres + backend + frontend
 ```
 
-Open <http://localhost:13001>. The normal UI supports signup, login, API-key
-creation, the Playground, request history, and the application Admin Console.
-The configured first-admin address is `admin@local.dev`; it becomes an admin on
-its first successful login. Email verification is deliberately disabled for
-this loopback-only demo.
+The new database has no account. On its first start the backend generates its
+JWT and API-key secrets into that database, stores the settings from
+`deploy/docker-compose.demo.yml` there, and logs a one-time setup code:
 
-Sign up and log in through the UI first with a demo-only password that you do
-not reuse elsewhere, then use the same password for the full smoke:
+```bash
+docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
+```
+
+Open <http://localhost:13001>; the console sends you to its setup page. Enter
+the code — it stays the same, and is printed again at every start, until setup
+is done — and create the administrator with the username `admin` and a
+demo-only password that you do not reuse elsewhere. After that the normal UI supports signup,
+login, API-key creation, the Playground, request history, and the application
+Admin Console, whose Configuration tab now holds the example's settings. Other
+accounts come from public signup and are not administrators. Email
+verification is deliberately disabled for this loopback-only demo.
+
+Use the same password for the full smoke:
 
 ```bash
 EXAMPLE_DEMO_ADMIN_PASSWORD='<the same password>' \
@@ -62,7 +72,9 @@ make demo-smoke DISTRIBUTION=example
 The full smoke uses the real auth and API routes, verifies the Admin Console and
 Playground backends, checks that a non-admin user gets `403`, and proves the
 account, refresh-cookie session, and API key survive an ordinary backend
-recreation. Success prints:
+recreation. If setup is still pending, it completes it as `admin`, reading the
+code with `docker logs` from the container `EXAMPLE_BACKEND_CONTAINER_NAME`
+names (or `--backend-container`). Success prints:
 
 ```text
 EXAMPLE_FULL_SMOKE_OK
@@ -73,14 +85,28 @@ credentials or a production security configuration.
 
 ## Stage 3: use local inference
 
-The public gateway model remains `example-chat`; only its upstream changes:
+The public gateway model remains `example-chat`; only its upstream changes.
+Stage 2 stored the three `EXAMPLE_UPSTREAM_*` settings in the example
+database, where they outrank `deploy/backend.env` and your shell, so change
+them in the Admin Console: **Configuration → Providers**, set
+`EXAMPLE_UPSTREAM_BASE_URL` to `http://host.docker.internal:8000/v1`,
+`EXAMPLE_UPSTREAM_API_KEY` to `local-placeholder` and `EXAMPLE_UPSTREAM_MODEL`
+to the served model name, save, and select **Restart backend**.
+
+The same change from a terminal, as CI makes it:
 
 ```bash
 export EXAMPLE_UPSTREAM_BASE_URL=http://host.docker.internal:8000/v1
 export EXAMPLE_UPSTREAM_API_KEY=local-placeholder
 export EXAMPLE_UPSTREAM_MODEL='<served-model-name>'
+EXAMPLE_DEMO_ADMIN_PASSWORD='<the admin password>' \
+python3 distributions/example/full_smoke.py --configure-upstream
 make demo DISTRIBUTION=example
 ```
+
+`--configure-upstream` signs in as `admin` and stores the three exported values
+through the admin configuration API; `make demo` then recreates the backend so
+the model registry reads them.
 
 This works with an OpenAI-compatible vLLM, SGLang, Ollama, or similar server.
 The host server must listen on a Docker-reachable address such as `0.0.0.0`.
@@ -119,16 +145,18 @@ Stop the full example while keeping its account, key, and history:
 make demo-down DISTRIBUTION=example
 ```
 
-Run `make demo DISTRIBUTION=example` again to resume Stage 2. To resume Stage
-3, re-export its three `EXAMPLE_UPSTREAM_*` values first; shell overrides are
-not persisted. To remove this example project's data and return to a fresh
-state:
+Run `make demo DISTRIBUTION=example` again to resume. Stage 3's upstream
+settings are stored in the database, so the same command resumes whichever
+stage you stopped at. To remove this example project's data and return to a
+fresh state:
 
 ```bash
 make demo-reset DISTRIBUTION=example
 ```
 
-The reset is destructive, but it cannot remove the production
+The reset is destructive — the administrator, the generated secrets and every
+stored setting go with the data, and the next `make demo` starts first-run
+setup again — but it cannot remove the production
 `hybridinference_postgres_data` volume.
 
 If you stop after Stage 1, the original command is still available:

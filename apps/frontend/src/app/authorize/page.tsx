@@ -17,6 +17,7 @@ import { useAuth } from '@/components/providers';
 import { createAuthorizationCode } from '@/lib/api/identity';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { useT } from '@/components/providers/useT';
@@ -161,7 +162,7 @@ function AuthorizeContent() {
             {t('auth.authorize.signin_lead', 'Sign in to')}{' '}
             <span className="font-medium">{request.clientLabel}</span> ({request.redirectHost}){' '}
             {t('auth.authorize.signin_as', 'as')}{' '}
-            <span className="font-medium">{state.user?.email}</span>
+            <span className="font-medium">{userAccountLabel(state.user)}</span>
           </p>
         </div>
 

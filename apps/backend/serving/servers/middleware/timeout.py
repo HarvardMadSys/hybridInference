@@ -2,19 +2,19 @@
 
 Enforces a per-request timeout, returning 504 Gateway Timeout when exceeded.
 ``REQUEST_TIMEOUT_SECONDS`` (default 120s) and ``STREAM_REQUEST_TIMEOUT_SECONDS``
-(default 3600s; <=0 disables the stream cap) are read once when the middleware is
-instantiated; changing the env at runtime requires a restart.
+(default 3600s; <=0 disables the stream cap) are read on every request, so a
+changed setting applies to the next request without a restart.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import os
 from typing import TYPE_CHECKING
 
 import anyio
 
+from serving.config.app_config import config_value
 from serving.servers.streaming_state import (
     REQUEST_TIMEOUT_SCOPE_STATE_KEY,
     STREAMING_RESPONSE_MARKER_HEADER,
@@ -34,8 +34,8 @@ def _parse_timeout_env() -> float:
 
 
 def _parse_stream_timeout_env() -> float | None:
-    """Read stream cap env; non-positive values intentionally disable the cap."""
-    raw = os.getenv("STREAM_REQUEST_TIMEOUT_SECONDS")
+    """Read the stream cap; non-positive values intentionally disable the cap."""
+    raw = config_value("STREAM_REQUEST_TIMEOUT_SECONDS")
     if raw is None or raw.strip() == "":
         return _DEFAULT_STREAM_TIMEOUT_S
     try:
@@ -47,7 +47,7 @@ def _parse_stream_timeout_env() -> float | None:
 
 def _parse_positive_timeout_env(name: str, default: float) -> float:
     """Read a strictly-positive timeout value with a safe default."""
-    raw = os.getenv(name)
+    raw = config_value(name)
     if raw is None or raw.strip() == "":
         return default
     try:
@@ -58,7 +58,11 @@ def _parse_positive_timeout_env(name: str, default: float) -> float:
 
 
 class TimeoutMiddleware:
-    """Cancel requests that exceed ``REQUEST_TIMEOUT_SECONDS`` and return 504."""
+    """Cancel requests that exceed ``REQUEST_TIMEOUT_SECONDS`` and return 504.
+
+    Timeouts passed to the constructor are fixed; without them both limits are
+    read from the configuration on every request.
+    """
 
     def __init__(
         self,
@@ -67,12 +71,20 @@ class TimeoutMiddleware:
         stream_timeout_s: float | None = None,
     ) -> None:
         self.app = app
-        self._timeout_s = timeout_s if timeout_s is not None else _parse_timeout_env()
-        self._stream_timeout_s = (
-            (stream_timeout_s if stream_timeout_s > 0 else None)
-            if stream_timeout_s is not None
-            else _parse_stream_timeout_env()
-        )
+        self._fixed_timeout_s = timeout_s
+        self._fixed_stream_timeout_s = stream_timeout_s
+
+    @property
+    def _timeout_s(self) -> float:
+        if self._fixed_timeout_s is not None:
+            return self._fixed_timeout_s
+        return _parse_timeout_env()
+
+    @property
+    def _stream_timeout_s(self) -> float | None:
+        if self._fixed_stream_timeout_s is not None:
+            return self._fixed_stream_timeout_s if self._fixed_stream_timeout_s > 0 else None
+        return _parse_stream_timeout_env()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Enforce per-request timeout and return 504 on expiry."""
@@ -81,6 +93,9 @@ class TimeoutMiddleware:
             return
 
         response_started = False
+        # Read once per request: the stream cap must not change under a response
+        # that is already running.
+        stream_timeout_s = self._stream_timeout_s
 
         with anyio.move_on_after(self._timeout_s) as scope_deadline:
             # Expose the scope so response generators (StreamSession) can
@@ -113,8 +128,8 @@ class TimeoutMiddleware:
                         # uncapped behavior.
                         scope_deadline.deadline = (
                             math.inf
-                            if self._stream_timeout_s is None
-                            else anyio.current_time() + self._stream_timeout_s
+                            if stream_timeout_s is None
+                            else anyio.current_time() + stream_timeout_s
                         )
                     message = {**message, "headers": headers}
                 await send(message)

@@ -85,15 +85,16 @@ async def admin_export_requests(
 
     # Filters mirror /admin/recent-requests so the JSONL export matches exactly
     # what the admin sees in the Requests tab (which reuses the same filter
-    # values): a substring match across user id/name/email, and a substring
-    # match on model id. The SELECT below already joins users.
+    # values): a substring match across user id/name/email/login name, and a
+    # substring match on model id. The SELECT below already joins users.
     if user_id:
         params.append(_escape_ilike_substring_term(user_id))
         idx = len(params)
         where_clauses.append(
             f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
-            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.login_name ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
         )
 
     if session_id:

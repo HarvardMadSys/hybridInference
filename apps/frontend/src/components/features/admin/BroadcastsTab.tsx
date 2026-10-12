@@ -15,6 +15,7 @@ import {
   sendTestBroadcastEmail,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -570,7 +571,9 @@ export function BroadcastsTab() {
                                   <tbody>
                                     {broadcastDetail.recipients.map((r) => (
                                       <tr key={r.user_id} className="border-t border-gray-100">
-                                        <td className="pr-4 py-1 text-gray-700">{r.email}</td>
+                                        <td className="pr-4 py-1 text-gray-700">
+                                          {userAccountLabel(r)}
+                                        </td>
                                         <td className="pr-4 py-1">
                                           <span
                                             className={

@@ -16,6 +16,7 @@ import {
   YAxis,
 } from 'recharts';
 import { AdminAnalyticsResponse, AnalyticsPeriod } from '@/lib/api/admin';
+import { userAccountLabel } from '@/lib/utils/userLabel';
 
 const CHART_COLORS = [
   '#3b82f6',
@@ -219,7 +220,9 @@ function DonutCard({
 
 function TopUsersCard({ entries }: { entries: AdminAnalyticsResponse['top_users'] }) {
   const chartData = entries.map((e) => {
-    const email = e.email || '';
+    // Named `email` for the chart's data key; an account without one shows
+    // its login name (or id) instead.
+    const email = userAccountLabel(e);
     return {
       email: email.length > 32 ? `${email.slice(0, 30)}…` : email,
       fullEmail: email,
@@ -332,8 +335,8 @@ function TopUsersByModelCard({
               <tr key={u.user_id} className="border-b border-gray-100 last:border-0">
                 <td className="py-2 pr-3 tabular-nums text-gray-400">{i + 1}</td>
                 <td className="py-2 pr-3 text-gray-700">
-                  <span className="block max-w-[280px] truncate" title={u.email}>
-                    {u.email}
+                  <span className="block max-w-[280px] truncate" title={userAccountLabel(u)}>
+                    {userAccountLabel(u)}
                   </span>
                 </td>
                 <td className="py-2 pr-3 text-right tabular-nums text-gray-900">

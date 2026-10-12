@@ -12,6 +12,7 @@ const TABS = [
   { slug: 'log', label: 'Log' },
   { slug: 'announcements', label: 'Announcements' },
   { slug: 'analytics', label: 'Analytics' },
+  { slug: 'configuration', label: 'Configuration' },
   { slug: 'settings', label: 'Settings' },
 ] as const;
 
@@ -23,7 +24,7 @@ export function AdminTabNav() {
         const href = `/dashboard/admin/${tab.slug}`;
         const isActive = pathname === href || pathname.startsWith(`${href}/`);
         return (
-          // Nine tabs are always in view; default prefetch would pull every
+          // Every tab is always in view; default prefetch would pull every
           // admin route's JS up front, so fetch each tab on demand instead.
           <Link
             key={tab.slug}

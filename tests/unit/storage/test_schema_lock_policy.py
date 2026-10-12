@@ -34,6 +34,7 @@ _STRONG_LOCK_FRAGMENTS = (
     "DROP CONSTRAINT",
     "SET DEFAULT",
     "SET NOT NULL",
+    "DROP NOT NULL",
     "DO $$",
 )
 

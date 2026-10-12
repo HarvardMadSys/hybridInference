@@ -40,11 +40,14 @@ def is_email_enabled() -> bool:
     return bool(settings.smtp_user and settings.smtp_password)
 
 
-def send_email(to_email: str, subject: str, html_body: str, text_body: str | None = None) -> bool:
+def send_email(
+    to_email: str | None, subject: str, html_body: str, text_body: str | None = None
+) -> bool:
     """Send an email using SMTP.
 
     Args:
-        to_email: Recipient email address.
+        to_email: Recipient email address. None or blank (an account created
+            without an email address) sends nothing.
         subject: Email subject.
         html_body: HTML email body.
         text_body: Plain text email body (optional, defaults to stripped HTML).
@@ -52,6 +55,10 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str | Non
     Returns:
         True if email sent successfully, False otherwise.
     """
+    if not to_email or not to_email.strip():
+        logger.warning("Email not sent: the recipient has no email address")
+        return False
+
     if not is_email_enabled():
         logger.warning("Email sending disabled: SMTP not configured")
         return False

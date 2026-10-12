@@ -1,8 +1,10 @@
-"""Environment-driven configuration for the docs RAG assistant.
+"""Configuration for the docs RAG assistant.
 
-Everything is read from environment variables with sensible defaults so the
-prototype can be pointed at a different corpus, index, or model without code
-changes. Defaults resolve relative to the repo root so it works out of the box.
+Every ``RAG_*`` setting is read through the database-backed configuration
+(``config_value``: database row, then environment variable) with sensible
+defaults, so the prototype can be pointed at a different corpus, index, or
+model without code changes. Defaults resolve relative to the repo root so it
+works out of the box.
 """
 
 from __future__ import annotations
@@ -10,6 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from serving.config.app_config import config_value
 
 
 def _repo_root_for(path: Path) -> Path:
@@ -135,40 +139,45 @@ class RagSettings:
     gateway_api_key: str
 
 
+def _setting(name: str, default: str) -> str:
+    value = config_value(name, default)
+    return default if value is None else value
+
+
 def _int_env(name: str, default: int) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        return int(_setting(name, str(default)))
     except (TypeError, ValueError):
         return default
 
 
 def _float_env(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        return float(_setting(name, str(default)))
     except (TypeError, ValueError):
         return default
 
 
 def load_rag_settings() -> RagSettings:
-    """Build :class:`RagSettings` from the environment."""
-    mode = os.getenv("RAG_EMBEDDER", "gateway").strip().lower()
+    """Build :class:`RagSettings` from the current configuration."""
+    mode = _setting("RAG_EMBEDDER", "gateway").strip().lower()
     if mode not in EMBEDDER_MODES:
         mode = "gateway"
     return RagSettings(
-        corpus_dir=Path(os.getenv("RAG_CORPUS_DIR", str(DEFAULT_CORPUS_DIR))),
-        index_path=Path(os.getenv("RAG_INDEX_PATH", str(DEFAULT_INDEX_PATH))),
+        corpus_dir=Path(_setting("RAG_CORPUS_DIR", str(DEFAULT_CORPUS_DIR))),
+        index_path=Path(_setting("RAG_INDEX_PATH", str(DEFAULT_INDEX_PATH))),
         embedder_mode=mode,
-        embed_model=os.getenv("RAG_EMBED_MODEL", "bge-m3"),
-        chat_model=os.getenv("RAG_CHAT_MODEL", "qwen3.6-35b"),
+        embed_model=_setting("RAG_EMBED_MODEL", "bge-m3"),
+        chat_model=_setting("RAG_CHAT_MODEL", "qwen3.6-35b"),
         top_k=_int_env("RAG_TOP_K", 4),
         chunk_max_chars=_int_env("RAG_CHUNK_MAX_CHARS", 1200),
         chunk_overlap_chars=_int_env("RAG_CHUNK_OVERLAP_CHARS", 150),
         max_tokens=_int_env("RAG_MAX_TOKENS", 1024),
         temperature=_float_env("RAG_TEMPERATURE", 0.3),
-        api_base_url=os.getenv("RAG_API_BASE_URL", "http://localhost:8080/v1"),
-        api_key=os.getenv("RAG_API_KEY", ""),
+        api_base_url=_setting("RAG_API_BASE_URL", "http://localhost:8080/v1"),
+        api_key=_setting("RAG_API_KEY", ""),
         # The ingest CLI embeds through a gateway; defaulting to a specific
         # deployment would send another operator's corpus to it.
-        gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "http://localhost:8080/v1"),
-        gateway_api_key=os.getenv("RAG_GATEWAY_API_KEY", os.getenv("LOCAL_API_KEY", "")),
+        gateway_base_url=_setting("RAG_GATEWAY_BASE_URL", "http://localhost:8080/v1"),
+        gateway_api_key=_setting("RAG_GATEWAY_API_KEY", _setting("LOCAL_API_KEY", "")),
     )

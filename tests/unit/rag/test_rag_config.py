@@ -113,12 +113,14 @@ def test_load_rag_settings_does_not_raise():
     assert settings.embedder_mode in ("gateway", "hash")
 
 
-def test_ingest_cli_builds_settings_with_all_required_fields(tmp_path):
+def test_ingest_cli_builds_settings_with_all_required_fields(tmp_path, monkeypatch):
     # Regression: RagSettings grew required api_base_url/api_key fields (#911)
     # and the ingest CLI's manual construction missed them, so every
     # `make rag-ingest` run died with a TypeError before reaching embedding.
     from serving.rag.ingest import main
 
+    # No database here: the CLI would otherwise try to load stored settings.
+    monkeypatch.setenv("DB_ENABLED", "false")
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "hello.md").write_text("# Hello\n\nSome documentation text.\n")

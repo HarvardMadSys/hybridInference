@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -11,17 +10,19 @@ from typing import Any
 import yaml
 from pydantic import AliasChoices, BaseModel, Field
 
+from serving.config.app_config import config_value
+
 log = logging.getLogger(__name__)
 
 _ENV_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
 
 
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ${VAR} and ${VAR:-default} in strings."""
+    """Recursively expand ${VAR} and ${VAR:-default} in strings (via ``config_value``)."""
     if isinstance(value, str):
 
         def repl(m: re.Match[str]) -> str:
-            return os.environ.get(m.group(1), m.group(2) or "")
+            return config_value(m.group(1), m.group(2) or "") or ""
 
         return _ENV_RE.sub(repl, value)
     if isinstance(value, dict):

@@ -10,10 +10,11 @@ names and freeze them in place.
 from __future__ import annotations
 
 import hmac
-import os
 from typing import Any
 
 from fastapi import Header, HTTPException, status
+
+from serving.config.app_config import config_value
 
 ENV_DISPATCH_TOKEN = "GATEWAY_GRANT_DISPATCH_TOKEN"
 
@@ -38,7 +39,7 @@ def require_dispatch_token(authorization: str | None = Header(None)) -> None:
         HTTPException: 404 when unconfigured, 401 when the token is absent or
             wrong.
     """
-    expected = (os.environ.get(ENV_DISPATCH_TOKEN) or "").strip()
+    expected = (config_value(ENV_DISPATCH_TOKEN) or "").strip()
     if not expected:
         raise error(
             status.HTTP_404_NOT_FOUND,

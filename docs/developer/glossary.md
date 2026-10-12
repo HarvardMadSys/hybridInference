@@ -116,6 +116,19 @@ Operational store
 : The Postgres tables that hold accounts, API keys and everything changed from
   the admin console.
 
+Setting
+: A value the gateway reads by name, such as `SMTP_PASSWORD` or a `${VAR}` the
+  model registry names. A gateway with a database stores its settings there,
+  and an administrator edits them on the admin console's Configuration tab;
+  the environment only supplies their starting values. See
+  [Settings stored in the database](configuration.md#settings-stored-in-the-database).
+
+First-run setup
+: How a new deployment gets its first administrator: the backend prints a
+  one-time setup code in its log, and whoever enters it on the console's
+  `/setup` page creates the account. See
+  [First-run setup](installation.md#first-run-setup).
+
 Runtime model
 : A model created from the admin console instead of the model registry. It
   exists only in the operational store.

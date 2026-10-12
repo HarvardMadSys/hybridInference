@@ -1,11 +1,18 @@
-"""In-memory sliding-window rate limiter for the login endpoint.
+"""In-memory sliding-window rate limiters for the login and first-run setup endpoints.
 
-Maintains two independent buckets:
+Login maintains two independent buckets:
 
-* Per-email: caps password-guessing against a single account
-  (``settings.login_rate_limit_per_15min`` attempts per 15 minutes).
+* Per-account: caps password-guessing against a single account
+  (``settings.login_rate_limit_per_15min`` attempts per 15 minutes), keyed
+  by the identifier the client signed in with — an email address, or the
+  login name of an account created without one.
 * Per-IP: caps credential-stuffing across many accounts from the same
   source (``settings.login_rate_limit_per_hour_per_ip`` attempts per hour).
+
+First-run setup counts wrong setup codes per IP (``SETUP_ATTEMPTS_PER_15MIN``
+per 15 minutes). Only failures are recorded and a correct code is never
+refused, so junk sent from an address the operator shares (every browser
+behind the console's proxy can) cannot lock the operator out.
 
 State is per-process and lost on restart; with multiple uvicorn workers
 the effective limit multiplies by worker count, which is acceptable for
@@ -26,10 +33,16 @@ _FIFTEEN_MIN_SECONDS = 15 * 60
 _HOUR_SECONDS = 3600
 _SWEEP_EVERY = 1024
 
+# Wrong first-run setup codes an IP may send in any 15-minute window before
+# further wrong ones are answered 429.
+SETUP_ATTEMPTS_PER_15MIN = 10
+
 _email_attempts: dict[str, deque[float]] = {}
 _ip_attempts: dict[str, deque[float]] = {}
+_setup_attempts: dict[str, deque[float]] = {}
 _lock = asyncio.Lock()
 _sweep_counter = 0
+_setup_sweep_counter = 0
 
 
 def _now() -> float:
@@ -48,8 +61,10 @@ def _sweep_inactive(buckets: dict[str, deque[float]], cutoff: float) -> None:
 async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]:
     """Record a login attempt and return whether it should be allowed.
 
-    Returns (True, None) if both the per-email and per-IP windows have
-    capacity, or (False, "email"|"ip") indicating which bucket tripped.
+    *email* is the identifier the client signed in with: an email address or
+    a login name (which never contains ``@``, so the two cannot share a
+    bucket). Returns (True, None) if both the per-account and per-IP windows
+    have capacity, or (False, "email"|"ip") indicating which bucket tripped.
     Recording happens on entry so probing with varied payloads cannot
     bypass the limit.
     """
@@ -61,7 +76,7 @@ async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]
     per_email = settings.login_rate_limit_per_15min
     per_ip = settings.login_rate_limit_per_hour_per_ip
 
-    # Normalize email so case variants share the same bucket.
+    # Normalize the identifier so case variants share the same bucket.
     email_key = email.strip().lower()
     # Normalize IPv6 to its /64 so rotating within a delegated prefix cannot
     # reset the per-IP window.
@@ -107,9 +122,40 @@ async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]
     return True, None
 
 
+async def record_failed_setup_attempt(ip: str) -> bool:
+    """Record a wrong first-run setup code and return whether the IP is still under the limit.
+
+    One sliding 15-minute window per client IP (IPv6 bucketed to its /64).
+    Returns False once the IP had already sent ``SETUP_ATTEMPTS_PER_15MIN``
+    wrong codes in the window; the caller answers 429 instead of 403. Only
+    failures are recorded: a correct code never reaches this function.
+    """
+    global _setup_sweep_counter
+
+    now = _now()
+    cutoff = now - _FIFTEEN_MIN_SECONDS
+    ip_key = normalize_ip_bucket(ip)
+
+    async with _lock:
+        _setup_sweep_counter += 1
+        if _setup_sweep_counter >= _SWEEP_EVERY:
+            _setup_sweep_counter = 0
+            _sweep_inactive(_setup_attempts, cutoff)
+
+        bucket = _setup_attempts.setdefault(ip_key, deque())
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        count = len(bucket)
+        bucket.append(now)
+
+    return count < SETUP_ATTEMPTS_PER_15MIN
+
+
 def reset_login_rate_limit_state() -> None:
-    """Wipe all recorded attempts. Test-only helper."""
-    global _sweep_counter
+    """Wipe all recorded attempts (login and setup). Test-only helper."""
+    global _sweep_counter, _setup_sweep_counter
     _email_attempts.clear()
     _ip_attempts.clear()
+    _setup_attempts.clear()
     _sweep_counter = 0
+    _setup_sweep_counter = 0

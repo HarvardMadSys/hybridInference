@@ -440,16 +440,21 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_user_by_email(email)
 
+    async def get_user_by_login_name(self, login_name: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_by_login_name(login_name)
+
     async def create_user(
         self,
         *,
         user_id: str,
-        email: str,
+        email: str | None,
         password_hash: str,
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
         signup_reason: str | None = None,
+        login_name: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.create_user(
@@ -460,6 +465,47 @@ class CachedOperationalStore(OperationalStore):
             email_verified=email_verified,
             status=status,
             signup_reason=signup_reason,
+            login_name=login_name,
+        )
+
+    async def get_or_create_setup_code(
+        self,
+        *,
+        marker_key: str,
+        code_key: str,
+        completed_at: str,
+        candidate_code: str,
+    ) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_or_create_setup_code(
+            marker_key=marker_key,
+            code_key=code_key,
+            completed_at=completed_at,
+            candidate_code=candidate_code,
+        )
+
+    async def create_first_admin(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        marker_key: str,
+        marker_value: str,
+        code_key: str,
+        admin_ip: str,
+    ) -> bool:
+        """Delegate to wrapped store (a new user id has nothing cached)."""
+        return await self._store.create_first_admin(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=user_name,
+            marker_key=marker_key,
+            marker_value=marker_value,
+            code_key=code_key,
+            admin_ip=admin_ip,
         )
 
     async def get_user_counts_by_status(self) -> dict[str, int]:

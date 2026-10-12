@@ -20,6 +20,12 @@ export interface SignupResponse {
 }
 
 export interface LoginRequest {
+  /**
+   * An email address, or the login name of an account created without one
+   * (the first-run administrator). The field keeps its name on the wire: the
+   * backend reads a value containing `@` as an email and anything else as a
+   * login name.
+   */
   email: string;
   password: string;
 }
@@ -30,7 +36,9 @@ export interface LoginResponse {
   expires_in: number;
   user: {
     id: string;
-    email: string;
+    /** `null` for an account that signs in with a login name instead. */
+    email: string | null;
+    login_name?: string | null;
     role: string;
     is_admin: boolean;
   };

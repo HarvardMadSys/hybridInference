@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import LoginPage from './page';
@@ -16,9 +16,10 @@ let authState = {
 let query = new URLSearchParams();
 
 const replaceMock = vi.fn();
+const loginMock = vi.fn();
 
 vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: authState, login: vi.fn() }),
+  useAuth: () => ({ state: authState, login: loginMock }),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -114,5 +115,60 @@ describe('signup navigation', () => {
       </SiteConfigProvider>,
     );
     expect(screen.queryByRole('link', { name: 'Sign Up' })).not.toBeInTheDocument();
+  });
+});
+
+describe('email or username', () => {
+  function signIn(identifier: string, password = 'pw') {
+    fireEvent.change(screen.getByLabelText('Email or username'), {
+      target: { value: identifier },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: password } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+  }
+
+  beforeEach(() => {
+    authState.isAuthenticated = false;
+    authState.user = null;
+    loginMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('is one text field, not an email field', () => {
+    render(<LoginPage />);
+
+    const field = screen.getByLabelText('Email or username');
+    expect(field).toHaveAttribute('type', 'text');
+    expect(field).toHaveAttribute('autocomplete', 'username');
+  });
+
+  it('signs in with the login name of an account that has no email', async () => {
+    render(<LoginPage />);
+
+    signIn('  Admin.ops ');
+
+    // Trimmed, and sent in the request's `email` field by the controller.
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('Admin.ops', 'pw'));
+  });
+
+  it('still signs in with an email address', async () => {
+    render(<LoginPage />);
+
+    signIn('user@example.test');
+
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('user@example.test', 'pw'));
+  });
+
+  it.each([
+    ['not-an-email@', 'Please enter a valid email address'],
+    ['x', 'Please enter a valid email address or username'],
+    ['has space', 'Please enter a valid email address or username'],
+    ['', 'Please enter your email or username'],
+  ])('refuses %j', async (identifier, message) => {
+    render(<LoginPage />);
+
+    signIn(identifier);
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(loginMock).not.toHaveBeenCalled();
   });
 });

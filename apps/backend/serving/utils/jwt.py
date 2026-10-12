@@ -1,6 +1,5 @@
 """JWT token generation and validation utilities."""
 
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,13 +23,17 @@ def get_jwt_secret() -> str:
 
 
 def get_jwt_algorithm() -> str:
-    """Get JWT algorithm from environment (default: HS256)."""
-    return os.getenv("JWT_ALGORITHM", "HS256")
+    """Get the JWT signing algorithm (``JWT_ALGORITHM``, default HS256)."""
+    from serving.config.settings import get_settings
+
+    return get_settings().jwt_algorithm
 
 
 def get_access_token_expire_minutes() -> int:
-    """Get access token expiration time in minutes (default: 15)."""
-    return int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+    """Get the access token lifetime in minutes (default 15)."""
+    from serving.config.settings import get_settings
+
+    return get_settings().jwt_access_token_expire_minutes
 
 
 def get_refresh_token_expire_days() -> int:
@@ -64,7 +67,7 @@ def generate_jti() -> str:
 
 def create_access_token(
     user_id: str,
-    email: str,
+    email: str | None,
     session_id: str | None = None,
     expires_delta: timedelta | None = None,
     is_admin: bool = False,
@@ -74,9 +77,10 @@ def create_access_token(
 
     Args:
         user_id: User ID to encode in token.
-        email: User email to encode in token.
+        email: User email to encode in token; an account without one (the
+            first-run setup administrator) gets an empty ``email`` claim.
         session_id: Session ID for token rotation (optional).
-        expires_delta: Custom expiration time (default: from env).
+        expires_delta: Custom expiration time (default: from settings).
         is_admin: Whether user has admin privileges.
         role: User permission role (free/pro/internal/admin).
 
@@ -94,7 +98,7 @@ def create_access_token(
 
     payload = {
         "sub": user_id,
-        "email": email,
+        "email": email or "",
         "role": role,
         "is_admin": is_admin,
         "jti": jti,

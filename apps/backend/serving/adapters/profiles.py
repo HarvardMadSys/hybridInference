@@ -7,11 +7,11 @@ format. Names are chosen to grow into a fuller framework later.
 from __future__ import annotations
 
 import math
-import os
 from enum import Enum
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from serving.config.app_config import config_value
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
 
@@ -307,8 +307,8 @@ _DEFAULT_STREAM_IDLE_TIMEOUT_S = 180.0
 
 
 def _positive_timeout_env(name: str, default: float | None) -> float | None:
-    """Parse a timeout env var: unset -> default, non-positive -> disabled."""
-    raw = os.getenv(name)
+    """Parse a timeout setting: unset -> default, non-positive -> disabled."""
+    raw = config_value(name)
     if raw is None or raw.strip() == "":
         return default
     try:

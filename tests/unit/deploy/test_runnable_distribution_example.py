@@ -231,10 +231,11 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     )
     assert backend["SIGNUP_ENABLED"] == "true"
     assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
-    assert backend["ADMIN_EMAILS"] == "admin@local.dev"
     assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
-    assert backend["JWT_SECRET_KEY"].startswith("${EXAMPLE_DEMO_JWT_SECRET:-LOCAL-ONLY-")
-    assert backend["API_KEY_SECRET"].startswith("${EXAMPLE_DEMO_API_KEY_SECRET:-LOCAL-ONLY-")
+    # First-run setup creates the administrator, and the backend generates both
+    # secrets into the example database: nothing names an admin or a secret.
+    for absent in ("ADMIN_EMAILS", "JWT_SECRET_KEY", "API_KEY_SECRET"):
+        assert absent not in backend
     assert backend["SITE_PUBLIC_BASE_URL"] == "http://localhost:${FRONTEND_PORT:-13001}"
 
     frontend = demo["services"]["frontend"]
@@ -319,15 +320,14 @@ def test_three_layer_demo_compose_is_isolated_and_shell_overridable() -> None:
     assert backend_env["DB_ENABLED"] == "true"
     assert backend_env["DB_STORE_FULL_CONTENT"] == "false"
     assert backend_env["USER_AUTH_ENABLED"] == "true"
-    assert backend_env["ADMIN_EMAILS"] == "admin@local.dev"
     assert backend_env["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
     assert backend_env["SITE_PUBLIC_BASE_URL"] == "http://localhost:23001"
     assert backend_env["FRONTEND_URL"] == "http://localhost:23001"
     assert backend_env["EXAMPLE_UPSTREAM_BASE_URL"] == ("http://host.docker.internal:28001/v1")
     assert backend_env["EXAMPLE_UPSTREAM_API_KEY"] == "shell-local-key"
     assert backend_env["EXAMPLE_UPSTREAM_MODEL"] == "shell-local-model"
-    assert backend_env["JWT_SECRET_KEY"].startswith("LOCAL-ONLY-")
-    assert backend_env["API_KEY_SECRET"].startswith("LOCAL-ONLY-")
+    for absent in ("ADMIN_EMAILS", "JWT_SECRET_KEY", "API_KEY_SECRET"):
+        assert absent not in backend_env
     assert services["frontend"]["build"]["args"]["NEXT_PUBLIC_API_BASE"] == ""
     assert services["frontend"]["build"]["args"]["BACKEND_INTERNAL_URL"] == ("http://backend:8080")
     assert services["frontend"]["environment"]["REFRESH_TOKEN_COOKIE_NAME"] == (
@@ -804,6 +804,8 @@ def test_full_smoke_enforces_its_site_config_contract(
         "distribution": {"id": "example"},
         "features": {"public_signup": True},
         "site": {"public_base_url": base_url},
+        "setup": {"required": True},
+        "configuration": {"incomplete": False},
     }
     responses = {
         "/health": {
@@ -832,6 +834,45 @@ def test_full_smoke_enforces_its_site_config_contract(
     with pytest.raises(full_smoke.SmokeError, match="publishes the wrong frontend URL"):
         full_smoke._check_public_surface(base_url)
 
+    # The demo's own settings are complete, so its console shows no banner.
+    # A backend that does not report it at all fails the same way.
+    site["site"]["public_base_url"] = base_url
+    site["configuration"]["incomplete"] = True
+    with pytest.raises(full_smoke.SmokeError, match="missing required settings"):
+        full_smoke._check_public_surface(base_url)
+    del site["configuration"]
+    with pytest.raises(full_smoke.SmokeError, match="missing required settings"):
+        full_smoke._check_public_surface(base_url)
+
+
+def test_full_smoke_requests_the_setup_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    full_smoke = _load_module("_runnable_example_full_setup_page", FULL_SMOKE)
+    base_url = "http://localhost:23001"
+    responses = {
+        "/health": {"status": "healthy", "database_configured": True, "database_connected": True},
+        "/site-config": {
+            "distribution": {"id": "example"},
+            "features": {"public_signup": True},
+            "site": {"public_base_url": base_url},
+            "configuration": {"incomplete": False},
+        },
+        "/v1/models": {"data": [{"id": full_smoke.EXPECTED_MODEL}]},
+    }
+    pages: list[str] = []
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda request_base_url, path, **kwargs: (200, responses[path]),
+    )
+    monkeypatch.setattr(
+        full_smoke, "_request_page", lambda request_base_url, path: pages.append(path)
+    )
+
+    full_smoke._check_public_surface(base_url)
+
+    assert "/setup" in pages
+    assert "/signup" in pages
+
 
 def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
     monkeypatch: pytest.MonkeyPatch,
@@ -854,39 +895,72 @@ def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
         full_smoke._check_admin_surfaces("http://localhost:13001", "jwt")
 
 
-def test_full_smoke_logs_in_before_it_bootstraps_the_local_admin(
+def _setup_log_line(code: str) -> str:
+    return (
+        "2026-10-10 12:00:00 - serving.setup_state - WARNING - First-run setup is "
+        f"pending. Open http://localhost:13001/setup and enter setup code {code}\n"
+    )
+
+
+def _login_or_setup(full_smoke, *, expect_existing: bool = False):
+    return full_smoke._login_or_setup(
+        "http://localhost:13001",
+        "not-printed",
+        expect_existing=expect_existing,
+        cookie_jar=full_smoke.CookieJar(),
+        backend_container="demo-backend",
+        deadline=time.monotonic() + 10,
+    )
+
+
+def test_full_smoke_logs_in_before_it_runs_first_run_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full_smoke = _load_module("_runnable_example_full_smoke_login", FULL_SMOKE)
     calls: list[tuple[str, str]] = []
+    payloads: dict[str, object] = {}
     responses = iter(
         [
             (401, {}),
-            (201, {}),
+            (200, {"setup_required": True}),
             (200, {"access_token": "jwt", "user": {"id": "user"}}),
         ]
     )
 
     def fake_request(base_url: str, path: str, **kwargs):
         calls.append((kwargs.get("method", "GET"), path))
+        payloads[path] = kwargs.get("payload")
         return next(responses)
 
+    read_logs: list[str] = []
     monkeypatch.setattr(full_smoke, "_request_json", fake_request)
-    _, existed = full_smoke._login_or_signup(
-        "http://localhost:13001",
-        "not-printed",
-        expect_existing=False,
-        cookie_jar=full_smoke.CookieJar(),
+    monkeypatch.setattr(
+        full_smoke,
+        "_backend_log",
+        lambda container: read_logs.append(container) or _setup_log_line("ABCD-EFGH-JKLM"),
     )
+    login, existed = _login_or_setup(full_smoke)
 
     assert existed is False
+    assert login["access_token"] == "jwt"
     assert calls == [
         ("POST", "/auth/login"),
-        ("POST", "/auth/signup"),
-        ("POST", "/auth/login"),
+        ("GET", "/auth/setup/status"),
+        ("POST", "/auth/setup/admin"),
     ]
+    assert read_logs == ["demo-backend"]
+    # The administrator signs in with a login name; it has no email address.
+    assert payloads["/auth/login"] == {"email": "admin", "password": "not-printed"}
+    assert payloads["/auth/setup/admin"] == {
+        "setup_code": "ABCD-EFGH-JKLM",
+        "login_name": "admin",
+        "password": "not-printed",
+        "display_name": "Local Admin",
+    }
 
+    # An existing admin just logs in: no setup check and no log read.
     calls.clear()
+    read_logs.clear()
     monkeypatch.setattr(
         full_smoke,
         "_request_json",
@@ -895,18 +969,272 @@ def test_full_smoke_logs_in_before_it_bootstraps_the_local_admin(
             or (200, {"access_token": "jwt", "user": {"id": "user"}})
         ),
     )
-    _, existed = full_smoke._login_or_signup(
-        "http://localhost:13001",
-        "not-printed",
-        expect_existing=False,
-        cookie_jar=full_smoke.CookieJar(),
-    )
+    _, existed = _login_or_setup(full_smoke)
 
     assert existed is True
     assert calls == [("POST", "/auth/login")]
+    assert read_logs == []
 
 
-def test_full_smoke_proves_an_unconfigured_email_is_not_admin(
+def test_full_smoke_does_not_set_up_a_deployment_that_already_has_an_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 401 after setup is a wrong password or another login name, never a retry."""
+    full_smoke = _load_module("_runnable_example_full_smoke_setup_done", FULL_SMOKE)
+    responses = iter([(401, {}), (200, {"setup_required": False})])
+    monkeypatch.setattr(
+        full_smoke, "_request_json", lambda base_url, path, **kwargs: next(responses)
+    )
+    monkeypatch.setattr(
+        full_smoke, "_backend_log", lambda container: pytest.fail("read the backend log")
+    )
+
+    with pytest.raises(full_smoke.SmokeError, match="already complete"):
+        _login_or_setup(full_smoke)
+
+    # A persisted admin that cannot log in fails before anything else is tried.
+    calls: list[str] = []
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda base_url, path, **kwargs: calls.append(path) or (401, {}),
+    )
+    with pytest.raises(full_smoke.SmokeError, match="persisted demo admin"):
+        _login_or_setup(full_smoke, expect_existing=True)
+    assert calls == ["/auth/login"]
+
+
+def test_full_smoke_takes_the_newest_setup_code_from_plain_or_json_logs() -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_setup_code", FULL_SMOKE)
+    plain = (
+        _setup_log_line("ABCD-EFGH-JKLM")
+        + "INFO:     Started server process [7]\n"
+        + _setup_log_line("NPQR-STUV-WXYZ")
+    )
+    # A log can span a database reset, which gives setup a new code; the last
+    # one printed is the current one.
+    assert full_smoke._newest_setup_code(plain) == "NPQR-STUV-WXYZ"
+    # The phrase is matched loosely, so a reworded announcement still counts.
+    assert full_smoke._newest_setup_code(f"{plain}Setup code: 2345-6789-ABCD\n") == (
+        "2345-6789-ABCD"
+    )
+
+    json_line = json.dumps(
+        {
+            "level": "WARNING",
+            "logger": "serving.setup_state",
+            "message": "First-run setup is pending. Open http://localhost:13001/setup "
+            "and enter setup code 2345-6789-ABCD",
+        }
+    )
+    assert full_smoke._newest_setup_code(f"{plain}{json_line}\n") == "2345-6789-ABCD"
+
+    # A line about a setup code that carries none does not count.
+    assert (
+        full_smoke._newest_setup_code(
+            "First-run setup attempt with a wrong setup code from 10.0.0.1\n"
+        )
+        is None
+    )
+    assert full_smoke._newest_setup_code("") is None
+
+
+def test_full_smoke_reads_the_backend_log_through_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_docker_logs", FULL_SMOKE)
+    seen: list[tuple[list[str], dict]] = []
+
+    def fake_run(command, **kwargs):
+        seen.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=_setup_log_line("ABCD-EFGH-JKLM"))
+
+    monkeypatch.setattr(full_smoke.subprocess, "run", fake_run)
+    assert full_smoke._newest_setup_code(full_smoke._backend_log("demo-backend")) == (
+        "ABCD-EFGH-JKLM"
+    )
+    command, kwargs = seen[0]
+    assert command == ["docker", "logs", "demo-backend"]
+    # The backend logs to stderr, so `docker logs` must be read on both streams.
+    assert kwargs["stderr"] == subprocess.STDOUT
+
+    monkeypatch.setattr(
+        full_smoke.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="Error response from daemon: No such container: demo-backend"
+        ),
+    )
+    with pytest.raises(full_smoke.SmokeError, match="--backend-container") as failure:
+        full_smoke._backend_log("demo-backend")
+    assert "daemon" not in str(failure.value)
+
+    def missing_docker(command, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(full_smoke.subprocess, "run", missing_docker)
+    with pytest.raises(full_smoke.SmokeError, match="docker CLI"):
+        full_smoke._backend_log("demo-backend")
+
+
+def test_full_smoke_waits_for_a_setup_code_and_retries_a_stale_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_setup_retry", FULL_SMOKE)
+    logs = iter(
+        [
+            "INFO:     Waiting for application startup.\n",
+            _setup_log_line("ABCD-EFGH-JKLM"),
+            # That code belonged to a database since reset; the restarted
+            # backend has printed the current one after it.
+            _setup_log_line("ABCD-EFGH-JKLM") + _setup_log_line("NPQR-STUV-WXYZ"),
+        ]
+    )
+    monkeypatch.setattr(full_smoke, "_backend_log", lambda container: next(logs))
+    monkeypatch.setattr(full_smoke.time, "sleep", lambda seconds: None)
+    tried: list[str] = []
+
+    def fake_request(base_url: str, path: str, **kwargs):
+        assert path == "/auth/setup/admin"
+        code = kwargs["payload"]["setup_code"]
+        tried.append(code)
+        if code == "ABCD-EFGH-JKLM":
+            return 403, {"detail": "That setup code is not valid."}
+        return 200, {"access_token": "jwt", "user": {"id": "user"}}
+
+    monkeypatch.setattr(full_smoke, "_request_json", fake_request)
+    login = full_smoke._create_setup_admin(
+        "http://localhost:13001",
+        "not-printed",
+        backend_container="demo-backend",
+        cookie_jar=full_smoke.CookieJar(),
+        deadline=time.monotonic() + 10,
+    )
+
+    assert login["access_token"] == "jwt"
+    assert tried == ["ABCD-EFGH-JKLM", "NPQR-STUV-WXYZ"]
+
+    monkeypatch.setattr(full_smoke, "_backend_log", lambda container: "INFO: started\n")
+    with pytest.raises(full_smoke.SmokeError, match="has no setup code"):
+        full_smoke._wait_for_setup_code("demo-backend", time.monotonic() - 1)
+
+
+def test_full_smoke_explains_a_refused_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_setup_refused", FULL_SMOKE)
+    monkeypatch.setattr(
+        full_smoke, "_backend_log", lambda container: _setup_log_line("ABCD-EFGH-JKLM")
+    )
+
+    def setup_admin():
+        return full_smoke._create_setup_admin(
+            "http://localhost:13001",
+            "not-printed",
+            backend_container="demo-backend",
+            cookie_jar=full_smoke.CookieJar(),
+            deadline=time.monotonic() + 10,
+        )
+
+    # A weak EXAMPLE_DEMO_ADMIN_PASSWORD is the operator's to fix.
+    monkeypatch.setattr(full_smoke, "_request_json", lambda base_url, path, **kwargs: (422, {}))
+    with pytest.raises(full_smoke.SmokeError, match="EXAMPLE_DEMO_ADMIN_PASSWORD"):
+        setup_admin()
+
+    # Setup completed meanwhile (say, in a browser): the same admin logs in.
+    monkeypatch.setattr(full_smoke, "_request_json", lambda base_url, path, **kwargs: (409, {}))
+    monkeypatch.setattr(
+        full_smoke, "_login", lambda base_url, name, password, **kwargs: (200, {"user": {}})
+    )
+    assert setup_admin() == {"user": {}}
+    monkeypatch.setattr(full_smoke, "_login", lambda base_url, name, password, **kwargs: (401, {}))
+    with pytest.raises(full_smoke.SmokeError, match="completed by someone else"):
+        setup_admin()
+
+
+def test_full_smoke_configures_the_upstream_from_its_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage 3 changes stored settings, the way Admin -> Configuration does."""
+    full_smoke = _load_module("_runnable_example_full_smoke_configure", FULL_SMOKE)
+    values = {
+        "EXAMPLE_UPSTREAM_BASE_URL": "http://host.docker.internal:8000/v1",
+        "EXAMPLE_UPSTREAM_API_KEY": "local-placeholder",
+        "EXAMPLE_UPSTREAM_MODEL": "served-model",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
+    logins: list[tuple[str, str]] = []
+    admin = {
+        "access_token": "jwt",
+        "user": {"id": "user", "login_name": "admin", "role": "admin", "is_admin": True},
+    }
+    monkeypatch.setattr(
+        full_smoke,
+        "_login",
+        lambda base_url, name, password, **kwargs: logins.append((name, password)) or (200, admin),
+    )
+    stored = {"entries": [{"key": name, "source": "database"} for name in values]}
+    requests: list[tuple[object, ...]] = []
+
+    def fake_request(base_url: str, path: str, **kwargs):
+        requests.append((kwargs.get("method"), path, kwargs.get("payload"), kwargs.get("bearer")))
+        return 200, stored
+
+    monkeypatch.setattr(full_smoke, "_request_json", fake_request)
+    full_smoke._configure_upstream("http://localhost:13001", "not-printed", time.monotonic() + 10)
+
+    assert logins == [("admin", "not-printed")]
+    assert requests == [("PATCH", "/admin/config", {"values": values}, "jwt")]
+
+    # A value the API did not store is a failure, not a silent no-op.
+    stored["entries"] = stored["entries"][:2]
+    with pytest.raises(full_smoke.SmokeError, match="EXAMPLE_UPSTREAM_MODEL was not stored"):
+        full_smoke._configure_upstream("http://localhost:13001", "x", time.monotonic() + 10)
+
+    monkeypatch.delenv("EXAMPLE_UPSTREAM_MODEL")
+    with pytest.raises(full_smoke.SmokeError, match="EXAMPLE_UPSTREAM_MODEL must be set"):
+        full_smoke._configure_upstream("http://localhost:13001", "x", time.monotonic() + 10)
+
+
+def test_full_smoke_main_selects_the_backend_container_and_isolates_configure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_main", FULL_SMOKE)
+    monkeypatch.delenv("EXAMPLE_DEMO_EXPECT_EXISTING", raising=False)
+    containers: list[str] = []
+
+    def fake_prepare(base_url, password, deadline, *, expect_existing, backend_container):
+        containers.append(backend_container)
+        raise full_smoke.SmokeError("stopped by the test")
+
+    monkeypatch.setattr(full_smoke, "_prepare", fake_prepare)
+
+    def run(*argv: str) -> None:
+        monkeypatch.setattr(sys, "argv", ["full_smoke.py", *argv])
+        with pytest.raises(SystemExit):
+            full_smoke.main()
+
+    # CI names its containers per run and exports the name, as Make does not.
+    monkeypatch.setenv("EXAMPLE_BACKEND_CONTAINER_NAME", "hi-tutorial-1-1-backend")
+    run("--recreate-command", "true")
+    monkeypatch.delenv("EXAMPLE_BACKEND_CONTAINER_NAME")
+    run("--recreate-command", "true")
+    run("--backend-container", "custom-backend", "--recreate-command", "true")
+    assert containers == [
+        "hi-tutorial-1-1-backend",
+        "hybridinference-example-backend",
+        "custom-backend",
+    ]
+
+    monkeypatch.setattr(
+        sys, "argv", ["full_smoke.py", "--configure-upstream", "--recreate-command", "true"]
+    )
+    with pytest.raises(SystemExit) as refused:
+        full_smoke.main()
+    assert refused.value.code == 2
+
+
+def test_full_smoke_proves_a_signed_up_account_is_not_admin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full_smoke = _load_module("_runnable_example_non_admin", FULL_SMOKE)
@@ -964,12 +1292,16 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
         refresh_cookies=full_smoke.CookieJar(),
     )
     used_keys: list[str] = []
+    paths: list[str] = []
 
     monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
 
     def fake_request(base_url: str, path: str, **kwargs):
+        paths.append(path)
         if path == "/auth/refresh":
             return 200, {"access_token": "refreshed-jwt"}
+        if path == "/auth/setup/status":
+            return 200, {"setup_required": False}
         return 200, {
             "keys": [
                 {
@@ -1001,6 +1333,22 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
     )
 
     assert used_keys == [state.api_key]
+    # The recreated backend found the setup marker in the database.
+    assert paths[0] == "/auth/setup/status"
+
+    def setup_pending_again(base_url: str, path: str, **kwargs):
+        if path == "/auth/setup/status":
+            return 200, {"setup_required": True}
+        return fake_request(base_url, path, **kwargs)
+
+    monkeypatch.setattr(full_smoke, "_request_json", setup_pending_again)
+    with pytest.raises(full_smoke.SmokeError, match="setup is still pending"):
+        full_smoke._verify_after_recreate(
+            "http://localhost:13001",
+            "not-printed",
+            state,
+            time.monotonic() + 10,
+        )
 
 
 def test_full_smoke_reset_state_is_private_and_old_credentials_are_rejected(
@@ -1024,11 +1372,17 @@ def test_full_smoke_reset_state_is_private_and_old_credentials_are_rejected(
     assert state_file.read_text()
 
     calls: list[tuple[str, str | None, tuple[int, ...]]] = []
+    logins: list[str] = []
     monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
-    monkeypatch.setattr(full_smoke, "_login", lambda *args: (401, {}))
+    monkeypatch.setattr(
+        full_smoke, "_login", lambda base_url, name, password: logins.append(name) or (401, {})
+    )
 
     def rejected_request(base_url: str, path: str, **kwargs):
         calls.append((path, kwargs.get("bearer"), kwargs.get("expected_statuses", (200,))))
+        if path == "/auth/setup/status":
+            # A fresh database has no account, so it waits for first-run setup.
+            return 200, {"setup_required": True}
         return 401, {}
 
     monkeypatch.setattr(full_smoke, "_request_json", rejected_request)
@@ -1039,8 +1393,10 @@ def test_full_smoke_reset_state_is_private_and_old_credentials_are_rejected(
     )
 
     assert calls == [
+        ("/auth/setup/status", None, (200,)),
         ("/v1/chat/completions", state.api_key, (401,)),
     ]
+    assert logins == ["admin"]
     assert not state_file.exists()
 
 
@@ -1111,9 +1467,27 @@ def test_full_smoke_reset_state_is_removed_when_reset_verification_fails(
     state_file = tmp_path / "state.json"
     full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
     monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
+    setup_required = {"value": True}
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda base_url, path, **kwargs: (200, {"setup_required": setup_required["value"]}),
+    )
     monkeypatch.setattr(full_smoke, "_login", lambda *args: (200, {}))
 
     with pytest.raises(full_smoke.SmokeError, match="account survived"):
+        full_smoke._verify_after_reset(
+            "http://localhost:13001",
+            str(state_file),
+            time.monotonic() + 10,
+        )
+
+    assert not state_file.exists()
+
+    # A database that still has its administrator was not reset at all.
+    full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
+    setup_required["value"] = False
+    with pytest.raises(full_smoke.SmokeError, match="not pending after destructive reset"):
         full_smoke._verify_after_reset(
             "http://localhost:13001",
             str(state_file),
@@ -1192,14 +1566,20 @@ def test_full_smoke_covers_the_full_ui_contract_without_printing_secrets() -> No
     for contract in (
         "EXAMPLE_DEMO_ADMIN_PASSWORD",
         "EXAMPLE_DEMO_EXPECT_EXISTING",
-        "admin@local.dev",
+        "EXAMPLE_BACKEND_CONTAINER_NAME",
+        "hybridinference-example-backend",
+        '"docker", "logs"',
         "viewer@local.dev",
         "hybridinference_example_refresh",
         "/auth/login",
         "/auth/signup",
+        "/auth/setup/status",
+        "/auth/setup/admin",
+        "/admin/config",
         '"/",',
         '"/login",',
         '"/signup",',
+        '"/setup",',
         "/user/me",
         "/user/api-keys/all",
         "/admin/stats",
@@ -1212,14 +1592,19 @@ def test_full_smoke_covers_the_full_ui_contract_without_printing_secrets() -> No
         "--write-reset-state",
         "--expect-existing-state",
         "--verify-reset-state",
+        "--backend-container",
+        "--configure-upstream",
         "EXAMPLE_FULL_SMOKE_OK",
         "EXAMPLE_RESET_SMOKE_OK",
+        "EXAMPLE_CONFIGURE_OK",
         "excluded_request_ids=prior_request_ids",
     ):
         assert contract in source
-    assert source.count("print(") == 2
+    # Markers only: never a credential, a response body or the setup code.
+    assert source.count("print(") == 3
     assert "print(SUCCESS_MARKER)" in source
     assert "print(RESET_SUCCESS_MARKER)" in source
+    assert "print(CONFIGURE_SUCCESS_MARKER)" in source
 
 
 def test_fake_provider_builds_a_deterministic_non_streaming_completion() -> None:
@@ -1429,7 +1814,13 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
         if line and not line.startswith("#") and "=" in line
     )
     assert f"localhost:{env_defaults['BACKEND_PORT']}/health" in tutorial
-    assert f"localhost:{env_defaults['FRONTEND_PORT']}/signup" in tutorial
+    assert f"localhost:{env_defaults['FRONTEND_PORT']}/setup" in tutorial
+    # Stage 2 starts with first-run setup, whose code is in the backend's log
+    # under the container name the example's Compose file defaults to.
+    example_compose = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
+    backend_container = example_compose["services"]["backend"]["container_name"]
+    default_container = backend_container.split(":-", 1)[1].rstrip("}")
+    assert f"docker logs {default_container} 2>&1 | grep 'setup code'" in tutorial
 
 
 def test_router_tutorial_is_reachable_in_the_developer_toctree() -> None:

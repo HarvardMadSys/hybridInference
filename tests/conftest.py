@@ -133,6 +133,42 @@ def _reset_runtime_settings_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _reset_setup_state():
+    """Forget first-run setup state between tests.
+
+    ``bootstrap.initialize()`` records it in process memory; a test that leaves
+    setup pending would make every later signup in the worker answer 503.
+    """
+    from serving.setup_state import reset_setup_state
+
+    reset_setup_state()
+    yield
+    reset_setup_state()
+
+
+@pytest.fixture(autouse=True)
+def _reset_app_config():
+    """Forget database-backed configuration a previous test loaded.
+
+    ``serving.config.app_config`` keeps what it loaded in module state and
+    ``config_value`` serves it ahead of the environment, so a test that boots
+    the gateway or loads rows must not hand them to the next one. The skipped
+    model list and a requested restart are module state too — the latter would
+    end the worker process at the next lifespan teardown.
+    """
+    from serving.config import app_config
+    from serving.servers import model_availability, restart
+
+    app_config.reset_state()
+    model_availability.reset()
+    restart.reset()
+    yield
+    app_config.reset_state()
+    model_availability.reset()
+    restart.reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_dynamic_keys_registry():
     """Clear the in-process provider-key adapter registry between tests.
 

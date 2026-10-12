@@ -5,8 +5,9 @@ quota help text, and OpenRouter attribution headers all carry the operator's
 identity. This module gives them a single resolution chain instead of
 hardcoded strings:
 
-1. explicit environment variables (``SITE_NAME``, ``SITE_PUBLIC_BASE_URL``,
-   ``SITE_DOCS_URL``, ``SITE_SUPPORT_EMAIL``);
+1. explicit settings (``SITE_NAME``, ``SITE_PUBLIC_BASE_URL``,
+   ``SITE_DOCS_URL``, ``SITE_SUPPORT_EMAIL``), stored in the database or set in
+   the environment;
 2. the active distribution manifest (``distribution.display_name`` plus the
    ``site:`` section) — only when ``DISTRIBUTION_CONFIG_MODE=active``,
    mirroring the gating of ``GET /site-config``;
@@ -22,9 +23,9 @@ override.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
+from serving.config.app_config import config_value
 from serving.config.branding import validate_public_https_base_url
 from serving.utils.logging import get_logger
 
@@ -57,7 +58,7 @@ NEUTRAL_DEFAULT = SiteIdentity(
 
 
 def _pick(env_key: str, manifest_value: str | None, legacy: str) -> str:
-    env_value = os.getenv(env_key, "").strip()
+    env_value = (config_value(env_key) or "").strip()
     if env_value:
         return env_value
     if manifest_value and manifest_value.strip():
@@ -67,7 +68,7 @@ def _pick(env_key: str, manifest_value: str | None, legacy: str) -> str:
 
 def _pick_docs_url(manifest_value: str | None) -> str:
     """Resolve the docs URL without publishing an invalid env override."""
-    env_value = os.getenv("SITE_DOCS_URL", "").strip()
+    env_value = (config_value("SITE_DOCS_URL") or "").strip()
     if env_value:
         try:
             return validate_public_https_base_url(env_value)

@@ -392,6 +392,8 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.validation.discovery_max',
   'auth.validation.email_invalid',
   'auth.validation.email_too_long',
+  'auth.validation.identifier_required',
+  'auth.validation.login_name_invalid',
   'auth.validation.password_lower',
   'auth.validation.password_min',
   'auth.validation.password_number',

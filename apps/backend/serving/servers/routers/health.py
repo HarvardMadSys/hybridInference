@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from serving.config.settings import has_role
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import db_disconnect_policy
+from serving.servers import restart
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import (
     database_enabled,
@@ -261,12 +262,14 @@ async def health(
                 "status": "unhealthy",
                 "reason": "database_unavailable_at_startup",
                 "routes_configured": routes_count,
+                "instance": restart.INSTANCE_ID,
                 "database_configured": True,
                 "database_connected": False,
             }
         return {
             "status": "healthy",
             "routes_configured": routes_count,
+            "instance": restart.INSTANCE_ID,
             "database_configured": False,
             "database_connected": False,
         }
@@ -277,6 +280,7 @@ async def health(
             "status": "unhealthy",
             "reason": "database_disconnected",
             "routes_configured": routes_count,
+            "instance": restart.INSTANCE_ID,
             "database_configured": True,
             "database_connected": False,
             "stores": {
@@ -291,6 +295,7 @@ async def health(
     return {
         "status": body_status,
         "routes_configured": routes_count,
+        "instance": restart.INSTANCE_ID,
         "database_configured": True,
         "database_connected": True,
         "stores": {

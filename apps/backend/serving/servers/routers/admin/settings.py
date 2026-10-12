@@ -10,6 +10,7 @@ from serving.auth.signup_policy import (
     distribution_allows_public_signup,
     invalidate_signup_policy_cache,
 )
+from serving.config.app_config import refresh_health
 from serving.config.distribution import DistributionConfigError
 from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
@@ -164,12 +165,17 @@ async def update_runtime_setting_endpoint(
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)
 
-    # Invalidate the singleton's TTL cache so the new value is visible immediately.
-    rt.invalidate_key(key)
+    # Cache the stored value rather than dropping the old one: a dropped entry
+    # reads as "not loaded", and synchronous readers such as
+    # is_user_auth_enabled() would fall back to the environment until the next
+    # refresh.
+    rt.set_cached(key, value)
     if key == "signup_enabled":
         # This write proves the store answers, so any fail-closed window the
         # policy resolver is holding is stale and must not mask the new value.
         invalidate_signup_policy_cache()
+    # Signup and verification decide whether mail settings are required.
+    refresh_health()
 
     ip = get_client_ip(request)
     await log_admin_action(

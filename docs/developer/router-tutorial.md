@@ -157,21 +157,43 @@ keeps running in the existing project and network. Postgres is added with an
 example-owned persistent volume, the backend is recreated against it, and the
 frontend is added last.
 
-Open <http://localhost:13001/signup> — or your own `FRONTEND_PORT` if you
+The new database has no account yet. On its first start the backend generates
+the secrets that sign sessions and protect API keys, stores the example's
+settings, and prints a one-time setup code in its log:
+
+```bash
+docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
+```
+
+`make logs s=backend DISTRIBUTION=example` shows the same line; press Ctrl-C
+to stop following it. The code stays the same until setup is done, and the
+backend prints it again every time it starts.
+
+Open <http://localhost:13001/setup> — or your own `FRONTEND_PORT` if you
 overrode it — and complete the browser flow:
 
-1. Sign up with `admin@local.dev`, a username, and a password with at least
-   eight characters, uppercase, lowercase, and a number. Use a demo-only
-   password that you do not reuse elsewhere, then accept the terms.
-2. Select **Back to Login**, then sign in with the same email and password.
-   Email verification is disabled for this loopback-only example.
+1. Enter the setup code, then create the administrator with the username
+   `admin` and a password with at least eight characters, uppercase,
+   lowercase, and a number. Use a demo-only password that you do not reuse
+   elsewhere. The account has no email address; it signs in with the
+   username. `admin` suits this loopback-only example, where the full-stack
+   check below expects it; a real deployment should pick a name that is hard
+   to guess, as [The first admin account](deployment.md#the-first-admin-account)
+   explains.
+2. The next step offers the settings a deployment usually fills in. The
+   example needs none of them: select **Save and continue**, then **Finish**.
+   The Admin Console opens on its **Configuration** tab, which lists every
+   setting the gateway keeps in its database, the example's own values among
+   them; see
+   [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 3. On the dashboard, create an API key, then reveal and copy it for the API
    call below.
 4. Open **API Playground**, select `example-chat`, and send a message. The reply
    is `RUNNABLE_EXAMPLE_OK`.
-5. Open **Admin Console**. This account is an admin because its email matches
-   the example's explicit `ADMIN_EMAILS` value in
-   `distributions/example/deploy/docker-compose.demo.yml`.
+5. Open **Admin Console** again. This account is an administrator because
+   first-run setup created it. Anyone else can now sign up at
+   <http://localhost:13001/signup> as an ordinary user; email verification is
+   disabled for this loopback-only example.
 
 The **Providers** and **Routing** tabs are where a provider, a key or a model
 is added to a running gateway;
@@ -212,13 +234,15 @@ make demo-smoke DISTRIBUTION=example
 EXAMPLE_FULL_SMOKE_OK
 ```
 
-The check signs in to the account (creating it if you skipped the browser
-steps), reuses or creates an API key, and sends normal and streaming requests
-through the console's address. It also exercises the Playground and the Admin
-API, confirms that a second, non-admin user gets `403` from the Admin API, and
+The check signs in as `admin`. If you skipped the browser steps, it completes
+first-run setup itself, reading the setup code from the backend's log. It
+reuses or creates an API key and sends normal and streaming requests through
+the console's address. It also exercises the Playground and the Admin API,
+confirms that a second, non-admin user gets `403` from the Admin API, and
 checks the request history. Finally it recreates the backend and confirms that
-the account, its sign-in session and the API key still work. It prints no
-secrets and does not reset the database.
+the account, its sign-in session and the API key still work: the secrets
+behind them live in the database, not in the container. It prints no secrets
+and does not reset the database.
 
 ## Stage 3: replace the fake provider with local inference
 
@@ -229,20 +253,31 @@ Binding to `0.0.0.0` can expose an unauthenticated model server to your LAN, so
 restrict the port with a host firewall or bind a Docker-reachable private
 interface instead when your runtime supports it.
 
-Then point the same public model at that server:
+Then point the same public model at that server. The model's route reads its
+upstream from three settings, which Stage 2 stored in the example's database.
+In the Admin Console, open **Configuration**, find them under **Providers**,
+and set:
 
-```bash
-export EXAMPLE_UPSTREAM_BASE_URL=http://host.docker.internal:8000/v1
-export EXAMPLE_UPSTREAM_API_KEY=local-placeholder
-export EXAMPLE_UPSTREAM_MODEL='<served-model-name>'
-make demo DISTRIBUTION=example
-```
+| Setting | Value |
+|---|---|
+| `EXAMPLE_UPSTREAM_BASE_URL` | `http://host.docker.internal:8000/v1` |
+| `EXAMPLE_UPSTREAM_API_KEY` | `local-placeholder` |
+| `EXAMPLE_UPSTREAM_MODEL` | the model name your server serves |
 
-`make demo` recreates the backend so the new upstream settings take effect,
-while preserving the account, API key, frontend, and Postgres volume. Clients
-and the Playground still request `example-chat`; only the route behind it has
-changed. `curl -s localhost:18080/routing` now reports the new `base_url`
-(substitute your own `BACKEND_PORT` here too if you overrode it).
+Select **Save**. The model registry reads these settings only when the backend
+starts, so a **Restart pending** notice appears: select **Restart backend** and
+wait for the page to reload. (`make demo DISTRIBUTION=example` has the same
+effect, by recreating the backend container.) The account, API key, frontend,
+and Postgres volume are untouched. Clients and the Playground still request
+`example-chat`; only the route behind it has changed.
+`curl -s localhost:18080/routing` now reports the new `base_url` (substitute
+your own `BACKEND_PORT` here too if you overrode it).
+
+Once Stage 2 has started, exporting `EXAMPLE_UPSTREAM_*` in your shell does not
+change the route: a stored setting wins over the environment, and the
+Configuration tab marks such a variable **Environment ignored**. To return to
+the bundled provider, select **Reset** on the three settings and restart the
+backend again.
 
 `EXAMPLE_UPSTREAM_API_KEY` is the credential the gateway presents to that
 provider. It is not the `HYBRIDINFERENCE_API_KEY` minted in Stage 2, which is
@@ -282,9 +317,10 @@ duplicate a registry.
 
 The two Compose files follow the same progression. The first adds the fake
 provider and starts the backend alone. The second adds the database and
-console settings and a database volume of the example's own. Nothing in the
-example touches the `hybridinference_postgres_data` volume a real deployment
-uses.
+console settings and a database volume of the example's own; its first start
+copies those settings into that database, which is where they change from then
+on. Nothing in the example touches the `hybridinference_postgres_data` volume
+a real deployment uses.
 
 The `EXAMPLE_OVERLAY` file marks the directory as an example, so a plain
 `make up` never picks it by accident; you select it with
@@ -314,16 +350,17 @@ API key, and request history:
 make demo-down DISTRIBUTION=example
 ```
 
-Resume Stage 2 with `make demo DISTRIBUTION=example`. To resume Stage 3, first
-restore the three `EXAMPLE_UPSTREAM_*` exports from that stage, then run the
-same command; those shell overrides are not stored in the database. To stop
-the stack and delete this example project's data:
+Resume with `make demo DISTRIBUTION=example`. Stage 3's upstream settings are
+stored in the database too, so the same command resumes whichever stage you
+stopped at. To stop the stack and delete this example project's data:
 
 ```bash
 make demo-reset DISTRIBUTION=example
 ```
 
-`demo-reset` is destructive for the example data, but it cannot delete the
+`demo-reset` is destructive for the example data — the administrator, the
+generated secrets and every stored setting go with it, and the next
+`make demo` starts with first-run setup again — but it cannot delete the
 production database volume. If you intentionally stop after Stage 1 instead,
 use `make down DISTRIBUTION=example`.
 
@@ -348,16 +385,37 @@ BACKEND_PORT=28080 FRONTEND_PORT=23001 DB_PORT=25432 \
 make demo DISTRIBUTION=example
 
 BACKEND_PORT=28080 FRONTEND_PORT=23001 DB_PORT=25432 \
-EXAMPLE_DEMO_ADMIN_PASSWORD='<the password from signup>' \
+EXAMPLE_DEMO_ADMIN_PASSWORD='<the password from setup>' \
 make demo-smoke DISTRIBUTION=example
 ```
 
 Then use backend port `28080` in Stage 1 and frontend port `23001` in Stages 2
-and 3. The links the site generates follow the same ports: from Stage 2 on,
+and 3. The links the site generates follow the same ports:
 `docker-compose.demo.yml` builds `SITE_PUBLIC_BASE_URL`, `BASE_URL` and
-`FRONTEND_URL` from `FRONTEND_PORT`. Keep the same three ports on every later
-`make demo` or `make demo-smoke`, including the Stage 3 command, because both
-commands can recreate containers.
+`FRONTEND_URL` from `FRONTEND_PORT`, and the first `make demo` stores them in
+the example's database. Keep the same three ports on every later `make demo`
+or `make demo-smoke`, because both commands can recreate containers. A
+different `FRONTEND_PORT` later does not reach the stored addresses; change
+them on the Configuration tab, or reset the example and start again.
+
+### The setup page rejects the code
+
+Run the `docker logs` command from Stage 2 again and copy the code from the
+last line. That is the current code, even when an earlier line shows the code
+of an example database you have since reset. Wrong codes are rate limited,
+but the right one is always accepted. If the log has no setup code at all,
+setup is already complete, so sign in instead.
+
+The administrator has no email address, so a forgotten password cannot be
+reset by mail. Reset it from the command line instead:
+
+```bash
+docker exec -it hybridinference-example-backend \
+  python -m serving.auth.reset_password admin
+```
+
+It asks for the new password twice and signs the account out everywhere;
+`--generate` prints a strong password instead of asking.
 
 ### Cannot connect to the Docker daemon
 

@@ -3,6 +3,7 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
@@ -30,6 +31,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.setup_state import refresh_setup_state
 from serving.utils import password as password_utils
 from serving.utils.email import (
     is_email_enabled,
@@ -109,6 +111,64 @@ def delete_refresh_token_cookie(response: Response) -> None:
     )
 
 
+async def start_user_session(
+    op_store: Any,
+    response: Response,
+    user_row: dict[str, Any],
+    *,
+    user_role: str,
+) -> LoginResponse:
+    """Sign *user_row* in: open a session and return the login response body.
+
+    Shared by ``POST /auth/login`` and first-run setup, so both issue the same
+    access token, store the same refresh-token session and set the same
+    refresh cookie on *response*. *user_role* is the role the caller has
+    settled on (login may just have promoted an ``ADMIN_EMAILS`` account).
+    """
+    session_id = generate_session_id()
+    is_admin = user_role == "admin"
+    access_token, jti = create_access_token(
+        user_id=user_row["id"],
+        email=user_row["email"],
+        session_id=session_id,
+        is_admin=is_admin,
+        role=user_role,
+    )
+    refresh_token = create_refresh_token()
+    refresh_token_hash_str = hash_refresh_token(refresh_token)
+
+    # Store refresh token in database
+    session_expires = datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days())
+    await op_store.create_session(
+        session_id=generate_ulid(),
+        user_id=user_row["id"],
+        refresh_token_hash=refresh_token_hash_str,
+        jti=jti,
+        sid=session_id,
+        expires_at=session_expires,
+    )
+
+    set_refresh_token_cookie(response, refresh_token)
+
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=get_access_token_expire_minutes() * 60,
+        user=UserInfo(
+            id=user_row["id"],
+            email=user_row["email"],
+            login_name=user_row.get("login_name"),
+            user_name=user_row["user_name"],
+            role=user_role,
+            status=user_row["status"],
+            email_verified=user_row["email_verified"],
+            created_at=user_row["created_at"],
+            last_login_at=datetime.now(timezone.utc),
+            is_admin=is_admin,
+        ),
+    )
+
+
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 async def signup(
     request: Request,
@@ -124,7 +184,13 @@ async def signup(
 
     Per-IP signup rate limits are configurable via
     settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
+
+    Refused with 503 until first-run setup has created the administrator:
+    the first account must not go to whoever reaches this endpoint first.
     """
+    if await refresh_setup_state():
+        raise HTTPException(status_code=503, detail="This deployment has not been set up yet.")
+
     if not await is_public_signup_enabled():
         raise HTTPException(
             status_code=403,
@@ -275,18 +341,24 @@ async def login(
     body: LoginRequest,
     op_store=Depends(get_operational_store),
 ) -> LoginResponse:
-    """Login with email and password.
+    """Login with email (or login name) and password.
+
+    ``body.email`` is an email address or, for an account created without
+    one (the first-run setup administrator), its login name; the schema has
+    already told the two apart and normalized the value.
 
     Returns access token (15 min) and sets refresh token as HttpOnly cookie
     (30 days by default).
 
     Rate limits (configurable via settings.login_rate_limit_per_15min and
     settings.login_rate_limit_per_hour_per_ip):
-    - 5 attempts per 15 minutes per email
+    - 5 attempts per 15 minutes per email or login name
     - 20 attempts per hour per IP
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    identifier = body.email
 
     # Record on entry so probing varied passwords cannot bypass the limit.
     client_ip = get_client_ip(request)
@@ -300,7 +372,7 @@ async def login(
         """Best-effort write to ``login_events``; never breaks login on failure."""
         try:
             await op_store.record_login_event(
-                email=body.email,
+                email=identifier,
                 outcome=outcome,
                 failure_reason=failure_reason,
                 user_id=user_id,
@@ -318,7 +390,7 @@ async def login(
                 failure_reason or "-",
             )
 
-    allowed, reason = await check_and_record_login(body.email, client_ip)
+    allowed, reason = await check_and_record_login(identifier, client_ip)
     if not allowed:
         retry_after = "3600" if reason == "ip" else "900"
         await _record("failure", failure_reason="rate_limited", user_id=None)
@@ -328,8 +400,11 @@ async def login(
             headers={"Retry-After": retry_after},
         )
 
-    # Find user by email
-    user_row = await op_store.get_user_by_email(body.email)
+    # A login name never contains "@", so this tells the two apart.
+    if "@" in identifier:
+        user_row = await op_store.get_user_by_email(identifier)
+    else:
+        user_row = await op_store.get_user_by_login_name(identifier)
 
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
@@ -400,59 +475,20 @@ async def login(
     # Update last login timestamp
     await op_store.update_user_last_login(user_row["id"])
 
-    # Create session and tokens
-    session_id = generate_session_id()
     user_role = user_row["role"] or "free"
 
     # Bootstrap seed: promote ADMIN_EMAILS users to admin when their role is
-    # still at the default 'free'.
-    if is_admin_email(user_row["email"]) and user_role == "free":
+    # still at the default 'free'. An account without an email never matches.
+    if user_row["email"] and is_admin_email(user_row["email"]) and user_role == "free":
         user_role = "admin"
         await op_store.update_user_fields(user_row["id"], role="admin")
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin (ADMIN_EMAILS)")
 
-    is_admin = user_role == "admin"
-    access_token, jti = create_access_token(
-        user_id=user_row["id"],
-        email=user_row["email"],
-        session_id=session_id,
-        is_admin=is_admin,
-        role=user_role,
-    )
-    refresh_token = create_refresh_token()
-    refresh_token_hash_str = hash_refresh_token(refresh_token)
+    login_response = await start_user_session(op_store, response, user_row, user_role=user_role)
 
-    # Store refresh token in database
-    session_expires = datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days())
-    await op_store.create_session(
-        session_id=generate_ulid(),
-        user_id=user_row["id"],
-        refresh_token_hash=refresh_token_hash_str,
-        jti=jti,
-        sid=session_id,
-        expires_at=session_expires,
-    )
+    logger.info(f"User logged in: {user_row['id']} ({identifier})")
 
-    set_refresh_token_cookie(response, refresh_token)
-
-    logger.info(f"User logged in: {user_row['id']} ({user_row['email']})")
-
-    return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
-        expires_in=get_access_token_expire_minutes() * 60,
-        user=UserInfo(
-            id=user_row["id"],
-            email=user_row["email"],
-            user_name=user_row["user_name"],
-            role=user_role,
-            status=user_row["status"],
-            email_verified=user_row["email_verified"],
-            created_at=user_row["created_at"],
-            last_login_at=datetime.now(timezone.utc),
-            is_admin=is_admin,
-        ),
-    )
+    return login_response
 
 
 @router.post("/logout", response_model=LogoutResponse)
@@ -553,7 +589,7 @@ async def refresh(
     user_role = user_row["role"] or "free"
 
     # Bootstrap seed on refresh (same logic as login — only when role is 'free')
-    if is_admin_email(user_row["email"]) and user_role == "free":
+    if user_row["email"] and is_admin_email(user_row["email"]) and user_role == "free":
         user_role = "admin"
         await op_store.update_user_fields(user_row["id"], role="admin")
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin on refresh (ADMIN_EMAILS)")

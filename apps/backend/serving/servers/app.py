@@ -5,14 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-from ..config.settings import get_settings, settings
+from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
-from . import bootstrap
-from .deps import database_enabled
+from . import bootstrap, restart
+from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
 from .middleware.request_id import RequestIdMiddleware
@@ -36,6 +34,7 @@ from .routers import (
     qdrant_proxy,
     rag,
     responses,
+    setup,
     site_config,
     site_updates,
     user_routes,
@@ -48,29 +47,31 @@ if TYPE_CHECKING:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - initialize and cleanup resources."""
-    # Resolve DB_ENABLED from dotenv as well as the process environment before
-    # validating. Bootstrap also loads dotenv for its standalone callers, but
-    # auth configuration must fail before it opens stores or starts tasks.
-    load_dotenv()
-    startup_settings = get_settings()
-    startup_settings.validate_auth_secrets(database_enabled=database_enabled())
-
     # Attach after uvicorn's own logging setup, which would otherwise wipe filters
     # added at import time. LOG_LEVEL=DEBUG disables suppression.
     attach_quiet_access_filter()
 
+    # Loads dotenv and the database-backed configuration, then refuses to start
+    # without the authentication secrets, before it opens stores or starts tasks.
+    services: AppServices = await bootstrap.initialize()
+    app.state.services = services  # type: ignore[attr-defined]
+
     import logging as _logging
 
     _sec_logger = _logging.getLogger(__name__)
-    if not startup_settings.admin_token:
+    if not get_settings().admin_token:
         _sec_logger.warning("admin_token is empty — legacy admin-token access is disabled")
 
-    services: AppServices = await bootstrap.initialize()
-    app.state.services = services  # type: ignore[attr-defined]
     try:
         yield
     finally:
-        await bootstrap.shutdown(services)
+        try:
+            await bootstrap.shutdown(services)
+        finally:
+            if restart.restart_requested():
+                # An administrator asked for this shutdown; exit non-zero so the
+                # supervisor starts the process again.
+                restart.exit_for_restart()
 
 
 def create_app() -> FastAPI:
@@ -82,10 +83,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS: use specific origins when credentials are enabled
+    # CORS: use specific origins when credentials are enabled. The origins are
+    # read per request (CORS_ALLOWED_ORIGINS is database-backed).
     app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allowed_origins,
+        SettingsCORSMiddleware,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(compat.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
+    app.include_router(setup.router)
     app.include_router(user_routes.router)
     app.include_router(internal.router)
     app.include_router(playground.router)

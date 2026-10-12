@@ -46,6 +46,15 @@ describe('AdminTabNav', () => {
     expect(screen.queryByRole('link', { name: 'Broadcast Email' })).not.toBeInTheDocument();
   });
 
+  it('lists the database-backed Configuration tab beside Settings', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/configuration',
+    );
+  });
+
   it('renames the audit tab to a top-level Log tab', () => {
     render(<AdminTabNav />);
 

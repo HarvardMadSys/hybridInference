@@ -1230,15 +1230,24 @@ jobs:
           export EXAMPLE_UPSTREAM_API_KEY="local-placeholder"
           export EXAMPLE_UPSTREAM_MODEL="host-fixture-model"
           export EXAMPLE_EXPECTED_CONTENT="STAGE3_HOST_FIXTURE_OK"
-          make demo DISTRIBUTION=example
-
-          backend_env="$(docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
-          grep -qx "EXAMPLE_UPSTREAM_BASE_URL=${EXAMPLE_UPSTREAM_BASE_URL}" <<< "${backend_env}"
-          grep -qx "EXAMPLE_UPSTREAM_API_KEY=${EXAMPLE_UPSTREAM_API_KEY}" <<< "${backend_env}"
-          grep -qx "EXAMPLE_UPSTREAM_MODEL=${EXAMPLE_UPSTREAM_MODEL}" <<< "${backend_env}"
 
           port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           test "${port}" = "${FRONTEND_PORT}"
+
+          # Stage 2's first start stored the bundled provider's EXAMPLE_UPSTREAM_*
+          # values in the example database, where they outrank the environment.
+          # Change them as the tutorial does -- an admin edit of the stored
+          # configuration -- then recreate the backend, because the model
+          # registry reads them only at startup.
+          python3 distributions/example/full_smoke.py \
+            --base-url "http://localhost:${port}" \
+            --timeout 120 \
+            --configure-upstream
+          make demo DISTRIBUTION=example
+
+          routing="$(curl --fail --silent --show-error "http://localhost:${BACKEND_PORT}/routing")"
+          grep -qF "host.docker.internal:${host_provider_port}" <<< "${routing}"
+
           EXAMPLE_DEMO_EXPECT_EXISTING=1 \
             DEMO_BASE_URL="http://localhost:${port}" \
             make demo-smoke DISTRIBUTION=example

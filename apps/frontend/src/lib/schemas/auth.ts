@@ -2,6 +2,13 @@ import { z } from 'zod';
 import { translate, type Translate } from '@/lib/i18n/translate';
 
 /**
+ * A login name: the first-run administrator signs in with one instead of an
+ * email address. The backend's rule, case-insensitive; a value containing `@`
+ * is an email address instead.
+ */
+export const LOGIN_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}$/;
+
+/**
  * Build the auth form schemas for one translator.
  *
  * Validation messages are interface copy like any other string, so they go
@@ -84,8 +91,32 @@ export function createAuthSchemas(t: Translate) {
 
   const signupSchema = createSignupSchema();
 
+  // "Email or username". The field keeps the name `email` because that is the
+  // request's field; a value with an `@` is held to the email rules, anything
+  // else to the login-name rule.
+  const loginIdentifierSchema = z
+    .string()
+    .trim()
+    .min(1, t('auth.validation.identifier_required', 'Please enter your email or username'))
+    .superRefine((value, ctx) => {
+      if (value.includes('@')) {
+        const parsed = emailSchema.safeParse(value);
+        if (!parsed.success) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error.issues[0].message });
+        }
+      } else if (!LOGIN_NAME_PATTERN.test(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: t(
+            'auth.validation.login_name_invalid',
+            'Please enter a valid email address or username',
+          ),
+        });
+      }
+    });
+
   const loginSchema = z.object({
-    email: emailSchema,
+    email: loginIdentifierSchema,
     password: z
       .string()
       .min(1, t('auth.validation.password_required', 'Please enter your password')),

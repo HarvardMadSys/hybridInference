@@ -261,6 +261,7 @@ def test_export_applies_user_id_filter():
     assert "l.user_id ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
     assert "u.user_name ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
     assert "u.email ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
+    assert "u.login_name ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
 
 
 def test_export_applies_session_id_filter():

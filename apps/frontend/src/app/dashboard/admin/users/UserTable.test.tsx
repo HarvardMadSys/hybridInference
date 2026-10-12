@@ -545,3 +545,60 @@ describe('UserDetailPanel activity stats gating', () => {
     expect(screen.getByText('50%')).toBeInTheDocument();
   });
 });
+
+describe('UserTable for an account without an email', () => {
+  // The first-run administrator: a login name, no email address.
+  const setupAdmin: UserRow = {
+    ...baseUser,
+    id: 'admin-1',
+    email: null,
+    login_name: 'admin',
+    user_name: 'Ops',
+    role: 'admin',
+    status: 'deleted',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({
+        id: 'admin-1',
+        email: null,
+        login_name: 'admin',
+        user_name: 'Ops',
+        role: 'admin',
+        status: 'deleted',
+      }),
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('names the row by login name and confirms a permanent delete with it', async () => {
+    const onHardDelete = vi.fn(async () => undefined);
+    renderTable(setupAdmin, { onHardDelete });
+
+    // The identity column: the login name, with the display name under it.
+    fireEvent.click(screen.getByTitle('admin'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Permanently Delete' }));
+
+    expect(screen.getByText('Permanently delete admin')).toBeInTheDocument();
+    expect(screen.getByText(/Type the user's\s+username/)).toBeInTheDocument();
+    const confirm = screen.getByRole('textbox', { name: 'Confirmation' });
+    // The panel's button and the dialog's share a name; the dialog's is last.
+    const dialogSubmit = screen.getAllByRole('button', { name: 'Permanently Delete' }).at(-1)!;
+    expect(dialogSubmit).toBeDisabled();
+
+    // The display name is not an identifier, so it does not confirm.
+    fireEvent.change(confirm, { target: { value: 'Ops' } });
+    expect(dialogSubmit).toBeDisabled();
+    fireEvent.change(confirm, { target: { value: 'admin' } });
+    expect(dialogSubmit).toBeEnabled();
+
+    fireEvent.click(dialogSubmit);
+    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', ''));
+  });
+});

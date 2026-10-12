@@ -155,6 +155,16 @@ const featuresSchema = z
   })
   .strict();
 
+// First-run setup and configuration health. Top-level siblings of `features`
+// rather than members of it: `features` is strict, so a key added there would
+// make an older console refuse the whole document, while unknown top-level keys
+// pass through. Optional for the same reason in the other direction — a gateway
+// that predates them has no setup flow and no configuration registry, which is
+// "not required" and "complete". The inner objects are not strict, so a later
+// field (a count, say) does not take this console down either.
+const setupStateSchema = z.object({ required: z.boolean() });
+const configurationStateSchema = z.object({ incomplete: z.boolean() });
+
 const versionedSiteConfigDocumentSchema = z
   .object({
     schema_version: z.literal(1),
@@ -165,6 +175,8 @@ const versionedSiteConfigDocumentSchema = z
     // before its branding document without replacing the compatibility values
     // already baked into the transition image.
     branding: z.unknown().nullable(),
+    setup: setupStateSchema.nullish(),
+    configuration: configurationStateSchema.nullish(),
   })
   // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
   // with the branding object below is deliberate. This envelope is what a
@@ -202,6 +214,14 @@ export interface RuntimeSiteConfig {
     agents: boolean;
     publicStats: boolean;
   };
+  /** First-run setup: while required, every route but `/setup` redirects there. */
+  setup: {
+    required: boolean;
+  };
+  /** A required setting has no value. No setting names are published. */
+  configuration: {
+    incomplete: boolean;
+  };
 }
 
 export const buildTimeSiteConfig: RuntimeSiteConfig = {
@@ -209,6 +229,8 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
   features: { publicSignup: true, rag: true, agents: false, publicStats: false },
+  setup: { required: false },
+  configuration: { incomplete: false },
 };
 
 function resolveBranding(input: unknown, displayName: string, supportEmail: string): Branding {
@@ -296,12 +318,18 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
 
   const document = parsed.data;
   let branding: Branding;
+  // A legacy document predates both states, and so does a v1 gateway without
+  // the setup flow: neither has anything to set up or report as missing.
+  let setupRequired = false;
+  let configurationIncomplete = false;
   if ('schema_version' in document) {
     branding = resolveBranding(
       document.branding,
       document.distribution.display_name,
       document.site.support_email,
     );
+    setupRequired = document.setup?.required === true;
+    configurationIncomplete = document.configuration?.incomplete === true;
   } else {
     branding = resolveLegacyBranding(
       document.distribution.display_name,
@@ -326,6 +354,8 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       // Opt-in only: publishing usage stats needs an explicit true.
       publicStats: document.features.public_stats === true,
     },
+    setup: { required: setupRequired },
+    configuration: { incomplete: configurationIncomplete },
   };
 }
 

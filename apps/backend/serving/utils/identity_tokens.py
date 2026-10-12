@@ -42,13 +42,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import os
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
 
+from serving.config.app_config import config_value
 from serving.config.settings import settings
 from serving.utils.identity_keys import (
     ALGORITHM,
@@ -99,7 +99,7 @@ def issuer() -> str:
     Raises:
         IdentityNotConfigured: If no issuer is configured.
     """
-    value = (os.environ.get(ENV_ISSUER) or settings.base_url or "").strip()
+    value = (config_value(ENV_ISSUER) or settings.base_url or "").strip()
     if not value:
         # Minting with an empty issuer would produce tokens that every correct
         # consumer rejects, and it would look like a verification bug rather
@@ -119,7 +119,7 @@ def allowed_redirects() -> tuple[str, ...]:
     Raises:
         IdentityNotConfigured: If none are configured.
     """
-    raw = os.environ.get(ENV_ALLOWED_REDIRECTS, "")
+    raw = config_value(ENV_ALLOWED_REDIRECTS) or ""
     values = tuple(item.strip() for item in raw.split(",") if item.strip())
     if not values:
         raise IdentityNotConfigured(f"{ENV_ALLOWED_REDIRECTS} must list at least one redirect URI")

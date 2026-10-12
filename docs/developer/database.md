@@ -1,15 +1,16 @@
 # Database
 
-The gateway uses PostgreSQL for request logs, user accounts, API keys, and every
-admin/runtime setting that outlives a restart. This page covers what is stored,
-how the schema comes into existence, and how to back it up, restore it, and reset
-it.
+The gateway uses PostgreSQL for request logs, user accounts, API keys, its
+settings, and every admin/runtime change that outlives a restart. This page
+covers what is stored, how the schema comes into existence, and how to back it
+up, restore it, and reset it.
 
 ## Is a database required?
 
 No. `DB_ENABLED` defaults to `true`, but a gateway started with `DB_ENABLED=false`
 routes requests normally — it simply has no request history, no user accounts, no
-API-key issuance, and no admin surfaces backed by stored settings.
+API-key issuance, and no admin surfaces backed by stored settings. It reads
+every setting from the environment instead.
 
 The distinction matters when reading `/health`, because the two "no database"
 states are not the same answer:
@@ -26,7 +27,8 @@ rotation.
 ## Connection settings
 
 Read by `Settings` in `apps/backend/serving/config/settings.py`, from `.env` or
-the process environment.
+the process environment. They are the settings that stay in the environment,
+because the backend needs them before it can read anything from the database.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -36,8 +38,14 @@ the process environment.
 | `DB_NAME` | `hybridinference` | Required by Compose (`DB_NAME must be set in .env file`). |
 | `DB_USER` | `postgres` | Required by Compose. |
 | `DB_PASSWORD` | *(empty)* | Required by Compose. |
-| `DB_STORE_FULL_CONTENT` | `false` | Whether prompts and responses are stored verbatim. See [Request logging and privacy](#request-logging-and-privacy). |
-| `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. Set it once and never change it; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
+
+Three more settings govern what the database keeps. They are stored in it,
+under **Privacy** on the admin console's **Configuration** tab:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `DB_STORE_FULL_CONTENT` | `false` | Whether prompts and responses are stored verbatim; applies after a backend restart. See [Request logging and privacy](#request-logging-and-privacy). |
+| `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. It cannot be changed once set; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 | `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion. See [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
@@ -54,6 +62,7 @@ below overlap harmlessly where two of them define the same table:
 
 | Code | Creates |
 |---|---|
+| `AppConfigStore.ensure_schema` in `apps/backend/serving/config/app_config_store.py` | `app_config`, first of all, because the rest of startup reads its settings |
 | `ensure_api_logs_schema` in `apps/backend/serving/storage/log_schema.py` | `api_logs` and `api_stats_hourly`, with their columns and indexes |
 | `DatabaseLogger._create_tables` in `apps/backend/serving/storage/database.py` | Calls the above, then the auth/admin tables |
 | `PostgresOperationalStore.initialize` in `apps/backend/serving/storage/postgres_operational.py` | The operational tables (settings, overrides, provider registry) |
@@ -92,11 +101,14 @@ settings govern this:
 - `ERASURE_FENCE_SECRET` is the key for those fingerprints. The first time
   the gateway starts against a database, it records a fingerprint of this
   secret — even before anything has been deleted — and from then on it refuses
-  to start if the secret differs. So set it to its own random value before
-  that first start, keep it across restarts and replicas, and never change it.
-  Left empty, it uses `API_KEY_SECRET` instead, and that value is the one
-  recorded; changing `API_KEY_SECRET` later then stops the backend too. If you
-  hit a mismatch, restore the original value; never delete fence rows or their
+  to start if the secret differs. Left empty, it uses `API_KEY_SECRET` instead,
+  which the backend generates into the database at that first start unless the
+  environment supplies one, and that value is the one recorded. To give the
+  fence its own secret, set `ERASURE_FENCE_SECRET` to a random value in `.env`
+  before the first start; the backend copies it into the database then. After
+  that neither secret can be changed: the **Configuration** tab refuses both.
+  If you hit a mismatch — say, after restoring a backup next to different
+  secrets — restore the original value; never delete fence rows or their
   metadata to get past it.
 - `ERASURE_FENCE_PROTOCOL_READY=true` turns permanent deletion on. Leave it
   `false` until every process that writes `api_logs` runs a version that checks
@@ -107,8 +119,9 @@ settings govern this:
 | Group | Tables | Holds |
 |---|---|---|
 | Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly rollups used by the dashboards |
+| Settings | `app_config` | The settings on the admin console's Configuration tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
 | Accounts and auth | `users`, `api_keys`, `auth_sessions`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys and their quotas, refresh sessions, sign-in history |
-| Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings, announcements, broadcast delivery state |
+| Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
 | Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
 | Cost and quota | `user_daily_cost` | Per-user daily spend used for quota enforcement |
 | RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
@@ -119,10 +132,31 @@ settings govern this:
 
 `\dt` on a live database lists every table.
 
+### Settings and first-run setup
+
+- `app_config` holds one row per stored setting: `key` (the
+  environment-variable name), `value` (in the string form that variable
+  takes, such as `true`, `8` or `a,b,c`), `secret`, `source` — `admin`,
+  `setup`, `env_import` or `generated` — and `updated_at`/`updated_by`. Secret
+  values are stored in plaintext; the admin API never returns them. A row wins
+  over the environment even when its value is empty. See
+  [Settings stored in the database](configuration.md#settings-stored-in-the-database).
+- `site_settings` holds the runtime switches of the admin Settings tab and,
+  once the first administrator exists, the row `setup_completed_at`, which
+  marks first-run setup as done. The application never clears it. While setup
+  is pending, the row `setup_code` holds the one-time code the backend prints
+  in its log, so read access to the database is enough to create the first
+  administrator; completing setup deletes it.
+- `users.email` is empty for the administrator that first-run setup creates;
+  that account signs in with `users.login_name`, which is unique regardless of
+  case. Every account from signup has an email address.
+
 ## Request logging and privacy
 
 `DB_STORE_FULL_CONTENT` defaults to `false`, and that default is not a redaction
-of the stored text — the text is never written. With it off, `api_logs.prompt`,
+of the stored text — the text is never written. It is a setting under
+**Privacy** on the admin console's Configuration tab, and a change applies
+after a backend restart. With it off, `api_logs.prompt`,
 `api_logs.response` and `api_logs.request_payload` are inserted as `NULL`, and
 `/v1/responses` state is not persisted.
 
@@ -191,9 +225,14 @@ docker exec -i hybridinference-postgres \
 ```
 
 Stop the backend with `docker stop hybridinference-backend` before restoring
-over a live database; `make down` would stop Postgres too. The backup contains
-hashed API keys and, if `DB_STORE_FULL_CONTENT` was ever on, user prompt
-content, so store it accordingly.
+over a live database; `make down` would stop Postgres too.
+
+The backup contains every stored setting in plaintext — provider keys, the
+SMTP password, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that sign
+sessions and protect API keys — as well as hashed API keys and, if
+`DB_STORE_FULL_CONTENT` was ever on, user prompt content. Whoever holds it can
+use your provider keys, decrypt users' stored API keys and sign administrator
+tokens, so store it as carefully as the credentials themselves.
 
 ## Reset
 
@@ -219,8 +258,10 @@ make up                                           # recreates an empty volume
 
 `make up` depends on the `docker-volumes` target, which recreates the named
 volume if it is missing, so the stack comes back on an empty database and the
-startup initialisers rebuild the schema. Take a dump first if there is any chance
-you want the data back.
+startup initialisers rebuild the schema. The backend then generates new secrets
+unless the environment supplies them, and prints a setup code for a new
+administrator. Take a dump first if there is any chance you want the data
+back.
 
 The runnable example (`make demo-reset DISTRIBUTION=example`) uses its own,
 example-scoped volume and cannot delete `hybridinference_postgres_data`.

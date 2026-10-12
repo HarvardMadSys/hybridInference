@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import os
 import threading
 from typing import TYPE_CHECKING
 
 from serving.adapters.key_pool import DEFAULT_MIN_ROLE, normalize_min_role
+from serving.config.app_config import config_value
 from serving.config.settings import ROLE_RANK
 from serving.utils.logging import get_logger
 
@@ -473,17 +473,22 @@ def aliased_key_providers() -> frozenset[str]:
 
 
 def configured_env_keys_for_provider(provider: str) -> list[str]:
-    """Return provider keys configured through base + numbered env vars."""
+    """Return provider keys configured through base + numbered settings.
+
+    "Env" keys are the ones configured as settings rather than added on the Keys
+    tab: each resolves through ``config_value``, the database-backed setting
+    first and the environment variable second.
+    """
     spec = _PROVIDER_ENV_KEY_VARS.get(provider)
     if spec is None:
         return []
 
     base_var, numbered_prefix = spec
-    base_value = os.getenv(base_var, "")
+    base_value = config_value(base_var, "") or ""
     keys = [base_value] if base_value else []
     start_index = 2 if base_value else 1
     for index in range(start_index, _MAX_NUMBERED_ENV_KEYS + 1):
-        value = os.getenv(f"{numbered_prefix}{index}", "")
+        value = config_value(f"{numbered_prefix}{index}", "") or ""
         if not value:
             break
         if value not in keys:

@@ -74,7 +74,12 @@ function LoginContent() {
       const errorMsg = suspensionMessage || getErrorMessage(err);
       setError(errorMsg);
       toast.error(errorMsg);
-      if (err instanceof APIError && err.code === 'EMAIL_NOT_VERIFIED') {
+      // Only an email account can be unverified; a login name has no inbox.
+      if (
+        err instanceof APIError &&
+        err.code === 'EMAIL_NOT_VERIFIED' &&
+        data.email.includes('@')
+      ) {
         setUnverifiedEmail(data.email);
       }
     } finally {
@@ -114,7 +119,7 @@ function LoginContent() {
       page="login"
       kicker={t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN')}
       title={t('auth.login.title', 'Log In')}
-      subtitle={t('auth.login.subtitle', 'Welcome back, please log in with your email')}
+      subtitle={t('auth.login.subtitle', 'Welcome back, please log in')}
       topbar={
         features.publicSignup ? (
           <>
@@ -162,17 +167,23 @@ function LoginContent() {
             </AuthNotice>
           ))}
 
+        {/* Email or username: the first-run administrator has a login name and
+            no email, so this is a text field and the schema decides which rule
+            applies. The request still sends it as `email`. */}
         <AuthField
           id="email"
-          label={t('auth.login.email_label', 'Email')}
+          label={t('auth.login.email_label', 'Email or username')}
           error={errors.email?.message}
         >
           <input
             id="email"
             className={errors.email?.message ? skin.inputError : skin.input}
             data-auth="control"
-            type="email"
-            autoComplete="email"
+            type="text"
+            autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             {...register('email')}
           />
         </AuthField>

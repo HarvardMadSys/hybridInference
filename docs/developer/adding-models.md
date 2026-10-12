@@ -77,17 +77,25 @@ The route inherits `base_url` and `api_key` from the model, so it only has to
 carry what differs. Repeat them on a route entry when a second route points
 somewhere else.
 
-2. **Set the environment variables** in `.env` at the repository root (the
-   backend's settings loader reads that file):
+2. **Set the variables.** On a gateway with a database, add each one on the
+   admin console's **Configuration** tab with **Add variable**, and mark the
+   API key secret. Without a database, put them in `.env` at the repository
+   root, which the backend's settings loader reads:
 
 ```bash
 PROVIDER_BASE_URL=https://api.provider.example/v1
 PROVIDER_API_KEY=your-api-key
 ```
 
+A value in `.env` also reaches a gateway with a database: at startup the
+backend copies it into the database, unless the database already has a value
+of that name.
+
 If a `${VAR}` used for `api_key`, `api_keys` or `base_url` is unset or empty,
 the gateway skips the whole model and logs which variable was missing. Mark a route `optional: true` to
-skip only that route instead.
+skip only that route instead. Until such a variable has a value, the console
+also reports it as a missing setting to every signed-in user, so mark a route
+you leave unconfigured on purpose `optional: true` as well.
 
 3. **Restart the backend** to load the new model.
 

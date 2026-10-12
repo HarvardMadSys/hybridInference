@@ -1,26 +1,39 @@
-"""Runtime settings with TTL cache and database-backed overrides.
+"""Runtime settings with an in-memory cache and database-backed overrides.
 
 Provides a registry of feature flags / operational knobs that can be toggled
 at runtime through the admin API without restarting the server.  Each setting
 has a type, a default value, and a human-readable description.
 
 Values are resolved in this order:
-1. In-memory TTL cache (avoids DB round-trips)
+1. In-memory cache, reloaded for every setting by :meth:`RuntimeSettings.refresh`
+   (one query, every :data:`REFRESH_INTERVAL_SECONDS`)
 2. ``site_settings`` table via the OperationalStore
 3. ``Settings`` (Pydantic env-var settings) attribute as fallback
 4. Registry default
+
+On boot, :func:`import_environment_values` copies a setting's environment
+variable (the upper-cased key) into ``site_settings`` when it has no row yet,
+so the variable can then be deleted from ``.env``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
 import time
 from typing import Any
 
 from fastapi import Request  # noqa: TC002 — required at runtime for FastAPI Depends
+from pydantic import TypeAdapter, ValidationError
 
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: How often every process reloads the runtime settings, so a write made by one
+#: worker reaches the others.
+REFRESH_INTERVAL_SECONDS = 10.0
 
 RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     "user_auth_enabled": {
@@ -186,12 +199,17 @@ _SENTINEL = object()
 
 
 class RuntimeSettings:
-    """TTL-cached reader for runtime settings backed by the operational store."""
+    """Cached reader for runtime settings backed by the operational store."""
 
     def __init__(self, store: Any, ttl: float = 30.0) -> None:
         self._store = store
         self._ttl = ttl
         self._cache: dict[str, tuple[float, Any]] = {}
+        # Bumped whenever this process writes or drops a cached value, so a
+        # refresh whose query was already in flight cannot put back the value
+        # an administrator just replaced.
+        self._versions: dict[str, int] = {}
+        self._refresh_task: asyncio.Task[None] | None = None
 
     def _coerce(self, raw: str | None, value_type: str) -> Any:
         if raw is None:
@@ -248,56 +266,106 @@ class RuntimeSettings:
             self._cache[key] = (now, db_val)
             return db_val
 
+        fallback = self._fallback(key, entry)
+        self._cache[key] = (now, fallback)
+        return fallback
+
+    @staticmethod
+    def _fallback(key: str, entry: dict[str, Any]) -> Any:
+        """Return the value a setting without a ``site_settings`` row resolves to."""
         from serving.config.settings import get_settings
 
-        settings = get_settings()
-        attr_val = getattr(settings, key, _SENTINEL)
-        if attr_val is not _SENTINEL:
-            self._cache[key] = (now, attr_val)
-            return attr_val
+        attr_val = getattr(get_settings(), key, _SENTINEL)
+        return attr_val if attr_val is not _SENTINEL else entry["default"]
 
-        default = entry["default"]
-        self._cache[key] = (now, default)
-        return default
+    async def refresh(self) -> None:
+        """Reload every registered setting with one query.
+
+        A row that does not parse keeps the setting's previous cached value, and
+        is logged rather than raised so it cannot stall the other settings.
+        """
+        versions = dict(self._versions)
+        rows = await self._store.list_settings()
+        by_key = {row.get("key"): row for row in rows}
+        now = time.monotonic()
+        for key, entry in RUNTIME_SETTINGS_REGISTRY.items():
+            if self._versions.get(key) != versions.get(key):
+                continue  # Written while the query ran; that write is newer.
+            row = by_key.get(key)
+            if row is None:
+                self._cache[key] = (now, self._fallback(key, entry))
+                continue
+            try:
+                value = self._coerce(row.get("value"), row.get("value_type") or entry["type"])
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Runtime setting {key!r} has an unreadable stored value; ignoring it"
+                )
+                continue
+            self._cache[key] = (now, value)
+
+    async def _refresh_loop(self, interval_seconds: float) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await self.refresh()
+            except Exception:
+                logger.warning("Runtime settings refresh failed", exc_info=True)
+
+    def start_refresh(self, interval_seconds: float = REFRESH_INTERVAL_SECONDS) -> None:
+        """Reload every setting every *interval_seconds* until :meth:`stop_refresh`."""
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        self._refresh_task = asyncio.create_task(self._refresh_loop(interval_seconds))
+
+    async def stop_refresh(self) -> None:
+        """Stop the loop started by :meth:`start_refresh`."""
+        task, self._refresh_task = self._refresh_task, None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def get_cached(self, key: str) -> tuple[bool, Any]:
-        """Return ``(found, value)`` for a non-expired cached entry.
+        """Return ``(found, value)`` for the last value loaded for *key*.
 
         Synchronous; does **not** touch the database. Use only on hot
         synchronous paths where awaiting :meth:`get_bool` (or peers) is
-        impossible. If the cache hasn't been populated yet, returns
-        ``(False, None)`` and the caller should fall back to its
+        impossible. The value does not expire: :meth:`refresh` replaces it,
+        and an expiry with nothing to re-populate the cache would silently
+        hand callers their environment fallback instead of the stored value.
+        Returns ``(False, None)`` only before the first load (or after
+        :meth:`invalidate_key`), when the caller should fall back to its
         environment-variable / default behaviour.
         """
         cached = self._cache.get(key)
         if cached is None:
             return False, None
-        cached_at, value = cached
-        if (time.monotonic() - cached_at) >= self._ttl:
-            return False, None
-        return True, value
+        return True, cached[1]
+
+    def set_cached(self, key: str, value: Any) -> None:
+        """Record a value this process just stored, so readers see it at once."""
+        self._versions[key] = self._versions.get(key, 0) + 1
+        self._cache[key] = (time.monotonic(), value)
 
     def invalidate_cache(self) -> None:
         """Clear all cached setting values."""
+        for key in self._cache:
+            self._versions[key] = self._versions.get(key, 0) + 1
         self._cache.clear()
 
     def invalidate_key(self, key: str) -> None:
         """Remove a single key from the cache."""
+        self._versions[key] = self._versions.get(key, 0) + 1
         self._cache.pop(key, None)
 
     async def list_all(self) -> list[dict[str, Any]]:
         """Return metadata for every registered setting."""
-        from serving.config.settings import get_settings
-
-        settings = get_settings()
         results: list[dict[str, Any]] = []
         for key, entry in RUNTIME_SETTINGS_REGISTRY.items():
             db_val = await self._read_from_db(key)
-            if db_val is not None:
-                value = db_val
-            else:
-                attr_val = getattr(settings, key, _SENTINEL)
-                value = attr_val if attr_val is not _SENTINEL else entry["default"]
+            value = db_val if db_val is not None else self._fallback(key, entry)
             results.append(
                 {
                     "key": key,
@@ -310,6 +378,82 @@ class RuntimeSettings:
                 }
             )
         return results
+
+
+# Written only where the key has no row: several workers boot at once, and an
+# administrator's value must never be replaced by an environment one.
+_IMPORT_SQL = """
+INSERT INTO site_settings (key, value, value_type, updated_at, updated_by)
+SELECT key, value, value_type, NOW(), 'env-import'
+FROM unnest($1::text[], $2::text[], $3::text[]) AS imported(key, value, value_type)
+ON CONFLICT (key) DO NOTHING
+RETURNING key
+"""
+
+_PARSERS: dict[str, TypeAdapter[Any]] = {
+    "bool": TypeAdapter(bool),
+    "int": TypeAdapter(int),
+    "float": TypeAdapter(float),
+}
+
+
+def _environment_value(key: str, entry: dict[str, Any]) -> str | None:
+    """Return a setting's environment value in the form ``site_settings`` stores.
+
+    Parsed the way ``Settings`` parses the same variable, then written the way
+    the admin API writes it (``str(value)``), so ``USER_AUTH_ENABLED=on`` is
+    stored as ``True`` rather than a word the cache would read as false.
+    """
+    raw = os.environ.get(key.upper(), "")
+    if not raw.strip():
+        return None
+    parser = _PARSERS.get(entry["type"])
+    if parser is None:
+        return raw
+    try:
+        value = parser.validate_python(raw.strip())
+    except ValidationError:
+        logger.warning(
+            f"Not importing {key.upper()}: {raw.strip()!r} is not a valid {entry['type']}"
+        )
+        return None
+    low, high = entry.get("min"), entry.get("max")
+    if (low is not None and value < low) or (high is not None and value > high):
+        logger.warning(f"Not importing {key.upper()}: {value} is outside the allowed range")
+        return None
+    return str(value)
+
+
+async def import_environment_values(pool: Any) -> list[str]:
+    """Copy runtime-setting environment variables into ``site_settings``.
+
+    A setting is imported when its upper-cased name has a non-empty value in the
+    environment and ``site_settings`` has no row for it. Rows are marked
+    ``updated_by='env-import'``.
+
+    Returns:
+        The keys this call imported.
+    """
+    keys: list[str] = []
+    values: list[str] = []
+    types: list[str] = []
+    for key, entry in RUNTIME_SETTINGS_REGISTRY.items():
+        value = _environment_value(key, entry)
+        if value is not None:
+            keys.append(key)
+            values.append(value)
+            types.append(entry["type"])
+    if not keys:
+        return []
+    async with pool.acquire() as conn:
+        records = await conn.fetch(_IMPORT_SQL, keys, values, types)
+    imported = [record["key"] for record in records]
+    if imported:
+        logger.info(
+            f"Imported {len(imported)} runtime setting(s) from the environment: "
+            f"{', '.join(sorted(imported))}"
+        )
+    return imported
 
 
 _runtime_settings: RuntimeSettings | None = None

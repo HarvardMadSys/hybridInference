@@ -128,7 +128,13 @@ const SCENARIOS: Scenario[] = [
       fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
     },
     controls: [
-      { label: 'Email', description: 'Please enter a valid email address', invalid: true },
+      // One field for an email address or a login name (the first-run
+      // administrator has no email), so an empty one asks for either.
+      {
+        label: 'Email or username',
+        description: 'Please enter your email or username',
+        invalid: true,
+      },
       { label: 'Password', description: 'Please enter your password', invalid: true },
     ],
   },

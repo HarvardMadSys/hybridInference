@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
+from serving.config.app_config import config_value
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -14,7 +13,7 @@ _VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 
 def _get_secret_key() -> str:
-    return os.getenv("TURNSTILE_SECRET_KEY", "").strip()
+    return (config_value("TURNSTILE_SECRET_KEY") or "").strip()
 
 
 async def verify_turnstile_token(token: str | None, remote_ip: str) -> bool:

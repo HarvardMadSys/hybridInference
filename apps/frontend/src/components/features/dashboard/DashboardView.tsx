@@ -9,11 +9,12 @@ import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { userDisplayName } from '@/lib/utils/userLabel';
 
 export function DashboardView() {
   const { state } = useAuth();
   const { branding, features, agentsUrl } = useSiteConfig();
-  const displayName = state.user?.user_name || state.user?.email;
+  const displayName = userDisplayName(state.user);
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-8">
@@ -86,8 +87,14 @@ export function DashboardView() {
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600">Email:</span>
-            <span className="font-medium">{state.user?.email}</span>
+            <span className="font-medium">{state.user?.email || 'Not set'}</span>
           </div>
+          {state.user?.login_name && (
+            <div className="flex justify-between">
+              <span className="text-gray-600">Login name:</span>
+              <span className="font-medium">{state.user.login_name}</span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span className="text-gray-600">User ID:</span>
             <span className="font-mono text-xs">{state.user?.id}</span>

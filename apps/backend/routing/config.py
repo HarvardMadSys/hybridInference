@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from serving.config.app_config import config_value
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -19,9 +20,11 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-(.*?))?\}")
 
 
 def _expand_env_value(val: Any) -> Any:
-    """Recursively expand environment variables in configuration values.
+    """Recursively expand ``${VAR}`` references in configuration values.
 
-    Supports ${VAR} and ${VAR:-default} syntax. Applies to strings, lists, and dicts.
+    Supports ${VAR} and ${VAR:-default} syntax. Applies to strings, lists, and
+    dicts. A variable resolves through ``config_value``: its database-backed
+    setting, then the environment.
 
     Args:
         val: Configuration value to process (str, list, dict, or other).
@@ -32,11 +35,9 @@ def _expand_env_value(val: Any) -> Any:
     if isinstance(val, str):
 
         def repl(match: re.Match[str]) -> str:
-            import os
-
             key = match.group(1)
             default = match.group(2)
-            return os.getenv(key, default if default is not None else "")
+            return config_value(key, default if default is not None else "") or ""
 
         return _ENV_PATTERN.sub(repl, val)
     if isinstance(val, list):

@@ -12,7 +12,7 @@ import aiohttp
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .openai_compat import _COMPLETION_TIMEOUT_S, _key_pool_provider_label
+from .openai_compat import _key_pool_provider_label, completion_timeout_s
 from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
 
@@ -357,7 +357,7 @@ class GeminiAdapter(BaseAdapter):
             data = await self.http.json_post_with_retry(
                 url,
                 json=request_body,
-                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
 

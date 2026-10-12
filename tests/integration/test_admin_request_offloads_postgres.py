@@ -112,7 +112,8 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
         await ensure_api_logs_schema(conn)
         # The user filter joins users; only the columns it reads are needed.
         await conn.execute(
-            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, user_name TEXT)"
+            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE, user_name TEXT, "
+            "login_name TEXT)"
         )
         await conn.execute(
             "INSERT INTO users (id, email, user_name) VALUES "
