@@ -44,6 +44,10 @@ async def test_ses_configuration_reports_its_missing_fields_and_redacts_secrets(
 ):
     from serving.utils import email, tencent_ses
 
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "true")
+    get_settings.cache_clear()
+
     # Simulate process startup after the fixture clears the cached instance.
     monkeypatch.setattr(email, "settings", get_settings())
     monkeypatch.setattr(tencent_ses, "settings", get_settings())
