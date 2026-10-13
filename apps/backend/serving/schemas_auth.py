@@ -2,13 +2,14 @@
 
 import re
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from pydantic.networks import validate_email
 
 from serving.config.site_identity import get_site_identity
 from serving.utils.password import validate_password_strength
+from serving.utils.phone_auth import normalize_phone
 
 UserName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=50)]
 
@@ -32,6 +33,56 @@ def normalize_login_name(value: str) -> str:
             "starting with a letter or digit"
         )
     return name
+
+
+class PhoneRequest(BaseModel):
+    """Canonical international phone identifier."""
+
+    phone: str = Field(max_length=32)
+
+    @field_validator("phone")
+    @classmethod
+    def canonical_phone(cls, value: str) -> str:
+        """Validate and normalize the mainland mobile number."""
+        return normalize_phone(value)
+
+
+class PhoneCodeRequest(PhoneRequest):
+    """Issue a code scoped to registration, login, or account binding."""
+
+    purpose: Literal["signup", "login", "bind"]
+    turnstile_token: str | None = None
+
+
+class PhoneCodeResponse(BaseModel):
+    """Delivery result without exposing a verification code."""
+
+    message: str
+    retry_after: int
+
+
+class PhoneVerifyRequest(PhoneRequest):
+    """Six-digit verification code and canonical recipient."""
+
+    code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class PhoneSignupRequest(PhoneVerifyRequest):
+    """Phone registration with profile and terms acceptance."""
+
+    user_name: UserName
+    use_case: str | None = Field(default=None, max_length=2000)
+    accepted_tos: bool
+
+
+class PhoneSignupResponse(BaseModel):
+    """Registration result for a user with no email identity."""
+
+    message: str
+    user_id: str
+    email: None = None
+    phone: str
+    requires_approval: bool = False
 
 
 # Authentication request/response schemas
@@ -117,6 +168,9 @@ class UserInfo(BaseModel):
     id: str
     email: str | None = None
     login_name: str | None = None
+    phone: str | None = None
+    phone_verified: bool = False
+    has_password: bool = True
     user_name: str | None = None
     role: str = "free"
     status: str = "active"

@@ -17,6 +17,7 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
+from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
@@ -350,7 +351,9 @@ async def get_current_user(
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
         pass
-    if require_verification and not user_row["email_verified"]:
+    if (
+        require_verification and user_row.get("email") and not user_row["email_verified"]
+    ) or phone_identity_unverified(user_row):
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please check your email for the verification link.",
@@ -365,6 +368,8 @@ async def get_current_user(
         "role": user_role,
         "is_admin": user_role == "admin",
         "email_verified": user_row["email_verified"],
+        "phone": user_row.get("phone"),
+        "phone_verified": user_row.get("phone_verified", False),
         "status": user_row["status"],
     }
 
@@ -442,7 +447,9 @@ async def verify_admin_access(
                 require_verification = await rs.get_bool("signup_require_email_verification")
             except (RuntimeError, KeyError):
                 pass
-            if require_verification and not user_row["email_verified"]:
+            if (
+                require_verification and user_row.get("email") and not user_row["email_verified"]
+            ) or phone_identity_unverified(user_row):
                 raise HTTPException(
                     status_code=403,
                     detail="Email not verified. Please verify your email to continue.",

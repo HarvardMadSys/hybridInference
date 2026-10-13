@@ -224,6 +224,7 @@ describe('loadRuntimeSiteConfig', () => {
     expect(recovered.distribution.id).toBe('runtime');
     expect(recovered.features).toEqual({
       publicSignup: false,
+      phoneAuth: false,
       rag: false,
       agents: false,
       publicStats: false,

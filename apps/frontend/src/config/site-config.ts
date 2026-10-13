@@ -148,6 +148,7 @@ const featuresSchema = z
   .object({
     routers: z.array(z.string()),
     public_signup: z.boolean().nullable(),
+    phone_auth: z.boolean().optional().default(false),
     rag: z.boolean().nullable(),
     // The gateway only sends this key when the deployment enables public
     // stats, so a document without it means "off".
@@ -210,6 +211,7 @@ export interface RuntimeSiteConfig {
   };
   features: {
     publicSignup: boolean;
+    phoneAuth: boolean;
     rag: boolean;
     agents: boolean;
     publicStats: boolean;
@@ -228,7 +230,7 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
-  features: { publicSignup: true, rag: true, agents: false, publicStats: false },
+  features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
   setup: { required: false },
   configuration: { incomplete: false },
 };
@@ -347,6 +349,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     },
     features: {
       publicSignup: document.features.public_signup ?? buildTimeSiteConfig.features.publicSignup,
+      phoneAuth: document.features.phone_auth,
       rag: document.features.rag ?? buildTimeSiteConfig.features.rag,
       // Only the server-side loader may enable the entry point, from an
       // explicit public URL or a configured local proxy.

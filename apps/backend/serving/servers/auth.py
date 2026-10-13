@@ -38,6 +38,7 @@ from serving.servers.deps import (
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
+from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
 logger = get_logger(__name__)
@@ -417,7 +418,9 @@ async def _authenticate_by_api_key(
             "RuntimeSettings lookup for signup_require_email_verification failed; "
             f"falling back to env: {exc}"
         )
-    if require_verification and user.get("email") and not user.get("email_verified"):
+    if (
+        require_verification and user.get("email") and not user.get("email_verified")
+    ) or phone_identity_unverified(user):
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
@@ -813,7 +816,9 @@ async def optional_verify_api_key(
             "RuntimeSettings lookup for signup_require_email_verification failed; "
             f"falling back to env: {exc}"
         )
-    if require_verification and row["email"] and not row["email_verified"]:
+    if (
+        require_verification and row["email"] and not row["email_verified"]
+    ) or phone_identity_unverified(row):
         return None
 
     user_role = row["role"] or "free"

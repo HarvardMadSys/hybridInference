@@ -225,7 +225,9 @@ class DatabaseLogger:
                     id TEXT PRIMARY KEY,
                     email TEXT UNIQUE,
                     login_name TEXT,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
+                    phone TEXT,
+                    phone_verified BOOLEAN NOT NULL DEFAULT FALSE,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                     role TEXT NOT NULL DEFAULT 'free'

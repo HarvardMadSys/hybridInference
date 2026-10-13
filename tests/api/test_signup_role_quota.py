@@ -71,6 +71,7 @@ def _make_current_user(role: str = "pro") -> dict:
     return {
         "user_id": "user-123",
         "role": role,
+        "email": "quota-user@example.test",
         "email_verified": True,
         "is_admin": False,
     }

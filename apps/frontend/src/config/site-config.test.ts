@@ -77,6 +77,21 @@ const runtimeDocument = {
 };
 
 describe('resolveRuntimeSiteConfig', () => {
+  it('only enables phone authentication when the server advertises it', () => {
+    expect(resolveRuntimeSiteConfig(runtimeDocument).features.phoneAuth).toBe(false);
+    expect(
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, phone_auth: true },
+      }).features.phoneAuth,
+    ).toBe(true);
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, phone_auth: 'true' },
+      }),
+    ).toThrow();
+  });
   it('maps the complete v1 runtime branding document', () => {
     const resolved = resolveRuntimeSiteConfig(runtimeDocument);
 
@@ -122,6 +137,7 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
     expect(resolved.features).toEqual({
       publicSignup: false,
+      phoneAuth: false,
       rag: false,
       agents: false,
       publicStats: false,
@@ -181,6 +197,7 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
     expect(resolved.features).toEqual({
       publicSignup: false,
+      phoneAuth: false,
       rag: false,
       agents: false,
       publicStats: false,
@@ -203,6 +220,7 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.branding.appName).toBe('Example Inference');
     expect(resolved.features).toEqual({
       publicSignup: false,
+      phoneAuth: false,
       rag: false,
       agents: false,
       publicStats: false,
@@ -413,6 +431,7 @@ describe('first-run setup and configuration health', () => {
     // Siblings of `features`, never members of it: that object stays strict.
     expect(resolved.features).toEqual({
       publicSignup: false,
+      phoneAuth: false,
       rag: false,
       agents: false,
       publicStats: false,

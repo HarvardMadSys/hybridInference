@@ -1703,3 +1703,21 @@ msgstr ""
 #~ "credentials, database connection, feature "
 #~ "switches"
 #~ msgstr "所有敏感信息和与主机相关的设置：凭据、数据库连接、功能开关"
+
+msgid "Optional phone authentication"
+msgstr "可选手机号认证"
+
+msgid "Phone signup, login and binding are disabled by default. Enable `SMS_AUTH_ENABLED` and select `SMS_PROVIDER=tencent` in **Admin > Configuration** only after delivery is configured. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work."
+msgstr "手机号注册、登录和绑定默认关闭。配置好发送服务后，在 **Admin > Configuration** 中开启 `SMS_AUTH_ENABLED` 并选择 `SMS_PROVIDER=tencent`。网关通过 `/site-config` 发布 `features.phone_auth`；共享表单仅在功能可用时显示手机号选项。原有邮箱登录和首次设置的管理员登录继续可用。"
+
+msgid "The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. This adapter currently sends to mainland China mobile numbers only. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control."
+msgstr "腾讯适配器需要 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、`SMS_REGION`、`SMS_SDK_APP_ID`、`SMS_SIGN_NAME` 和 `SMS_TEMPLATE_ID`。临时凭据还需要 `TENCENT_CLOUD_TOKEN`。审核通过的模板依次接收验证码和有效分钟数两个参数。此适配器目前仅向中国大陆手机号发送短信。真实凭据、已审核签名和模板 ID 应保存在部署配置中，不要提交到源码仓库。"
+
+msgid "Account identifiers use international format, such as `+8613812345678`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. For the Tencent domestic adapter, set the former to `86` if local input is desired and the latter to `+86`. Number policy belongs to the deployment, while provider delivery remains separate from account storage."
+msgstr "账号标识使用国际格式，例如 `+8613812345678`。`SMS_DEFAULT_COUNTRY_CODE` 可为本地格式输入补充国家呼叫码；留空则要求输入国际格式。`SMS_ALLOWED_PREFIXES` 可通过逗号分隔的前缀限制目的地。使用腾讯国内短信适配器时，如需支持本地输入，将前者设为 `86`，并将后者设为 `+86`。号码策略属于部署配置，供应商发送逻辑与账号存储保持分离。"
+
+msgid "Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Binding requires an authenticated session and a separate code for that account."
+msgstr "验证码默认 300 秒过期，最多允许猜测五次，且只能使用一次。PostgreSQL 在多个工作进程间串行执行发送和验证配额检查；`SMS_OTP_*` 设置控制相关限制。Turnstile 与可信代理客户端 IP 处理继续复用注册流程。手机号注册遵循开放注册和审核策略，不会自动合并邮箱账号，也不会创建密码。绑定需要已认证会话及专属于该账号的验证码。"
+
+msgid "Startup adds phone identity columns and durable code tables and makes password hashes nullable. Upgrade every gateway worker before enabling phone signup. Back up the database first; once phone-only accounts exist, an older binary that assumes every account has a password is not a supported rollback. Disabling SMS hides phone login but does not remove accounts, so arrange another verified sign-in method before disabling it for phone-only users. Site UI v1 message overrides remain optional; distributions can translate the added phone message slots without owning authentication logic."
+msgstr "启动时会添加手机号身份字段和持久验证码表，并允许密码哈希为空。开启手机号注册前应先升级全部网关工作进程，并备份数据库。一旦存在仅使用手机号的账号，就不支持回滚到假设每个账号都有密码的旧程序。关闭短信会隐藏手机号登录，但不会删除账号，因此为仅使用手机号的用户关闭该功能前，应先安排其他已验证的登录方式。Site UI v1 文案覆盖仍为可选；发行版可翻译新增手机号文案槽位，无需自行维护认证逻辑。"

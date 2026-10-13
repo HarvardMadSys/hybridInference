@@ -9,9 +9,11 @@ vi.mock('next/script', () => ({
 
 vi.mock('@/lib/api/auth', () => ({
   signup: vi.fn(),
+  signupPhone: vi.fn(),
+  sendPhoneCode: vi.fn(),
 }));
 
-import { signup, type SignupResponse } from '@/lib/api/auth';
+import { signup, signupPhone, type SignupResponse } from '@/lib/api/auth';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
 import { NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
@@ -82,6 +84,7 @@ describe('SignupPage', () => {
   afterEach(() => {
     cleanup();
     mockedSignup.mockReset();
+    vi.mocked(signupPhone).mockReset();
   });
 
   describe('consent step', () => {
@@ -221,6 +224,75 @@ describe('SignupPage', () => {
   });
 
   describe('account step', () => {
+    it('keeps phone signup hidden by default', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      expect(
+        screen.queryByRole('button', { name: 'Phone verification code' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('requires consent before phone signup and preserves the account approval result', async () => {
+      vi.mocked(signupPhone).mockResolvedValueOnce({
+        message: 'Pending approval.',
+        email: null,
+        phone: '+8613812345678',
+        user_id: 'phone-user',
+        requires_approval: true,
+      });
+      render(
+        <SiteConfigProvider
+          initialConfig={{
+            ...buildTimeSiteConfig,
+            features: { ...buildTimeSiteConfig.features, phoneAuth: true },
+          }}
+        >
+          <SignupPage />
+        </SiteConfigProvider>,
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Phone verification code' }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Mobile number')).not.toBeInTheDocument();
+      completeConsentStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Phone verification code' }));
+      fireEvent.change(screen.getByLabelText('Mobile number'), {
+        target: { value: '+8613812345678' },
+      });
+      fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Sign Up' }));
+      expect(await screen.findByText('Pending approval.')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Registration Submitted' })).toBeInTheDocument();
+      expect(signupPhone).toHaveBeenCalledWith({
+        phone: '+8613812345678',
+        code: '123456',
+        user_name: 'Phone User',
+        use_case: undefined,
+        accepted_tos: true,
+      });
+      expect(signup).not.toHaveBeenCalled();
+    });
+
+    it('closes both signup methods when public registration is disabled', () => {
+      render(
+        <SiteConfigProvider
+          initialConfig={{
+            ...buildTimeSiteConfig,
+            features: { ...buildTimeSiteConfig.features, publicSignup: false, phoneAuth: true },
+          }}
+        >
+          <SignupPage />
+        </SiteConfigProvider>,
+      );
+      expect(
+        screen.getByRole('heading', { name: 'Public signup is unavailable' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Phone verification code' }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    });
     it('renders Turnstile from the runtime branding value', () => {
       const runtimeConfig = {
         ...buildTimeSiteConfig,

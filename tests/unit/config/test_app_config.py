@@ -1255,3 +1255,41 @@ async def test_a_lower_case_environment_value_is_compared_for_environment_ignore
 
     entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
     assert entries["SMTP_HOST"]["environment_ignored"] is True
+
+
+@pytest.mark.asyncio
+async def test_sms_delivery_settings_use_db_precedence_and_redact_credentials(
+    config_env, monkeypatch
+):
+    from serving.utils.sms import is_sms_enabled
+
+    monkeypatch.setenv("SMS_AUTH_ENABLED", "true")
+    store = FakeAppConfigStore(
+        [
+            row("SMS_AUTH_ENABLED", "false"),
+            row("SMS_PROVIDER", "tencent"),
+            row("TENCENT_CLOUD_SECRET_ID", "synthetic-sms-id"),
+            row("TENCENT_CLOUD_SECRET_KEY", "synthetic-sms-secret"),
+            row("TENCENT_CLOUD_TOKEN", "synthetic-sms-session"),
+            row("SMS_SDK_APP_ID", "1400000000"),
+            row("SMS_SIGN_NAME", "Test sign"),
+            row("SMS_TEMPLATE_ID", "201"),
+        ]
+    )
+    # Match a process boot: the delivery modules share the instance overlaid
+    # by app_config; the test suite clears get_settings between test cases.
+    from serving.utils import sms, tencent_sms
+
+    monkeypatch.setattr(sms, "settings", get_settings())
+    monkeypatch.setattr(tencent_sms, "settings", get_settings())
+    await _boot(store)
+    assert not is_sms_enabled()
+    await app_config.update({"SMS_AUTH_ENABLED": True}, updated_by="admin")
+    assert is_sms_enabled()
+    description = str(app_config.describe())
+    assert "synthetic-sms-secret" not in description
+    assert "synthetic-sms-session" not in description
+    await _restart(store)
+    monkeypatch.setattr(sms, "settings", get_settings())
+    monkeypatch.setattr(tencent_sms, "settings", get_settings())
+    assert is_sms_enabled()

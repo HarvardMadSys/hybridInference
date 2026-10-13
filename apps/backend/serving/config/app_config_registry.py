@@ -73,6 +73,7 @@ CATEGORIES: tuple[Category, ...] = (
         "Email (SMTP)",
         "Outgoing mail for verification, password reset and notifications.",
     ),
+    Category("phone", "Phone authentication", "Optional phone sign-in and SMS delivery."),
     Category(
         "providers",
         "Providers",
@@ -165,6 +166,14 @@ def _auth_secret_required(context: RequirementContext) -> bool:
     # Mirrors Settings.validate_auth_secrets: only a database-free gateway with
     # user authentication off runs without these.
     return context.database_enabled or context.user_auth_enabled
+
+
+def _tencent_credentials_required(context: RequirementContext) -> bool:
+    # The selected transport needs credentials even before signup is enabled.
+    return (
+        context.value("SMS_PROVIDER") == "tencent"
+        or context.value("EMAIL_PROVIDER") == "tencent_ses"
+    )
 
 
 def _smtp_required(context: RequirementContext) -> bool:
@@ -439,6 +448,98 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Cloudflare Turnstile secret for the signup captcha. Empty turns verification off.",
         "str",
         secret=True,
+    ),
+    # --- phone authentication -----------------------------------------------
+    _setting(
+        "sms_auth_enabled",
+        "phone",
+        "Enable phone registration, login and binding when SMS delivery is configured.",
+        "bool",
+    ),
+    _setting(
+        "sms_provider",
+        "phone",
+        "SMS verification provider. None disables delivery.",
+        "str",
+        choices=("none", "tencent"),
+    ),
+    _setting(
+        "sms_default_country_code",
+        "phone",
+        "Optional country calling code for local input, without +; empty requires international format.",
+        "str",
+    ),
+    _setting(
+        "sms_allowed_prefixes",
+        "phone",
+        "Comma-separated allowed international prefixes, such as +86. Empty permits any prefix supported by the provider.",
+        "str",
+    ),
+    _setting("sms_region", "phone", "Tencent SMS resource region.", "str"),
+    _setting("sms_sdk_app_id", "phone", "Tencent SMS application ID.", "str"),
+    _setting("sms_sign_name", "phone", "Approved Tencent SMS signature text.", "str"),
+    _setting(
+        "sms_template_id",
+        "phone",
+        "Approved Tencent SMS template with code and lifetime-in-minutes parameters.",
+        "str",
+    ),
+    _setting(
+        "sms_otp_expire_seconds",
+        "phone",
+        "Verification code lifetime in seconds.",
+        "int",
+        minimum=60,
+        maximum=600,
+    ),
+    _setting(
+        "sms_otp_send_cooldown_seconds",
+        "phone",
+        "Minimum seconds between messages to one phone.",
+        "int",
+        minimum=60,
+    ),
+    _setting(
+        "sms_otp_send_per_phone_hour", "phone", "Messages to one phone per hour.", "int", minimum=1
+    ),
+    _setting(
+        "sms_otp_send_per_phone_day", "phone", "Messages to one phone per day.", "int", minimum=1
+    ),
+    _setting(
+        "sms_otp_send_per_ip_hour",
+        "phone",
+        "Messages requested by one client address per hour.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_send_per_ip_day",
+        "phone",
+        "Messages requested by one client address per day.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_max_attempts",
+        "phone",
+        "Maximum guesses for a verification code.",
+        "int",
+        minimum=1,
+        maximum=10,
+    ),
+    _setting(
+        "sms_otp_verify_per_phone_15min",
+        "phone",
+        "Verification attempts for one phone per fifteen minutes.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_verify_per_ip_hour",
+        "phone",
+        "Verification attempts from one client address per hour.",
+        "int",
+        minimum=1,
     ),
     # --- email -------------------------------------------------------------
     _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
@@ -866,6 +967,29 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
     ),
     # --- integrations ------------------------------------------------------
+    _setting(
+        "tencent_cloud_secret_id",
+        "integrations",
+        "Tencent Cloud CAM credential ID, used only by the selected delivery adapter.",
+        "str",
+        secret=True,
+        required=_tencent_credentials_required,
+    ),
+    _setting(
+        "tencent_cloud_secret_key",
+        "integrations",
+        "Tencent Cloud CAM credential secret. Never sent to the browser.",
+        "str",
+        secret=True,
+        required=_tencent_credentials_required,
+    ),
+    _setting(
+        "tencent_cloud_token",
+        "integrations",
+        "Optional session token for temporary Tencent Cloud credentials.",
+        "str",
+        secret=True,
+    ),
     ConfigEntry(
         "IDENTITY_JWT_PRIVATE_KEY",
         "integrations",

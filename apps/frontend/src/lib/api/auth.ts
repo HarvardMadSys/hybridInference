@@ -14,7 +14,8 @@ export interface SignupRequest {
 
 export interface SignupResponse {
   message: string;
-  email: string;
+  email: string | null;
+  phone?: string | null;
   user_id: string;
   requires_approval: boolean;
 }
@@ -39,9 +40,77 @@ export interface LoginResponse {
     /** `null` for an account that signs in with a login name instead. */
     email: string | null;
     login_name?: string | null;
+    phone?: string | null;
+    phone_verified?: boolean;
     role: string;
     is_admin: boolean;
   };
+}
+
+export type PhoneCodePurpose = 'signup' | 'login' | 'bind';
+
+export interface PhoneSignupRequest {
+  phone: string;
+  code: string;
+  user_name: string;
+  use_case?: string;
+  accepted_tos: true;
+}
+
+export async function sendPhoneCode(data: {
+  phone: string;
+  purpose: PhoneCodePurpose;
+  turnstileToken?: string;
+}): Promise<{ message: string; retry_after: number }> {
+  const { turnstileToken, ...rest } = data;
+  const options: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...rest,
+      ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
+    }),
+    credentials: 'include',
+  };
+  const resp =
+    data.purpose === 'bind'
+      ? await fetchWithAuth(API_BASE, '/auth/phone/code', options)
+      : await safeFetch(`${API_BASE}/auth/phone/code`, options);
+  return jsonOrThrow(resp);
+}
+
+export async function signupPhone(data: PhoneSignupRequest): Promise<SignupResponse> {
+  const resp = await safeFetch(`${API_BASE}/auth/phone/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    credentials: 'include',
+  });
+  return jsonOrThrow(resp);
+}
+
+export async function loginPhone(data: { phone: string; code: string }): Promise<LoginResponse> {
+  const resp = await safeFetch(`${API_BASE}/auth/phone/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    credentials: 'include',
+  });
+  const result = await jsonOrThrow<LoginResponse>(resp);
+  setAccessToken(result.access_token);
+  return result;
+}
+
+export async function bindPhone(data: {
+  phone: string;
+  code: string;
+}): Promise<{ message: string }> {
+  const resp = await fetchWithAuth(API_BASE, '/auth/phone/bind', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return jsonOrThrow(resp);
 }
 
 export async function signup(data: SignupRequest): Promise<SignupResponse> {

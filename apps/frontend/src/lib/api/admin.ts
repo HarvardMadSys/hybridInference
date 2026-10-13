@@ -17,6 +17,7 @@ export interface AdminUser {
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_name: string | null;
   role: string;
   status: string;
@@ -65,6 +66,7 @@ export interface ListUsersResponse {
 export interface ApproveRejectResponse {
   user_id: string;
   email: string | null;
+  phone?: string | null;
   status: string;
   message: string;
 }
@@ -191,6 +193,7 @@ export interface UserDetail {
   id: string;
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_name: string | null;
   role: string;
   status: string;
@@ -364,6 +367,7 @@ export async function resumeUser(userId: string, reason?: string): Promise<Appro
 export interface HardDeleteUserResponse {
   user_id: string;
   email: string | null;
+  phone?: string | null;
   message: string;
 }
 
@@ -915,6 +919,7 @@ export interface SparklineBucket {
 export interface AnalyticsUserEntry {
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_id: string;
   requests: number;
   fraction: number; // 0.0–1.0 share of user-attributed requests in period
@@ -929,6 +934,7 @@ export interface AnalyticsBreakdownEntry {
 export interface AnalyticsModelUserEntry {
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_id: string;
   requests: number;
   tokens: number; // prompt + completion tokens for this user + model
