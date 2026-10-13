@@ -168,6 +168,14 @@ def _auth_secret_required(context: RequirementContext) -> bool:
     return context.database_enabled or context.user_auth_enabled
 
 
+def _tencent_credentials_required(context: RequirementContext) -> bool:
+    # The selected transport needs credentials even before signup is enabled.
+    return (
+        context.value("SMS_PROVIDER") == "tencent"
+        or context.value("EMAIL_PROVIDER") == "tencent_ses"
+    )
+
+
 def _smtp_required(context: RequirementContext) -> bool:
     # Without mail, a new account can never verify its address.
     return context.email_verification_needed and not context.email_enabled
@@ -466,27 +474,6 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "phone",
         "Comma-separated allowed international prefixes, such as +86. Empty permits any prefix supported by the provider.",
         "str",
-    ),
-    _setting(
-        "tencent_cloud_secret_id",
-        "phone",
-        "Tencent Cloud CAM credential ID, used only by the selected delivery adapter.",
-        "str",
-        secret=True,
-    ),
-    _setting(
-        "tencent_cloud_secret_key",
-        "phone",
-        "Tencent Cloud CAM credential secret. Never sent to the browser.",
-        "str",
-        secret=True,
-    ),
-    _setting(
-        "tencent_cloud_token",
-        "phone",
-        "Optional session token for temporary Tencent Cloud credentials.",
-        "str",
-        secret=True,
     ),
     _setting("sms_region", "phone", "Tencent SMS resource region.", "str"),
     _setting("sms_sdk_app_id", "phone", "Tencent SMS application ID.", "str"),
@@ -980,6 +967,29 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
     ),
     # --- integrations ------------------------------------------------------
+    _setting(
+        "tencent_cloud_secret_id",
+        "integrations",
+        "Tencent Cloud CAM credential ID, used only by the selected delivery adapter.",
+        "str",
+        secret=True,
+        required=_tencent_credentials_required,
+    ),
+    _setting(
+        "tencent_cloud_secret_key",
+        "integrations",
+        "Tencent Cloud CAM credential secret. Never sent to the browser.",
+        "str",
+        secret=True,
+        required=_tencent_credentials_required,
+    ),
+    _setting(
+        "tencent_cloud_token",
+        "integrations",
+        "Optional session token for temporary Tencent Cloud credentials.",
+        "str",
+        secret=True,
+    ),
     ConfigEntry(
         "IDENTITY_JWT_PRIVATE_KEY",
         "integrations",

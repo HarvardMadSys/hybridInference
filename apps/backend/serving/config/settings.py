@@ -195,12 +195,6 @@ class Settings(BaseSettings):
     smtp_from_email: str = "noreply@localhost"
     smtp_from_name: str = "HybridInference"
 
-    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
-    # additionally provide a token; no frontend receives any of these values.
-    tencent_cloud_secret_id: str = ""
-    tencent_cloud_secret_key: str = ""
-    tencent_cloud_token: str = ""
-
     sms_auth_enabled: bool = False
     sms_provider: Literal["none", "tencent"] = "none"
     sms_default_country_code: str = Field(default="", pattern=r"^(?:[1-9][0-9]{0,2})?$")
@@ -228,6 +222,12 @@ class Settings(BaseSettings):
     # Frontend URL (for email links). Must be absolute to be clickable in an
     # email, so the default points at a local console rather than being empty.
     frontend_url: str = "http://localhost:3001"
+
+    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
+    # additionally provide a token; no frontend receives any of these values.
+    tencent_cloud_secret_id: str = ""
+    tencent_cloud_secret_key: str = ""
+    tencent_cloud_token: str = ""
 
     # Qdrant (shared vector database for codebase indexing)
     qdrant_base_url: str = "http://localhost:6333"
