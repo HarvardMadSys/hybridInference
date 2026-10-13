@@ -189,18 +189,6 @@ class Settings(BaseSettings):
 
     # Email (optional)
     email_provider: Literal["smtp", "tencent_ses"] = "smtp"
-    smtp_host: str = "smtp.resend.com"
-    smtp_port: int = 587
-    smtp_user: str = "resend"
-    smtp_password: str = ""
-    smtp_from_email: str = "noreply@localhost"
-    smtp_from_name: str = "HybridInference"
-
-    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
-    # additionally provide a token; no frontend receives any of these values.
-    tencent_cloud_secret_id: str = ""
-    tencent_cloud_secret_key: str = ""
-    tencent_cloud_token: str = ""
     tencent_ses_region: Literal["ap-guangzhou", "ap-hongkong"] = "ap-guangzhou"
     tencent_ses_from_email: str = ""
     tencent_ses_from_name: str = ""
@@ -210,6 +198,12 @@ class Settings(BaseSettings):
     tencent_ses_template_rejection: int | None = Field(default=None, ge=1)
     tencent_ses_template_admin_signup: int | None = Field(default=None, ge=1)
     tencent_ses_template_notice: int | None = Field(default=None, ge=1)
+    smtp_host: str = "smtp.resend.com"
+    smtp_port: int = 587
+    smtp_user: str = "resend"
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@localhost"
+    smtp_from_name: str = "HybridInference"
 
     # Public base URL of this gateway. Empty by default: an unconfigured
     # deployment has none, and the two consumers already handle that —
@@ -220,6 +214,12 @@ class Settings(BaseSettings):
     # Frontend URL (for email links). Must be absolute to be clickable in an
     # email, so the default points at a local console rather than being empty.
     frontend_url: str = "http://localhost:3001"
+
+    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
+    # additionally provide a token; no frontend receives any of these values.
+    tencent_cloud_secret_id: str = ""
+    tencent_cloud_secret_key: str = ""
+    tencent_cloud_token: str = ""
 
     # Qdrant (shared vector database for codebase indexing)
     qdrant_base_url: str = "http://localhost:6333"
