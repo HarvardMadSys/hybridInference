@@ -16,14 +16,16 @@ let authState = {
 let query = new URLSearchParams();
 
 const replaceMock = vi.fn();
+const pushMock = vi.fn();
 const loginMock = vi.fn();
+const phoneLoginMock = vi.fn();
 
 vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: authState, login: loginMock }),
+  useAuth: () => ({ state: authState, login: loginMock, loginPhone: phoneLoginMock }),
 }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: replaceMock, push: vi.fn() }),
+  useRouter: () => ({ replace: replaceMock, push: pushMock }),
   useSearchParams: () => query,
 }));
 
@@ -80,6 +82,45 @@ describe('the ?next= round-trip', () => {
 });
 
 describe('signup navigation', () => {
+  it('keeps the email login route as the default', async () => {
+    authState.isAuthenticated = false;
+    loginMock.mockResolvedValueOnce(undefined);
+    render(<LoginPage />);
+    expect(
+      screen.queryByRole('button', { name: 'Phone verification code' }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Email or username'), {
+      target: { value: 'email@example.test' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('email@example.test', 'password'));
+    expect(phoneLoginMock).not.toHaveBeenCalled();
+  });
+
+  it('logs in by phone through the auth provider and returns to the requested internal page', async () => {
+    authState.isAuthenticated = false;
+    query = new URLSearchParams({ next: '/authorize?client_id=cloud-agent' });
+    phoneLoginMock.mockResolvedValueOnce(undefined);
+    render(
+      <SiteConfigProvider
+        initialConfig={{
+          ...buildTimeSiteConfig,
+          features: { ...buildTimeSiteConfig.features, phoneAuth: true },
+        }}
+      >
+        <LoginPage />
+      </SiteConfigProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Phone verification code' }));
+    expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '13812345678' } });
+    fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+    await waitFor(() => expect(phoneLoginMock).toHaveBeenCalledWith('13812345678', '123456'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/authorize?client_id=cloud-agent'));
+    expect(loginMock).not.toHaveBeenCalled();
+  });
   it('offers exactly one signup entry', () => {
     // One, not two. The frame is chosen by the Site UI (see
     // `src/site-ui/`), and both the console's card and a module's frame are

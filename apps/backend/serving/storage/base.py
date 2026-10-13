@@ -119,6 +119,44 @@ class OperationalStore(ABC):
     async def health_check(self) -> bool:
         """Return True if the store is reachable and healthy."""
 
+    # -- phone authentication (optional for legacy store implementations) ----
+
+    async def get_user_by_phone(self, phone: str) -> Row | None:
+        """Fetch an account by its canonical phone number."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def create_phone_user(self, **fields: Any) -> bool:
+        """Create a verified phone-only identity, refusing duplicate identifiers."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def bind_user_phone(self, user_id: str, phone: str) -> bool:
+        """Bind a verified phone atomically without replacing or merging identities."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def reserve_phone_code(self, **fields: Any) -> int:
+        """Reserve a send within shared quotas and install an inactive challenge."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def activate_phone_code(self, challenge_id: str) -> bool:
+        """Activate only the challenge acknowledged by the SMS provider."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def invalidate_phone_code(self, challenge_id: str) -> None:
+        """Remove a failed delivery without removing another concurrent challenge."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def consume_phone_code(self, **fields: Any) -> str:
+        """Record bounded attempts and atomically consume a matching challenge once."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def create_phone_session(self, **fields: Any) -> bool:
+        """Issue a session, timestamp, and success event under an active-owner lock."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
+    async def record_phone_login_event(self, **fields: Any) -> None:
+        """Record phone login outcomes without fabricating an email."""
+        raise RuntimeError("Phone authentication is unavailable in this store")
+
     # -- users ---------------------------------------------------------------
 
     @abstractmethod

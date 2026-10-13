@@ -156,10 +156,12 @@ class UserListItem(BaseModel):
     id: str
     email: str | None
     login_name: str | None = None
+    phone: str | None = None
     user_name: str | None
     role: str = "free"
     status: str
     email_verified: bool
+    phone_verified: bool = False
     approval_note: str | None = None
     reviewed_at: datetime | None = None
     reviewed_by: str | None = None
@@ -314,6 +316,7 @@ class SummaryUserItem(BaseModel):
     id: str
     email: str | None
     login_name: str | None = None
+    phone: str | None = None
     user_name: str | None = None
     role: str = "free"
     today_cost_usd: Decimal = Field(default=Decimal("0"))
@@ -349,6 +352,7 @@ class ApproveUserResponse(BaseModel):
 
     user_id: str
     email: str | None
+    phone: str | None = None
     status: str
     message: str
 
@@ -366,6 +370,7 @@ class RejectUserResponse(BaseModel):
 
     user_id: str
     email: str | None
+    phone: str | None = None
     status: str
     message: str
 
@@ -380,10 +385,12 @@ class UserDetailResponse(BaseModel):
     id: str
     email: str | None
     login_name: str | None = None
+    phone: str | None = None
     user_name: str | None
     role: str = "free"
     status: str
     email_verified: bool
+    phone_verified: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
     # Key info
@@ -498,6 +505,7 @@ class DeleteUserResponse(BaseModel):
 
     user_id: str
     email: str | None
+    phone: str | None = None
     status: str
     message: str
 
@@ -513,6 +521,7 @@ class ResumeUserResponse(BaseModel):
 
     user_id: str
     email: str | None
+    phone: str | None = None
     status: str
     message: str
 
@@ -534,6 +543,7 @@ class HardDeleteUserResponse(BaseModel):
 
     user_id: str
     email: str | None
+    phone: str | None = None
     message: str
 
 

@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
@@ -194,6 +194,30 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_email: str = "noreply@localhost"
     smtp_from_name: str = "HybridInference"
+
+    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
+    # additionally provide a token; no frontend receives any of these values.
+    tencent_cloud_secret_id: str = ""
+    tencent_cloud_secret_key: str = ""
+    tencent_cloud_token: str = ""
+
+    sms_auth_enabled: bool = False
+    sms_provider: Literal["none", "tencent"] = "none"
+    sms_default_country_code: str = Field(default="", pattern=r"^(?:[1-9][0-9]{0,2})?$")
+    sms_allowed_prefixes: str = ""
+    sms_region: str = "ap-guangzhou"
+    sms_sdk_app_id: str = ""
+    sms_sign_name: str = ""
+    sms_template_id: str = ""
+    sms_otp_expire_seconds: int = Field(default=300, ge=60, le=600)
+    sms_otp_send_cooldown_seconds: int = Field(default=60, ge=60)
+    sms_otp_send_per_phone_hour: int = Field(default=5, ge=1)
+    sms_otp_send_per_phone_day: int = Field(default=10, ge=1)
+    sms_otp_send_per_ip_hour: int = Field(default=20, ge=1)
+    sms_otp_send_per_ip_day: int = Field(default=100, ge=1)
+    sms_otp_max_attempts: int = Field(default=5, ge=1, le=10)
+    sms_otp_verify_per_phone_15min: int = Field(default=10, ge=1)
+    sms_otp_verify_per_ip_hour: int = Field(default=30, ge=1)
 
     # Public base URL of this gateway. Empty by default: an unconfigured
     # deployment has none, and the two consumers already handle that —

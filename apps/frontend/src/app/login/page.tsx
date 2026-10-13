@@ -17,6 +17,8 @@ import { fill } from '@/lib/utils/interpolate';
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
 import { useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
+import { AuthMethodSelector } from '@/components/auth/AuthMethodSelector';
+import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 
 function LoginContent() {
   const t = useT();
@@ -28,7 +30,8 @@ function LoginContent() {
   // through here with its query attached, and a crafted ?next= must never be
   // able to send a fresh session off-site.
   const nextPath = internalPathOr('/dashboard', searchParams.get('next'));
-  const { login, state } = useAuth();
+  const { login, loginPhone, state } = useAuth();
+  const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Email of an unverified account that just failed to log in. When set, we
@@ -119,7 +122,11 @@ function LoginContent() {
       page="login"
       kicker={t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN')}
       title={t('auth.login.title', 'Log In')}
-      subtitle={t('auth.login.subtitle', 'Welcome back, please log in')}
+      subtitle={
+        features.phoneAuth
+          ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
+          : t('auth.login.subtitle', 'Welcome back, please log in')
+      }
       topbar={
         features.publicSignup ? (
           <>
@@ -139,83 +146,97 @@ function LoginContent() {
         </>
       }
     >
-      <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
-        {error && <AuthNotice tone="error">{error}</AuthNotice>}
+      {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
+      {features.phoneAuth && method === 'phone' ? (
+        <PhoneAuthForm
+          purpose="login"
+          onLogin={async (phone, code) => {
+            await loginPhone(phone, code);
+            toast.success(t('auth.login.success_toast', 'Login successful!'));
+            router.push(nextPath);
+          }}
+        />
+      ) : (
+        <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
+          {error && <AuthNotice tone="error">{error}</AuthNotice>}
 
-        {unverifiedEmail &&
-          (resendDone ? (
-            <AuthNotice tone="ok">
-              {fill(
-                t(
-                  'auth.login.resent_notice',
-                  'A new verification email is on its way to {email}. Please check your inbox (and spam folder).',
-                ),
-                { email: unverifiedEmail },
-              )}
-            </AuthNotice>
-          ) : (
-            <AuthNotice>
-              <p>{t('auth.login.resend_prompt', "Didn't get the verification email?")}</p>
-              <button
-                type="button"
-                className={skin.linkButton}
-                onClick={handleResend}
-                disabled={isResending}
-              >
-                {t('auth.login.resend_button', 'Resend verification email')}
-              </button>
-            </AuthNotice>
-          ))}
+          {unverifiedEmail &&
+            (resendDone ? (
+              <AuthNotice tone="ok">
+                {fill(
+                  t(
+                    'auth.login.resent_notice',
+                    'A new verification email is on its way to {email}. Please check your inbox (and spam folder).',
+                  ),
+                  { email: unverifiedEmail },
+                )}
+              </AuthNotice>
+            ) : (
+              <AuthNotice>
+                <p>{t('auth.login.resend_prompt', "Didn't get the verification email?")}</p>
+                <button
+                  type="button"
+                  className={skin.linkButton}
+                  onClick={handleResend}
+                  disabled={isResending}
+                >
+                  {t('auth.login.resend_button', 'Resend verification email')}
+                </button>
+              </AuthNotice>
+            ))}
 
-        {/* Email or username: the first-run administrator has a login name and
+          {/* Email or username: the first-run administrator has a login name and
             no email, so this is a text field and the schema decides which rule
             applies. The request still sends it as `email`. */}
-        <AuthField
-          id="email"
-          label={t('auth.login.email_label', 'Email or username')}
-          error={errors.email?.message}
-        >
-          <input
+          <AuthField
             id="email"
-            className={errors.email?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="text"
-            autoComplete="username"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            {...register('email')}
-          />
-        </AuthField>
+            label={t('auth.login.email_label', 'Email or username')}
+            error={errors.email?.message}
+          >
+            <input
+              id="email"
+              className={errors.email?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="text"
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              {...register('email')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="password"
-          label={t('auth.login.password_label', 'Password')}
-          error={errors.password?.message}
-          // The action belongs to the field, and where it sits is the
-          // module's `fieldLayout`. Nothing here decides that.
-          action={forgotLink}
-        >
-          <input
+          <AuthField
             id="password"
-            className={errors.password?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="password"
-            autoComplete="current-password"
-            {...register('password')}
-          />
-        </AuthField>
+            label={t('auth.login.password_label', 'Password')}
+            error={errors.password?.message}
+            // The action belongs to the field, and where it sits is the
+            // module's `fieldLayout`. Nothing here decides that.
+            action={forgotLink}
+          >
+            <input
+              id="password"
+              className={errors.password?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="password"
+              autoComplete="current-password"
+              {...register('password')}
+            />
+          </AuthField>
 
-        <button
-          type="submit"
-          className={skin.submit}
-          data-auth="submit"
-          disabled={isLoading}
-          aria-busy={isLoading}
-        >
-          {isLoading ? t('auth.login.submitting', 'Logging in…') : t('auth.login.submit', 'Log In')}
-        </button>
-      </form>
+          <button
+            type="submit"
+            className={skin.submit}
+            data-auth="submit"
+            disabled={isLoading}
+            aria-busy={isLoading}
+          >
+            {isLoading
+              ? t('auth.login.submitting', 'Logging in…')
+              : t('auth.login.submit', 'Log In')}
+          </button>
+        </form>
+      )}
     </AuthPageFrame>
   );
 }

@@ -25,6 +25,7 @@ from serving.storage.log_schema import (
     drop_columns_if_present,
     execute_ddl,
 )
+from serving.storage.phone_auth import PostgresPhoneAuthMixin, initialize_phone_auth
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ logger = get_logger(__name__)
 
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name).
 _USER_COLUMNS = (
-    "id, email, login_name, user_name, role, status, email_verified, "
+    "id, email, login_name, phone, phone_verified, user_name, role, status, email_verified, "
     "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
     "signup_reason, admin_note, suspension_message"
 )
@@ -119,7 +120,7 @@ def _coerce_user_row(row: Any) -> Row | None:
     return d
 
 
-class PostgresOperationalStore(OperationalStore):
+class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
     def __init__(self, pool: asyncpg.Pool, *, fence_secret: str | None = None) -> None:
@@ -158,7 +159,7 @@ class PostgresOperationalStore(OperationalStore):
                 id TEXT PRIMARY KEY,
                 email TEXT UNIQUE,
                 login_name TEXT,
-                password_hash TEXT NOT NULL,
+                password_hash TEXT,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                 role TEXT NOT NULL DEFAULT 'free'
@@ -180,6 +181,12 @@ class PostgresOperationalStore(OperationalStore):
                 suspension_message TEXT
             )
         """)
+        try:
+            await initialize_phone_auth(conn)
+        except SchemaLockUnavailable as exc:
+            raise RequiredOperationalSchemaUnavailable(
+                "Phone identity columns are required before the operational store can serve."
+            ) from exc
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
         await conn.execute(
@@ -517,7 +524,8 @@ class PostgresOperationalStore(OperationalStore):
                 id BIGSERIAL PRIMARY KEY,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 user_id TEXT,
-                email TEXT NOT NULL,
+                email TEXT,
+                phone TEXT,
                 outcome TEXT NOT NULL
                     CHECK (outcome IN ('success', 'failure')),
                 failure_reason TEXT,
@@ -526,6 +534,15 @@ class PostgresOperationalStore(OperationalStore):
             )
             """
         )
+        await apply_column_migrations(
+            conn,
+            "login_events",
+            [("phone", "ALTER TABLE login_events ADD COLUMN IF NOT EXISTS phone TEXT")],
+        )
+        login_email_meta = await column_metadata(conn, "login_events", "email")
+        if login_email_meta and login_email_meta["not_null"]:
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "ALTER TABLE login_events ALTER COLUMN email DROP NOT NULL")
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_user "
             "ON login_events (user_id, created_at DESC) WHERE user_id IS NOT NULL"
@@ -1176,6 +1193,11 @@ class PostgresOperationalStore(OperationalStore):
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active'",
                 user_id,
             )
+            await conn.execute(
+                "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
+                "phone = (SELECT phone FROM users WHERE id = $1)",
+                user_id,
+            )
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
             await conn.execute("DELETE FROM email_verification_tokens WHERE user_id = $1", user_id)
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
@@ -1316,6 +1338,16 @@ class PostgresOperationalStore(OperationalStore):
             )
             sessions_status = await conn.execute(
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
+            )
+            await conn.execute(
+                "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
+                "phone = (SELECT phone FROM users WHERE id = $1)",
+                user_id,
+            )
+            await conn.execute(
+                "DELETE FROM phone_auth_attempts WHERE "
+                "phone = (SELECT phone FROM users WHERE id = $1)",
+                user_id,
             )
             login_events_status = await conn.execute(
                 "DELETE FROM login_events WHERE user_id = $1", user_id
@@ -1473,6 +1505,7 @@ class PostgresOperationalStore(OperationalStore):
             where_clauses.append(
                 f"(u.email ILIKE ${substr_idx} "
                 f"OR u.login_name ILIKE ${substr_idx} "
+                f"OR u.phone ILIKE ${substr_idx} "
                 f"OR u.user_name ILIKE ${substr_idx} "
                 f"OR u.id::text LIKE ${id_idx} "
                 f"OR EXISTS (SELECT 1 FROM api_keys k2 "
@@ -1648,7 +1681,7 @@ class PostgresOperationalStore(OperationalStore):
             # share the WHERE clause and join optional cost CTEs uniformly.
             cte_parts = [
                 f"filtered_users AS ("
-                f"  SELECT u.id, u.email, u.login_name, u.user_name, u.role, u.status, "
+                f"  SELECT u.id, u.email, u.login_name, u.phone, u.phone_verified, u.user_name, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                 f"  u.signup_reason, u.admin_note, "
                 f"  u.created_at, u.last_login_at, "
@@ -1896,7 +1929,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "u.email, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
+                "u.email, u.login_name, u.phone, u.phone_verified, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1911,7 +1944,7 @@ class PostgresOperationalStore(OperationalStore):
         """Lightweight identity lookup (no quota check, no last_used write)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.user_id, u.email, u.role, u.email_verified, u.preferences, "
+                "SELECT k.user_id, u.email, u.login_name, u.phone, u.phone_verified, u.role, u.email_verified, u.preferences, "
                 "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -3558,7 +3591,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             # 1. Pending count + top
             pending_rows = await conn.fetch(
-                "SELECT id, email, login_name, user_name, role, created_at "
+                "SELECT id, email, login_name, phone, user_name, role, created_at "
                 "FROM users WHERE status = 'pending_approval' "
                 "ORDER BY created_at DESC LIMIT $1",
                 top_n,
@@ -3585,7 +3618,7 @@ class PostgresOperationalStore(OperationalStore):
                     WHERE day BETWEEN $2 AND $3
                     GROUP BY user_id
                 )
-                SELECT u.id, u.email, u.login_name, u.user_name, u.role,
+                SELECT u.id, u.email, u.login_name, u.phone, u.user_name, u.role,
                        COALESCE(t.today_cost, 0) AS today_cost,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
@@ -3616,6 +3649,7 @@ class PostgresOperationalStore(OperationalStore):
                     "id": r["id"],
                     "email": r["email"],
                     "login_name": r.get("login_name"),
+                    "phone": r.get("phone"),
                     "user_name": r["user_name"],
                     "role": r["role"] or "free",
                     "today_cost_usd": today,
@@ -3663,6 +3697,7 @@ class PostgresOperationalStore(OperationalStore):
                         "id": r["id"],
                         "email": r["email"],
                         "login_name": r.get("login_name"),
+                        "phone": r.get("phone"),
                         "user_name": r["user_name"],
                         "role": r["role"] or "free",
                         "today_cost_usd": _Decimal("0"),

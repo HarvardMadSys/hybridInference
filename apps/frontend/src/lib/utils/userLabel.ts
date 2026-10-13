@@ -17,6 +17,7 @@ export interface UserIdentity {
   user_id?: string | null;
   email?: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_name?: string | null;
 }
 
@@ -31,20 +32,28 @@ function firstPresent(...values: Array<string | null | undefined>): string {
 /** The name to show a person by: display name, email, login name, then id. */
 export function userDisplayName(user: UserIdentity | null | undefined): string {
   if (!user) return '';
-  return firstPresent(user.user_name, user.email, user.login_name, user.id, user.user_id);
+  return firstPresent(
+    user.user_name,
+    user.email,
+    user.login_name,
+    user.phone,
+    user.id,
+    user.user_id,
+  );
 }
 
 /** The account's sign-in identifier: email, else login name, else id. */
 export function userAccountLabel(user: UserIdentity | null | undefined): string {
   if (!user) return '';
-  return firstPresent(user.email, user.login_name, user.id, user.user_id);
+  return firstPresent(user.email, user.login_name, user.phone, user.id, user.user_id);
 }
 
 /** What `userAccountLabel` returned, so a prompt can say what to type. */
-export type AccountLabelKind = 'email' | 'login_name' | 'id';
+export type AccountLabelKind = 'email' | 'login_name' | 'phone' | 'id';
 
 export function userAccountLabelKind(user: UserIdentity | null | undefined): AccountLabelKind {
   if (user?.email?.trim()) return 'email';
   if (user?.login_name?.trim()) return 'login_name';
+  if (user?.phone?.trim()) return 'phone';
   return 'id';
 }

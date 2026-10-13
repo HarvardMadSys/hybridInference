@@ -1,7 +1,12 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { endAgentSession, login as loginApi, logout as logoutApi } from '@/lib/api/auth';
+import {
+  endAgentSession,
+  login as loginApi,
+  loginPhone as loginPhoneApi,
+  logout as logoutApi,
+} from '@/lib/api/auth';
 import { AUTH_EXPIRED_EVENT, setAccessToken } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
 import { useSiteConfig } from './SiteConfigProvider';
@@ -20,6 +25,9 @@ export interface AuthUser {
    */
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
+  phone_verified?: boolean;
+  has_password?: boolean;
   user_name?: string | null;
   role: string;
   is_admin: boolean;
@@ -41,6 +49,7 @@ interface AuthContextValue {
    * administrator is signed in by the request that created the account.
    */
   adoptSession: (accessToken: string) => Promise<void>;
+  loginPhone: (phone: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -77,6 +86,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           id: me.id,
           email: me.email ?? null,
           login_name: me.login_name ?? null,
+          phone: me.phone,
+          phone_verified: me.phone_verified,
+          has_password: me.has_password,
           user_name: me.user_name,
           role: me.role || 'free',
           is_admin: me.is_admin,
@@ -131,10 +143,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [agentsUrl]);
 
+  const loginPhone = useCallback(
+    async (phone: string, code: string) => {
+      await loginPhoneApi({ phone, code });
+      await refreshUser();
+    },
+    [refreshUser],
+  );
+
   const value: AuthContextValue = {
     state,
     login,
     adoptSession,
+    loginPhone,
     logout,
     refreshUser,
   };

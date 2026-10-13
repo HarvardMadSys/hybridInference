@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { buildCombinedUseCase, createAuthSchemas, SignupFormData } from '@/lib/schemas/auth';
@@ -15,14 +14,9 @@ import { AuthField, AuthNotice } from '@/components/auth/AuthForm';
 import { useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 import { SignupConsentStep } from './SignupConsentStep';
-
-const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
-
-declare global {
-  interface Window {
-    [TURNSTILE_CALLBACK]?: (token: string) => void;
-  }
-}
+import { AuthMethodSelector } from '@/components/auth/AuthMethodSelector';
+import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { TurnstileChallenge } from '@/components/auth/TurnstileChallenge';
 
 export default function SignupPage() {
   const t = useT();
@@ -30,10 +24,12 @@ export default function SignupPage() {
   const { branding, features } = useSiteConfig();
   const turnstileSiteKey = branding.turnstileSiteKey;
   const [step, setStep] = useState<'consent' | 'form'>('consent');
+  const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
+  const [captchaReset, setCaptchaReset] = useState(0);
   // Validation copy is interface copy too: the schemas are rebuilt per
   // translator, and the signup one also takes the runtime site host because it
   // measures the text buildCombinedUseCase will submit.
@@ -49,17 +45,6 @@ export default function SignupPage() {
   } = useForm<SignupFormData>({
     resolver: zodResolver(runtimeSignupSchema),
   });
-
-  useEffect(() => {
-    turnstileTokenRef.current = null;
-    if (!turnstileSiteKey) return;
-    window[TURNSTILE_CALLBACK] = (token: string) => {
-      turnstileTokenRef.current = token;
-    };
-    return () => {
-      delete window[TURNSTILE_CALLBACK];
-    };
-  }, [turnstileSiteKey]);
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
@@ -94,6 +79,8 @@ export default function SignupPage() {
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
+      turnstileTokenRef.current = null;
+      setCaptchaReset((value) => value + 1);
       setIsLoading(false);
     }
   };
@@ -169,155 +156,156 @@ export default function SignupPage() {
         </>
       }
     >
-      <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
-        {error && <AuthNotice tone="error">{error}</AuthNotice>}
+      {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
+      {features.phoneAuth && method === 'phone' ? (
+        <PhoneAuthForm purpose="signup" onSuccess={setSignupResult} />
+      ) : (
+        <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
+          {error && <AuthNotice tone="error">{error}</AuthNotice>}
 
-        {branding.fastTrackDomain && (
-          <AuthNotice>
-            {fill(
-              t(
-                'auth.signup.fast_track',
-                'Open to {org} students — sign up with your @{domain} email for instant access. Everyone else: please describe your use case below — we review and approve manually.',
-              ),
-              { org: branding.fastTrackOrg, domain: branding.fastTrackDomain },
-            )}
-          </AuthNotice>
-        )}
+          {branding.fastTrackDomain && (
+            <AuthNotice>
+              {fill(
+                t(
+                  'auth.signup.fast_track',
+                  'Open to {org} students — sign up with your @{domain} email for instant access. Everyone else: please describe your use case below — we review and approve manually.',
+                ),
+                { org: branding.fastTrackOrg, domain: branding.fastTrackDomain },
+              )}
+            </AuthNotice>
+          )}
 
-        <AuthField
-          id="email"
-          label={t('auth.signup.email_label', 'Email')}
-          error={errors.email?.message}
-        >
-          <input
+          <AuthField
             id="email"
-            className={errors.email?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="email"
-            autoComplete="email"
-            {...register('email')}
-          />
-        </AuthField>
+            label={t('auth.signup.email_label', 'Email')}
+            error={errors.email?.message}
+          >
+            <input
+              id="email"
+              className={errors.email?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="email"
+              autoComplete="email"
+              {...register('email')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="userName"
-          label={t('auth.signup.username_label', 'Username')}
-          hint={t(
-            'auth.signup.username_hint',
-            'This name is shown in your account and admin review.',
-          )}
-          error={errors.userName?.message}
-        >
-          <input
+          <AuthField
             id="userName"
-            className={errors.userName?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="text"
-            autoComplete="username"
-            {...register('userName')}
-          />
-        </AuthField>
+            label={t('auth.signup.username_label', 'Username')}
+            hint={t(
+              'auth.signup.username_hint',
+              'This name is shown in your account and admin review.',
+            )}
+            error={errors.userName?.message}
+          >
+            <input
+              id="userName"
+              className={errors.userName?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="text"
+              autoComplete="username"
+              {...register('userName')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="password"
-          label={t('auth.signup.password_label', 'Password')}
-          hint={t(
-            'auth.signup.password_hint',
-            'At least 8 characters with uppercase, lowercase, and numbers.',
-          )}
-          error={errors.password?.message}
-        >
-          <input
+          <AuthField
             id="password"
-            className={errors.password?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="password"
-            autoComplete="new-password"
-            {...register('password')}
-          />
-        </AuthField>
+            label={t('auth.signup.password_label', 'Password')}
+            hint={t(
+              'auth.signup.password_hint',
+              'At least 8 characters with uppercase, lowercase, and numbers.',
+            )}
+            error={errors.password?.message}
+          >
+            <input
+              id="password"
+              className={errors.password?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="password"
+              autoComplete="new-password"
+              {...register('password')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="confirmPassword"
-          label={t('auth.signup.confirm_password_label', 'Confirm Password')}
-          error={errors.confirmPassword?.message}
-        >
-          <input
+          <AuthField
             id="confirmPassword"
-            className={errors.confirmPassword?.message ? skin.inputError : skin.input}
-            data-auth="control"
-            type="password"
-            autoComplete="new-password"
-            {...register('confirmPassword')}
-          />
-        </AuthField>
+            label={t('auth.signup.confirm_password_label', 'Confirm Password')}
+            error={errors.confirmPassword?.message}
+          >
+            <input
+              id="confirmPassword"
+              className={errors.confirmPassword?.message ? skin.inputError : skin.input}
+              data-auth="control"
+              type="password"
+              autoComplete="new-password"
+              {...register('confirmPassword')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="discoverySource"
-          label={t('auth.signup.discovery_label', 'How did you find us?')}
-          hint={t('auth.signup.discovery_hint', 'Optional, but helpful for improving outreach.')}
-          error={errors.discoverySource?.message}
-        >
-          <textarea
+          <AuthField
             id="discoverySource"
-            rows={2}
-            maxLength={500}
-            placeholder={t(
-              'auth.signup.discovery_placeholder',
-              'Friend/classmate, search engine, social media, course link, etc.',
-            )}
-            className={`${errors.discoverySource?.message ? skin.inputError : skin.input} auth-textarea`}
-            data-auth="control"
-            {...register('discoverySource')}
-          />
-        </AuthField>
+            label={t('auth.signup.discovery_label', 'How did you find us?')}
+            hint={t('auth.signup.discovery_hint', 'Optional, but helpful for improving outreach.')}
+            error={errors.discoverySource?.message}
+          >
+            <textarea
+              id="discoverySource"
+              rows={2}
+              maxLength={500}
+              placeholder={t(
+                'auth.signup.discovery_placeholder',
+                'Friend/classmate, search engine, social media, course link, etc.',
+              )}
+              className={`${errors.discoverySource?.message ? skin.inputError : skin.input} auth-textarea`}
+              data-auth="control"
+              {...register('discoverySource')}
+            />
+          </AuthField>
 
-        <AuthField
-          id="useCase"
-          label={t('auth.signup.use_case_label', 'Use case')}
-          hint={t('auth.signup.use_case_hint', 'Helps admins review signups faster.')}
-          error={errors.useCase?.message}
-        >
-          <textarea
+          <AuthField
             id="useCase"
-            rows={4}
-            maxLength={2000}
-            placeholder={t(
-              'auth.signup.use_case_placeholder',
-              'Tell us briefly what you plan to use the service for (research project, course, app prototype, etc.).',
-            )}
-            className={`${errors.useCase?.message ? skin.inputError : skin.input} auth-textarea`}
-            data-auth="control"
-            {...register('useCase')}
-          />
-        </AuthField>
-
-        {turnstileSiteKey && (
-          <>
-            <Script
-              src="https://challenges.cloudflare.com/turnstile/v0/api.js"
-              strategy="afterInteractive"
+            label={t('auth.signup.use_case_label', 'Use case')}
+            hint={t('auth.signup.use_case_hint', 'Helps admins review signups faster.')}
+            error={errors.useCase?.message}
+          >
+            <textarea
+              id="useCase"
+              rows={4}
+              maxLength={2000}
+              placeholder={t(
+                'auth.signup.use_case_placeholder',
+                'Tell us briefly what you plan to use the service for (research project, course, app prototype, etc.).',
+              )}
+              className={`${errors.useCase?.message ? skin.inputError : skin.input} auth-textarea`}
+              data-auth="control"
+              {...register('useCase')}
             />
-            <div
-              className="cf-turnstile"
-              data-sitekey={turnstileSiteKey}
-              data-callback={TURNSTILE_CALLBACK}
-            />
-          </>
-        )}
+          </AuthField>
 
-        <button
-          type="submit"
-          className={skin.submit}
-          data-auth="submit"
-          disabled={isLoading}
-          aria-busy={isLoading}
-        >
-          {isLoading
-            ? t('auth.signup.submitting', 'Creating your account…')
-            : t('auth.signup.submit', 'Sign Up')}
-        </button>
-      </form>
+          {turnstileSiteKey && (
+            <TurnstileChallenge
+              siteKey={turnstileSiteKey}
+              onToken={(token) => {
+                turnstileTokenRef.current = token;
+              }}
+              resetKey={captchaReset}
+            />
+          )}
+
+          <button
+            type="submit"
+            className={skin.submit}
+            data-auth="submit"
+            disabled={isLoading}
+            aria-busy={isLoading}
+          >
+            {isLoading
+              ? t('auth.signup.submitting', 'Creating your account…')
+              : t('auth.signup.submit', 'Sign Up')}
+          </button>
+        </form>
+      )}
     </AuthPageFrame>
   );
 }

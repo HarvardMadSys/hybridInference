@@ -1,5 +1,15 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { AGENT_LOGOUT_TIMEOUT_MS, endAgentSession, login, resendVerification } from '../auth';
+import {
+  AGENT_LOGOUT_TIMEOUT_MS,
+  endAgentSession,
+  bindPhone,
+  login,
+  loginPhone,
+  resendVerification,
+  sendPhoneCode,
+  signupPhone,
+} from '../auth';
+import { getAccessToken, setAccessToken } from '../client';
 import { APIError } from '@/lib/utils/errors';
 
 const fetchMock = vi.fn();
@@ -12,10 +22,100 @@ beforeEach(() => {
     setItem: () => undefined,
     removeItem: () => undefined,
   });
+  setAccessToken(null);
 });
 
 afterEach(() => {
+  setAccessToken(null);
   vi.unstubAllGlobals();
+});
+
+describe('phone auth requests', () => {
+  function respond(data: unknown) {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  }
+
+  function validToken() {
+    return `header.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
+  }
+
+  it('sends the purpose and captcha token without a browser-side credential', async () => {
+    respond({ message: 'sent', retry_after: 60 });
+    await sendPhoneCode({ phone: '13812345678', purpose: 'signup', turnstileToken: 'captcha' });
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/auth\/phone\/code$/);
+    expect(options.credentials).toBe('include');
+    expect(JSON.parse(options.body)).toEqual({
+      phone: '13812345678',
+      purpose: 'signup',
+      turnstile_token: 'captcha',
+    });
+  });
+
+  it('sends signup consent and accepts a phone-only identity', async () => {
+    const result = {
+      message: 'created',
+      user_id: 'phone-user',
+      email: null,
+      phone: '+8613812345678',
+      requires_approval: true,
+    };
+    respond(result);
+    const request = {
+      phone: '13812345678',
+      code: '123456',
+      user_name: 'Phone User',
+      accepted_tos: true as const,
+    };
+    expect(await signupPhone(request)).toEqual(result);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/auth\/phone\/signup$/);
+    expect(JSON.parse(options.body)).toEqual(request);
+  });
+
+  it('uses the shared access-token and HttpOnly refresh-cookie flow for phone login', async () => {
+    const accessToken = validToken();
+    respond({
+      access_token: accessToken,
+      token_type: 'bearer',
+      expires_in: 3600,
+      user: {
+        id: 'phone-user',
+        email: null,
+        phone: '+8613812345678',
+        phone_verified: true,
+        role: 'free',
+        is_admin: false,
+      },
+    });
+    const result = await loginPhone({ phone: '13812345678', code: '123456' });
+    expect(result.user.email).toBeNull();
+    expect(getAccessToken()).toBe(accessToken);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/auth\/phone\/login$/);
+    expect(fetchMock.mock.calls[0][1].credentials).toBe('include');
+  });
+
+  it('authenticates both sending a bind code and binding an existing account', async () => {
+    const accessToken = validToken();
+    setAccessToken(accessToken);
+    respond({ message: 'sent', retry_after: 60 });
+    await sendPhoneCode({ phone: '13812345678', purpose: 'bind' });
+    respond({ message: 'bound' });
+    await bindPhone({ phone: '13812345678', code: '123456' });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      expect.stringMatching(/\/auth\/phone\/code$/),
+      expect.stringMatching(/\/auth\/phone\/bind$/),
+    ]);
+    for (const [, options] of fetchMock.mock.calls) {
+      expect(options.headers.get('Authorization')).toBe(`Bearer ${accessToken}`);
+      expect(options.credentials).toBe('include');
+    }
+  });
 });
 
 describe('resendVerification', () => {

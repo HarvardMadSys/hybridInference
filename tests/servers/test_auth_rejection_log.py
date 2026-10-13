@@ -669,7 +669,9 @@ async def test_quota_exceeded_logs_rejection(monkeypatch):
         "user_name": "Test",
         "role": "free",
         "email": None,
-        "email_verified": True,
+        "phone": "+8613800138000",
+        "phone_verified": True,
+        "email_verified": False,
         "quota_daily_cost_usd": 0.001,  # very low
     }
     app, log_calls, _op = _build_app(monkeypatch, op_store_user=user_row)

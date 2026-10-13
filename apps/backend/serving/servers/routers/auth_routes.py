@@ -31,6 +31,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.servers.routers.phone_auth_routes import router as phone_auth_router
 from serving.setup_state import refresh_setup_state
 from serving.utils import password as password_utils
 from serving.utils.email import (
@@ -49,11 +50,13 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login
+from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+router.include_router(phone_auth_router)
 logger = get_logger(__name__)
 
 
@@ -158,6 +161,9 @@ async def start_user_session(
             id=user_row["id"],
             email=user_row["email"],
             login_name=user_row.get("login_name"),
+            phone=user_row.get("phone"),
+            phone_verified=user_row.get("phone_verified", False),
+            has_password=bool(user_row.get("password_hash")),
             user_name=user_row["user_name"],
             role=user_role,
             status=user_row["status"],
@@ -411,7 +417,9 @@ async def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Verify password
-    if not password_utils.verify_password(body.password, user_row["password_hash"]):
+    if not user_row.get("password_hash") or not password_utils.verify_password(
+        body.password, user_row["password_hash"]
+    ):
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -463,7 +471,9 @@ async def login(
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
         pass
-    if require_verification and not user_row["email_verified"]:
+    if (
+        require_verification and user_row.get("email") and not user_row["email_verified"]
+    ) or phone_identity_unverified(user_row):
         await _record("failure", failure_reason="email_unverified", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
@@ -579,7 +589,9 @@ async def refresh(
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
         pass
-    if require_verification and not user_row["email_verified"]:
+    if (
+        require_verification and user_row.get("email") and not user_row["email_verified"]
+    ) or phone_identity_unverified(user_row):
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",

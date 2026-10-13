@@ -69,6 +69,32 @@ export function createAuthSchemas(t: Translate) {
     'Combined use case and discovery response is too long (max 2000 characters)',
   );
 
+  const phoneCredentialsSchema = z.object({
+    phone: z
+      .string()
+      .trim()
+      .regex(
+        /^\+?[1-9]\d{7,14}$/,
+        t('auth.validation.phone_invalid', 'Enter a phone number with its country code.'),
+      ),
+    code: z
+      .string()
+      .regex(
+        /^\d{6}$/,
+        t('auth.validation.phone_code_invalid', 'Enter the six-digit verification code.'),
+      ),
+  });
+
+  function createPhoneSignupSchema(siteHost = 'this service') {
+    return signupFieldsSchema
+      .omit({ email: true, password: true, confirmPassword: true })
+      .extend(phoneCredentialsSchema.shape)
+      .refine(
+        (data) => buildCombinedUseCase(data.useCase, data.discoverySource, siteHost).length <= 2000,
+        { message: combinedMaxMessage, path: ['discoverySource'] },
+      );
+  }
+
   /**
    * The signup schema names the site host in the text it measures, so the
    * factory stays a factory: each call mints fresh refinements over the
@@ -138,6 +164,8 @@ export function createAuthSchemas(t: Translate) {
     loginSchema,
     profileUpdateSchema,
     createSignupSchema,
+    phoneCredentialsSchema,
+    createPhoneSignupSchema,
   };
 }
 
@@ -177,3 +205,6 @@ export const createSignupSchema = consoleSchemas.createSignupSchema;
 export type SignupFormData = z.infer<typeof signupSchema>;
 export type LoginFormData = z.infer<typeof loginSchema>;
 export type ProfileUpdateData = z.infer<typeof profileUpdateSchema>;
+export type PhoneSignupFormData = z.infer<
+  ReturnType<typeof consoleSchemas.createPhoneSignupSchema>
+>;

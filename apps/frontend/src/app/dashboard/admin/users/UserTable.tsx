@@ -422,6 +422,7 @@ export function UserTable(props: UserTableProps) {
                 id: u.id,
                 email: u.email,
                 login_name: u.login_name ?? null,
+                phone: u.phone,
                 user_name: u.user_name,
                 role: u.role,
                 status: u.status,
@@ -693,7 +694,9 @@ export function UserTable(props: UserTableProps) {
                 ? 'email address'
                 : hardDeleteConfirmKind === 'login_name'
                   ? 'username'
-                  : 'user ID'}{' '}
+                  : hardDeleteConfirmKind === 'phone'
+                    ? 'phone number'
+                    : 'user ID'}{' '}
               (<span className="font-mono text-gray-700">{hardDeleteConfirmTarget}</span>) to
               confirm:
             </p>
@@ -706,7 +709,9 @@ export function UserTable(props: UserTableProps) {
                   ? 'email@example.com'
                   : hardDeleteConfirmKind === 'login_name'
                     ? 'username'
-                    : 'user ID'
+                    : hardDeleteConfirmKind === 'phone'
+                      ? 'phone number'
+                      : 'user ID'
               }
               value={hardDeleteEmailConfirm}
               onChange={(e) => setHardDeleteEmailConfirm(e.target.value)}

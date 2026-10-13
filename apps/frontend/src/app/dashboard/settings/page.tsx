@@ -8,12 +8,15 @@ import toast from 'react-hot-toast';
 import { updatePassword, updateProfile } from '@/lib/api/user';
 import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { fill } from '@/lib/utils/interpolate';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
-import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useT } from '@/components/providers/useT';
+import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 
 const changePasswordSchema = z
   .object({
@@ -35,7 +38,8 @@ type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 
 function SettingsContent() {
   const { state, refreshUser } = useAuth();
-  const branding = useBranding();
+  const { branding, features } = useSiteConfig();
+  const t = useT();
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
@@ -158,63 +162,90 @@ function SettingsContent() {
           </div>
         </Card>
 
-        <Card>
-          <div className="flex flex-col h-full">
-            <div className="mb-2">
-              <h2 className="text-lg font-semibold">Change Password</h2>
-              <p className="text-sm text-gray-600">
-                Update your password to keep your account secure.
-              </p>
-            </div>
-            <form
-              onSubmit={passwordForm.handleSubmit(onPasswordSubmit)}
-              className="space-y-4 flex-1"
-            >
-              {passwordError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
-                  {passwordError}
-                </div>
-              )}
-              {passwordSuccess && (
-                <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-md text-sm">
-                  {passwordSuccess}
-                </div>
-              )}
-
-              <InputField
-                label="Current Password"
-                type="password"
-                autoComplete="current-password"
-                error={passwordForm.formState.errors.oldPassword?.message}
-                {...passwordForm.register('oldPassword')}
-              />
-
-              <InputField
-                label="New Password"
-                type="password"
-                hint="At least 8 characters with uppercase, lowercase, and numbers"
-                autoComplete="new-password"
-                error={passwordForm.formState.errors.newPassword?.message}
-                {...passwordForm.register('newPassword')}
-              />
-
-              <InputField
-                label="Confirm New Password"
-                type="password"
-                autoComplete="new-password"
-                error={passwordForm.formState.errors.confirmPassword?.message}
-                {...passwordForm.register('confirmPassword')}
-              />
-
-              <div className="mt-auto flex justify-end">
-                <Button type="submit" isLoading={passwordLoading}>
-                  Update Password
-                </Button>
+        {state.user?.has_password !== false && (
+          <Card>
+            <div className="flex flex-col h-full">
+              <div className="mb-2">
+                <h2 className="text-lg font-semibold">Change Password</h2>
+                <p className="text-sm text-gray-600">
+                  Update your password to keep your account secure.
+                </p>
               </div>
-            </form>
-          </div>
-        </Card>
+              <form
+                onSubmit={passwordForm.handleSubmit(onPasswordSubmit)}
+                className="space-y-4 flex-1"
+              >
+                {passwordError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
+                    {passwordError}
+                  </div>
+                )}
+                {passwordSuccess && (
+                  <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-md text-sm">
+                    {passwordSuccess}
+                  </div>
+                )}
+
+                <InputField
+                  label="Current Password"
+                  type="password"
+                  autoComplete="current-password"
+                  error={passwordForm.formState.errors.oldPassword?.message}
+                  {...passwordForm.register('oldPassword')}
+                />
+
+                <InputField
+                  label="New Password"
+                  type="password"
+                  hint="At least 8 characters with uppercase, lowercase, and numbers"
+                  autoComplete="new-password"
+                  error={passwordForm.formState.errors.newPassword?.message}
+                  {...passwordForm.register('newPassword')}
+                />
+
+                <InputField
+                  label="Confirm New Password"
+                  type="password"
+                  autoComplete="new-password"
+                  error={passwordForm.formState.errors.confirmPassword?.message}
+                  {...passwordForm.register('confirmPassword')}
+                />
+
+                <div className="mt-auto flex justify-end">
+                  <Button type="submit" isLoading={passwordLoading}>
+                    Update Password
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </Card>
+        )}
       </div>
+
+      {features.phoneAuth && (
+        <Card>
+          <h2 className="text-lg font-semibold">
+            {t('auth.phone.settings_title', 'Mobile number')}
+          </h2>
+          {state.user?.phone_verified ? (
+            <p className="mt-2 text-sm text-gray-600">
+              {fill(t('auth.phone.bound_number', 'Verified mobile number: {phone}'), {
+                phone: state.user.phone ?? '',
+              })}
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-gray-600">
+                {t(
+                  'auth.phone.bind_hint',
+                  'Bind a mobile number to log in to this account with a verification code.',
+                )}
+              </p>
+              <PhoneAuthForm purpose="bind" onSuccess={refreshUser} />
+            </>
+          )}
+        </Card>
+      )}
 
       {/* Placeholder: Danger Zone */}
       <Card>

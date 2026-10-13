@@ -362,7 +362,8 @@ async def anthropic_aware_validation_exception_handler(
     The status is unchanged at 422 -- same as FastAPI's default -- and the
     correlation id still rides on the ``X-Request-ID`` response header, so a
     client that reports "I got a 422, here is the id" is still supportable. The
-    full validation detail, ``input`` included, goes to the log.
+    full validation detail, ``input`` included, goes to the log except on
+    phone-auth routes, where submitted OTPs and phone numbers are omitted.
 
     Registered on the Anthropic-aware pair in ``create_app`` alongside the
     HTTPException handler, so the Anthropic surfaces keep their own envelope
@@ -378,7 +379,21 @@ async def anthropic_aware_validation_exception_handler(
         # cannot render). Answering the request matters more than the log line,
         # and a body with no field list is still a correct 422.
         errors = None
-    detail = str(errors) if errors is not None else str(exc)
+    if request.url.path.startswith("/auth/phone/"):
+        # A missing signup field carries the whole body in ``input``, including
+        # a valid OTP. Keep diagnostics without retaining that credential.
+        detail = (
+            str(
+                [
+                    {key: error[key] for key in ("type", "loc", "msg") if key in error}
+                    for error in errors
+                ]
+            )
+            if errors is not None
+            else "Invalid phone authentication request"
+        )
+    else:
+        detail = str(errors) if errors is not None else str(exc)
     logger.warning(
         "request_validation_error",
         extra={

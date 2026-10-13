@@ -48,6 +48,7 @@ def _recipient_where(
         "role = ANY($1::text[])",
         "status = ANY($2::text[])",
         "email IS NOT NULL",
+        "btrim(email) <> ''",
     ]
     params: list[Any] = [target_roles or [], target_statuses or []]
     if min_spend_today_usd is not None:

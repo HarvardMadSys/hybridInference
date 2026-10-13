@@ -62,6 +62,7 @@ from serving.servers.routers.models import _build_model_list_async
 from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
+from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
@@ -280,6 +281,9 @@ async def get_current_user_info(
         id=user_row["id"],
         email=user_row["email"],
         login_name=user_row.get("login_name"),
+        phone=user_row.get("phone"),
+        phone_verified=user_row.get("phone_verified", False),
+        has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
         role=user_row["role"] or "free",
         status=user_row["status"],
@@ -392,7 +396,11 @@ async def create_api_key(
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
         pass
-    if require_verification and not current_user.get("email_verified"):
+    if (
+        require_verification
+        and current_user.get("email")
+        and not current_user.get("email_verified")
+    ) or phone_identity_unverified(current_user):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
     # Check if user already has an active API key. Use the account-or-user
@@ -821,6 +829,9 @@ async def update_profile(
         id=user_row["id"],
         email=user_row["email"],
         login_name=user_row.get("login_name"),
+        phone=user_row.get("phone"),
+        phone_verified=user_row.get("phone_verified", False),
+        has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
         role=user_row["role"] or "free",
         status=user_row["status"],
@@ -851,6 +862,9 @@ async def change_password(
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if not user_row.get("password_hash"):
+        raise HTTPException(400, "This account uses phone verification and has no password.")
 
     if not password_utils.verify_password(body.old_password, user_row["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")

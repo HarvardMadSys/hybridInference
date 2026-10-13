@@ -572,3 +572,15 @@ additionally reports unpublished routes and requires an administrator's JWT
 or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints'
 output as sensitive.
 ```
+
+## Optional phone authentication
+
+Phone signup, login and binding are disabled by default. Enable `SMS_AUTH_ENABLED` and select `SMS_PROVIDER=tencent` in **Admin > Configuration** only after delivery is configured. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work.
+
+The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. This adapter currently sends to mainland China mobile numbers only. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control.
+
+Account identifiers use international format, such as `+8613812345678`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. For the Tencent domestic adapter, set the former to `86` if local input is desired and the latter to `+86`. Number policy belongs to the deployment, while provider delivery remains separate from account storage.
+
+Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Binding requires an authenticated session and a separate code for that account.
+
+Startup adds phone identity columns and durable code tables and makes password hashes nullable. Upgrade every gateway worker before enabling phone signup. Back up the database first; once phone-only accounts exist, an older binary that assumes every account has a password is not a supported rollback. Disabling SMS hides phone login but does not remove accounts, so arrange another verified sign-in method before disabling it for phone-only users. Site UI v1 message overrides remain optional; distributions can translate the added phone message slots without owning authentication logic.

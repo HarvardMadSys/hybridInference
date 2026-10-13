@@ -95,6 +95,12 @@ export function DashboardView() {
               <span className="font-medium">{state.user.login_name}</span>
             </div>
           )}
+          {state.user?.phone && (
+            <div className="flex justify-between">
+              <span className="text-gray-600">Mobile number:</span>
+              <span className="font-medium">{state.user.phone}</span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span className="text-gray-600">User ID:</span>
             <span className="font-mono text-xs">{state.user?.id}</span>

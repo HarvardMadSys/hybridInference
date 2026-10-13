@@ -76,7 +76,12 @@ def _user_label(user_row: dict) -> str:
 
     The first-run setup administrator has no email address.
     """
-    return user_row.get("email") or user_row.get("login_name") or user_row["id"]
+    return (
+        user_row.get("email")
+        or user_row.get("login_name")
+        or user_row.get("phone")
+        or user_row["id"]
+    )
 
 
 @router.get("/users", response_model=ListUsersResponse)
@@ -166,6 +171,8 @@ async def list_users(
                 id=row["id"],
                 email=row["email"],
                 login_name=row.get("login_name"),
+                phone=row.get("phone"),
+                phone_verified=row.get("phone_verified", False),
                 user_name=row["user_name"],
                 role=row["role"] or "free",
                 status=row["status"],
@@ -421,6 +428,7 @@ async def admin_get_users_summary(
                     id=u["id"],
                     email=u.get("email"),
                     login_name=u.get("login_name"),
+                    phone=u.get("phone"),
                     user_name=u.get("user_name"),
                     role=u.get("role", "free"),
                     today_cost_usd=Decimal(str(u.get("today_cost_usd", 0))),
@@ -516,6 +524,7 @@ async def approve_user(
     return ApproveUserResponse(
         user_id=user_id,
         email=user_row["email"],
+        phone=user_row.get("phone"),
         status="active",
         message=f"User {_user_label(user_row)} has been approved.",
     )
@@ -568,6 +577,7 @@ async def reject_user(
     return RejectUserResponse(
         user_id=user_id,
         email=user_row["email"],
+        phone=user_row.get("phone"),
         status="rejected",
         message=f"User {_user_label(user_row)} has been rejected.",
     )
@@ -678,6 +688,8 @@ async def get_user_detail(
         id=user_row["id"],
         email=user_row["email"],
         login_name=user_row.get("login_name"),
+        phone=user_row.get("phone"),
+        phone_verified=user_row.get("phone_verified", False),
         user_name=user_row["user_name"],
         role=user_row["role"] or "free",
         status=user_row["status"],
@@ -940,6 +952,7 @@ async def delete_user(
     return DeleteUserResponse(
         user_id=user_id,
         email=user_row["email"],
+        phone=user_row.get("phone"),
         status="deleted",
         message=f"User {_user_label(user_row)} has been deleted.",
     )
@@ -1006,6 +1019,7 @@ async def resume_user(
     return ResumeUserResponse(
         user_id=user_id,
         email=user_row["email"],
+        phone=user_row.get("phone"),
         status="active",
         message=f"User {_user_label(user_row)} has been resumed.",
     )
@@ -1157,5 +1171,6 @@ async def hard_delete_user(
     return HardDeleteUserResponse(
         user_id=user_id,
         email=email,
+        phone=user_row.get("phone"),
         message=f"User {label} has been permanently deleted.",
     )

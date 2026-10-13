@@ -660,6 +660,50 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_sessions(user_id)
 
+    async def get_user_by_phone(self, phone: str) -> Row | None:
+        """Fetch an account by its canonical phone number."""
+        return await self._store.get_user_by_phone(phone)
+
+    async def create_phone_user(self, **fields: Any) -> bool:
+        """Create a verified phone-only identity, refusing duplicate identifiers."""
+        return await self._store.create_phone_user(**fields)
+
+    async def bind_user_phone(self, user_id: str, phone: str) -> bool:
+        """Bind a verified phone atomically without replacing or merging identities."""
+        bound = await self._store.bind_user_phone(user_id, phone)
+        if bound:
+            await self._cache.delete(self._user_key(user_id))
+            await self._cache.delete_pattern("auth:*")
+            await self._cache.delete_pattern("auth_light:*")
+        return bound
+
+    async def reserve_phone_code(self, **fields: Any) -> int:
+        """Reserve a send within shared quotas and install an inactive challenge."""
+        return await self._store.reserve_phone_code(**fields)
+
+    async def activate_phone_code(self, challenge_id: str) -> bool:
+        """Activate only the challenge acknowledged by the SMS provider."""
+        return await self._store.activate_phone_code(challenge_id)
+
+    async def invalidate_phone_code(self, challenge_id: str) -> None:
+        """Remove a failed delivery without removing another concurrent challenge."""
+        return await self._store.invalidate_phone_code(challenge_id)
+
+    async def consume_phone_code(self, **fields: Any) -> str:
+        """Record bounded attempts and atomically consume a matching challenge once."""
+        return await self._store.consume_phone_code(**fields)
+
+    async def create_phone_session(self, **fields: Any) -> bool:
+        """Issue a session, timestamp, and success event under an active-owner lock."""
+        created = await self._store.create_phone_session(**fields)
+        if created:
+            await self._cache.delete(self._user_key(fields["user_id"]))
+        return created
+
+    async def record_phone_login_event(self, **fields: Any) -> None:
+        """Record phone login outcomes without fabricating an email."""
+        await self._store.record_phone_login_event(**fields)
+
     # -- login events (pass-through) -----------------------------------------
 
     async def record_login_event(

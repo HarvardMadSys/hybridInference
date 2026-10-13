@@ -25,7 +25,7 @@ const initialConfig: RuntimeSiteConfig = {
     appName: 'Runtime Example',
     contactEmail: 'runtime@example.test',
   },
-  features: { publicSignup: false, rag: false, agents: true, publicStats: false },
+  features: { publicSignup: false, phoneAuth: false, rag: false, agents: true, publicStats: false },
 };
 
 describe('SiteConfigProvider', () => {

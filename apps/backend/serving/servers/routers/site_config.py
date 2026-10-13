@@ -24,6 +24,7 @@ from serving.config.app_config import get_config_health
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.config.site_identity import get_site_identity
 from serving.setup_state import refresh_setup_state
+from serving.utils.sms import is_sms_enabled
 
 router = APIRouter()
 
@@ -80,7 +81,11 @@ async def get_site_config() -> dict[str, Any]:
     if config is None:
         return {
             **_NEUTRAL,
-            "features": {**_NEUTRAL["features"], "public_signup": public_signup},
+            "features": {
+                **_NEUTRAL["features"],
+                "public_signup": public_signup,
+                "phone_auth": is_sms_enabled(),
+            },
             **deployment_state,
         }
     site_identity = get_site_identity()
@@ -95,6 +100,7 @@ async def get_site_config() -> dict[str, Any]:
         "features": {
             **_public_features(config.features.model_dump()),
             "public_signup": public_signup,
+            "phone_auth": is_sms_enabled(),
         },
         "branding": (
             branding.public_payload(docs_url=site_identity.docs_url)

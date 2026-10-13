@@ -137,6 +137,9 @@ _DISTINCT_VALUES = {
     "provider_route_types": "chutes=quota",
     "cookie_samesite": "strict",
     "cookie_domain": "example.com",
+    "sms_provider": "tencent",
+    "sms_default_country_code": "86",
+    "sms_allowed_prefixes": "+86",
 }
 # Values a field cannot take on its own, by the cross-field rules (field names).
 _PREREQUISITES = {

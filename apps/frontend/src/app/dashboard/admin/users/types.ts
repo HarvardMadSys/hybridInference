@@ -11,6 +11,7 @@ export interface UserRow {
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_name: string | null;
   role: UserRole;
   status: UserStatus;
@@ -42,6 +43,7 @@ export interface SummaryUserItem {
   id: string;
   email: string | null;
   login_name?: string | null;
+  phone?: string | null;
   user_name: string | null;
   role: UserRole;
   today_cost_usd: string;

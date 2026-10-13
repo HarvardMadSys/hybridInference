@@ -5,6 +5,14 @@ import { userAccountLabel, userAccountLabelKind, userDisplayName } from './userL
 describe('naming a user without an email', () => {
   const setupAdmin = { id: 'u1', email: null, login_name: 'admin', user_name: null };
 
+  it('labels a phone-only account without replacing a setup username', () => {
+    const phone = { id: 'u-phone', email: null, phone: '+12025550123' };
+    expect(userDisplayName(phone)).toBe('+12025550123');
+    expect(userAccountLabel(phone)).toBe('+12025550123');
+    expect(userAccountLabelKind(phone)).toBe('phone');
+    expect(userAccountLabel({ ...setupAdmin, phone: phone.phone })).toBe('admin');
+  });
+
   it('greets by display name, then email, then login name, then id', () => {
     expect(userDisplayName({ ...setupAdmin, user_name: 'Ops' })).toBe('Ops');
     expect(userDisplayName({ id: 'u2', email: 'a@example.test', user_name: '' })).toBe(
