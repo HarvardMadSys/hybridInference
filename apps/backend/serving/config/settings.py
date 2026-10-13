@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
@@ -188,12 +188,28 @@ class Settings(BaseSettings):
     turnstile_secret_key: str = ""
 
     # Email (optional)
+    email_provider: Literal["smtp", "tencent_ses"] = "smtp"
     smtp_host: str = "smtp.resend.com"
     smtp_port: int = 587
     smtp_user: str = "resend"
     smtp_password: str = ""
     smtp_from_email: str = "noreply@localhost"
     smtp_from_name: str = "HybridInference"
+
+    # Tencent Cloud credentials are server-only. Temporary CAM credentials may
+    # additionally provide a token; no frontend receives any of these values.
+    tencent_cloud_secret_id: str = ""
+    tencent_cloud_secret_key: str = ""
+    tencent_cloud_token: str = ""
+    tencent_ses_region: Literal["ap-guangzhou", "ap-hongkong"] = "ap-guangzhou"
+    tencent_ses_from_email: str = ""
+    tencent_ses_from_name: str = ""
+    tencent_ses_template_verification: int | None = Field(default=None, ge=1)
+    tencent_ses_template_password_reset: int | None = Field(default=None, ge=1)
+    tencent_ses_template_approval: int | None = Field(default=None, ge=1)
+    tencent_ses_template_rejection: int | None = Field(default=None, ge=1)
+    tencent_ses_template_admin_signup: int | None = Field(default=None, ge=1)
+    tencent_ses_template_notice: int | None = Field(default=None, ge=1)
 
     # Public base URL of this gateway. Empty by default: an unconfigured
     # deployment has none, and the two consumers already handle that —

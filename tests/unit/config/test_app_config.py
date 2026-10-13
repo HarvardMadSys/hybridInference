@@ -1255,3 +1255,43 @@ async def test_a_lower_case_environment_value_is_compared_for_environment_ignore
 
     entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
     assert entries["SMTP_HOST"]["environment_ignored"] is True
+
+
+@pytest.mark.asyncio
+async def test_ses_configuration_reports_its_missing_fields_and_redacts_secrets(
+    config_env, monkeypatch
+):
+    from serving.utils import email, tencent_ses
+
+    # Simulate process startup after the fixture clears the cached instance.
+    monkeypatch.setattr(email, "settings", get_settings())
+    monkeypatch.setattr(tencent_ses, "settings", get_settings())
+    store = FakeAppConfigStore([row("EMAIL_PROVIDER", "tencent_ses")])
+    await _boot(store)
+    missing = app_config.get_config_health().missing
+    assert "SMTP_PASSWORD" not in missing
+    assert "TENCENT_CLOUD_SECRET_KEY" in missing
+    assert "TENCENT_SES_TEMPLATE_VERIFICATION" in missing
+    assert "TENCENT_SES_TEMPLATE_PASSWORD_RESET" in missing
+    assert not email.is_email_enabled()
+    await app_config.update(
+        {
+            "TENCENT_CLOUD_SECRET_ID": "synthetic-ses-id",
+            "TENCENT_CLOUD_SECRET_KEY": "synthetic-ses-secret",
+            "TENCENT_CLOUD_TOKEN": "synthetic-ses-session",
+            "TENCENT_SES_FROM_EMAIL": "noreply@example.org",
+            "TENCENT_SES_TEMPLATE_VERIFICATION": 101,
+            "TENCENT_SES_TEMPLATE_PASSWORD_RESET": 102,
+        },
+        updated_by="admin",
+    )
+    assert email.is_email_enabled()
+    assert not any(
+        key.startswith(("SMTP_", "TENCENT_")) for key in app_config.get_config_health().missing
+    )
+    description = str(app_config.describe())
+    assert "synthetic-ses-secret" not in description
+    assert "synthetic-ses-session" not in description
+    await app_config.delete("TENCENT_SES_TEMPLATE_VERIFICATION", updated_by="admin")
+    assert not email.is_email_enabled()
+    assert "TENCENT_SES_TEMPLATE_VERIFICATION" in app_config.get_config_health().missing

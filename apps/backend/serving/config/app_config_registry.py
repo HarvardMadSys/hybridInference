@@ -70,7 +70,7 @@ CATEGORIES: tuple[Category, ...] = (
     ),
     Category(
         "email",
-        "Email (SMTP)",
+        "Email",
         "Outgoing mail for verification, password reset and notifications.",
     ),
     Category(
@@ -169,7 +169,19 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 
 def _smtp_required(context: RequirementContext) -> bool:
     # Without mail, a new account can never verify its address.
-    return context.email_verification_needed and not context.email_enabled
+    return (
+        context.value("EMAIL_PROVIDER") != "tencent_ses"
+        and context.email_verification_needed
+        and not context.email_enabled
+    )
+
+
+def _ses_required(context: RequirementContext) -> bool:
+    return (
+        context.value("EMAIL_PROVIDER") == "tencent_ses"
+        and context.email_verification_needed
+        and not context.email_enabled
+    )
 
 
 def _env_string(value: Any) -> str | None:
@@ -441,6 +453,98 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
     ),
     # --- email -------------------------------------------------------------
+    _setting(
+        "email_provider",
+        "email",
+        "Outgoing email transport; SMTP preserves existing behavior.",
+        "str",
+        choices=("smtp", "tencent_ses"),
+        setup=True,
+    ),
+    _setting(
+        "tencent_cloud_secret_id",
+        "email",
+        "Tencent Cloud CAM credential ID, used only by the selected delivery adapter.",
+        "str",
+        secret=True,
+        required=_ses_required,
+    ),
+    _setting(
+        "tencent_cloud_secret_key",
+        "email",
+        "Tencent Cloud CAM credential secret. Never sent to the browser.",
+        "str",
+        secret=True,
+        required=_ses_required,
+    ),
+    _setting(
+        "tencent_cloud_token",
+        "email",
+        "Optional session token for temporary Tencent Cloud credentials.",
+        "str",
+        secret=True,
+    ),
+    _setting(
+        "tencent_ses_region",
+        "email",
+        "Tencent SES resource region.",
+        "str",
+        choices=("ap-guangzhou", "ap-hongkong"),
+    ),
+    _setting(
+        "tencent_ses_from_email",
+        "email",
+        "Approved Tencent SES sender address.",
+        "str",
+        required=_ses_required,
+    ),
+    _setting(
+        "tencent_ses_from_name", "email", "Display name for outgoing Tencent SES mail.", "str"
+    ),
+    _setting(
+        "tencent_ses_template_verification",
+        "email",
+        "Approved Tencent SES verification template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+        required=_ses_required,
+    ),
+    _setting(
+        "tencent_ses_template_password_reset",
+        "email",
+        "Approved Tencent SES password reset template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+        required=_ses_required,
+    ),
+    _setting(
+        "tencent_ses_template_approval",
+        "email",
+        "Approved Tencent SES approval template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "tencent_ses_template_rejection",
+        "email",
+        "Approved Tencent SES rejection template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "tencent_ses_template_admin_signup",
+        "email",
+        "Approved Tencent SES admin signup template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "tencent_ses_template_notice",
+        "email",
+        "Approved Tencent SES notice template ID; leave unset to disable the template.",
+        "int",
+        minimum=1,
+    ),
     _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
         "smtp_port", "email", "SMTP server port.", "int", setup=True, minimum=1, maximum=65_535
