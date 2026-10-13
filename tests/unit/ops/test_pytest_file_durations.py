@@ -146,7 +146,15 @@ def test_output_failure_warns_without_raising(tmp_path: Path) -> None:
 
 
 def test_real_xdist_controller_writes_combined_manifest(tmp_path: Path) -> None:
-    test_file = tmp_path / "test_sample.py"
+    # Regression: --rootdir alone does not stop pytest from traversing parents.
+    # A runner's unrelated files and conftests must stay outside this child run.
+    (tmp_path / "conftest.py").write_text(
+        "raise AssertionError('child pytest escaped its project directory')\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    test_file = project / "test_sample.py"
     test_file.write_text(
         """
 import time
@@ -169,7 +177,7 @@ def test_four():
 """.lstrip(),
         encoding="utf-8",
     )
-    output = tmp_path / "artifacts/durations.json"
+    output = project / "artifacts/durations.json"
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join(
@@ -188,14 +196,16 @@ def test_four():
             "-c",
             os.devnull,
             "--rootdir",
-            str(tmp_path),
+            str(project),
+            "--confcutdir",
+            str(project),
             "-n",
             "2",
             "--pytest-file-durations-output",
             str(output),
             str(test_file),
         ],
-        cwd=tmp_path,
+        cwd=project,
         env=env,
         check=False,
         capture_output=True,
