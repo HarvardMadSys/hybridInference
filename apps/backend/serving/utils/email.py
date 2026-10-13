@@ -4,7 +4,7 @@ import html as html_lib
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from markdown_it import MarkdownIt
 
@@ -32,18 +32,28 @@ def get_smtp_config() -> dict[str, str | int]:
 
 
 def is_email_enabled() -> bool:
-    """Check if email sending is enabled (SMTP credentials configured).
+    """Check whether the selected email delivery provider is configured.
 
     Returns:
-        True if SMTP is configured, False otherwise.
+        True if the selected provider is configured, False otherwise.
     """
+    if settings.email_provider == "tencent_ses":
+        from serving.utils.tencent_ses import is_ses_enabled
+
+        return is_ses_enabled()
     return bool(settings.smtp_user and settings.smtp_password)
 
 
 def send_email(
-    to_email: str | None, subject: str, html_body: str, text_body: str | None = None
+    to_email: str | None,
+    subject: str,
+    html_body: str,
+    text_body: str | None = None,
+    *,
+    template: str = "notice",
+    template_data: dict[str, str] | None = None,
 ) -> bool:
-    """Send an email using SMTP.
+    """Send an email using the configured delivery provider.
 
     Args:
         to_email: Recipient email address. None or blank (an account created
@@ -51,6 +61,8 @@ def send_email(
         subject: Email subject.
         html_body: HTML email body.
         text_body: Plain text email body (optional, defaults to stripped HTML).
+        template: Approved SES template kind; ignored by SMTP.
+        template_data: Scalar SES variables; omitted notices use the text body.
 
     Returns:
         True if email sent successfully, False otherwise.
@@ -60,8 +72,18 @@ def send_email(
         return False
 
     if not is_email_enabled():
-        logger.warning("Email sending disabled: SMTP not configured")
+        logger.warning("Email sending disabled: delivery provider not configured")
         return False
+
+    if settings.email_provider == "tencent_ses":
+        from serving.utils.tencent_ses import send_template
+
+        if template_data is None:
+            if text_body is None:
+                logger.warning("Tencent SES notices require a plain text body")
+                return False
+            template_data = {"site_name": get_site_identity().name, "body": text_body}
+        return send_template(to_email, subject, template, template_data)
 
     config = get_smtp_config()
 
@@ -174,7 +196,14 @@ This link will expire in 24 hours.
 If you didn't create an account, you can safely ignore this email.
     """
 
-    return send_email(to_email, subject, html_body, text_body)
+    return send_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template="verification",
+        template_data={"site_name": site_name, "token": quote(verification_token, safe="")},
+    )
 
 
 def send_password_reset_email(to_email: str, reset_token: str, base_url: str) -> bool:
@@ -259,7 +288,14 @@ This link will expire in 1 hour.
 If you didn't request a password reset, you can safely ignore this email.
     """
 
-    return send_email(to_email, subject, html_body, text_body)
+    return send_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template="password_reset",
+        template_data={"site_name": site_name, "token": quote(reset_token, safe="")},
+    )
 
 
 def send_approval_email(to_email: str) -> bool:
@@ -310,7 +346,14 @@ You can now log in and start using the API:
 If you did not register for {site_name}, please ignore this email.
     """
 
-    return send_email(to_email, subject, html_body, text_body)
+    return send_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template="approval",
+        template_data={"site_name": site_name},
+    )
 
 
 def send_rejection_email(to_email: str, reason: str) -> bool:
@@ -356,7 +399,14 @@ Reason: {reason}
 If you believe this was a mistake, please contact the administrator.
     """
 
-    return send_email(to_email, subject, html_body, text_body)
+    return send_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template="rejection",
+        template_data={"site_name": site_name, "reason": reason},
+    )
 
 
 def send_new_registration_admin_email(
@@ -437,7 +487,14 @@ Use case: {use_case_text}
 Review at: {admin_url}
     """
 
-    return send_email(to_email, subject, html_body, text_body)
+    return send_email(
+        to_email,
+        subject,
+        html_body,
+        text_body,
+        template="admin_signup",
+        template_data={"site_name": site_name, "identifier": user_email},
+    )
 
 
 # ── Broadcast email templates ──────────────────────────────────────────────

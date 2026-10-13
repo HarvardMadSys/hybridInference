@@ -80,6 +80,11 @@ def test_settings_entries_match_their_field_types() -> None:
         if entry.field is None:
             continue
         annotation = Settings.model_fields[entry.field].annotation
+        args = typing.get_args(annotation)
+        if type(None) in args:
+            non_null = [arg for arg in args if arg is not type(None)]
+            assert len(non_null) == 1, entry.key
+            annotation = non_null[0]
         if annotation in expected:
             assert entry.type == expected[annotation], entry.key
         elif typing.get_origin(annotation) is list:
@@ -130,6 +135,8 @@ def test_smtp_credentials_are_required_while_signup_needs_verification() -> None
 
 
 _DISTINCT_VALUES = {
+    "email_provider": "tencent_ses",
+    "tencent_ses_region": "ap-hongkong",
     "cors_allowed_origins": "https://x.example",
     "trusted_proxies": "10.0.0.0/8",
     "trusted_direct_client_networks": "192.168.0.0/16",

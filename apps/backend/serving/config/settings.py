@@ -188,6 +188,16 @@ class Settings(BaseSettings):
     turnstile_secret_key: str = ""
 
     # Email (optional)
+    email_provider: Literal["smtp", "tencent_ses"] = "smtp"
+    tencent_ses_region: Literal["ap-guangzhou", "ap-hongkong"] = "ap-guangzhou"
+    tencent_ses_from_email: str = ""
+    tencent_ses_from_name: str = ""
+    tencent_ses_template_verification: int | None = Field(default=None, ge=1)
+    tencent_ses_template_password_reset: int | None = Field(default=None, ge=1)
+    tencent_ses_template_approval: int | None = Field(default=None, ge=1)
+    tencent_ses_template_rejection: int | None = Field(default=None, ge=1)
+    tencent_ses_template_admin_signup: int | None = Field(default=None, ge=1)
+    tencent_ses_template_notice: int | None = Field(default=None, ge=1)
     smtp_host: str = "smtp.resend.com"
     smtp_port: int = 587
     smtp_user: str = "resend"
