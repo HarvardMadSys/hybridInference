@@ -311,7 +311,6 @@ async def get_user_models(
     return await _build_model_list_async(
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
-        user_role=current_user.get("role", "free"),
         model_visibility_resolver=model_visibility_resolver,
         user_ctx={**current_user, "disabled_models": disabled_models},
     )

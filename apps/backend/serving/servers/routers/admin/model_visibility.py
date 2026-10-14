@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.config.settings import VALID_ROLES
+from serving.model_access import baseline_required_role
 from serving.schemas_admin import (
     ListModelVisibilityResponse,
     ModelVisibilityItem,
@@ -20,10 +21,6 @@ from serving.servers.deps import (
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
-
-
-def _baseline_required_role(route) -> str:
-    return route.required_role or ("admin" if route.admin_only else "free")
 
 
 def _is_canonical_model(model_id: str, route) -> bool:
@@ -61,7 +58,7 @@ async def list_model_visibility(
         if not _is_canonical_model(model_id, route):
             continue
 
-        baseline = _baseline_required_role(route)
+        baseline = baseline_required_role(route)
         override = overrides.get(model_id)
         effective = _effective_required_role_for_admin_list(baseline, override)
         models.append(
@@ -94,7 +91,7 @@ async def update_model_visibility(
         if route is None or not _is_canonical_model(model_id, route):
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 
-        baseline = _baseline_required_role(route)
+        baseline = baseline_required_role(route)
         old_row = await op_store.get_model_visibility_override(model_id)
         old_override = None if old_row is None else old_row.get("required_role")
 

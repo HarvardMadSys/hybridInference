@@ -26,8 +26,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from serving.config.settings import has_role
-from serving.model_access import is_model_disabled_for_user
+from serving.model_access import model_access_denial
 from serving.pricing import effective_pricing
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
@@ -56,9 +55,29 @@ def _is_anthropic_client(request: Request) -> bool:
     return ua.startswith(("anthropic-", "claude-cli", "claude-sdk"))
 
 
+async def _listed_for(
+    route: Any,
+    model_id: str,
+    user_ctx: dict[str, Any] | None,
+    model_visibility_resolver: Any | None,
+) -> bool:
+    """Return whether a model listing shows ``route`` to ``user_ctx``.
+
+    The inference surfaces' own access check, except that a listing does not
+    apply an inference grant's model list.
+    """
+    denial = await model_access_denial(
+        route,
+        model_id,
+        user_ctx,
+        visibility_resolver=model_visibility_resolver,
+        grant_scope=False,
+    )
+    return denial is None
+
+
 async def _format_anthropic_model_list(
     router_exec: Any,
-    user_role: str,
     model_visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
 ) -> dict:
@@ -69,23 +88,14 @@ async def _format_anthropic_model_list(
     """
     data: list[dict] = []
     emitted: set[str] = set()
-    for _model_id, route in tuple(router_exec.routes.items()):
-        if not route.published:
-            continue
+    for model_id, route in tuple(router_exec.routes.items()):
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
             continue
-        canonical_id = configs[0].id
-        required = route.required_role or ("admin" if route.admin_only else "free")
-        if model_visibility_resolver is not None:
-            required = await model_visibility_resolver.get_effective_required_role(
-                canonical_id, required
-            )
-        if not has_role(user_role, required):
-            continue
-        if is_model_disabled_for_user(canonical_id, user_ctx):
+        if not await _listed_for(route, model_id, user_ctx, model_visibility_resolver):
             continue
         primary = configs[0]
+        canonical_id = primary.id
         if canonical_id in emitted:
             continue
         emitted.add(canonical_id)
@@ -125,18 +135,13 @@ async def list_models(
     response shape instead.  The ``/models`` and ``/openrouter/models`` paths
     always return the OpenAI/OpenRouter shape.
     """
-    raw_role = (user_ctx or {}).get("role", "free")
-    user_role = raw_role
     if request.url.path == "/v1/models" and _is_anthropic_client(request):
         return JSONResponse(
-            await _format_anthropic_model_list(
-                router_exec, user_role, model_visibility_resolver, user_ctx
-            )
+            await _format_anthropic_model_list(router_exec, model_visibility_resolver, user_ctx)
         )
     return await _build_model_list_async(
         router_exec,
         embedding_adapters,
-        user_role,
         model_visibility_resolver,
         user_ctx=user_ctx,
     )
@@ -153,36 +158,26 @@ async def list_models_anthropic(
     Mirrors the Anthropic GET /v1/models response shape unconditionally,
     regardless of request headers or User-Agent.
     """
-    raw_role = (user_ctx or {}).get("role", "free")
-    user_role = raw_role
     return JSONResponse(
-        await _format_anthropic_model_list(
-            router_exec, user_role, model_visibility_resolver, user_ctx
-        )
+        await _format_anthropic_model_list(router_exec, model_visibility_resolver, user_ctx)
     )
 
 
-def build_model_list(
+async def _build_model_list_async(
     router_exec: Any,
     embedding_adapters: dict[str, Any],
-    user_role: str,
+    model_visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
 ) -> ModelList:
-    """Build the model catalog visible to the given user role."""
+    """Build the model catalog visible to ``user_ctx``, with runtime overrides if any."""
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
     for model_id, route in tuple(router_exec.routes.items()):
-        if not route.published:
-            continue
-        required = route.required_role or ("admin" if route.admin_only else "free")
-        if not has_role(user_role, required):
-            continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
             continue
-        canonical_id = configs[0].id
-        if is_model_disabled_for_user(canonical_id, user_ctx):
+        if not await _listed_for(route, model_id, user_ctx, model_visibility_resolver):
             continue
 
         # Conservative limits across all adapters for this model
@@ -235,110 +230,6 @@ def build_model_list(
         models.append(model_entry)
 
     # Append embedding models from the embedding_adapters dict
-    emb_seen: set[str] = set()
-    for _model_id, adapter in embedding_adapters.items():
-        cfg = getattr(adapter, "config", None)
-        if not cfg:
-            continue
-        canonical_id = cfg.id
-        if canonical_id in emb_seen or canonical_id in emitted_ids:
-            continue
-        emb_seen.add(canonical_id)
-        models.append(
-            ModelItem(
-                id=canonical_id,
-                name=cfg.name,
-                created=CREATED_TS,
-                owned_by=cfg.provider,
-                input_modalities=cfg.input_modalities,
-                output_modalities=cfg.output_modalities,
-                quantization=cfg.quantization,
-                context_length=cfg.context_length,
-                max_output_length=cfg.max_output_length,
-                pricing=effective_pricing(cfg) or {},
-                # The catalog lists embedding models beside chat models with
-                # the same modality defaults; this is the one signal a client
-                # has that the model answers /v1/embeddings, not chat.
-                supported_features=["embeddings"],
-                on_demand=cfg.on_demand,
-            )
-        )
-
-    return ModelList(data=models)
-
-
-async def _build_model_list_async(
-    router_exec: Any,
-    embedding_adapters: dict[str, Any],
-    user_role: str,
-    model_visibility_resolver: Any | None = None,
-    user_ctx: dict[str, Any] | None = None,
-) -> ModelList:
-    """Build the model catalog visible to the given user role with optional runtime overrides."""
-    if model_visibility_resolver is None:
-        return build_model_list(router_exec, embedding_adapters, user_role, user_ctx)
-
-    models: list[ModelItem] = []
-    emitted_ids: set[str] = set()
-
-    for model_id, route in tuple(router_exec.routes.items()):
-        if not route.published:
-            continue
-        configs = [adapter.config for adapter, _ in route.adapters]
-        if not configs:
-            continue
-        primary_cfg = configs[0]
-        canonical_id = primary_cfg.id
-        required = route.required_role or ("admin" if route.admin_only else "free")
-        required = await model_visibility_resolver.get_effective_required_role(
-            canonical_id, required
-        )
-        if not has_role(user_role, required):
-            continue
-        if is_model_disabled_for_user(canonical_id, user_ctx):
-            continue
-
-        context_length = min(cfg.context_length for cfg in configs)
-        max_output_length = min(cfg.max_output_length for cfg in configs)
-
-        supported_params_sets = [set(cfg.supported_params) for cfg in configs]
-        if supported_params_sets:
-            supported_sampling_parameters = sorted(set.intersection(*supported_params_sets))
-        else:
-            supported_sampling_parameters = []
-
-        supported_features: list[str] = []
-        if any(cfg.supports_tools for cfg in configs):
-            supported_features.append("tools")
-        if any(cfg.supports_structured_output for cfg in configs):
-            supported_features.append("json_mode")
-            supported_features.append("structured_outputs")
-
-        if canonical_id in emitted_ids:
-            continue
-        emitted_ids.add(canonical_id)
-
-        model_entry = ModelItem(
-            id=canonical_id,
-            name=primary_cfg.name,
-            created=CREATED_TS,
-            owned_by=primary_cfg.provider,
-            input_modalities=primary_cfg.input_modalities,
-            output_modalities=primary_cfg.output_modalities,
-            quantization=primary_cfg.quantization,
-            context_length=context_length,
-            max_output_length=max_output_length,
-            pricing=effective_pricing(primary_cfg) or {},
-            supported_sampling_parameters=supported_sampling_parameters,
-            supported_features=supported_features,
-            # Any adapter marking the model on-demand makes the whole model
-            # on-demand: a probe that hits the lazy route still pins its GPU.
-            on_demand=any(cfg.on_demand for cfg in configs),
-        )
-        if model_id != canonical_id:
-            model_entry.openrouter = {"slug": model_id}
-        models.append(model_entry)
-
     emb_seen: set[str] = set()
     for _model_id, adapter in embedding_adapters.items():
         cfg = getattr(adapter, "config", None)

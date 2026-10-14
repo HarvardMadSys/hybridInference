@@ -1,8 +1,11 @@
-"""Helpers for per-user model denylist normalization and checks."""
+"""Who may use a model, and the one access check every model surface applies."""
 
 from __future__ import annotations
 
+import enum
 from typing import Any
+
+from serving.config.settings import has_role
 
 DISABLED_MODELS_PREFERENCE_KEY = "disabled_models"
 
@@ -60,3 +63,82 @@ def is_model_outside_grant_scope(canonical_model_id: str, user_ctx: dict[str, An
     if allowed is None:
         return False
     return canonical_model_id not in set(allowed)
+
+
+class ModelAccessDenial(enum.Enum):
+    """Why a caller may not use a model.
+
+    Every surface answers each reason the same way it answers an unknown model,
+    so a caller cannot tell them apart; the reason is for the surface's own
+    logging.
+    """
+
+    UNPUBLISHED = "unpublished"
+    ROLE = "role"
+    DISABLED = "disabled"
+    OUTSIDE_GRANT = "outside_grant"
+
+
+def route_canonical_model_id(route: Any, model_id: str) -> str:
+    """Return the canonical id of the model ``route`` serves.
+
+    An alias shares its model's route, so the route's first adapter names the
+    model whichever spelling the caller used. ``model_id``, the name the route
+    was looked up by, stands in only for a route with no adapters.
+    """
+    adapters = getattr(route, "adapters", None)
+    return adapters[0][0].config.id if adapters else model_id
+
+
+def baseline_required_role(route: Any) -> str:
+    """Return the role a route requires before any runtime visibility override."""
+    return route.required_role or ("admin" if route.admin_only else "free")
+
+
+async def model_access_denial(
+    route: Any,
+    model_id: str,
+    user_ctx: dict[str, Any] | None,
+    *,
+    visibility_resolver: Any | None = None,
+    grant_scope: bool = True,
+) -> ModelAccessDenial | None:
+    """Return why ``user_ctx`` may not use the model behind ``route``, or None.
+
+    The check every surface applies before it serves or lists a model: the
+    route is published, the caller's role meets the role the model requires
+    (after the runtime visibility override), the caller has not disabled the
+    model, and, with ``grant_scope``, an inference grant names it. Overrides,
+    denylists and grants are all keyed by the canonical id, so every check reads
+    the canonical id: an alias is held to the same rules as its model.
+
+    Only queries; nothing is claimed or recorded.
+
+    Args:
+        route: The route registered under ``model_id``.
+        model_id: The name the route was looked up by, canonical id or alias.
+        user_ctx: The caller as the auth dependency resolved it, or None for
+            an anonymous caller.
+        visibility_resolver: Source of runtime required-role overrides, if the
+            deployment has one.
+        grant_scope: Whether to apply an inference grant's model list. The
+            inference surfaces do; the model listings and the agent catalog do
+            not.
+
+    Returns:
+        The first reason that applies, in the order above, or None when the
+        caller may use the model.
+    """
+    if not route.published:
+        return ModelAccessDenial.UNPUBLISHED
+    canonical = route_canonical_model_id(route, model_id)
+    required = baseline_required_role(route)
+    if visibility_resolver is not None:
+        required = await visibility_resolver.get_effective_required_role(canonical, required)
+    if not has_role((user_ctx or {}).get("role") or "free", required):
+        return ModelAccessDenial.ROLE
+    if is_model_disabled_for_user(canonical, user_ctx):
+        return ModelAccessDenial.DISABLED
+    if grant_scope and is_model_outside_grant_scope(canonical, user_ctx):
+        return ModelAccessDenial.OUTSIDE_GRANT
+    return None
