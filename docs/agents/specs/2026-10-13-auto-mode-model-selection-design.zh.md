@@ -209,7 +209,8 @@ entrypoint（虚拟模型名，如 vllm-sr/auto）→ recipe（一整套路由�
 @dataclass(frozen=True)
 class Candidate:
     model_id: str
-    overrides: Mapping[str, Any]          # {"reasoning_effort": "high"} 等
+    overrides: tuple[tuple[str, str | int | float | bool | None], ...]
+    # 如 (("reasoning_effort", "high"),)，按参数名排序
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,10 @@ class ModelSelector(Protocol):
         session: SessionState | None,
     ) -> Decision: ...
 ```
+
+配置加载时把覆盖参数按参数名排序并转为元组，第一版只接受标量值。
+这样 `Candidate` 可作为估计映射的键，同一模型的不同推理强度是不同候选，
+相同参数也不会因 YAML 中的顺序不同而变成不同候选。
 
 Scorer 的实现按阶段替换，接口不变：
 

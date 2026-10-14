@@ -109,7 +109,7 @@ async def test_a_grant_that_names_the_model_reaches_it_by_alias(module, path, bo
     """A grant stores canonical ids; the model it names is the model it reaches."""
     app = _app(module, _ctx(agent_allowed_models=[MODEL]), mock_db_logger)
 
-    assert await _call(app, path, body(ALIAS)) != status.HTTP_404_NOT_FOUND
+    assert await _call(app, path, body(ALIAS)) == status.HTTP_200_OK
 
 
 @pytest.mark.asyncio
@@ -118,4 +118,4 @@ async def test_an_alias_of_an_open_model_still_resolves(module, path, body, mock
     """The other half: nothing above may be passed by refusing every alias."""
     app = _app(module, _ctx(), mock_db_logger)
 
-    assert await _call(app, path, body(ALIAS)) != status.HTTP_404_NOT_FOUND
+    assert await _call(app, path, body(ALIAS)) == status.HTTP_200_OK
