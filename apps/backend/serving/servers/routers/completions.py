@@ -18,10 +18,9 @@ from routing.executor import ProviderPinError
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
-from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.grant_auth import ledger_attribution
-from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
+from serving.model_access import ModelAccessDenial, model_access_denial
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.schemas import (
     ChatCompletionRequest,
@@ -663,53 +662,31 @@ async def chat_completions(
         req_ctx.mark_model_not_found()
         raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
 
-    # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
+    # Every reason the caller may not use this model gets one answer: the model
+    # does not exist. A sandbox cannot enumerate what is outside its scope by
+    # reading the difference between 403 and 404 (serving/model_access.py).
     route = router_exec.routes[model]
-    if not route.published:
-        req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
-    required = route.required_role or ("admin" if route.admin_only else "free")
-    user_role = user_ctx.get("role", "free")
-    if model_visibility_resolver is not None:
-        canonical_id = route.adapters[0][0].config.id if route.adapters else model
-        required = await model_visibility_resolver.get_effective_required_role(
-            canonical_id, required
-        )
-    if not has_role(user_role, required):
-        logger.info(
-            "Insufficient role for model",
-            extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
-        )
-        if log_store and not suppress_synthetic_logging:
-            completions_logger.schedule_log(
-                request_id,
-                {
-                    "request_id": request_id,
-                    "model_id": model,
-                    "provider": "router",
-                    "prompt": messages,
-                    "response": None,
-                    "usage": None,
-                    "latency_ms": int((time.time() - start_time) * 1000),
-                    "status_code": 404,
-                    "error": f"Model '{model}' not found",
-                    "params": early_params,
-                    "metadata": metadata,
-                    "pricing": None,
-                    "request_payload": body,
+    denial = await model_access_denial(
+        route, model, user_ctx, visibility_resolver=model_visibility_resolver
+    )
+    if denial is not None:
+        if denial is ModelAccessDenial.ROLE:
+            logger.info(
+                "Insufficient role for model",
+                extra={
+                    "model": model,
+                    "user_id": user_ctx.get("user_id"),
+                    "role": user_ctx.get("role", "free"),
                 },
             )
-        req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
-    # Two different reasons, one answer. The owner disabled this model, or a
-    # grant-authenticated caller was not given it — either way the caller is
-    # told it does not exist, so a sandbox cannot enumerate what is outside its
-    # scope by reading the difference between 403 and 404.
-    canonical_for_access = route.adapters[0][0].config.id if route.adapters else model
-    if is_model_disabled_for_user(canonical_for_access, user_ctx) or is_model_outside_grant_scope(
-        canonical_for_access, user_ctx
-    ):
-        if log_store and not suppress_synthetic_logging:
+        # An unpublished route is a runtime model creation that has not
+        # committed yet. It is refused without a request log row, as it was
+        # before this check was shared.
+        if (
+            denial is not ModelAccessDenial.UNPUBLISHED
+            and log_store
+            and not suppress_synthetic_logging
+        ):
             completions_logger.schedule_log(
                 request_id,
                 {

@@ -40,7 +40,6 @@ from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value, on_change
-from serving.config.settings import has_role
 from serving.exceptions import (
     generic_message_for_status,
     operator_safe_error,
@@ -48,7 +47,7 @@ from serving.exceptions import (
     scrub_error_for_user,
 )
 from serving.grant_auth import ledger_attribution
-from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
+from serving.model_access import model_access_denial
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing
@@ -526,22 +525,19 @@ async def _resolve(
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
-    if route is None or not route.published:
+    if route is None:
         req_ctx.mark_model_not_found()
         raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
-    required = route.required_role or ("admin" if route.admin_only else "free")
-    user_role = (user_ctx or {}).get("role", "free")
-    if model_visibility_resolver is not None:
-        required = await model_visibility_resolver.get_effective_required_role(canonical, required)
-    if not has_role(user_role, required):
-        req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
-    # Same answer for "the owner disabled it" and "your grant does not name
-    # it". Checked on the canonical id, which the alias resolution above has
-    # already produced — a grant stores canonical ids, so scoping on the
-    # requested spelling would let an alias walk straight past it.
-    if is_model_disabled_for_user(canonical, user_ctx) or is_model_outside_grant_scope(
-        canonical, user_ctx
+    # The same answer for every reason the caller may not use the model. The
+    # check reads the canonical id off the route: the alias map above covers
+    # Anthropic's display names only, a registry alias is a route-table key of
+    # its own, and the visibility override, the denylist and a grant's list
+    # all name the canonical id (serving/model_access.py).
+    if (
+        await model_access_denial(
+            route, canonical, user_ctx, visibility_resolver=model_visibility_resolver
+        )
+        is not None
     ):
         req_ctx.mark_model_not_found()
         raise HTTPException(404, model_not_found_detail(model_id, canonical, user_ctx=user_ctx))
@@ -550,6 +546,7 @@ async def _resolve(
     if not for_dispatch:
         adapter, _ = route.adapters[0]
         return canonical, route, adapter
+    user_role = (user_ctx or {}).get("role", "free")
     return (
         canonical,
         route,
