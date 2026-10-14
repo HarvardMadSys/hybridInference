@@ -214,6 +214,18 @@ class PostgresLogStore(LogStore):
             store_full_content if store_full_content is not None else self.store_full_prompts
         )
         sanitized_error = strip_null_bytes(error)
+        # Keep only the response identity even when full-content logging is
+        # disabled. This joins a native agent message to its measured request;
+        # a caller-supplied metadata value must never impersonate that identity.
+        metadata = dict(metadata or {})
+        metadata.pop("response_id", None)
+        response_id = response.get("id") if isinstance(response, dict) else None
+        if (
+            isinstance(response_id, str)
+            and 1 <= len(response_id) <= 256
+            and all(char.isascii() and (char.isalnum() or char in "_.:-") for char in response_id)
+        ):
+            metadata["response_id"] = response_id
         sanitized_metadata = strip_null_bytes(metadata)
         sanitized_tools = strip_null_bytes((params or {}).get("tools"))
         if should_store_full:
@@ -487,6 +499,7 @@ class PostgresLogStore(LogStore):
         until: dt.datetime,
         limit: int,
         after: tuple[dt.datetime, str] | None = None,
+        response_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Page through one grant's window, ordered by start time then id."""
         after_started_at = after[0] if after is not None else None
@@ -494,7 +507,7 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT request_id,
+                SELECT request_id, metadata->>'response_id' AS response_id,
                        (metadata->>'request_started_at')::timestamptz AS request_started_at,
                        timestamp AS logged_at,
                        model_id,
@@ -511,6 +524,7 @@ class PostgresLogStore(LogStore):
                        COALESCE(metadata->>'usage_estimated' = 'true', FALSE) AS usage_estimated
                 FROM api_logs
                 WHERE {_GRANT_WINDOW_WHERE}
+                  AND ($8::text IS NULL OR metadata->>'response_id' = $8)
                   AND (
                       $5::timestamptz IS NULL
                       OR ((metadata->>'request_started_at')::timestamptz, request_id)
@@ -526,6 +540,7 @@ class PostgresLogStore(LogStore):
                 after_started_at,
                 after_request_id,
                 limit,
+                response_id,
             )
         return [dict(r) for r in rows]
 

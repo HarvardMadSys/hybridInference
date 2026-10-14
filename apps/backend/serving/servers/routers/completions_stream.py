@@ -834,7 +834,9 @@ class StreamSession:
         if self._final_reasoning:
             message_for_db["reasoning_content"] = self._final_reasoning
         response_for_db: dict[str, Any] = {
-            "id": self._request_id,
+            # Match the identity stamped onto every client-visible SSE frame,
+            # not the independent internal request/log identity.
+            "id": self._completion_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": self._model,

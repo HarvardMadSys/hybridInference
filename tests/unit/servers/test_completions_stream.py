@@ -351,11 +351,13 @@ async def test_finalization_schedules_log_and_records_observation():
         completions_logger=cl_logger,
     )
     chunks = [_content_chunk("gpt-4", "hi", finish="stop")]
-    await _consume(session.stream(_aiter(chunks)))
+    emitted = await _consume(session.stream(_aiter(chunks)))
 
     cl_logger.schedule_log.assert_called_once()
     request_id, log_data = cl_logger.schedule_log.call_args.args
     assert request_id == "rid-1"
+    assert log_data["response"]["id"] == json.loads(emitted[0][6:])["id"]
+    assert log_data["response"]["id"] != request_id
     assert log_data["status_code"] == 200
     assert log_data["response"]["choices"][0]["message"]["content"] == "hi"
     assert log_data["response"]["choices"][0]["finish_reason"] == "stop"
