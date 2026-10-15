@@ -61,3 +61,14 @@ describe('UsageStats max_concurrency', () => {
     expect(screen.queryByText(/Max concurrent requests:/)).not.toBeInTheDocument();
   });
 });
+
+describe('UsageStats period boundaries', () => {
+  it('says Today and This Month start at 00:00 UTC, as the quota does', () => {
+    mockedUseUsageStats.mockReturnValue({ data: baseStats, isLoading: false, error: null });
+    render(<UsageStats />);
+    expect(
+      screen.getByText(/Today and This Month start at 00:00 UTC, when the daily quota resets/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/follows your timezone/)).not.toBeInTheDocument();
+  });
+});

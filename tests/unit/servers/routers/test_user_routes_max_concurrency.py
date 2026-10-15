@@ -91,7 +91,6 @@ async def test_get_usage_includes_max_concurrency_when_no_key(monkeypatch):
 
     resp = await user_routes.get_usage(
         period="today",
-        timezone_name="UTC",
         current_user=current_user,
         op_store=op_store,
         log_store=None,
@@ -130,7 +129,6 @@ async def test_get_usage_includes_max_concurrency_when_has_key(monkeypatch):
 
     resp = await user_routes.get_usage(
         period="today",
-        timezone_name="UTC",
         current_user=current_user,
         op_store=op_store,
         log_store=log_store,
@@ -156,7 +154,6 @@ async def test_get_usage_concurrency_when_runtime_unavailable(monkeypatch):
 
     resp = await user_routes.get_usage(
         period="today",
-        timezone_name="UTC",
         current_user=current_user,
         op_store=op_store,
         log_store=None,
@@ -187,7 +184,6 @@ async def test_get_usage_propagates_is_admin_to_helper(monkeypatch):
 
     resp = await user_routes.get_usage(
         period="today",
-        timezone_name="UTC",
         current_user=current_user,
         op_store=op_store,
         log_store=None,

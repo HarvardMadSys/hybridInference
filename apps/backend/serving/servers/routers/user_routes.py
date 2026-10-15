@@ -13,9 +13,8 @@ from serving.config.site_identity import get_site_identity
 
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.exceptions import (
     UserNotFoundError,
@@ -144,29 +143,6 @@ def _get_daily_quota_reset_at() -> datetime:
     """Return the next daily quota reset timestamp."""
     now = datetime.now(timezone.utc)
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
-    """Return the UTC start timestamp for a user-visible usage period."""
-    if period == "all":
-        return None
-    if period == "week":
-        return datetime.now(timezone.utc) - timedelta(days=7)
-
-    try:
-        tz = ZoneInfo(user_timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise HTTPException(status_code=400, detail="Invalid timezone") from exc
-
-    now = datetime.now(tz)
-    if period == "today":
-        local_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "month":
-        local_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    else:
-        return None
-
-    return local_start.astimezone(timezone.utc)
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
@@ -686,14 +662,14 @@ async def regenerate_api_key(
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(
     period: str = "today",
-    timezone_name: str = Query("UTC", alias="timezone"),
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> UsageResponse:
     """Get user's usage statistics and quota information.
 
-    Supports periods: today, week, month, all
+    Supports periods: today, week, month, all. ``today`` and ``month`` start at
+    00:00 UTC, when the daily quota resets; ``week`` is the last 7 days.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
