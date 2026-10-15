@@ -7,6 +7,7 @@ handlers that use these are covered in ``tests/servers/test_auto_mode_surfaces.p
 
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 
@@ -21,16 +22,21 @@ from routing.model_selection import (
 )
 from serving.adapters.base import ModelConfig
 from serving.auto_mode import (
+    AnthropicStreamModelRenamer,
     AutoSelection,
     anthropic_features,
     apply_to_anthropic_body,
     apply_to_chat_request,
     candidate_info,
+    hide_served_model,
     load_auto_mode,
     openai_features,
+    served_model_names,
     session_key,
     strip_foreign_thinking,
 )
+from serving.exceptions import conceal_served_model
+from serving.utils import context as req_ctx
 from serving.utils.session_identity import SessionIdentity
 
 
@@ -386,3 +392,107 @@ def test_a_tier_named_like_a_registered_model_turns_auto_off(tmp_path, caplog):
     with caplog.at_level(logging.ERROR):
         assert load_auto_mode(path, _routes("known", "auto-balance")) is None
     assert "'auto-balance' is a registered model name" in caplog.text
+
+
+# -- Keeping the served model from the caller -------------------------------------
+
+
+def _sse(event: str, data: dict) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+_START = _sse("message_start", {"type": "message_start", "message": {"id": "m1", "model": "mid-b"}})
+_DELTA = _sse("content_block_delta", {"type": "content_block_delta", "delta": {"text": "mid-b"}})
+
+
+def _renamed(*chunks: bytes) -> bytes:
+    renamer = AnthropicStreamModelRenamer("auto-balance")
+    return b"".join(renamer.feed(chunk) for chunk in chunks) + renamer.flush()
+
+
+def test_the_stream_names_the_auto_model_in_message_start_only():
+    out = _renamed(_START, _DELTA)
+
+    start, delta = out.split(b"\n\n")[:2]
+    assert json.loads(start.split(b"data: ")[1])["message"] == {"id": "m1", "model": "auto-balance"}
+    assert delta + b"\n\n" == _DELTA, "content is the model's own and passes untouched"
+
+
+def test_message_start_split_across_chunks_is_held_until_whole():
+    renamer = AnthropicStreamModelRenamer("auto-balance")
+    stream = _START + _DELTA
+
+    first = renamer.feed(stream[:20])
+    rest = renamer.feed(stream[20:])
+
+    assert first == b""
+    assert b'"model": "auto-balance"' in rest
+    assert rest.endswith(_DELTA)
+
+
+def test_events_before_message_start_and_crlf_framing_pass_through():
+    ping = b"event: ping\r\ndata: {}\r\n\r\n"
+    start = _START.replace(b"\n", b"\r\n")
+
+    out = _renamed(ping, start, _DELTA)
+
+    assert out.startswith(ping)
+    assert b'"model": "auto-balance"' in out
+    assert b'"model": "mid-b"' not in out
+
+
+def test_a_stream_without_message_start_is_not_held_forever():
+    renamer = AnthropicStreamModelRenamer("auto-balance")
+    partial = b"data: " + b"x" * 70_000
+
+    assert renamer.feed(partial) == partial
+    assert renamer.feed(_START) == _START, "past the limit everything passes as it came"
+
+
+def test_the_served_models_names_cover_what_an_upstream_may_quote():
+    config = _cfg(id="mid-b", name="Mid B", provider_model_id="org/Mid-B-Instruct", aliases=["mb"])
+
+    assert served_model_names([config], "mid-b-alias") == {
+        "mid-b",
+        "Mid B",
+        "org/Mid-B-Instruct",
+        "mid-b-alias",
+    }
+
+
+def test_errors_name_the_auto_model_for_this_request_only():
+    config = _cfg(id="mid-b", provider_model_id="org/Mid-B-Instruct")
+    selection = _selection(Candidate("mid-b"))
+    selection.served_names = served_model_names([config])
+    message = "org/Mid-B-Instruct is overloaded; mid-b will retry."
+
+    req_ctx.reset_request_scope()
+    hide_served_model(selection)
+    assert conceal_served_model(message) == "auto-balance is overloaded; auto-balance will retry."
+
+    req_ctx.reset_request_scope()
+    assert conceal_served_model(message) == message
+
+
+def test_a_model_the_request_moves_on_to_is_hidden_too():
+    selection = _selection(Candidate("mid-b"))
+    selection.served_names = frozenset({"mid-b"})
+    req_ctx.reset_request_scope()
+
+    hide_served_model(selection)
+    hide_served_model(selection, _cfg(id="qwen-fast", provider_model_id="Qwen/Qwen3-Fast"))
+
+    assert conceal_served_model("mid-b, then Qwen/Qwen3-Fast, then qwen-fast") == (
+        "auto-balance, then auto-balance, then auto-balance"
+    )
+    req_ctx.reset_request_scope()
+
+
+def test_only_whole_names_are_replaced():
+    req_ctx.reset_request_scope()
+    req_ctx.update({req_ctx.CONCEALED_MODEL: ("auto-fast", frozenset({"fast", "mid-b"}))})
+
+    assert conceal_served_model("auto-fast; mid-b-v2; mid-b.v2; mid-b. fast") == (
+        "auto-fast; mid-b-v2; mid-b.v2; auto-fast. auto-fast"
+    )
+    req_ctx.reset_request_scope()

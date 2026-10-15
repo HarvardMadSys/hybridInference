@@ -828,13 +828,15 @@ when a model that could take the request has no endpoint admitted. It gets a 400
 when every model the caller can use is unable to take the request, for example
 because the prompt is too long for all of them.
 
-**What the client sees.** The response's `model` is the model that served the
-request. The `X-Auto-Profile`, `X-Auto-Model` and `X-Auto-Session` headers name
-the tier, the model, and what happened to the session: `new`, `keep`,
-`turn_switch`, `forced_switch` or `side_call`. `/v1/models` lists each auto
-model to a caller who may use any of its models. Its window, input kinds and
-tool support are the most any of those models offers. Sampling parameters and
-structured output are listed only when all of them support them.
+**What the client sees.** The auto model, and never the model that served the
+request. The response's `model`, every chunk of a stream, and the Responses API
+name the auto model the request asked for. Error messages name it in place of
+the served model, an upstream's own message included. The console's request
+history and an inference grant's request ledger show the auto model too, with
+no provider or routing detail and a generic error message. `/v1/models` lists
+each auto model to a caller who may use any of its models. Its window, input
+kinds and tool support are the most any of those models offers. Sampling
+parameters and structured output are listed only when all of them support them.
 
 **What is recorded.** The log row's `model_id` is the model that served the
 request, and cost is computed for it. The decision is in `metadata.auto`: the

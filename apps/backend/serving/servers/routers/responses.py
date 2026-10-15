@@ -251,11 +251,6 @@ async def create_response(
     if not isinstance(chat_result, dict):
         raise HTTPException(502, "Unexpected upstream response shape")
 
-    # An auto model reports the model that served the request, as chat does.
-    auto_selection = getattr(request.state, "auto_selection", None)
-    if auto_selection is not None:
-        model = auto_selection.model_id
-
     responses_obj = chat_response_to_responses(
         chat_result,
         response_id=response_id,
@@ -278,10 +273,7 @@ async def create_response(
             model=model,
         )
 
-    return JSONResponse(
-        content=responses_obj,
-        headers=auto_selection.response_headers() if auto_selection is not None else None,
-    )
+    return JSONResponse(content=responses_obj)
 
 
 async def _stream_response(
@@ -327,11 +319,6 @@ async def _stream_response(
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
     )
-
-    # Selection ran in the delegate, before any byte of its stream.
-    auto_selection = getattr(request.state, "auto_selection", None)
-    if auto_selection is not None:
-        model = auto_selection.model_id
 
     translator = ResponsesStreamTranslator(
         response_id=response_id,
@@ -412,12 +399,7 @@ async def _stream_response(
                         )
                     )
 
-    headers = (
-        {**_SSE_HEADERS, **auto_selection.response_headers()}
-        if auto_selection is not None
-        else _SSE_HEADERS
-    )
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 async def _persist(

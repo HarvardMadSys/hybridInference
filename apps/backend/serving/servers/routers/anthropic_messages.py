@@ -40,15 +40,18 @@ from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
+    AnthropicStreamModelRenamer,
     AutoModelUnavailable,
     anthropic_features,
     apply_to_anthropic_body,
     auto_mode_for,
+    hide_served_model,
     session_key,
     strip_foreign_thinking,
 )
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import (
+    conceal_served_model,
     generic_message_for_status,
     operator_safe_error,
     safe_detail_text,
@@ -175,6 +178,9 @@ def _anthropic_error(
     error_type: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
+    # Every error this surface answers with passes here, so an auto request's
+    # error never names the model serving it (serving/auto_mode.py).
+    message = conceal_served_model(message)
     return JSONResponse(
         status_code=status,
         content={
@@ -1484,8 +1490,9 @@ async def anthropic_messages(
     # here to the model its tier chooses, and from here on is served exactly as
     # a request naming that model: resolved, access-checked and dispatched below,
     # and logged and billed under it with the decision in ``metadata.auto``
-    # (serving/auto_mode.py). Read before ``consume_session_fields`` takes the
-    # session declarations out of the body.
+    # (serving/auto_mode.py). The caller is not told which model that is: the
+    # response names the auto model, and so do error messages. Read before
+    # ``consume_session_fields`` takes the session declarations out of the body.
     auto_selection: AutoSelection | None = None
     # What the client sent, for the log, taken before the rewrite below.
     client_request: dict[str, Any] | None = None
@@ -1534,6 +1541,7 @@ async def anthropic_messages(
             return _anthropic_error(exc.status_code, exc.detail or "")
         client_request = copy.deepcopy(body)
         apply_to_anthropic_body(auto_selection, body)
+        hide_served_model(auto_selection)
         model_id = auto_selection.model_id
 
     try:
@@ -1624,6 +1632,9 @@ async def anthropic_messages(
         if canonical != _orig_model
         else None
     )
+    if auto_selection is not None and reroute_info is not None:
+        # The reroute's target serves the request now; keep it from the caller too.
+        hide_served_model(auto_selection, *(entry[0].config for entry in _route.adapters))
 
     forwarded_headers = _extract_forwarded_headers(request)
 
@@ -1814,7 +1825,6 @@ async def anthropic_messages(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            **(auto_selection.response_headers() if auto_selection is not None else {}),
         }
 
         async def _gen():
@@ -1837,6 +1847,12 @@ async def anthropic_messages(
             ttft_buffer = b""
             response_acc: dict | None = None
             sse_buffer = b""
+            # An auto request's stream names the auto model, not the one serving it.
+            renamer = (
+                AnthropicStreamModelRenamer(auto_selection.requested)
+                if auto_selection is not None
+                else None
+            )
             try:
                 upstream = adapter.stream_messages(
                     body,
@@ -1989,7 +2005,11 @@ async def anthropic_messages(
                             # gets neither the credit nor the delimiter, so it
                             # is never dressed up as a complete answer.
                             if sse_buffer.strip() and _account_sse(b"\n\n"):
-                                yield b"\n\n"
+                                tail = renamer.feed(b"\n\n") if renamer is not None else b"\n\n"
+                                if tail:
+                                    yield tail
+                            if renamer is not None and (held := renamer.flush()):
+                                yield held
                             break
                         if isinstance(item, Exception):
                             raise item
@@ -2008,6 +2028,10 @@ async def anthropic_messages(
                             elif len(ttft_buffer) > 16384:
                                 ttft_buffer = b""
                         _account_sse(chunk)
+                        if renamer is not None:
+                            chunk = renamer.feed(chunk)
+                            if not chunk:
+                                continue
                         yield chunk
                 finally:
                     reader_task.cancel()
@@ -2392,6 +2416,8 @@ async def anthropic_messages(
     # response. Recorded before logging so a slow log store can't delay the
     # recovery signal that closes an open circuit.
     health_registry.record_success(dispatch_endpoint_id)
+    if auto_selection is not None and isinstance(resp, dict) and "model" in resp:
+        resp["model"] = auto_selection.requested
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {
@@ -2420,10 +2446,7 @@ async def anthropic_messages(
             op_store=op_store,
             user_id=user_ctx.get("user_id"),
         )
-    return JSONResponse(
-        content=resp,
-        headers=auto_selection.response_headers() if auto_selection is not None else None,
-    )
+    return JSONResponse(content=resp)
 
 
 @router.post("/v1/messages/count_tokens", response_model=None)

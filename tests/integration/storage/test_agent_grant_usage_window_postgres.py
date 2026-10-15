@@ -139,9 +139,12 @@ async def _write(
     estimated: bool = False,
     response_id: str | None = None,
     pricing: dict[str, str] | None = PRICING,
+    auto: str | None = None,
 ) -> None:
     """One row as a surface would write it: the job column plus attribution."""
     metadata: dict[str, Any] = {"agent_job_id": JOB}
+    if auto is not None:
+        metadata["auto"] = {"requested": auto, "chosen": "glm-5.1"}
     if grant is not None:
         metadata.update(
             ledger_attribution(
@@ -314,6 +317,25 @@ async def test_requests_page_in_start_order_and_resume_after_a_row(log_store) ->
 
     after = (second[-1]["request_started_at"], second[-1]["request_id"])
     assert await log_store.list_agent_grant_requests(**query, limit=2, after=after) == []
+
+
+@pytest.mark.asyncio
+async def test_a_request_for_an_auto_model_reports_the_auto_model(log_store) -> None:
+    """The owner is not told which model served it; its cost is still that model's."""
+    await _write(
+        log_store,
+        "auto-request",
+        grant=GRANT,
+        started_at=SINCE,
+        usage={"prompt_tokens": 100, "completion_tokens": 10},
+        auto="auto-balance",
+    )
+    query = {"agent_job_id": JOB, "grant_id": GRANT, "since": SINCE, "until": UNTIL}
+
+    (row,) = await log_store.list_agent_grant_requests(**query, limit=5)
+
+    assert (row["model_id"], row["served_model_id"]) == ("auto-balance", "auto-balance")
+    assert row["cost_usd"] > 0
 
 
 @pytest.mark.asyncio

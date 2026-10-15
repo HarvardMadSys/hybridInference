@@ -1,10 +1,13 @@
 """Auto models on the inference surfaces (``serving/auto_mode.py``).
 
 A request naming ``auto-<tier>`` is rewritten to the model the tier chooses and
-then served as a request naming that model. These tests drive the real handlers
-and router: the candidates are three models with different windows and
-capabilities, a provider is taken down through the admin kill switch, and the
-switch that turns auto on is the runtime setting itself.
+then served as a request naming that model. The caller is never told which: the
+response, its stream and its errors name the auto model. Which model served,
+and why, is what the log records, so that is what these tests read.
+
+They drive the real handlers and router: the candidates are three models with
+different windows and capabilities, a provider is taken down through the admin
+kill switch, and the switch that turns auto on is the runtime setting itself.
 """
 
 from __future__ import annotations
@@ -224,6 +227,27 @@ class _Gateway:
             await asyncio.sleep(0.02)
         raise AssertionError("no request was logged")
 
+    async def sessions(self, count: int, timeout: float = 2.0) -> list[tuple[str, str]]:
+        """Return ``(session action, model logged)`` for the first ``count`` messages requests.
+
+        The log is written in the background; /v1/messages request ids order by
+        arrival, so the rows are put back in the order the requests were sent.
+        """
+        deadline = time.time() + timeout
+        while self.log_store.log_request.call_count < count:
+            if time.time() > deadline:
+                raise AssertionError(f"{self.log_store.log_request.call_count} of {count} logged")
+            await asyncio.sleep(0.02)
+        rows = sorted(
+            (call.kwargs for call in self.log_store.log_request.call_args_list),
+            key=lambda row: row["request_id"],
+        )
+        return [(row["metadata"]["auto"]["session_action"], row["model_id"]) for row in rows]
+
+
+def _no_auto_headers(response) -> bool:
+    return not any(name.lower().startswith("x-auto") for name in response.headers)
+
 
 @pytest.fixture
 def gateway(mock_db_logger, mock_log_store) -> _Gateway:
@@ -300,7 +324,7 @@ async def test_a_request_naming_a_model_is_untouched(gateway):
     response = await gateway.post("/v1/chat/completions", _chat(MID))
 
     assert response.status_code == 200
-    assert "X-Auto-Profile" not in response.headers
+    assert response.json()["model"] == MID
     logged = await gateway.logged()
     assert logged["model_id"] == MID
     assert "auto" not in logged["metadata"]
@@ -310,14 +334,13 @@ async def test_a_request_naming_a_model_is_untouched(gateway):
 
 
 @pytest.mark.asyncio
-async def test_chat_is_served_by_the_tiers_first_choice_and_says_so(gateway):
+async def test_chat_is_served_by_the_first_choice_and_names_only_the_auto_model(gateway):
     response = await gateway.post("/v1/chat/completions", _chat("auto-balance"), SESSION)
 
     assert response.status_code == 200
-    assert response.json()["model"] == MID
-    assert response.headers["X-Auto-Profile"] == "balance"
-    assert response.headers["X-Auto-Model"] == MID
-    assert response.headers["X-Auto-Session"] == "new"
+    assert response.json()["model"] == "auto-balance"
+    assert MID not in response.text
+    assert _no_auto_headers(response)
     assert gateway.served() == [MID]
     logged = await gateway.logged()
     assert logged["model_id"] == MID
@@ -338,16 +361,45 @@ async def test_bare_auto_is_the_default_tier(gateway):
     response = await gateway.post("/v1/chat/completions", _chat("auto"))
 
     assert response.status_code == 200
-    assert response.headers["X-Auto-Profile"] == "balance"
+    assert response.json()["model"] == "auto"
+    assert (await gateway.logged())["metadata"]["auto"]["profile"] == "balance"
 
 
 @pytest.mark.asyncio
-async def test_a_streamed_chat_carries_the_headers_too(gateway):
+async def test_every_chunk_of_a_streamed_chat_names_the_auto_model(gateway):
     response = await gateway.post("/v1/chat/completions", _chat("auto-balance", stream=True))
 
     assert response.status_code == 200
-    assert response.headers["X-Auto-Model"] == MID
-    assert f'"model": "{MID}"' in response.text or f'"model":"{MID}"' in response.text
+    assert gateway.served() == [MID]
+    assert MID not in response.text
+    assert response.text.count('"model": "auto-balance"') >= 2  # the role chunk and the reply
+    assert _no_auto_headers(response)
+
+
+@pytest.mark.asyncio
+async def test_an_upstream_error_does_not_name_the_model(gateway):
+    """An upstream's own message quotes its model; the caller sees the auto model instead."""
+    import aiohttp
+    from multidict import CIMultiDict, CIMultiDictProxy
+    from yarl import URL
+
+    url = URL("https://upstream.example/v1/chat/completions")
+
+    async def overloaded(messages, **params):
+        raise aiohttp.ClientResponseError(
+            request_info=aiohttp.RequestInfo(url, "POST", CIMultiDictProxy(CIMultiDict()), url),
+            history=(),
+            status=400,
+            message=f"{MID} rejected the request: context too long for {MID}.",
+        )
+
+    gateway.adapters[MID].chat_completion = overloaded
+
+    response = await gateway.post("/v1/chat/completions", _chat("auto-balance"))
+
+    assert response.status_code == 400
+    assert MID not in response.text
+    assert "auto-balance rejected the request" in response.text
 
 
 @pytest.mark.asyncio
@@ -438,11 +490,11 @@ async def test_a_request_no_usable_model_can_take_is_refused_as_such(gateway):
 async def test_a_session_stays_on_its_model_in_a_tool_loop_and_moves_at_the_next_turn(gateway):
     """mid-b is down, so the session starts on frontier-a; mid-b recovers mid-loop."""
     gateway.down(MID)
-    first = await gateway.post("/v1/messages", _anthropic("auto-balance", OPENING), SESSION)
+    await gateway.post("/v1/messages", _anthropic("auto-balance", OPENING), SESSION)
     gateway.down()
 
-    in_loop = await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
-    next_turn = await gateway.post(
+    await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
+    await gateway.post(
         "/v1/messages",
         _anthropic(
             "auto-balance",
@@ -455,15 +507,11 @@ async def test_a_session_stays_on_its_model_in_a_tool_loop_and_moves_at_the_next
         SESSION,
     )
 
-    assert [r.headers["X-Auto-Session"] for r in (first, in_loop, next_turn)] == [
-        "new",
-        "keep",
-        "turn_switch",
-    ]
-    assert [r.headers["X-Auto-Model"] for r in (first, in_loop, next_turn)] == [
-        FRONTIER,
-        FRONTIER,
-        MID,
+    assert gateway.served() == [FRONTIER, FRONTIER, MID]
+    assert await gateway.sessions(3) == [
+        ("new", FRONTIER),
+        ("keep", FRONTIER),
+        ("turn_switch", MID),
     ]
 
 
@@ -475,8 +523,7 @@ async def test_a_tool_loop_moves_at_once_when_its_model_goes_down(gateway):
     response = await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
 
     assert response.status_code == 200
-    assert response.headers["X-Auto-Session"] == "forced_switch"
-    assert response.headers["X-Auto-Model"] == FRONTIER
+    assert await gateway.sessions(2) == [("new", MID), ("forced_switch", FRONTIER)]
 
 
 @pytest.mark.asyncio
@@ -490,15 +537,18 @@ async def test_a_conversation_in_the_same_session_keeps_its_own_model(gateway):
     await gateway.post("/v1/messages", _anthropic("auto-balance", OPENING), SESSION)
     gateway.down()
 
-    subagent = await gateway.post(
+    await gateway.post(
         "/v1/messages",
         _anthropic("auto-balance", [{"role": "user", "content": "search the docs"}]),
         SESSION,
     )
-    main = await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
+    await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
 
-    assert (subagent.headers["X-Auto-Session"], subagent.headers["X-Auto-Model"]) == ("new", MID)
-    assert (main.headers["X-Auto-Session"], main.headers["X-Auto-Model"]) == ("keep", FRONTIER)
+    assert await gateway.sessions(3) == [
+        ("new", FRONTIER),
+        ("new", MID),
+        ("keep", FRONTIER),
+    ]
 
 
 @pytest.mark.asyncio
@@ -511,10 +561,9 @@ async def test_sessions_are_kept_per_caller(mock_db_logger, mock_log_store):
     other = {**USER, "user_id": "user-2"}
     gateway.app.dependency_overrides[verify_api_key] = lambda: other
 
-    response = await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
+    await gateway.post("/v1/messages", _anthropic("auto-balance", _tool_loop()), SESSION)
 
-    assert response.headers["X-Auto-Session"] == "new"
-    assert response.headers["X-Auto-Model"] == MID
+    assert await gateway.sessions(2) == [("new", FRONTIER), ("new", MID)]
 
 
 # -- Anthropic Messages -----------------------------------------------------------
@@ -547,20 +596,24 @@ async def test_an_anthropic_native_model_is_not_sent_another_models_thinking(
         "role": "assistant",
         "content": [_thinking("frontier"), {"type": "tool_use", "id": "t2", "name": "cat"}],
     }
-    kept = await gateway.post(
+    await gateway.post(
         "/v1/messages",
         _anthropic("auto-balance", [*OPENING, by_mid, result, by_frontier, result]),
         SESSION,
     )
 
-    assert switched.headers["X-Auto-Session"] == "forced_switch"
-    assert kept.headers["X-Auto-Session"] == "keep"
+    assert switched.json()["model"] == "auto-balance"
+    assert await gateway.sessions(3) == [
+        ("new", MID),
+        ("forced_switch", FRONTIER),
+        ("keep", FRONTIER),
+    ]
     first, second = gateway.adapters[FRONTIER].calls
     assert [b["type"] for b in first["messages"][1]["content"]] == ["tool_use"]
     assert [b["type"] for b in second["messages"][1]["content"]] == ["tool_use"]
     assert [b["type"] for b in second["messages"][3]["content"]] == ["thinking", "tool_use"]
-    logged = await gateway.logged()
-    assert logged["prompt"][1]["content"][0] == _thinking("mid")
+    prompts = [call.kwargs["prompt"] for call in gateway.log_store.log_request.call_args_list]
+    assert all(p[1]["content"][0] == _thinking("mid") for p in prompts if len(p) > 1)
 
 
 @pytest.mark.asyncio
@@ -568,7 +621,8 @@ async def test_messages_is_served_and_logged_under_the_chosen_model(gateway):
     response = await gateway.post("/v1/messages", _anthropic("auto-intelligence"), SESSION)
 
     assert response.status_code == 200
-    assert response.headers["X-Auto-Model"] == FRONTIER
+    assert response.json()["model"] == "auto-intelligence"
+    assert _no_auto_headers(response)
     assert gateway.served() == [FRONTIER]
     assert gateway.last_call(FRONTIER)["params"]["reasoning_effort"] == "high"
     logged = await gateway.logged()
@@ -580,13 +634,25 @@ async def test_messages_is_served_and_logged_under_the_chosen_model(gateway):
 
 
 @pytest.mark.asyncio
+async def test_a_streamed_message_names_the_auto_model(gateway):
+    response = await gateway.post("/v1/messages", _anthropic("auto-balance", stream=True))
+
+    assert response.status_code == 200
+    assert gateway.served() == [MID]
+    assert "event: message_start" in response.text
+    assert '"model": "auto-balance"' in response.text
+    assert MID not in response.text
+    assert _no_auto_headers(response)
+
+
+@pytest.mark.asyncio
 async def test_messages_with_tools_skips_a_model_that_would_drop_them(gateway):
     tools = [{"name": "ls", "description": "list", "input_schema": {"type": "object"}}]
 
     response = await gateway.post("/v1/messages", _anthropic("auto-fast", tools=tools))
 
     assert response.status_code == 200
-    assert response.headers["X-Auto-Model"] == MID
+    assert gateway.served() == [MID]
     assert gateway.last_call(MID)["params"]["reasoning_effort"] == "low"
 
 
@@ -615,12 +681,16 @@ async def test_count_tokens_for_a_tier_the_caller_can_use_none_of_is_404(gateway
 
 
 @pytest.mark.asyncio
-async def test_the_responses_api_reports_the_model_that_served(gateway):
-    response = await gateway.post("/v1/responses", {"model": "auto-balance", "input": "hi"})
+@pytest.mark.parametrize("stream", [False, True], ids=["whole", "streamed"])
+async def test_the_responses_api_names_the_auto_model(gateway, stream):
+    response = await gateway.post(
+        "/v1/responses", {"model": "auto-balance", "input": "hi", "stream": stream}
+    )
 
     assert response.status_code == 200
-    assert response.json()["model"] == MID
-    assert response.headers["X-Auto-Model"] == MID
+    assert gateway.served() == [MID]
+    assert "auto-balance" in response.text
+    assert MID not in response.text
 
 
 @pytest.mark.asyncio

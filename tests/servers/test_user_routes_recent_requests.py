@@ -13,7 +13,9 @@ connection. The helper guards the dashboard's hot path so we verify:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -21,6 +23,7 @@ from serving.servers.routers import user_routes
 from serving.servers.routers.user_routes import (
     _RECENT_REQUESTS_COUNT_CACHE,
     _RECENT_REQUESTS_COUNT_TTL_SECONDS,
+    _SHOWN_MODEL_SQL,
     _get_cached_user_request_count,
 )
 
@@ -124,7 +127,7 @@ async def test_count_query_filters_on_model_id_when_provided():
     sql = args[0]
     bind_params = args[1:]
     assert "user_id = $1" in sql
-    assert "model_id ILIKE '%' || $2 || '%'" in sql
+    assert f"{_SHOWN_MODEL_SQL} ILIKE '%' || $2 || '%'" in sql
     assert bind_params == ("user-1", "gpt-4o")
 
 
@@ -140,7 +143,7 @@ async def test_count_query_escapes_ilike_wildcards_in_model_id():
     sql = args[0]
     bind_params = args[1:]
     assert "user_id = $1" in sql
-    assert "model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in sql
+    assert f"{_SHOWN_MODEL_SQL} ILIKE '%' || $2 || '%' ESCAPE '\\'" in sql
     assert bind_params == ("user-1", r"gpt\%\_4\\\\o")
 
 
@@ -178,3 +181,66 @@ async def test_cache_evicts_oldest_entries_at_capacity(monkeypatch):
     await _get_cached_user_request_count(conn, "user-2", None)
     await _get_cached_user_request_count(conn, "user-4", None)
     assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-2", None), ("user-4", None)}
+
+
+def _row(**overrides):
+    return {
+        "request_id": "req-1",
+        "model_id": "mid-b",
+        "provider": "zai",
+        "timestamp": datetime(2026, 10, 15, tzinfo=UTC),
+        "status_code": 200,
+        "latency_ms": 10,
+        "ttft_ms": 5,
+        "stream": False,
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": 2,
+        "cost_usd": 0.001,
+        "error": None,
+        "routewise": {"primary_provider": "mid-b:zai-api"},
+        "request_type": None,
+        "is_auto": False,
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_request_for_an_auto_model_shows_the_auto_model_only():
+    """The query names the auto model; the row withholds what would name the served one."""
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"total": 2})
+    conn.fetch = AsyncMock(
+        return_value=[
+            _row(),
+            _row(
+                request_id="req-2",
+                model_id="auto-balance",
+                status_code=503,
+                error="No provider is currently available for model 'mid-b'",
+                is_auto=True,
+            ),
+        ]
+    )
+    acquire = MagicMock()
+    acquire.__aenter__ = AsyncMock(return_value=conn)
+    acquire.__aexit__ = AsyncMock(return_value=None)
+    db_logger = SimpleNamespace(pool=SimpleNamespace(acquire=lambda: acquire))
+
+    page = await user_routes.get_recent_requests(
+        limit=50, offset=0, model_id=None, current_user={"user_id": "user-1"}, db_logger=db_logger
+    )
+
+    sql = conn.fetch.call_args.args[0]
+    assert f"{_SHOWN_MODEL_SQL} AS model_id" in sql
+    named, auto = page.requests
+    assert (named.model_id, named.provider, named.routewise) == (
+        "mid-b",
+        "zai",
+        {"primary_provider": "mid-b:zai-api"},
+    )
+    assert (auto.model_id, auto.provider, auto.routewise) == ("auto-balance", "auto", None)
+    assert "mid-b" not in (auto.error or "")

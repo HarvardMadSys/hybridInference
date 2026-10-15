@@ -50,6 +50,13 @@ UPSTREAM_PRIORITY = "upstream_priority"
 # entry in REQUEST_SCOPED_KEYS.
 UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
 
+# req_ctx key set when a request for an auto model is served by a model chosen
+# for it (serving/auto_mode.py). Its value is ``(auto_model, names)``: the auto
+# model the caller asked for, and every name of the model serving it. The caller
+# is not told which model that is, so every user-facing error message names the
+# auto model instead (``serving.exceptions.conceal_served_model``).
+CONCEALED_MODEL = "concealed_model"
+
 # req_ctx key holding the dispatch's first-token watch
 # (``routing.engine_wait.FirstTokenWatch``), or ``None``. FixedRouter pushes it
 # around each streaming attempt it would offload if the engine did not start
@@ -113,6 +120,9 @@ REQUEST_SCOPED_KEYS = (
     # mandatory: a leftover value would rank the next request, which is a
     # different prompt on a possibly different endpoint.
     UPSTREAM_PRIORITY,
+    # A leftover value would rewrite the next request's error messages, for a
+    # model it did not ask for.
+    CONCEALED_MODEL,
 )
 
 

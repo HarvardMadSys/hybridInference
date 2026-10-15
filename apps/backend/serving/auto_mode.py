@@ -12,18 +12,26 @@ around that decision that depends on the gateway is here:
 - describing a request in protocol-neutral terms (:func:`openai_features`,
   :func:`anthropic_features`) and keying its session (:func:`session_key`);
 - rewriting the request for the chosen model (:func:`apply_to_chat_request`,
-  :func:`apply_to_anthropic_body`, :func:`strip_foreign_thinking`).
+  :func:`apply_to_anthropic_body`, :func:`strip_foreign_thinking`);
+- keeping the chosen model from the caller (:func:`hide_served_model`,
+  :class:`AnthropicStreamModelRenamer`).
 
 Once the request names the chosen model it is served exactly as if the caller
 had named that model. Its access is checked again, its own router picks the
 endpoint, and the request is logged and billed under the model that served it,
 with the decision in ``metadata.auto``.
 
+The caller is not told which model that is. Responses name the auto model the
+caller asked for, error messages do too, and the console's request history
+shows the auto model. Operators see the served model in the log and the admin
+views.
+
 Design: ``docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md``.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +58,7 @@ from routing.model_selection import (
 )
 from routing.prefill_load import estimate_prefill_tokens
 from serving.model_access import model_access_denial, route_canonical_model_id
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -63,6 +72,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "AUTO_MODE_SETTING_KEY",
+    "AnthropicStreamModelRenamer",
     "AutoMode",
     "AutoModelUnavailable",
     "AutoSelection",
@@ -71,8 +81,10 @@ __all__ = [
     "apply_to_chat_request",
     "auto_mode_for",
     "candidate_info",
+    "hide_served_model",
     "load_auto_mode",
     "openai_features",
+    "served_model_names",
     "session_key",
     "strip_foreign_thinking",
 ]
@@ -161,6 +173,9 @@ class AutoSelection:
             ``None`` when nothing does and no state was kept.
         switches: How often the session's model has changed, this request
             included. Non-zero means the history may hold another model's output.
+        served_names: Every name the chosen model goes by -- its id, aliases,
+            display name and upstream model ids -- for keeping it out of what
+            the caller is told.
         effort_applied: Whether the candidate's reasoning effort was written into
             the request. The caller's own setting is never overridden.
     """
@@ -173,6 +188,7 @@ class AutoSelection:
     prompt_tokens: int
     session_source: str | None
     switches: int
+    served_names: frozenset[str] = frozenset()
     effort_applied: bool = False
 
     def log_metadata(self) -> dict[str, Any]:
@@ -192,14 +208,6 @@ class AutoSelection:
             "turn": self.turn.value,
             "prompt_tokens_estimate": self.prompt_tokens,
             "effort_applied": self.candidate.reasoning_effort if self.effort_applied else None,
-        }
-
-    def response_headers(self) -> dict[str, str]:
-        """Return the headers that tell the client which tier chose which model."""
-        return {
-            "X-Auto-Profile": self.decision.profile,
-            "X-Auto-Model": self.model_id,
-            "X-Auto-Session": self.decision.session_action.value,
         }
 
 
@@ -298,6 +306,7 @@ class AutoMode:
             switches = decision.next_state.switches
         else:
             switches = state.switches if state is not None else 0
+        route = router_exec.routes[chosen.model_id]
         return AutoSelection(
             requested=requested,
             decision=decision,
@@ -307,6 +316,9 @@ class AutoMode:
             prompt_tokens=features.prompt_tokens,
             session_source=source if key is not None else None,
             switches=switches,
+            served_names=served_model_names(
+                [adapter.config for adapter, _ in route.adapters], chosen.model_id
+            ),
         )
 
 
@@ -564,6 +576,112 @@ def apply_to_anthropic_body(selection: AutoSelection, body: dict[str, Any]) -> N
     else:
         return
     selection.effort_applied = True
+
+
+def served_model_names(configs: Sequence[ModelConfig], *extra: str) -> frozenset[str]:
+    """Return every name a model goes by, from its route's adapter configs.
+
+    Its id, aliases and display name, and the model id each upstream knows it
+    by, which an upstream's own error message may quote. Names shorter than
+    three characters are left out: replacing them would mangle unrelated text.
+    """
+    names: set[str] = set(extra)
+    for cfg in configs:
+        names.update((cfg.id, cfg.name, cfg.provider_model_id or "", *(cfg.aliases or ())))
+    return frozenset(name for name in names if len(name) >= 3)
+
+
+def hide_served_model(selection: AutoSelection, *also: ModelConfig) -> None:
+    """Keep the model serving this request out of every error message the caller gets.
+
+    Publishes the served model's names for ``serving.exceptions.conceal_served_model``,
+    which every user-facing error text passes through. ``also`` adds the configs
+    of a model the request moved on to after selection, such as the small-call
+    reroute's target.
+    """
+    current = req_ctx.get().get(req_ctx.CONCEALED_MODEL)
+    names = set(current[1]) if current else set(selection.served_names)
+    names |= served_model_names(also)
+    req_ctx.update({req_ctx.CONCEALED_MODEL: (selection.requested, frozenset(names))})
+
+
+class AnthropicStreamModelRenamer:
+    """Rename the model in an Anthropic event stream's ``message_start``.
+
+    The stream is forwarded as the upstream sends it, and its ``message_start``
+    event names the model that serves the request. This holds back the bytes up
+    to the end of that event, rewrites its ``message.model``, and passes every
+    later byte through untouched. Only the opening of the stream is ever held.
+    """
+
+    #: Give up and pass the stream through if no message_start ends this early.
+    _MAX_HELD = 65536
+
+    def __init__(self, model: str):
+        """Rename to ``model``."""
+        self._model = model
+        self._held = b""
+        self._done = False
+
+    def feed(self, data: bytes) -> bytes:
+        """Return the bytes of ``data`` that can be sent now."""
+        if self._done:
+            return data
+        self._held += data
+        out = b""
+        while not self._done:
+            end = _event_end(self._held)
+            if end is None:
+                if len(self._held) > self._MAX_HELD:
+                    self._done = True
+                break
+            event, self._held = self._held[:end], self._held[end:]
+            renamed = self._rename(event)
+            if renamed is not None:
+                event = renamed
+                self._done = True
+            out += event
+        if self._done:
+            out, self._held = out + self._held, b""
+        return out
+
+    def flush(self) -> bytes:
+        """Return whatever is still held, as it came; the stream has ended."""
+        held, self._held, self._done = self._held, b"", True
+        return held
+
+    def _rename(self, event: bytes) -> bytes | None:
+        """Return ``event`` with its model renamed, or ``None`` if it is not message_start."""
+        lines = event.split(b"\n")
+        for index, line in enumerate(lines):
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                return None
+            if not isinstance(data, dict) or data.get("type") != "message_start":
+                return None
+            message = data.get("message")
+            if not isinstance(message, dict):
+                return None
+            message["model"] = self._model
+            lines[index] = (
+                b"data: " + json.dumps(data).encode() + (b"\r" if line.endswith(b"\r") else b"")
+            )
+            return b"\n".join(lines)
+        return None
+
+
+def _event_end(buffer: bytes) -> int | None:
+    """Return the index just past the first complete SSE event in ``buffer``, if any."""
+    ends = [
+        index + len(delimiter)
+        for delimiter in (b"\n\n", b"\r\n\r\n")
+        if (index := buffer.find(delimiter)) >= 0
+    ]
+    return min(ends) if ends else None
 
 
 _THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")

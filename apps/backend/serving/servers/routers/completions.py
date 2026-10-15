@@ -22,6 +22,7 @@ from serving.auto_mode import (
     AutoModelUnavailable,
     apply_to_chat_request,
     auto_mode_for,
+    hide_served_model,
     openai_features,
     session_key,
 )
@@ -651,9 +652,11 @@ async def chat_completions(
     # here to the model its tier chooses, and from here on is served exactly as
     # a request naming that model: the access check below runs on it, its own
     # router picks the endpoint, and it is logged and billed under it with the
-    # decision in ``metadata.auto`` (serving/auto_mode.py). The services are
-    # read off the app rather than injected, because the Responses API and the
-    # legacy completions route call this handler directly.
+    # decision in ``metadata.auto`` (serving/auto_mode.py). The caller is not
+    # told which model that is: responses name the auto model, and so do error
+    # messages. The services are read off the app rather than injected, because
+    # the Responses API and the legacy completions route call this handler
+    # directly.
     auto_selection: AutoSelection | None = None
     auto_mode = await auto_mode_for(model, getattr(request.app.state, "services", None))
     if auto_mode is not None:
@@ -702,11 +705,11 @@ async def chat_completions(
                 raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx)) from None
             raise HTTPException(exc.status_code, exc.detail) from None
         apply_to_chat_request(auto_selection, payload)
+        hide_served_model(auto_selection)
         model = auto_selection.model_id
         metadata["auto"] = auto_selection.log_metadata()
-        # The Responses API reports the model that served its request from this.
-        request.state.auto_selection = auto_selection
-    auto_headers = auto_selection.response_headers() if auto_selection is not None else {}
+    # The model name the client is shown, when it is not the one serving it.
+    response_model = auto_selection.requested if auto_selection is not None else None
 
     # Check if model has routing configured
     if model not in router_exec.routes:
@@ -989,6 +992,7 @@ async def chat_completions(
             get_adapter_config_for_provider=get_adapter_config_for_provider,
             request_payload=body,
             timeout_fired_probe=_timeout_fired_probe(request),
+            response_model=response_model,
         )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
@@ -997,7 +1001,7 @@ async def chat_completions(
             keepalive_gen = _streaming_response_with_keepalive(
                 session.stream(adapter_chunks),
                 request_id=request_id,
-                model=model,
+                model=response_model or model,
                 request_headers=request.headers,
             )
             first_chunk: bytes | None = None
@@ -1032,7 +1036,6 @@ async def chat_completions(
             streaming_headers: dict[str, str] = {
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
-                **auto_headers,
             }
             if is_synthetic_probe:
                 provider_header = get_single_route_provider()
@@ -1080,7 +1083,6 @@ async def chat_completions(
         response_headers = {
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
-            **auto_headers,
         }
         if is_synthetic_probe:
             provider_header = get_single_route_provider()
@@ -1108,6 +1110,10 @@ async def chat_completions(
         if isinstance(response, dict):
             sanitize_result = sanitize_response(response, serializer_mode)
             response = sanitize_result.response_json
+            if response_model is not None:
+                response.pop("provider", None)
+                if "model" in response:
+                    response["model"] = response_model
             routing_info = sanitize_result.routing_info
             if routing_info:
                 routing = merge_adapter_routing(routing, routing_info)
@@ -1248,7 +1254,6 @@ async def chat_completions(
 
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
-        http_response.headers.update(auto_headers)
         return response
 
     except ProviderPinError as exc:

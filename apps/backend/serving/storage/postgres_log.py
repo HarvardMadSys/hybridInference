@@ -501,7 +501,12 @@ class PostgresLogStore(LogStore):
         after: tuple[dt.datetime, str] | None = None,
         response_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Page through one grant's window, ordered by start time then id."""
+        """Page through one grant's window, ordered by start time then id.
+
+        A request for an auto model reports the auto model it asked for as both
+        its model and its served model: the owner is not told which model served
+        it (serving/auto_mode.py). Its cost is still the served model's.
+        """
         after_started_at = after[0] if after is not None else None
         after_request_id = after[1] if after is not None else None
         async with self.pool.acquire() as conn:
@@ -510,8 +515,9 @@ class PostgresLogStore(LogStore):
                 SELECT request_id, metadata->>'response_id' AS response_id,
                        (metadata->>'request_started_at')::timestamptz AS request_started_at,
                        timestamp AS logged_at,
-                       model_id,
-                       served_model_id,
+                       COALESCE(metadata->'auto'->>'requested', model_id) AS model_id,
+                       COALESCE(metadata->'auto'->>'requested', served_model_id)
+                           AS served_model_id,
                        prompt_tokens,
                        completion_tokens,
                        cache_read_tokens,
