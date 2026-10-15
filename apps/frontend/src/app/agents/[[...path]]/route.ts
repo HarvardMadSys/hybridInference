@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
 
 const WEB_PREFIX = '/agents';
 const API_PREFIX = '/agents/api';
@@ -118,6 +119,16 @@ function requestHeaders(request: NextRequest): Headers {
     }
     headers.append(name, value);
   });
+
+  // The Agent signs in through its own session cookie and never reads the
+  // console's. Relaying that one would hand a service a credential that mints
+  // console access tokens for whoever is signed in here.
+  const cookie = withoutConsoleSession(request.headers.get('cookie'));
+  if (cookie) {
+    headers.set('cookie', cookie);
+  } else {
+    headers.delete('cookie');
+  }
 
   const host = request.headers.get('host') || request.nextUrl.host;
   if (host) headers.set('x-forwarded-host', host);

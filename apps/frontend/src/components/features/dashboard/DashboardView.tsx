@@ -11,6 +11,19 @@ import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { userDisplayName } from '@/lib/utils/userLabel';
 
+/**
+ * The Agents link, naming the account this console tab is using.
+ *
+ * The Agent signs in on its own and may be using a different account of this
+ * browser; given this one, it can say so and offer to switch rather than
+ * silently showing another account's work.
+ */
+function agentsEntryUrl(agentsUrl: string, userId: string | undefined): string {
+  if (!userId) return agentsUrl;
+  const separator = agentsUrl.includes('?') ? '&' : '?';
+  return `${agentsUrl}${separator}gateway_account=${encodeURIComponent(userId)}`;
+}
+
 export function DashboardView() {
   const { state } = useAuth();
   const { branding, features, agentsUrl } = useSiteConfig();
@@ -128,7 +141,7 @@ export function DashboardView() {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {features.agents && (
               <a
-                href={agentsUrl}
+                href={agentsEntryUrl(agentsUrl, state.user?.id)}
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
               >
                 <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

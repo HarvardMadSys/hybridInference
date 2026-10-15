@@ -19,6 +19,9 @@ import { useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 import { AuthMethodSelector } from '@/components/auth/AuthMethodSelector';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { AccountChooser } from '@/components/auth/AccountChooser';
+import type { AccountSummary } from '@/lib/api/auth';
+import { userDisplayName } from '@/lib/utils/userLabel';
 
 function LoginContent() {
   const t = useT();
@@ -30,7 +33,13 @@ function LoginContent() {
   // through here with its query attached, and a crafted ?next= must never be
   // able to send a fresh session off-site.
   const nextPath = internalPathOr('/dashboard', searchParams.get('next'));
-  const { login, loginPhone, state } = useAuth();
+  // ?add=1 comes from "Add another account": the visitor is signed in already
+  // and wants the form, not to be sent on.
+  const addMode = searchParams.get('add') === '1';
+  const { login, loginPhone, state, accounts = [], switchAccount, removeAccount } = useAuth();
+  // Null until the visitor picks: the chooser when this browser has accounts.
+  const [view, setView] = useState<'chooser' | 'form' | null>(null);
+  const showChooser = !addMode && view !== 'form' && accounts.length > 0;
   const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,16 +55,40 @@ function LoginContent() {
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
+    defaultValues: { email: searchParams.get('identifier') ?? '' },
   });
 
   useEffect(() => {
-    if (!state.loading && state.isAuthenticated) {
+    if (!state.loading && state.isAuthenticated && !addMode) {
       router.replace(nextPath);
     }
-  }, [state.loading, state.isAuthenticated, router, nextPath]);
+  }, [state.loading, state.isAuthenticated, addMode, router, nextPath]);
+
+  const chooseAccount = async (account: AccountSummary) => {
+    await switchAccount(account.id);
+    toast.success(
+      fill(t('auth.accounts.switched_toast', 'Continuing as {name}'), {
+        name: userDisplayName(account),
+      }),
+    );
+    router.push(nextPath);
+  };
+
+  // An account whose session ended signs in again with its own identifier.
+  const signInAgain = (account: AccountSummary) => {
+    const identifier = account.email || account.login_name;
+    if (identifier) {
+      setValue('email', identifier);
+      setMethod('email');
+    } else if (account.phone) {
+      setMethod('phone');
+    }
+    setView('form');
+  };
 
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
@@ -106,7 +139,7 @@ function LoginContent() {
     }
   };
 
-  if (state.loading || state.isAuthenticated) {
+  if (state.loading || (state.isAuthenticated && !addMode)) {
     return <AuthLoading />;
   }
 
@@ -121,11 +154,19 @@ function LoginContent() {
     <AuthPageFrame
       page="login"
       kicker={t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN')}
-      title={t('auth.login.title', 'Log In')}
+      title={
+        showChooser
+          ? t('auth.accounts.title', 'Choose an account')
+          : addMode
+            ? t('auth.accounts.add_title', 'Add another account')
+            : t('auth.login.title', 'Log In')
+      }
       subtitle={
-        features.phoneAuth
-          ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
-          : t('auth.login.subtitle', 'Welcome back, please log in')
+        showChooser
+          ? t('auth.accounts.subtitle', 'Accounts signed in on this browser')
+          : features.phoneAuth
+            ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
+            : t('auth.login.subtitle', 'Welcome back, please log in')
       }
       topbar={
         features.publicSignup ? (
@@ -146,8 +187,32 @@ function LoginContent() {
         </>
       }
     >
-      {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
-      {features.phoneAuth && method === 'phone' ? (
+      {showChooser ? (
+        <AccountChooser
+          accounts={accounts}
+          onChoose={chooseAccount}
+          onSignIn={signInAgain}
+          onRemove={(account) => removeAccount(account.id)}
+          onUseAnother={() => {
+            setValue('email', '');
+            setView('form');
+          }}
+        />
+      ) : (
+        <>
+          {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
+          {addMode ? (
+            <button type="button" className={skin.linkButton} onClick={() => router.push(nextPath)}>
+              {t('auth.accounts.cancel_add', 'Cancel')}
+            </button>
+          ) : accounts.length > 0 ? (
+            <button type="button" className={skin.linkButton} onClick={() => setView('chooser')}>
+              {t('auth.accounts.back', 'Back to your accounts')}
+            </button>
+          ) : null}
+        </>
+      )}
+      {showChooser ? null : features.phoneAuth && method === 'phone' ? (
         <PhoneAuthForm
           purpose="login"
           onLogin={async (phone, code) => {

@@ -13,6 +13,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
   RESET_TOKEN_USED: 'This password reset link has already been used. Please request a new one',
   SESSION_NOT_FOUND: 'Session not found. Please login again',
   SESSION_REVOKED: 'Session has been revoked',
+  ACCOUNT_CHANGED: 'You signed in to another account in a different tab. Reload to continue',
 
   // API Key errors
   DUPLICATE_API_KEY: 'You already have an active API key',

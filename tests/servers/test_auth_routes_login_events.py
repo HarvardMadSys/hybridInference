@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from serving.servers.deps import get_operational_store
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers.auth_routes import router as auth_router
+from tests.fixtures import browser_sessions
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def fake_op_store() -> MagicMock:
     op.update_user_fields = AsyncMock()
     op.create_session = AsyncMock()
     op.record_login_event = AsyncMock()
+    browser_sessions.install(op)
     return op
 
 

@@ -455,16 +455,16 @@ msgstr "账号与认证"
 
 #: ../developer/database.md
 msgid ""
-"`users`, `api_keys`, `auth_sessions`, `login_events`, "
-"`email_verification_tokens`, `password_reset_tokens`, "
-"`identity_auth_codes`"
+"`users`, `api_keys`, `auth_sessions`, `browser_sessions`, "
+"`browser_session_accounts`, `login_events`, `email_verification_tokens`, "
+"`password_reset_tokens`, `identity_auth_codes`"
 msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"User records, hashed API keys and their quotas, refresh sessions, sign-in"
-" history"
-msgstr "用户记录、哈希后的 API key 及其配额、refresh token 会话、登录历史"
+"User records, hashed API keys and their quotas, refresh sessions and the "
+"accounts signed in on each browser, sign-in history"
+msgstr "用户记录、哈希后的 API key 及其配额、refresh token 会话及每个浏览器上已登录的账号、登录历史"
 
 #: ../developer/database.md
 msgid "Admin actions"

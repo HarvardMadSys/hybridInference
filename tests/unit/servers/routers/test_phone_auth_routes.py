@@ -12,14 +12,17 @@ from serving.servers.deps import get_current_user
 from serving.servers.routers import auth_routes, phone_auth_routes as routes, user_routes
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
+from tests.fixtures import browser_sessions
 
 PHONE = "+8613800138000"
 
 
-def request(authorization=None):
+def request(authorization=None, cookie=None):
     headers = [(b"user-agent", b"phone-auth-test")]
     if authorization:
         headers.append((b"authorization", authorization.encode()))
+    if cookie:
+        headers.append((b"cookie", cookie.encode()))
     return Request(
         {
             "type": "http",
@@ -31,6 +34,12 @@ def request(authorization=None):
             "server": ("test", 443),
         }
     )
+
+
+def issued_cookie(response):
+    """The session cookie value a response set."""
+    header = response.headers["set-cookie"]
+    return header.split("refresh_token=", 1)[1].split(";", 1)[0]
 
 
 def user(*, email=None, email_verified=False, status="active", phone_verified=True):
@@ -101,6 +110,7 @@ class Store:
             }
         )
         self.rotate_session = AsyncMock()
+        self.browser_sessions = browser_sessions.install(self)
 
 
 @pytest.mark.parametrize("phone", ["13800138000", "+8613800138000", " 13800138000 "])
@@ -286,8 +296,83 @@ async def test_phone_login_and_authenticated_profile_and_refresh(enabled):
     assert context["phone"] == PHONE
     profile = await user_routes.get_current_user_info(context, store)
     assert profile.has_password is False
-    refreshed = await auth_routes.refresh(Response(), "refresh-token", store)
+    refreshed = await auth_routes.refresh(
+        request(cookie=f"refresh_token={issued_cookie(response)}"), Response(), store
+    )
     assert verify_access_token(refreshed.access_token)["email"] == ""
+
+
+@pytest.mark.asyncio
+async def test_phone_login_starts_a_browser_session(enabled):
+    store = Store(user())
+    response = Response()
+    await routes.phone_login(
+        request(), response, PhoneVerifyRequest(phone=PHONE, code="123456"), store
+    )
+    [browser] = store.browser_sessions.browsers.values()
+    assert browser["active_user_id"] == "existing-user"
+    assert browser["secret_hash"] == auth_routes.hash_refresh_token(issued_cookie(response))
+
+
+@pytest.mark.asyncio
+async def test_phone_login_joins_the_browser_it_signs_in_on(enabled):
+    store = Store(user())
+    first = Response()
+    await routes.phone_login(
+        request(), first, PhoneVerifyRequest(phone=PHONE, code="123456"), store
+    )
+    [browser_id] = store.browser_sessions.browsers
+    store.browser_sessions.members[(browser_id, "other-user")] = "other-session"
+
+    again = Response()
+    await routes.phone_login(
+        request(cookie=f"refresh_token={issued_cookie(first)}"),
+        again,
+        PhoneVerifyRequest(phone=PHONE, code="123456"),
+        store,
+    )
+
+    # The same browser, still holding the other account, with a new cookie.
+    assert list(store.browser_sessions.browsers) == [browser_id]
+    assert (browser_id, "other-user") in store.browser_sessions.members
+    assert issued_cookie(again) != issued_cookie(first)
+
+
+@pytest.mark.asyncio
+async def test_phone_login_is_refused_when_the_browser_is_full(enabled):
+    store = Store(user())
+    first = Response()
+    await routes.phone_login(
+        request(), first, PhoneVerifyRequest(phone=PHONE, code="123456"), store
+    )
+    [browser_id] = store.browser_sessions.browsers
+    del store.browser_sessions.members[(browser_id, "existing-user")]
+    for index in range(5):
+        store.browser_sessions.members[(browser_id, f"user-{index}")] = f"session-{index}"
+    store.create_phone_session.reset_mock()
+
+    with pytest.raises(HTTPException) as refused:
+        await routes.phone_login(
+            request(cookie=f"refresh_token={issued_cookie(first)}"),
+            Response(),
+            PhoneVerifyRequest(phone=PHONE, code="123456"),
+            store,
+        )
+    assert refused.value.status_code == 409
+    store.create_phone_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_phone_login_leaves_the_browser_alone(enabled):
+    store = Store(user(status="pending_approval"))
+    with pytest.raises(HTTPException):
+        await routes.phone_login(
+            request(cookie="refresh_token=previous-refresh"),
+            Response(),
+            PhoneVerifyRequest(phone=PHONE, code="123456"),
+            store,
+        )
+    assert store.browser_sessions.browsers == {}
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,7 @@ from serving.setup_state import (
 from serving.utils import password as password_utils
 from serving.utils.jwt import get_jwt_secret
 from serving.utils.login_rate_limit import SETUP_ATTEMPTS_PER_15MIN
+from tests.fixtures import browser_sessions
 
 SETUP_CODE = "ABCDEFGHJKLM"
 STRONG_PASSWORD = "Str0ngPassword"
@@ -70,6 +71,7 @@ def op_store() -> MagicMock:
     store.get_user_by_id = AsyncMock(side_effect=_get_user_by_id)
     store.update_user_last_login = AsyncMock()
     store.create_session = AsyncMock()
+    browser_sessions.install(store)
     return store
 
 

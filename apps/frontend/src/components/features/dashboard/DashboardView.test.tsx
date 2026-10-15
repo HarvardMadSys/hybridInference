@@ -56,13 +56,16 @@ describe('DashboardView runtime agents gate', () => {
     expect(screen.getByRole('link', { name: /api playground/i })).toBeInTheDocument();
   });
 
-  it('shows the Agents link when the runtime feature is enabled', () => {
+  it('shows the Agents link, naming this console account, when the feature is enabled', () => {
     agentsEnabled = true;
     agentsUrl = '/agents';
 
     render(<DashboardView />);
 
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
+    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute(
+      'href',
+      '/agents?gateway_account=internal-user',
+    );
   });
 
   it('links the tile directly to a standalone agent site', () => {
@@ -71,7 +74,10 @@ describe('DashboardView runtime agents gate', () => {
 
     render(<DashboardView />);
 
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', agentsUrl);
+    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute(
+      'href',
+      'https://agents.example.test/?gateway_account=internal-user',
+    );
   });
 
   it('keeps the standalone agent tile restricted to internal users', () => {

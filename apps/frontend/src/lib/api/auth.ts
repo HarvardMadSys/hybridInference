@@ -1,4 +1,11 @@
-import { fetchWithAuth, jsonOrThrow, safeFetch, setAccessToken, getAccessToken } from './client';
+import {
+  fetchWithAuth,
+  getAccessToken,
+  jsonOrThrow,
+  safeFetch,
+  setAccessToken,
+  withSessionLock,
+} from './client';
 import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
@@ -90,12 +97,15 @@ export async function signupPhone(data: PhoneSignupRequest): Promise<SignupRespo
 }
 
 export async function loginPhone(data: { phone: string; code: string }): Promise<LoginResponse> {
-  const resp = await safeFetch(`${API_BASE}/auth/phone/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-    credentials: 'include',
-  });
+  // A sign-in rotates the browser's cookie, like a refresh.
+  const resp = await withSessionLock(() =>
+    safeFetch(`${API_BASE}/auth/phone/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      credentials: 'include',
+    }),
+  );
   const result = await jsonOrThrow<LoginResponse>(resp);
   setAccessToken(result.access_token);
   return result;
@@ -130,12 +140,15 @@ export async function signup(data: SignupRequest): Promise<SignupResponse> {
 }
 
 export async function login(data: LoginRequest): Promise<LoginResponse> {
-  const resp = await safeFetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-    credentials: 'include',
-  });
+  // A sign-in rotates the browser's cookie, like a refresh.
+  const resp = await withSessionLock(() =>
+    safeFetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      credentials: 'include',
+    }),
+  );
 
   const result = await jsonOrThrow<LoginResponse>(resp);
   setAccessToken(result.access_token);
@@ -152,6 +165,111 @@ export async function logout(): Promise<void> {
     });
   } finally {
     setAccessToken(null);
+  }
+}
+
+/** One account signed in on this browser, as the account chooser shows it. */
+export interface AccountSummary {
+  id: string;
+  email: string | null;
+  login_name?: string | null;
+  phone?: string | null;
+  user_name?: string | null;
+  role: string;
+  /** The account the browser is using. */
+  active: boolean;
+  /** False once its session has ended: choosing it asks for its password again. */
+  signed_in: boolean;
+  /** Whether it may use the Cloud Agent; null when signed out or unknown. */
+  agent_access?: boolean | null;
+}
+
+export interface AccountsResponse {
+  active_user_id: string | null;
+  accounts: AccountSummary[];
+  max_accounts: number;
+}
+
+/**
+ * The accounts signed in on this browser. Needs only the cookie, no account.
+ *
+ * Under the session lock because the first answer to a cookie issued before
+ * browser sessions existed replaces it.
+ */
+export async function listAccounts(): Promise<AccountsResponse> {
+  const resp = await withSessionLock(() =>
+    safeFetch(`${API_BASE}/auth/accounts`, { credentials: 'include' }),
+  );
+  return jsonOrThrow<AccountsResponse>(resp);
+}
+
+/**
+ * Get a token for another account signed in on this browser, without a password.
+ *
+ * With `activate` (the default) it becomes the browser's account and this tab's
+ * token. Without, the token is only returned — the consent page uses one to
+ * sign the Cloud Agent in as an account the console is not showing.
+ */
+export async function switchAccount(
+  userId: string,
+  { activate = true }: { activate?: boolean } = {},
+): Promise<LoginResponse> {
+  const send = () =>
+    safeFetch(`${API_BASE}/auth/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, activate }),
+      credentials: 'include',
+    });
+  const resp = await (activate ? withSessionLock(send) : send());
+  const result = await jsonOrThrow<LoginResponse>(resp);
+  if (activate) setAccessToken(result.access_token);
+  return result;
+}
+
+/** Sign one account out of this browser, whether or not its session is live. */
+export async function removeAccount(userId: string): Promise<AccountsResponse> {
+  const resp = await withSessionLock(() =>
+    safeFetch(`${API_BASE}/auth/accounts/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    }),
+  );
+  return jsonOrThrow<AccountsResponse>(resp);
+}
+
+/** Sign every account out of this browser. */
+export async function logoutAll(): Promise<void> {
+  try {
+    const resp = await withSessionLock(() =>
+      safeFetch(`${API_BASE}/auth/logout-all`, { method: 'POST', credentials: 'include' }),
+    );
+    await jsonOrThrow(resp);
+  } finally {
+    setAccessToken(null);
+  }
+}
+
+/**
+ * The account the Cloud Agent is signed in as in this browser.
+ *
+ * `null` when it has no session; `undefined` when that cannot be told — the
+ * Agent served from another origin, or not answering — so a caller deciding
+ * whether to end that session must assume it might be anyone's.
+ */
+export async function agentSessionUser(agentsUrl: string): Promise<string | null | undefined> {
+  if (!agentsUrl) return null;
+  try {
+    const resp = await fetch(`${agentsUrl.replace(/\/+$/, '')}/api/v1/session/me`, {
+      credentials: 'include',
+      signal: AbortSignal.timeout(AGENT_LOGOUT_TIMEOUT_MS),
+    });
+    if (resp.status === 401) return null;
+    if (!resp.ok) return undefined;
+    const body = (await resp.json()) as { id?: unknown };
+    return typeof body.id === 'string' ? body.id : undefined;
+  } catch {
+    return undefined;
   }
 }
 

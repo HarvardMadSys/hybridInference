@@ -618,6 +618,76 @@ class OperationalStore(ABC):
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delete all sessions for a user (used during user deletion)."""
 
+    # -- browser sessions ----------------------------------------------------
+    #
+    # A browser holds one cookie naming one browser session, and that session
+    # lists the accounts signed in there, each through its own auth session.
+
+    @abstractmethod
+    async def create_browser_session(
+        self, *, browser_session_id: str, secret_hash: str, expires_at: datetime
+    ) -> None:
+        """Insert a browser session with no accounts yet."""
+
+    @abstractmethod
+    async def get_browser_session(self, secret_hash: str) -> Row | None:
+        """Fetch a browser session by the hash of its cookie.
+
+        Returns: ``id, active_user_id, expires_at, revoked``.
+        """
+
+    @abstractmethod
+    async def rotate_browser_session(
+        self,
+        browser_session_id: str,
+        *,
+        current_secret_hash: str,
+        new_secret_hash: str,
+        expires_at: datetime | None = None,
+    ) -> bool:
+        """Replace the cookie hash if it is still *current_secret_hash*.
+
+        Extends the expiry to *expires_at* when that is later. Returns False
+        when another request rotated it first or the session is revoked.
+        """
+
+    @abstractmethod
+    async def list_browser_session_accounts(self, browser_session_id: str) -> list[Row]:
+        """Return the accounts signed in to a browser, oldest first.
+
+        Each row carries the account's ``auth_session_id`` and that session's
+        ``sid``, ``session_expires_at`` and ``session_revoked`` (all None once
+        the session row is gone), and the user's profile columns (None once
+        the user row is gone).
+        """
+
+    @abstractmethod
+    async def attach_browser_session_account(
+        self, browser_session_id: str, *, user_id: str, auth_session_id: str
+    ) -> None:
+        """Make *auth_session_id* the browser's session for *user_id* and its active account.
+
+        Revokes the session the browser held for that account before, if any.
+        """
+
+    @abstractmethod
+    async def set_browser_session_active(
+        self, browser_session_id: str, user_id: str | None
+    ) -> None:
+        """Choose the browser's active account, or none."""
+
+    @abstractmethod
+    async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
+        """Revoke and remove one account's session in a browser.
+
+        Clears the active account when it was this one. Returns how many
+        accounts remain signed in to the browser.
+        """
+
+    @abstractmethod
+    async def revoke_browser_session(self, browser_session_id: str) -> None:
+        """Revoke every account's session in a browser, and the browser session."""
+
     # -- login events (audit) ------------------------------------------------
 
     @abstractmethod

@@ -18,6 +18,7 @@
  * rather than falling through.
  */
 import { NextResponse, type NextRequest } from 'next/server';
+import { withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
 
 const BACKEND_INTERNAL_URL = process.env.BUILT_BACKEND_INTERNAL_URL || 'http://backend:8080';
 const PGADMIN_INTERNAL_URL = process.env.PGADMIN_INTERNAL_URL || 'http://pgadmin:80';
@@ -31,11 +32,6 @@ const PGADMIN_SCRIPT_NAME = '/pgadmin';
 
 /** Budget for the admin check. Exceeding it denies, it does not admit. */
 const VERIFY_TIMEOUT_MS = 5_000;
-
-/** Session cookies issued by FastAPI; pgAdmin has no use for either name. */
-function sessionCookieNames(): Set<string> {
-  return new Set(['refresh_token', process.env.REFRESH_TOKEN_COOKIE_NAME || 'refresh_token']);
-}
 
 /**
  * Hop-by-hop headers apply to a single connection and must not be relayed
@@ -83,28 +79,14 @@ async function verifyAdmin(cookie: string | null): Promise<Verdict> {
   return 'forbidden';
 }
 
-/** Drop the console's own session cookie; pgAdmin keeps its own separately. */
-function cookiesForUpstream(cookie: string | null): string | null {
-  if (!cookie) return null;
-  const consoleSessions = sessionCookieNames();
-  const kept = cookie
-    .split(';')
-    .map((part) => part.trim())
-    .filter((part) => {
-      const separator = part.indexOf('=');
-      const name = (separator === -1 ? part : part.slice(0, separator)).trim();
-      return part.length > 0 && !consoleSessions.has(name);
-    });
-  return kept.length > 0 ? kept.join('; ') : null;
-}
-
 function requestHeaders(request: NextRequest): Headers {
   const headers = new Headers();
   request.headers.forEach((value, name) => {
     if (!UNFORWARDABLE_HEADERS.has(name.toLowerCase())) headers.set(name, value);
   });
 
-  const cookie = cookiesForUpstream(request.headers.get('cookie'));
+  // pgAdmin keeps its own session cookie; only the console's is dropped.
+  const cookie = withoutConsoleSession(request.headers.get('cookie'));
   if (cookie) {
     headers.set('cookie', cookie);
   } else {

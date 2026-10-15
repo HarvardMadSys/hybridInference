@@ -164,6 +164,33 @@ describe('/agents runtime proxy', () => {
     expect(headers.get('x-forwarded-proto')).toBe('https');
   });
 
+  it('keeps the Agent session cookie but not the console session', async () => {
+    const upstream = stubFetch();
+
+    await GET(
+      request('/agents/api/v1/session/me', {
+        headers: { cookie: 'refresh_token=console; __Host-cloud_agent_session=agent; theme=dark' },
+      }),
+    );
+
+    const sent = new Headers(upstream.mock.calls[0][1].headers).get('cookie');
+    expect(sent).toBe('__Host-cloud_agent_session=agent; theme=dark');
+  });
+
+  it('strips a deployment-scoped console session cookie', async () => {
+    vi.stubEnv('REFRESH_TOKEN_COOKIE_NAME', 'hybridinference_example_refresh');
+    const upstream = stubFetch();
+
+    await GET(
+      request('/agents', {
+        headers: { cookie: 'hybridinference_example_refresh=console; refresh_token=legacy' },
+      }),
+    );
+
+    const headers = new Headers(upstream.mock.calls[0][1].headers);
+    expect(headers.get('cookie')).toBeNull();
+  });
+
   it('preserves separate Set-Cookie fields and drops encoded and hop-by-hop response headers', async () => {
     const headers = new Headers({
       connection: 'x-private-hop',

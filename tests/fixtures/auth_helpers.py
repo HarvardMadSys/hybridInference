@@ -72,6 +72,8 @@ async def cleanup_auth_tables(pool) -> None:
             await conn.execute("DELETE FROM email_verification_tokens")
             await conn.execute("DELETE FROM password_reset_tokens")
             await conn.execute("DELETE FROM auth_sessions")
+            await conn.execute("DELETE FROM browser_session_accounts")
+            await conn.execute("DELETE FROM browser_sessions")
             await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
             await conn.execute("DELETE FROM signup_allowed_domains")
             await conn.execute("DELETE FROM users")
