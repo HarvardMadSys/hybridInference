@@ -127,8 +127,8 @@ export function UsageStats(): JSX.Element {
                     />
                   </svg>
                   <div className="invisible absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-md bg-gray-900 px-3 py-2 text-xs text-white shadow-lg group-hover:visible">
-                    Internal cost attributed from logged usage ({period} window, UTC boundary
-                    follows your timezone). Not a bill — for transparency only.
+                    Internal cost attributed from logged usage. Today and This Month start at 00:00
+                    UTC, when the daily quota resets. Not a bill — for transparency only.
                     <div className="absolute left-1/2 top-full -mt-1 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
                   </div>
                 </div>
