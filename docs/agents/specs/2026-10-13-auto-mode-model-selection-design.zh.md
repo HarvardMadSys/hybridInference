@@ -1,7 +1,7 @@
 # Auto 模式：按请求自动选择模型的设计
 
 - 日期：2026-10-13
-- 状态：讨论稿。调研结论与抽象均为提议。[实施计划](../plans/2026-10-13-auto-mode-implementation.zh.md)的 PR 1（共享资格检查）已随本文合并（#1522）；PR 2 实现了不依赖第 10 节的选择核心，尚未接入请求路径。依赖第 10 节的部分等它确定后再做
+- 状态：讨论稿。调研结论与抽象均为提议。[实施计划](../plans/2026-10-13-auto-mode-implementation.zh.md)的 PR 1（共享资格检查）已随本文合并（#1522）；PR 2 实现了不依赖第 10 节的选择核心；PR 3 把它接入两个接口，由运行时开关控制，默认关闭。依赖第 10 节的部分等它确定后再做
 - 范围：新增"按请求选择模型"的一层，提供 intelligence / balance / fast 三个档位；不改变 Fixed / RouteWise 在单个模型内选择 endpoint 的行为
 - 相关记录：[实施计划](../plans/2026-10-13-auto-mode-implementation.zh.md)、[可组合的 Hybrid Routing 设计](2026-09-14-composable-hybrid-routing-design.zh.md)（§8.2 只读估计接口）、[RouteWise 会话级 cache-aware 路由](2026-06-01-routewise-session-cache-aware-routing-design.zh.md)
 

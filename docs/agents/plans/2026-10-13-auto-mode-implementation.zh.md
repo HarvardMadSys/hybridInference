@@ -1,8 +1,9 @@
 # Auto 模式实施计划
 
 - 日期：2026-10-13
-- 状态：PR 1 已合并（#1522）；PR 2 已实现，未接入请求路径；PR 3 之后尚未开始
+- 状态：PR 1 已合并（#1522）；PR 2 已实现，未接入请求路径（#1523）；PR 3 已实现，在本地网关进程上验证，staging 尚未验证；PR 4 尚未开始
 - PR 2 分支：`murphy/claude/auto-mode-selection-core`
+- PR 3 分支：`murphy/claude/auto-mode-wiring`，基于 PR 2 分支
 - 当前代码参照：`bbf1bbe8`（`dev`）
 - 设计：[Auto 模式：按请求自动选择模型的设计](../specs/2026-10-13-auto-mode-model-selection-design.zh.md)
 
@@ -47,18 +48,26 @@ PR 4 新增的字段默认值都等于 v1 的行为，v1 的配置不用改。
 
 测试：`tests/unit/routing/test_model_selection_*.py`，覆盖每个过滤原因、每条会话规则、存储的过期 / 淘汰 / key 隔离、两步校验，以及一个跨故障和上下文增长的完整会话。
 
-### PR 3：接入两个接口（运行时开关默认关闭）
+### PR 3：接入两个接口（已实现，运行时开关默认关闭）
 
-- 启动时读 `models.yaml` 的 `auto:` 段，`parse_auto_config()` 和 `check_against_catalog()` 报错时禁用 auto，告警写日志；admin 新建模型时保留 `auto` / `auto-*`。
-- serving 侧新增一个模块，只做和协议格式有关的事：
-  - 提取特征：prompt token 估计、模态、`max_tokens`、是否在工具循环里（Anthropic 格式看最后一条 user 消息是否只有 `tool_result`，OpenAI 格式看最后一条是否是 `role: tool`）、是否是安全检查（复用 `_is_tool_safety_check`）。
-  - 构造 catalog：只放 `model_access_denial()` 放行、且 `router_exec.eligible_adapters()` 非空的模型（只查询）；上下文、模态等由 `select()` 检查。
-  - 会话 key：调用方 + `session_identity()`；没有声明会话时用 `routing/prefill_load.py` 的 `conversation_fingerprint()`。会话 ID 是客户端自报的，key 必须带调用方。
-  - 改写请求：换模型名（`payload` 一起改）；客户端没指定 effort 时填候选的 effort（`/v1/messages` 写 `output_config.effort`，completions 写 `reasoning_effort`）；切换模型时去掉历史 thinking block。
-- 接入点：两个 handler 查找模型之前、`count_tokens`、`/v1/models`（至少有一个候选可用时才列出 auto）。
-- 输出：`metadata.auto`；响应里的 `model` 是实际模型，header 标出档位。
-- 测试照 `tests/servers/test_anthropic_messages_reroute.py` 的写法，覆盖：改写结果、按权限过滤、首选熔断时用下一个、工具循环中不切换、`count_tokens` 和 Responses 路径、开关关闭时 auto ID 返回 404、点名模型的请求和日志不变。
-- 退出条件：在 staging 上用 Claude Code（`ANTHROPIC_MODEL=auto-balance`）跑一个完整会话，OpenAI SDK 和 Responses API 各跑一次，核对 `api_logs` 里的决策和成本。
+- 配置：启动时在路由表完整之后（YAML 模型和从数据库恢复的运行时模型都已注册）读 `models.yaml` 的 `auto:` 段，`load_auto_mode()` 报错或档位与已注册名称重名时 auto 关闭，每个问题写一条日志；候选未注册或不接受 effort 只告警。结果放在 `AppServices.auto_mode`。
+- 开关：运行时设置 `auto_mode_enabled`，默认关闭。只有名字落在 `auto` / `auto-*` 且有对应档位的请求才读这个设置，点名模型的请求不读。开关存在 `site_settings`，所以没有数据库的网关打不开 auto，和 `reasoning_small_call_reroute_enabled` 一样。
+- serving 侧新模块 `serving/auto_mode.py`：
+  - catalog：每个候选模型要通过 `model_access_denial()`（含 grant 范围），再用 `eligible_adapters()` 查是否有 endpoint 准入（只查询）。模型的能力取各路由的最小窗口、最小输出上限、共同的模态、全部支持才算支持 tools、effort 取交集，与 `/v1/models` 对多路由模型的保守口径一致。
+  - 特征：OpenAI 格式最后一条是 `role: tool` 时算工具循环；Anthropic 格式最后一条 user 消息里只要有 `tool_result` 就算工具循环。Claude Code 会在同一条消息里附加提醒文本，用户打断工具时也是 `tool_result` 加文字，宁可把新一轮当成工具循环，这样最多把切换推迟一轮，不会在循环中间换模型。图片在 `tool_result` 里也算。安全检查（`_is_tool_safety_check`）算旁路调用。
+  - 会话 key：调用方（`user_id` 和 grant）+ 声明的会话 + 对话开头的指纹（`conversation_fingerprint()`，只用消息，不含 tools）。和原计划的差别是声明了会话时也带上开头指纹：Claude Code 的子 agent 和标题、安全检查等辅助调用与主对话共用一个会话 ID，只按会话 ID 记状态，子 agent 开始时会把主对话在工具循环中途换掉。不带 tools 是因为 Claude Code 中途加载工具会改变 tools 列表。
+  - 改写请求：chat 同时改 `payload.model` 和 handler 的 `model`；`/v1/messages` 改 `body["model"]` 后照常走 `_resolve`。候选的 effort 只在客户端没指定时写入（`reasoning_effort` / `output_config.effort`），由各自原有的检查处理。日志里的 `request_payload` 保留客户端原样发来的请求。
+  - thinking：OpenAI 翻译器本来就丢掉 thinking block，所以只在分派给 Anthropic 原生 adapter、且会话换过模型时，去掉历史里的 thinking block；会话在工具循环中沿用当前模型时，保留最后一条 assistant 消息的 thinking。
+- 错误：调用方一个候选都用不了时 404（和未知模型一样，不暴露候选）；有候选能接这个请求但没有 endpoint 准入时 503；调用方能用的候选都接不了这个请求（上下文、模态、tools）时 400，消息里不出现候选名。
+- 输出：日志的 `model_id` 是实际模型，成本按实际模型算；`metadata.auto` 记档位、版本、有序候选、被跳过的候选及原因、会话动作和来源、轮次类型、prompt 估计、是否写入了 effort。响应 `model` 是实际模型，header 为 `X-Auto-Profile` / `X-Auto-Model` / `X-Auto-Session`；Responses API 也报实际模型。
+- `/v1/models`（OpenAI 和 Anthropic 两种格式）在开关打开、且调用方能用档位内至少一个模型时列出 auto（不检查 grant 范围，与其他列表一致）。窗口、模态、tools 取候选中最大的，因为选择会把请求交给有这项能力的模型；采样参数和结构化输出取交集。控制台自己的 `/user/models` 不列 auto：那个列表也用于禁用模型的设置，而禁用列表按真实模型 ID 记录。
+- `count_tokens`：只检查调用方能否用档位内某个模型，计数仍在本地估计。
+- admin：新建模型时拒绝 `auto` / `auto-*`（422）。检查放在 admin 请求入口，不放在启动时恢复运行时模型的共享函数里，以免已有的同名运行时模型在重启时丢失。
+- 文档：`docs/developer/routing.md` 新增 “Auto models” 一节，含 zh_CN 翻译。
+- 测试：`tests/unit/serving/test_auto_mode.py`（特征、会话 key、改写、thinking、加载）；`tests/servers/test_auto_mode_surfaces.py`（三个接口、开关、权限和 grant、首选不可用、上下文、模态、tools、会话规则、子 agent、按调用方隔离、Responses、`/v1/models`、Anthropic 原生 thinking、日志）；`tests/servers/test_admin_provider_routes.py`（保留名）。
+- 验证：在本地起了真实网关进程（临时 Postgres、假的 OpenAI 兼容上游、三个模型），开关从环境变量导入。核对了：三种档位的选择和 effort；上下文、图片、tools 导致的跳过；400 / 404；流式和 Responses；`count_tokens`；`/v1/models` 两种格式；一个 Claude Code 格式的会话经历首选上游连续 500、熔断打开后强制切换、恢复后工具循环中不切回、下一轮切回、子 agent 按新会话、安全检查按旁路调用；`api_logs` 的 `model_id`、成本和 `metadata.auto`；运行中改 `site_settings` 关闭和重新打开开关（10 秒内生效，不用重启）。
+- 已知限制（按设计）：没有跨模型 fallback。会话的模型在熔断打开之前失败，客户端收到的是这个错误，熔断打开后的下一个请求才换模型（设计 §6.3 第 5 条）。
+- 退出条件尚未满足：在 staging 上用 Claude Code（`ANTHROPIC_MODEL=auto-balance`）跑一个完整会话，OpenAI SDK 和 Responses API 各跑一次，核对 `api_logs` 里的决策和成本。
 
 ### PR 4：影子运行和任务分类
 

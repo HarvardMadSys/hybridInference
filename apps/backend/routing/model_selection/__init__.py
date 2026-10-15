@@ -21,6 +21,7 @@ from routing.model_selection.config import (
     AutoProfile,
     CatalogCheck,
     check_against_catalog,
+    is_auto_model_id,
     parse_auto_config,
 )
 from routing.model_selection.constraints import PROMPT_ESTIMATE_HEADROOM, drop_reason
@@ -63,6 +64,7 @@ __all__ = [
     "check_against_catalog",
     "continue_session",
     "drop_reason",
+    "is_auto_model_id",
     "parse_auto_config",
     "select",
 ]

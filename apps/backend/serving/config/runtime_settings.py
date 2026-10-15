@@ -104,6 +104,17 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "this setting. Off by default."
         ),
     },
+    "auto_mode_enabled": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Serve the auto models (auto, auto-<tier>) defined in the auto: section "
+            "of models.yaml: each request is sent to a model the tier chooses for it. "
+            "With this off, or with no auto: section, the auto models do not exist "
+            "and requests naming them get 404. Requests naming a model are never "
+            "affected. Off by default."
+        ),
+    },
     "user_concurrency_free": {
         "type": "int",
         "default": 3,

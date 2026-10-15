@@ -1728,6 +1728,195 @@ msgstr ""
 "`dynamic_keys`，所以对这几个 provider 记录的预留会保存下来，但永远不会生效。这些模型请改用模型目录里的 "
 "`required_role` 来限制。"
 
+#: ../developer/routing.md:750
+msgid "Auto models"
+msgstr "Auto 模型"
+
+#: ../developer/routing.md:752
+msgid ""
+"Everything above chooses an endpoint for the model a request names. An "
+"auto model chooses the model. A client names a tier, such as `auto-"
+"balance`, and each request is sent to one of the tier's candidate models."
+" From then on it is served exactly as a request naming that model would "
+"be."
+msgstr ""
+"前面讲的都是为请求点名的模型选择端点；auto 模型选择的是模型本身。客户端点名一个档位，例如 `auto-"
+"balance`，每个请求都会交给这个档位的某个候选模型，之后的处理与直接点名该模型的请求完全相同。"
+
+#: ../developer/routing.md:757
+msgid ""
+"Tiers are defined in an `auto:` section of the model registry, next to "
+"`models:`:"
+msgstr "档位定义在模型注册表的 `auto:` 段里，和 `models:` 并列："
+
+#: ../developer/routing.md:781
+msgid ""
+"Each profile is served as `auto-<name>`. The auto models exist only while"
+" the `auto_mode_enabled` runtime setting is on, and it is off by default."
+" While it is off, a request naming one gets 404 and `/v1/models` does not"
+" list them. Requests that name a real model are never affected."
+msgstr ""
+"每个档位以 `auto-<name>` 的名字提供。只有运行时设置 `auto_mode_enabled` 打开时 auto "
+"模型才存在，它默认关闭。关闭时，点名 auto 模型的请求得到 404，`/v1/models` 也不列出它们。点名真实模型的请求不受任何影响。"
+
+#: ../developer/routing.md:786
+msgid ""
+"**Which candidate serves.** The first one in the list that can serve the "
+"request. A candidate is skipped for any of these reasons:"
+msgstr "**由哪个候选服务**。列表中第一个能服务该请求的候选。候选在以下任一情况下会被跳过："
+
+#: ../developer/routing.md:789
+msgid ""
+"The caller could not use its model by name. Role, visibility overrides, "
+"the caller's disabled models and a grant's model list all apply."
+msgstr "调用方不能直接点名使用它的模型：角色、可见性覆盖、调用方禁用的模型和 grant 的模型列表都会生效。"
+
+#: ../developer/routing.md:791
+msgid ""
+"None of its model's endpoints is admitted, because the provider is "
+"disabled or every circuit is open."
+msgstr "它的模型没有任何端点可以准入，因为 provider 被禁用，或者熔断器全部打开。"
+
+#: ../developer/routing.md:793
+msgid "The request sends tools and the model does not support them."
+msgstr "请求带了 tools，而模型不支持。"
+
+#: ../developer/routing.md:794
+msgid ""
+"The request carries an input kind, such as an image, that the model does "
+"not accept."
+msgstr "请求带有模型不接受的输入类型，例如图片。"
+
+#: ../developer/routing.md:796
+msgid ""
+"The prompt estimate times 1.25, plus `max_tokens` capped at the model's "
+"output limit, does not fit its context window. A model with several "
+"routes counts as having its smallest window."
+msgstr ""
+"prompt 估计值乘以 1.25，再加上按模型输出上限截断后的 "
+"`max_tokens`，超出了它的上下文窗口。有多条路由的模型按其中最小的窗口计算。"
+
+#: ../developer/routing.md:799
+msgid "The model does not accept the candidate's `reasoning_effort`."
+msgstr "模型不接受候选指定的 `reasoning_effort`。"
+
+#: ../developer/routing.md:801
+msgid ""
+"A candidate's `reasoning_effort` is applied only when the request does "
+"not set one of its own."
+msgstr "只有请求自己没有设置推理强度时，才会使用候选的 `reasoning_effort`。"
+
+#: ../developer/routing.md:804
+msgid ""
+"**Sessions.** Changing models in the middle of a conversation costs its "
+"prompt cache and hands an agent's plan to a model that did not make it. "
+"So:"
+msgstr "**会话**。在对话中途换模型，会让 prompt 缓存失效，还会把 agent 的计划交给一个没有参与制定它的模型。所以："
+
+#: ../developer/routing.md:807
+msgid ""
+"A conversation in its tool loop stays on its model. The loop is "
+"recognised by a last message that carries a tool result. It moves only "
+"when that model can no longer serve."
+msgstr "处在工具循环中的对话留在当前模型上。判断依据是最后一条消息带有工具结果。只有当前模型无法继续服务时才会换。"
+
+#: ../developer/routing.md:810
+msgid ""
+"A new user turn ranks the candidates again, so a conversation that fell "
+"back returns to the first choice once that model is back."
+msgstr "新的用户轮次会重新排序候选，所以回退过的对话会在首选模型恢复后回到首选。"
+
+#: ../developer/routing.md:812
+msgid ""
+"Claude Code's tool-permission check uses the conversation's model and "
+"changes nothing."
+msgstr "Claude Code 的工具权限检查使用对话当前的模型，不改变任何会话状态。"
+
+#: ../developer/routing.md:815
+msgid ""
+"A conversation is identified by the caller, the session the client "
+"declares, and the conversation's opening messages. That keeps Claude "
+"Code's subagents and helper calls apart from the main conversation they "
+"share a session with. Sessions are held in process and forgotten on "
+"restart."
+msgstr ""
+"对话由调用方、客户端声明的会话和对话开头的消息共同识别。这样 Claude Code 的子 agent "
+"和辅助调用，不会和与它们共用一个会话的主对话混在一起。会话保存在进程内，重启后丢失。"
+
+#: ../developer/routing.md:820
+msgid ""
+"When a session has changed models and the request goes to an Anthropic-"
+"native endpoint, thinking blocks are removed from the history first, "
+"because that upstream rejects thinking another model wrote. The current "
+"model's thinking in the last step of its tool loop is kept."
+msgstr ""
+"如果会话换过模型，而请求要发往 Anthropic 原生端点，会先从历史中去掉 thinking block，因为这类上游会拒绝其他模型写出的 "
+"thinking。当前模型在工具循环最后一步的 thinking 会保留。"
+
+#: ../developer/routing.md:825
+msgid ""
+"**When no candidate can serve.** The request gets a 404, the same answer "
+"as an unknown model, when the caller can use none of the tier's models. "
+"It gets a 503 when a model that could take the request has no endpoint "
+"admitted. It gets a 400 when every model the caller can use is unable to "
+"take the request, for example because the prompt is too long for all of "
+"them."
+msgstr ""
+"**没有候选能服务时**。调用方用不了档位内的任何模型时，请求得到 404，与未知模型的回答相同。能接这个请求的模型没有可准入的端点时，得到 "
+"503。调用方能用的每个模型都接不了这个请求时（例如 prompt 对它们都太长），得到 400。"
+
+#: ../developer/routing.md:831
+msgid ""
+"**What the client sees.** The response's `model` is the model that served"
+" the request. The `X-Auto-Profile`, `X-Auto-Model` and `X-Auto-Session` "
+"headers name the tier, the model, and what happened to the session: "
+"`new`, `keep`, `turn_switch`, `forced_switch` or `side_call`. "
+"`/v1/models` lists each auto model to a caller who may use any of its "
+"models. Its window, input kinds and tool support are the most any of "
+"those models offers. Sampling parameters and structured output are listed"
+" only when all of them support them."
+msgstr ""
+"**客户端看到什么**。响应中的 `model` 是实际服务该请求的模型。`X-Auto-Profile`、`X-Auto-Model` 和 `X"
+"-Auto-Session` 三个 header "
+"分别给出档位、模型，以及会话发生了什么：`new`、`keep`、`turn_switch`、`forced_switch` 或 "
+"`side_call`。`/v1/models` 只向能使用其中任一模型的调用方列出对应的 auto "
+"模型。它的窗口、输入类型和工具支持取这些模型中能提供的最大值；采样参数和结构化输出只有在所有模型都支持时才列出。"
+
+#: ../developer/routing.md:839
+msgid ""
+"**What is recorded.** The log row's `model_id` is the model that served "
+"the request, and cost is computed for it. The decision is in "
+"`metadata.auto`: the tier and its version, the candidates in order, each "
+"skipped candidate with its reason, and the session action."
+msgstr ""
+"**记录了什么**。日志行的 `model_id` 是实际服务该请求的模型，成本也按它计算。决策记在 `metadata.auto` "
+"中：档位及其版本、按顺序排列的候选、每个被跳过的候选及原因，以及会话动作。"
+
+#: ../developer/routing.md:844
+msgid ""
+"**At startup** the section is checked against the models the gateway "
+"starts with. An invalid section turns auto off and logs every problem in "
+"it. A tier named like a registered model also turns auto off, since the "
+"tier would hide that model. A candidate whose model is not registered, or"
+" that asks for an effort its model does not accept, only logs a warning, "
+"and requests skip it until it can serve. The admin API refuses to create "
+"a model named `auto` or `auto-<anything>`."
+msgstr ""
+"**启动时**，这一段会和网关启动时的模型对照检查。这一段无效时 auto 关闭，并在日志中列出其中的每个问题。档位名与已注册的模型重名时 "
+"auto 也会关闭，因为档位会把那个模型挡住。候选的模型未注册，或者候选要求的 effort "
+"模型不接受，只记一条警告，请求会跳过它，直到它可以服务。管理 API 拒绝创建名为 `auto` 或 `auto-<anything>` 的模型。"
+
+#: ../developer/routing.md:852
+msgid ""
+"The admin playground and the console's own model list do not offer auto "
+"models. The design is in [the auto mode "
+"design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-13"
+"-auto-mode-model-selection-design.zh.md)."
+msgstr ""
+"管理后台的 playground 和控制台自己的模型列表不提供 auto 模型。设计见 [auto "
+"模式设计](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-13"
+"-auto-mode-model-selection-design.zh.md)。"
+
 #: ../developer/routing.md:651
 msgid "API endpoints"
 msgstr "API 端点"

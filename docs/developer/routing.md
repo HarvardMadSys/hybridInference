@@ -747,6 +747,112 @@ when a reservation applies to it. The dedicated `anthropic`, `claude`, and
 stored and never applied. Gate those models with the catalog's `required_role`
 instead.
 
+## Auto models
+
+Everything above chooses an endpoint for the model a request names. An auto
+model chooses the model. A client names a tier, such as `auto-balance`, and
+each request is sent to one of the tier's candidate models. From then on it is
+served exactly as a request naming that model would be.
+
+Tiers are defined in an `auto:` section of the model registry, next to
+`models:`:
+
+```yaml
+auto:
+  default_profile: balance        # what a request for plain `auto` gets
+  session:
+    idle_timeout_seconds: 1800
+    max_sessions: 10000
+  profiles:
+    intelligence:
+      candidates:
+        - {model: <frontier-model>, reasoning_effort: high}
+        - {model: <mid-model>, reasoning_effort: high}
+    balance:
+      candidates:
+        - {model: <mid-model>}
+        - {model: <frontier-model>}
+    fast:
+      candidates:
+        - {model: <small-model>}
+        - {model: <mid-model>, reasoning_effort: low}
+```
+
+Each profile is served as `auto-<name>`. The auto models exist only while the
+`auto_mode_enabled` runtime setting is on, and it is off by default. While it
+is off, a request naming one gets 404 and `/v1/models` does not list them.
+Requests that name a real model are never affected.
+
+**Which candidate serves.** The first one in the list that can serve the
+request. A candidate is skipped for any of these reasons:
+
+- The caller could not use its model by name. Role, visibility overrides, the
+  caller's disabled models and a grant's model list all apply.
+- None of its model's endpoints is admitted, because the provider is disabled
+  or every circuit is open.
+- The request sends tools and the model does not support them.
+- The request carries an input kind, such as an image, that the model does not
+  accept.
+- The prompt estimate times 1.25, plus `max_tokens` capped at the model's
+  output limit, does not fit its context window. A model with several routes
+  counts as having its smallest window.
+- The model does not accept the candidate's `reasoning_effort`.
+
+A candidate's `reasoning_effort` is applied only when the request does not set
+one of its own.
+
+**Sessions.** Changing models in the middle of a conversation costs its prompt
+cache and hands an agent's plan to a model that did not make it. So:
+
+- A conversation in its tool loop stays on its model. The loop is recognised
+  by a last message that carries a tool result. It moves only when that model
+  can no longer serve.
+- A new user turn ranks the candidates again, so a conversation that fell back
+  returns to the first choice once that model is back.
+- Claude Code's tool-permission check uses the conversation's model and changes
+  nothing.
+
+A conversation is identified by the caller, the session the client declares,
+and the conversation's opening messages. That keeps Claude Code's subagents and
+helper calls apart from the main conversation they share a session with.
+Sessions are held in process and forgotten on restart.
+
+When a session has changed models and the request goes to an Anthropic-native
+endpoint, thinking blocks are removed from the history first, because that
+upstream rejects thinking another model wrote. The current model's thinking in
+the last step of its tool loop is kept.
+
+**When no candidate can serve.** The request gets a 404, the same answer as an
+unknown model, when the caller can use none of the tier's models. It gets a 503
+when a model that could take the request has no endpoint admitted. It gets a 400
+when every model the caller can use is unable to take the request, for example
+because the prompt is too long for all of them.
+
+**What the client sees.** The response's `model` is the model that served the
+request. The `X-Auto-Profile`, `X-Auto-Model` and `X-Auto-Session` headers name
+the tier, the model, and what happened to the session: `new`, `keep`,
+`turn_switch`, `forced_switch` or `side_call`. `/v1/models` lists each auto
+model to a caller who may use any of its models. Its window, input kinds and
+tool support are the most any of those models offers. Sampling parameters and
+structured output are listed only when all of them support them.
+
+**What is recorded.** The log row's `model_id` is the model that served the
+request, and cost is computed for it. The decision is in `metadata.auto`: the
+tier and its version, the candidates in order, each skipped candidate with its
+reason, and the session action.
+
+**At startup** the section is checked against the models the gateway starts
+with. An invalid section turns auto off and logs every problem in it. A tier
+named like a registered model also turns auto off, since the tier would hide
+that model. A candidate whose model is not registered, or that asks for an
+effort its model does not accept, only logs a warning, and requests skip it
+until it can serve. The admin API refuses to create a model named `auto` or
+`auto-<anything>`.
+
+The admin playground and the console's own model list do not offer auto models.
+The design is in
+[the auto mode design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md).
+
 ## API endpoints
 
 | Endpoint | Purpose |

@@ -39,6 +39,14 @@ from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.auto_mode import (
+    AutoModelUnavailable,
+    anthropic_features,
+    apply_to_anthropic_body,
+    auto_mode_for,
+    session_key,
+    strip_foreign_thinking,
+)
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import (
     generic_message_for_status,
@@ -75,6 +83,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from fastapi.exceptions import RequestValidationError
+
+    from serving.auto_mode import AutoSelection
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -1470,6 +1480,62 @@ async def anthropic_messages(
     # routes broken for exactly the clients that send it.
     body = normalize_inline_system(body)
 
+    # A request naming an auto model (``auto``, ``auto-<tier>``) is rewritten
+    # here to the model its tier chooses, and from here on is served exactly as
+    # a request naming that model: resolved, access-checked and dispatched below,
+    # and logged and billed under it with the decision in ``metadata.auto``
+    # (serving/auto_mode.py). Read before ``consume_session_fields`` takes the
+    # session declarations out of the body.
+    auto_selection: AutoSelection | None = None
+    # What the client sent, for the log, taken before the rewrite below.
+    client_request: dict[str, Any] | None = None
+    auto_mode = await auto_mode_for(model_id, getattr(request.app.state, "services", None))
+    if auto_mode is not None:
+        prompt_messages, prompt_tools = _prefill_inputs(body)
+        features = anthropic_features(
+            body,
+            prompt_tokens=estimate_prefill_tokens(prompt_messages, tools=prompt_tools),
+            side_call=_is_tool_safety_check(body),
+        )
+        try:
+            auto_selection = await auto_mode.select(
+                model_id,
+                features,
+                router_exec=router_exec,
+                user_ctx=user_ctx,
+                visibility_resolver=model_visibility_resolver,
+                session=session_key(
+                    user_ctx,
+                    session_identity(request.headers, body),
+                    conversation_fingerprint(prompt_messages),
+                ),
+            )
+        except AutoModelUnavailable as exc:
+            asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+                log_rejection(
+                    request=request,
+                    status_code=exc.status_code,
+                    error_code=(
+                        "model_not_found"
+                        if exc.status_code == 404
+                        else "no_provider_available"
+                        if exc.status_code == 503
+                        else "invalid_request"
+                    ),
+                    reason=exc.detail or f"Model '{model_id}' not found",
+                    user=user_ctx,
+                    model_id=model_id,
+                    prompt=body.get("messages") or "",
+                )
+            )
+            if exc.status_code == 404:
+                req_ctx.mark_model_not_found()
+                return _anthropic_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
+            return _anthropic_error(exc.status_code, exc.detail or "")
+        client_request = copy.deepcopy(body)
+        apply_to_anthropic_body(auto_selection, body)
+        model_id = auto_selection.model_id
+
     try:
         canonical, _route, adapter = await _resolve(
             model_id,
@@ -1512,7 +1578,7 @@ async def anthropic_messages(
         # keeps the raw detail server-side either way.
         return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
-    request_payload_for_log = copy.deepcopy(body)
+    request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
 
     # Which session this request belongs to. This is the surface Claude Code
     # uses, and it sends no ``X-Session-ID``: it packs the run into
@@ -1590,6 +1656,16 @@ async def anthropic_messages(
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
     messages_for_log = copy.deepcopy(body.get("messages"))
+
+    # After the log snapshot, which keeps what the client sent, and after the
+    # reroute, so it is the serving adapter's format that decides.
+    if auto_selection is not None and adapter.native_format != "openai":
+        removed_thinking = strip_foreign_thinking(auto_selection, body)
+        if removed_thinking:
+            logger.info(
+                f"[{request_id}] Removed {removed_thinking} thinking block(s) another "
+                f"model may have written before dispatch to {canonical}"
+            )
 
     if adapter.native_format == "openai":
         normalized_tool_inputs = _count_non_object_tool_inputs(body)
@@ -1689,6 +1765,7 @@ async def anthropic_messages(
         "surface": "anthropic_messages",
         "alias_input": model_id if model_id != canonical else None,
         "reroute": reroute_info,
+        "auto": auto_selection.log_metadata() if auto_selection is not None else None,
         # ``LogStore.log_request`` recovers ``api_logs.served_endpoint_id`` from
         # ``metadata["endpoint_id"]``; without it the column falls through to the
         # bare provider label ("sglang"), so every endpoint of a provider — and
@@ -1737,6 +1814,7 @@ async def anthropic_messages(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            **(auto_selection.response_headers() if auto_selection is not None else {}),
         }
 
         async def _gen():
@@ -2342,7 +2420,10 @@ async def anthropic_messages(
             op_store=op_store,
             user_id=user_ctx.get("user_id"),
         )
-    return JSONResponse(content=resp)
+    return JSONResponse(
+        content=resp,
+        headers=auto_selection.response_headers() if auto_selection is not None else None,
+    )
 
 
 @router.post("/v1/messages/count_tokens", response_model=None)
@@ -2379,10 +2460,20 @@ async def anthropic_count_tokens(
     # used to probe hidden models or make an unusable model look available.
     # Visibility only: the count is computed locally, so a provider outage must
     # not blind the client's context tracking.
+    # An auto model is visible when the caller may use any of its tier's
+    # models. Which one would serve does not change the estimate below.
+    auto_mode = await auto_mode_for(model_id, getattr(request.app.state, "services", None))
     try:
-        await _resolve(
-            model_id, router_exec, user_ctx, model_visibility_resolver, for_dispatch=False
-        )
+        if auto_mode is not None:
+            if not await auto_mode.reachable(
+                model_id, router_exec, user_ctx, model_visibility_resolver
+            ):
+                req_ctx.mark_model_not_found()
+                raise HTTPException(404, model_not_found_detail(model_id, user_ctx=user_ctx))
+        else:
+            await _resolve(
+                model_id, router_exec, user_ctx, model_visibility_resolver, for_dispatch=False
+            )
     except HTTPException as exc:
         # Visibility check only, and _resolve's messages are static contract
         # text; see the note on the same call in the messages handler.

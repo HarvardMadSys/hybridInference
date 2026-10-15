@@ -16,6 +16,9 @@ Anthropic-family clients that send an ``anthropic-version`` header (or a
 ``User-Agent`` starting with ``anthropic-`` / ``claude-cli`` / ``claude-sdk``)
 receive the Anthropic list-models response shape from ``/v1/models``.
 The dedicated ``/anthropic/v1/models`` route always returns that shape.
+
+While auto mode is on, the auto models (``auto``, ``auto-<tier>``) are listed
+after the models, each to a caller who may use any of its tier's models.
 """
 
 from __future__ import annotations
@@ -26,11 +29,18 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
+from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
 from serving.pricing import effective_pricing
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
-from serving.servers.deps import get_embedding_adapters, get_model_visibility_resolver, get_router
+from serving.servers.deps import (
+    get_auto_mode,
+    get_embedding_adapters,
+    get_model_visibility_resolver,
+    get_router,
+)
 
 router = APIRouter()
 
@@ -76,10 +86,79 @@ async def _listed_for(
     return denial is None
 
 
+async def _auto_models_for(
+    auto_mode: AutoMode | None,
+    router_exec: Any,
+    model_visibility_resolver: Any | None,
+    user_ctx: dict[str, Any] | None,
+) -> list[tuple[str, str, list[Any]]]:
+    """Return ``(id, tier, configs)`` for each auto model listed to ``user_ctx``.
+
+    An auto model is listed while auto mode is on and the caller may use at
+    least one of its tier's models, by the listings' own rule (no grant scope).
+    ``configs`` are the adapter configs of those models.
+    """
+    if auto_mode is None or not await auto_mode_enabled():
+        return []
+    profiles = auto_mode.config.profiles
+    names = [AUTO_MODEL_ID, *(f"{AUTO_MODEL_PREFIX}{name}" for name in profiles)]
+    listed: list[tuple[str, str, list[Any]]] = []
+    for name in names:
+        reachable = await auto_mode.reachable(
+            name, router_exec, user_ctx, model_visibility_resolver, grant_scope=False
+        )
+        if not reachable:
+            continue
+        configs = [
+            adapter.config
+            for model_id in reachable
+            for adapter, _ in router_exec.routes[model_id].adapters
+        ]
+        listed.append((name, auto_mode.config.resolve(name).name, configs))
+    return listed
+
+
+def _auto_model_item(model_id: str, tier: str, configs: list[Any]) -> ModelItem:
+    """Describe an auto model by what its tier's models offer between them.
+
+    What selection routes on is offered when any model has it: a request is
+    sent to a model with the window, the input kind or the tools it needs. The
+    rest is offered only when every model has it, since any of them may serve.
+    """
+    by_model: dict[str, list[Any]] = {}
+    for cfg in configs:
+        by_model.setdefault(cfg.id, []).append(cfg)
+    infos = [candidate_info(model_configs) for model_configs in by_model.values()]
+    quantizations = {cfg.quantization for cfg in configs}
+    features: list[str] = []
+    if any(info.supports_tools for info in infos):
+        features.append("tools")
+    if all(cfg.supports_structured_output for cfg in configs):
+        features.extend(["json_mode", "structured_outputs"])
+    return ModelItem(
+        id=model_id,
+        name=f"Auto ({tier})",
+        created=CREATED_TS,
+        owned_by="auto",
+        input_modalities=sorted(set().union(*(info.input_modalities for info in infos))),
+        output_modalities=["text"],
+        quantization=quantizations.pop() if len(quantizations) == 1 else "mixed",
+        context_length=max(info.context_length for info in infos),
+        max_output_length=max(info.max_output_length for info in infos),
+        pricing={},
+        supported_sampling_parameters=sorted(
+            set.intersection(*(set(cfg.supported_params) for cfg in configs))
+        ),
+        supported_features=features,
+        on_demand=any(cfg.on_demand for cfg in configs),
+    )
+
+
 async def _format_anthropic_model_list(
     router_exec: Any,
     model_visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
+    auto_mode: AutoMode | None = None,
 ) -> dict:
     """Build the Anthropic GET /v1/models response shape from the model registry.
 
@@ -107,6 +186,17 @@ async def _format_anthropic_model_list(
                 "created_at": _CREATED_AT_ISO,
             }
         )
+    for model_id, tier, _configs in await _auto_models_for(
+        auto_mode, router_exec, model_visibility_resolver, user_ctx
+    ):
+        data.append(
+            {
+                "type": "model",
+                "id": model_id,
+                "display_name": f"Auto ({tier})",
+                "created_at": _CREATED_AT_ISO,
+            }
+        )
     return {
         "data": data,
         "has_more": False,
@@ -124,6 +214,7 @@ async def list_models(
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     user_ctx: dict | None = Depends(optional_verify_api_key),
+    auto_mode: AutoMode | None = Depends(get_auto_mode),
 ):
     """List available models with metadata similar to OpenRouter schema.
 
@@ -137,13 +228,16 @@ async def list_models(
     """
     if request.url.path == "/v1/models" and _is_anthropic_client(request):
         return JSONResponse(
-            await _format_anthropic_model_list(router_exec, model_visibility_resolver, user_ctx)
+            await _format_anthropic_model_list(
+                router_exec, model_visibility_resolver, user_ctx, auto_mode
+            )
         )
     return await _build_model_list_async(
         router_exec,
         embedding_adapters,
         model_visibility_resolver,
         user_ctx=user_ctx,
+        auto_mode=auto_mode,
     )
 
 
@@ -152,6 +246,7 @@ async def list_models_anthropic(
     router_exec=Depends(get_router),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     user_ctx: dict | None = Depends(optional_verify_api_key),
+    auto_mode: AutoMode | None = Depends(get_auto_mode),
 ):
     """Return the Anthropic-format model list (always).
 
@@ -159,7 +254,9 @@ async def list_models_anthropic(
     regardless of request headers or User-Agent.
     """
     return JSONResponse(
-        await _format_anthropic_model_list(router_exec, model_visibility_resolver, user_ctx)
+        await _format_anthropic_model_list(
+            router_exec, model_visibility_resolver, user_ctx, auto_mode
+        )
     )
 
 
@@ -168,8 +265,13 @@ async def _build_model_list_async(
     embedding_adapters: dict[str, Any],
     model_visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
+    auto_mode: AutoMode | None = None,
 ) -> ModelList:
-    """Build the model catalog visible to ``user_ctx``, with runtime overrides if any."""
+    """Build the model catalog visible to ``user_ctx``, with runtime overrides if any.
+
+    The auto models are listed only when ``auto_mode`` is passed: ``/v1/models``
+    passes it, the console's own list does not.
+    """
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
@@ -228,6 +330,11 @@ async def _build_model_list_async(
         if model_id != canonical_id:
             model_entry.openrouter = {"slug": model_id}
         models.append(model_entry)
+
+    for auto_id, tier, configs in await _auto_models_for(
+        auto_mode, router_exec, model_visibility_resolver, user_ctx
+    ):
+        models.append(_auto_model_item(auto_id, tier, configs))
 
     # Append embedding models from the embedding_adapters dict
     emb_seen: set[str] = set()

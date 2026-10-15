@@ -63,6 +63,7 @@ __all__ = [
     "AutoProfile",
     "CatalogCheck",
     "check_against_catalog",
+    "is_auto_model_id",
     "parse_auto_config",
 ]
 
@@ -70,6 +71,17 @@ __all__ = [
 AUTO_MODEL_ID = "auto"
 #: Prefix of every tier's virtual model: ``auto-<tier>``.
 AUTO_MODEL_PREFIX = "auto-"
+
+
+def is_auto_model_id(model_id: str) -> bool:
+    """Return whether ``model_id`` is in the namespace auto models are served from.
+
+    That is ``auto`` and every ``auto-<name>``, whether or not a tier of that name
+    is configured: tiers are added by editing the section, and a model registered
+    under such a name in the meantime would be hidden by the tier.
+    """
+    return model_id == AUTO_MODEL_ID or model_id.startswith(AUTO_MODEL_PREFIX)
+
 
 _PROFILE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
