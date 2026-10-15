@@ -18,9 +18,22 @@ let query = new URLSearchParams();
 const replaceMock = vi.fn();
 const createCodeMock = vi.fn();
 const navigateToMock = vi.fn();
+const accountTokenMock = vi.fn();
+let accountsState: Array<{
+  id: string;
+  email: string;
+  role: string;
+  active: boolean;
+  signed_in: boolean;
+  agent_access?: boolean | null;
+}> = [];
 
 vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: authState }),
+  useAuth: () => ({ state: authState, accounts: accountsState, accountsReady: true }),
+}));
+
+vi.mock('@/lib/api/auth', () => ({
+  switchAccount: (...args: unknown[]) => accountTokenMock(...args),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -60,6 +73,7 @@ beforeEach(() => {
     user: { id: 'user_1', email: 'murphy@example.test', role: 'pro' },
   };
   createCodeMock.mockResolvedValue({ code: 'code-123', expires_in: 60 });
+  accountsState = [];
 });
 
 afterEach(() => {
@@ -184,5 +198,92 @@ describe('the consent step', () => {
     expect(navigateToMock).not.toHaveBeenCalled();
     // The button recovers so the user can retry once the problem is fixed.
     expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled();
+  });
+});
+
+describe('several accounts on the browser', () => {
+  function account(id: string, extra: Partial<(typeof accountsState)[number]> = {}) {
+    return {
+      id,
+      email: `${id}@example.test`,
+      role: 'free',
+      active: false,
+      signed_in: true,
+      agent_access: true,
+      ...extra,
+    };
+  }
+
+  beforeEach(() => {
+    accountsState = [account('user_1', { active: true }), account('user_2')];
+    accountTokenMock.mockResolvedValue({ access_token: 'token-for-user_2' });
+  });
+
+  it('asks which one to sign in, starting from the console’s', () => {
+    validQuery();
+    render(<AuthorizePage />);
+
+    expect(screen.getByText(/Choose the account/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /user_1@example\.test/ })).toBeChecked();
+  });
+
+  it('signs the application in as another account without switching the console', async () => {
+    validQuery();
+    render(<AuthorizePage />);
+
+    fireEvent.click(screen.getByRole('radio', { name: /user_2@example\.test/ }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledTimes(1));
+    expect(accountTokenMock).toHaveBeenCalledWith('user_2', { activate: false });
+    expect(createCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ client_id: 'cloud-agent' }),
+      'token-for-user_2',
+    );
+  });
+
+  it('preselects the account the application names', () => {
+    validQuery({ login_hint: 'user_2' });
+    render(<AuthorizePage />);
+
+    expect(screen.getByRole('radio', { name: /user_2@example\.test/ })).toBeChecked();
+  });
+
+  it('asks even with one account when the application says to', () => {
+    accountsState = [account('user_1', { active: true })];
+    validQuery({ prompt: 'select_account' });
+    render(<AuthorizePage />);
+
+    expect(screen.getByRole('link', { name: 'Use another account' })).toHaveAttribute(
+      'href',
+      `/login?add=1&next=${encodeURIComponent(`/authorize?${query.toString()}`)}`,
+    );
+  });
+
+  it('cannot pick an account without access to the application, or a signed-out one', () => {
+    accountsState = [
+      account('user_1', { active: true }),
+      account('user_2', { agent_access: false }),
+      account('user_3', { signed_in: false, agent_access: null }),
+    ];
+    validQuery();
+    render(<AuthorizePage />);
+
+    expect(screen.getByRole('radio', { name: /user_2@example\.test/ })).toBeDisabled();
+    expect(screen.getByText(/No access to this application/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /user_3@example\.test/ })).toBeDisabled();
+    expect(screen.getByRole('link', { name: 'Sign in again' })).toHaveAttribute(
+      'href',
+      expect.stringContaining('identifier=user_3%40example.test'),
+    );
+  });
+
+  it('offers the browser’s accounts to a tab with none active instead of the form', () => {
+    authState = { loading: false, isAuthenticated: false, user: null };
+    validQuery();
+    render(<AuthorizePage />);
+
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('radio', { name: /user_1@example\.test/ })).toBeChecked();
   });
 });
