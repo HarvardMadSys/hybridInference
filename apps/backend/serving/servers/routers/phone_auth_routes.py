@@ -230,7 +230,11 @@ async def phone_login(
     op_store=Depends(get_operational_store),
 ) -> LoginResponse:
     """Consume a login code and issue the existing cookie-based session."""
-    from serving.servers.routers.auth_routes import hash_refresh_token, set_refresh_token_cookie
+    from serving.servers.routers.auth_routes import (
+        hash_refresh_token,
+        revoke_replaced_session,
+        set_refresh_token_cookie,
+    )
 
     _require_enabled(op_store)
     user = await op_store.get_user_by_phone(body.phone)
@@ -310,6 +314,7 @@ async def phone_login(
     if not created:
         await record("failure", "account_inactive")
         raise HTTPException(403, "Account is not active. Please contact support.")
+    await revoke_replaced_session(op_store, request)
     set_refresh_token_cookie(response, refresh)
     return LoginResponse(
         access_token=token,

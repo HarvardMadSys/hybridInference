@@ -345,6 +345,55 @@ class TestLogin:
         assert data["user"]["email"] == test_user["email"].lower()
 
     @pytest.mark.asyncio
+    async def test_login_revokes_the_session_its_cookie_replaces(
+        self, auth_app_client: AsyncClient, test_user
+    ):
+        """Signing in again overwrites the refresh cookie; the old session must die with it."""
+        credentials = {"email": test_user["email"], "password": test_user["password"]}
+        first = await auth_app_client.post("/auth/login", json=credentials)
+        first_refresh = first.cookies.get("refresh_token")
+        assert first_refresh
+
+        second = await auth_app_client.post(
+            "/auth/login", json=credentials, cookies={"refresh_token": first_refresh}
+        )
+        assert second.status_code == 200
+        second_refresh = second.cookies.get("refresh_token")
+        assert second_refresh and second_refresh != first_refresh
+
+        stale = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": first_refresh}
+        )
+        assert stale.status_code == 401
+        current = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": second_refresh}
+        )
+        assert current.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_failed_login_keeps_the_previous_session(
+        self, auth_app_client: AsyncClient, test_user
+    ):
+        """A sign-in that fails sets no cookie, so it must not revoke the one in place."""
+        first = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": test_user["password"]},
+        )
+        first_refresh = first.cookies.get("refresh_token")
+
+        failed = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": "WrongPassword123!"},
+            cookies={"refresh_token": first_refresh},
+        )
+        assert failed.status_code == 401
+
+        still_valid = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": first_refresh}
+        )
+        assert still_valid.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_login_wrong_password(self, auth_app_client: AsyncClient, test_user):
         """Test login with wrong password fails."""
         response = await auth_app_client.post(

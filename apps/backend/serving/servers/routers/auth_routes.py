@@ -114,8 +114,33 @@ def delete_refresh_token_cookie(response: Response) -> None:
     )
 
 
+async def revoke_replaced_session(op_store: Any, request: Request) -> None:
+    """Revoke the session whose refresh cookie a new sign-in is about to overwrite.
+
+    The browser holds one refresh cookie, so signing in replaces it, and the
+    session behind the old value can never be refreshed from this browser
+    again. Left alone it stays valid in the table until it expires, a live
+    credential nobody holds on purpose. Called only once the new session is
+    stored: a sign-in that fails must leave the old one working.
+
+    Best effort. The sign-in has already succeeded, and failing it here would
+    leave the browser with neither session; a revoke that does not land only
+    costs what it cost before this existed.
+    """
+    refresh_token = get_refresh_token_cookie(request)
+    if not refresh_token:
+        return
+    try:
+        session_row = await op_store.get_session_by_token_hash(hash_refresh_token(refresh_token))
+        if session_row and not session_row["revoked"]:
+            await op_store.revoke_session(session_row["id"])
+    except Exception:
+        logger.exception("replaced_session_revoke_failed")
+
+
 async def start_user_session(
     op_store: Any,
+    request: Request,
     response: Response,
     user_row: dict[str, Any],
     *,
@@ -125,8 +150,9 @@ async def start_user_session(
 
     Shared by ``POST /auth/login`` and first-run setup, so both issue the same
     access token, store the same refresh-token session and set the same
-    refresh cookie on *response*. *user_role* is the role the caller has
-    settled on (login may just have promoted an ``ADMIN_EMAILS`` account).
+    refresh cookie on *response*, revoking the session the browser's previous
+    cookie belonged to. *user_role* is the role the caller has settled on
+    (login may just have promoted an ``ADMIN_EMAILS`` account).
     """
     session_id = generate_session_id()
     is_admin = user_role == "admin"
@@ -151,6 +177,7 @@ async def start_user_session(
         expires_at=session_expires,
     )
 
+    await revoke_replaced_session(op_store, request)
     set_refresh_token_cookie(response, refresh_token)
 
     return LoginResponse(
@@ -494,7 +521,9 @@ async def login(
         await op_store.update_user_fields(user_row["id"], role="admin")
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin (ADMIN_EMAILS)")
 
-    login_response = await start_user_session(op_store, response, user_row, user_role=user_role)
+    login_response = await start_user_session(
+        op_store, request, response, user_row, user_role=user_role
+    )
 
     logger.info(f"User logged in: {user_row['id']} ({identifier})")
 

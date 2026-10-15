@@ -1,15 +1,24 @@
 // Centralized HTTP client with auth handling and token refresh.
 
-import { APIError, httpStatusToErrorCode } from '@/lib/utils/errors';
+import { APIError, ERROR_MESSAGES, httpStatusToErrorCode } from '@/lib/utils/errors';
 
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
+// Set once a refresh proves the browser's session now belongs to another
+// account; cleared only by a sign-in in this tab. See refreshAccessToken.
+let accountChanged = false;
 
-// This event is ephemeral within one loaded console bundle, not persisted
+// These events are ephemeral within one loaded console bundle, not persisted
 // distribution state. Keeping a stable neutral name lets storageKeyPrefix be
 // supplied entirely by runtime branding without coupling the API client to a
 // build-time value.
 export const AUTH_EXPIRED_EVENT = 'hybridinference:auth-expired';
+export const ACCOUNT_CHANGED_EVENT = 'hybridinference:account-changed';
+
+/** Web Lock every tab of this origin takes around a refresh. */
+const REFRESH_LOCK = 'hybridinference:auth-refresh';
+/** A refresh holds that lock for every tab, so a hung one must not hold it forever. */
+const REFRESH_TIMEOUT_MS = 20_000;
 
 // Wrap fetch so a genuine connectivity failure (DNS, offline, connection
 // refused/reset) — which rejects with a TypeError before any response exists —
@@ -37,9 +46,28 @@ function notifyAuthExpired(): void {
   }
 }
 
+/**
+ * A sign-in in another tab moved the browser's session to a different account.
+ *
+ * This tab still shows the previous account, so it sends nothing until it is
+ * reloaded: a request made now would act as the new account on a page built
+ * for the old one. The token is dropped so the reload starts from the cookie.
+ */
+function notifyAccountChanged(): void {
+  accountChanged = true;
+  accessToken = null;
+  sessionStorage.removeItem('access_token');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(ACCOUNT_CHANGED_EVENT));
+  }
+}
+
 export function setAccessToken(token: string | null): void {
   accessToken = token;
   if (token) {
+    // Only a sign-in in this tab hands a token in from outside; the account
+    // this tab now shows is the one it chose.
+    accountChanged = false;
     sessionStorage.setItem('access_token', token);
   } else {
     sessionStorage.removeItem('access_token');
@@ -53,22 +81,47 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-function isAccessTokenExpired(token: string | null): boolean {
-  if (!token) return true;
+function tokenPayload(token: string | null): Record<string, unknown> | null {
+  if (!token) return null;
   try {
     const parts = token.split('.');
-    if (parts.length !== 3) return true;
+    if (parts.length !== 3) return null;
     const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-    const exp = payload?.exp;
-    if (typeof exp !== 'number') return true;
-    // 30s skew to avoid races with server clock
-    return exp * 1000 < Date.now() + 30_000;
+    return payload && typeof payload === 'object' ? payload : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
+function isAccessTokenExpired(token: string | null): boolean {
+  const exp = tokenPayload(token)?.exp;
+  if (typeof exp !== 'number') return true;
+  // 30s skew to avoid races with server clock
+  return exp * 1000 < Date.now() + 30_000;
+}
+
+/** The account a token was issued to, or null when it names none. */
+function tokenSubject(token: string | null): string | null {
+  const sub = tokenPayload(token)?.sub;
+  return typeof sub === 'string' && sub ? sub : null;
+}
+
+/**
+ * Run a refresh with every other tab's refresh held off.
+ *
+ * Each refresh rotates the shared refresh cookie and retires the value it was
+ * sent with. Two tabs refreshing at once both send the same value, and the one
+ * that lands second is refused and signed out. Taking a lock across the origin
+ * makes the second wait until the first response has replaced the cookie, so it
+ * sends the new one. Without Web Locks the refresh runs as before.
+ */
+async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+  if (typeof navigator === 'undefined' || !navigator.locks) return run();
+  return await navigator.locks.request(REFRESH_LOCK, run);
+}
+
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
+  if (accountChanged) return false;
   // If refresh is already in progress, wait for it to prevent race conditions
   if (refreshPromise) {
     return refreshPromise;
@@ -76,22 +129,36 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
 
   refreshPromise = (async () => {
     try {
-      const resp = await safeFetch(`${apiBase}/auth/refresh`, {
-        method: 'POST',
-        credentials: 'include',
+      return await withRefreshLock(async () => {
+        // The account this tab is showing, read before the refresh can replace it.
+        const shownSubject = tokenSubject(getAccessToken());
+        const resp = await safeFetch(`${apiBase}/auth/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+          signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+        });
+        if (!resp.ok) {
+          notifyAuthExpired();
+          return false;
+        }
+        const data = await resp.json();
+        const token = data?.access_token as string | undefined;
+        if (!token) {
+          notifyAuthExpired();
+          return false;
+        }
+        // The refresh cookie is the browser's, not this tab's: after a sign-in
+        // elsewhere it belongs to another account, and installing its token
+        // would quietly turn this page into that account's.
+        const refreshedSubject = tokenSubject(token);
+        if (shownSubject && refreshedSubject && shownSubject !== refreshedSubject) {
+          notifyAccountChanged();
+          return false;
+        }
+        accessToken = token;
+        sessionStorage.setItem('access_token', token);
+        return true;
       });
-      if (!resp.ok) {
-        notifyAuthExpired();
-        return false;
-      }
-      const data = await resp.json();
-      const token = data?.access_token as string | undefined;
-      if (!token) {
-        notifyAuthExpired();
-        return false;
-      }
-      setAccessToken(token);
-      return true;
     } finally {
       // Clear the promise so future refreshes can proceed
       refreshPromise = null;
@@ -101,14 +168,22 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
   return refreshPromise;
 }
 
+function accountChangedError(): APIError {
+  return new APIError('ACCOUNT_CHANGED', ERROR_MESSAGES.ACCOUNT_CHANGED);
+}
+
 export async function fetchWithAuth(
   apiBase: string,
   input: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  if (accountChanged) throw accountChangedError();
   let token = getAccessToken();
   if (isAccessTokenExpired(token)) {
     await refreshAccessToken(apiBase);
+    // Sending without a token now would earn a 401 whose retry runs as the
+    // other account, the very switch the refresh just refused.
+    if (accountChanged) throw accountChangedError();
     token = getAccessToken();
   }
 
@@ -125,6 +200,7 @@ export async function fetchWithAuth(
 
   const refreshed = await refreshAccessToken(apiBase);
   if (!refreshed) {
+    if (accountChanged) throw accountChangedError();
     notifyAuthExpired();
     return resp;
   }

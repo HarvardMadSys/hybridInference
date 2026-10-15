@@ -1,13 +1,15 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { AccountChangedNotice } from '@/components/features/auth/AccountChangedNotice';
 import {
   endAgentSession,
   login as loginApi,
   loginPhone as loginPhoneApi,
   logout as logoutApi,
 } from '@/lib/api/auth';
-import { AUTH_EXPIRED_EVENT, setAccessToken } from '@/lib/api/client';
+import { ACCOUNT_CHANGED_EVENT, AUTH_EXPIRED_EVENT, setAccessToken } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
 import { useSiteConfig } from './SiteConfigProvider';
 
@@ -70,11 +72,13 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { agentsUrl } = useSiteConfig();
+  const queryClient = useQueryClient();
   const [state, setState] = useState<AuthState>({
     isAuthenticated: false,
     loading: true,
     user: null,
   });
+  const [accountChanged, setAccountChanged] = useState(false);
 
   const refreshUser = useCallback(async () => {
     try {
@@ -113,42 +117,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   }, []);
 
-  // Sign out from cloud agent
+  useEffect(() => {
+    const handleAccountChanged = () => setAccountChanged(true);
+    window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
+    return () => window.removeEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
+  }, []);
+
+  // What every sign-in does once its request has installed the new token.
+  // Queries are cached under keys that name no account, so the previous
+  // account's answers go first; and the agent session belonged to whoever was
+  // signed in before, so it ends.
+  const startSession = useCallback(async () => {
+    queryClient.clear();
+    await endAgentSession(agentsUrl);
+    await refreshUser();
+  }, [agentsUrl, queryClient, refreshUser]);
+
   const login = useCallback(
     async (identifier: string, password: string) => {
       await loginApi({ email: identifier, password });
-      await endAgentSession(agentsUrl);
-      await refreshUser();
+      await startSession();
     },
-    [agentsUrl, refreshUser],
+    [startSession],
   );
 
-  // The same steps as a login after its request: a new session ends any agent
-  // session, which belonged to whoever was signed in before.
+  // A session the backend issued outside login(), started the same way.
   const adoptSession = useCallback(
     async (accessToken: string) => {
       setAccessToken(accessToken);
-      await endAgentSession(agentsUrl);
-      await refreshUser();
+      await startSession();
     },
-    [agentsUrl, refreshUser],
+    [startSession],
   );
 
   const logout = useCallback(async () => {
     try {
       await logoutApi();
     } finally {
+      queryClient.clear();
       await endAgentSession(agentsUrl);
       setState({ isAuthenticated: false, loading: false, user: null });
     }
-  }, [agentsUrl]);
+  }, [agentsUrl, queryClient]);
 
   const loginPhone = useCallback(
     async (phone: string, code: string) => {
       await loginPhoneApi({ phone, code });
-      await refreshUser();
+      await startSession();
     },
-    [refreshUser],
+    [startSession],
   );
 
   const value: AuthContextValue = {
@@ -160,7 +177,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refreshUser,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      {accountChanged ? <AccountChangedNotice /> : null}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

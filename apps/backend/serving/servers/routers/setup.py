@@ -98,4 +98,4 @@ async def create_setup_admin(
     user_row = await op_store.get_user_by_id(user_id)
     if user_row is None:  # pragma: no cover - the row was committed just above
         raise HTTPException(status_code=500, detail="The administrator account was not found.")
-    return await start_user_session(op_store, response, user_row, user_role="admin")
+    return await start_user_session(op_store, request, response, user_row, user_role="admin")

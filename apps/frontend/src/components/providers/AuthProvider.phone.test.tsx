@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/api/auth', () => ({ login: vi.fn(), loginPhone: vi.fn(), logout: vi.fn() }));
+vi.mock('@/lib/api/auth', () => ({
+  login: vi.fn(),
+  loginPhone: vi.fn(),
+  logout: vi.fn(),
+  endAgentSession: vi.fn(),
+}));
 vi.mock('@/lib/api/user', () => ({ getMe: vi.fn() }));
 
 import { loginPhone } from '@/lib/api/auth';
@@ -56,9 +62,11 @@ describe('AuthProvider phone login', () => {
       },
     });
     render(
-      <AuthProvider>
-        <Consumer />
-      </AuthProvider>,
+      <QueryClientProvider client={new QueryClient()}>
+        <AuthProvider>
+          <Consumer />
+        </AuthProvider>
+      </QueryClientProvider>,
     );
     expect(await screen.findByText('signed out')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Phone login' }));

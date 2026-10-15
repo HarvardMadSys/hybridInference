@@ -16,10 +16,12 @@ from serving.utils.phone_auth import hash_phone_code
 PHONE = "+8613800138000"
 
 
-def request(authorization=None):
+def request(authorization=None, cookie=None):
     headers = [(b"user-agent", b"phone-auth-test")]
     if authorization:
         headers.append((b"authorization", authorization.encode()))
+    if cookie:
+        headers.append((b"cookie", cookie.encode()))
     return Request(
         {
             "type": "http",
@@ -101,6 +103,7 @@ class Store:
             }
         )
         self.rotate_session = AsyncMock()
+        self.revoke_session = AsyncMock()
 
 
 @pytest.mark.parametrize("phone", ["13800138000", "+8613800138000", " 13800138000 "])
@@ -288,6 +291,59 @@ async def test_phone_login_and_authenticated_profile_and_refresh(enabled):
     assert profile.has_password is False
     refreshed = await auth_routes.refresh(Response(), "refresh-token", store)
     assert verify_access_token(refreshed.access_token)["email"] == ""
+
+
+@pytest.mark.asyncio
+async def test_phone_login_revokes_the_session_its_cookie_replaces(enabled):
+    store = Store(user())
+    await routes.phone_login(
+        request(cookie="refresh_token=previous-refresh"),
+        Response(),
+        PhoneVerifyRequest(phone=PHONE, code="123456"),
+        store,
+    )
+    store.get_session_by_token_hash.assert_awaited_once_with(
+        auth_routes.hash_refresh_token("previous-refresh")
+    )
+    store.revoke_session.assert_awaited_once_with("session")
+
+
+@pytest.mark.asyncio
+async def test_phone_login_without_a_previous_cookie_revokes_nothing(enabled):
+    store = Store(user())
+    await routes.phone_login(
+        request(), Response(), PhoneVerifyRequest(phone=PHONE, code="123456"), store
+    )
+    store.get_session_by_token_hash.assert_not_awaited()
+    store.revoke_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phone_login_survives_a_failed_revoke(enabled):
+    store = Store(user())
+    store.revoke_session.side_effect = RuntimeError("database unavailable")
+    response = Response()
+    result = await routes.phone_login(
+        request(cookie="refresh_token=previous-refresh"),
+        response,
+        PhoneVerifyRequest(phone=PHONE, code="123456"),
+        store,
+    )
+    assert result.access_token
+    assert "refresh_token=" in response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_failed_phone_login_keeps_the_previous_session(enabled):
+    store = Store(user(status="pending_approval"))
+    with pytest.raises(HTTPException):
+        await routes.phone_login(
+            request(cookie="refresh_token=previous-refresh"),
+            Response(),
+            PhoneVerifyRequest(phone=PHONE, code="123456"),
+            store,
+        )
+    store.revoke_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
