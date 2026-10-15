@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig, withAgentsUrl } from '@/config/site-config';
 import { ACCOUNT_CHANGED_EVENT, getAccessToken, setAccessToken } from '@/lib/api/client';
@@ -58,12 +59,13 @@ function Probe() {
   return <span>{controller.state.loading ? 'loading' : 'ready'}</span>;
 }
 
-async function renderWithAgents(agentsUrl: string) {
+async function renderWithAgents(agentsUrl: string, page: React.ReactNode = null) {
   render(
     <SiteConfigProvider initialConfig={withAgentsUrl(buildTimeSiteConfig, agentsUrl)}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <Probe />
+          {page}
         </AuthProvider>
       </QueryClientProvider>
     </SiteConfigProvider>,
@@ -307,6 +309,87 @@ describe('AuthProvider with several accounts on the browser', () => {
     });
 
     expect(screen.getByRole('alertdialog')).toHaveTextContent('You signed out in another tab');
+  });
+});
+
+describe('AuthProvider and what a page holds itself', () => {
+  // A page that keeps a just-created secret in its own state, as the API key
+  // form does with the one time it shows a full key.
+  function KeyPage() {
+    const [key, setKey] = useState<string | null>(null);
+    return key ? (
+      <p>Your new key: {key}</p>
+    ) : (
+      <button type="button" onClick={() => setKey('sk-first-full-key')}>
+        Create key
+      </button>
+    );
+  }
+
+  async function createKeyAs(id: string, others: string[] = []) {
+    getMe.mockResolvedValue(me(id));
+    listAccounts.mockResolvedValue({
+      active_user_id: id,
+      accounts: [account(id, { active: true }), ...others.map((other) => account(other))],
+      max_accounts: 5,
+    });
+    await renderWithAgents('/agents', <KeyPage />);
+    await waitFor(() => expect(controller.state.user?.id).toBe(id));
+    fireEvent.click(screen.getByRole('button', { name: 'Create key' }));
+    expect(screen.getByText(/sk-first-full-key/)).toBeInTheDocument();
+  }
+
+  it('drops it when the browser switches to another account', async () => {
+    await createKeyAs('first-user', ['other-user']);
+    getMe.mockResolvedValue(me('other-user'));
+
+    await act(() => controller.switchAccount('other-user'));
+
+    expect(controller.state.user?.id).toBe('other-user');
+    expect(screen.queryByText(/sk-first-full-key/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Create key' })).toBeInTheDocument();
+  });
+
+  it('drops it when another account is added and becomes this browser’s', async () => {
+    await createKeyAs('first-user');
+    loginApi.mockResolvedValueOnce({ user: { id: 'second-user' } });
+    getMe.mockResolvedValue(me('second-user'));
+
+    await act(() => controller.login('second@example.test', 'pw'));
+
+    expect(screen.queryByText(/sk-first-full-key/)).toBeNull();
+  });
+
+  it('drops it on logout', async () => {
+    await createKeyAs('first-user');
+
+    await act(() => controller.logout());
+
+    expect(screen.queryByText(/sk-first-full-key/)).toBeNull();
+  });
+
+  it('keeps it while the account stays the same', async () => {
+    await createKeyAs('first-user');
+
+    await act(() => controller.refreshUser());
+    await act(() => controller.refreshAccounts());
+
+    expect(screen.getByText(/sk-first-full-key/)).toBeInTheDocument();
+  });
+
+  it('keeps a signed-out page through the sign-in it is finishing', async () => {
+    function SignInPage() {
+      const [typed, setTyped] = useState('');
+      return <input aria-label="Email" value={typed} onChange={(e) => setTyped(e.target.value)} />;
+    }
+    await renderWithAgents('/agents', <SignInPage />);
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'next@example.test' } });
+    getMe.mockResolvedValue(me('next-user'));
+
+    await act(() => controller.login('next@example.test', 'pw'));
+
+    expect(controller.state.user?.id).toBe('next-user');
+    expect(screen.getByLabelText('Email')).toHaveValue('next@example.test');
   });
 });
 

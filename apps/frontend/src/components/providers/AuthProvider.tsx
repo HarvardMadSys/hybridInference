@@ -1,7 +1,15 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import {
+  Fragment,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { AccountChangedNotice } from '@/components/features/auth/AccountChangedNotice';
 import {
   agentSessionUser,
@@ -105,6 +113,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user: null,
   });
   const [accountChanged, setAccountChanged] = useState<AccountChangeReason | null>(null);
+  // The account the pages below were built for, and a count bumped whenever it
+  // gives way to another account or to nobody. The pages are keyed on the
+  // count: clearing the query cache drops what they fetched, but not what they
+  // hold themselves — the key a form just created, a playground conversation.
+  // Settled here, during render, so no page ever draws for the new account
+  // with the previous one's state.
+  const [pageOwner, setPageOwner] = useState<{ id: string | null; generation: number }>({
+    id: null,
+    generation: 0,
+  });
+  const shownId = state.user?.id ?? null;
+  if (pageOwner.id !== shownId) {
+    setPageOwner({
+      id: shownId,
+      // From nobody to someone keeps the page: a signed-out page holds nothing
+      // of an account, and the sign-in form is still finishing its request.
+      generation: pageOwner.id === null ? pageOwner.generation : pageOwner.generation + 1,
+    });
+  }
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [maxAccounts, setMaxAccounts] = useState(5);
   const [accountsReady, setAccountsReady] = useState(false);
@@ -334,7 +361,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      <Fragment key={pageOwner.generation}>{children}</Fragment>
       {accountChanged ? <AccountChangedNotice reason={accountChanged} /> : null}
     </AuthContext.Provider>
   );
