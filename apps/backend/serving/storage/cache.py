@@ -660,6 +660,62 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_sessions(user_id)
 
+    # -- browser sessions (pass-through) -------------------------------------
+
+    async def create_browser_session(
+        self, *, browser_session_id: str, secret_hash: str, expires_at: datetime
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.create_browser_session(
+            browser_session_id=browser_session_id, secret_hash=secret_hash, expires_at=expires_at
+        )
+
+    async def get_browser_session(self, secret_hash: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_browser_session(secret_hash)
+
+    async def rotate_browser_session(
+        self,
+        browser_session_id: str,
+        *,
+        current_secret_hash: str,
+        new_secret_hash: str,
+        expires_at: datetime | None = None,
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.rotate_browser_session(
+            browser_session_id,
+            current_secret_hash=current_secret_hash,
+            new_secret_hash=new_secret_hash,
+            expires_at=expires_at,
+        )
+
+    async def list_browser_session_accounts(self, browser_session_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_browser_session_accounts(browser_session_id)
+
+    async def attach_browser_session_account(
+        self, browser_session_id: str, *, user_id: str, auth_session_id: str
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.attach_browser_session_account(
+            browser_session_id, user_id=user_id, auth_session_id=auth_session_id
+        )
+
+    async def set_browser_session_active(
+        self, browser_session_id: str, user_id: str | None
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.set_browser_session_active(browser_session_id, user_id)
+
+    async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.detach_browser_session_account(browser_session_id, user_id)
+
+    async def revoke_browser_session(self, browser_session_id: str) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.revoke_browser_session(browser_session_id)
+
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
         return await self._store.get_user_by_phone(phone)

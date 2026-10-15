@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from serving.auth.browser_sessions import prepare_sign_in
 from serving.schemas_auth import LoginResponse, SetupAdminRequest, SetupStatusResponse
 from serving.servers.deps import database_enabled, get_operational_store
 from serving.servers.routers.auth_routes import start_user_session
@@ -98,4 +99,5 @@ async def create_setup_admin(
     user_row = await op_store.get_user_by_id(user_id)
     if user_row is None:  # pragma: no cover - the row was committed just above
         raise HTTPException(status_code=500, detail="The administrator account was not found.")
-    return await start_user_session(op_store, request, response, user_row, user_role="admin")
+    browser = await prepare_sign_in(op_store, request, user_id)
+    return await start_user_session(op_store, response, browser, user_row, user_role="admin")

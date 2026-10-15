@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
+from serving.auth.browser_sessions import complete_sign_in, hash_refresh_token, prepare_sign_in
 from serving.auth.signup_policy import allowlist_is_empty, is_public_signup_enabled
 from serving.config.settings import get_signup_notify_emails, settings
 from serving.exceptions import AccountSuspendedError
@@ -229,13 +230,7 @@ async def phone_login(
     body: PhoneVerifyRequest,
     op_store=Depends(get_operational_store),
 ) -> LoginResponse:
-    """Consume a login code and issue the existing cookie-based session."""
-    from serving.servers.routers.auth_routes import (
-        hash_refresh_token,
-        revoke_replaced_session,
-        set_refresh_token_cookie,
-    )
-
+    """Consume a login code and add the account to the browser's session."""
     _require_enabled(op_store)
     user = await op_store.get_user_by_phone(body.phone)
 
@@ -290,6 +285,11 @@ async def phone_login(
     if not user.get("phone_verified"):
         await record("failure", "phone_unverified")
         raise HTTPException(403, "Phone number is not verified.")
+    try:
+        browser = await prepare_sign_in(op_store, request, user["id"])
+    except HTTPException:
+        await record("failure", "browser_account_limit")
+        raise
     user_role = user.get("role") or "free"
     sid = generate_session_id()
     token, jti = create_access_token(
@@ -299,14 +299,15 @@ async def phone_login(
         is_admin=user_role == "admin",
         role=user_role,
     )
-    refresh = create_refresh_token()
+    auth_session_id = generate_ulid()
     created = await op_store.create_phone_session(
-        session_id=generate_ulid(),
+        session_id=auth_session_id,
         user_id=user["id"],
         phone=body.phone,
         ip=get_client_ip(request),
         user_agent=request.headers.get("user-agent"),
-        refresh_token_hash=hash_refresh_token(refresh),
+        # The browser's cookie names its browser session, never this one.
+        refresh_token_hash=hash_refresh_token(create_refresh_token()),
         jti=jti,
         sid=sid,
         expires_at=datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days()),
@@ -314,8 +315,9 @@ async def phone_login(
     if not created:
         await record("failure", "account_inactive")
         raise HTTPException(403, "Account is not active. Please contact support.")
-    await revoke_replaced_session(op_store, request)
-    set_refresh_token_cookie(response, refresh)
+    await complete_sign_in(
+        op_store, response, browser, user_id=user["id"], auth_session_id=auth_session_id
+    )
     return LoginResponse(
         access_token=token,
         expires_in=get_access_token_expire_minutes() * 60,

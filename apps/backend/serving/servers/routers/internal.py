@@ -13,12 +13,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from serving.auth.browser_sessions import (
+    get_refresh_token_cookie,
+    hash_refresh_token,
+    resolve_browser_session,
+    session_live,
+)
 from serving.servers.deps import get_operational_store
-from serving.servers.routers.auth_routes import get_refresh_token_cookie, hash_refresh_token
+from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/internal", tags=["Internal"])
+logger = get_logger(__name__)
 
 
 async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[str, Any]:
@@ -54,10 +61,10 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
 
 @router.get("/verify-admin")
 async def verify_admin(
-    refresh_token: str | None = Depends(get_refresh_token_cookie),
+    request: Request,
     op_store=Depends(get_operational_store),
 ) -> Response:
-    """Verify that the caller has admin role via their refresh_token cookie.
+    """Verify that the caller has admin role via their session cookie.
 
     Gates access to pgAdmin. The caller is the console's pgAdmin proxy,
     ``apps/frontend/src/app/pgadmin/[[...path]]/route.ts``, which fetches this
@@ -66,8 +73,28 @@ async def verify_admin(
     cannot authenticate, which is also why this endpoint survived the removal of
     the Nginx ``auth_request`` block that used to call it.
 
-    Returns 200 for admin only, 401/403 otherwise.
+    With several accounts signed in on one browser, it is enough that one of
+    them is an administrator whose session is live: pgAdmin opens in a tab of
+    its own, which has no notion of the account the console is showing. The
+    account that admitted the browser is logged.
+
+    Returns 200 for admin only, 401/403 otherwise. Read-only: this answer is
+    not relayed to the browser, so it can neither rotate nor upgrade a cookie.
     """
+    refresh_token = get_refresh_token_cookie(request)
+    if refresh_token and op_store:
+        browser = await resolve_browser_session(op_store, request, upgrade=False)
+        if browser is not None:
+            live = [account for account in browser.accounts if session_live(account)]
+            admin = next((a for a in live if (a["role"] or "free") == "admin"), None)
+            if admin is not None:
+                logger.info("verify_admin admitted browser %s as %s", browser.id, admin["user_id"])
+                return Response(status_code=200)
+            if live:
+                raise HTTPException(status_code=403, detail="Admin access required.")
+            raise HTTPException(status_code=401, detail="Invalid session.")
+
+    # A cookie from before browser sessions names one account's session.
     user = await _validate_session(refresh_token, op_store)
 
     if (user["role"] or "free") != "admin":

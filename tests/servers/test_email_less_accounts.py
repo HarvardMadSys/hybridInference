@@ -21,6 +21,7 @@ from serving.servers.routers import admin as admin_router, auth_routes, user_rou
 from serving.servers.routers.auth_routes import hash_refresh_token
 from serving.utils import password as password_utils
 from serving.utils.jwt import create_access_token, get_jwt_secret
+from tests.fixtures import browser_sessions
 
 ADMIN_ID = "u-admin"
 OTHER_ID = "u-other"
@@ -112,6 +113,7 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
             {"all": 1, "active": 1},
         )
     )
+    store.browser_sessions = browser_sessions.install(store)
     return store
 
 
@@ -229,15 +231,15 @@ class TestLogin:
 
     async def test_refresh_works_without_an_email(self, client, op_store, monkeypatch):
         monkeypatch.setattr(auth_routes.settings, "admin_emails", "someone@example.com")
-        op_store.get_session_by_token_hash = AsyncMock(
-            return_value={
-                "id": "s1",
-                "user_id": ADMIN_ID,
-                "sid": "sess",
-                "revoked": False,
-                "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc),
-            }
-        )
+        legacy_session = {
+            "id": "s1",
+            "user_id": ADMIN_ID,
+            "sid": "sess",
+            "revoked": False,
+            "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc),
+        }
+        op_store.get_session_by_token_hash = AsyncMock(return_value=legacy_session)
+        op_store.browser_sessions.remember_session(legacy_session)
 
         resp = await client.post("/auth/refresh", cookies={"refresh_token": "tok"})
 

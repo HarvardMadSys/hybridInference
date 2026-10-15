@@ -180,6 +180,47 @@ class UserInfo(BaseModel):
     last_login_at: datetime | None = None
 
 
+# Accounts signed in on one browser
+class AccountSummary(BaseModel):
+    """One account in a browser's account chooser."""
+
+    id: str
+    email: str | None = None
+    login_name: str | None = None
+    phone: str | None = None
+    user_name: str | None = None
+    role: str = "free"
+    active: bool = Field(description="The account the browser is currently using.")
+    signed_in: bool = Field(
+        description="False once its session has ended; the chooser then asks to sign in again."
+    )
+    agent_access: bool | None = Field(
+        default=None,
+        description="Whether it may use the Cloud Agent; None when signed out or unknown.",
+    )
+
+
+class AccountsResponse(BaseModel):
+    """The accounts signed in on the calling browser."""
+
+    active_user_id: str | None = None
+    accounts: list[AccountSummary]
+    max_accounts: int
+
+
+class SwitchAccountRequest(BaseModel):
+    """Request a token for another account signed in on this browser."""
+
+    user_id: str = Field(min_length=1, max_length=64)
+    activate: bool = Field(
+        default=True,
+        description=(
+            "Make it the browser's active account. False only mints a token for it, "
+            "which is how the consent page signs the Cloud Agent in as another account."
+        ),
+    )
+
+
 # First-run setup schemas
 class SetupStatusResponse(BaseModel):
     """Whether the console should show the first-run setup page."""

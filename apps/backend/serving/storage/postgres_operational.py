@@ -15,6 +15,7 @@ from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
     SchemaLockUnavailable,
     apply_column_migrations,
@@ -516,6 +517,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "ON auth_sessions(refresh_token_hash) WHERE NOT revoked"
         )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
+
+        await ensure_browser_session_tables(conn)
 
         # --- login_events ---
         await conn.execute(
@@ -1199,6 +1202,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
             )
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
+            await self._forget_browser_session_account(conn, user_id)
             await conn.execute("DELETE FROM email_verification_tokens WHERE user_id = $1", user_id)
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
             await conn.execute(
@@ -1211,6 +1215,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 json.dumps({"email": email, "reason": reason}),
                 True,
             )
+
+    @staticmethod
+    async def _forget_browser_session_account(conn: asyncpg.Connection, user_id: str) -> None:
+        """Take a deleted account off every browser that listed it.
+
+        Its sessions are gone already; this removes the account from browsers'
+        account lists, which name it, and from any browser that had it active.
+        """
+        await conn.execute("DELETE FROM browser_session_accounts WHERE user_id = $1", user_id)
+        await conn.execute(
+            "UPDATE browser_sessions SET active_user_id = NULL WHERE active_user_id = $1",
+            user_id,
+        )
 
     async def begin_hard_delete_user(self, user_id: str) -> str:
         """Claim a soft-deleted user before purging rows in another store."""
@@ -1339,6 +1356,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             sessions_status = await conn.execute(
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
             )
+            await self._forget_browser_session_account(conn, user_id)
             await conn.execute(
                 "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
                 "phone = (SELECT phone FROM users WHERE id = $1)",
@@ -2305,6 +2323,157 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Delete all sessions for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
+
+    # -- browser sessions ----------------------------------------------------
+
+    async def create_browser_session(
+        self, *, browser_session_id: str, secret_hash: str, expires_at: datetime
+    ) -> None:
+        """Insert a browser session with no accounts yet."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO browser_sessions (id, secret_hash, expires_at) VALUES ($1, $2, $3)",
+                browser_session_id,
+                secret_hash,
+                expires_at,
+            )
+
+    async def get_browser_session(self, secret_hash: str) -> Row | None:
+        """Fetch a browser session by the hash of its cookie."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, active_user_id, expires_at, revoked "
+                "FROM browser_sessions WHERE secret_hash = $1",
+                secret_hash,
+            )
+        return dict(row) if row else None
+
+    async def rotate_browser_session(
+        self,
+        browser_session_id: str,
+        *,
+        current_secret_hash: str,
+        new_secret_hash: str,
+        expires_at: datetime | None = None,
+    ) -> bool:
+        """Replace the cookie hash if it is still *current_secret_hash*."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE browser_sessions SET secret_hash = $1, last_used_at = NOW(), "
+                "expires_at = GREATEST(expires_at, COALESCE($2, expires_at)) "
+                "WHERE id = $3 AND secret_hash = $4 AND NOT revoked RETURNING id",
+                new_secret_hash,
+                expires_at,
+                browser_session_id,
+                current_secret_hash,
+            )
+        return row is not None
+
+    async def list_browser_session_accounts(self, browser_session_id: str) -> list[Row]:
+        """Return the accounts signed in to a browser, oldest first."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT a.user_id, a.auth_session_id, a.added_at, "
+                "s.sid, s.expires_at AS session_expires_at, s.revoked AS session_revoked, "
+                "u.email, u.login_name, u.phone, u.phone_verified, u.user_name, u.role, "
+                "u.status, u.email_verified, u.password_hash IS NOT NULL AS has_password, "
+                "u.created_at, u.last_login_at "
+                "FROM browser_session_accounts a "
+                "LEFT JOIN auth_sessions s ON s.id = a.auth_session_id "
+                "LEFT JOIN users u ON u.id = a.user_id "
+                "WHERE a.browser_session_id = $1 ORDER BY a.added_at, a.user_id",
+                browser_session_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def attach_browser_session_account(
+        self, browser_session_id: str, *, user_id: str, auth_session_id: str
+    ) -> None:
+        """Make *auth_session_id* the browser's session for *user_id*, and its active account.
+
+        A session the browser already held for the same account is revoked:
+        signing in again replaces it, and nothing can reach the old one.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            previous = await conn.fetchval(
+                "SELECT auth_session_id FROM browser_session_accounts "
+                "WHERE browser_session_id = $1 AND user_id = $2 FOR UPDATE",
+                browser_session_id,
+                user_id,
+            )
+            await conn.execute(
+                "INSERT INTO browser_session_accounts (browser_session_id, user_id, auth_session_id) "
+                "VALUES ($1, $2, $3) ON CONFLICT (browser_session_id, user_id) "
+                "DO UPDATE SET auth_session_id = EXCLUDED.auth_session_id",
+                browser_session_id,
+                user_id,
+                auth_session_id,
+            )
+            if previous is not None and previous != auth_session_id:
+                await conn.execute(
+                    "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1", previous
+                )
+            await conn.execute(
+                "UPDATE browser_sessions SET active_user_id = $1, last_used_at = NOW() "
+                "WHERE id = $2",
+                user_id,
+                browser_session_id,
+            )
+
+    async def set_browser_session_active(
+        self, browser_session_id: str, user_id: str | None
+    ) -> None:
+        """Choose the browser's active account, or none."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE browser_sessions SET active_user_id = $1, last_used_at = NOW() "
+                "WHERE id = $2",
+                user_id,
+                browser_session_id,
+            )
+
+    async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
+        """Sign *user_id* out of one browser; return how many accounts remain there."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            auth_session_id = await conn.fetchval(
+                "DELETE FROM browser_session_accounts "
+                "WHERE browser_session_id = $1 AND user_id = $2 RETURNING auth_session_id",
+                browser_session_id,
+                user_id,
+            )
+            if auth_session_id is not None:
+                await conn.execute(
+                    "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1", auth_session_id
+                )
+            await conn.execute(
+                "UPDATE browser_sessions SET active_user_id = NULL "
+                "WHERE id = $1 AND active_user_id = $2",
+                browser_session_id,
+                user_id,
+            )
+            remaining = await conn.fetchval(
+                "SELECT COUNT(*) FROM browser_session_accounts WHERE browser_session_id = $1",
+                browser_session_id,
+            )
+        return int(remaining or 0)
+
+    async def revoke_browser_session(self, browser_session_id: str) -> None:
+        """Sign every account out of one browser and retire its cookie."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE WHERE id IN ("
+                "SELECT auth_session_id FROM browser_session_accounts "
+                "WHERE browser_session_id = $1)",
+                browser_session_id,
+            )
+            await conn.execute(
+                "DELETE FROM browser_session_accounts WHERE browser_session_id = $1",
+                browser_session_id,
+            )
+            await conn.execute(
+                "UPDATE browser_sessions SET revoked = TRUE, active_user_id = NULL WHERE id = $1",
+                browser_session_id,
+            )
 
     # -- login events --------------------------------------------------------
 

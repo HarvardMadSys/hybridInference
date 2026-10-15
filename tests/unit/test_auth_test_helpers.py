@@ -88,6 +88,8 @@ async def test_cleanup_auth_tables_deletes_expected_tables_in_order():
         call("DELETE FROM email_verification_tokens"),
         call("DELETE FROM password_reset_tokens"),
         call("DELETE FROM auth_sessions"),
+        call("DELETE FROM browser_session_accounts"),
+        call("DELETE FROM browser_sessions"),
         call("DELETE FROM api_keys WHERE account_id IS NOT NULL"),
         call("DELETE FROM signup_allowed_domains"),
         call("DELETE FROM users"),
