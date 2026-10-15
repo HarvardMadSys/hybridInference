@@ -15,8 +15,8 @@ let accountChanged = false;
 export const AUTH_EXPIRED_EVENT = 'hybridinference:auth-expired';
 export const ACCOUNT_CHANGED_EVENT = 'hybridinference:account-changed';
 
-/** Web Lock every tab of this origin takes around a refresh. */
-const REFRESH_LOCK = 'hybridinference:auth-refresh';
+/** Web Lock every tab of this origin takes around a request that rotates the session cookie. */
+const SESSION_LOCK = 'hybridinference:auth-refresh';
 /** A refresh holds that lock for every tab, so a hung one must not hold it forever. */
 const REFRESH_TIMEOUT_MS = 20_000;
 
@@ -46,19 +46,23 @@ function notifyAuthExpired(): void {
   }
 }
 
+/** Why a tab's account stopped being the browser's: another account, or none. */
+export type AccountChangeReason = 'switched' | 'signed-out';
+
 /**
- * A sign-in in another tab moved the browser's session to a different account.
+ * Another tab moved the browser to a different account, or signed this one out.
  *
  * This tab still shows the previous account, so it sends nothing until it is
  * reloaded: a request made now would act as the new account on a page built
  * for the old one. The token is dropped so the reload starts from the cookie.
+ * Dispatches `ACCOUNT_CHANGED_EVENT` with the reason as its `detail`.
  */
-function notifyAccountChanged(): void {
+export function markAccountChanged(reason: AccountChangeReason): void {
   accountChanged = true;
   accessToken = null;
   sessionStorage.removeItem('access_token');
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(ACCOUNT_CHANGED_EVENT));
+    window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: reason }));
   }
 }
 
@@ -107,17 +111,18 @@ function tokenSubject(token: string | null): string | null {
 }
 
 /**
- * Run a refresh with every other tab's refresh held off.
+ * Run a request that rotates the session cookie with every other tab's held off.
  *
- * Each refresh rotates the shared refresh cookie and retires the value it was
- * sent with. Two tabs refreshing at once both send the same value, and the one
- * that lands second is refused and signed out. Taking a lock across the origin
- * makes the second wait until the first response has replaced the cookie, so it
- * sends the new one. Without Web Locks the refresh runs as before.
+ * A refresh, a sign-in and an account switch each replace the shared cookie
+ * and retire the value they were sent with. Two tabs doing so at once both send
+ * the same value, and the one that lands second is refused and signed out.
+ * Taking a lock across the origin makes the second wait until the first
+ * response has replaced the cookie, so it sends the new one. Without Web Locks
+ * the request runs as before. Not reentrant: `run` must not refresh.
  */
-async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+export async function withSessionLock<T>(run: () => Promise<T>): Promise<T> {
   if (typeof navigator === 'undefined' || !navigator.locks) return run();
-  return await navigator.locks.request(REFRESH_LOCK, run);
+  return await navigator.locks.request(SESSION_LOCK, run);
 }
 
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
@@ -129,7 +134,7 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
 
   refreshPromise = (async () => {
     try {
-      return await withRefreshLock(async () => {
+      return await withSessionLock(async () => {
         // The account this tab is showing, read before the refresh can replace it.
         const shownSubject = tokenSubject(getAccessToken());
         const resp = await safeFetch(`${apiBase}/auth/refresh`, {
@@ -152,7 +157,7 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
         // would quietly turn this page into that account's.
         const refreshedSubject = tokenSubject(token);
         if (shownSubject && refreshedSubject && shownSubject !== refreshedSubject) {
-          notifyAccountChanged();
+          markAccountChanged('switched');
           return false;
         }
         accessToken = token;

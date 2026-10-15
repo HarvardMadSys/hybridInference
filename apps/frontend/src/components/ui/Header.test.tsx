@@ -11,13 +11,18 @@ let authState = {
 };
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace }),
+  useRouter: () => ({ replace, push: vi.fn() }),
+  usePathname: () => '/dashboard',
 }));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
     state: authState,
+    accounts: [],
+    maxAccounts: 5,
     logout: vi.fn(),
+    logoutAll: vi.fn(),
+    switchAccount: vi.fn(),
   }),
 }));
 

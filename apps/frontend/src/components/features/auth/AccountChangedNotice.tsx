@@ -1,17 +1,30 @@
 'use client';
 
 import { useEffect, useId, useRef } from 'react';
+import type { AccountChangeReason } from '@/lib/api/client';
+
+const WORDING: Record<AccountChangeReason, { title: string; body: string }> = {
+  switched: {
+    title: 'You switched accounts in another tab',
+    body: 'This browser is now using a different account. Reload this page to continue with that account.',
+  },
+  'signed-out': {
+    title: 'You signed out in another tab',
+    body: 'This account is no longer signed in on this browser. Reload this page to choose an account.',
+  },
+};
 
 /**
- * Covers the page once a sign-in in another tab has moved this browser to a
- * different account.
+ * Covers the page once another tab has moved this browser to a different
+ * account, or signed out the one this page shows.
  *
  * The page underneath was built for the previous account and the API client
  * now refuses to send anything from it, so the one way forward is a reload,
  * which starts again from the account the browser is signed in to. It cannot be
  * dismissed: a dismissed notice would leave a page whose every action fails.
  */
-export function AccountChangedNotice() {
+export function AccountChangedNotice({ reason }: { reason: AccountChangeReason }) {
+  const wording = WORDING[reason];
   const titleId = useId();
   const bodyId = useId();
   const reloadRef = useRef<HTMLButtonElement>(null);
@@ -30,11 +43,10 @@ export function AccountChangedNotice() {
         className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
       >
         <h3 id={titleId} className="text-[15px] font-semibold text-gray-900">
-          You switched accounts in another tab
+          {wording.title}
         </h3>
         <p id={bodyId} className="mt-2 text-[13px] text-gray-600">
-          This browser is now signed in to a different account. Reload this page to continue with
-          that account.
+          {wording.body}
         </p>
         <div className="mt-4 flex justify-end">
           <button

@@ -11,6 +11,11 @@ import { SiteConfigProvider } from './SiteConfigProvider';
 const loginApi = vi.fn();
 const loginPhoneApi = vi.fn();
 const logoutApi = vi.fn();
+const logoutAllApi = vi.fn();
+const switchAccountApi = vi.fn();
+const removeAccountApi = vi.fn();
+const listAccounts = vi.fn();
+const agentSessionUser = vi.fn();
 const endAgentSession = vi.fn();
 const getMe = vi.fn();
 
@@ -18,8 +23,28 @@ vi.mock('@/lib/api/auth', () => ({
   login: (...args: unknown[]) => loginApi(...args),
   loginPhone: (...args: unknown[]) => loginPhoneApi(...args),
   logout: (...args: unknown[]) => logoutApi(...args),
+  logoutAll: (...args: unknown[]) => logoutAllApi(...args),
+  switchAccount: (...args: unknown[]) => switchAccountApi(...args),
+  removeAccount: (...args: unknown[]) => removeAccountApi(...args),
+  listAccounts: (...args: unknown[]) => listAccounts(...args),
+  agentSessionUser: (...args: unknown[]) => agentSessionUser(...args),
   endAgentSession: (...args: unknown[]) => endAgentSession(...args),
 }));
+
+function account(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    email: `${id}@example.test`,
+    role: 'free',
+    active: false,
+    signed_in: true,
+    ...extra,
+  };
+}
+
+function me(id: string) {
+  return { id, email: `${id}@example.test`, role: 'free', is_admin: false };
+}
 
 vi.mock('@/lib/api/user', () => ({
   getMe: (...args: unknown[]) => getMe(...args),
@@ -48,9 +73,16 @@ async function renderWithAgents(agentsUrl: string) {
 
 beforeEach(() => {
   queryClient = new QueryClient();
-  loginApi.mockReset().mockResolvedValue(undefined);
-  loginPhoneApi.mockReset().mockResolvedValue(undefined);
+  loginApi.mockReset().mockResolvedValue({ user: { id: 'next-user' } });
+  loginPhoneApi.mockReset().mockResolvedValue({ user: { id: 'phone-user' } });
   logoutApi.mockReset().mockResolvedValue(undefined);
+  logoutAllApi.mockReset().mockResolvedValue(undefined);
+  switchAccountApi.mockReset().mockResolvedValue({ user: { id: 'other-user' } });
+  removeAccountApi.mockReset().mockResolvedValue({ accounts: [], max_accounts: 5 });
+  listAccounts
+    .mockReset()
+    .mockResolvedValue({ active_user_id: null, accounts: [], max_accounts: 5 });
+  agentSessionUser.mockReset().mockResolvedValue(undefined);
   endAgentSession.mockReset().mockResolvedValue(undefined);
   getMe.mockReset().mockRejectedValue(new Error('signed out'));
 });
@@ -181,5 +213,160 @@ describe('AuthProvider account change in another tab', () => {
       'You switched accounts in another tab',
     );
     expect(screen.getByRole('button', { name: 'Reload' })).toHaveFocus();
+  });
+});
+
+describe('AuthProvider with several accounts on the browser', () => {
+  async function signedInAs(id: string, others: string[] = []) {
+    getMe.mockResolvedValue(me(id));
+    listAccounts.mockResolvedValue({
+      active_user_id: id,
+      accounts: [account(id, { active: true }), ...others.map((other) => account(other))],
+      max_accounts: 5,
+    });
+    await renderWithAgents('/agents');
+    await waitFor(() => expect(controller.accounts).toHaveLength(1 + others.length));
+  }
+
+  it('keeps the agent session when another account joins the browser', async () => {
+    await signedInAs('first-user');
+
+    await act(() => controller.login('second@example.test', 'pw'));
+
+    expect(endAgentSession).not.toHaveBeenCalled();
+  });
+
+  it('switches without a password and drops the previous account’s cache', async () => {
+    await signedInAs('first-user', ['other-user']);
+    queryClient.setQueryData(['apiKeys'], [{ key_prefix: 'sk-first' }]);
+    getMe.mockResolvedValue(me('other-user'));
+
+    await act(() => controller.switchAccount('other-user'));
+
+    expect(switchAccountApi).toHaveBeenCalledWith('other-user');
+    expect(queryClient.getQueryData(['apiKeys'])).toBeUndefined();
+    expect(controller.state.user?.id).toBe('other-user');
+    expect(endAgentSession).not.toHaveBeenCalled();
+  });
+
+  it('ends the agent session on logout only when it is the departing account’s', async () => {
+    await signedInAs('first-user', ['other-user']);
+    agentSessionUser.mockResolvedValueOnce('other-user');
+
+    await act(() => controller.logout());
+
+    expect(endAgentSession).not.toHaveBeenCalled();
+    expect(controller.state.isAuthenticated).toBe(false);
+  });
+
+  it('ends it on logout when it is that account’s, or when that cannot be told', async () => {
+    await signedInAs('first-user', ['other-user']);
+    agentSessionUser.mockResolvedValueOnce('first-user');
+    await act(() => controller.logout());
+    expect(endAgentSession).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    endAgentSession.mockClear();
+    await signedInAs('first-user', ['other-user']);
+    agentSessionUser.mockResolvedValueOnce(undefined);
+    await act(() => controller.logout());
+    expect(endAgentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes another account without signing this one out', async () => {
+    await signedInAs('first-user', ['other-user']);
+    removeAccountApi.mockResolvedValueOnce({
+      accounts: [account('first-user', { active: true })],
+      max_accounts: 5,
+    });
+    agentSessionUser.mockResolvedValueOnce('other-user');
+
+    await act(() => controller.removeAccount('other-user'));
+
+    expect(removeAccountApi).toHaveBeenCalledWith('other-user');
+    expect(controller.accounts.map((entry) => entry.id)).toEqual(['first-user']);
+    expect(controller.state.user?.id).toBe('first-user');
+    expect(endAgentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('signs every account out and ends the agent session', async () => {
+    await signedInAs('first-user', ['other-user']);
+
+    await act(() => controller.logoutAll());
+
+    expect(logoutAllApi).toHaveBeenCalledTimes(1);
+    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+    expect(controller.state.isAuthenticated).toBe(false);
+  });
+
+  it('names a sign-out in another tab differently from a switch', async () => {
+    await renderWithAgents('/agents');
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: 'signed-out' }));
+    });
+
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You signed out in another tab');
+  });
+});
+
+describe('AuthProvider and the browser’s other tabs', () => {
+  // Another tab of the same browser, as BroadcastChannel sees one.
+  function otherTab() {
+    return new BroadcastChannel('hybridinference:accounts');
+  }
+
+  it('stops this tab when another one switches the browser to a different account', async () => {
+    getMe.mockResolvedValue(me('first-user'));
+    await renderWithAgents('/agents');
+    await waitFor(() => expect(controller.state.user?.id).toBe('first-user'));
+
+    const tab = otherTab();
+    tab.postMessage({ type: 'active', userId: 'other-user' });
+    tab.close();
+
+    await waitFor(() =>
+      expect(screen.getByRole('alertdialog')).toHaveTextContent(
+        'You switched accounts in another tab',
+      ),
+    );
+  });
+
+  it('says signed out when another tab signs this account out', async () => {
+    getMe.mockResolvedValue(me('first-user'));
+    await renderWithAgents('/agents');
+    await waitFor(() => expect(controller.state.user?.id).toBe('first-user'));
+
+    const tab = otherTab();
+    tab.postMessage({ type: 'active', userId: null });
+    tab.close();
+
+    await waitFor(() =>
+      expect(screen.getByRole('alertdialog')).toHaveTextContent('You signed out in another tab'),
+    );
+  });
+
+  it('takes up an account signed in elsewhere when this tab had none', async () => {
+    await renderWithAgents('/agents');
+    getMe.mockResolvedValue(me('new-user'));
+
+    const tab = otherTab();
+    tab.postMessage({ type: 'active', userId: 'new-user' });
+    tab.close();
+
+    await waitFor(() => expect(controller.state.user?.id).toBe('new-user'));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('does not hear its own announcements', async () => {
+    getMe.mockResolvedValue(me('first-user'));
+    await renderWithAgents('/agents');
+    getMe.mockResolvedValue(me('other-user'));
+
+    await act(() => controller.switchAccount('other-user'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(controller.state.user?.id).toBe('other-user');
   });
 });

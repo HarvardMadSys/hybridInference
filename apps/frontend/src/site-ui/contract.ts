@@ -282,6 +282,15 @@ export interface AuthAppearance {
  * `metaMessages` (see `META_MESSAGE_KEYS`).
  */
 export const AUTH_MESSAGE_KEYS = [
+  'auth.accounts.add_title',
+  'auth.accounts.back',
+  'auth.accounts.cancel_add',
+  'auth.accounts.remove',
+  'auth.accounts.signed_out',
+  'auth.accounts.subtitle',
+  'auth.accounts.switched_toast',
+  'auth.accounts.title',
+  'auth.accounts.use_another',
   'auth.consent.age_body',
   'auth.consent.age_confirm',
   'auth.consent.age_title',
