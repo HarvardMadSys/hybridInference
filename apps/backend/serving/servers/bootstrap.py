@@ -23,6 +23,7 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.auto_mode import AutoMode, load_auto_mode
 from serving.config import app_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.disabled_providers import DisabledProviderResolver
@@ -727,6 +728,24 @@ async def _init_router_and_models(
         logger.warning(f"Failed to load models.yaml: {exc}")
 
     return embedding_adapters, model_infos
+
+
+def _load_auto_mode(router: RouteExecutor) -> AutoMode | None:
+    """Load the ``auto:`` section of the models registry, or ``None`` to leave auto off.
+
+    Called once the route table is complete -- the registry's models and the
+    runtime models restored from the database -- so the section is checked
+    against every model the gateway starts with. A problem with the section
+    turns auto off and nothing else.
+    """
+    try:
+        models_path = resolve_config_path("models").path
+        if not models_path.exists():
+            return None
+        return load_auto_mode(models_path, router.routes)
+    except Exception as exc:
+        logger.warning(f"Auto mode is off: failed to load the auto section: {exc}")
+        return None
 
 
 def _build_model_router_registry(
@@ -1515,6 +1534,8 @@ async def initialize() -> AppServices:
     pricing_lookup = PricingLookup(router=router)
     cost_tracker = CostTracker(op_store=operational_store, pricing=pricing_lookup)
 
+    auto_mode = _load_auto_mode(router)
+
     # Start managed router lifecycle hooks only after the rest of bootstrap has
     # succeeded, so a later startup failure cannot leave background tasks
     # running without a matching shutdown.
@@ -1584,6 +1605,7 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        auto_mode=auto_mode,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,

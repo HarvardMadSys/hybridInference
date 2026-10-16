@@ -266,6 +266,7 @@ class StreamSession:
         get_adapter_config_for_provider: Callable[[str, str | None], Any],
         request_payload: Any | None = None,
         timeout_fired_probe: Callable[[], bool] | None = None,
+        response_model: str | None = None,
     ) -> None:
         """Capture per-request state and dependencies.
 
@@ -311,9 +312,14 @@ class StreamSession:
                 classify a mid-stream cancellation as a gateway timeout (504)
                 rather than a client disconnect (499). ``None`` means "no
                 middleware signal available" and classifies as disconnect.
+            response_model: The model name every chunk the client receives
+                carries, when it must not be the one serving the request: the
+                auto model the client asked for (``serving/auto_mode.py``).
+                ``None`` leaves the chunks as the adapter made them.
         """
         self._routing: RoutingInfo = routing
         self._model = model
+        self._response_model = response_model
         self._messages = messages
         self._params = params
         self._request_id = request_id
@@ -439,7 +445,9 @@ class StreamSession:
             # expires with nothing to show, the role chunk is the byte that goes
             # out -- the same moment a keepalive comment would have -- so a slow
             # upstream is committed exactly as before, just 15s later.
-            role_chunk = make_role_chunk(model=self._model, completion_id=self._completion_id)
+            role_chunk = make_role_chunk(
+                model=self._response_model or self._model, completion_id=self._completion_id
+            )
 
             def _commit() -> str:
                 """Mark the response committed and return the role chunk that commits it."""
@@ -569,6 +577,12 @@ class StreamSession:
 
                             out_json = result.chunk_json or chunk_json
                             stamp_completion_id(out_json, self._completion_id)
+                            if self._response_model is not None:
+                                # Upstream chunks pass through with their own
+                                # fields; an aggregator names its provider in one.
+                                out_json.pop("provider", None)
+                                if "model" in out_json:
+                                    out_json["model"] = self._response_model
                             sanitized_chunk = f"data: {json.dumps(out_json)}\n\n"
                             logger.debug(
                                 f"Yielding sanitized chunk {self._chunk_count} "

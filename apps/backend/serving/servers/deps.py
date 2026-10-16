@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from routing.routers import ManagedRouter
+    from serving.auto_mode import AutoMode
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
@@ -109,6 +110,9 @@ class AppServices:
     pricing_lookup: PricingLookup | None = None
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
+    # The ``auto:`` section of models.yaml, when it loaded cleanly. Served only
+    # while the ``auto_mode_enabled`` runtime setting is on (serving/auto_mode.py).
+    auto_mode: AutoMode | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -190,6 +194,13 @@ def get_model_visibility_resolver(
 ) -> ModelVisibilityResolver | None:
     """Dependency to obtain the ModelVisibilityResolver (if configured)."""
     return getattr(services, "model_visibility_resolver", None)
+
+
+def get_auto_mode(
+    services: AppServices = Depends(get_services),
+) -> AutoMode | None:
+    """Dependency to obtain the loaded auto mode (if configured)."""
+    return getattr(services, "auto_mode", None)
 
 
 def get_model_concurrency_resolver(

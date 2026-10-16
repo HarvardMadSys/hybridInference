@@ -2626,6 +2626,38 @@ async def test_post_provider_route_model_rejects_orphaned_routewise_settings(adm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model_id", ["auto", "auto-balance", " auto-new "])
+async def test_post_provider_route_model_refuses_an_auto_model_name(admin_client, model_id):
+    """The auto models are served under these names; a model there would be hidden."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": model_id,
+            "strategy": "fixed",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        f"Model id {model_id.strip()!r} is reserved for auto models"
+    )
+    assert model_id.strip() not in route_executor.routes
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_post_provider_route_model_creates_openrouter_concurrency_model(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")

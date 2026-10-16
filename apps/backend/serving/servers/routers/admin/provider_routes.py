@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.model_router_registry import StaleRouterStrategyChangeError
+from routing.model_selection import is_auto_model_id
 from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
@@ -2680,6 +2681,16 @@ async def _prepare_model_candidate_from_payload(
     payload: CreateProviderRouteModelRequest,
     route_id: str | None = None,
 ) -> PreparedRouteCandidate:
+    # The auto models are served under these names (serving/auto_mode.py). A
+    # model created under one would be hidden by a tier of that name, or turn
+    # auto off at the next start. Checked here, on the admin's request, and not
+    # where persisted models are restored, so one created before the names were
+    # reserved still loads.
+    if is_auto_model_id(payload.model_id.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Model id {payload.model_id.strip()!r} is reserved for auto models",
+        )
     upstream_provider = _target_provider_from_request(
         payload.upstream_provider,
         payload.openrouter_provider,

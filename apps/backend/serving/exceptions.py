@@ -13,6 +13,8 @@ from typing import Any
 
 import aiohttp
 
+from serving.utils import context as req_ctx
+
 
 class HybridInferenceError(Exception):
     """Base exception for all business errors."""
@@ -487,8 +489,31 @@ def safe_detail_text(detail: Any, status_code: int) -> str:
     429 stays a 429 and a 503 stays a 503.
     """
     if isinstance(detail, str):
-        return detail
+        return conceal_served_model(detail)
     return generic_message_for_status(status_code)
+
+
+def conceal_served_model(text: str) -> str:
+    """Name the auto model the caller asked for wherever ``text`` names the model serving it.
+
+    A request for an auto model is not told which model serves it
+    (``serving/auto_mode.py``), and an error message is the one place that model
+    would otherwise surface: the gateway's own "Model 'x' ..." texts once the
+    request has been rewritten, and an upstream's message about its own model.
+    The names come from the request context (``req_ctx.CONCEALED_MODEL``); any
+    other request is returned unchanged. A name is replaced only as a whole
+    token, so ``auto-fast`` survives a model named ``fast`` and replacing twice
+    changes nothing.
+    """
+    concealed = req_ctx.get().get(req_ctx.CONCEALED_MODEL)
+    if not concealed or not text:
+        return text
+    auto_model, names = concealed
+    for name in sorted(names, key=len, reverse=True):
+        text = re.sub(
+            rf"(?<![\w./-]){re.escape(name)}(?![\w/-]|\.\w)", auto_model, text, flags=re.IGNORECASE
+        )
+    return text
 
 
 def user_safe_error_for_log(raw: str | None, status_code: int | None) -> str | None:
@@ -534,6 +559,7 @@ def scrub_error_for_user(
         if not base:
             base = generic_message_for_status(status_code)
 
+    base = conceal_served_model(base)
     if request_id:
         return f"{base} (request_id: {request_id})"
     return base
