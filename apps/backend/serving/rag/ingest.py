@@ -23,6 +23,13 @@ The check exists because rebuilding needs a gateway, a key and minutes, while
 deciding *whether* to rebuild needs only the chunker and milliseconds. Fusing
 the two is what lets an index go stale unobserved: nothing cheap enough to run
 routinely can answer the question.
+
+Both read the ``RAG_*`` settings the gateway would use: the configuration
+database's stored values first, then the environment. So ``--check`` may read
+the configuration database — skipped with ``DB_ENABLED=false``; one that cannot
+be reached leaves the environment's values in force, with a warning, once the
+connection's deadline passes — but it still never embeds and never calls the
+gateway.
 """
 
 from __future__ import annotations
@@ -235,13 +242,28 @@ def build_index(settings: RagSettings) -> VectorStore:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point: build the index and write it to disk."""
-    # The gateway's address and key may be stored settings rather than
-    # environment variables, so read them from the database before the defaults
-    # are taken. Not for --check, which promises never to call out.
+    """CLI entry point: build the index and write it to disk, or ``--check`` it."""
+    # The corpus, the index, the embedder and the gateway's address and key may
+    # be stored settings rather than environment variables, so read them from
+    # the database before the defaults are taken: a check against the
+    # environment alone would compare the wrong corpus, or report drift the
+    # stored settings do not have. Without a database nothing is contacted, and
+    # an unreachable one leaves the environment's values in force, with a
+    # warning (load_stored_configuration).
     probe = argparse.ArgumentParser(add_help=False)
     probe.add_argument("--check", action="store_true")
-    if not probe.parse_known_args(argv)[0].check:
+    if probe.parse_known_args(argv)[0].check:
+        try:
+            load_stored_configuration()
+        except Exception as exc:
+            # Exit 1 means "drifted, go rebuild", and an uncaught exception
+            # exits 1. Settings that could not be read decide nothing.
+            print(
+                f"index not checked: stored settings not loaded: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    else:
         load_stored_configuration()
     defaults = load_rag_settings()
     parser = argparse.ArgumentParser(description="Build the docs RAG index.")
@@ -254,7 +276,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "verify the committed index against the corpus and exit "
-            "(0 current, 1 drifted, 2 not checked); never embeds, never calls out"
+            "(0 current, 1 drifted, 2 not checked); never embeds and never calls the "
+            "gateway, but reads stored settings from the configuration database "
+            "unless DB_ENABLED=false"
         ),
     )
     args = parser.parse_args(argv)

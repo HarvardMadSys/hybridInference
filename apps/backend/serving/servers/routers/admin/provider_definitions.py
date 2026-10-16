@@ -30,7 +30,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, get_services, verify_admin_access
-from serving.servers.registry import parse_openrouter_kind
+from serving.servers.registry import parse_openrouter_kind, resolve_reference
 from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
     _validate_base_url,
@@ -105,6 +105,12 @@ def _models_config_path() -> Path:
 
 
 def _expand_config_string(value: Any) -> str:
+    """Expand a whole-value ``${VAR}`` / ``${VAR:-default}`` from models.yaml.
+
+    An empty value falls through to the inline default; without one, an unset
+    variable resolves to its registered default (``resolve_reference``), so a
+    reference such as ``${CHUTES_BASE_URL}`` reads as the registry reads it.
+    """
     if not isinstance(value, str):
         return ""
     raw = value.strip()
@@ -112,7 +118,9 @@ def _expand_config_string(value: Any) -> str:
     if match is None:
         return raw
     var_name, fallback = match.groups()
-    return (config_value(var_name) or fallback or "").strip()
+    if fallback is None:
+        return (resolve_reference(var_name) or "").strip()
+    return (config_value(var_name) or fallback).strip()
 
 
 def _provider_spec_from_route_kind(

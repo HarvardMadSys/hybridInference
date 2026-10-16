@@ -238,6 +238,31 @@ async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_manifest", [False, True], ids=["neutral", "manifest"])
+async def test_phone_auth_flag_is_sent_only_while_enabled(
+    client, monkeypatch, tmp_path, with_manifest
+):
+    # Consoles from before phone registration parse `features` strictly and
+    # refuse the whole document, so every page, over a key they do not know.
+    if with_manifest:
+        manifest = tmp_path / "distribution.yaml"
+        manifest.write_text(MANIFEST)
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+        get_settings.cache_clear()
+        get_distribution_config.cache_clear()
+
+    monkeypatch.setattr(site_config, "is_sms_enabled", lambda: False)
+    features = (await client.get("/site-config")).json()["features"]
+    # Only the keys every console accepts.
+    assert set(features) == {"routers", "public_signup", "rag"}
+
+    monkeypatch.setattr(site_config, "is_sms_enabled", lambda: True)
+    features = (await client.get("/site-config")).json()["features"]
+    assert features["phone_auth"] is True
+
+
+@pytest.mark.asyncio
 async def test_deployment_state_defaults(client):
     body = (await client.get("/site-config")).json()
 

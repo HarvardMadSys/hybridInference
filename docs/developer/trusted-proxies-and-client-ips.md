@@ -22,6 +22,16 @@ Each of these is a setting under **Network** on the admin console's
 in the environment, from which a new deployment's first start copies them. See
 [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 
+After that first start the stored values win, so change proxy trust on the
+Configuration tab or with `python -m serving.config.manage set`, not in `.env`.
+An environment value that conflicts with a stored one — `TRUST_X_REAL_IP=1`
+while the stored `TRUST_PROXY_HEADERS` is off, say — is set aside with a
+warning in the log, and its default applies. The bundled Compose file passes
+`TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` with a default of `0`, and
+the first start stores what it passes. If every client appears with your
+proxy's address, look at these settings on the Configuration tab first: a
+stored `0` outranks a `1` in `.env`.
+
 The rest of this page explains each setting, how the address is resolved, and
 what is logged and stored. `apps/backend/serving/utils/request_ip.py` is the one
 place in the code that makes this decision.
@@ -80,7 +90,8 @@ trusted. Do not trust broad internal subnets — that would allow any host
 within that subnet to assert client identity on any request.
 
 An invalid CIDR is refused: the **Configuration** tab will not save it, and in
-the environment it stops the gateway at startup.
+the environment it stops the gateway at startup unless the database holds a
+valid value for the setting.
 
 ### Direct private client networks
 
@@ -136,12 +147,15 @@ Three settings control header processing:
 All three flags default to `0` (disabled). Setting a flag alone does nothing if the
 corresponding network list is empty — this is the fail-closed default.
 `TRUST_CLOUDFLARE_HEADERS=1` additionally requires the master
-`TRUST_PROXY_HEADERS=1` flag and a non-empty Cloudflare-authorized network list;
-these combinations are refused, both on save in the **Configuration** tab and
-at startup from the environment.
+`TRUST_PROXY_HEADERS=1` flag and a non-empty Cloudflare-authorized network list.
 `TRUST_X_REAL_IP=1` likewise requires `TRUST_PROXY_HEADERS=1` and uses the same
 trusted-proxy network list, but it is consulted only when XFF is completely
 absent.
+
+The **Configuration** tab refuses to save a combination that breaks one of
+these rules. At startup, an environment value that breaks one with a stored
+value is set aside and its default applies; a combination the environment
+breaks on its own stops the gateway.
 
 ### Why this matters
 

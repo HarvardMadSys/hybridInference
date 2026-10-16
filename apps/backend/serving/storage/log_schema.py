@@ -791,11 +791,13 @@ def resolve_fence_secret(secret: str | None) -> str:
     fallback_secret = _non_blank_secret(settings.api_key_secret)
     if fallback_secret is not None:
         _log.warning(
-            "Erasure fence: using API_KEY_SECRET as the fence derivation "
-            "secret (set erasure_fence_secret to a dedicated, stable secret "
-            "to avoid this). Once pinned, changing API_KEY_SECRET causes "
-            "startup fingerprint validation to fail; restore the pinned value "
-            "instead of deleting fence data.",
+            "Erasure fence: ERASURE_FENCE_SECRET is empty, so the fence derives "
+            "its digests from API_KEY_SECRET. The first start with a database "
+            "pins that choice: from then on keep API_KEY_SECRET unchanged and "
+            "ERASURE_FENCE_SECRET empty, since startup fingerprint validation "
+            "refuses any other secret. Only a deployment that has never started "
+            "can choose a dedicated ERASURE_FENCE_SECRET. If validation fails, "
+            "restore the pinned value instead of deleting fence data.",
         )
         return fallback_secret
     raise ErasureFenceUnavailable(

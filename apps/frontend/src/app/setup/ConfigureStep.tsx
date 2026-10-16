@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import { ConfigEntryField } from '@/components/features/configuration/ConfigEntryField';
 import {
@@ -41,6 +42,7 @@ type SignupValues = Partial<Record<SignupKey, boolean>>;
  * sign-up settings, then the configuration batch.
  */
 export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) => void }) {
+  const router = useRouter();
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [signup, setSignup] = useState<SignupValues>({});
@@ -115,17 +117,25 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     setSaving(true);
     setSaveError(null);
     const keys = Object.keys(values);
+    let wrote = false;
     try {
       for (const { key } of SIGNUP_SETTINGS) {
         const wanted = signupDraft[key];
         if (wanted === undefined || wanted === signup[key]) continue;
         const updated = await updateRuntimeSetting(key, wanted);
+        wrote = true;
         // Saved: a retry after a later failure must not send it again.
         setSignup((prev) => ({ ...prev, [key]: updated.value === true }));
       }
       // The configuration response is read after the sign-up settings were
       // written, so its `missing` list already reflects them.
-      const next = keys.length > 0 ? await patchConfig({ values }) : await getConfig();
+      let next: ConfigResponse;
+      if (keys.length > 0) {
+        next = await patchConfig({ values });
+        wrote = true;
+      } else {
+        next = await getConfig();
+      }
       onSaved(next);
     } catch (e) {
       const message = getErrorMessage(e);
@@ -134,6 +144,10 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       setSaveError(message);
     } finally {
       setSaving(false);
+      // The server-rendered site configuration carries sign-up and whether
+      // required settings are missing; re-read it after any write, even one
+      // followed by a failure, as the Configuration tab does.
+      if (wrote) router.refresh();
     }
   };
 
@@ -164,7 +178,18 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
   const signupKeys = SIGNUP_SETTINGS.filter(({ key }) => signupDraft[key] !== undefined);
 
   return (
-    <div className="space-y-6">
+    // A form, so Enter continues, and one browsers do not offer to remember:
+    // a secret typed here is not a login. The values are checked here and by
+    // the backend, not by the browser.
+    <form
+      autoComplete="off"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!saving) void save();
+      }}
+      className="space-y-6"
+    >
       {signupKeys.length > 0 ? (
         <section aria-labelledby="setup-group-signup">
           <h2
@@ -257,10 +282,10 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       ) : null}
 
       <div className="flex justify-end">
-        <Button type="button" onClick={() => void save()} isLoading={saving}>
+        <Button type="submit" isLoading={saving}>
           Save and continue
         </Button>
       </div>
-    </div>
+    </form>
   );
 }

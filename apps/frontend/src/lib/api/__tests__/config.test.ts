@@ -4,10 +4,12 @@ import { setAccessToken } from '../client';
 import {
   checkBackendHealth,
   getConfig,
+  markConfigSecret,
   patchConfig,
   resetConfigKey,
   restartBackend,
   waitForBackendRestart,
+  type ConfigEntry,
   type ConfigResponse,
 } from '../config';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
@@ -97,19 +99,103 @@ describe('configuration client', () => {
     expect(init.method).toBe('POST');
   });
 
+  it('marks a stored variable secret with a PATCH that changes no value', async () => {
+    fetchMock.mockResolvedValueOnce(json(EMPTY));
+
+    await markConfigSecret('MY_ROUTE_HEADER');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/admin\/config$/);
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({
+      values: {},
+      secrets: { MY_ROUTE_HEADER: true },
+    });
+  });
+
+  it.each([
+    'MY_KEY has no stored value to protect yet: set a value and mark it secret in the same save.',
+    "SMTP_HOST: a built-in setting keeps the registry's secret flag.",
+  ])('reports a refused flag-only change verbatim: %s', async (message) => {
+    fetchMock.mockResolvedValueOnce(
+      json({ error: { type: 'invalid_request_error', message, code: 400 } }, 400),
+    );
+
+    const error = await markConfigSecret('MY_KEY').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(APIError);
+    expect((error as APIError).statusCode).toBe(400);
+    expect(getErrorMessage(error)).toBe(message);
+  });
+
+  it("keeps no secret's value or default, whatever the backend sent", async () => {
+    const entry = (overrides: Partial<ConfigEntry>): ConfigEntry => ({
+      key: 'SETTING',
+      category: 'general',
+      description: '',
+      type: 'str',
+      secret: false,
+      required: false,
+      missing: false,
+      is_set: true,
+      value: null,
+      default: null,
+      source: 'database',
+      restart_required: false,
+      pending_restart: false,
+      environment_ignored: false,
+      immutable: false,
+      setup: false,
+      custom: false,
+      invalid: null,
+      used_by: [],
+      updated_at: null,
+      updated_by: null,
+      ...overrides,
+    });
+    const leaky: ConfigResponse = {
+      ...EMPTY,
+      entries: [
+        entry({ key: 'SMTP_PASSWORD', secret: true, value: 'hunter2', default: 'changeme' }),
+        entry({ key: 'SMTP_HOST', value: 'smtp.example.test', default: 'localhost' }),
+      ],
+    };
+
+    for (const call of [
+      () => getConfig(),
+      () => patchConfig({ values: { SMTP_HOST: 'smtp.example.test' } }),
+      () => markConfigSecret('SMTP_PASSWORD'),
+      () => resetConfigKey('SMTP_HOST'),
+    ]) {
+      fetchMock.mockResolvedValueOnce(json(leaky));
+      const [secret, plain] = (await call()).entries;
+
+      expect(secret).toMatchObject({ key: 'SMTP_PASSWORD', value: null, default: null });
+      expect(JSON.stringify(secret)).not.toMatch(/hunter2|changeme/);
+      expect(plain).toMatchObject({ value: 'smtp.example.test', default: 'localhost' });
+    }
+  });
+
+  // FastAPI's `{detail}`, and the gateway's envelope, which is what its
+  // HTTPException handler answers in production.
   it.each([
     [400, 'SLACK_BOT_TOKEN: invalid value'],
     [403, 'DB_HOST is set in the environment only'],
     [409, 'API_KEY_SECRET cannot be changed once set'],
-  ])('shows a %i detail verbatim', async (status, detail) => {
-    fetchMock.mockResolvedValueOnce(json({ detail }, status));
+  ])('shows a %i message verbatim', async (status, message) => {
+    for (const body of [
+      { detail: message },
+      { error: { type: 'invalid_request_error', message, code: status } },
+    ]) {
+      fetchMock.mockResolvedValueOnce(json(body, status));
 
-    const error = await patchConfig({ values: { X: 'y' } }).catch((e: unknown) => e);
+      const error = await patchConfig({ values: { X: 'y' } }).catch((e: unknown) => e);
 
-    expect(error).toBeInstanceOf(APIError);
-    expect((error as APIError).statusCode).toBe(status);
-    // "invalid … TOKEN" must not turn into "Invalid or expired token".
-    expect(getErrorMessage(error)).toBe(detail);
+      expect(error).toBeInstanceOf(APIError);
+      expect((error as APIError).statusCode).toBe(status);
+      // "invalid … TOKEN" must not turn into "Invalid or expired token".
+      expect(getErrorMessage(error)).toBe(message);
+    }
   });
 });
 

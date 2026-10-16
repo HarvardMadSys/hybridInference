@@ -21,6 +21,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.setup_state import refresh_setup_state
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
 from serving.utils.jwt import (
     create_access_token,
@@ -49,6 +50,16 @@ def _require_enabled(op_store) -> None:
 
 
 async def _require_signup() -> None:
+    """Refuse phone registration unless setup is complete and public signup is open.
+
+    While first-run setup is pending this answers 503, as ``POST /auth/signup``
+    does: any account completes setup, so a stranger's would leave the
+    operator's ``/auth/setup/admin`` a 409 and the deployment without an
+    administrator. Both registration steps call this before the captcha, the
+    quotas and the SMS, so a refused request costs nothing.
+    """
+    if await refresh_setup_state():
+        raise HTTPException(503, "This deployment has not been set up yet.")
     if not await is_public_signup_enabled():
         raise HTTPException(
             403, "Public signup is currently disabled. Please contact administrator."

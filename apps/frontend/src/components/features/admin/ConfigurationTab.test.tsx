@@ -17,6 +17,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/config', () => ({
   getConfig: vi.fn(),
   patchConfig: vi.fn(),
+  markConfigSecret: vi.fn(),
   resetConfigKey: vi.fn(),
   restartBackend: vi.fn(),
   waitForBackendRestart: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('react-hot-toast', () => ({
 
 import {
   getConfig,
+  markConfigSecret,
   patchConfig,
   resetConfigKey,
   restartBackend,
@@ -44,7 +46,11 @@ import { ConfigurationTab } from './ConfigurationTab';
 /** What a misbehaving backend might leak; the page must never show it. */
 const LEAKED_SECRET = 'sk-live-should-never-render';
 
+/** When a stored row was written. */
+const STORED_AT = '2026-10-01T12:00:00Z';
+
 function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
+  const source = overrides.source ?? 'database';
   return {
     key: 'SETTING',
     category: 'general',
@@ -56,7 +62,7 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
     is_set: true,
     value: '',
     default: null,
-    source: 'database',
+    source,
     restart_required: false,
     pending_restart: false,
     environment_ignored: false,
@@ -65,7 +71,8 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
     custom: false,
     invalid: null,
     used_by: [],
-    updated_at: null,
+    // A value in force from the database is a row, written at some time.
+    updated_at: source === 'database' ? STORED_AT : null,
     updated_by: null,
     ...overrides,
   };
@@ -124,7 +131,9 @@ function makeConfig(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
         category: 'security',
         secret: true,
         immutable: true,
-        value: null,
+        // Locked, and leaked by the same misbehaving backend.
+        value: LEAKED_SECRET,
+        default: LEAKED_SECRET,
         source: 'database',
       }),
     ],
@@ -147,6 +156,7 @@ async function renderTab(config = makeConfig(), props: { initialMissingOnly?: bo
 
 beforeEach(() => {
   vi.mocked(patchConfig).mockImplementation(async () => makeConfig());
+  vi.mocked(markConfigSecret).mockImplementation(async () => makeConfig());
   vi.mocked(resetConfigKey).mockImplementation(async () => makeConfig());
   vi.mocked(restartBackend).mockResolvedValue({ restarting: true, instance: 'old-process' });
   vi.mocked(waitForBackendRestart).mockResolvedValue('restarted');
@@ -161,7 +171,8 @@ describe('secrets', () => {
   it('never renders a secret value, even one the backend sent by mistake', async () => {
     await renderTab();
 
-    expect(document.body.textContent).not.toContain(LEAKED_SECRET);
+    // Not as text, and not in an attribute (a value, a placeholder) either.
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
     expect(screen.queryByDisplayValue(LEAKED_SECRET)).not.toBeInTheDocument();
     const email = section('Email (SMTP)');
     expect(within(email).getByText('Set')).toBeInTheDocument();
@@ -211,6 +222,296 @@ describe('secrets', () => {
 
     expect(within(security).getByText(/cannot be changed once set/)).toBeInTheDocument();
     expect(within(security).queryByRole('button', { name: /API_KEY_SECRET/ })).toBeNull();
+  });
+});
+
+describe('marking a variable secret', () => {
+  const HEADER_VALUE = 'plain-header-value';
+
+  /**
+   * The usual configuration, built in, plus two stored variables: one an
+   * administrator added, one found in models.yaml.
+   */
+  function withVariables(): ConfigResponse {
+    const base = makeConfig();
+    return {
+      ...base,
+      entries: [
+        ...base.entries.map((builtIn) => ({ ...builtIn, origin: 'static' as const })),
+        entry({
+          key: 'MY_ROUTE_HEADER',
+          category: 'providers',
+          description: 'Added by an administrator for a reference in the model registry.',
+          origin: 'custom',
+          custom: true,
+          value: HEADER_VALUE,
+          restart_required: true,
+        }),
+        entry({
+          key: 'ROUTE_REGION',
+          category: 'providers',
+          description: 'Referenced by the model registry.',
+          origin: 'discovered',
+          value: 'eu-west',
+          restart_required: true,
+          used_by: ['glm-4.6'],
+        }),
+      ],
+    };
+  }
+
+  /** `config` once `key` is secret; `leak` keeps its value, as a buggy backend might. */
+  function markedIn(config: ConfigResponse, key: string, leak = false): ConfigResponse {
+    return {
+      ...config,
+      entries: config.entries.map((candidate) =>
+        candidate.key === key
+          ? { ...candidate, secret: true, value: leak ? candidate.value : null }
+          : candidate,
+      ),
+    };
+  }
+
+  function confirmMarking(key: string): HTMLElement {
+    fireEvent.click(screen.getByRole('button', { name: `Mark ${key} as secret` }));
+    const dialog = screen.getByRole('dialog', { name: `Mark ${key} as secret?` });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as secret' }));
+    return dialog;
+  }
+
+  it('is offered for stored variables, not for built-in settings or secrets', async () => {
+    await renderTab(withVariables());
+
+    expect(screen.getByRole('button', { name: 'Mark MY_ROUTE_HEADER as secret' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark ROUTE_REGION as secret' })).toBeVisible();
+    // SMTP_PORT is stored too, but a built-in setting's secret flag is fixed.
+    expect(screen.getAllByRole('button', { name: /^Mark .* as secret$/ })).toHaveLength(2);
+  });
+
+  it('is not offered by a backend that does not say where entries come from', async () => {
+    const config = withVariables();
+    await renderTab({
+      ...config,
+      entries: config.entries.map(({ origin: _origin, ...older }) => older),
+    });
+
+    expect(screen.queryByRole('button', { name: /^Mark .* as secret$/ })).toBeNull();
+  });
+
+  it('is offered on a reset row, which keeps the flag but has nothing to Reset', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({ key: 'SMTP_HOST', category: 'email', value: 'mx.test', origin: 'static' }),
+          entry({
+            key: 'ROUTE_ZONE',
+            category: 'providers',
+            description: 'Referenced by the model registry.',
+            origin: 'discovered',
+            // Reset: the environment's value applies, and the row remains.
+            source: 'environment',
+            value: 'zone-a',
+            updated_at: STORED_AT,
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+    const providers = section('Providers');
+
+    expect(
+      within(providers).getByRole('button', { name: 'Mark ROUTE_ZONE as secret' }),
+    ).toBeVisible();
+    expect(within(providers).queryByRole('button', { name: 'Reset ROUTE_ZONE' })).toBeNull();
+  });
+
+  it('marks it after a warning, and drops its plaintext with any unsaved edit', async () => {
+    const config = withVariables();
+    vi.mocked(markConfigSecret).mockResolvedValueOnce(markedIn(config, 'MY_ROUTE_HEADER', true));
+    await renderTab(config);
+    const providers = section('Providers');
+    const field = within(providers).getByLabelText('MY_ROUTE_HEADER');
+    expect(field).toHaveValue(HEADER_VALUE);
+    fireEvent.change(field, { target: { value: 'typed-but-unsaved' } });
+
+    fireEvent.click(
+      within(providers).getByRole('button', { name: 'Mark MY_ROUTE_HEADER as secret' }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Mark MY_ROUTE_HEADER as secret?' });
+    expect(dialog).toHaveTextContent('This cannot be undone from the console.');
+    expect(dialog).toHaveTextContent('Your unsaved change to it is discarded.');
+    expect(markConfigSecret).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as secret' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(markConfigSecret).toHaveBeenCalledWith('MY_ROUTE_HEADER');
+    expect(patchConfig).not.toHaveBeenCalled();
+    // Neither the stored value (still in the buggy response) nor the edit.
+    for (const plaintext of [HEADER_VALUE, 'typed-but-unsaved']) {
+      expect(screen.queryByDisplayValue(plaintext)).not.toBeInTheDocument();
+      expect(document.body.innerHTML).not.toContain(plaintext);
+    }
+    const after = section('Providers');
+    expect(within(after).getByRole('button', { name: 'Replace MY_ROUTE_HEADER' })).toBeVisible();
+    expect(within(after).queryByRole('button', { name: /^Mark MY_ROUTE_HEADER/ })).toBeNull();
+    expect(within(after).queryByRole('button', { name: 'Save Providers' })).toBeNull();
+    expect(refreshMock).toHaveBeenCalled();
+  });
+
+  it('does not claim success when the variable comes back unchanged', async () => {
+    const config = withVariables();
+    vi.mocked(markConfigSecret).mockResolvedValueOnce(config);
+    await renderTab(config);
+
+    const dialog = confirmMarking('ROUTE_REGION');
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'The backend answered, but ROUTE_REGION is still not secret.',
+    );
+    expect(screen.getByLabelText('ROUTE_REGION')).toHaveValue('eu-west');
+    expect(refreshMock).not.toHaveBeenCalled();
+  });
+
+  // The backend's 400s for a flag-only change, shown as they are.
+  it.each([
+    'ROUTE_REGION has no stored value to protect yet: set a value and mark it secret in the same save.',
+    "ROUTE_REGION: a built-in setting keeps the registry's secret flag.",
+  ])('keeps the dialog open with the reason the backend gave: %s', async (message) => {
+    vi.mocked(markConfigSecret).mockRejectedValueOnce(new APIError('HTTP_400', message, 400));
+    await renderTab(withVariables());
+
+    const dialog = confirmMarking('ROUTE_REGION');
+
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(message);
+    // Nothing changed on the page.
+    expect(screen.getByLabelText('ROUTE_REGION')).toHaveValue('eu-west');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('locked settings', () => {
+  function securityOnly(entries: ConfigEntry[]): ConfigResponse {
+    return makeConfig({ entries, missing: [], pending_restart: [] });
+  }
+
+  it('shows a locked setting without an editor or Reset, even an empty one', async () => {
+    vi.mocked(getConfig).mockResolvedValue(
+      securityOnly([
+        // The erasure fence already runs on API_KEY_SECRET.
+        entry({
+          key: 'ERASURE_FENCE_SECRET',
+          category: 'security',
+          description: 'Empty uses API_KEY_SECRET.',
+          secret: true,
+          immutable: true,
+          locked: true,
+          is_set: false,
+          value: null,
+          source: 'default',
+        }),
+        entry({ key: 'PINNED', category: 'security', value: 'v1', locked: true }),
+      ]),
+    );
+    render(<ConfigurationTab />);
+    const security = await screen.findByRole('region', { name: 'Security' });
+
+    const fence = within(security).getByLabelText('ERASURE_FENCE_SECRET');
+    expect(fence.tagName).toBe('OUTPUT');
+    expect(fence).toHaveTextContent('Not set · can no longer be set');
+    expect(within(security).getByLabelText('PINNED')).toHaveTextContent(
+      'v1 · cannot be changed once set',
+    );
+    // No Replace, Clear, Reset or Mark as secret, and nothing to type into.
+    expect(within(security).queryByRole('button')).toBeNull();
+    expect(within(security).queryByRole('textbox')).toBeNull();
+    expect(within(security).queryByText('Cannot be changed once it is set.')).toBeNull();
+  });
+
+  it('takes the backend at its word when an immutable setting is not locked yet', async () => {
+    vi.mocked(getConfig).mockResolvedValue(
+      securityOnly([
+        entry({
+          key: 'ERASURE_FENCE_SECRET',
+          category: 'security',
+          secret: true,
+          immutable: true,
+          locked: false,
+          is_set: false,
+          value: null,
+          source: 'default',
+        }),
+      ]),
+    );
+    render(<ConfigurationTab />);
+    const security = await screen.findByRole('region', { name: 'Security' });
+
+    expect(within(security).getByLabelText('ERASURE_FENCE_SECRET')).toHaveAttribute(
+      'type',
+      'password',
+    );
+    expect(within(security).getByText('Cannot be changed once it is set.')).toBeVisible();
+  });
+});
+
+describe('forms', () => {
+  it('keeps what is typed out of password managers', async () => {
+    await renderTab();
+    const email = section('Email (SMTP)');
+
+    fireEvent.click(within(email).getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
+    const secret = within(email).getByLabelText('SMTP_PASSWORD');
+    expect(secret.closest('form')).toHaveAttribute('autocomplete', 'off');
+    expect(secret).toHaveAttribute('autocomplete', 'new-password');
+    expect(secret).toHaveAttribute('data-1p-ignore', 'true');
+    expect(secret).toHaveAttribute('data-lpignore', 'true');
+    expect(secret).toHaveAttribute('data-bwignore', 'true');
+    expect(secret).toHaveAttribute('data-form-type', 'other');
+    // Nor is the field before it a username.
+    expect(within(email).getByLabelText('SMTP_HOST')).toHaveAttribute('autocomplete', 'off');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    expect(form).toHaveAttribute('autocomplete', 'off');
+    expect(within(form).getByLabelText('Name')).toHaveAttribute('autocomplete', 'off');
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'MY_API_KEY' } });
+    const value = within(form).getByLabelText('Value');
+    expect(value).toHaveAttribute('type', 'password');
+    expect(value).toHaveAttribute('autocomplete', 'new-password');
+    expect(value).toHaveAttribute('data-1p-ignore', 'true');
+  });
+
+  it('saves a category on Enter', async () => {
+    await renderTab();
+    const email = section('Email (SMTP)');
+    const port = within(email).getByLabelText('SMTP_PORT');
+    fireEvent.change(port, { target: { value: '587' } });
+
+    // Enter in a field submits its form: the Save button is that form's.
+    const save = within(email).getByRole('button', { name: 'Save Email (SMTP)' });
+    expect(save).toHaveAttribute('type', 'submit');
+    expect(save.closest('form')).toBe(port.closest('form'));
+    fireEvent.submit(port.closest('form') as HTMLFormElement);
+
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } }));
+  });
+
+  it('adds a variable on Enter', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'MY_REGION' } });
+    fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu' } });
+
+    fireEvent.submit(form);
+
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: { MY_REGION: 'eu' },
+        secrets: { MY_REGION: false },
+      }),
+    );
   });
 });
 
@@ -352,7 +653,60 @@ describe('reset and custom variables', () => {
     expect(refreshMock).toHaveBeenCalled();
   });
 
-  it('adds a custom variable, secret by its name unless told otherwise', async () => {
+  it('resets a stored value the backend refused', async () => {
+    // The refused row: the default applies in its place, and says so.
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({
+            key: 'SMTP_PORT',
+            category: 'email',
+            type: 'int',
+            value: 587,
+            default: 587,
+            source: 'default',
+            invalid: 'must be between 1 and 65535',
+            updated_at: STORED_AT,
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Reset SMTP_PORT?' })).getByRole('button', {
+        name: 'Reset',
+      }),
+    );
+
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledWith('SMTP_PORT'));
+  });
+
+  it('offers no Reset where nothing is stored, or only a reset row', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({ key: 'SMTP_HOST', category: 'email', value: 'mx.test', source: 'environment' }),
+          // Already reset: the environment applies, and the row stores nothing.
+          entry({
+            key: 'SMTP_FROM_NAME',
+            category: 'email',
+            value: 'Ops',
+            source: 'environment',
+            updated_at: STORED_AT,
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+
+    expect(screen.queryByRole('button', { name: /^Reset / })).toBeNull();
+  });
+
+  it("adds a custom variable, always secret when its name looks like a credential's", async () => {
     await renderTab();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
@@ -361,7 +715,11 @@ describe('reset and custom variables', () => {
       target: { value: 'my_provider_api_key' },
     });
     expect(within(form).getByLabelText('Name')).toHaveValue('MY_PROVIDER_API_KEY');
-    expect(within(form).getByRole('checkbox')).toBeChecked();
+    // The backend makes such a name secret whatever the request says.
+    const box = within(form).getByRole('checkbox');
+    expect(box).toBeChecked();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription('A name like this one is always secret.');
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'k-123' } });
     fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
 
@@ -369,6 +727,45 @@ describe('reset and custom variables', () => {
       expect(patchConfig).toHaveBeenCalledWith({
         values: { MY_PROVIDER_API_KEY: 'k-123' },
         secrets: { MY_PROVIDER_API_KEY: true },
+      }),
+    );
+  });
+
+  it.each(['sentry_dsn', 'vertex_sa_json', 'upstream_bearer', 'ftp_pass', 'basic_auth'])(
+    "treats %s as secret, as the backend's word list does",
+    async (name) => {
+      await renderTab();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+      const form = screen.getByRole('form', { name: 'Add variable' });
+      fireEvent.change(within(form).getByLabelText('Name'), { target: { value: name } });
+
+      expect(within(form).getByRole('checkbox')).toBeChecked();
+      expect(within(form).getByRole('checkbox')).toBeDisabled();
+      expect(within(form).getByLabelText('Value')).toHaveAttribute('type', 'password');
+    },
+  );
+
+  it('lets the administrator make any other variable secret', async () => {
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'MY_REGION' } });
+    const box = within(form).getByRole('checkbox');
+    expect(box).not.toBeChecked();
+    expect(box).toBeEnabled();
+    expect(within(form).getByLabelText('Value')).toHaveAttribute('type', 'text');
+
+    fireEvent.click(box);
+    expect(within(form).getByLabelText('Value')).toHaveAttribute('type', 'password');
+    fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
+
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: { MY_REGION: 'eu' },
+        secrets: { MY_REGION: true },
       }),
     );
   });

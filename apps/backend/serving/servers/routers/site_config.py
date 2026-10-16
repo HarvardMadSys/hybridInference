@@ -45,17 +45,21 @@ async def _deployment_state() -> dict[str, Any]:
     }
 
 
+# Feature flags that are off unless a deployment turns them on, each newer than
+# some console still in use. Consoles read a missing one as off.
+_OPT_IN_FEATURES = frozenset({"public_stats", "phone_auth"})
+
+
 def _public_features(features: dict[str, Any]) -> dict[str, Any]:
-    """Drop ``public_stats`` unless it is enabled.
+    """Drop each opt-in flag (``public_stats``, ``phone_auth``) that is not enabled.
 
     Consoles parse ``features`` strictly, so an older console would reject the
-    whole document over a key it does not know. Omitting the opt-in flag while
-    it is off keeps such a console working; it only ever sees the key on a
-    deployment that turned the feature on, which needs this release anyway.
+    whole document, and with it every page, over a key it does not know.
+    Omitting an opt-in flag while it is off keeps such a console working; it
+    only ever sees the key on a deployment that turned the feature on, which
+    needs a console that has the feature anyway.
     """
-    if features.get("public_stats") is not True:
-        features = {k: v for k, v in features.items() if k != "public_stats"}
-    return features
+    return {k: v for k, v in features.items() if k not in _OPT_IN_FEATURES or v is True}
 
 
 @router.get("/site-config")
@@ -81,11 +85,13 @@ async def get_site_config() -> dict[str, Any]:
     if config is None:
         return {
             **_NEUTRAL,
-            "features": {
-                **_NEUTRAL["features"],
-                "public_signup": public_signup,
-                "phone_auth": is_sms_enabled(),
-            },
+            "features": _public_features(
+                {
+                    **_NEUTRAL["features"],
+                    "public_signup": public_signup,
+                    "phone_auth": is_sms_enabled(),
+                }
+            ),
             **deployment_state,
         }
     site_identity = get_site_identity()
@@ -97,11 +103,13 @@ async def get_site_config() -> dict[str, Any]:
             "public_base_url": site_identity.public_base_url,
             "support_email": site_identity.support_email,
         },
-        "features": {
-            **_public_features(config.features.model_dump()),
-            "public_signup": public_signup,
-            "phone_auth": is_sms_enabled(),
-        },
+        "features": _public_features(
+            {
+                **config.features.model_dump(),
+                "public_signup": public_signup,
+                "phone_auth": is_sms_enabled(),
+            }
+        ),
         "branding": (
             branding.public_payload(docs_url=site_identity.docs_url)
             if branding is not None

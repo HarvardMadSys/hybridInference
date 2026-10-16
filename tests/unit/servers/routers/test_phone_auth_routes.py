@@ -1,7 +1,7 @@
 """Phone route policy, identity compatibility, and external-send failure boundaries."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from serving.schemas_auth import PhoneCodeRequest, PhoneSignupRequest, PhoneVerifyRequest
 from serving.servers.deps import get_current_user
 from serving.servers.routers import auth_routes, phone_auth_routes as routes, user_routes
+from serving.setup_state import init_setup_state
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
 from tests.fixtures import browser_sessions
@@ -178,6 +179,53 @@ async def test_closed_signup_blocks_code_and_submit(enabled, monkeypatch):
     assert exc.value.status_code == 403
     store.reserve_phone_code.assert_not_called()
     store.consume_phone_code.assert_not_called()
+
+
+@pytest.fixture
+async def setup_pending():
+    """First-run setup is pending: no account exists and the setup code is stored."""
+    setup_store = MagicMock()
+    setup_store.get_or_create_setup_code = AsyncMock(return_value="ABCDEFGHJKLM")
+    await init_setup_state(setup_store)
+
+
+NOT_SET_UP = (503, "This deployment has not been set up yet.")
+
+
+@pytest.mark.asyncio
+async def test_signup_code_waits_for_first_run_setup(enabled, setup_pending, monkeypatch):
+    # Any account completes setup, so a stranger's phone account would lock the
+    # operator out of /auth/setup/admin. Refused before the captcha, the quota
+    # reservation and the SMS, so the refusal costs nothing.
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "run_in_threadpool", sender)
+    store = Store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.send_phone_code(
+            request(), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+        )
+    assert (exc.value.status_code, exc.value.detail) == NOT_SET_UP
+    routes.verify_turnstile_token.assert_not_awaited()
+    store.get_user_by_phone.assert_not_called()
+    store.reserve_phone_code.assert_not_called()
+    sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_phone_signup_waits_for_first_run_setup(enabled, setup_pending):
+    store = Store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.phone_signup(
+            request(),
+            PhoneSignupRequest(phone=PHONE, code="123456", user_name="Stranger", accepted_tos=True),
+            BackgroundTasks(),
+            store,
+            None,
+        )
+    assert (exc.value.status_code, exc.value.detail) == NOT_SET_UP
+    routes.check_and_record_signup.assert_not_awaited()
+    store.consume_phone_code.assert_not_called()
+    store.create_phone_user.assert_not_called()
 
 
 @pytest.mark.asyncio

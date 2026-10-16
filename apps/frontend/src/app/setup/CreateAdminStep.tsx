@@ -23,30 +23,34 @@ import { SETUP_INPUT_CLASS, SETUP_INPUT_ERROR_CLASS, SetupField } from './SetupF
 export const SETUP_CODE_LOG_COMMAND =
   "docker logs hybridinference-backend 2>&1 | grep 'setup code'";
 
+/**
+ * Each field's rule, as an error. The form checks the same rules first, and
+ * the backend's 422 names the fields it refused without saying why
+ * ("Invalid request: body.password"), so this is what a field shows then.
+ */
+const FIELD_RULES = {
+  setupCode: `A setup code has ${SETUP_CODE_LENGTH} letters and digits, like ABCD-EFGH-JKLM.`,
+  loginName:
+    'Use 3–32 letters, digits, dots, underscores or hyphens, starting with a letter or digit.',
+  displayName: 'A display name has 2–50 characters.',
+  password: 'Use at least 8 characters, with an uppercase letter, a lowercase letter and a number.',
+} as const;
+
 const createAdminSchema = z
   .object({
     setupCode: z
       .string()
       .trim()
       .min(1, 'Enter the setup code from the backend log.')
-      .refine(
-        isWellFormedSetupCode,
-        `A setup code has ${SETUP_CODE_LENGTH} letters and digits, like ABCD-EFGH-JKLM.`,
-      ),
-    loginName: z
-      .string()
-      .trim()
-      .regex(
-        LOGIN_NAME_PATTERN,
-        'Use 3–32 letters, digits, dots, underscores or hyphens, starting with a letter or digit.',
-      ),
+      .refine(isWellFormedSetupCode, FIELD_RULES.setupCode),
+    loginName: z.string().trim().regex(LOGIN_NAME_PATTERN, FIELD_RULES.loginName),
     // Optional; when given, the backend's 2–50 characters.
     displayName: z
       .string()
       .trim()
       .refine(
         (value) => value === '' || (value.length >= 2 && value.length <= 50),
-        'A display name has 2–50 characters.',
+        FIELD_RULES.displayName,
       ),
     password: passwordSchema,
     confirmPassword: z.string(),
@@ -59,12 +63,12 @@ const createAdminSchema = z
 type CreateAdminForm = z.infer<typeof createAdminSchema>;
 
 /** Request field → form field, for a 422's per-field messages. */
-const FIELD_FOR: Record<string, keyof CreateAdminForm> = {
-  setup_code: 'setupCode',
-  login_name: 'loginName',
-  display_name: 'displayName',
-  password: 'password',
-};
+const FIELD_FOR = new Map<string, keyof typeof FIELD_RULES>([
+  ['setup_code', 'setupCode'],
+  ['login_name', 'loginName'],
+  ['display_name', 'displayName'],
+  ['password', 'password'],
+]);
 
 /**
  * Step 1: the first administrator, authorized by the setup code.
@@ -119,12 +123,14 @@ export function CreateAdminStep({ onCreated }: { onCreated: () => void }) {
           setAlreadySetUp(true);
           return;
         case 422: {
+          // By request field: FastAPI's own body carries a reason for each,
+          // the gateway's names the field only (an empty reason).
           const fields = (err.details?.fields ?? {}) as Record<string, string>;
           let placed = false;
-          for (const [field, message] of Object.entries(fields)) {
-            const formField = FIELD_FOR[field];
+          for (const [field, reason] of Object.entries(fields)) {
+            const formField = FIELD_FOR.get(field);
             if (formField) {
-              setError(formField, { message });
+              setError(formField, { message: reason || FIELD_RULES[formField] });
               placed = true;
             }
           }

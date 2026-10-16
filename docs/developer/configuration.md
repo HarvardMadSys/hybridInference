@@ -156,8 +156,11 @@ handling. Any other kind fails registry loading with
 `models.yaml`, only `base_url`, `api_key`, `api_keys`, `provider_model_id` and a
 route's `embeddings_path` are expanded, and only when the entire value is
 exactly `${VAR}`. The value is the [setting](#settings-stored-in-the-database)
-of that name: its database value, else the environment variable. There is no
-`${VAR:-default}` and no embedded substitution:
+of that name: its database value, else the environment variable, else the
+default the gateway registers for that setting, so `${CHUTES_BASE_URL}` loads
+as `https://llm.chutes.ai/v1` when nothing sets it. A database or environment
+value wins even when it is empty. There is no `${VAR:-default}` and no
+embedded substitution:
 
 ```yaml
 base_url: ${LOCAL_BASE_URL}                  # expanded
@@ -236,7 +239,10 @@ The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what
 takes a failing endpoint out of rotation.
 
 Unlike the model registry, this file's expander handles `${VAR}`,
-`${VAR:-default}`, and variables embedded in longer strings, at any depth.
+`${VAR:-default}`, and variables embedded in longer strings, at any depth. The
+alerts file expands the same way. A variable neither the database nor the
+environment sets takes the inline `:-default`, and without one the default the
+gateway registers for that setting.
 
 `routing_strategy:` and `routing_parameter:` are the deprecated spellings of
 `default_router:` and per-model `router_params:`. They still load, and log a
@@ -412,11 +418,17 @@ others) are the exception: they are needed to read the database, so an invalid
 one always stops the backend.
 
 Settings that depend on each other — `TRUST_X_REAL_IP` needs
-`TRUST_PROXY_HEADERS` — are judged together, the database's values over the
-environment's. A variable whose partner is already stored is copied in like any
-other, so it survives the variable's removal. When the two sources together
-still break such a rule, neither side is copied in and the backend stops,
-naming the rule, until one side is corrected.
+`TRUST_PROXY_HEADERS` — are judged together, and a stored value wins there
+too. A variable whose partner is already stored and satisfies the rule is
+copied in like any other, so it survives the variable's removal. One that
+breaks the rule with a stored value is set aside instead: it counts as unset,
+its default applies, the next start does not copy it in, and the log says so
+with a warning. With `TRUST_X_REAL_IP=1` in the environment and
+`TRUST_PROXY_HEADERS` stored as off, for example, the gateway runs with
+`TRUST_X_REAL_IP` off; to turn both on, change them together on the
+Configuration tab or with `python -m serving.config.manage set`. Only a rule
+the environment breaks on its own, with no stored value involved, stops the
+backend, which names the rule.
 
 On the first start against an empty database the backend also generates the
 two secrets it cannot run without, `JWT_SECRET_KEY` and `API_KEY_SECRET`,
@@ -434,13 +446,25 @@ its value comes from. Besides every setting the gateway reads itself, it lists:
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules
   under **Alerts**;
-- numbered extra keys for a provider's key pool, such as `MINIMAX_API_KEY2`,
-  once one is set;
+- numbered extra keys for a provider's key pool, `MINIMAX_API_KEY1` to
+  `MINIMAX_API_KEY20` beside `MINIMAX_API_KEY` for instance, once one is set.
+  Every one that has a value joins the pool: a blank one in the middle does
+  not end the list, and a key entered twice counts once;
 - variables added with **Add variable**, for a `${VAR}` reference the gateway
   cannot see yet, such as one in a registry you are about to switch to.
 
 Secrets are write-only: the tab shows whether one is set, never its value, and
-the admin audit log records only that it changed. A save is checked as a
+the admin audit log records only that it changed. Besides the settings the
+gateway knows to be secret, every `${VAR}` a configuration file uses in a
+credential field — `api_key`, `api_keys`, `token`, an `Authorization` header —
+is secret, whatever it is called. Any other variable is secret when its name
+contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `PWD`, `WEBHOOK`,
+`PRIVATE`, `AUTH`, `CREDENTIAL`, `BEARER`, `CERT`, `DSN` or `SA_JSON`, and a
+variable added under such a name always is. An administrator can also mark a
+discovered, numbered or added variable secret with **Mark as secret**. That
+works one way only: a secret is never shown again, not even after a reset.
+
+A save is checked as a
 whole, against everything it leaves in force, so settings that depend on each
 other — `TRUST_CLOUDFLARE_HEADERS` needs `TRUST_PROXY_HEADERS` — can change
 together. A save or a **Reset** that would leave another setting unable to
@@ -491,17 +515,21 @@ docker exec -it hybridinference-backend python -m serving.config.manage reset JW
 ```
 
 `list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores a
-value — add `--secret` when it creates a custom variable that holds one — and
-`reset KEY` resets it as the tab's **Reset** does, so that the environment or
-the default applies again. It talks to the database directly with the `DB_*`
-connection settings alone, so it needs no sign-in and still runs when another
-setting in the environment is invalid, and it never prints a secret's value. When
+value — add `--secret` to mark a discovered, numbered or added variable
+secret, as **Mark as secret** does — and `reset KEY` resets it as the tab's
+**Reset** does, so that the environment or the default applies again. It never
+prints a secret's value. A running backend picks a change up within about ten
+seconds, or at its next restart for a setting marked **Restart required**.
+
+The tool talks to the database directly with the `DB_*` connection settings
+alone, so it needs no sign-in and still runs when another setting in the
+environment is invalid. Like the backend, it first reads `.env` from the
+directory it runs in, without replacing a variable already set, so a value
+kept only there is the one it shows and the one a reset falls back to. When
 the backend container is not running, run it in the repository root of a
 source checkout instead (`uv run python -m serving.config.manage ...`), where
-`.env` reaches Postgres on `127.0.0.1:5432`. A running backend picks the
-change up within about ten seconds, or at its next restart for a setting
-marked **Restart required**. The command that resets an administrator's
-password works the same way; see
+`.env` reaches Postgres on `127.0.0.1:5432`. The command that resets an
+administrator's password works the same way; see
 [The first admin account](deployment.md#the-first-admin-account).
 
 ### Missing settings
@@ -593,6 +621,6 @@ The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KE
 
 Account identifiers use international format, such as `+8613812345678`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. For the Tencent domestic adapter, set the former to `86` if local input is desired and the latter to `+86`. Number policy belongs to the deployment, while provider delivery remains separate from account storage.
 
-Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Binding requires an authenticated session and a separate code for that account.
+Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Like email signup, it is refused with `503` while first-run setup is pending. Binding requires an authenticated session and a separate code for that account.
 
 Startup adds phone identity columns and durable code tables and makes password hashes nullable. Upgrade every gateway worker before enabling phone signup. Back up the database first; once phone-only accounts exist, an older binary that assumes every account has a password is not a supported rollback. Disabling SMS hides phone login but does not remove accounts, so arrange another verified sign-in method before disabling it for phone-only users. Site UI v1 message overrides remain optional; distributions can translate the added phone message slots without owning authentication logic.

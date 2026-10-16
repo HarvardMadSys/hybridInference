@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-10 15:00-0400\n"
+"POT-Creation-Date: 2026-10-16 19:08-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -219,11 +219,11 @@ msgstr "打开控制台 `http://localhost:3001`，它会把你带到设置页面
 msgid ""
 "Enter the setup code. It stays the same until setup is done, and the "
 "backend logs it again every time it starts, whatever `LOG_LEVEL` is set "
-"to. Until setup is done the backend also refuses sign-ups, so nobody else"
-" can claim the first account."
+"to. Until setup is done the backend also refuses sign-ups, by email or by"
+" phone, so nobody else can claim the first account."
 msgstr ""
 "输入设置码。在设置完成之前它保持不变，不管 `LOG_LEVEL` "
-"设成什么，后端每次启动都会再把它记进日志。设置完成之前，后端也拒绝一切注册，所以别人抢不走第一个账号。"
+"设成什么，后端每次启动都会再把它记进日志。设置完成之前，后端也拒绝一切注册，无论是用邮箱还是手机号，所以别人抢不走第一个账号。"
 
 #: ../developer/installation.md:87
 msgid ""
@@ -535,34 +535,45 @@ msgstr ""
 #: ../developer/installation.md:107
 msgid ""
 "trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs "
-"`TRUST_PROXY_HEADERS=1`"
-msgstr "信任所列对端发来的 Cloudflare `CF-Connecting-IP`；还需要同时设置 `TRUST_PROXY_HEADERS=1`"
+"`TRUST_PROXY_HEADERS` on"
+msgstr "信任所列对端发来的 Cloudflare `CF-Connecting-IP`；还需要同时打开 `TRUST_PROXY_HEADERS`"
 
 #: ../developer/installation.md:217
 msgid ""
 "[Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) says "
-"which of the proxy settings above to set for your setup."
-msgstr "按你的部署方式该设上面哪几项代理设置，见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"
+"which of the proxy settings above to set for your setup. Put them in "
+"`.env` before the first start, or set them on the Configuration tab "
+"afterwards: the first start stores them, and from then on a `.env` edit "
+"changes nothing. Under Compose that includes `TRUST_PROXY_HEADERS` and "
+"`TRUST_CLOUDFLARE_HEADERS` when `.env` does not set them, stored as the "
+"Compose file's default `0`."
+msgstr ""
+"按你的部署方式该设上面哪几项代理设置，见[可信代理与客户端 IP](trusted-proxies-and-client-"
+"ips.md)。可以在第一次启动之前写进 `.env`，也可以之后在 Configuration 标签页上设置：第一次启动会把它们存下来，此后再改"
+" `.env` 就不会有任何效果。在 Compose 下，`.env` 没有设置的 `TRUST_PROXY_HEADERS` 和 "
+"`TRUST_CLOUDFLARE_HEADERS` 也在其中，存下的是 Compose 文件的默认值 `0`。"
 
-#: ../developer/installation.md:220
+#: ../developer/installation.md:224
 msgid "Provider credentials"
 msgstr "Provider 凭据"
 
-#: ../developer/installation.md:222
+#: ../developer/installation.md:226
 #, python-brace-format
 msgid ""
 "A model registry names its own credentials. Its `api_key`, `api_keys`, "
 "`base_url` and `provider_model_id` fields can each be written as "
 "`${VAR}`, which is resolved when the registry loads: the setting of that "
-"name stored in the database, else the environment variable. So the "
-"provider keys a deployment needs are the variables its registry names, "
-"and you can call them whatever you like."
+"name stored in the database, else the environment variable, else the "
+"default the gateway registers for it. So the provider keys a deployment "
+"needs are the variables its registry names, and you can call them "
+"whatever you like."
 msgstr ""
 "模型注册表自己指定要用哪些凭据。它的 `api_key`、`api_keys`、`base_url` 和 `provider_model_id` "
-"字段都可以写成 `${VAR}`，在加载注册表时解析：先取数据库里存储的同名设置项，没有再用环境变量。所以一个部署需要哪些 provider "
-"key，就看它的注册表写了哪些变量，变量名随你起。"
+"字段都可以写成 "
+"`${VAR}`，在加载注册表时解析：先取数据库里存储的同名设置项，没有再用环境变量，再没有就用网关为它注册的默认值。所以一个部署需要哪些 "
+"provider key，就看它的注册表写了哪些变量，变量名随你起。"
 
-#: ../developer/installation.md:237
+#: ../developer/installation.md:241
 #, python-brace-format
 msgid ""
 "Only a whole value is substituted: `${VAR:-default}` and `${VAR}` inside "
@@ -572,7 +583,7 @@ msgstr ""
 "只有整个值才会被替换：`${VAR:-default}`，以及嵌在更长字符串里的 "
 "`${VAR}`，都不会被替换。详见[配置](configuration.md)。"
 
-#: ../developer/installation.md:240
+#: ../developer/installation.md:244
 msgid ""
 "The **Configuration** tab lists every variable the active registry names,"
 " under **Providers**, marks the ones a model cannot load without, and "
@@ -588,7 +599,20 @@ msgstr ""
 "`OPENROUTER_API_KEY`。标签页还没列出的名字（比如你即将切换过去的那份注册表要用的）可以用 **Add variable** "
 "添加。注册表在启动时读取这些值，所以改了之后要重启后端。没有数据库的网关则从 `.env` 读取它们。"
 
-#: ../developer/installation.md:248
+#: ../developer/installation.md:252
+msgid ""
+"A provider key whose description on the Configuration tab mentions "
+"numbered extras, such as `OPENROUTER_API_KEY` or `MINIMAX_API_KEY`, can "
+"have extras numbered `1` to `20` (`MINIMAX_API_KEY2`, say). Every one "
+"that has a value joins that provider's key pool, whichever numbers are "
+"used, and a key entered twice counts once."
+msgstr ""
+"如果某个 provider key 在 Configuration 标签页上的说明里提到了带编号的额外 key，比如 "
+"`OPENROUTER_API_KEY` 或 `MINIMAX_API_KEY`，它就可以有编号从 `1` 到 `20` 的额外 key（比如 "
+"`MINIMAX_API_KEY2`）。每个有值的 key 都会加入这个 provider 的 key 池，不管用的是哪些编号；同一个 key "
+"填了两次也只算一次。"
+
+#: ../developer/installation.md:258
 msgid ""
 "Keys can also be added from the admin console (**Providers → Keys**) with"
 " no restart; they join the same pool as the keys the registry names. See "
@@ -599,11 +623,11 @@ msgstr ""
 "放在同一个池子里。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-"
 "admin-console)。"
 
-#: ../developer/installation.md:252
+#: ../developer/installation.md:262
 msgid "Where the config files live"
 msgstr "配置文件在哪里"
 
-#: ../developer/installation.md:254
+#: ../developer/installation.md:264
 msgid ""
 "The gateway finds its model registry, routing file and alert rules "
 "through environment variables or a distribution's manifest, and falls "
@@ -616,7 +640,7 @@ msgstr ""
 "`config/examples/` 下的示例。具体规则见[网关如何找到自己的配置](configuration.md#how-a"
 "-gateway-finds-its-config)，文件里该写什么，那一页后面都有讲。"
 
-#: ../developer/installation.md:260
+#: ../developer/installation.md:270
 msgid ""
 "The Compose file mounts both `config/` and `distributions/` read-only "
 "into the backend, so editing either on the host and restarting the "
@@ -625,7 +649,7 @@ msgstr ""
 "Compose 文件把 `config/` 和 `distributions/` "
 "都以只读方式挂载进后端，所以在宿主机上改了其中任何一个，重启后端就行——不用重新构建镜像。"
 
-#: ../developer/installation.md:265
+#: ../developer/installation.md:275
 msgid ""
 "A backend running directly on the host can reach a host inference server "
 "through `localhost`. A backend in Docker must use a Docker-reachable "
@@ -636,15 +660,15 @@ msgstr ""
 "内能访问到的地址，例如 `host.docker.internal`，并且要在模型注册表里显式写出来；HybridInference 不会替你改写"
 " provider 的 URL。"
 
-#: ../developer/installation.md:271
+#: ../developer/installation.md:281
 msgid "Verifying the install"
 msgstr "验证安装"
 
-#: ../developer/installation.md:273
+#: ../developer/installation.md:283
 msgid "Against a running gateway:"
 msgstr "对着运行中的网关执行："
 
-#: ../developer/installation.md:284
+#: ../developer/installation.md:294
 msgid ""
 "Drop the `Authorization` header if you set `USER_AUTH_ENABLED=0`. Use a "
 "model id that `/v1/models` actually listed."
@@ -652,13 +676,13 @@ msgstr ""
 "如果设了 `USER_AUTH_ENABLED=0`，就去掉 `Authorization` 头。模型 id 要用 `/v1/models` "
 "真的列出来的那些。"
 
-#: ../developer/installation.md:287
+#: ../developer/installation.md:297
 msgid ""
 "The same call from the OpenAI Python SDK — the gateway is the `base_url`,"
 " and nothing else about an existing client changes:"
 msgstr "同一个调用，用 OpenAI 的 Python SDK 来发——网关就是那个 `base_url`，现有客户端别的什么都不用改："
 
-#: ../developer/installation.md:302
+#: ../developer/installation.md:312
 msgid ""
 "In a development checkout, `make check` runs the linters and the default "
 "test suite; [Contributing](contributing.md#quality-gates) lists the other"
@@ -667,11 +691,11 @@ msgstr ""
 "本地开发时，`make check` 会运行 linter 和默认测试套件；其他检查见[贡献指南](contributing.md"
 "#quality-gates)。"
 
-#: ../developer/installation.md:305
+#: ../developer/installation.md:315
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/installation.md:307
+#: ../developer/installation.md:317
 msgid ""
 "**`required variable DB_USER is missing a value: DB_USER must be set in "
 ".env file`** — Compose stopped before starting anything. Fill in "
@@ -681,7 +705,7 @@ msgstr ""
 ".env file`**——Compose 还没启动任何东西就停了。按[上文](#running-with-docker)的做法，在 `.env`"
 " 里填上 `DB_USER` 和 `DB_PASSWORD`。"
 
-#: ../developer/installation.md:311
+#: ../developer/installation.md:321
 msgid ""
 "**`Authentication configuration incomplete: set JWT_SECRET_KEY, "
 "API_KEY_SECRET`** at startup — the backend could not read its settings "
@@ -694,7 +718,7 @@ msgstr ""
 "`Configuration load failed after 3 attempts` 会说明原因；应该修好数据库连接，而不是往 `.env` "
 "里加密钥。"
 
-#: ../developer/installation.md:317
+#: ../developer/installation.md:327
 msgid ""
 "**The setup page rejects the code** — copy it again from the last line "
 "the `docker logs` command prints; an earlier line can belong to a "
@@ -708,7 +732,7 @@ msgstr ""
 "命令输出的最后一行重新复制；更早的行可能属于你后来重置掉的数据库。输错的设置码会按客户端地址限流，但正确的设置码总会被接受。如果日志里根本没有设置码，说明设置已经完成；直接登录，或者按[第一个管理员账号](deployment.md"
 "#the-first-admin-account)里的做法重置管理员密码。"
 
-#: ../developer/installation.md:324
+#: ../developer/installation.md:334
 msgid ""
 "**A required setting is missing** — signed-in users see a banner, and the"
 " settings it means are marked **Missing** on the **Configuration** tab. "
@@ -721,7 +745,7 @@ msgstr ""
 "**Missing**。在那里把它们填上；provider 凭据要在 **Restart backend** "
 "之后才生效。如果部署有意不设置某个模型的凭据，就改为在模型注册表里给那条路由标上 `optional: true`，这样这个变量就不再是必填的。"
 
-#: ../developer/installation.md:331
+#: ../developer/installation.md:341
 msgid ""
 "**Signing in fails after a settings change** — change the setting back "
 "from the command line, which needs no sign-in; see [Without the "
@@ -730,7 +754,7 @@ msgstr ""
 "**改了设置项之后登录失败**——用命令行把这个设置项改回来，这不需要登录；见[不通过控制台](configuration.md#without-"
 "the-console)。"
 
-#: ../developer/installation.md:335
+#: ../developer/installation.md:345
 msgid ""
 "**`env file ... .env not found`** — create it with `cp .env.example .env`"
 " before `make up`."
@@ -738,7 +762,7 @@ msgstr ""
 "**`env file ... .env not found`**——在 `make up` 之前先用 `cp .env.example "
 ".env` 创建它。"
 
-#: ../developer/installation.md:338
+#: ../developer/installation.md:348
 msgid ""
 "**Import errors when running from source** — run `make setup-dev` (or `uv"
 " sync --group dev`) so the backend is installed into `.venv`, then start "
@@ -747,7 +771,7 @@ msgstr ""
 "**从源码运行时报导入错误**——运行 `make setup-dev`（或 `uv sync --group dev`），把后端装进 "
 "`.venv`，然后用 `uv run` 启动网关，或者先激活 `.venv` 再启动。"
 
-#: ../developer/installation.md:342
+#: ../developer/installation.md:352
 msgid ""
 "**Every request 404s with an empty `/v1/models`** — the registry loaded "
 "nothing. On startup the backend logs either `Registered N routes from "
@@ -760,7 +784,7 @@ msgstr ""
 "<path>`，要么打印一条错误，指出它找不到的注册表路径；把这个路径和[配置](configuration.md#how-a-gateway-"
 "finds-its-config)里的优先级列表对照一下。"
 
-#: ../developer/installation.md:347
+#: ../developer/installation.md:357
 msgid ""
 "**Port already in use** — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT` in `.env`."
@@ -1230,3 +1254,10 @@ msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONT
 #~ "email address; it signs in with "
 #~ "the username."
 #~ msgstr "创建管理员：一个用户名和一个密码。这个账号没有邮箱地址，用用户名登录。"
+
+#~ msgid ""
+#~ "[Trusted Proxies and Client IPs](trusted-"
+#~ "proxies-and-client-ips.md) says which"
+#~ " of the proxy settings above to "
+#~ "set for your setup."
+#~ msgstr "按你的部署方式该设上面哪几项代理设置，见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"

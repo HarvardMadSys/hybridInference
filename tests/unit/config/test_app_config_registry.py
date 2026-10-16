@@ -425,3 +425,220 @@ def test_the_jwt_algorithms_offered_are_the_ones_a_shared_secret_can_sign() -> N
     for algorithm in entry.choices:
         token = jwt.encode({"sub": "x"}, "s" * 64, algorithm=algorithm)
         assert jwt.decode(token, "s" * 64, algorithms=[algorithm]) == {"sub": "x"}
+
+
+# --- secrecy -----------------------------------------------------------------
+
+
+def test_the_secret_name_words() -> None:
+    """The console's add-variable form mirrors this list."""
+    assert registry.SECRET_NAME_WORDS == (
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASS",
+        "PWD",
+        "WEBHOOK",
+        "PRIVATE",
+        "AUTH",
+        "CREDENTIAL",
+        "BEARER",
+        "CERT",
+        "DSN",
+        "SA_JSON",
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MY_PROVIDER_API_KEY",
+        "ACME_CREDENTIALS",
+        "AZURE_OPENAI_CREDENTIAL",
+        "GLM_PASS",
+        "DB_PWD",
+        "GLM_AUTH",
+        "SENTRY_DSN",
+        "UPSTREAM_BEARER",
+        "CLIENT_CERT",
+        "VERTEX_SA_JSON",
+        "SLACK_WEBHOOK",
+        "lower_case_token",
+        # Field names, too.
+        "api_key",
+        "api_keys",
+        "Authorization",
+    ],
+)
+def test_names_that_look_like_a_credential(name: str) -> None:
+    assert registry.is_secret_name(name)
+
+
+@pytest.mark.parametrize("name", ["ACME_REGION", "LOCAL_BOX_URL", "base_url", "embeddings_path"])
+def test_names_that_do_not(name: str) -> None:
+    assert not registry.is_secret_name(name)
+
+
+def test_a_custom_entry_follows_its_name_unless_flagged() -> None:
+    assert registry.custom_entry("ACME_PASS").secret
+    assert registry.custom_entry("ACME_PASS", secret=False).secret
+    assert not registry.custom_entry("ACME_REGION").secret
+    assert registry.custom_entry("ACME_REGION", secret=True).secret
+
+
+def test_discovery_marks_references_from_credential_fields(tmp_path) -> None:
+    models = _write(
+        tmp_path,
+        "models.yaml",
+        """
+        models:
+          - id: chat-a
+            base_url: ${ACME_BASE}
+            api_key: ${ACME_ONE}
+            provider_model_id: ${ACME_MODEL}
+          - id: chat-b
+            route:
+              - kind: openrouter
+                base_url: https://openrouter.ai/api/v1
+                api_keys:
+                  - ${ACME_TWO}
+                  - ${ACME_THREE}
+              - kind: openai_compat
+                base_url: https://canary.example/v1
+                api_key: ${ACME_FOUR}
+                optional: true
+              - kind: openai_compat
+                base_url: https://other.example/v1
+                headers:
+                  Authorization: Bearer ${ACME_FIVE}
+        """,
+    )
+    routing = _write(
+        tmp_path,
+        "routing.yaml",
+        """
+        remote_deployment:
+          - endpoint: ${ACME_ENDPOINT}
+            token: ${ACME_SIX}
+            models: [chat-a]
+        """,
+    )
+    found = registry.discover_references(models, routing, None)
+
+    for key in ("ACME_ONE", "ACME_TWO", "ACME_THREE", "ACME_FOUR", "ACME_FIVE", "ACME_SIX"):
+        assert found[key].credential, key
+    for key in ("ACME_BASE", "ACME_MODEL", "ACME_ENDPOINT"):
+        assert not found[key].credential, key
+    entries = registry.build_entries(found, {}, {})
+    assert entries["ACME_ONE"].secret and entries["ACME_FIVE"].secret
+    assert not entries["ACME_BASE"].secret
+
+
+def test_a_static_entry_referenced_as_a_credential_is_secret(tmp_path) -> None:
+    models = _write(
+        tmp_path,
+        "models.yaml",
+        """
+        models:
+          - id: chat
+            base_url: ${SITE_PUBLIC_BASE_URL}
+            api_key: ${SITE_NAME}
+        """,
+    )
+    entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
+
+    assert entries["SITE_NAME"].secret
+    assert entries["SITE_NAME"].origin == "static"
+    assert not entries["SITE_PUBLIC_BASE_URL"].secret
+
+
+def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
+    models = _write(
+        tmp_path,
+        "models.yaml",
+        """
+        models:
+          - id: chat
+            base_url: ${LOCAL_BOX_URL}
+            api_key: literal-key
+        """,
+    )
+    found = registry.discover_references(models, None, None)
+
+    entries = registry.build_entries(
+        found,
+        {"SITE_NAME": True, "MY_BOX_REGION": True, "MY_OTHER_REGION": False},
+        {},
+        {"LOCAL_BOX_URL": True, "FORGOTTEN_URL": True, "SITE_DOCS_URL": False},
+    )
+
+    assert entries["SITE_NAME"].secret  # static, flagged on its row
+    assert entries["MY_BOX_REGION"].secret  # custom, flagged
+    assert not entries["MY_OTHER_REGION"].secret
+    assert entries["LOCAL_BOX_URL"].secret  # discovered, flagged on its reset row
+    assert not entries["SITE_DOCS_URL"].secret
+    # A reset row lists no entry of its own.
+    assert "FORGOTTEN_URL" not in entries
+
+
+# --- phone authentication ----------------------------------------------------
+
+#: What serving.utils.tencent_sms.is_configured() needs, by Settings field.
+_SMS_NEEDS = (
+    "tencent_cloud_secret_id",
+    "tencent_cloud_secret_key",
+    "sms_sdk_app_id",
+    "sms_sign_name",
+    "sms_template_id",
+    "sms_region",
+)
+
+
+def test_the_sms_requirements_are_what_the_adapter_needs(monkeypatch) -> None:
+    from serving.utils import tencent_sms
+
+    complete = dict.fromkeys(_SMS_NEEDS, "set")
+    monkeypatch.setattr(tencent_sms, "settings", Settings(**complete))
+    assert tencent_sms.is_configured()
+    context = _context({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "tencent"})
+    required = {
+        entry.field
+        for entry in registry.static_entries()
+        if entry.category in ("phone", "integrations") and entry.is_required(context)
+    }
+    for name in _SMS_NEEDS:
+        monkeypatch.setattr(tencent_sms, "settings", Settings(**{**complete, name: ""}))
+        assert not tencent_sms.is_configured(), name
+    assert required == set(_SMS_NEEDS)
+
+
+@pytest.mark.parametrize(
+    "values,required",
+    [
+        ({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "tencent"}, True),
+        ({"SMS_AUTH_ENABLED": "1", "SMS_PROVIDER": "tencent"}, True),
+        ({"SMS_AUTH_ENABLED": "false", "SMS_PROVIDER": "tencent"}, False),
+        ({"SMS_AUTH_ENABLED": "", "SMS_PROVIDER": "tencent"}, False),
+        ({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "none"}, False),
+    ],
+)
+def test_sms_values_are_required_only_while_phone_sign_in_sends_through_tencent(
+    values, required
+) -> None:
+    context = _context(values)
+    for name in _SMS_NEEDS:
+        entry = registry.static_entry(registry.settings_env_name(name))
+        assert entry is not None
+        assert entry.is_required(context) is required, name
+    token = registry.static_entry("TENCENT_CLOUD_TOKEN")
+    assert token is not None and not token.is_required(context)
+
+
+def test_tencent_ses_still_needs_the_credentials_with_sms_off() -> None:
+    context = _context({"SMS_AUTH_ENABLED": "false", "EMAIL_PROVIDER": "tencent_ses"})
+    for key in ("TENCENT_CLOUD_SECRET_ID", "TENCENT_CLOUD_SECRET_KEY"):
+        entry = registry.static_entry(key)
+        assert entry is not None and entry.is_required(context)
+    entry = registry.static_entry("SMS_SDK_APP_ID")
+    assert entry is not None and not entry.is_required(context)

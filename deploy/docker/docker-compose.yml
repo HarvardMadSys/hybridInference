@@ -50,13 +50,21 @@ services:
       SUPERVISOR_RESTARTS_BACKEND: "1"
       # Fail closed: the compose default does NOT trust forwarding headers.
       # Proxy-header processing is inert without a non-empty TRUSTED_PROXIES /
-      # TRUSTED_CLOUDFLARE_NETWORKS authorizing the socket peer; set both in
-      # the deployment .env for the actual proxy topology.
+      # TRUSTED_CLOUDFLARE_NETWORKS authorizing the socket peer. Those two and
+      # both TRUST_*_HEADERS switches are application settings, copied into the
+      # database the first time the environment gives them a value, as
+      # described above. This line always gives one, its 0, so the first boot
+      # stores it. Set the proxy topology in .env before that boot; afterwards
+      # change these settings under Admin > Configuration or with
+      # `python -m serving.config.manage set`, because a stored value ignores
+      # later .env edits.
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-0}
       # Opt-in only. Trusting CF-Connecting-IP is safe solely when the origin
       # cannot be reached except through Cloudflare (Authenticated Origin Pulls
       # or a Cloudflare IP allowlist) — otherwise anyone hitting the origin
-      # directly can forge it. Set to 1 in .env once that is true.
+      # directly can forge it. Turn it on once that is true; as with
+      # TRUST_PROXY_HEADERS, after the first boot that is done under
+      # Admin > Configuration, not in .env.
       TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-0}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite

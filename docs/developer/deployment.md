@@ -200,7 +200,8 @@ Nothing has to change before the upgrade. At its first start the new backend
 copies every setting that has a value in its environment into the database —
 from `.env`, from an overlay's `deploy/*.env`, and from the values the Compose
 file passes through — and logs
-`Imported N setting(s) from the environment into the database`. The switches
+`Imported N setting(s) from the environment into the database`, with the
+exceptions below. The switches
 on the **Settings** tab are copied into their own store the same way. The
 existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
 sessions and API keys keep working, and a database that already has accounts
@@ -214,6 +215,20 @@ nothing — the **Configuration** tab marks it **Environment ignored** — so ma
 changes on the tab and delete the lines from `.env` when convenient. Keep a
 copy until a rollback is no longer possible: a release from before the
 settings moved into the database reads them only from the environment.
+
+Besides a value that is not valid on its own, two kinds of value are not
+copied, and the log names each with a warning:
+
+- A value that breaks a rule with a setting already stored, such as
+  `TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The
+  stored value wins and the environment's counts as unset. Check proxy trust
+  after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a
+  default of `0`, so a database that stored that `0` keeps the gateway off
+  forwarded headers whatever `.env` says. Change it on the Configuration tab;
+  see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
+- `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its
+  place. Leave the variable out: while it is set, the backend refuses to
+  start; see [Database](database.md#secrets-for-deleting-accounts).
 
 The `environment:` passthroughs in `deploy/docker/docker-compose.yml` work the
 same way: they carry an overlay's values into the container, where they are
@@ -409,7 +424,8 @@ your alerts file instead.
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.
-Until then the backend refuses sign-ups, so nobody else can claim the account:
+Until then the backend refuses every sign-up, by email or by phone, so nobody
+else can claim the account:
 
 1. Read the setup code from the backend's log. The code is kept in the
    database and stays the same, across restarts and worker processes, until
@@ -468,7 +484,10 @@ It reads only the `DB_*` settings, asks twice for the new password — or, with
 every browser must sign in again. It takes an email address as well, for any
 other account. From a source checkout, run
 `uv run python -m serving.auth.reset_password <username>` in the repository
-root.
+root. It also works on a database the backend's upgrade has not migrated yet —
+while an upgraded backend keeps restarting because another session holds the
+users table, say — and changes no schema. Such a database has no login names
+yet, so name the account by its email address there.
 
 **A setting that breaks the console.** Settings live in the database, so a
 value that stops sign-in from working cannot be fixed by editing `.env`, nor

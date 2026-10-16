@@ -106,7 +106,11 @@ settings govern this:
   environment supplies one, and that value is the one recorded. To give the
   fence its own secret, set `ERASURE_FENCE_SECRET` to a random value in `.env`
   before the first start; the backend copies it into the database then. After
-  that neither secret can be changed: the **Configuration** tab refuses both.
+  that neither secret can be changed: the **Configuration** tab refuses both,
+  and shows `ERASURE_FENCE_SECRET` locked once the fence uses
+  `API_KEY_SECRET`. An `ERASURE_FENCE_SECRET` added to the environment later
+  is not copied in either, with a warning in the log; but while the variable
+  is set, the fence uses it and the backend refuses to start, so remove it.
   If you hit a mismatch — say, after restoring a backup next to different
   secrets — restore the original value; never delete fence rows or their
   metadata to get past it.

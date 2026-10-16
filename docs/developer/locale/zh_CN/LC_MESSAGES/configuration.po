@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-12 10:53-0400\n"
+"POT-Creation-Date: 2026-10-16 19:08-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -13,24 +13,6 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
-
-msgid "Optional Tencent SES email delivery"
-msgstr "可选腾讯 SES 邮件发送"
-
-msgid "`EMAIL_PROVIDER` defaults to `smtp`. Select `tencent_ses` in **Admin > Configuration** to use Tencent Cloud transactional email instead. The selection is explicit: a failed SES request or missing SES template does not fall back to SMTP. The existing verification, password-reset and notification callers use the selected transport."
-msgstr "`EMAIL_PROVIDER` 默认为 `smtp`。在 **Admin > Configuration** 中选择 `tencent_ses` 可改用腾讯云事务邮件。选择是明确的：SES 请求失败或缺少 SES 模板时不会回退到 SMTP。原有验证邮件、密码重置和通知调用使用所选发送方式。"
-
-msgid "Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the selected region. Secret values remain server-side and are redacted in the configuration API. Keep production credentials and sender identities in deployment configuration."
-msgstr "配置 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、可选的 `TENCENT_CLOUD_TOKEN`、`TENCENT_SES_REGION`、`TENCENT_SES_FROM_EMAIL` 和可选的 `TENCENT_SES_FROM_NAME`。发件地址必须在所选地域审核通过。秘密值保留在服务端，配置 API 会隐藏这些值。生产凭据和发件身份应保存在部署配置中。"
-
-msgid "Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLATE_PASSWORD_RESET` before enabling SES account mail. Configure `TENCENT_SES_TEMPLATE_APPROVAL`, `TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` and `TENCENT_SES_TEMPLATE_NOTICE` for the notifications the deployment uses. Unset IDs disable those templates. Configuration health reports missing SES account-mail fields when public signup requires email verification, instead of asking for SMTP credentials."
-msgstr "启用 SES 账号邮件前，为 `TENCENT_SES_TEMPLATE_VERIFICATION` 和 `TENCENT_SES_TEMPLATE_PASSWORD_RESET` 设置正整数 ID。根据部署使用的通知配置 `TENCENT_SES_TEMPLATE_APPROVAL`、`TENCENT_SES_TEMPLATE_REJECTION`、`TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` 和 `TENCENT_SES_TEMPLATE_NOTICE`。未设置的 ID 会禁用对应模板。当开放注册要求验证邮箱时，配置健康检查会报告缺失的 SES 账号邮件字段，不再要求 SMTP 凭据。"
-
-msgid "Reference HTML lives in `config/examples/tencent-ses/`. Before submitting templates for provider approval, replace the example domain with the deployment console domain and choose the desired language and wording. Verification and reset templates contain a fixed HTTPS origin and path; only the encoded `token` query value varies. Other templates use `site_name` and, where applicable, `reason`, `identifier` or `body`. Keep template links consistent with `FRONTEND_URL`; the gateway cannot inspect approved template contents."
-msgstr "参考 HTML 位于 `config/examples/tencent-ses/`。提交供应商审核前，将示例域名替换为部署控制台域名，并选择所需语言和文案。验证与重置模板包含固定的 HTTPS 来源和路径，只有编码后的 `token` 查询值会变化。其他模板使用 `site_name`，并按需使用 `reason`、`identifier` 或 `body`。模板链接应与 `FRONTEND_URL` 保持一致；网关无法检查已审核模板的内容。"
-
-msgid "SES receives approved templates with escaped scalar values, never arbitrary HTML variables. Serialized template data is limited to 800 UTF-8 bytes; oversized notices and HTML-only notices fail rather than being truncated. Successful submission means provider acceptance, not inbox delivery. Calls are not automatically retried because a timeout can follow acceptance. Deployments that require unrestricted HTML mail or long notices can continue to use SMTP."
-msgstr "SES 接收审核模板和经过转义的标量变量，不接收任意 HTML 变量。序列化后的模板数据限制为 800 个 UTF-8 字节；超长通知及仅有 HTML 的通知会失败，不会被截断。提交成功表示供应商已接受请求，不代表邮件已送达收件箱。请求不会自动重试，因为超时可能发生在请求已被接受之后。需要任意 HTML 邮件或较长通知的部署可以继续使用 SMTP。"
 
 #: ../developer/configuration.md:1
 msgid "Configuration"
@@ -55,6 +37,84 @@ msgid ""
 msgstr "发行版 manifest、品牌、UI 模块和后端扩展见[发行版定制](distribution-customization.md)。"
 
 #: ../developer/configuration.md:12
+msgid "Optional Tencent SES email delivery"
+msgstr "可选腾讯 SES 邮件发送"
+
+#: ../developer/configuration.md:14
+msgid ""
+"`EMAIL_PROVIDER` defaults to `smtp`. Select `tencent_ses` in **Admin > "
+"Configuration** to use Tencent Cloud transactional email instead. The "
+"selection is explicit: a failed SES request or missing SES template does "
+"not fall back to SMTP. The existing verification, password-reset and "
+"notification callers use the selected transport."
+msgstr ""
+"`EMAIL_PROVIDER` 默认为 `smtp`。在 **Admin > Configuration** 中选择 `tencent_ses`"
+" 可改用腾讯云事务邮件。选择是明确的：SES 请求失败或缺少 SES 模板时不会回退到 "
+"SMTP。原有验证邮件、密码重置和通知调用使用所选发送方式。"
+
+#: ../developer/configuration.md:16
+msgid ""
+"Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional"
+" `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` "
+"and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the "
+"selected region. Secret values remain server-side and are redacted in the"
+" configuration API. Keep production credentials and sender identities in "
+"deployment configuration."
+msgstr ""
+"配置 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、可选的 "
+"`TENCENT_CLOUD_TOKEN`、`TENCENT_SES_REGION`、`TENCENT_SES_FROM_EMAIL` 和可选的 "
+"`TENCENT_SES_FROM_NAME`。发件地址必须在所选地域审核通过。秘密值保留在服务端，配置 API "
+"会隐藏这些值。生产凭据和发件身份应保存在部署配置中。"
+
+#: ../developer/configuration.md:18
+msgid ""
+"Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and "
+"`TENCENT_SES_TEMPLATE_PASSWORD_RESET` before enabling SES account mail. "
+"Configure `TENCENT_SES_TEMPLATE_APPROVAL`, "
+"`TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` and"
+" `TENCENT_SES_TEMPLATE_NOTICE` for the notifications the deployment uses."
+" Unset IDs disable those templates. Configuration health reports missing "
+"SES account-mail fields when public signup requires email verification, "
+"instead of asking for SMTP credentials."
+msgstr ""
+"启用 SES 账号邮件前，为 `TENCENT_SES_TEMPLATE_VERIFICATION` 和 "
+"`TENCENT_SES_TEMPLATE_PASSWORD_RESET` 设置正整数 ID。根据部署使用的通知配置 "
+"`TENCENT_SES_TEMPLATE_APPROVAL`、`TENCENT_SES_TEMPLATE_REJECTION`、`TENCENT_SES_TEMPLATE_ADMIN_SIGNUP`"
+" 和 `TENCENT_SES_TEMPLATE_NOTICE`。未设置的 ID "
+"会禁用对应模板。当开放注册要求验证邮箱时，配置健康检查会报告缺失的 SES 账号邮件字段，不再要求 SMTP 凭据。"
+
+#: ../developer/configuration.md:20
+msgid ""
+"Reference HTML lives in `config/examples/tencent-ses/`. Before submitting"
+" templates for provider approval, replace the example domain with the "
+"deployment console domain and choose the desired language and wording. "
+"Verification and reset templates contain a fixed HTTPS origin and path; "
+"only the encoded `token` query value varies. Other templates use "
+"`site_name` and, where applicable, `reason`, `identifier` or `body`. Keep"
+" template links consistent with `FRONTEND_URL`; the gateway cannot "
+"inspect approved template contents."
+msgstr ""
+"参考 HTML 位于 `config/examples/tencent-"
+"ses/`。提交供应商审核前，将示例域名替换为部署控制台域名，并选择所需语言和文案。验证与重置模板包含固定的 HTTPS 来源和路径，只有编码后的"
+" `token` 查询值会变化。其他模板使用 `site_name`，并按需使用 `reason`、`identifier` 或 "
+"`body`。模板链接应与 `FRONTEND_URL` 保持一致；网关无法检查已审核模板的内容。"
+
+#: ../developer/configuration.md:22
+msgid ""
+"SES receives approved templates with escaped scalar values, never "
+"arbitrary HTML variables. Serialized template data is limited to 800 "
+"UTF-8 bytes; oversized notices and HTML-only notices fail rather than "
+"being truncated. Successful submission means provider acceptance, not "
+"inbox delivery. Calls are not automatically retried because a timeout can"
+" follow acceptance. Deployments that require unrestricted HTML mail or "
+"long notices can continue to use SMTP."
+msgstr ""
+"SES 接收审核模板和经过转义的标量变量，不接收任意 HTML 变量。序列化后的模板数据限制为 800 个 UTF-8 字节；超长通知及仅有 "
+"HTML "
+"的通知会失败，不会被截断。提交成功表示供应商已接受请求，不代表邮件已送达收件箱。请求不会自动重试，因为超时可能发生在请求已被接受之后。需要任意 "
+"HTML 邮件或较长通知的部署可以继续使用 SMTP。"
+
+#: ../developer/configuration.md:24
 msgid "What the gateway reads at startup"
 msgstr "网关启动时读什么"
 
@@ -115,7 +175,7 @@ msgid ""
 "containers are wired"
 msgstr "数据库连接、上面这些文件的路径，以及容器之间怎样连接"
 
-#: ../developer/configuration.md:22
+#: ../developer/configuration.md:34
 msgid ""
 "Only the model registry is required to serve traffic. Without it the "
 "gateway starts, serves `/health`, and answers `GET /v1/models` with an "
@@ -126,7 +186,7 @@ msgstr ""
 "要承接流量，必需的只有模型注册表。没有它，网关照样能启动、提供 `/health`，只是 `GET /v1/models` "
 "会返回空列表。没有路由配置文件，每条路由保持注册表给它的权重；没有告警配置文件，则使用内置阈值。"
 
-#: ../developer/configuration.md:27
+#: ../developer/configuration.md:39
 msgid ""
 "The files are not the whole story once a database is configured. The "
 "admin console writes providers, keys, routes, weights and per-model "
@@ -141,11 +201,11 @@ msgstr ""
 "](#runtime-configuration-from-the-admin-console)，设置项见[存储在数据库中的设置项"
 "](#settings-stored-in-the-database)。"
 
-#: ../developer/configuration.md:36
+#: ../developer/configuration.md:48
 msgid "Where configuration lives"
 msgstr "配置放在哪里"
 
-#: ../developer/configuration.md:38
+#: ../developer/configuration.md:50
 msgid ""
 "`config/examples/` contains reference gateway configuration, including "
 "`models.openrouter.yaml` and `routing.minimal.yaml`. A deployment keeps "
@@ -161,7 +221,7 @@ msgstr ""
 "选用这些文件。manifest 和 overlay 的目录结构见[发行版定制](distribution-customization.md"
 "#the-distribution-manifest)。"
 
-#: ../developer/configuration.md:46
+#: ../developer/configuration.md:58
 msgid ""
 "A provider, key, route or whole model can also be added from the admin "
 "console while the gateway runs. That state lives in Postgres and is "
@@ -170,19 +230,19 @@ msgstr ""
 "网关运行期间，也可以在管理控制台里添加 provider、key、路由乃至整个模型。这些状态保存在 Postgres 里，详见[下文"
 "](#runtime-configuration-from-the-admin-console)。"
 
-#: ../developer/configuration.md:50
+#: ../developer/configuration.md:62
 msgid "How a gateway finds its config"
 msgstr "网关如何找到自己的配置"
 
-#: ../developer/configuration.md:52
+#: ../developer/configuration.md:64
 msgid "Precedence is environment, then manifest, then built-in default."
 msgstr "优先级依次是：环境变量、manifest、内置默认值。"
 
-#: ../developer/configuration.md:54
+#: ../developer/configuration.md:66
 msgid "Each kind of file is looked up on its own, in this order:"
 msgstr "每类文件都单独查找，顺序如下："
 
-#: ../developer/configuration.md:56
+#: ../developer/configuration.md:68
 msgid ""
 "**An explicit environment variable.** `MODELS_CONFIG_PATH`, "
 "`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`. (The older names "
@@ -192,7 +252,7 @@ msgstr ""
 "**显式设置的环境变量**。`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`。（旧名"
 " `MODELS_CONFIG` 和 `ROUTING_CONFIG` 仍然可用；两者都设置时，以规范名 `*_CONFIG_PATH` 为准。）"
 
-#: ../developer/configuration.md:60
+#: ../developer/configuration.md:72
 msgid ""
 "**The distribution manifest's `paths:` section** — only when "
 "`DISTRIBUTION_CONFIG_MODE=active`. By default a manifest is only checked,"
@@ -203,7 +263,7 @@ msgstr ""
 "时生效。默认情况下只检查 manifest，不应用它；见[启用 manifest](distribution-"
 "customization.md#activating-a-manifest)。"
 
-#: ../developer/configuration.md:64
+#: ../developer/configuration.md:76
 msgid ""
 "**The built-in default**, which points at the reference examples: "
 "`config/examples/models.openrouter.yaml` and "
@@ -215,11 +275,11 @@ msgstr ""
 "`config/examples/routing.minimal.yaml`。`alerts` 的默认值是 "
 "`config/alerts.yaml`，本仓库并不带这个文件——缺少告警配置文件就表示「使用内置阈值」。"
 
-#: ../developer/configuration.md:70
+#: ../developer/configuration.md:82
 msgid "Two things follow:"
 msgstr "这意味着两件事："
 
-#: ../developer/configuration.md:72
+#: ../developer/configuration.md:84
 msgid ""
 "An environment variable **beats the manifest**. If you set "
 "`MODELS_CONFIG_PATH` in a deployment that also has a manifest, the "
@@ -230,14 +290,14 @@ msgstr ""
 " 里的 `models:` 路径就会被忽略，网关会记一条 `explicit env override ... wins over "
 "manifest value ...` 日志。两种方式选一种就好。"
 
-#: ../developer/configuration.md:76
+#: ../developer/configuration.md:88
 msgid ""
 "Paths that come from the environment are resolved relative to the "
 "**working directory** of the process. Relative paths inside a manifest "
 "are resolved against **the manifest file's own directory**."
 msgstr "来自环境变量的路径，相对于进程的**工作目录**解析；manifest 里的相对路径，则相对于 **manifest 文件自己所在的目录**解析。"
 
-#: ../developer/configuration.md:80
+#: ../developer/configuration.md:92
 msgid ""
 "A path that resolves from layer 1 or 2 but does not exist is a warning, "
 "not a failure: the gateway logs `Models config not found: <path> "
@@ -246,11 +306,11 @@ msgstr ""
 "如果第 1 层或第 2 层给出的路径实际不存在，网关只会发出警告，不会启动失败：它记录 `Models config not found: "
 "<path> (source=env)`，然后在一个模型都没注册的状态下继续运行。"
 
-#: ../developer/configuration.md:84
+#: ../developer/configuration.md:96
 msgid "What a fresh clone does with no configuration at all"
 msgstr "全新克隆、完全没有配置时会怎样"
 
-#: ../developer/configuration.md:86
+#: ../developer/configuration.md:98
 msgid ""
 "Start the gateway in a clean checkout with no `MODELS_CONFIG_PATH`, no "
 "manifest and no overlay, and the built-in default applies: it serves "
@@ -264,37 +324,37 @@ msgstr ""
 "`config/examples/models.openrouter.yaml`。这个文件注册了三个模型：两个直接走 "
 "OpenRouter，另一个优先用本地的 OpenAI 兼容服务器，失败时自动回退到 OpenRouter。三个模型都只需要同一个凭据。"
 
-#: ../developer/configuration.md:98
+#: ../developer/configuration.md:110
 msgid ""
 "Without that variable every model in the file is skipped — its route's "
 "only API key expands to empty — and the gateway says so before serving "
 "anything:"
 msgstr "不设这个变量，文件里的每个模型都会被跳过（每条路由唯一的 API key 展开后是空的），网关在开始服务之前就会给出提示："
 
-#: ../developer/configuration.md:108
+#: ../developer/configuration.md:120
 msgid ""
 "With a database, set it on the admin console's **Configuration** tab "
 "instead, which lists it as missing, and restart the backend."
 msgstr "有数据库时，改为在管理控制台的 **Configuration** 标签页上设置它（那里会把它标为缺失），然后重启后端。"
 
-#: ../developer/configuration.md:111
+#: ../developer/configuration.md:123
 msgid ""
 "This is the fastest way to a gateway that routes real traffic. Replace "
 "the file with your own registry once you know what you want to serve."
 msgstr "这是让网关跑上真实流量的最快路径。等你想清楚要提供哪些模型，再用自己的注册表替换这个文件。"
 
-#: ../developer/configuration.md:114
+#: ../developer/configuration.md:126
 msgid "The model registry"
 msgstr "模型注册表"
 
-#: ../developer/configuration.md:116
+#: ../developer/configuration.md:128
 msgid ""
 "[Adding a New Model](adding-models.md) is the field reference. Three "
 "things belong here because they are properties of *configuration loading*"
 " rather than of any one field:"
 msgstr "字段参考见[添加新模型](adding-models.md)。有三件事放在本页讲，因为它们属于*配置加载*的行为，而不是某个字段的含义："
 
-#: ../developer/configuration.md:120
+#: ../developer/configuration.md:132
 msgid ""
 "**A route's `kind:` picks the adapter; the model's `provider:` is its "
 "default.** When a route omits `kind:`, the model's top-level `provider:` "
@@ -308,7 +368,7 @@ msgstr ""
 "`api_key` 构造出一条路由。`provider` 同时也是写入 "
 "`api_logs.provider`、并在指标里展示的标签，所以一条路由可以用 `provider:` 单独覆盖它。"
 
-#: ../developer/configuration.md:127
+#: ../developer/configuration.md:139
 msgid ""
 "**These are the built-in kinds.** A deployment can add more with a "
 "[backend extension](backend-extensions.md); those are checked first."
@@ -362,7 +422,7 @@ msgstr ""
 msgid "`AnthropicAdapter`"
 msgstr ""
 
-#: ../developer/configuration.md:138
+#: ../developer/configuration.md:150
 msgid ""
 "Local inference servers have no dedicated adapter: `vllm`, `sglang` and "
 "`ollama` are OpenAI-compatible kinds that differ only in their provider "
@@ -373,7 +433,7 @@ msgstr ""
 "provider 标签和用量处理上。其他任何 kind 都会让注册表加载失败，报错 `ValueError: Unknown adapter "
 "kind: <kind>`。"
 
-#: ../developer/configuration.md:143
+#: ../developer/configuration.md:155
 #, python-brace-format
 msgid ""
 "**`${VAR}` interpolation in the registry is whole-value only.** In "
@@ -381,26 +441,31 @@ msgid ""
 "`provider_model_id` and a route's `embeddings_path` are expanded, and "
 "only when the entire value is exactly `${VAR}`. The value is the [setting"
 "](#settings-stored-in-the-database) of that name: its database value, "
-"else the environment variable. There is no `${VAR:-default}` and no "
-"embedded substitution:"
+"else the environment variable, else the default the gateway registers for"
+" that setting, so `${CHUTES_BASE_URL}` loads as "
+"`https://llm.chutes.ai/v1` when nothing sets it. A database or "
+"environment value wins even when it is empty. There is no "
+"`${VAR:-default}` and no embedded substitution:"
 msgstr ""
 "**注册表里的 `${VAR}` 插值只支持整值替换**。在 `models.yaml` 里，只有 "
 "`base_url`、`api_key`、`api_keys`、`provider_model_id` 和路由的 "
 "`embeddings_path` 会被展开，而且只在整个值恰好是 `${VAR}` 时才展开。取到的值是同名的[设置项](#settings-"
-"stored-in-the-database)：先看数据库里的值，没有再用环境变量。不支持 "
+"stored-in-the-"
+"database)：先看数据库里的值，没有再用环境变量，再没有就用网关为这个设置项注册的默认值，所以什么都没设置时，`${CHUTES_BASE_URL}`"
+" 会以 `https://llm.chutes.ai/v1` 加载。数据库或环境变量里的值哪怕为空也优先。不支持 "
 "`${VAR:-default}`，也不支持嵌在字符串中间的替换："
 
-#: ../developer/configuration.md:159
+#: ../developer/configuration.md:174
 msgid ""
 "The routing and alerts files are more permissive (see below), so do not "
 "carry habits from one file to the other."
 msgstr "路由配置文件和告警配置文件的展开规则更宽松（见下文），所以别把一种文件里的写法习惯带到另一种文件里。"
 
-#: ../developer/configuration.md:162
+#: ../developer/configuration.md:177
 msgid "The routing file"
 msgstr "路由配置文件"
 
-#: ../developer/configuration.md:164
+#: ../developer/configuration.md:179
 msgid ""
 "`routing.yaml` is optional, and most deployments can leave it out. Read "
 "this section before relying on it: on a gateway with a database, which "
@@ -413,7 +478,7 @@ msgstr ""
 "服务栈就是这种），它的权重划分不起作用，它的健康探测也从不改变路由。流量去哪里，由模型注册表里的权重、在管理控制台里设置的权重覆盖，以及[路由](routing.md)里介绍的"
 " router 共同决定。"
 
-#: ../developer/configuration.md:171
+#: ../developer/configuration.md:186
 msgid "Every key, with its default:"
 msgstr "所有键及其默认值："
 
@@ -500,7 +565,7 @@ msgstr ""
 msgid "Free-form mapping."
 msgstr "自由格式的映射。"
 
-#: ../developer/configuration.md:182
+#: ../developer/configuration.md:197
 msgid ""
 "Each deployment entry needs both an `endpoint:` (which must start with "
 "`http://` or `https://`) and a non-empty `models:` list; an entry with an"
@@ -515,7 +580,7 @@ msgstr ""
 "initialize`，然后继续使用注册表自己的权重。而 `endpoint:` "
 "展开为空的条目只会被单独丢弃，同时发出一条警告，列出因此失去归属的模型。这样，某个变量没设置也不会导致其余端点全部失效。"
 
-#: ../developer/configuration.md:204
+#: ../developer/configuration.md:219
 msgid ""
 "**The weight split applies only to a gateway without a database.** At "
 "startup, the gateway sorts each model's routes into local and remote: a "
@@ -535,7 +600,7 @@ msgstr ""
 "设置了别的比例），在组内平均分摊，再把每个模型的权重缩放到总和为 1.0。如果某个模型有一组为空，全部流量归另一组。什么都匹配不上的模型，保留它 "
 "`route:` 列表里的权重。在带数据库的网关上，路由读的是注册表里的权重加上管理员设置的覆盖值，根本不会用到这次划分。"
 
-#: ../developer/configuration.md:215
+#: ../developer/configuration.md:230
 msgid ""
 "Health probing covers `local_deployment` endpoints only — remote "
 "providers do not serve the gateway's `/health` path and would be marked "
@@ -545,7 +610,7 @@ msgstr ""
 "健康探测只针对 `local_deployment` 里的端点：远程 provider 没有网关要探测的 `/health` "
 "路径，探测的话会被误判为不健康。每次探测都是向端点 origin 的根路径加 `/health` 发一个 `GET`。"
 
-#: ../developer/configuration.md:219
+#: ../developer/configuration.md:234
 msgid ""
 "**The probe only reports; it never changes routing.** An endpoint that "
 "fails every probe keeps its weight and keeps receiving traffic. Each "
@@ -560,15 +625,20 @@ msgstr ""
 "`endpoint_health_enforced: false`。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-"
 "health-and-circuit-breaking)。"
 
-#: ../developer/configuration.md:226
+#: ../developer/configuration.md:241
 #, python-brace-format
 msgid ""
 "Unlike the model registry, this file's expander handles `${VAR}`, "
 "`${VAR:-default}`, and variables embedded in longer strings, at any "
-"depth."
-msgstr "和模型注册表不同，这个文件的变量展开支持 `${VAR}`、`${VAR:-default}` 和嵌在长字符串里的变量，而且在任意嵌套层级都有效。"
+"depth. The alerts file expands the same way. A variable neither the "
+"database nor the environment sets takes the inline `:-default`, and "
+"without one the default the gateway registers for that setting."
+msgstr ""
+"和模型注册表不同，这个文件的变量展开支持 `${VAR}`、`${VAR:-default}` "
+"和嵌在长字符串里的变量，而且在任意嵌套层级都有效。告警文件的展开方式与此相同。数据库和环境变量都没有设置的变量，先取行内的 "
+"`:-default`，没有的话再用网关为这个设置项注册的默认值。"
 
-#: ../developer/configuration.md:229
+#: ../developer/configuration.md:247
 msgid ""
 "`routing_strategy:` and `routing_parameter:` are the deprecated spellings"
 " of `default_router:` and per-model `router_params:`. They still load, "
@@ -580,11 +650,11 @@ msgstr ""
 "`router_params:` 的旧写法，已废弃。它们仍然能加载，但会记录一条废弃警告。按模型选择 router（模型注册表里的 "
 "`router:` / `router_params:`）会覆盖 `default_router`，详见[路由](routing.md)。"
 
-#: ../developer/configuration.md:235
+#: ../developer/configuration.md:253
 msgid "Settings that currently have no effect"
 msgstr "目前不生效的设置"
 
-#: ../developer/configuration.md:237
+#: ../developer/configuration.md:255
 msgid ""
 "The gateway accepts these when it loads its configuration, so setting "
 "them does not stop it from starting, but today they do nothing — or, in "
@@ -676,11 +746,11 @@ msgstr ""
 msgid "A label only; does not select a host or build anything"
 msgstr "只是个标签；不会选择主机，也不会构建任何东西"
 
-#: ../developer/configuration.md:251
+#: ../developer/configuration.md:269
 msgid "Runtime configuration from the admin console"
 msgstr "从管理控制台做运行时配置"
 
-#: ../developer/configuration.md:253
+#: ../developer/configuration.md:271
 msgid ""
 "The files above are read once, at startup. Everything else an operator "
 "changes about routing goes through the admin console — or the `/admin/*` "
@@ -693,7 +763,7 @@ msgstr ""
 "端点）写进运行数据存储，所以不用重启就能生效，重启后也不会丢。如果某个模型、provider 或 key "
 "需要*马上*在运行中的网关上可用，又不想改 overlay、重新部署，就用这一层。"
 
-#: ../developer/configuration.md:260
+#: ../developer/configuration.md:278
 msgid ""
 "It needs a database. `DB_ENABLED` defaults to `true` "
 "([Database](database.md) covers the connection); with `DB_ENABLED=false` "
@@ -707,7 +777,7 @@ msgstr ""
 "configured`，调用这些端点的控制台标签页也就无处可写。所有端点都要求在 `Authorization: Bearer ...` "
 "头里带上管理员的 JWT 或 `ADMIN_TOKEN`。"
 
-#: ../developer/configuration.md:266
+#: ../developer/configuration.md:284
 msgid "Providers tab"
 msgstr "Providers 标签页"
 
@@ -844,7 +914,7 @@ msgstr ""
 msgid "`disabled_providers`"
 msgstr ""
 
-#: ../developer/configuration.md:277
+#: ../developer/configuration.md:295
 msgid ""
 "The registry on the Overview tab lists every provider the gateway can "
 "route to, but only *custom* providers are editable there. A provider that"
@@ -861,7 +931,7 @@ msgstr ""
 "provider 只能是 `openai_compat`；通用 adapter 处理不了的协议需要专门的 adapter，这就要改代码了（见[编写"
 " provider adapter](provider-adapters.md)）。"
 
-#: ../developer/configuration.md:286
+#: ../developer/configuration.md:304
 #, python-brace-format
 msgid ""
 "A key added here joins the same pool as the keys the registry names "
@@ -877,7 +947,7 @@ msgstr ""
 "database)）在这张表里没有对应的行，所以这个标签页可以禁用它、把它预留给某个层级，但不能删除。要去掉它，就在 "
 "**Configuration** 标签页上清空这个变量，再重启后端。"
 
-#: ../developer/configuration.md:294
+#: ../developer/configuration.md:312
 msgid "Routing tab"
 msgstr "Routing 标签页"
 
@@ -1022,7 +1092,7 @@ msgstr "RouteWise 设置"
 msgid "`/admin/routewise/model-settings` — see [RouteWise](routing.md#routewise)"
 msgstr "`/admin/routewise/model-settings`——见 [RouteWise](routing.md#routewise)"
 
-#: ../developer/configuration.md:306
+#: ../developer/configuration.md:324
 #, python-brace-format
 msgid ""
 "`GET /admin/routing/provider-routes` (or `.../{model_id}`) returns every "
@@ -1033,7 +1103,7 @@ msgstr ""
 "`.../{model_id}`）返回网关当前在用的每一条路由，每条都标着 `source: yaml`、`override` 或 "
 "`runtime`；想看两层叠加后的结果，这是最快的办法。"
 
-#: ../developer/configuration.md:310
+#: ../developer/configuration.md:328
 msgid ""
 "The provider selector on this tab offers every custom provider, plus each"
 " built-in kind that the registry, the live route table or a configured "
@@ -1049,7 +1119,7 @@ msgstr ""
 "这个设置项声明（见[环境变量](installation.md#environment-variables)）；没有列出的 provider "
 "三种都可以用。"
 
-#: ../developer/configuration.md:318
+#: ../developer/configuration.md:336
 msgid ""
 "A model created here is a **runtime model**: it exists only in the "
 "database, carries an id, a first route, a pricing table, a router "
@@ -1067,7 +1137,7 @@ msgstr ""
 " `ModelConfig` 的默认值：`context_length` 8192，`max_output_length` "
 "4096，只支持文本输入输出，不支持工具调用。如果模型需要其中任何一项，就把它写进注册表。"
 
-#: ../developer/configuration.md:327
+#: ../developer/configuration.md:345
 msgid "Settings tab"
 msgstr "Settings 标签页"
 
@@ -1110,32 +1180,32 @@ msgstr ""
 msgid "`model_concurrency_exemptions`"
 msgstr ""
 
-#: ../developer/configuration.md:334
+#: ../developer/configuration.md:352
 msgid "How the two layers combine"
 msgstr "两层如何叠加"
 
-#: ../developer/configuration.md:336
+#: ../developer/configuration.md:354
 msgid ""
 "The registry is loaded first and the stored state is applied on top of "
 "it, in this order at boot; each admin change is also applied to the "
 "running router the moment it is saved."
 msgstr "启动时先加载注册表，再按下面的顺序把已存状态叠加上去；管理员的每次改动在保存时也会立即应用到运行中的 router 上。"
 
-#: ../developer/configuration.md:340
+#: ../developer/configuration.md:358
 msgid "Custom provider definitions, skipping any slug the code or registry owns."
 msgstr "自定义 provider 定义；代码或注册表里已有的 slug 会被跳过。"
 
-#: ../developer/configuration.md:341
+#: ../developer/configuration.md:359
 msgid ""
 "Stored provider keys, seeded into each provider's pool beside the "
 "environment keys."
 msgstr "已存的 provider key，加入各个 provider 的 key 池，与环境变量里的 key 并列。"
 
-#: ../developer/configuration.md:343
+#: ../developer/configuration.md:361
 msgid "Per-model router strategy overrides."
 msgstr "按模型设置的 router 策略覆盖项。"
 
-#: ../developer/configuration.md:344
+#: ../developer/configuration.md:362
 msgid ""
 "Runtime routes. A runtime model is restored only if its creation "
 "finished; a stored route whose model is no longer in the registry is "
@@ -1145,11 +1215,11 @@ msgstr ""
 "运行时路由。运行时模型只有在创建过程完整结束后才会被恢复；如果一条已存路由对应的模型已经不在注册表里，它会被跳过并记录警告，所以从 YAML "
 "里删掉一个模型，不会因为一行残留数据又把它带回来。"
 
-#: ../developer/configuration.md:348
+#: ../developer/configuration.md:366
 msgid "Route overrides, retargeting the registry routes they name."
 msgstr "路由覆盖项，把对应的注册表路由改指到新的目标。"
 
-#: ../developer/configuration.md:349
+#: ../developer/configuration.md:367
 msgid ""
 "Key tier reservations, re-read now that every provider is known; then "
 "weight overrides, disabled providers, offload routes and model "
@@ -1158,7 +1228,7 @@ msgstr ""
 "key 的层级预留：此时所有 provider 都已加载，所以再读一遍。然后是权重覆盖项、已禁用的 "
 "provider、卸载路由和模型可见性，这些会加载到解析器里，供 router 在处理请求时查询。"
 
-#: ../developer/configuration.md:353
+#: ../developer/configuration.md:371
 msgid ""
 "Two rules follow from that order. A stored change never edits the file it"
 " overrides: delete the override and the registry route, weight or "
@@ -1171,11 +1241,11 @@ msgstr ""
 "值就恢复了；运行时添加的候选路由和注册表的路由并存，而不是取代它们。第二，存储里没有记录的内容仍以文件为准，所以要改目录元数据、别名或新增 "
 "adapter kind，还是得改注册表再重启。"
 
-#: ../developer/configuration.md:360
+#: ../developer/configuration.md:378
 msgid "Settings stored in the database"
 msgstr "存储在数据库中的设置项"
 
-#: ../developer/configuration.md:362
+#: ../developer/configuration.md:380
 msgid ""
 "Everything the gateway reads that is not one of the files above, the "
 "database connection or container wiring is a *setting*: provider keys, "
@@ -1192,29 +1262,29 @@ msgstr ""
 "的密钥。有数据库的网关把它们存在 `app_config` 表里，由管理员在管理控制台的 **Configuration** "
 "标签页上编辑。`DB_ENABLED=false` 的网关没有存储的设置项，只读环境变量和内置默认值。"
 
-#: ../developer/configuration.md:371
+#: ../developer/configuration.md:389
 msgid "Where a value comes from"
 msgstr "值从哪里来"
 
-#: ../developer/configuration.md:373
+#: ../developer/configuration.md:391
 msgid "Each setting resolves in this order:"
 msgstr "每个设置项按以下顺序取值："
 
-#: ../developer/configuration.md:375
+#: ../developer/configuration.md:393
 msgid ""
 "its row in the database — even an empty one, which is how a setting is "
 "cleared;"
 msgstr "数据库里它的那一行——哪怕值为空也算，清空一个设置项靠的就是这个；"
 
-#: ../developer/configuration.md:377
+#: ../developer/configuration.md:395
 msgid "the environment variable of the same name;"
 msgstr "同名的环境变量；"
 
-#: ../developer/configuration.md:378
+#: ../developer/configuration.md:396
 msgid "the built-in default."
 msgstr "内置默认值。"
 
-#: ../developer/configuration.md:380
+#: ../developer/configuration.md:398
 msgid ""
 "The environment is a starting point. At every start, a setting that has a"
 " non-empty value in the environment and no row in the database is copied "
@@ -1234,7 +1304,7 @@ msgstr ""
 "重置它，让环境变量、再往后是默认值重新生效。重置是持久的：数据库会记住这次重置，下次启动时不会再把这个变量复制进来，之后对它的修改也会生效。**Settings**"
 " 标签页上的开关（`USER_AUTH_ENABLED`、`SIGNUP_ENABLED` 等）也以同样的方式从环境变量复制过去。"
 
-#: ../developer/configuration.md:392
+#: ../developer/configuration.md:410
 msgid ""
 "An environment value that is not valid on its own — a CIDR range that "
 "does not parse, a number that is not one — is not copied in. The backend "
@@ -1253,20 +1323,29 @@ msgstr ""
 "一节），环境变量无效时这个命令照样能用。数据库连接设置（`DB_HOST`、`DB_PORT` "
 "等）是例外：读取数据库需要它们，所以其中任何一个无效，后端都会停下来。"
 
-#: ../developer/configuration.md:402
+#: ../developer/configuration.md:420
 msgid ""
 "Settings that depend on each other — `TRUST_X_REAL_IP` needs "
-"`TRUST_PROXY_HEADERS` — are judged together, the database's values over "
-"the environment's. A variable whose partner is already stored is copied "
-"in like any other, so it survives the variable's removal. When the two "
-"sources together still break such a rule, neither side is copied in and "
-"the backend stops, naming the rule, until one side is corrected."
+"`TRUST_PROXY_HEADERS` — are judged together, and a stored value wins "
+"there too. A variable whose partner is already stored and satisfies the "
+"rule is copied in like any other, so it survives the variable's removal. "
+"One that breaks the rule with a stored value is set aside instead: it "
+"counts as unset, its default applies, the next start does not copy it in,"
+" and the log says so with a warning. With `TRUST_X_REAL_IP=1` in the "
+"environment and `TRUST_PROXY_HEADERS` stored as off, for example, the "
+"gateway runs with `TRUST_X_REAL_IP` off; to turn both on, change them "
+"together on the Configuration tab or with `python -m "
+"serving.config.manage set`. Only a rule the environment breaks on its "
+"own, with no stored value involved, stops the backend, which names the "
+"rule."
 msgstr ""
-"相互依赖的设置项（比如 `TRUST_X_REAL_IP` 需要 "
-"`TRUST_PROXY_HEADERS`）会放在一起判断，数据库里的值覆盖环境变量里的值。如果一个变量依赖的另一项已经存进了数据库，它会像其他变量一样被复制进去，"
-"之后删掉这个变量也不会丢。如果两边合起来仍然违反这类规则，两边都不会被复制，后端会停止并指出是哪条规则，直到其中一边被改正。"
+"相互依赖的设置项（`TRUST_X_REAL_IP` 需要 "
+"`TRUST_PROXY_HEADERS`）会放在一起判断，存储的值在这里同样优先。如果一个变量的搭档已经存储并且满足规则，它会像其他变量一样被复制进去，所以即使删掉这个环境变量，它也会保留。与存储值一起违反规则的变量则会被搁置：它被当作未设置，使用默认值，下次启动也不会复制进去，日志里会有一条警告说明这一点。比如环境变量里是"
+" `TRUST_X_REAL_IP=1`，而存储的 `TRUST_PROXY_HEADERS` 是关闭的，网关就会在 "
+"`TRUST_X_REAL_IP` 关闭的状态下运行；要把两者都打开，就在 Configuration 标签页上或用 `python -m "
+"serving.config.manage set` 一起修改。只有环境变量自己（不涉及任何存储值）违反的规则才会让后端停下，并指出是哪条规则。"
 
-#: ../developer/configuration.md:409
+#: ../developer/configuration.md:433
 msgid ""
 "On the first start against an empty database the backend also generates "
 "the two secrets it cannot run without, `JWT_SECRET_KEY` and "
@@ -1283,18 +1362,18 @@ msgstr ""
 "accounts)。如果数据库里已经有 API key，后端宁可拒绝启动，也不会为它生成新的 "
 "`API_KEY_SECRET`，因为新密钥会让所有这些 key 失效。"
 
-#: ../developer/configuration.md:417
+#: ../developer/configuration.md:441
 msgid "The Configuration tab"
 msgstr "Configuration 标签页"
 
-#: ../developer/configuration.md:419
+#: ../developer/configuration.md:443
 msgid ""
 "The tab groups the settings by category, describes each one and shows "
 "where its value comes from. Besides every setting the gateway reads "
 "itself, it lists:"
 msgstr "这个标签页把设置项按类别分组，逐个说明用途，并标出每个值的来源。除了网关自己读取的所有设置项，它还列出："
 
-#: ../developer/configuration.md:422
+#: ../developer/configuration.md:446
 #, python-brace-format
 msgid ""
 "every `${VAR}` the active model registry and routing file name, under "
@@ -1304,13 +1383,18 @@ msgstr ""
 "当前模型注册表和路由配置文件引用的每一个 `${VAR}`，列在 **Providers** 下，并注明用到它的模型；告警规则引用的则列在 "
 "**Alerts** 下；"
 
-#: ../developer/configuration.md:425
+#: ../developer/configuration.md:449
 msgid ""
-"numbered extra keys for a provider's key pool, such as "
-"`MINIMAX_API_KEY2`, once one is set;"
-msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
+"numbered extra keys for a provider's key pool, `MINIMAX_API_KEY1` to "
+"`MINIMAX_API_KEY20` beside `MINIMAX_API_KEY` for instance, once one is "
+"set. Every one that has a value joins the pool: a blank one in the middle"
+" does not end the list, and a key entered twice counts once;"
+msgstr ""
+"provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY` 旁边的 `MINIMAX_API_KEY1` 到 "
+"`MINIMAX_API_KEY20`，只要设置了其中一个就会列出。每个有值的 key 都会加入池子：中间有一个空着并不会让列表就此结束，同一个 "
+"key 填了两次也只算一次；"
 
-#: ../developer/configuration.md:427
+#: ../developer/configuration.md:453
 #, python-brace-format
 msgid ""
 "variables added with **Add variable**, for a `${VAR}` reference the "
@@ -1318,13 +1402,32 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
-#: ../developer/configuration.md:430
+#: ../developer/configuration.md:456
 #, python-brace-format
 msgid ""
 "Secrets are write-only: the tab shows whether one is set, never its "
-"value, and the admin audit log records only that it changed. A save is "
-"checked as a whole, against everything it leaves in force, so settings "
-"that depend on each other — `TRUST_CLOUDFLARE_HEADERS` needs "
+"value, and the admin audit log records only that it changed. Besides the "
+"settings the gateway knows to be secret, every `${VAR}` a configuration "
+"file uses in a credential field — `api_key`, `api_keys`, `token`, an "
+"`Authorization` header — is secret, whatever it is called. Any other "
+"variable is secret when its name contains `KEY`, `TOKEN`, `SECRET`, "
+"`PASSWORD`, `PASS`, `PWD`, `WEBHOOK`, `PRIVATE`, `AUTH`, `CREDENTIAL`, "
+"`BEARER`, `CERT`, `DSN` or `SA_JSON`, and a variable added under such a "
+"name always is. An administrator can also mark a discovered, numbered or "
+"added variable secret with **Mark as secret**. That works one way only: a"
+" secret is never shown again, not even after a reset."
+msgstr ""
+"密钥只能写不能读：标签页只显示它有没有设置，从不显示它的值，管理审计日志也只记录它被改过。除了网关本身就知道是密钥的设置项，配置文件里用在凭据字段（`api_key`、`api_keys`、`token`、`Authorization`"
+" 请求头）中的每个 `${VAR}` 也都是密钥，无论它叫什么名字。其他变量的名字里只要含有 "
+"`KEY`、`TOKEN`、`SECRET`、`PASSWORD`、`PASS`、`PWD`、`WEBHOOK`、`PRIVATE`、`AUTH`、`CREDENTIAL`、`BEARER`、`CERT`、`DSN`"
+" 或 `SA_JSON`，就是密钥；用这样的名字添加的变量一定是密钥。管理员也可以用 **Mark as secret** "
+"把从配置文件里发现的变量、带编号的变量或手动添加的变量标为密钥。这个操作只能单向进行：密钥一旦标记，就再也不会显示出来，即使重置之后也一样。"
+
+#: ../developer/configuration.md:467
+#, python-brace-format
+msgid ""
+"A save is checked as a whole, against everything it leaves in force, so "
+"settings that depend on each other — `TRUST_CLOUDFLARE_HEADERS` needs "
 "`TRUST_PROXY_HEADERS` — can change together. A save or a **Reset** that "
 "would leave another setting unable to apply is refused and names it: "
 "turning `TRUST_PROXY_HEADERS` off while `TRUST_X_REAL_IP` is on, for "
@@ -1336,19 +1439,20 @@ msgid ""
 "`MODELS_CONFIG_PATH`, cannot be set here. Behind the tab are `GET` and "
 "`PATCH /admin/config` and `DELETE /admin/config/{key}`."
 msgstr ""
-"密钥只能写不能读：标签页只显示它有没有设置，从不显示它的值，管理审计日志也只记录它被改过。一次保存会作为整体校验，并按保存后实际生效的全部配置来判断，所以相互依赖的设置项（比如 "
-"`TRUST_CLOUDFLARE_HEADERS` 需要 `TRUST_PROXY_HEADERS`）可以一起修改。如果一次保存或 **Reset** "
+"一次保存会作为整体校验，并按保存后实际生效的全部配置来判断，所以相互依赖的设置项（比如 `TRUST_CLOUDFLARE_HEADERS` 需要"
+" `TRUST_PROXY_HEADERS`）可以一起修改。如果一次保存或 **Reset** "
 "会让另一个设置项无法生效，它会被拒绝，并指出是哪一项：例如在 `TRUST_X_REAL_IP` 开着时关掉 "
-"`TRUST_PROXY_HEADERS`，或者在 `TRUST_CLOUDFLARE_HEADERS` 开着时清空 Cloudflare 网段。把两项放在同一次保存里修改即可。如果 "
-"**Reset** 后要回落到的环境变量值本身不合法，Reset 也会被拒绝。原本就无效的设置项不会挡住无关的修改。留在环境变量里的名字，比如 "
-"`DB_PASSWORD` 或 `MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH "
-"/admin/config`，以及 `DELETE /admin/config/{key}`。"
+"`TRUST_PROXY_HEADERS`，或者在 `TRUST_CLOUDFLARE_HEADERS` 开着时清空 Cloudflare "
+"网段。把两项放在同一次保存里修改即可。如果 **Reset** 后要回落到的环境变量值本身不合法，Reset "
+"也会被拒绝。原本就无效的设置项不会挡住无关的修改。留在环境变量里的名字，比如 `DB_PASSWORD` 或 "
+"`MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH /admin/config`，以及 "
+"`DELETE /admin/config/{key}`。"
 
-#: ../developer/configuration.md:444
+#: ../developer/configuration.md:480
 msgid "When a change applies"
 msgstr "改动何时生效"
 
-#: ../developer/configuration.md:446
+#: ../developer/configuration.md:482
 msgid ""
 "Most settings apply as soon as they are saved: at once in the backend "
 "process that served the save, and within ten seconds in every other one. "
@@ -1362,7 +1466,7 @@ msgstr ""
 "的设置项只在启动时读取，进程会一直用启动时的值，直到重启。provider "
 "凭据和注册表引用的每个变量都属于这一类，熔断器和出站并发的调优、告警以及 `DB_STORE_FULL_CONTENT` 也是。"
 
-#: ../developer/configuration.md:453
+#: ../developer/configuration.md:489
 msgid ""
 "While such a change is waiting, the tab shows a **Restart pending** "
 "notice with a **Restart backend** button. The button (`POST "
@@ -1389,14 +1493,14 @@ msgstr ""
 "`SUPERVISOR_RESTARTS_BACKEND=1`；用其他方式启动后端的部署，只有当它的守护进程会在进程退出后把它重新拉起时，才应设置这个变量。没有设置它时，以及后端由多个"
 " worker 进程提供服务时（`WEB_CONCURRENCY` 或 `UVICORN_WORKERS` 大于 1，或者用了 `uvicorn "
 "--workers`，这时按钮只能重启其中一个进程），标签页会改为给出一条让你自己运行的命令，比如 `docker restart "
-"hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。控制台以 `/health` 的 `instance` "
-"字段换成另一个进程作为重启完成的标志，所以后端回来得再快也不会被漏掉。"
+"hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。控制台以 `/health` 的 "
+"`instance` 字段换成另一个进程作为重启完成的标志，所以后端回来得再快也不会被漏掉。"
 
-#: ../developer/configuration.md:470
+#: ../developer/configuration.md:506
 msgid "Without the console"
 msgstr "不通过控制台"
 
-#: ../developer/configuration.md:472
+#: ../developer/configuration.md:508
 msgid ""
 "A setting can break the console that edits it — a value that stops sign-"
 "in from working, say. `python -m serving.config.manage` changes stored "
@@ -1406,38 +1510,46 @@ msgstr ""
 "某个设置项可能把用来编辑它的控制台本身弄坏——比如一个让登录失效的值。这时可以用 `python -m "
 "serving.config.manage` 在命令行里修改已存储的设置项，校验规则和控制台完全一样："
 
-#: ../developer/configuration.md:481
+#: ../developer/configuration.md:517
 msgid ""
 "`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores"
-" a value — add `--secret` when it creates a custom variable that holds "
-"one — and `reset KEY` resets it as the tab's **Reset** does, so that the "
-"environment or the default applies again. It talks to the database "
-"directly with the `DB_*` connection settings alone, so it needs no sign-"
-"in and still runs when another setting in the environment is invalid, and"
-" it never prints a secret's value. When the backend container is not "
-"running, run it in the repository root of a source checkout instead (`uv "
-"run python -m serving.config.manage ...`), where `.env` reaches Postgres "
-"on `127.0.0.1:5432`. A running backend picks the change up within about "
-"ten seconds, or at its next restart for a setting marked **Restart "
-"required**. The command that resets an administrator's password works the"
-" same way; see [The first admin account](deployment.md#the-first-admin-"
-"account)."
+" a value — add `--secret` to mark a discovered, numbered or added "
+"variable secret, as **Mark as secret** does — and `reset KEY` resets it "
+"as the tab's **Reset** does, so that the environment or the default "
+"applies again. It never prints a secret's value. A running backend picks "
+"a change up within about ten seconds, or at its next restart for a "
+"setting marked **Restart required**."
 msgstr ""
-"`list` 列出所有设置项，`get KEY` 查看其中一项，`set KEY VALUE` "
-"存入一个值（如果它新建的是一个存放密钥的自定义变量，就加上 `--secret`），`reset KEY` 则像标签页上的 **Reset** "
-"一样重置它，让环境变量或默认值重新生效。它只用 `DB_*` "
-"连接设置直接访问数据库，所以不需要登录，环境变量里别的设置项无效时也照样能运行，而且从不打印密钥的值。后端容器没在运行时，改在源码 "
-"checkout 的仓库根目录下运行它（`uv run python -m serving.config.manage ...`），那里的 "
-"`.env` 可以通过 `127.0.0.1:5432` 连上 Postgres。正在运行的后端会在大约十秒内读到这个改动；标着 "
-"**Restart required** "
-"的设置项则要等下次重启。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md#the-first-admin-"
-"account)。"
+"`list` 列出所有设置项，`get KEY` 查看其中一项，`set KEY VALUE` 存入一个值（加上 `--secret` "
+"会把从配置文件里发现的变量、带编号的变量或手动添加的变量标为密钥，和 **Mark as secret** 的作用一样），`reset KEY` "
+"则像标签页上的 **Reset** 一样重置它，让环境变量或默认值重新生效。它从不打印密钥的值。正在运行的后端会在大约十秒内读到改动；标着 "
+"**Restart required** 的设置项则要等下次重启。"
 
-#: ../developer/configuration.md:495
+#: ../developer/configuration.md:524
+msgid ""
+"The tool talks to the database directly with the `DB_*` connection "
+"settings alone, so it needs no sign-in and still runs when another "
+"setting in the environment is invalid. Like the backend, it first reads "
+"`.env` from the directory it runs in, without replacing a variable "
+"already set, so a value kept only there is the one it shows and the one a"
+" reset falls back to. When the backend container is not running, run it "
+"in the repository root of a source checkout instead (`uv run python -m "
+"serving.config.manage ...`), where `.env` reaches Postgres on "
+"`127.0.0.1:5432`. The command that resets an administrator's password "
+"works the same way; see [The first admin account](deployment.md#the-"
+"first-admin-account)."
+msgstr ""
+"这个工具只用 `DB_*` 连接设置直接访问数据库，所以不需要登录，环境变量里别的设置项无效时也照样能运行。和后端一样，它会先读取所在目录下的 "
+"`.env`，但不会替换已经设置的变量，所以只写在那里的值，就是它显示的值，也是重置后回落到的值。后端容器没在运行时，改在源码 checkout "
+"的仓库根目录下运行它（`uv run python -m serving.config.manage ...`），那里的 `.env` 可以通过 "
+"`127.0.0.1:5432` 连上 Postgres。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md"
+"#the-first-admin-account)。"
+
+#: ../developer/configuration.md:535
 msgid "Missing settings"
 msgstr "缺失的设置项"
 
-#: ../developer/configuration.md:497
+#: ../developer/configuration.md:537
 msgid ""
 "Some settings are required: the two generated secrets, every variable a "
 "model route needs to load (unless the route is `optional: true`), and "
@@ -1460,7 +1572,7 @@ msgstr ""
 "API key 发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，都是“not "
 "found”，所以从这个差别里看不出任何超出其可用范围的信息。"
 
-#: ../developer/configuration.md:510
+#: ../developer/configuration.md:550
 msgid ""
 "A deployment that leaves a model's credential unset on purpose — a route "
 "it does not use yet, or a canary it enables elsewhere — should mark that "
@@ -1470,7 +1582,7 @@ msgstr ""
 "如果部署有意不设置某个模型的凭据——比如一条暂时不用的路由，或者在别处才启用的 canary——就应该在模型注册表里给那条路由标上 "
 "`optional: true`。这样这条路由会被悄悄跳过，它的变量也不会被报告为缺失。"
 
-#: ../developer/configuration.md:516
+#: ../developer/configuration.md:556
 msgid ""
 "Settings are stored in plaintext. Anyone who can read the database — a "
 "`pg_dump`, a backup, a `psql` or pgAdmin session — can read every "
@@ -1481,30 +1593,30 @@ msgstr ""
 "设置项以明文存储。任何能读到数据库的人——通过 `pg_dump`、备份，或者 `psql`、pgAdmin 会话——都能读到每一个 "
 "provider key，解密用户存下的 API key，并签发管理员 token。要像保护这些凭据本身那样，保护数据库的访问权限和备份。"
 
-#: ../developer/configuration.md:522
+#: ../developer/configuration.md:562
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:524
+#: ../developer/configuration.md:564
 msgid ""
 "The environment keeps what the backend needs before it can reach its "
 "database and what describes the containers rather than the application:"
 msgstr "环境变量里留下的，是后端连上数据库之前就需要的东西，以及描述容器而不是应用本身的东西："
 
-#: ../developer/configuration.md:527
+#: ../developer/configuration.md:567
 msgid ""
 "the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, "
 "`DB_PASSWORD`, `DB_ENABLED`;"
 msgstr "数据库连接：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_ENABLED`；"
 
-#: ../developer/configuration.md:529
+#: ../developer/configuration.md:569
 msgid ""
 "the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`, "
 "`ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`, "
 "`DISTRIBUTION_CONFIG_MODE`;"
 msgstr "配置文件：`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`；"
 
-#: ../developer/configuration.md:532
+#: ../developer/configuration.md:572
 msgid ""
 "the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, "
 "`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, "
@@ -1514,13 +1626,13 @@ msgstr ""
 "后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`、`SUPERVISOR_RESTARTS_BACKEND`，以及控制台也会读取的"
 " `REFRESH_TOKEN_COOKIE_NAME`；"
 
-#: ../developer/configuration.md:535
+#: ../developer/configuration.md:575
 msgid ""
 "Compose and the console: host ports and bind addresses, the console's "
 "build values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`."
 msgstr "Compose 和控制台：宿主机端口和绑定地址，控制台的构建期取值，以及 `AGENT_WEB_INTERNAL_URL` 这类运行期取值。"
 
-#: ../developer/configuration.md:538
+#: ../developer/configuration.md:578
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -1537,15 +1649,15 @@ msgstr ""
 "variables)列出了你最可能要设置的设置项。其他设置项如果在环境变量里有值，会按上文所述在启动时导入数据库。永远不要把密钥写进模型注册表或 "
 "manifest：在那里用 `${VAR}` 引用它。"
 
-#: ../developer/configuration.md:547
+#: ../developer/configuration.md:587
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:553
+#: ../developer/configuration.md:593
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:560
+#: ../developer/configuration.md:600
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -1557,7 +1669,7 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:566
+#: ../developer/configuration.md:606
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, the upstream `base_url`, its provider label and its weight — that "
@@ -1572,6 +1684,88 @@ msgstr ""
 "标签和权重——也就是你完整的上游拓扑，包括 base URL 里的主机和端口。如果网关能从公网访问，而你又不打算公开这份拓扑，就在反向代理上屏蔽 "
 "`/routing`。`GET /admin/routing` 还会返回未发布的路由，需要在 `Authorization: Bearer "
 "...` 头里带上管理员的 JWT 或 `ADMIN_TOKEN`。两个接口的输出都要当作敏感信息。"
+
+#: ../developer/configuration.md:616
+msgid "Optional phone authentication"
+msgstr "可选手机号认证"
+
+#: ../developer/configuration.md:618
+msgid ""
+"Phone signup, login and binding are disabled by default. Enable "
+"`SMS_AUTH_ENABLED` and select `SMS_PROVIDER=tencent` in **Admin > "
+"Configuration** only after delivery is configured. The gateway advertises"
+" `features.phone_auth` through `/site-config`; the shared forms show the "
+"phone option only when it is available. Existing email and first-run "
+"administrator logins continue to work."
+msgstr ""
+"手机号注册、登录和绑定默认关闭。配置好发送服务后，在 **Admin > Configuration** 中开启 "
+"`SMS_AUTH_ENABLED` 并选择 `SMS_PROVIDER=tencent`。网关通过 `/site-config` 发布 "
+"`features.phone_auth`；共享表单仅在功能可用时显示手机号选项。原有邮箱登录和首次设置的管理员登录继续可用。"
+
+#: ../developer/configuration.md:620
+msgid ""
+"The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, "
+"`TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, "
+"`SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require"
+" `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its "
+"lifetime in minutes, in that order. This adapter currently sends to "
+"mainland China mobile numbers only. Keep real credentials, approved "
+"signatures and template IDs in deployment configuration, outside source "
+"control."
+msgstr ""
+"腾讯适配器需要 "
+"`TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、`SMS_REGION`、`SMS_SDK_APP_ID`、`SMS_SIGN_NAME`"
+" 和 `SMS_TEMPLATE_ID`。临时凭据还需要 "
+"`TENCENT_CLOUD_TOKEN`。审核通过的模板依次接收验证码和有效分钟数两个参数。此适配器目前仅向中国大陆手机号发送短信。真实凭据、已审核签名和模板"
+" ID 应保存在部署配置中，不要提交到源码仓库。"
+
+#: ../developer/configuration.md:622
+msgid ""
+"Account identifiers use international format, such as `+8613812345678`. "
+"`SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local "
+"input; leave it empty to require international input. "
+"`SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-"
+"separated prefixes. For the Tencent domestic adapter, set the former to "
+"`86` if local input is desired and the latter to `+86`. Number policy "
+"belongs to the deployment, while provider delivery remains separate from "
+"account storage."
+msgstr ""
+"账号标识使用国际格式，例如 `+8613812345678`。`SMS_DEFAULT_COUNTRY_CODE` "
+"可为本地格式输入补充国家呼叫码；留空则要求输入国际格式。`SMS_ALLOWED_PREFIXES` "
+"可通过逗号分隔的前缀限制目的地。使用腾讯国内短信适配器时，如需支持本地输入，将前者设为 `86`，并将后者设为 "
+"`+86`。号码策略属于部署配置，供应商发送逻辑与账号存储保持分离。"
+
+#: ../developer/configuration.md:624
+msgid ""
+"Codes expire after 300 seconds by default, allow at most five guesses, "
+"and can be consumed once. PostgreSQL serializes send and verification "
+"quotas across workers; the `SMS_OTP_*` settings control their bounds. "
+"Turnstile and trusted-proxy client IP handling remain shared with signup."
+" Phone registration follows public-signup and approval policy, never "
+"automatically merges with an email account, and creates no password. Like"
+" email signup, it is refused with `503` while first-run setup is pending."
+" Binding requires an authenticated session and a separate code for that "
+"account."
+msgstr ""
+"验证码默认 300 秒过期，最多允许猜测五次，且只能使用一次。PostgreSQL "
+"在多个工作进程间串行执行发送和验证配额检查；`SMS_OTP_*` 设置控制相关限制。Turnstile 与可信代理客户端 IP "
+"处理继续复用注册流程。手机号注册遵循开放注册和审核策略，不会自动合并邮箱账号，也不会创建密码。和邮箱注册一样，首次运行设置完成之前，手机号注册会被拒绝并返回"
+" `503`。绑定需要已认证会话及专属于该账号的验证码。"
+
+#: ../developer/configuration.md:626
+msgid ""
+"Startup adds phone identity columns and durable code tables and makes "
+"password hashes nullable. Upgrade every gateway worker before enabling "
+"phone signup. Back up the database first; once phone-only accounts exist,"
+" an older binary that assumes every account has a password is not a "
+"supported rollback. Disabling SMS hides phone login but does not remove "
+"accounts, so arrange another verified sign-in method before disabling it "
+"for phone-only users. Site UI v1 message overrides remain optional; "
+"distributions can translate the added phone message slots without owning "
+"authentication logic."
+msgstr ""
+"启动时会添加手机号身份字段和持久验证码表，并允许密码哈希为空。开启手机号注册前应先升级全部网关工作进程，并备份数据库。一旦存在仅使用手机号的账号，就不支持回滚到假设每个账号都有密码的旧程序。关闭短信会隐藏手机号登录，但不会删除账号，因此为仅使用手机号的用户关闭该功能前，应先安排其他已验证的登录方式。Site"
+" UI v1 文案覆盖仍为可选；发行版可翻译新增手机号文案槽位，无需自行维护认证逻辑。"
 
 #~ msgid "Read by"
 #~ msgstr "读取方"
@@ -1722,20 +1916,34 @@ msgstr ""
 #~ "switches"
 #~ msgstr "所有敏感信息和与主机相关的设置：凭据、数据库连接、功能开关"
 
-msgid "Optional phone authentication"
-msgstr "可选手机号认证"
+#~ msgid ""
+#~ "Unlike the model registry, this file's"
+#~ " expander handles `${VAR}`, `${VAR:-default}`,"
+#~ " and variables embedded in longer "
+#~ "strings, at any depth."
+#~ msgstr ""
+#~ "和模型注册表不同，这个文件的变量展开支持 `${VAR}`、`${VAR:-default}` "
+#~ "和嵌在长字符串里的变量，而且在任意嵌套层级都有效。"
 
-msgid "Phone signup, login and binding are disabled by default. Enable `SMS_AUTH_ENABLED` and select `SMS_PROVIDER=tencent` in **Admin > Configuration** only after delivery is configured. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work."
-msgstr "手机号注册、登录和绑定默认关闭。配置好发送服务后，在 **Admin > Configuration** 中开启 `SMS_AUTH_ENABLED` 并选择 `SMS_PROVIDER=tencent`。网关通过 `/site-config` 发布 `features.phone_auth`；共享表单仅在功能可用时显示手机号选项。原有邮箱登录和首次设置的管理员登录继续可用。"
+#~ msgid ""
+#~ "Settings that depend on each other "
+#~ "— `TRUST_X_REAL_IP` needs `TRUST_PROXY_HEADERS` "
+#~ "— are judged together, the database's"
+#~ " values over the environment's. A "
+#~ "variable whose partner is already stored"
+#~ " is copied in like any other, "
+#~ "so it survives the variable's removal."
+#~ " When the two sources together still"
+#~ " break such a rule, neither side "
+#~ "is copied in and the backend "
+#~ "stops, naming the rule, until one "
+#~ "side is corrected."
+#~ msgstr ""
+#~ "相互依赖的设置项（比如 `TRUST_X_REAL_IP` 需要 "
+#~ "`TRUST_PROXY_HEADERS`）会放在一起判断，数据库里的值覆盖环境变量里的值。如果一个变量依赖的另一项已经存进了数据库，它会像其他变量一样被复制进去，之后删掉这个变量也不会丢。如果两边合起来仍然违反这类规则，两边都不会被复制，后端会停止并指出是哪条规则，直到其中一边被改正。"
 
-msgid "The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. This adapter currently sends to mainland China mobile numbers only. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control."
-msgstr "腾讯适配器需要 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、`SMS_REGION`、`SMS_SDK_APP_ID`、`SMS_SIGN_NAME` 和 `SMS_TEMPLATE_ID`。临时凭据还需要 `TENCENT_CLOUD_TOKEN`。审核通过的模板依次接收验证码和有效分钟数两个参数。此适配器目前仅向中国大陆手机号发送短信。真实凭据、已审核签名和模板 ID 应保存在部署配置中，不要提交到源码仓库。"
-
-msgid "Account identifiers use international format, such as `+8613812345678`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. For the Tencent domestic adapter, set the former to `86` if local input is desired and the latter to `+86`. Number policy belongs to the deployment, while provider delivery remains separate from account storage."
-msgstr "账号标识使用国际格式，例如 `+8613812345678`。`SMS_DEFAULT_COUNTRY_CODE` 可为本地格式输入补充国家呼叫码；留空则要求输入国际格式。`SMS_ALLOWED_PREFIXES` 可通过逗号分隔的前缀限制目的地。使用腾讯国内短信适配器时，如需支持本地输入，将前者设为 `86`，并将后者设为 `+86`。号码策略属于部署配置，供应商发送逻辑与账号存储保持分离。"
-
-msgid "Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Binding requires an authenticated session and a separate code for that account."
-msgstr "验证码默认 300 秒过期，最多允许猜测五次，且只能使用一次。PostgreSQL 在多个工作进程间串行执行发送和验证配额检查；`SMS_OTP_*` 设置控制相关限制。Turnstile 与可信代理客户端 IP 处理继续复用注册流程。手机号注册遵循开放注册和审核策略，不会自动合并邮箱账号，也不会创建密码。绑定需要已认证会话及专属于该账号的验证码。"
-
-msgid "Startup adds phone identity columns and durable code tables and makes password hashes nullable. Upgrade every gateway worker before enabling phone signup. Back up the database first; once phone-only accounts exist, an older binary that assumes every account has a password is not a supported rollback. Disabling SMS hides phone login but does not remove accounts, so arrange another verified sign-in method before disabling it for phone-only users. Site UI v1 message overrides remain optional; distributions can translate the added phone message slots without owning authentication logic."
-msgstr "启动时会添加手机号身份字段和持久验证码表，并允许密码哈希为空。开启手机号注册前应先升级全部网关工作进程，并备份数据库。一旦存在仅使用手机号的账号，就不支持回滚到假设每个账号都有密码的旧程序。关闭短信会隐藏手机号登录，但不会删除账号，因此为仅使用手机号的用户关闭该功能前，应先安排其他已验证的登录方式。Site UI v1 文案覆盖仍为可选；发行版可翻译新增手机号文案槽位，无需自行维护认证逻辑。"
+#~ msgid ""
+#~ "numbered extra keys for a provider's "
+#~ "key pool, such as `MINIMAX_API_KEY2`, "
+#~ "once one is set;"
+#~ msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
