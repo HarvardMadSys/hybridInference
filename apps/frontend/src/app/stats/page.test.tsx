@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PublicStats } from '@/lib/api/publicStats';
 
@@ -83,6 +83,26 @@ const stats: PublicStats = {
   thresholds: { min_client_requests: 10, min_country_requests: 100, min_public_accounts: 3 },
 };
 
+const models: NonNullable<PublicStats['models']> = {
+  items: [
+    {
+      name: 'minimax-m3',
+      requests: 6_000_000,
+      tokens: 200_000_000_000,
+      daily_requests: [2],
+      daily_tokens: [5],
+    },
+    {
+      name: 'glm-5.1',
+      requests: 2_000_000,
+      tokens: 600_000_000_000,
+      daily_requests: [1],
+      daily_tokens: [11],
+    },
+  ],
+  other: { requests: 553_192, tokens: 32_000_000_000, daily_requests: [1], daily_tokens: [1] },
+};
+
 function mockFetch(response: Partial<Response> & { json?: () => Promise<unknown> }) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, ...response }));
 }
@@ -114,6 +134,49 @@ describe('StatsPage', () => {
     // Small account counts are withheld, not shown as numbers.
     expect(screen.getAllByText('<3').length).toBe(2);
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/public-stats$/), expect.anything());
+  });
+
+  it('folds traffic by model until it is opened', async () => {
+    mockFetch({ json: async () => ({ ...stats, models }) });
+    render(<StatsPage />);
+
+    const toggle = await screen.findByRole('button', { name: 'Traffic by model' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText(/glm-5\.1 served 72% of all tokens/)).toBeInTheDocument();
+    expect(screen.queryByText('Other models')).not.toBeInTheDocument();
+    expect(screen.getByText('Models.')).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const body = within(document.getElementById('stats-models-body') as HTMLElement);
+    // Busiest first by the chosen measure; the pooled rest always last.
+    const names = () =>
+      body
+        .getAllByRole('row')
+        .slice(1)
+        .map((r) => r.firstChild?.textContent);
+    expect(names()).toEqual(['glm-5.1', 'minimax-m3', 'Other models']);
+    expect(body.getByRole('cell', { name: '600B' })).toBeInTheDocument();
+
+    fireEvent.click(body.getByRole('button', { name: 'Requests' }));
+    expect(names()).toEqual(['minimax-m3', 'glm-5.1', 'Other models']);
+    expect(body.getByRole('cell', { name: '6M' })).toBeInTheDocument();
+
+    fireEvent.focus(body.getByRole('img', { name: /^glm-5\.1, requests per day/ }));
+    expect(body.getByRole('status')).toHaveTextContent('1 request');
+    expect(body.getByRole('status')).toHaveTextContent('partial day');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Other models')).not.toBeInTheDocument();
+  });
+
+  it('leaves out traffic by model for snapshots made before it was counted', async () => {
+    mockFetch({ json: async () => stats });
+    render(<StatsPage />);
+    expect(await screen.findByText('832B')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Traffic by model' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Models.')).not.toBeInTheDocument();
   });
 
   it('says so when the deployment does not publish stats', async () => {

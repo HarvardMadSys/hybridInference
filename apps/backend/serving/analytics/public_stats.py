@@ -1,15 +1,18 @@
-"""Daily public usage snapshot: accounts, tokens, countries, languages and agent clients.
+"""Daily public usage snapshot: accounts, tokens, models, countries, languages and agent clients.
 
 An offline job (``python -m serving.analytics.public_stats``, run once a day by
-the deployment's scheduler) reads ``api_logs``, the hourly country rollup and
-account statuses, reduces them to aggregates, and stores the result as one JSON
-document in ``public_stats_snapshots``. ``GET /public-stats`` serves the newest
-document when the distribution opts in with ``features.public_stats``.
+the deployment's scheduler) reads ``api_logs``, the hourly country rollup,
+account statuses and the model catalog, reduces them to aggregates, and stores
+the result as one JSON document in ``public_stats_snapshots``.
+``GET /public-stats`` serves the newest document when the distribution opts in
+with ``features.public_stats``.
 
 Only aggregates leave this module: no account ids, IP addresses, message text
 or raw User-Agent strings. Per-item account counts below
 ``MIN_PUBLIC_ACCOUNTS`` are withheld (``null``). Message text is read only to
-detect its language and is never stored.
+detect its language and is never stored. A model is named only while the
+catalog offers it to ``PUBLIC_MODEL_ROLE``; every other model's traffic is
+counted together as "other", so an internal model's name never leaves.
 """
 
 from __future__ import annotations
@@ -24,8 +27,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
+from routing.model_selection import (
+    AUTO_MODEL_ID,
+    AUTO_MODEL_PREFIX,
+    AutoConfigError,
+    parse_auto_config,
+)
 from serving.analytics import agent_catalog as catalog
 from serving.analytics.language_id import detect_message, user_languages
+from serving.config.settings import has_role
 from serving.utils.geo_resolver import ALPHA2_TO_ALPHA3
 from serving.utils.logging import get_logger
 
@@ -45,6 +57,9 @@ MIN_COUNTRY_REQUESTS = 100
 MIN_PUBLIC_ACCOUNTS = 3
 LANGUAGE_SAMPLE_PER_ACCOUNT = 8
 TOP_COUNTRIES = 12
+# A model is named when an account with this role may use it. Internal and
+# admin models, and models no longer in the catalog, are counted as "other".
+PUBLIC_MODEL_ROLE = "pro"
 KEEP_SNAPSHOTS = 30
 STATEMENT_TIMEOUT_MS = 600_000
 
@@ -72,9 +87,13 @@ _NOT_PROBE = "COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'"
 
 FIRST_LOG_SQL = "SELECT MIN(timestamp) FROM api_logs"
 
+# One row per (day, model). The model is the one the caller named, as their own
+# request history shows it: an auto model counts as itself, not as the model
+# chosen to serve it.
 DAILY_SQL = f"""
 SELECT
   (date_trunc('day', timestamp AT TIME ZONE 'UTC'))::date AS day,
+  COALESCE(metadata->'auto'->>'requested', model_id) AS model,
   COUNT(*)::BIGINT AS requests,
   COALESCE(SUM(prompt_tokens), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(completion_tokens), 0)::BIGINT AS output_tokens,
@@ -83,7 +102,7 @@ FROM api_logs
 WHERE timestamp >= $1 AND timestamp < $2
   AND status_code = 200
   AND {_NOT_PROBE}
-GROUP BY 1
+GROUP BY 1, 2
 """
 
 CLIENTS_SQL = f"""
@@ -164,6 +183,11 @@ SELECT
 FROM users
 """
 
+# Runtime role overrides set from the admin console. The table is created by
+# the gateway's operational store, so a database it has not run against lacks it.
+VISIBILITY_OVERRIDES_TABLE_SQL = "SELECT to_regclass('model_visibility_overrides') IS NOT NULL"
+VISIBILITY_OVERRIDES_SQL = "SELECT model_id, required_role FROM model_visibility_overrides"
+
 INSERT_SNAPSHOT_SQL = "INSERT INTO public_stats_snapshots (payload) VALUES ($1::jsonb)"
 
 PRUNE_SNAPSHOTS_SQL = """
@@ -211,25 +235,113 @@ def _share(part: float, whole: float) -> float:
     return round(part / whole, 6) if whole else 0.0
 
 
-def build_daily(
-    rows: Iterable[Mapping[str, Any]], start: datetime, end: datetime
-) -> list[dict[str, Any]]:
-    """Return one entry per UTC day in ``[start, end)``, zero-filled."""
-    by_day = {row["day"]: row for row in rows}
+def days_between(start: datetime, end: datetime) -> list[date]:
+    """Return every UTC day that overlaps ``[start, end)``."""
     days = []
     day, last = start.date(), (end - timedelta(microseconds=1)).date()
     while day <= last:
-        row = by_day.get(day)
-        days.append(
-            {
-                "date": day.isoformat(),
-                "input_tokens": int(row["input_tokens"]) if row else 0,
-                "output_tokens": int(row["output_tokens"]) if row else 0,
-                "requests": int(row["requests"]) if row else 0,
-            }
-        )
+        days.append(day)
         day += timedelta(days=1)
     return days
+
+
+def build_daily(
+    rows: Iterable[Mapping[str, Any]], start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """Return one entry per UTC day in ``[start, end)``, zero-filled, summed over models."""
+    by_day: defaultdict[date, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        for key in ("input_tokens", "output_tokens", "requests"):
+            by_day[row["day"]][key] += int(row[key])
+    return [
+        {
+            "date": day.isoformat(),
+            "input_tokens": by_day[day]["input_tokens"],
+            "output_tokens": by_day[day]["output_tokens"],
+            "requests": by_day[day]["requests"],
+        }
+        for day in days_between(start, end)
+    ]
+
+
+def public_model_names(
+    models_config: Mapping[str, Any], overrides: Mapping[str, str]
+) -> dict[str, str]:
+    """Map each model id and alias the page may name to the id it is shown under.
+
+    A model is public when ``PUBLIC_MODEL_ROLE`` meets its required role, after
+    the runtime override. A missing or unknown role reads as the gateway reads
+    it (``free`` when unset, never satisfied when unknown), and ``admin_only``
+    always hides. An auto model is public when its tier has a public candidate.
+
+    Args:
+        models_config: The parsed ``models.yaml``.
+        overrides: Runtime required role by canonical model id.
+    """
+    names: dict[str, str] = {}
+    for model in models_config.get("models") or []:
+        if not isinstance(model, dict) or model.get("id") is None:
+            continue
+        model_id = str(model["id"])
+        role = overrides.get(model_id) or str(model.get("required_role", "free"))
+        if model.get("admin_only") or not has_role(PUBLIC_MODEL_ROLE, role):
+            continue
+        names[model_id] = model_id
+        for alias in model.get("aliases") or []:
+            names.setdefault(str(alias), model_id)
+
+    if models_config.get("auto") is None:
+        return names
+    try:
+        auto = parse_auto_config(models_config["auto"])
+    except AutoConfigError:
+        return names
+    public_tiers = {
+        name
+        for name, profile in auto.profiles.items()
+        if any(candidate.model_id in names for candidate in profile.candidates)
+    }
+    for name in public_tiers:
+        names[f"{AUTO_MODEL_PREFIX}{name}"] = f"{AUTO_MODEL_PREFIX}{name}"
+    if auto.default_profile in public_tiers:
+        names[AUTO_MODEL_ID] = AUTO_MODEL_ID
+    return names
+
+
+def build_models(
+    rows: Iterable[Mapping[str, Any]], start: datetime, end: datetime, names: Mapping[str, str]
+) -> dict[str, Any]:
+    """Return requests and tokens per day for each public model, and for the rest together.
+
+    Args:
+        rows: Successful requests per (day, model).
+        start: Start of the window.
+        end: End of the window.
+        names: From :func:`public_model_names`; a model not in it counts as other.
+    """
+    days = days_between(start, end)
+    index = {day: i for i, day in enumerate(days)}
+    requests: defaultdict[str | None, list[int]] = defaultdict(lambda: [0] * len(days))
+    tokens: defaultdict[str | None, list[int]] = defaultdict(lambda: [0] * len(days))
+    for row in rows:
+        name = names.get(row["model"]) if row["model"] is not None else None
+        i = index[row["day"]]
+        requests[name][i] += int(row["requests"])
+        tokens[name][i] += int(row["input_tokens"]) + int(row["output_tokens"])
+
+    def series(name: str | None) -> dict[str, Any]:
+        return {
+            "requests": sum(requests[name]),
+            "tokens": sum(tokens[name]),
+            "daily_requests": requests[name],
+            "daily_tokens": tokens[name],
+        }
+
+    named = sorted((n for n in requests if n is not None), key=lambda n: (-sum(tokens[n]), n))
+    return {
+        "items": [{"name": name, **series(name)} for name in named],
+        "other": series(None) if None in requests else None,
+    }
 
 
 def build_countries(rows: Iterable[Mapping[str, Any]], weeks: list[date]) -> dict[str, Any]:
@@ -407,8 +519,13 @@ def build_payload(
     languages_by_week: Mapping[date, Mapping[str, set[str]]] | None,
     messages_sampled: int,
     registrations_row: Mapping[str, Any] | None = None,
+    model_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Assemble the public snapshot document."""
+    """Assemble the public snapshot document.
+
+    ``models`` is ``null`` when ``model_names`` is None (the catalog could not
+    be read), rather than every model counted as other.
+    """
     daily_rows = list(daily_rows)
     weeks = weeks_between(start, end)
     daily = build_daily(daily_rows, start, end)
@@ -441,6 +558,9 @@ def build_payload(
             else None
         ),
         "daily": daily,
+        "models": (
+            build_models(daily_rows, start, end, model_names) if model_names is not None else None
+        ),
         "countries": build_countries(country_rows, weeks),
         "languages": (
             build_languages(languages_by_week, weeks, messages_sampled)
@@ -491,10 +611,26 @@ async def _sample_languages(
     return by_week, messages
 
 
+async def _visibility_overrides(conn: Any) -> dict[str, str]:
+    """Return the runtime required role by canonical model id."""
+    if not await conn.fetchval(VISIBILITY_OVERRIDES_TABLE_SQL):
+        return {}
+    rows = await conn.fetch(VISIBILITY_OVERRIDES_SQL)
+    return {row["model_id"]: row["required_role"] for row in rows}
+
+
 async def compute_snapshot(
-    conn: Any, *, now: datetime | None = None, lookback_weeks: int = LOOKBACK_WEEKS
+    conn: Any,
+    *,
+    now: datetime | None = None,
+    lookback_weeks: int = LOOKBACK_WEEKS,
+    models_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the logs, the country rollup and account statuses and build the snapshot."""
+    """Read the logs, the country rollup and account statuses and build the snapshot.
+
+    ``models_config`` is the parsed ``models.yaml``; without it the snapshot
+    has no per-model section.
+    """
     now = now or datetime.now(timezone.utc)
     end = now.replace(minute=0, second=0, microsecond=0)
     first_log = await conn.fetchval(FIRST_LOG_SQL)
@@ -519,6 +655,11 @@ async def compute_snapshot(
     ]
     country_rows = await conn.fetch(COUNTRIES_SQL, start, end)
     registrations_row = await conn.fetchrow(REGISTRATIONS_SQL)
+    model_names = (
+        public_model_names(models_config, await _visibility_overrides(conn))
+        if models_config is not None
+        else None
+    )
     languages, messages = await _sample_languages(conn, weeks_between(start, end), start, end)
     return build_payload(
         generated_at=now,
@@ -530,7 +671,23 @@ async def compute_snapshot(
         languages_by_week=languages,
         messages_sampled=messages,
         registrations_row=registrations_row,
+        model_names=model_names,
     )
+
+
+def load_models_config() -> dict[str, Any] | None:
+    """Read the gateway's ``models.yaml``, or return None when it cannot be read."""
+    from serving.config.distribution import resolve_config_path
+
+    try:
+        path = resolve_config_path("models").path
+        data = yaml.safe_load(path.read_text())
+    except Exception:
+        logger.warning(
+            "public_stats: cannot read the model catalog; leaving out models", exc_info=True
+        )
+        return None
+    return data if isinstance(data, dict) else None
 
 
 async def store_snapshot(conn: Any, payload: dict[str, Any]) -> None:
@@ -559,21 +716,25 @@ async def _main(args: argparse.Namespace) -> int:
         },
     )
     try:
-        payload = await compute_snapshot(conn, lookback_weeks=args.weeks)
+        payload = await compute_snapshot(
+            conn, lookback_weeks=args.weeks, models_config=load_models_config()
+        )
         if args.dry_run:
             json.dump(payload, sys.stdout, indent=2)
             sys.stdout.write("\n")
         else:
             await store_snapshot(conn, payload)
         totals = payload["totals"]
+        models = payload["models"]
         languages = payload["languages"]
         registrations = payload["registrations"]
         logger.info(
-            "public_stats: %s snapshot for %s days: %s tokens, %s countries, %s languages, "
-            "%s clients; %s approved accounts, %s waiting",
+            "public_stats: %s snapshot for %s days: %s tokens, %s named models, %s countries, "
+            "%s languages, %s clients; %s approved accounts, %s waiting",
             "computed" if args.dry_run else "stored",
             payload["window"]["days"],
             totals["tokens"],
+            len(models["items"]) if models else "no",
             payload["countries"]["total"],
             languages["total"] if languages else "no",
             payload["agents"]["clients_total"],
