@@ -6,6 +6,14 @@ const API_BASE = config.apiBase;
 
 export type ClientKind = 'coding' | 'general' | 'custom' | 'chat' | 'direct';
 
+/** One model's successful requests and tokens, in total and per day of ``daily``. */
+export interface ModelTraffic {
+  requests: number;
+  tokens: number;
+  daily_requests: number[];
+  daily_tokens: number[];
+}
+
 export interface PublicStats {
   schema_version: 1;
   generated_at: string;
@@ -24,6 +32,12 @@ export interface PublicStats {
   /** Accounts at snapshot time; absent from snapshots made before it was added. */
   registrations?: { approved: number; waiting: number } | null;
   daily: { date: string; input_tokens: number; output_tokens: number; requests: number }[];
+  /**
+   * Traffic by the model each request named. Models not offered to the public,
+   * including retired ones, are counted together in ``other``. Absent from
+   * snapshots made before it was added, and null when the catalog was unreadable.
+   */
+  models?: { items: (ModelTraffic & { name: string })[]; other: ModelTraffic | null } | null;
   countries: {
     total: number;
     total_min_requests: number;

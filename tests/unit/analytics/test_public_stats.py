@@ -42,6 +42,111 @@ def test_daily_rows_are_zero_filled_across_the_window():
     assert daily[0]["requests"] == 0
 
 
+def test_daily_sums_every_model_of_a_day():
+    day = date(2026, 8, 2)
+    rows = [
+        {"day": day, "model": "a", "input_tokens": 100, "output_tokens": 5, "requests": 3},
+        {"day": day, "model": "b", "input_tokens": 20, "output_tokens": 1, "requests": 2},
+    ]
+    daily = ps.build_daily(rows, START, END)
+    assert daily[2] == {
+        "date": "2026-08-02",
+        "input_tokens": 120,
+        "output_tokens": 6,
+        "requests": 5,
+    }
+
+
+CATALOG = {
+    "models": [
+        {"id": "open-model", "aliases": ["open-alias"]},
+        {"id": "pro-model", "required_role": "pro"},
+        {"id": "internal-model", "required_role": "internal", "aliases": ["internal-alias"]},
+        {"id": "admin-model", "required_role": "admin"},
+        {"id": "flagged-model", "admin_only": True},
+        {"id": "typo-model", "required_role": "everyone"},
+        {"id": "hidden-at-runtime"},
+        {"id": "opened-at-runtime", "required_role": "internal"},
+    ],
+    "auto": {
+        "default_profile": "coding",
+        "profiles": {
+            "coding": {"candidates": [{"model": "internal-model"}, {"model": "open-model"}]},
+            "lab": {"candidates": [{"model": "internal-model"}]},
+        },
+    },
+}
+
+
+def test_public_model_names_follow_the_role_a_pro_account_has():
+    names = ps.public_model_names(
+        CATALOG, {"hidden-at-runtime": "internal", "opened-at-runtime": "free"}
+    )
+    assert names == {
+        "open-model": "open-model",
+        "open-alias": "open-model",
+        "pro-model": "pro-model",
+        "opened-at-runtime": "opened-at-runtime",
+        # A tier is named when any of its candidates is; bare auto is its default tier.
+        "auto-coding": "auto-coding",
+        "auto": "auto",
+    }
+
+
+def test_public_model_names_ignore_an_unusable_auto_section():
+    names = ps.public_model_names({**CATALOG, "auto": {"profiles": "nope"}}, {})
+    assert not any(name.startswith("auto") for name in names)
+    assert names["open-model"] == "open-model"
+
+
+def test_models_name_public_models_and_pool_the_rest():
+    d1, d2 = date(2026, 7, 31), date(2026, 8, 12)
+    rows = [
+        {"day": d1, "model": "open-alias", "input_tokens": 90, "output_tokens": 10, "requests": 2},
+        {"day": d2, "model": "open-model", "input_tokens": 9, "output_tokens": 1, "requests": 1},
+        {"day": d1, "model": "pro-model", "input_tokens": 500, "output_tokens": 0, "requests": 1},
+        {
+            "day": d1,
+            "model": "internal-model",
+            "input_tokens": 7,
+            "output_tokens": 0,
+            "requests": 1,
+        },
+        {"day": d2, "model": "retired-model", "input_tokens": 3, "output_tokens": 0, "requests": 4},
+        {"day": d2, "model": None, "input_tokens": 1, "output_tokens": 0, "requests": 1},
+    ]
+    out = ps.build_models(rows, START, END, ps.public_model_names(CATALOG, {}))
+    assert [m["name"] for m in out["items"]] == ["pro-model", "open-model"]
+    open_model = out["items"][1]
+    assert open_model["requests"] == 3
+    assert open_model["tokens"] == 110
+    assert len(open_model["daily_tokens"]) == 13
+    assert open_model["daily_tokens"][0] == 100
+    assert open_model["daily_tokens"][-1] == 10
+    assert open_model["daily_requests"][1:-1] == [0] * 11
+    assert out["other"]["requests"] == 6
+    assert out["other"]["tokens"] == 11
+    assert out["other"]["daily_requests"][0] == 1
+    assert out["other"]["daily_requests"][-1] == 5
+    assert "internal-model" not in json.dumps(out)
+    assert "retired-model" not in json.dumps(out)
+
+
+def test_models_without_other_traffic_publish_null_other():
+    rows = [
+        {
+            "day": date(2026, 8, 1),
+            "model": "open-model",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "requests": 1,
+        }
+    ]
+    out = ps.build_models(rows, START, END, {"open-model": "open-model"})
+    assert out["other"] is None
+    assert ps.build_models([], START, END, {}) == {"items": [], "other": None}
+
+
 def test_countries_count_weekly_activity_and_hide_exact_volumes():
     rows = [
         {"week": W2, "country_code": "USA", "continent_code": "NA", "requests": 900},
@@ -157,6 +262,7 @@ def test_payload_is_aggregate_only():
     }
     assert payload["registrations"] == {"approved": 12, "waiting": 7}
     assert payload["languages"] is None
+    assert payload["models"] is None
     text = json.dumps(payload)
     assert "secret-user-id" not in text
     assert "secret-host" not in text
@@ -198,7 +304,7 @@ async def test_schema_is_idempotent_ddl_without_identifying_columns():
         assert identifier not in joined
 
 
-def _fake_conn(*, server_version="160004", sample_texts=None):
+def _fake_conn(*, server_version="160004", sample_texts=None, overrides_table=True):
     sample_texts = sample_texts or []
 
     async def fetch(sql, *args):
@@ -206,6 +312,7 @@ def _fake_conn(*, server_version="160004", sample_texts=None):
             return [
                 {
                     "day": date(2026, 8, 3),
+                    "model": "internal-model",
                     "input_tokens": 50,
                     "output_tokens": 5,
                     "requests": 2,
@@ -225,12 +332,16 @@ def _fake_conn(*, server_version="160004", sample_texts=None):
             ]
         if sql is ps.COUNTRIES_SQL:
             return [{"week": W2, "country_code": "FRA", "continent_code": "EU", "requests": 2}]
+        if sql is ps.VISIBILITY_OVERRIDES_SQL:
+            return [{"model_id": "internal-model", "required_role": "free"}]
         assert "jsonb_array_elements" in sql
         return [{"user_id": "u1", "text": t} for t in sample_texts]
 
     async def fetchval(sql, *args):
         if sql == "SHOW server_version_num":
             return server_version
+        if sql is ps.VISIBILITY_OVERRIDES_TABLE_SQL:
+            return overrides_table
         assert sql is ps.FIRST_LOG_SQL
         return START
 
@@ -264,6 +375,27 @@ async def test_compute_snapshot_reads_from_the_first_log_to_the_hour():
     assert len(sample_calls) == 3  # one per week in the window
     assert "pg_input_is_valid" in sample_calls[0].args[0]
     assert sample_calls[0].args[3] == ps.LANGUAGE_SAMPLE_PER_ACCOUNT
+    # Without the catalog there is no per-model section.
+    assert payload["models"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("overrides_table", "named"), [(True, True), (False, False)])
+async def test_compute_snapshot_names_models_after_runtime_overrides(overrides_table, named):
+    conn = _fake_conn(overrides_table=overrides_table)
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc), models_config=CATALOG
+    )
+    models = payload["models"]
+    if named:
+        # The override opens internal-model, so it is named.
+        assert [m["name"] for m in models["items"]] == ["internal-model"]
+        assert models["other"] is None
+    else:
+        assert models["items"] == []
+        assert models["other"]["tokens"] == 55
+    queried = [c.args[0] for c in conn.fetch.await_args_list]
+    assert (ps.VISIBILITY_OVERRIDES_SQL in queried) is overrides_table
 
 
 @pytest.mark.asyncio

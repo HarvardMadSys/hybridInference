@@ -16,6 +16,7 @@ import {
   fmtWhole,
   languageName,
 } from './format';
+import { ModelTrafficSection } from './ModelTraffic';
 
 const chartLoading = () => <div className="h-[200px] animate-pulse rounded-lg bg-gray-50" />;
 const DailyTokensChart = dynamic(() => import('./StatsCharts').then((m) => m.DailyTokensChart), {
@@ -121,7 +122,7 @@ function SectionHeading({
 
 function StatsBody({ stats }: { stats: PublicStats }) {
   const [metric, setMetric] = useState<'tokens' | 'requests'>('tokens');
-  const { totals, registrations, countries, languages, agents, thresholds } = stats;
+  const { totals, registrations, models, countries, languages, agents, thresholds } = stats;
   const lastPartial = stats.last_week_partial;
   const withheld = `fewer than ${thresholds.min_public_accounts}`;
   const continents = Object.entries(CONTINENTS)
@@ -221,6 +222,8 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           </p>
         </Card>
       </section>
+
+      {models && <ModelTrafficSection models={models} dates={stats.daily.map((d) => d.date)} />}
 
       <section className="space-y-4" aria-labelledby="stats-countries">
         <SectionHeading id="stats-countries" title="Countries and territories">
@@ -491,6 +494,14 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             excluding our own health checks. Input counts the whole prompt, including cached
             prefixes. Weeks start on Monday (UTC).
           </p>
+          {models && (
+            <p>
+              <span className="font-semibold text-gray-900">Models.</span> Each request counts under
+              the model it named, so an alias counts as its model and an auto model as itself, not
+              the model chosen to serve it. Models not offered to the public, and models since
+              retired, are counted together as &ldquo;Other models&rdquo;.
+            </p>
+          )}
           <p>
             <span className="font-semibold text-gray-900">Countries.</span> Each request&apos;s IP
             address is geolocated when it is logged; only the country is kept. Addresses that cannot
