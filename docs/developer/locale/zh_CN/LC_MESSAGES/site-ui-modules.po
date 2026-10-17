@@ -893,8 +893,8 @@ msgid "`data-auth=\"secondary-actions\"`"
 msgstr "`data-auth=\"secondary-actions\"`"
 
 #: ../developer/site-ui-modules.md
-msgid "the row of alternative links on `/verify-email`"
-msgstr "`/verify-email` 上的备选链接行"
+msgid "alternative actions, including the method selector and links on `/verify-email`"
+msgstr "备选操作，包括方式选择器以及 `/verify-email` 上的链接"
 
 #: ../developer/site-ui-modules.md
 msgid "`data-auth=\"consent\"`"
@@ -1131,3 +1131,11 @@ msgid ""
 msgstr ""
 "控制台或示例模块每次改动时，本仓库的 CI "
 "都会跑同样的这两个构建，并检查示例镜像如何提供它的资源。这只覆盖示例：你发行版自己的镜像和资源，也要自行构建和测试。"
+
+#: ../developer/site-ui-modules.md
+msgid "The login method selector uses `auth.login.method_label`, `auth.login.password_method`, and `auth.login.sms_method` for password and SMS code login. Signup retains `auth.phone.method_label`, `auth.phone.email_method`, and `auth.phone.phone_method` for its email and phone account choices."
+msgstr "登录方式选择器通过 `auth.login.method_label`、`auth.login.password_method` 和 `auth.login.sms_method` 提供密码登录与短信验证码登录文案。注册则保留 `auth.phone.method_label`、`auth.phone.email_method` 和 `auth.phone.phone_method`，用于邮箱和手机号账号选项。"
+
+#: ../developer/site-ui-modules.md
+msgid "The login and signup method group additionally exposes `data-auth-method-selector` for scoped styling, while keeping its `data-auth=\"secondary-actions\"` hook. Its buttons use `aria-pressed` to identify the selected method."
+msgstr "登录和注册的方式选择组额外提供 `data-auth-method-selector`，用于限定样式作用范围，同时保留 `data-auth=\"secondary-actions\"` 钩子。组内按钮通过 `aria-pressed` 标识当前选中的方式。"
