@@ -67,7 +67,7 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
 from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
-from serving.utils.token_utils import normalize_usage
+from serving.utils.token_utils import normalize_usage, optional_token_count
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1152,8 +1152,8 @@ async def chat_completions(
                     if _ns_usage.get("total_tokens") is not None
                     else None
                 ),
-                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                cache_read_tokens=optional_token_count(_ns_usage.get("cache_read_tokens")),
+                cache_write_tokens=optional_token_count(_ns_usage.get("cache_write_tokens")),
                 reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
             )
 

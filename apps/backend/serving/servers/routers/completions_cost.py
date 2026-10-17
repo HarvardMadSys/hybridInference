@@ -240,8 +240,8 @@ class CostTracker:
         prompt_tokens: int,
         completion_tokens: int,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
@@ -256,6 +256,13 @@ class CostTracker:
         (matches the prior ``_schedule_cost_increment`` semantics — auth
         failures and 4xx error paths never reach this method, but freebie
         models with zero pricing legitimately produce zero cost).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` accept ``None`` to mean
+        "the provider did not report cache usage", which is distinct from a
+        reported ``0`` (a measured miss). A ``None`` is treated as 0 for the
+        arithmetic (there is nothing to discount) but the distinction is
+        preserved by callers before this point; see
+        ``serving.utils.token_utils.optional_token_count``.
         """
         pricing = routing.pricing or self._pricing.for_routing(routing)
         if pricing is None:
@@ -299,8 +306,8 @@ class CostTracker:
         completion_tokens: int,
         pricing: Pricing,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
     ) -> float | None:
         """Mirror :func:`serving.storage.utils.calculate_cost` byte-for-byte.
@@ -309,6 +316,11 @@ class CostTracker:
         prompt total only when the adapter configures a non-zero cache
         rate (otherwise they fall through to the regular prompt rate, the
         same behavior as the dict-based path).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` may be ``None`` when the
+        provider did not report cache usage. ``None`` is arithmetic zero here
+        (nothing to discount) and never a measured miss; the distinction is
+        preserved upstream so the log row stays NULL.
         """
         try:
             prompt = float(prompt_tokens or 0)

@@ -639,8 +639,15 @@ def calculate_cost(
         reasoning_tokens = float(usage.get("reasoning_tokens", 0))
         total_raw = usage.get("total_tokens")
         total_tokens = float(total_raw) if total_raw is not None else None
-        cache_read_tokens = float(usage.get("cache_read_tokens", 0))
-        cache_write_tokens = float(usage.get("cache_write_tokens", 0))
+        # ``None`` (or absent) means the provider did not report cache usage,
+        # which is distinct from a reported 0. Coerce an unreported value to
+        # 0 here -- there is nothing to subtract or bill -- but never let a
+        # missing field be mistaken for a measured miss by callers that read
+        # this usage dict for display.
+        cache_read_raw = usage.get("cache_read_tokens")
+        cache_write_raw = usage.get("cache_write_tokens")
+        cache_read_tokens = float(cache_read_raw) if cache_read_raw is not None else 0.0
+        cache_write_tokens = float(cache_write_raw) if cache_write_raw is not None else 0.0
 
         prompt_price = float(pricing.get("prompt", "0"))
         completion_price = float(pricing.get("completion", "0"))

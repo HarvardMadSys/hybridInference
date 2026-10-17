@@ -6,6 +6,7 @@ Different models handle reasoning/thinking tokens differently:
 - Qwen3 Coder: non-thinking mode (no explicit reasoning tokens)
 """
 
+import math
 from typing import Any
 
 
@@ -199,11 +200,49 @@ def extract_cache_tokens(
     return cache_read, cache_write
 
 
+def optional_token_count(value: Any) -> int | None:
+    """Coerce a reported token count to ``int``, preserving "not reported".
+
+    A provider that omits a cache-token field is *not* reporting a measured
+    zero, and the two must not be conflated: ``None`` flows through to a NULL
+    ``api_logs`` column and an "unknown" cache state, whereas ``0`` is a
+    measured miss that a dashboard renders as 0% and a cost model reads as
+    "no discount earned". Collapsing ``None`` to ``0`` at a call site is how a
+    silent provider comes to look like a cache miss.
+
+    Returns ``None`` for a missing key, ``None``, a non-numeric value, a
+    negative count, a fractional value, or a non-finite one (``inf``/``nan``,
+    which ``int()`` would otherwise raise on or silently truncate); otherwise
+    the value as ``int``. A reported ``0`` stays ``0`` -- it is a real
+    measurement. Accepting a bare ``int`` fast-path keeps the common case off
+    the float path.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # ``bool`` is an ``int`` subclass; a boolean is never a token count.
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    if number != int(number):
+        # A fractional token count is not a real measurement; treat it as
+        # unreported rather than silently truncating.
+        return None
+    return int(number)
+
+
 def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Normalize usage dict by extracting and flattening token fields.
 
-    Extracts reasoning_tokens and cache tokens from various nested provider
-    formats and places them at the top level for consistent downstream access.
+    Extracts reasoning and cache tokens from provider formats, flattens cache
+    fields to the top level, and removes invalid direct cache counts before
+    cost and persistence consumers read them.
 
     Args:
         usage: Raw usage dictionary from model response
@@ -214,14 +253,23 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     if not usage:
         return None
 
+    # Start from a copy so canonical cache fields can be validated before the
+    # normalized value is shared by cost tracking and persistence.
+    normalized = dict(usage)
+    for field in ("cache_read_tokens", "cache_write_tokens"):
+        if field not in normalized:
+            continue
+        count = optional_token_count(normalized[field])
+        if count is None:
+            normalized.pop(field)
+        else:
+            normalized[field] = count
+
     # Extract reasoning tokens from nested locations
     reasoning_tokens = extract_reasoning_tokens(usage)
 
     # Extract cache tokens from nested locations
-    cache_read, cache_write = extract_cache_tokens(usage)
-
-    # Create normalized usage dict
-    normalized = dict(usage)  # Copy to avoid modifying original
+    cache_read, cache_write = extract_cache_tokens(normalized)
 
     # Add reasoning_tokens at top level if found
     if reasoning_tokens is not None:

@@ -614,6 +614,8 @@ jobs:
           # Database configuration for auth tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          CACHE_TELEMETRY_TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          CACHE_TELEMETRY_TEST_DB_NAME: hybridinference_test_db
           DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
@@ -642,6 +644,8 @@ jobs:
           # Database configuration for auth tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          CACHE_TELEMETRY_TEST_DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          CACHE_TELEMETRY_TEST_DB_NAME: hybridinference_test_db
           DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
