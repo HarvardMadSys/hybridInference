@@ -627,6 +627,13 @@ class OperationalStore(ABC):
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delete all sessions for a user (used during user deletion)."""
 
+    @abstractmethod
+    async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
+        """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
+
+        Returns how many sessions were revoked.
+        """
+
     # -- browser sessions ----------------------------------------------------
     #
     # A browser holds one cookie naming one browser session, and that session

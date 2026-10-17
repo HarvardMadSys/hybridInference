@@ -382,6 +382,8 @@ async def get_current_user(
         "phone": user_row.get("phone"),
         "phone_verified": user_row.get("phone_verified", False),
         "status": user_row["status"],
+        # The auth session this token was issued for; ``auth_sessions.sid``.
+        "sid": payload.get("sid"),
     }
 
 

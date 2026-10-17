@@ -233,6 +233,33 @@ async def test_an_ended_session_is_listed_as_signed_out(
 
 
 @pytest.mark.asyncio
+async def test_changing_the_password_signs_the_account_out_of_other_browsers(
+    auth_app_client, test_user, second_user
+):
+    here, elsewhere = Browser(auth_app_client), Browser(auth_app_client)
+    token = (await here.login(test_user)).json()["access_token"]
+    await elsewhere.login(second_user)
+    await elsewhere.login(test_user)
+
+    response = await here.send(
+        "POST",
+        "/user/change-password",
+        json={"old_password": test_user["password"], "new_password": "Brand-New-Pass-1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    # The browser that changed it stays signed in.
+    assert await here.refreshed_subject() == test_user["id"]
+    # Elsewhere the account is signed out; the other account there is not.
+    listing = await elsewhere.accounts()
+    signed_in = {account["id"]: account["signed_in"] for account in listing["accounts"]}
+    assert signed_in == {test_user["id"]: False, second_user["id"]: True}
+    refused = await elsewhere.send("POST", "/auth/switch", json={"user_id": test_user["id"]})
+    assert refused.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_deleting_a_user_takes_it_off_every_browser(
     browser, auth_backend, test_user, second_user
 ):

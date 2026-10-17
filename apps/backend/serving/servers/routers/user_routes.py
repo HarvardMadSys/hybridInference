@@ -14,7 +14,7 @@ from serving.config.site_identity import get_site_identity
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from serving.exceptions import (
     UserNotFoundError,
@@ -62,6 +62,7 @@ from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
+from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
@@ -835,13 +836,18 @@ async def update_profile(
 async def change_password(
     request: Request,
     body: ChangePasswordRequest,
+    background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> ChangePasswordResponse:
     """Change the signed-in account's password, or give it a first one.
 
-    An account with a password must give it. One without (a phone account)
-    must give a ``set_password`` code sent to its verified phone.
+    An account with a password must give it, and the attempt counts against
+    the login rate limit. One without (a phone account) must give a
+    ``set_password`` code sent to its verified phone.
+
+    Every other session of the account is then revoked, as a password reset
+    does, and its verified email is told.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -854,33 +860,42 @@ async def change_password(
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user_row.get("password_hash"):
-        if not body.old_password or not password_utils.verify_password(
-            body.old_password, user_row["password_hash"]
-        ):
-            raise HTTPException(status_code=400, detail="Current password is incorrect.")
-
-        if body.new_password == body.old_password:
-            raise HTTPException(
-                status_code=400, detail="New password must be different from current password."
-            )
-    else:
-        # A first password is a new way in; the session alone cannot add one.
-        await confirm_account_owner(
-            request,
-            op_store,
-            user_row,
-            password=None,
-            phone_code=body.phone_code,
-            purpose="set_password",
+    first_password = not user_row.get("password_hash")
+    # The current password, or for a first password (a new way in, which the
+    # session alone cannot add) a code sent to the account's phone.
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=body.old_password,
+        phone_code=body.phone_code,
+        purpose="set_password",
+    )
+    if not first_password and body.new_password == body.old_password:
+        raise HTTPException(
+            status_code=400, detail="New password must be different from current password."
         )
 
     new_password_hash = password_utils.hash_password(body.new_password)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
+    # Whoever else holds a session (the reason to change a password, often)
+    # loses it; this one stays signed in.
+    revoked = await op_store.revoke_user_sessions(
+        current_user["user_id"], except_sid=current_user.get("sid")
+    )
 
-    logger.info(f"Password changed for user: {current_user['user_id']}")
+    if user_row.get("email") and user_row.get("email_verified") and is_email_enabled():
+        background_tasks.add_task(
+            send_password_changed_email, user_row["email"], first_password=first_password
+        )
 
-    return ChangePasswordResponse(message="Password changed successfully.")
+    logger.info(
+        f"Password changed for user: {current_user['user_id']} (revoked {revoked} other sessions)"
+    )
+
+    return ChangePasswordResponse(
+        message="Password changed successfully. Other devices have been signed out."
+    )
 
 
 @router.get("/recent-requests", response_model=RecentRequestsResponse)
