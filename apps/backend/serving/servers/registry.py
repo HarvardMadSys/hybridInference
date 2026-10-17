@@ -505,6 +505,7 @@ def register_from_models_yaml(
                     "reasoning_efforts",
                     "pricing",
                     "pricing_schedule",
+                    "pricing_source",
                     "route_metadata",
                     "extra_body",
                     "processor",
@@ -742,6 +743,8 @@ def register_from_models_yaml(
                     adapter_cfg["pricing"] = r["pricing"]
                 if "pricing_schedule" in r:
                     adapter_cfg["pricing_schedule"] = r["pricing_schedule"]
+                if "pricing_source" in r:
+                    adapter_cfg["pricing_source"] = r["pricing_source"]
 
                 # Route-level processor override (bypasses model-ID auto-detection)
                 if "processor" in r:

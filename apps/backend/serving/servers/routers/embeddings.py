@@ -15,7 +15,7 @@ from routing.endpoints import endpoint_id_for_config
 from serving.config.runtime_settings import get_runtime_settings
 from serving.grant_auth import ledger_attribution
 from serving.observability.tracked_tasks import tracked_task
-from serving.pricing import effective_pricing
+from serving.pricing import effective_pricing, require_embedding_pricing
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -271,6 +271,7 @@ async def create_embeddings(
         )
 
     adapter = embedding_adapters[model]
+    require_embedding_pricing(adapter)
     adapter_config = getattr(adapter, "config", None)
     provider = getattr(adapter_config, "provider", None) or "unknown"
     endpoint_id = endpoint_id_for_config(adapter_config)

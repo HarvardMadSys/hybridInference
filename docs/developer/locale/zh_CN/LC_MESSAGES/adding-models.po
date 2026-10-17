@@ -551,18 +551,8 @@ msgid "For example, apply higher prices on weekdays except configured public hol
 msgstr "例如，在星期一至星期五使用较高价格，但排除已配置的公共假日："
 
 #: ../developer/adding-models.md:218
-msgid ""
-"Omitting the calendar fields preserves daily schedules. On excluded dates "
-"and non-selected weekdays, all windows are skipped and `default` applies. "
-"Overnight windows use the current UTC date for both restrictions. "
-"Deployment owners must maintain holiday exclusions from the provider's "
-"calendar each year; the gateway does not fetch holiday or price changes "
-"from the internet. A request keeps the prices selected at its start, even "
-"if a stream finishes across a boundary."
-msgstr ""
-"省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。"
-"跨越午夜的时段也按当前 UTC 日期判断这两项限制。部署维护者需要每年根据 provider 的日历更新假日排除列表；"
-"网关不会从互联网获取假日或价格变更。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
+msgid "Omitting the calendar fields preserves daily schedules. On excluded dates and non-selected weekdays, all windows are skipped and `default` applies. Overnight windows use the current UTC date for both restrictions. For these manually configured schedules, deployment owners maintain holiday exclusions and prices; use `pricing_source` above for automatic updates. A request keeps the prices selected at its start, even if a stream finishes across a boundary."
+msgstr "省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。跨越午夜的时段也按当前 UTC 日期判断这两项限制。这类手工配置的时段由部署维护者更新假日和价格；需要自动更新时，使用上面的 `pricing_source`。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
 
 #: ../developer/adding-models.md:225
 msgid "Route configuration"
@@ -1534,3 +1524,38 @@ msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
 #~ "backend's settings loader reads that "
 #~ "file):"
 #~ msgstr "在仓库根目录的 `.env` 里**设置环境变量**（后端的配置加载器读的就是这个文件）："
+
+
+#: ../developer/adding-models.md
+msgid "`pricing_source`"
+msgstr "`pricing_source`"
+
+
+#: ../developer/adding-models.md
+msgid "Automatically follow a supported provider: `{provider: deepseek, model: deepseek-flash}` or `deepseek-v4-pro`. Requires PostgreSQL; cannot be combined with `pricing_schedule`. Set to `null` on a route to use its own prices"
+msgstr "自动跟随已支持的 provider：`{provider: deepseek, model: deepseek-flash}` 或 `deepseek-v4-pro`。需要 PostgreSQL；不能与 `pricing_schedule` 同时使用。在路由中设为 `null` 可使用该路由自己的价格"
+
+
+#: ../developer/adding-models.md
+msgid "Automatic DeepSeek prices"
+msgstr "自动同步 DeepSeek 价格"
+
+
+#: ../developer/adding-models.md
+msgid "To follow DeepSeek prices automatically, configure the official API model id as a pricing source. The source is independent of the inference endpoint, so a self-hosted route can use these reference prices too. PostgreSQL stores the last validated snapshot; no API key is sent to the pricing or calendar sources."
+msgstr "要自动跟随 DeepSeek 价格，请将官方 API 模型 id 配置为价格来源。价格来源与推理端点相互独立，因此自部署路由也可以采用这些参考价。PostgreSQL 保存最近一次通过校验的快照；抓取价格和日历数据时不会发送 API 密钥。"
+
+
+#: ../developer/adding-models.md
+msgid "The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) every five minutes for USD input, output and cache-hit prices and UTC peak windows. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays."
+msgstr "网关每五分钟检查[官方英文价格页](https://api-docs.deepseek.com/quick_start/pricing/)，读取以美元计价的输入、输出、缓存命中单价及 UTC 峰时。当前年度和下一年度的假期来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，这是根据国务院公告生成的第三方数据集，不是 DeepSeek API。下一年度公布后会自动同步；空占位文件不会被解释为全年没有假期。"
+
+
+#: ../developer/adding-models.md
+msgid "Validated snapshots replace the stored tariff atomically. Workers reload it every ten seconds; each request keeps the snapshot and time captured at its start, including streaming requests. Peak/off-peak switching happens locally at the configured boundaries, without waiting for a network poll. This is periodic synchronization, not a real-time guarantee that all workers observe an official price change simultaneously."
+msgstr "通过校验的快照会原子替换已保存的价目表。各 worker 每十秒重新读取一次；每个请求固定使用开始时的快照和时间，流式请求也一样。峰谷切换按本地时钟在配置边界发生，不必等待网络轮询。这是定期同步，并不保证所有 worker 在官方改价的瞬间同时看到新价格。"
+
+
+#: ../developer/adding-models.md
+msgid "Fetch or parsing failures retain the last validated snapshot and are logged. A first startup needs either a usable stored snapshot or a successful fetch. Unknown calendars and unrecognized price-page rules cannot silently become zero prices or an empty holiday list. The parser currently accepts the documented weekday schedule only while its UTC peak windows stay within the same Chinese calendar day."
+msgstr "抓取或解析失败时保留最近一次有效快照并记录日志。首次启动必须能读取可用的持久化快照，或成功抓取数据。未知日历和无法识别的价格页规则不能静默变成零价格或空假期列表。当前解析器支持官方文档中的工作日规则，并要求 UTC 峰时仍处在同一个中国自然日内。"

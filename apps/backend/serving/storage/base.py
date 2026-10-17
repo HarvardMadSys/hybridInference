@@ -1114,6 +1114,17 @@ class OperationalStore(ABC):
     ) -> None:
         """Upsert a site_settings row."""
 
+    async def compare_and_set_setting(
+        self,
+        key: str,
+        expected: str | None,
+        value: str,
+        value_type: str,
+        updated_by: str | None,
+    ) -> bool:
+        """Publish only if the row still has *expected* (None means absent)."""
+        raise NotImplementedError("This operational store does not support atomic settings")
+
     @abstractmethod
     async def delete_setting(self, key: str) -> bool:
         """Delete a site_settings row by key. Returns True when removed."""

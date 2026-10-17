@@ -147,6 +147,7 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "client_error_kind",
         "provider",
         "pricing_time",
+        "pricing_snapshot",
         # Written durably by the Anthropic Messages surface, which has no
         # fallback to publish around and hands its upstream to a background
         # reader task. A leftover value would rank the next request -- a

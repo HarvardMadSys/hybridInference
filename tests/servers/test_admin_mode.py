@@ -80,6 +80,27 @@ async def test_playground_models_hide_unpublished_routes() -> None:
     assert [model["id"] for model in result["models"]] == ["visible-model"]
 
 
+@pytest.mark.asyncio
+async def test_playground_source_pricing_is_checked_before_stream_response(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from serving.utils import context as req_ctx
+
+    router = RouteExecutor()
+    adapter = _PlaygroundAdapter(_cfg("canonical"))
+    adapter.config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
+    router.register_route("alias", [(adapter, 1.0)])
+    dispatch = AsyncMock()
+    monkeypatch.setattr(router, "stream_chat_completion", dispatch)
+    body = playground.PlaygroundChatRequest(
+        model="alias", messages=[{"role": "user", "content": "hi"}]
+    )
+    with req_ctx.push(pricing_snapshot=None), pytest.raises(HTTPException) as exc:
+        await playground.playground_chat(body, _admin={}, router_exec=router)
+    assert exc.value.status_code == 503
+    dispatch.assert_not_called()
+
+
 def _create_test_user(**overrides: Any) -> dict[str, Any]:
     """Create a user payload suitable for inserting into the test database."""
     user_id = generate_ulid()

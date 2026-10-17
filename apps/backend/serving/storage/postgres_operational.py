@@ -3079,6 +3079,38 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def compare_and_set_setting(
+        self,
+        key: str,
+        expected: str | None,
+        value: str,
+        value_type: str,
+        updated_by: str | None,
+    ) -> bool:
+        """Keep a delayed external fetch from overwriting a newer published value."""
+        async with self._pool.acquire() as conn:
+            if expected is None:
+                result = await conn.fetchval(
+                    "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                    "VALUES ($1, $2, $3, NOW(), $4) ON CONFLICT (key) DO NOTHING RETURNING key",
+                    key,
+                    value,
+                    value_type,
+                    updated_by,
+                )
+            else:
+                result = await conn.fetchval(
+                    "UPDATE site_settings SET value = $3, value_type = $4, "
+                    "updated_at = NOW(), updated_by = $5 WHERE key = $1 AND value = $2 "
+                    "RETURNING key",
+                    key,
+                    expected,
+                    value,
+                    value_type,
+                    updated_by,
+                )
+        return result is not None
+
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows ordered by key."""
         async with self._pool.acquire() as conn:
