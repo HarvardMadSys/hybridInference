@@ -24,6 +24,7 @@ import { useT } from '@/components/providers/useT';
 import { NEUTRAL_AUTH_APPEARANCE, useAuthAppearance } from '@/site-ui/appearance';
 import { AuthField, AuthNotice } from './AuthForm';
 import { TurnstileChallenge } from './TurnstileChallenge';
+import { SignupDetailsHeading } from './SignupDetailsHeading';
 
 export interface PhoneCountryOption {
   code: string;
@@ -499,6 +500,7 @@ export function PhoneAuthForm(props: Props) {
               {...register('userName')}
             />
           </AuthField>
+          <SignupDetailsHeading />
           <AuthField
             id="phone-discoverySource"
             label={t('auth.signup.discovery_label', 'How did you find us?')}
