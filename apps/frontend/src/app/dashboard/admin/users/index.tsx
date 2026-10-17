@@ -27,11 +27,13 @@ import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { getViewById } from './lib/views';
+import { parseHiddenColumns, type ColumnId } from './lib/columns';
 import type { Density, FilterState, UserRow } from './types';
 import type { SummaryCardId } from './SummaryCards';
 
 const DENSITY_KEY = 'admin.users.density';
 const PAGE_SIZE_KEY = 'admin.users.pageSize';
+const HIDDEN_COLUMNS_KEY = 'admin.users.hiddenColumns';
 const DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[1]; // 100
 
 export default function UsersTab() {
@@ -92,6 +94,19 @@ export default function UsersTab() {
   useEffect(() => {
     localStorage.setItem(PAGE_SIZE_KEY, String(pageSize));
   }, [pageSize]);
+
+  // Persisted column visibility (the "Columns" menu)
+  const [hiddenColumns, setHiddenColumns] = useState<ColumnId[]>([]);
+  const [hiddenColumnsLoaded, setHiddenColumnsLoaded] = useState(false);
+  useEffect(() => {
+    setHiddenColumns(parseHiddenColumns(localStorage.getItem(HIDDEN_COLUMNS_KEY)));
+    setHiddenColumnsLoaded(true);
+  }, []);
+  useEffect(() => {
+    // Skip the first render so the empty default doesn't overwrite the saved list.
+    if (hiddenColumnsLoaded)
+      localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify(hiddenColumns));
+  }, [hiddenColumns, hiddenColumnsLoaded]);
 
   // Data
   const queryClient = useQueryClient();
@@ -282,54 +297,64 @@ export default function UsersTab() {
 
   return (
     <div className="mt-6 space-y-4">
-      <SummaryCards onCardClick={onCardClick} />
-      <SavedViews current={filterState} onApply={applyFilterState} />
-      <FilterBar
-        state={filterState}
-        onChange={applyFilterState}
-        density={density}
-        onDensityChange={setDensity}
-      />
+      <SummaryCards onCardClick={onCardClick} activeView={filterState.view} />
 
-      {usersQuery.isLoading && (
-        <div className="flex justify-center py-12">
-          <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-        </div>
-      )}
-      {usersQuery.error && (
-        <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
-          Failed to load users.
-          <button type="button" onClick={() => usersQuery.refetch()} className="ml-2 underline">
-            Retry
-          </button>
-        </div>
-      )}
-      {!usersQuery.isLoading && (
-        <>
-          <UserTable
-            users={displayRows}
-            costHistories={costHistories}
-            turnAverages={turnAverages}
-            askQuestionFractions={askQuestionFractions}
-            automationScores={automationScores}
-            scoreState={scoreState}
-            scoreSortDir={scoreSortDir}
-            onScoreHeader={onScoreHeader}
+      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <div className="space-y-3 border-b border-gray-200 bg-gray-50/50 p-3">
+          <SavedViews current={filterState} onApply={applyFilterState} />
+          <FilterBar
+            state={filterState}
+            onChange={applyFilterState}
             density={density}
-            filterState={filterState}
-            onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
-            {...handlers}
+            onDensityChange={setDensity}
+            hiddenColumns={hiddenColumns}
+            onHiddenColumnsChange={setHiddenColumns}
           />
-          <Pagination
-            page={page}
-            pageSize={pageSize}
-            total={total}
-            count={users.length}
-            onPageChange={setPage}
-            onPageSizeChange={onPageSizeChange}
-          />
-        </>
-      )}
+        </div>
+
+        {usersQuery.isLoading && (
+          <div className="flex justify-center py-16">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          </div>
+        )}
+        {usersQuery.error && (
+          <div className="m-3 rounded-md border border-red-200 bg-red-50 p-3 text-[13px] text-red-700">
+            Failed to load users.
+            <button type="button" onClick={() => usersQuery.refetch()} className="ml-2 underline">
+              Retry
+            </button>
+          </div>
+        )}
+        {!usersQuery.isLoading && (
+          <>
+            <UserTable
+              users={displayRows}
+              costHistories={costHistories}
+              turnAverages={turnAverages}
+              askQuestionFractions={askQuestionFractions}
+              automationScores={automationScores}
+              scoreState={scoreState}
+              scoreSortDir={scoreSortDir}
+              onScoreHeader={onScoreHeader}
+              density={density}
+              hiddenColumns={hiddenColumns}
+              filterState={filterState}
+              onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+              {...handlers}
+            />
+            <div className="border-t border-gray-200 px-3">
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                count={users.length}
+                onPageChange={setPage}
+                onPageSizeChange={onPageSizeChange}
+              />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

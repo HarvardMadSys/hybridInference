@@ -59,7 +59,7 @@ export function UserUsageInsights({ userId }: { userId: string }) {
   const busy = analyzing || sampling;
 
   return (
-    <div className="space-y-3 border-t border-gray-200 pt-4">
+    <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
           Usage insights
