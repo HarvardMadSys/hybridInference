@@ -30,7 +30,7 @@ from serving.auth.signup_policy import (
     is_public_signup_enabled,
 )
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
-from serving.exceptions import AccountSuspendedError
+from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
 from serving.schemas_auth import (
     AccountsResponse,
     DeleteAccountRequest,
@@ -644,20 +644,26 @@ async def delete_own_account(
         )
 
     browser = await resolve_browser_session(op_store, request)
-    await op_store.delete_user(
-        user_id,
-        admin_ip=client_ip,
-        admin_id=user_id,
-        reason="Deleted by the account owner",
-        email=user_row.get("email"),
-        self_service=True,
-    )
+    try:
+        await op_store.delete_user(
+            user_id,
+            admin_ip=client_ip,
+            admin_id=user_id,
+            reason="Deleted by the account owner",
+            email=user_row.get("email"),
+            self_service=True,
+        )
+    except SelfDeleteRefused:
+        raise HTTPException(
+            status_code=409,
+            detail="This account changed while it was being deleted, so it was not deleted.",
+        ) from None
     # The account is off every browser now; retire this browser's cookie if it
-    # was the last account here, and leave the others signed in otherwise.
+    # was the last account here, and leave the others signed in otherwise. A
+    # cookie that names no browser is left alone: another tab may have just
+    # rotated it, and clearing it would sign every other account out.
     if browser is not None:
         await _sign_out_of_browser(op_store, response, browser, user_id)
-    else:
-        delete_refresh_token_cookie(response)
 
     if user_row.get("email") and is_email_enabled():
         background_tasks.add_task(send_account_deleted_email, user_row["email"])

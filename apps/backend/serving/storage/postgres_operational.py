@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
-from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged
+from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged, SelfDeleteRefused
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
@@ -1189,9 +1189,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert are atomic (single transaction).
-        *self_service* marks the audit entry as the owner's own deletion.
+        *self_service* marks the audit entry as the owner's own deletion, and
+        requires the account to still be active and not an administrator
+        under the row lock; otherwise ``SelfDeleteRefused`` rolls it all back.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            if self_service:
+                # The route checked these before proving ownership; a promotion
+                # or suspension committed since must win over the deletion.
+                owner = await conn.fetchrow(
+                    "SELECT status, role FROM users WHERE id = $1 FOR UPDATE", user_id
+                )
+                if owner is None or owner["status"] != "active" or owner["role"] == "admin":
+                    raise SelfDeleteRefused(user_id)
             await conn.execute("UPDATE users SET status = 'deleted' WHERE id = $1", user_id)
             await conn.execute(
                 "UPDATE api_keys SET status = 'revoked' "

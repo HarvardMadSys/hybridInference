@@ -280,7 +280,10 @@ class OperationalStore(ABC):
 
         All mutations and the audit-log insert must be atomic (single
         transaction). *self_service* marks the audit entry as the account
-        owner's own deletion rather than an administrator's.
+        owner's own deletion rather than an administrator's, and must raise
+        ``SelfDeleteRefused`` without changing anything unless the account,
+        read under the same transaction's row lock, is still active and not
+        an administrator.
         """
 
     @abstractmethod

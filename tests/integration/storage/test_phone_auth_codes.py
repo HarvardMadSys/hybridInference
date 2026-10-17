@@ -495,3 +495,42 @@ async def test_self_service_soft_delete_is_marked_in_the_audit_log(phone_store):
         )
     assert status == "deleted"
     assert json.loads(details)["self_service"] is True
+
+
+async def test_self_service_delete_refuses_an_account_promoted_meanwhile(phone_store):
+    from serving.exceptions import SelfDeleteRefused
+
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    async with phone_store._pool.acquire() as promoter:
+        # An administrator's promotion holds the row when the deletion starts.
+        tx = promoter.transaction()
+        await tx.start()
+        await promoter.execute("UPDATE users SET role = 'admin' WHERE id = 'user-a'")
+        deletion = asyncio.create_task(
+            phone_store.delete_user("user-a", admin_ip=IP, admin_id="user-a", self_service=True)
+        )
+        await asyncio.sleep(0.3)
+        assert not deletion.done()
+        await tx.commit()
+        with pytest.raises(SelfDeleteRefused):
+            await deletion
+    async with phone_store._pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status, role FROM users WHERE id = 'user-a'")
+        audited = await conn.fetchval(
+            "SELECT count(*) FROM admin_audit_log WHERE target_user_id = 'user-a'"
+        )
+    assert (row["status"], row["role"]) == ("active", "admin")
+    assert audited == 0
+
+
+async def test_admin_soft_delete_is_not_gated_on_role(phone_store):
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    async with phone_store._pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = 'admin' WHERE id = 'user-a'")
+    await phone_store.delete_user("user-a", admin_ip=IP, admin_id="someone-else")
+    async with phone_store._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT status FROM users WHERE id = 'user-a'") == "deleted"

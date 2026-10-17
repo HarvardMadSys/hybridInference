@@ -76,6 +76,8 @@ class Store:
         self.invalidate_phone_code = AsyncMock()
         self.create_phone_session = AsyncMock(return_value=True)
         self.record_phone_login_event = AsyncMock()
+        # No pre-browser-session cookies here: a retired value names nothing.
+        self.get_session_by_token_hash = AsyncMock(return_value=None)
         self.browser_sessions = browser_sessions.install(self)
         self.delete_user = AsyncMock(side_effect=self._delete_user)
 
@@ -341,3 +343,58 @@ async def test_delete_account_code_goes_only_to_the_accounts_own_number(
     assert store.reserve_phone_code.call_args.kwargs["user_id"] == "owner"
     assert store.reserve_phone_code.call_args.kwargs["purpose"] == "delete_account"
     assert sender.await_count == (1 if sent else 0)
+
+
+# -- races ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_account_that_changed_before_the_delete_ran_is_not_deleted(setup):
+    from serving.exceptions import SelfDeleteRefused
+
+    store = Store(phone_account())
+    cookie = await signed_in(store)
+    store.delete_user.side_effect = SelfDeleteRefused("owner")
+    response = Response()
+    tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as exc:
+        await delete(
+            store,
+            DeleteAccountRequest(confirm=PHONE, phone_code="123456"),
+            req=request(cookie=f"refresh_token={cookie}"),
+            response=response,
+            tasks=tasks,
+        )
+    assert exc.value.status_code == 409
+    [browser] = store.browser_sessions.browsers.values()
+    assert browser["revoked"] is False
+    assert "set-cookie" not in response.headers
+    assert tasks.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_cookie_rotated_by_another_tab_is_left_alone(setup):
+    store = Store(phone_account())
+    cookie = await signed_in(store)
+    [browser_id] = store.browser_sessions.browsers
+    store.browser_sessions.members[(browser_id, "other-user")] = "other-session"
+    # Another tab refreshes first: the cookie this request carries is retired,
+    # and the browser now holds a value this response must not overwrite.
+    assert await store.browser_sessions.rotate_browser_session(
+        browser_id,
+        current_secret_hash=auth_routes.hash_refresh_token(cookie),
+        new_secret_hash=auth_routes.hash_refresh_token("rotated-by-another-tab"),
+        expires_at=None,
+    )
+    response = Response()
+    await delete(
+        store,
+        DeleteAccountRequest(confirm=PHONE, phone_code="123456"),
+        req=request(cookie=f"refresh_token={cookie}"),
+        response=response,
+    )
+    store.delete_user.assert_awaited_once()
+    assert "set-cookie" not in response.headers
+    browser = store.browser_sessions.browsers[browser_id]
+    assert browser["revoked"] is False
+    assert list(store.browser_sessions.members) == [(browser_id, "other-user")]
