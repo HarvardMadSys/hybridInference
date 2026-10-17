@@ -10,11 +10,33 @@ function formatTokenLimit(value: number): string {
   return value.toLocaleString();
 }
 
-function formatPricing(model: ModelCatalogItem): string {
-  const prompt = model.pricing.prompt;
-  const completion = model.pricing.completion;
-  if (!prompt && !completion) return '—';
-  return `$${prompt ?? '0'} / $${completion ?? '0'} / 1M`;
+function ModelPricing({ pricing }: Pick<ModelCatalogItem, 'pricing'>): JSX.Element {
+  const rates = [
+    ['Input', pricing.prompt],
+    ['Output', pricing.completion],
+    ['Cache hit', pricing.input_cache_reads],
+    ['Cache write', pricing.input_cache_writes],
+  ] as const;
+  const hasPrice = (value: string | undefined): value is string =>
+    value !== undefined && value.trim() !== '';
+
+  if (!rates.some(([, value]) => hasPrice(value))) return <>—</>;
+
+  return (
+    <dl className="space-y-0.5 whitespace-nowrap tabular-nums">
+      {rates.map(([label, value], index) => {
+        if (index >= 2 && !hasPrice(value)) return null;
+        // Zero cache rates use the ordinary input rate in gateway billing.
+        const effectiveValue = index >= 2 && Number(value) === 0 ? pricing.prompt : value;
+        return (
+          <div key={label} className="flex justify-end gap-2">
+            <dt className="text-gray-500">{label}</dt>
+            <dd>{hasPrice(effectiveValue) ? `$${effectiveValue}` : '—'}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
 }
 
 function copyModelId(modelId: string): void {
@@ -71,7 +93,7 @@ export function ModelsSection(): JSX.Element {
               <tr className="border-b border-gray-200 text-[11px] font-medium uppercase tracking-wide text-gray-500">
                 <th className="py-1.5 pr-2">Model</th>
                 <th className="py-1.5 pr-2 whitespace-nowrap">Ctx / out</th>
-                <th className="hidden py-1.5 text-right sm:table-cell">$/1M</th>
+                <th className="py-1.5 text-right whitespace-nowrap">USD / 1M tokens</th>
               </tr>
             </thead>
             <tbody className="text-gray-800">
@@ -92,8 +114,8 @@ export function ModelsSection(): JSX.Element {
                     {formatTokenLimit(model.context_length)} /{' '}
                     {formatTokenLimit(model.max_output_length)}
                   </td>
-                  <td className="hidden py-1 align-top text-right text-[11px] text-gray-600 sm:table-cell">
-                    {formatPricing(model)}
+                  <td className="py-1 align-top text-right text-[11px] text-gray-600">
+                    <ModelPricing pricing={model.pricing} />
                   </td>
                 </tr>
               ))}

@@ -518,13 +518,16 @@ msgstr ""
 
 #: ../developer/adding-models.md
 msgid ""
-"UTC-only activation time plus recurring daily price windows: `pricing` "
+"UTC-only activation time plus recurring price windows: `pricing` "
 "stays active before `effective_at`; afterwards `default` applies outside "
 "each half-open `[start, end)` window, and a window's own `pricing` "
-"overrides the base fields"
+"overrides the base fields. Optional `weekdays` (ISO integers 1=Monday "
+"through 7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC "
+"dates can use windows"
 msgstr ""
-"一个生效时间（只支持 UTC），加上每天循环的价格时段：`effective_at` 之前一直用 `pricing`；之后，不在任何左闭右开的 "
-"`[start, end)` 时段内时用 `default`，落在某个时段内时，用该时段自己的 `pricing` 覆盖基础字段"
+"一个生效时间（只支持 UTC），加上循环的价格时段：`effective_at` 之前一直用 `pricing`；之后，不在任何左闭右开的 "
+"`[start, end)` 时段内时用 `default`，落在某个时段内时，用该时段自己的 `pricing` 覆盖基础字段。可选的 "
+"`weekdays`（ISO 整数，1 为星期一，7 为星期日）和 `excluded_dates`（`YYYY-MM-DD`）限定哪些 UTC 日期可以使用这些时段"
 
 #: ../developer/adding-models.md:192
 msgid ""
@@ -540,6 +543,28 @@ msgstr ""
 "admin` 的旧写法）。"
 
 #: ../developer/adding-models.md:197
+msgid "Calendar-aware prices"
+msgstr "按日历调整价格"
+
+#: ../developer/adding-models.md:199
+msgid "For example, apply higher prices on weekdays except configured public holidays:"
+msgstr "例如，在星期一至星期五使用较高价格，但排除已配置的公共假日："
+
+#: ../developer/adding-models.md:218
+msgid ""
+"Omitting the calendar fields preserves daily schedules. On excluded dates "
+"and non-selected weekdays, all windows are skipped and `default` applies. "
+"Overnight windows use the current UTC date for both restrictions. "
+"Deployment owners must maintain holiday exclusions from the provider's "
+"calendar each year; the gateway does not fetch holiday or price changes "
+"from the internet. A request keeps the prices selected at its start, even "
+"if a stream finishes across a boundary."
+msgstr ""
+"省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。"
+"跨越午夜的时段也按当前 UTC 日期判断这两项限制。部署维护者需要每年根据 provider 的日历更新假日排除列表；"
+"网关不会从互联网获取假日或价格变更。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
+
+#: ../developer/adding-models.md:225
 msgid "Route configuration"
 msgstr "路由配置"
 
