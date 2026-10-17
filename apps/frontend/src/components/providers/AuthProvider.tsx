@@ -32,6 +32,7 @@ import {
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
 import { getMe } from '@/lib/api/user';
+import { AccountToastContext, type AccountToastScope } from '@/lib/hooks/useAccountToast';
 import { useSiteConfig } from './SiteConfigProvider';
 import { clearToasts } from './ToastProvider';
 
@@ -108,6 +109,25 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { agentsUrl } = useSiteConfig();
   const queryClient = useQueryClient();
+  const accountRevision = useRef(0);
+  const toastScopeRef = useRef<AccountToastScope>({ userId: null, active: true });
+  const [toastScope, setToastScope] = useState(toastScopeRef.current);
+  const invalidateAccountToasts = useCallback(() => {
+    accountRevision.current += 1;
+    toastScopeRef.current.active = false;
+    clearToasts();
+  }, []);
+  const activateAccountToasts = useCallback(
+    (userId: string) => {
+      const previous = toastScopeRef.current;
+      if (previous.active && previous.userId === userId) return;
+      invalidateAccountToasts();
+      const next = { userId, active: true };
+      toastScopeRef.current = next;
+      setToastScope(next);
+    },
+    [invalidateAccountToasts],
+  );
   const [state, setState] = useState<AuthState>({
     isAuthenticated: false,
     loading: true,
@@ -143,8 +163,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   accountsRef.current = accounts;
 
   const refreshUser = useCallback(async () => {
+    const revision = accountRevision.current;
     try {
       const me = await getMe();
+      // An earlier profile request must not reactivate an account that left
+      // while it was in flight (including an other-tab account-change notice).
+      if (revision !== accountRevision.current) return;
+      activateAccountToasts(me.id);
       setState({
         isAuthenticated: true,
         loading: false,
@@ -161,9 +186,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       });
     } catch {
+      if (revision !== accountRevision.current) return;
+      invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
     }
-  }, []);
+  }, [activateAccountToasts, invalidateAccountToasts]);
 
   const refreshAccounts = useCallback(async () => {
     try {
@@ -189,22 +216,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handleAuthExpired = () => {
+      invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
-  }, []);
+  }, [invalidateAccountToasts]);
 
   useEffect(() => {
     const handleAccountChanged = (event: Event) => {
       const reason = (event as CustomEvent<AccountChangeReason>).detail;
       // The page's toasts went with its account, and would sit above the notice.
-      clearToasts();
+      invalidateAccountToasts();
       setAccountChanged(reason === 'signed-out' ? 'signed-out' : 'switched');
     };
     window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
     return () => window.removeEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
-  }, []);
+  }, [invalidateAccountToasts]);
 
   useEffect(
     () =>
@@ -247,8 +275,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // account changes — by every sign-in, switch and sign-out.
   const forgetPreviousAccount = useCallback(() => {
     queryClient.clear();
-    clearToasts();
-  }, [queryClient]);
+    invalidateAccountToasts();
+  }, [invalidateAccountToasts, queryClient]);
 
   // What every sign-in does once its request has installed the new token.
   // Queries are cached under keys that name no account, so the previous
@@ -373,7 +401,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      <Fragment key={pageOwner.generation}>{children}</Fragment>
+      <AccountToastContext.Provider value={toastScope}>
+        <Fragment key={pageOwner.generation}>{children}</Fragment>
+      </AccountToastContext.Provider>
       {accountChanged ? <AccountChangedNotice reason={accountChanged} /> : null}
     </AuthContext.Provider>
   );

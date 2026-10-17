@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminMetricDistribution,
   AdminPerformanceMetricsWindow,
@@ -89,20 +89,24 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
 }
 
 export function PerformanceTab() {
+  const toast = useAccountToast();
   const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
   const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
 
-  const loadPerformanceMetrics = useCallback(async (refresh = false) => {
-    setPerfMetricsLoading(true);
-    try {
-      const d = await getPerformanceMetrics({ refresh });
-      setPerfMetrics(d.windows);
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
+  const loadPerformanceMetrics = useCallback(
+    async (refresh = false) => {
+      setPerfMetricsLoading(true);
+      try {
+        const d = await getPerformanceMetrics({ refresh });
+        setPerfMetrics(d.windows);
+      } catch (e) {
+        toast.error(getErrorMessage(e));
+      } finally {
+        setPerfMetricsLoading(false);
+      }
+    },
+    [toast],
+  );
 
   useEffect(() => {
     loadPerformanceMetrics();

@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
@@ -466,6 +466,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
 }
 
 export function RequestsTab() {
+  const toast = useAccountToast();
   // Requests state
   const [reqEntries, setReqEntries] = useState<AdminRecentRequestItem[]>([]);
   const [reqTotal, setReqTotal] = useState(0);
@@ -553,7 +554,7 @@ export function RequestsTab() {
         if (seq === reqSeqRef.current) setReqLoading(false);
       }
     },
-    [reqOffset, reqOutcome, reqType, reqDays, reqSessionFilter],
+    [reqOffset, reqOutcome, reqType, reqDays, reqSessionFilter, toast],
   );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
@@ -583,7 +584,7 @@ export function RequestsTab() {
     } finally {
       setReqMetricsLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   const handleClearErrors = useCallback(async () => {
     if (
@@ -605,7 +606,7 @@ export function RequestsTab() {
     } finally {
       setClearingErrors(false);
     }
-  }, [loadRequests, loadRequestMetrics, reqUserFilter, reqModelFilter]);
+  }, [toast, loadRequests, reqUserFilter, reqModelFilter, loadRequestMetrics]);
 
   useEffect(() => {
     loadRequests(debouncedUserFilter, debouncedModelFilter);

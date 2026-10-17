@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import type { RoutewiseProbeSampleItem, RoutewiseSettingItem } from '@/lib/api/admin';
 import {
@@ -117,6 +117,7 @@ function sampleStatusClass(sample: RoutewiseProbeSampleItem) {
 }
 
 export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSettingsPanelProps) {
+  const toast = useAccountToast();
   const [settings, setSettings] = useState<RoutewiseSettingItem[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
@@ -352,7 +353,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         }
       }
     },
-    [drafts, modelId],
+    [drafts, modelId, toast],
   );
 
   const handleResetSetting = useCallback(
@@ -391,7 +392,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         }
       }
     },
-    [modelId],
+    [modelId, toast],
   );
 
   const handleRunProbe = useCallback(async () => {
@@ -449,7 +450,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         setProbeRunning(false);
       }
     }
-  }, [loadProbeSamples, modelId]);
+  }, [loadProbeSamples, modelId, toast]);
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4">
