@@ -33,6 +33,7 @@ import {
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
 import { getMe } from '@/lib/api/user';
 import { useSiteConfig } from './SiteConfigProvider';
+import { clearToasts } from './ToastProvider';
 
 /**
  * Exported because the host facade re-exports them: a distribution's UI reads
@@ -197,6 +198,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const handleAccountChanged = (event: Event) => {
       const reason = (event as CustomEvent<AccountChangeReason>).detail;
+      // The page's toasts went with its account, and would sit above the notice.
+      clearToasts();
       setAccountChanged(reason === 'signed-out' ? 'signed-out' : 'switched');
     };
     window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
@@ -239,20 +242,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [agentsUrl],
   );
 
+  // What the tab holds for the account it showed, outside any page: the query
+  // cache, and the toasts that account's actions raised. Dropped whenever that
+  // account changes — by every sign-in, switch and sign-out.
+  const forgetPreviousAccount = useCallback(() => {
+    queryClient.clear();
+    clearToasts();
+  }, [queryClient]);
+
   // What every sign-in does once its request has installed the new token.
   // Queries are cached under keys that name no account, so the previous
-  // account's answers go first. The Agent session stays when the account joins
-  // a browser that has others signed in — it is one of theirs — and ends on a
-  // browser that had none, where it can only belong to someone who left.
+  // account's answers go first, and its toasts with them. The Agent session
+  // stays when the account joins a browser that has others signed in — it is
+  // one of theirs — and ends on a browser that had none, where it can only
+  // belong to someone who left.
   const startSession = useCallback(
     async (userId: string, hadAccounts: boolean) => {
-      queryClient.clear();
+      forgetPreviousAccount();
       if (!hadAccounts) await endAgentSession(agentsUrl);
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId });
     },
-    [agentsUrl, queryClient, refreshAccounts, refreshUser],
+    [agentsUrl, forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const signedInHere = () => accountsRef.current.some((account) => account.signed_in);
@@ -271,13 +283,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (accessToken: string) => {
       const hadAccounts = signedInHere();
       setAccessToken(accessToken);
-      queryClient.clear();
+      forgetPreviousAccount();
       if (!hadAccounts) await endAgentSession(agentsUrl);
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId: userIdRef.current });
     },
-    [agentsUrl, queryClient, refreshAccounts, refreshUser],
+    [agentsUrl, forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const loginPhone = useCallback(
@@ -292,24 +304,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const switchAccount = useCallback(
     async (userId: string) => {
       await switchAccountApi(userId);
-      queryClient.clear();
+      forgetPreviousAccount();
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId });
     },
-    [queryClient, refreshAccounts, refreshUser],
+    [forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const signedOut = useCallback(
     async (userIds: string[] | null) => {
-      queryClient.clear();
+      forgetPreviousAccount();
       if (userIds) await endAgentSessionOf(userIds);
       else await endAgentSession(agentsUrl);
       setState({ isAuthenticated: false, loading: false, user: null });
       await refreshAccounts();
       announceAccounts({ type: 'active', userId: null });
     },
-    [agentsUrl, endAgentSessionOf, queryClient, refreshAccounts],
+    [agentsUrl, endAgentSessionOf, forgetPreviousAccount, refreshAccounts],
   );
 
   const logout = useCallback(async () => {
