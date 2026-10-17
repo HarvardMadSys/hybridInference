@@ -5,8 +5,10 @@ import { Fragment } from 'react';
 import { BuildInfo } from '@/components/ui/BuildInfo';
 import { useBranding, useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
+import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 export function SiteFooter(): JSX.Element {
+  const consoleWidth = useConsoleWidth();
   const branding = useBranding();
   const { features } = useSiteConfig();
   const t = useT();
@@ -116,7 +118,9 @@ export function SiteFooter(): JSX.Element {
   entries.push({ key: 'build', node: <BuildInfo /> });
 
   return (
-    <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
+    <footer
+      className={`mx-auto w-full ${consoleWidth} px-6 py-6 text-center text-sm text-gray-400`}
+    >
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
         {entries.map((entry, index) => (
           <Fragment key={entry.key}>

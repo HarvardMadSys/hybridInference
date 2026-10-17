@@ -138,6 +138,7 @@ export function AuthPageFrame({
   subtitle,
   topbar,
   legal,
+  wide = false,
   children,
 }: {
   page: 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
@@ -146,6 +147,11 @@ export function AuthPageFrame({
   subtitle: string;
   topbar?: React.ReactNode;
   legal?: React.ReactNode;
+  /**
+   * The body is reading matter — the sign-up terms — and wants a wider column.
+   * Only the console's own card reads it; a module frame sizes its own body.
+   */
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   // Straight from the module rather than through the route: an account page
@@ -154,7 +160,7 @@ export function AuthPageFrame({
   const Frame = SITE_UI_CLIENT.AuthFrame ?? null;
   if (!Frame) {
     return (
-      <NeutralAuthCard title={title} subtitle={subtitle} topbar={topbar}>
+      <NeutralAuthCard title={title} subtitle={subtitle} topbar={topbar} wide={wide}>
         {children}
       </NeutralAuthCard>
     );

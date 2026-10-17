@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { getUserFilterProviders, type UserFilterProvider } from '@/lib/api/admin';
+import { CONTROL } from '../ui';
 
 interface Props {
   value: string | null;
@@ -43,7 +44,7 @@ export function ProviderFilter({ value, onChange }: Props) {
     <select
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || null)}
-      className="rounded border bg-white px-2 py-1 text-sm"
+      className={CONTROL}
     >
       <option value="">Any provider</option>
       {options.map((option) => (

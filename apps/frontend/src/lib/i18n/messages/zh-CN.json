@@ -119,6 +119,10 @@
     "source": "BEFORE YOU START",
     "text": "开始之前"
   },
+  "auth.consent.progress": {
+    "source": "{done} of {total} confirmed",
+    "text": "已确认 {done}/{total} 项"
+  },
   "auth.consent.terms_body": [
     {
       "source": "Please read the terms in full. The confirmations below unlock once you reach the end.",
@@ -287,9 +291,29 @@
     "source": "If this phone number is eligible, a verification code has been sent.",
     "text": "如果该手机号符合条件，验证码已发送。"
   },
+  "auth.phone.country_code_label": {
+    "source": "Country code",
+    "text": "国家或地区代码"
+  },
+  "auth.phone.country_code_options_label": {
+    "source": "Country code options",
+    "text": "国家或地区代码选项"
+  },
+  "auth.phone.country_empty": {
+    "source": "No matching countries.",
+    "text": "没有匹配的国家或地区。"
+  },
+  "auth.phone.country_search": {
+    "source": "Search country or code",
+    "text": "搜索国家、地区或代码"
+  },
   "auth.phone.email_method": {
     "source": "Email and password",
     "text": "邮箱和密码"
+  },
+  "auth.phone.international": {
+    "source": "International",
+    "text": "国际"
   },
   "auth.phone.login_subtitle": {
     "source": "Welcome back, please log in",
@@ -298,6 +322,10 @@
   "auth.phone.method_label": {
     "source": "Account method",
     "text": "账户方式"
+  },
+  "auth.phone.national_hint": {
+    "source": "Select a country code, then enter your phone number.",
+    "text": "先选择国家或地区代码，再输入手机号。"
   },
   "auth.phone.phone_hint": [
     {
@@ -417,6 +445,14 @@
     "source": "Confirm Password",
     "text": "确认密码"
   },
+  "auth.signup.details_body": {
+    "source": "Both questions are optional, but answers help admins approve accounts faster.",
+    "text": "两个问题都是选填，但回答有助于管理员更快审批账户。"
+  },
+  "auth.signup.details_title": {
+    "source": "Tell us about your project",
+    "text": "介绍一下你的项目"
+  },
   "auth.signup.discovery_hint": {
     "source": "Optional, but helpful for improving outreach.",
     "text": "选填，可帮助我们改进推广。"
@@ -465,6 +501,22 @@
     "source": "Password",
     "text": "密码"
   },
+  "auth.signup.password_rule_length": {
+    "source": "8+ characters",
+    "text": "至少 8 个字符"
+  },
+  "auth.signup.password_rule_lower": {
+    "source": "Lowercase",
+    "text": "小写字母"
+  },
+  "auth.signup.password_rule_number": {
+    "source": "Number",
+    "text": "数字"
+  },
+  "auth.signup.password_rule_upper": {
+    "source": "Uppercase",
+    "text": "大写字母"
+  },
   "auth.signup.pending_title": {
     "source": "Registration Submitted",
     "text": "注册申请已提交"
@@ -473,9 +525,29 @@
     "source": "Here is what happens with your account next.",
     "text": "以下是你的账户接下来的处理流程。"
   },
+  "auth.signup.review_agreements": {
+    "source": "Review agreements",
+    "text": "查看协议"
+  },
+  "auth.signup.show_password": {
+    "source": "Show password",
+    "text": "显示密码"
+  },
   "auth.signup.signin_link": {
     "source": "Sign in",
     "text": "登录"
+  },
+  "auth.signup.step_account": {
+    "source": "Account details",
+    "text": "账户信息"
+  },
+  "auth.signup.step_consent": {
+    "source": "Agreements",
+    "text": "协议"
+  },
+  "auth.signup.steps_label": {
+    "source": "Sign-up progress",
+    "text": "注册进度"
   },
   "auth.signup.submit": {
     "source": "Sign Up",

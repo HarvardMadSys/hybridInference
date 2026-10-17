@@ -7,14 +7,18 @@ import { useT } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 import { AccountMenu } from './AccountMenu';
 import { LanguageSwitcher } from './LanguageSwitcher';
+import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 export function Header() {
+  const consoleWidth = useConsoleWidth();
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
   const t = useT();
 
   return (
-    <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
+    <header
+      className={`mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-6 py-6`}
+    >
       <div className="flex min-w-0 items-baseline gap-2">
         <Link
           href="/"

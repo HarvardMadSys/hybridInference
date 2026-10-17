@@ -113,7 +113,8 @@ export function AuthField({
 }: {
   id: string;
   label: string;
-  hint?: string;
+  /** Usually a sentence; a page may pass richer content, such as a checklist. */
+  hint?: ReactNode;
   error?: string;
   /** The field's own action — the "forgot password" link — when it has one. */
   action?: ReactNode;

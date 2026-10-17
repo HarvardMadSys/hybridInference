@@ -39,7 +39,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         // Administration is not translated: it is for the operators, not the
         // console's users, and stays in English whatever language the reader
         // chose. `lang` says so to screen readers and browser translation.
-        <div lang="en" className="mx-auto w-full max-w-4xl pb-20">
+        <div lang="en" className="w-full pb-20">
           {/* Nav */}
           <div className="mb-10 flex items-center justify-between">
             <Link
