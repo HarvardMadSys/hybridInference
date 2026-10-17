@@ -299,8 +299,10 @@ export default function UsersTab() {
     <div className="mt-6 space-y-4">
       <SummaryCards onCardClick={onCardClick} activeView={filterState.view} />
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-        <div className="space-y-3 border-b border-gray-200 bg-gray-50/50 p-3">
+      {/* Keep toolbar popovers visible even when the table has few or no rows.
+          UserTable owns the horizontal scrolling; only its content is clipped. */}
+      <div className="rounded-lg border border-gray-200 bg-white">
+        <div className="space-y-3 rounded-t-lg border-b border-gray-200 bg-gray-50/50 p-3">
           <SavedViews current={filterState} onApply={applyFilterState} />
           <FilterBar
             state={filterState}
