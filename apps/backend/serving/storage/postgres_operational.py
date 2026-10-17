@@ -2357,6 +2357,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
 
+    async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
+        """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
+
+        The rows stay, so a browser that listed the account shows it signed
+        out rather than forgetting it.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE "
+                "WHERE user_id = $1 AND revoked IS NOT TRUE AND sid IS DISTINCT FROM $2::text",
+                user_id,
+                except_sid,
+            )
+        return int(result.split()[-1])
+
     # -- browser sessions ----------------------------------------------------
 
     async def create_browser_session(
