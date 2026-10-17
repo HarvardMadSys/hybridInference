@@ -1,5 +1,6 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
+import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 
 const API_BASE = config.apiBase;
 
@@ -18,6 +19,8 @@ export interface User {
   email_verified: boolean;
   is_admin: boolean;
   created_at: string;
+  /** The interface language this account last chose; absent when it never chose. */
+  locale?: AccountLocaleChoice | null;
 }
 
 export interface ApiKeyResponse {
@@ -94,6 +97,27 @@ export interface ModelCatalogResponse {
 export async function getMe(): Promise<User> {
   const resp = await fetchWithAuth(API_BASE, '/user/me');
   return jsonOrThrow<User>(resp);
+}
+
+/**
+ * Store the account's interface language.
+ *
+ * `chosenAt` is passed only when the choice was made earlier, signed out, and
+ * is being carried into the account; the server takes the current time
+ * otherwise, and never a time later than its own clock.
+ */
+export async function updateLocalePreference(
+  locale: string,
+  chosenAt?: number,
+): Promise<AccountLocaleChoice> {
+  const resp = await fetchWithAuth(API_BASE, '/user/preferences/locale', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      chosenAt === undefined ? { locale } : { locale, chosen_at: new Date(chosenAt).toISOString() },
+    ),
+  });
+  return jsonOrThrow<AccountLocaleChoice>(resp);
 }
 
 export async function getModels(): Promise<ModelCatalogResponse> {

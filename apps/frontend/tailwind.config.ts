@@ -53,8 +53,34 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
-        serif: ['var(--font-serif)', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
+        // The CJK families come after the Latin ones, so Latin text keeps its
+        // face and Chinese text takes a system font that has the glyphs rather
+        // than whatever the browser falls back to. No CJK web font is
+        // downloaded: a complete one is several megabytes.
+        sans: [
+          'Inter',
+          'system-ui',
+          '-apple-system',
+          'Segoe UI',
+          'Roboto',
+          'PingFang SC',
+          'Hiragino Sans GB',
+          'Noto Sans CJK SC',
+          'Noto Sans SC',
+          'Microsoft YaHei',
+          'sans-serif',
+        ],
+        serif: [
+          'var(--font-serif)',
+          'Georgia',
+          'Cambria',
+          'Times New Roman',
+          'Songti SC',
+          'Noto Serif CJK SC',
+          'Noto Serif SC',
+          'SimSun',
+          'serif',
+        ],
       },
       borderRadius: {
         lg: '0.5rem',

@@ -8,6 +8,8 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel } from '@/lib/utils/userLabel';
 import { isCompleteCode, OwnerPhoneCode } from './OwnerPhoneCode';
+import { useT, type Translate } from '@/components/providers/useT';
+import { fill } from '@/lib/utils/interpolate';
 
 /** How the signed-in account proves it is its owner's, or why it cannot here. */
 export type DeletionProof = 'password' | 'phone' | 'admin' | 'unavailable';
@@ -24,8 +26,38 @@ export function confirmationMatches(typed: string, identifier: string): boolean 
   return identifier !== '' && typed.trim().toLowerCase() === identifier.toLowerCase();
 }
 
-function contactText(contactEmail: string | undefined): string {
-  return contactEmail ? `contact ${contactEmail}` : 'contact the administrator';
+/**
+ * "…, contact {email}." — whole sentences per case, because where the address
+ * goes, and what replaces it when there is none, differs between languages.
+ */
+function cannotDeleteHere(t: Translate, contactEmail: string | undefined): string {
+  return contactEmail
+    ? fill(
+        t(
+          'account.delete.unavailable_email',
+          'This account cannot confirm its deletion here. To delete it, contact {email}.',
+        ),
+        { email: contactEmail },
+      )
+    : t(
+        'account.delete.unavailable_admin',
+        'This account cannot confirm its deletion here. To delete it, contact the administrator.',
+      );
+}
+
+function historyKept(t: Translate, contactEmail: string | undefined): string {
+  return contactEmail
+    ? fill(
+        t(
+          'account.delete.history_email',
+          'Its request history is kept. To have that erased as well, or if you change your mind, contact {email}.',
+        ),
+        { email: contactEmail },
+      )
+    : t(
+        'account.delete.history_admin',
+        'Its request history is kept. To have that erased as well, or if you change your mind, contact the administrator.',
+      );
 }
 
 /**
@@ -36,22 +68,31 @@ export function DangerZone() {
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
   const [open, setOpen] = useState(false);
+  const t = useT();
   const user = state.user;
   if (!user) return null;
   const proof = deletionProof(user, Boolean(features.phoneAuth));
-  const contact = contactText(branding.contactEmail);
+  const contactEmail = branding.contactEmail;
 
   return (
     <>
       <div className="flex flex-col gap-3 rounded-lg border border-red-100 bg-red-50/50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">Delete this account</h3>
+          <h3 className="text-sm font-semibold text-gray-900">
+            {t('account.delete.heading', 'Delete this account')}
+          </h3>
           <p className="mt-1 text-sm text-gray-600">
             {proof === 'admin'
-              ? 'An administrator account cannot delete itself. Ask another administrator to delete it.'
+              ? t(
+                  'account.delete.admin',
+                  'An administrator account cannot delete itself. Ask another administrator to delete it.',
+                )
               : proof === 'unavailable'
-                ? `This account cannot confirm its deletion here. To delete it, ${contact}.`
-                : 'Revokes its API keys and signs it out everywhere. You cannot undo this yourself.'}
+                ? cannotDeleteHere(t, contactEmail)
+                : t(
+                    'account.delete.summary',
+                    'Revokes its API keys and signs it out everywhere. You cannot undo this yourself.',
+                  )}
           </p>
         </div>
         <button
@@ -60,14 +101,14 @@ export function DangerZone() {
           disabled={proof === 'admin' || proof === 'unavailable'}
           className="shrink-0 rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Delete account
+          {t('account.delete.open', 'Delete account')}
         </button>
       </div>
       {open && (proof === 'password' || proof === 'phone') ? (
         <DeleteAccountDialog
           user={user}
           proof={proof}
-          contact={contact}
+          contactEmail={contactEmail}
           onClose={() => setOpen(false)}
         />
       ) : null}
@@ -78,15 +119,16 @@ export function DangerZone() {
 function DeleteAccountDialog({
   user,
   proof,
-  contact,
+  contactEmail,
   onClose,
 }: {
   user: AuthUser;
   proof: 'password' | 'phone';
-  contact: string;
+  contactEmail: string | undefined;
   onClose: () => void;
 }) {
   const { deleteAccount } = useAuth();
+  const t = useT();
   const identifier = userAccountLabel(user);
   const titleId = useId();
   const confirmId = useId();
@@ -155,7 +197,7 @@ function DeleteAccountDialog({
       await deleteAccount(
         proof === 'password' ? { confirm: typed, password } : { confirm: typed, phoneCode: code },
       );
-      toast.success('Your account has been deleted.');
+      toast.success(t('account.delete.done_toast', 'Your account has been deleted.'));
     } catch (err) {
       setError(getErrorMessage(err));
       setBusy(false);
@@ -181,28 +223,30 @@ function DeleteAccountDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h3 id={titleId} className="text-[15px] font-semibold text-gray-900">
-          Delete account
+          {t('account.delete.open', 'Delete account')}
         </h3>
         <div className="mt-3 space-y-2 text-[13px] text-gray-600">
-          <p>Deleting this account will:</p>
+          <p>{t('account.delete.will', 'Deleting this account will:')}</p>
           <ul className="list-disc space-y-1 pl-5">
-            <li>revoke all of its API keys at once;</li>
-            <li>sign it out on every device, the Agent included.</li>
+            <li>{t('account.delete.will_revoke', 'revoke all of its API keys at once;')}</li>
+            <li>
+              {t(
+                'account.delete.will_sign_out',
+                'sign it out on every device, the Agent included.',
+              )}
+            </li>
           </ul>
-          <p>
-            Its request history is kept. To have that erased as well, or if you change your mind,{' '}
-            {contact}.
-          </p>
+          <p>{historyKept(t, contactEmail)}</p>
         </div>
 
         <form onSubmit={submit} className="mt-4 space-y-3">
           <div>
             <label htmlFor={confirmId} className="block text-[13px] text-gray-700">
-              To confirm, type{' '}
+              {t('account.delete.confirm_lead', 'To confirm, type')}{' '}
               <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[12px] text-gray-900">
                 {identifier}
               </span>{' '}
-              below:
+              {t('account.delete.confirm_tail', 'below:')}
             </label>
             <input
               id={confirmId}
@@ -221,7 +265,7 @@ function DeleteAccountDialog({
           {proof === 'password' ? (
             <div>
               <label htmlFor={secretId} className="block text-[13px] text-gray-700">
-                Your password
+                {t('account.delete.password', 'Your password')}
               </label>
               <input
                 id={secretId}
@@ -256,7 +300,7 @@ function DeleteAccountDialog({
               disabled={busy}
               className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40"
             >
-              Cancel
+              {t('common.cancel', 'Cancel')}
             </button>
             <button
               type="submit"
@@ -264,7 +308,9 @@ function DeleteAccountDialog({
               aria-busy={busy || undefined}
               className="rounded-md bg-red-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {busy ? 'Deleting…' : 'Delete this account'}
+              {busy
+                ? t('account.delete.deleting', 'Deleting…')
+                : t('account.delete.heading', 'Delete this account')}
             </button>
           </div>
         </form>

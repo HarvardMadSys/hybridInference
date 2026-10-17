@@ -657,6 +657,60 @@ class TestLLMProberLayout:
         }
 
 
+class TestLocalePreference:
+    """The account's interface language, through /user/me and its PUT."""
+
+    @pytest.mark.asyncio
+    async def test_me_reports_no_language_until_one_is_chosen(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        response = await auth_app_client.get("/user/me", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["locale"] is None
+
+    @pytest.mark.asyncio
+    async def test_choose_then_read_back_newest_wins(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
+    ):
+        operational_store, _, _, _ = auth_backend
+
+        chosen = await auth_app_client.put(
+            "/user/preferences/locale", headers=auth_headers, json={"locale": "zh-CN"}
+        )
+        assert chosen.status_code == 200
+        assert chosen.json()["value"] == "zh-CN"
+
+        me = await auth_app_client.get("/user/me", headers=auth_headers)
+        assert me.json()["locale"] == chosen.json()
+
+        # A choice carried in from before is older than the stored one: kept out.
+        older = await auth_app_client.put(
+            "/user/preferences/locale",
+            headers=auth_headers,
+            json={"locale": "en", "chosen_at": "2020-01-01T00:00:00Z"},
+        )
+        assert older.status_code == 200
+        assert older.json() == chosen.json()
+
+        prefs = await operational_store.get_user_preferences(test_user["id"])
+        assert prefs["locale"]["value"] == "zh-CN"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_language_is_refused(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        response = await auth_app_client.put(
+            "/user/preferences/locale", headers=auth_headers, json={"locale": "fr"}
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_requires_authentication(self, auth_app_client: AsyncClient):
+        response = await auth_app_client.put("/user/preferences/locale", json={"locale": "en"})
+        assert response.status_code == 401
+
+
 class TestConcurrentAPIKeyCreation:
     """Test concurrent API key creation (database constraint)."""
 

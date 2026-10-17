@@ -9,6 +9,8 @@ import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { config } from '@/config/env';
 import { fetchWithAuth } from '@/lib/api/client';
+import { useT, type Translate } from '@/components/providers/useT';
+import { fill } from '@/lib/utils/interpolate';
 
 type GatewayStatus = 'checking' | 'healthy' | 'degraded' | 'unhealthy' | 'unreachable';
 
@@ -35,13 +37,28 @@ interface HomeLink {
 export const GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
 const MODEL_PREVIEW_LIMIT = 6;
 
-const statusDetails: Record<GatewayStatus, { label: string; dotClassName: string }> = {
-  checking: { label: 'Checking…', dotClassName: 'bg-gray-400' },
-  healthy: { label: 'Healthy', dotClassName: 'bg-emerald-500' },
-  degraded: { label: 'Degraded', dotClassName: 'bg-amber-500' },
-  unhealthy: { label: 'Unhealthy', dotClassName: 'bg-red-500' },
-  unreachable: { label: 'Unreachable', dotClassName: 'bg-red-500' },
+const statusDots: Record<GatewayStatus, string> = {
+  checking: 'bg-gray-400',
+  healthy: 'bg-emerald-500',
+  degraded: 'bg-amber-500',
+  unhealthy: 'bg-red-500',
+  unreachable: 'bg-red-500',
 };
+
+function statusLabel(status: GatewayStatus, t: Translate): string {
+  switch (status) {
+    case 'checking':
+      return t('landing.home.status_checking', 'Checking…');
+    case 'healthy':
+      return t('landing.home.status_healthy', 'Healthy');
+    case 'degraded':
+      return t('landing.home.status_degraded', 'Degraded');
+    case 'unhealthy':
+      return t('landing.home.status_unhealthy', 'Unhealthy');
+    default:
+      return t('landing.home.status_unreachable', 'Unreachable');
+  }
+}
 
 const PRIMARY_LINK_CLASS =
   'inline-flex h-10 items-center justify-center rounded-lg bg-gray-950 px-4 text-sm font-medium text-white transition-colors hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2';
@@ -114,22 +131,35 @@ function isAbsoluteUrl(value: string): boolean {
 
 // Anonymous visitors get the way in; signed-in users get the console. The
 // header carries no sign-in link, so this is the page that has to offer one.
-function homeLinks(auth: ReturnType<typeof useAuth>['state'], publicSignup: boolean): HomeLink[] {
+function homeLinks(
+  auth: ReturnType<typeof useAuth>['state'],
+  publicSignup: boolean,
+  t: Translate,
+): HomeLink[] {
+  const signIn = t('landing.hero.signin', 'Sign in');
   if (!auth.isAuthenticated) {
     if (publicSignup) {
       return [
-        { href: '/signup', label: 'Sign up', primary: true },
-        { href: '/login', label: 'Sign in' },
+        { href: '/signup', label: t('landing.home.signup', 'Sign up'), primary: true },
+        { href: '/login', label: signIn },
       ];
     }
-    return [{ href: '/login', label: 'Sign in', primary: true }];
+    return [{ href: '/login', label: signIn, primary: true }];
   }
-  const links: HomeLink[] = [{ href: '/dashboard', label: 'Dashboard', primary: true }];
+  const links: HomeLink[] = [
+    { href: '/dashboard', label: t('chrome.header.dashboard', 'Dashboard'), primary: true },
+  ];
   if (hasRole(auth.user?.role, 'internal')) {
-    links.push({ href: '/dashboard/playground', label: 'Playground' });
+    links.push({
+      href: '/dashboard/playground',
+      label: t('landing.home.playground', 'Playground'),
+    });
   }
   if (auth.user?.is_admin) {
-    links.push({ href: '/dashboard/admin', label: 'Admin Console' });
+    links.push({
+      href: '/dashboard/admin',
+      label: t('dashboard.internal.admin', 'Admin Console'),
+    });
   }
   return links;
 }
@@ -141,6 +171,7 @@ export function DeveloperHome({
 } = {}): JSX.Element {
   const { branding, distribution, features } = useSiteConfig();
   const { state: auth } = useAuth();
+  const t = useT();
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('checking');
   const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
@@ -197,11 +228,12 @@ export function DeveloperHome({
   }, [auth.loading, catalogScope, requestTimeoutMs]);
 
   const isExample = distribution.id === 'example';
-  const scope = isExample ? 'local gateway' : 'gateway';
   const needsAttention = gatewayStatus === 'unhealthy' || gatewayStatus === 'unreachable';
-  const status = statusDetails[gatewayStatus];
-  const links = homeLinks(auth, features.publicSignup);
-  const catalogLabel = catalogScope === 'account' ? 'Your models' : 'Public models';
+  const links = homeLinks(auth, features.publicSignup, t);
+  const catalogLabel =
+    catalogScope === 'account'
+      ? t('landing.home.your_models', 'Your models')
+      : t('landing.home.public_models', 'Public models');
   const visibleModels = showAllModels ? catalog : catalog?.slice(0, MODEL_PREVIEW_LIMIT);
 
   // The command needs an absolute base. A distribution that publishes one
@@ -239,7 +271,7 @@ export function DeveloperHome({
           {isExample ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600">
               <span className="h-1.5 w-1.5 rounded-full bg-gray-500" aria-hidden="true" />
-              Local example
+              {t('landing.home.local_example', 'Local example')}
             </div>
           ) : null}
           <h1
@@ -249,15 +281,30 @@ export function DeveloperHome({
           >
             {/* /health is a liveness check (process and stores), so this says
                 "running", not "ready": provider circuits are not consulted. */}
-            {needsAttention ? `Your ${scope} needs attention.` : `Your ${scope} is running.`}
+            {isExample
+              ? needsAttention
+                ? t('landing.home.local_attention', 'Your local gateway needs attention.')
+                : t('landing.home.local_running', 'Your local gateway is running.')
+              : needsAttention
+                ? t('landing.home.attention', 'Your gateway needs attention.')
+                : t('landing.home.running', 'Your gateway is running.')}
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-gray-600">
             {isExample
-              ? 'Inspect the example deployment, try a request, or open the console to configure your own routes.'
-              : 'Check the gateway, try a request, or open the console to configure routes and keys.'}
+              ? t(
+                  'landing.home.intro_example',
+                  'Inspect the example deployment, try a request, or open the console to configure your own routes.',
+                )
+              : t(
+                  'landing.home.intro',
+                  'Check the gateway, try a request, or open the console to configure routes and keys.',
+                )}
           </p>
 
-          <nav aria-label="Gateway tools" className="mt-7 flex flex-wrap gap-3">
+          <nav
+            aria-label={t('landing.home.tools_label', 'Gateway tools')}
+            className="mt-7 flex flex-wrap gap-3"
+          >
             {links.map((link) => (
               <Link
                 key={link.href}
@@ -273,20 +320,27 @@ export function DeveloperHome({
         <dl className="grid border-t border-gray-200 bg-gray-50 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <div className="border-b border-gray-200 px-6 py-5 sm:border-b-0 sm:border-r sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              Gateway health
+              {t('landing.home.health', 'Gateway health')}
             </dt>
             <dd
               className="mt-2 flex items-center gap-2 text-sm font-semibold text-gray-900"
               aria-live="polite"
             >
-              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} aria-hidden="true" />
-              {status.label}
+              <span
+                className={`h-2 w-2 rounded-full ${statusDots[gatewayStatus]}`}
+                aria-hidden="true"
+              />
+              {statusLabel(gatewayStatus, t)}
             </dd>
           </div>
           <div className="min-w-0 px-6 py-5 sm:px-8">
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">API base</dt>
+            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
+              {t('landing.home.api_base', 'API base')}
+            </dt>
             <dd className="mt-2 break-all font-mono text-sm font-medium text-gray-900">
-              {quickstartHidden ? 'Not published' : curlBase || 'Same origin'}
+              {quickstartHidden
+                ? t('landing.home.not_published', 'Not published')
+                : curlBase || t('landing.home.same_origin', 'Same origin')}
             </dd>
           </div>
         </dl>
@@ -316,15 +370,19 @@ export function DeveloperHome({
                 onClick={() => setShowAllModels((expanded) => !expanded)}
                 className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-950 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
               >
-                {showAllModels ? 'Show fewer' : `Show all ${catalog.length}`}
+                {showAllModels
+                  ? t('landing.home.show_fewer', 'Show fewer')
+                  : fill(t('landing.home.show_all', 'Show all {count}'), {
+                      count: String(catalog.length),
+                    })}
               </button>
             )}
           </div>
           <div className="mt-3 text-sm text-gray-600" aria-live="polite">
             {catalogUnavailable ? (
-              'Unavailable'
+              t('landing.home.unavailable', 'Unavailable')
             ) : catalog === null ? (
-              'Loading…'
+              t('landing.home.loading', 'Loading…')
             ) : catalog.length > 0 ? (
               <ul
                 id={catalogId}
@@ -342,7 +400,7 @@ export function DeveloperHome({
                 ))}
               </ul>
             ) : (
-              'None configured'
+              t('landing.home.none_configured', 'None configured')
             )}
           </div>
         </section>
@@ -352,27 +410,39 @@ export function DeveloperHome({
         <section className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-6 text-sm text-gray-600">
           {catalogScope === 'public' ? (
             <>
-              <p className="font-medium text-gray-900">No public chat models.</p>
-              <p className="mt-1">Sign in to see the models available to your account.</p>
+              <p className="font-medium text-gray-900">
+                {t('landing.home.no_public_chat', 'No public chat models.')}
+              </p>
+              <p className="mt-1">
+                {t(
+                  'landing.home.no_public_chat_hint',
+                  'Sign in to see the models available to your account.',
+                )}
+              </p>
             </>
           ) : auth.user?.is_admin ? (
             <>
-              <p className="font-medium text-gray-900">No chat models yet.</p>
+              <p className="font-medium text-gray-900">
+                {t('landing.home.no_chat_admin', 'No chat models yet.')}
+              </p>
               <p className="mt-1">
-                Add a route in the{' '}
+                {t('landing.home.add_route_lead', 'Add a route in the')}{' '}
                 <Link href="/dashboard/admin" className="underline hover:text-gray-900">
-                  Admin Console
+                  {t('dashboard.internal.admin', 'Admin Console')}
                 </Link>{' '}
-                to serve one.
+                {t('landing.home.add_route_tail', 'to serve one.')}
               </p>
             </>
           ) : (
             <>
               <p className="font-medium text-gray-900">
-                No chat models are available to your account.
+                {t('landing.home.no_chat_user', 'No chat models are available to your account.')}
               </p>
               <p className="mt-1">
-                Ask the operator of this deployment to add a route or grant access.
+                {t(
+                  'landing.home.no_chat_user_hint',
+                  'Ask the operator of this deployment to add a route or grant access.',
+                )}
               </p>
             </>
           )}
@@ -381,9 +451,11 @@ export function DeveloperHome({
         <section className="overflow-hidden rounded-2xl border border-gray-200 bg-gray-950 shadow-sm">
           <div className="flex items-center justify-between border-b border-gray-800 px-5 py-3">
             <div>
-              <p className="text-sm font-medium text-white">Try the API</p>
+              <p className="text-sm font-medium text-white">
+                {t('landing.home.try_api', 'Try the API')}
+              </p>
               <p className="mt-0.5 text-xs text-gray-400">
-                Uses <code>{exampleModel}</code>
+                {t('landing.home.uses', 'Uses')} <code>{exampleModel}</code>
               </p>
             </div>
             <button
@@ -392,7 +464,9 @@ export function DeveloperHome({
               className="rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:bg-gray-900 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
               aria-live="polite"
             >
-              {copied ? 'Copied' : 'Copy curl'}
+              {copied
+                ? t('landing.home.copied', 'Copied')
+                : t('landing.home.copy_curl', 'Copy curl')}
             </button>
           </div>
           <pre className="overflow-x-auto px-5 py-5 text-sm leading-6 text-gray-200">

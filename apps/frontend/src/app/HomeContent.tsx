@@ -49,7 +49,7 @@ function ClassicLanding(): JSX.Element {
           <Link href="/terms" className="underline hover:text-gray-700">
             {t('chrome.footer.terms_link', 'Terms of Service')}
           </Link>
-          .
+          {t('chrome.footer.terms_tail', '.')}
         </p>
       </footer>
     </div>

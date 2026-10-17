@@ -2,15 +2,19 @@
 
 import Link from 'next/link';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useT, type Translate } from '@/components/providers/useT';
 
-const TRUST_POINTS = [
-  'No credit card required',
-  'OpenAI & Anthropic compatible',
-  'Frontier open models',
-];
+function trustPoints(t: Translate): string[] {
+  return [
+    t('landing.hero.trust_no_card', 'No credit card required'),
+    t('landing.hero.trust_compatible', 'OpenAI & Anthropic compatible'),
+    t('landing.hero.trust_models', 'Frontier open models'),
+  ];
+}
 
 export function Hero(): JSX.Element {
   const { branding, features } = useSiteConfig();
+  const t = useT();
   return (
     <section className="relative w-full overflow-hidden rounded-3xl border border-gray-100 bg-gradient-to-br from-white via-gray-50 to-red-50/40 px-6 py-24 text-center shadow-subtle">
       {/* Decorative background accents */}
@@ -38,14 +42,17 @@ export function Hero(): JSX.Element {
 
         <h1 className="mx-auto mt-6 max-w-3xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl md:text-6xl">
           {branding.appName}{' '}
-          <span className="bg-gradient-to-r from-crimson via-crimson-light to-crimson bg-clip-text text-transparent">
-            for open-source, research and education
+          {/* `break-keep`: wrap Chinese at its punctuation, not inside a word. */}
+          <span className="break-keep bg-gradient-to-r from-crimson via-crimson-light to-crimson bg-clip-text text-transparent">
+            {t('landing.hero.tagline', 'for open-source, research and education')}
           </span>
         </h1>
 
         <p className="mx-auto mt-6 max-w-2xl text-base text-gray-600 sm:text-lg">
-          An OpenAI-compatible API powered by frontier open models — free for the research
-          community.
+          {t(
+            'landing.hero.subtitle',
+            'An OpenAI-compatible API powered by frontier open models — free for the research community.',
+          )}
         </p>
 
         <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -54,7 +61,7 @@ export function Hero(): JSX.Element {
               href="/signup"
               className="group inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-crimson px-7 text-base font-medium text-white shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:bg-crimson-dark hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-crimson focus:ring-offset-2"
             >
-              Sign up free
+              {t('landing.hero.signup', 'Sign up free')}
               <svg
                 className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
                 viewBox="0 0 20 20"
@@ -73,12 +80,12 @@ export function Hero(): JSX.Element {
             href="/login"
             className="inline-flex h-12 items-center justify-center rounded-xl border border-gray-300 bg-white/80 px-7 text-base font-medium text-gray-900 shadow-subtle backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:bg-white hover:shadow-card focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
           >
-            Sign in
+            {t('landing.hero.signin', 'Sign in')}
           </Link>
         </div>
 
         <ul className="mt-9 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-gray-500">
-          {TRUST_POINTS.map((point) => (
+          {trustPoints(t).map((point) => (
             <li key={point} className="inline-flex items-center gap-1.5">
               <svg
                 className="h-4 w-4 text-crimson"

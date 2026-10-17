@@ -513,7 +513,7 @@ export function PhoneAuthForm(props: Props) {
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
-              placeholder="6-digit code"
+              placeholder={t('auth.phone.code_placeholder', '6-digit code')}
               maxLength={6}
               disabled={loading}
               {...register('code')}

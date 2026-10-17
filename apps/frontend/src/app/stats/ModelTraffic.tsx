@@ -2,13 +2,14 @@
 
 import { useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { ModelTraffic, PublicStats } from '@/lib/api/publicStats';
-import { KIND_COLORS, fmtCompact, fmtDay, fmtPercent } from './format';
+import { fill } from '@/lib/utils/interpolate';
+import { KIND_COLORS } from './format';
+import { useStatsFormat, type StatsFormat } from './useStatsFormat';
 
 type Metric = 'tokens' | 'requests';
 
 const BAR = KIND_COLORS.coding;
 const BAR_ACTIVE = '#1b4f8f';
-const OTHER_LABEL = 'Other models';
 
 function daily(series: ModelTraffic, metric: Metric): number[] {
   return metric === 'tokens' ? series.daily_tokens : series.daily_requests;
@@ -29,13 +30,14 @@ function DailyBars({
   values: number[];
   metric: Metric;
 }) {
+  const f = useStatsFormat();
+  const { t } = f;
   const [active, setActive] = useState<number | null>(null);
   const n = values.length;
   const max = Math.max(...values, 1);
   const peak = values.indexOf(Math.max(...values));
   // Leave air between bars only while there are few enough to see it.
   const gap = n <= 60 ? 0.25 : 0;
-  const unit = metric === 'tokens' ? 'tokens' : 'requests';
 
   const pick = (event: PointerEvent<SVGSVGElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
@@ -60,7 +62,18 @@ function DailyBars({
     <div className="relative h-8">
       <svg
         role="img"
-        aria-label={`${label}, ${unit} per day. Busiest day ${fmtDay(dates[peak] ?? '')}: ${fmtCompact(values[peak] ?? 0)} ${unit}.`}
+        aria-label={fill(
+          metric === 'tokens'
+            ? t(
+                'stats.models.bars_tokens',
+                '{model}, tokens per day. Busiest day {date}: {value} tokens.',
+              )
+            : t(
+                'stats.models.bars_requests',
+                '{model}, requests per day. Busiest day {date}: {value} requests.',
+              ),
+          { model: label, date: f.day(dates[peak] ?? ''), value: f.compact(values[peak] ?? 0) },
+        )}
         tabIndex={0}
         viewBox={`0 0 ${n} 100`}
         preserveAspectRatio="none"
@@ -95,16 +108,30 @@ function DailyBars({
           style={{ left: `${((active + 0.5) / n) * 100}%` }}
         >
           <span className="font-semibold tabular-nums text-gray-950">
-            {fmtCompact(values[active])} {values[active] === 1 ? unit.slice(0, -1) : unit}
+            {dayValue(f, metric, values[active])}
           </span>{' '}
           <span className="text-gray-500">
-            {fmtDay(dates[active])}
-            {active === 0 || active === n - 1 ? ' · partial day' : ''}
+            {active === 0 || active === n - 1 ? f.partialDay(dates[active]) : f.day(dates[active])}
           </span>
         </div>
       )}
     </div>
   );
+}
+
+/** "1.2K tokens" / "1 request", in the reader's language. */
+function dayValue(f: StatsFormat, metric: Metric, value: number): string {
+  const { t } = f;
+  const one = value === 1;
+  const template =
+    metric === 'tokens'
+      ? one
+        ? t('stats.models.value_token_one', '{value} token')
+        : t('stats.models.value_token_other', '{value} tokens')
+      : one
+        ? t('stats.models.value_request_one', '{value} request')
+        : t('stats.models.value_request_other', '{value} requests');
+  return fill(template, { value: f.compact(value) });
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -127,13 +154,16 @@ export function ModelTrafficSection({
   models: NonNullable<PublicStats['models']>;
   dates: string[];
 }): JSX.Element {
+  const f = useStatsFormat();
+  const { t } = f;
   const [open, setOpen] = useState(false);
   const [metric, setMetric] = useState<Metric>('tokens');
+  const otherLabel = t('stats.models.other', 'Other models');
   const rows: { key: string; label: string; series: ModelTraffic }[] = [
     ...[...models.items]
       .sort((a, b) => b[metric] - a[metric] || a.name.localeCompare(b.name))
       .map((m) => ({ key: m.name, label: m.name, series: m })),
-    ...(models.other ? [{ key: '__other__', label: OTHER_LABEL, series: models.other }] : []),
+    ...(models.other ? [{ key: '__other__', label: otherLabel, series: models.other }] : []),
   ];
   const all = (m: Metric) => rows.reduce((sum, r) => sum + r.series[m], 0);
   const top = [...models.items].sort((a, b) => b.tokens - a.tokens)[0];
@@ -150,15 +180,32 @@ export function ModelTrafficSection({
             className="-ml-1 inline-flex items-center gap-1.5 rounded-md px-1 text-left hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
           >
             <Chevron open={open} />
-            Traffic by model
+            {t('stats.models.title', 'Traffic by model')}
           </button>
         </h2>
         <p className="max-w-3xl text-sm text-gray-600">
-          Requests and tokens per day for each of the {models.items.length} models we offer
-          {models.other ? ', with every other model counted together' : ''}.
-          {top && all('tokens') > 0
-            ? ` ${top.name} served ${fmtPercent(top.tokens / all('tokens'))} of all tokens.`
-            : ''}
+          {(() => {
+            const intro = fill(
+              models.other
+                ? t(
+                    'stats.models.intro_with_other',
+                    'Requests and tokens per day for each of the {count} models we offer, with every other model counted together.',
+                  )
+                : t(
+                    'stats.models.intro',
+                    'Requests and tokens per day for each of the {count} models we offer.',
+                  ),
+              { count: String(models.items.length) },
+            );
+            if (!top || all('tokens') <= 0) return intro;
+            return fill(t('stats.models.intro_and_top', '{intro} {top}'), {
+              intro,
+              top: fill(t('stats.models.top', '{model} served {share} of all tokens.'), {
+                model: top.name,
+                share: f.percent(top.tokens / all('tokens')),
+              }),
+            });
+          })()}
         </p>
       </div>
       <div id="stats-models-body" hidden={!open}>
@@ -166,12 +213,14 @@ export function ModelTrafficSection({
           <div className="min-w-0 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-gray-900">
-                {metric === 'tokens' ? 'Tokens per day' : 'Requests per day'}, by model
+                {metric === 'tokens'
+                  ? t('stats.models.tokens_per_day', 'Tokens per day, by model')
+                  : t('stats.models.requests_per_day', 'Requests per day, by model')}
               </h3>
               <div
                 className="inline-flex rounded-lg border border-gray-200 p-0.5"
                 role="group"
-                aria-label="Measure"
+                aria-label={t('stats.measure', 'Measure')}
               >
                 {(['tokens', 'requests'] as const).map((m) => (
                   <button
@@ -183,7 +232,7 @@ export function ModelTrafficSection({
                       metric === m ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
                     }`}
                   >
-                    {m === 'tokens' ? 'Tokens' : 'Requests'}
+                    {m === 'tokens' ? t('stats.tokens', 'Tokens') : t('stats.requests', 'Requests')}
                   </button>
                 ))}
               </div>
@@ -192,12 +241,18 @@ export function ModelTrafficSection({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                    <th className="py-2 pr-4 font-medium">Model</th>
+                    <th className="py-2 pr-4 font-medium">{t('stats.model', 'Model')}</th>
                     <th className="py-2 pr-4 text-right font-medium">
-                      {metric === 'tokens' ? 'Tokens' : 'Requests'}
+                      {metric === 'tokens'
+                        ? t('stats.tokens', 'Tokens')
+                        : t('stats.requests', 'Requests')}
                     </th>
-                    <th className="hidden py-2 pr-4 text-right font-medium sm:table-cell">Share</th>
-                    <th className="w-1/2 py-2 font-medium">Per day</th>
+                    <th className="hidden py-2 pr-4 text-right font-medium sm:table-cell">
+                      {t('stats.models.share', 'Share')}
+                    </th>
+                    <th className="w-1/2 py-2 font-medium">
+                      {t('stats.models.per_day', 'Per day')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -209,10 +264,10 @@ export function ModelTrafficSection({
                         {r.label}
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums text-gray-700">
-                        {fmtCompact(r.series[metric])}
+                        {f.compact(r.series[metric])}
                       </td>
                       <td className="hidden py-2 pr-4 text-right tabular-nums text-gray-600 sm:table-cell">
-                        {fmtPercent(all(metric) ? r.series[metric] / all(metric) : 0)}
+                        {f.percent(all(metric) ? r.series[metric] / all(metric) : 0)}
                       </td>
                       <td className="py-2">
                         <DailyBars
@@ -228,8 +283,10 @@ export function ModelTrafficSection({
               </table>
             </div>
             <p className="mt-3 text-xs text-gray-500">
-              Each row is scaled to that model&apos;s busiest day. The first and last days are
-              partial and drawn lighter. Hover or focus a row&apos;s bars for a day&apos;s value.
+              {t(
+                'stats.models.footnote',
+                "Each row is scaled to that model's busiest day. The first and last days are partial and drawn lighter. Hover or focus a row's bars for a day's value.",
+              )}
             </p>
           </div>
         )}

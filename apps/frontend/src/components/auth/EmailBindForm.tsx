@@ -63,14 +63,22 @@ export function EmailBindForm({
     if (loading) return;
     const trimmed = data.email.trim();
     if (currentEmail && trimmed.toLowerCase() === currentEmail.trim().toLowerCase()) {
-      setError('Please enter a different email address to change your email.');
+      setError(
+        t(
+          'auth.email_bind.same_email',
+          'Please enter a different email address to change your email.',
+        ),
+      );
       return;
     }
     if (hasPassword ? !password : !isCompleteCode(phoneCode)) {
       setError(
         hasPassword
-          ? 'Enter your current password to confirm this change.'
-          : 'Enter the verification code sent to your phone.',
+          ? t(
+              'auth.email_bind.password_required',
+              'Enter your current password to confirm this change.',
+            )
+          : t('settings.password.code_required', 'Enter the verification code sent to your phone.'),
       );
       return;
     }
@@ -86,9 +94,12 @@ export function EmailBindForm({
       await onSuccess();
       setNotice(
         result.email_verified
-          ? 'Email address updated successfully.'
+          ? t('auth.email_bind.updated', 'Email address updated successfully.')
           : fill(
-              'Verification email sent to {email}. Click the link in your inbox to finish verifying.',
+              t(
+                'auth.email_bind.sent',
+                'Verification email sent to {email}. Click the link in your inbox to finish verifying.',
+              ),
               { email: result.email },
             ),
       );
@@ -105,13 +116,16 @@ export function EmailBindForm({
 
   const isNeutral = skin === NEUTRAL_AUTH_APPEARANCE;
   const hintText = currentEmail
-    ? 'Enter a new email address to send a verification link. Your current email stays active until verified.'
-    : 'We will send a verification link to this address.';
+    ? t(
+        'auth.email_bind.change_hint',
+        'Enter a new email address to send a verification link. Your current email stays active until verified.',
+      )
+    : t('auth.email_bind.bind_hint', 'We will send a verification link to this address.');
   const submitLabel = loading
     ? 'Sending…'
     : currentEmail
-      ? 'Change Email'
-      : 'Send verification email';
+      ? t('auth.email_bind.change', 'Change Email')
+      : t('auth.email_bind.send', 'Send verification email');
 
   const submitButton = (
     <button
@@ -168,17 +182,17 @@ export function EmailBindForm({
                   clipRule="evenodd"
                 />
               </svg>
-              Verified
+              {t('settings.phone.verified', 'Verified')}
             </span>
           )}
         </div>
       </AuthField>
       {hasPassword ? (
         <InputField
-          label="Current password"
+          label={t('auth.email_bind.current_password', 'Current password')}
           type="password"
           autoComplete="current-password"
-          hint="Confirms that this change is yours."
+          hint={t('auth.email_bind.current_password_hint', 'Confirms that this change is yours.')}
           value={password}
           onChange={(event) => {
             setPassword(event.target.value);
