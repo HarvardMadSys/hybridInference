@@ -1071,7 +1071,7 @@ def _quota_card(
     """Build the alert context for one account that has consumed its quota."""
     # Clamped at zero rather than signed. The predicate that selects these rows
     # includes the gate's optimistic pre-charge, so an account is already being
-    # refused at $19.99 against a $20.00 cap — and rendering that as
+    # refused at $19.991 against a $20.00 cap — and rendering that as
     # "over_by: $-0.01" on a card titled "quota consumed" reads as a
     # contradiction rather than as the boundary case it is. At or below the cap
     # the honest word is "at cap".
