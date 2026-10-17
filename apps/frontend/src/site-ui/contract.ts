@@ -273,7 +273,9 @@ export interface AuthAppearance {
  * The list is enforced, not advisory: `module.tsx` drops every other key from
  * a module's dictionary before any page reads it. Console pages translate
  * through the same `t()` — `/authorize` with `auth.authorize.*`, `/chat` with
- * `chat.*` — and stay closed because their keys are not here. Each key listed
+ * `chat.*` — and stay closed because their keys are not here. The phone
+ * binding on `/dashboard/settings` is console copy too, even though it reuses
+ * the account pages' form: console routes always read the English default. Each key listed
  * is one a page actually reads; one that nothing reads would be a promise the
  * host does not keep.
  *
@@ -352,10 +354,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.login.subtitle',
   'auth.login.success_toast',
   'auth.login.title',
-  'auth.phone.bind_hint',
-  'auth.phone.bind_submit',
-  'auth.phone.bind_success',
-  'auth.phone.bound_number',
   'auth.phone.code_label',
   'auth.phone.code_sent',
   'auth.phone.email_method',
@@ -367,7 +365,6 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.phone.retry_in',
   'auth.phone.send_code',
   'auth.phone.sending',
-  'auth.phone.settings_title',
   'auth.phone.signup_pending',
   'auth.phone.signup_success',
   'auth.phone.submitting',

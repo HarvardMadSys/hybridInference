@@ -2,8 +2,9 @@
 
 import { useMemo } from 'react';
 
+import { useIsConsoleCopy } from '@/site-ui/appearance';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
-import { translator, type Translate } from '@/lib/i18n/translate';
+import { translate, translator, type Translate } from '@/lib/i18n/translate';
 
 /**
  * Resolve one interface string, in a component.
@@ -22,15 +23,14 @@ import { translator, type Translate } from '@/lib/i18n/translate';
  *
  * `SITE_UI_CLIENT.authMessages` holds only the keys the contract declares —
  * `module.tsx` drops the rest — so a module can supply wording only for those.
- * It cannot invent a slot or reach a console page's copy, and it cannot change
- * a validation rule, because the rules pass their own message through this
- * function rather than being read from it. A declared key set to `''` resolves
- * to the empty string: that is a module removing a sentence on purpose, not a
- * missing translation.
+ * Console routes (marked by `SiteUiBoundary` when `usePublicRoute()` is `null`)
+ * always keep the shared English copy (`CONSOLE_LANGUAGE = 'en'`), even when
+ * they mount a shared component such as `PhoneAuthForm`.
  */
 export function useT(): Translate {
-  const messages = SITE_UI_CLIENT.authMessages;
-  return useMemo(() => translator(messages), [messages]);
+  const isConsoleRoute = useIsConsoleCopy();
+  const messages = isConsoleRoute ? undefined : SITE_UI_CLIENT.authMessages;
+  return useMemo(() => (messages ? translator(messages) : translate), [messages]);
 }
 
 export type { Translate };
