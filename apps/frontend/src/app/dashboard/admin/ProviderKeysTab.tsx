@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   ProviderApiKeyItem,
   ProviderKeyMinRole,
@@ -45,6 +45,7 @@ function formatRelative(s: string | null): string {
 }
 
 export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProviderChange }: Props) {
+  const toast = useAccountToast();
   const [providers, setProviders] = useState<string[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>(initialProvider);
@@ -76,23 +77,26 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     } catch (err) {
       toast.error(`Failed to load providers: ${getErrorMessage(err)}`);
     }
-  }, []);
+  }, [toast]);
 
-  const loadKeys = useCallback(async (provider: string) => {
-    if (!provider) {
-      setKeys([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      const resp = await listProviderKeys(provider);
-      setKeys(resp.keys);
-    } catch (err) {
-      toast.error(`Failed to load keys: ${getErrorMessage(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loadKeys = useCallback(
+    async (provider: string) => {
+      if (!provider) {
+        setKeys([]);
+        return;
+      }
+      setLoading(true);
+      try {
+        const resp = await listProviderKeys(provider);
+        setKeys(resp.keys);
+      } catch (err) {
+        toast.error(`Failed to load keys: ${getErrorMessage(err)}`);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [toast],
+  );
 
   useEffect(() => {
     void loadProviders();

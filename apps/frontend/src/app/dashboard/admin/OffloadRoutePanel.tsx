@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import type { OffloadRoute, ProviderRoute } from '@/lib/api/admin';
 import { clearOffloadRoute, setOffloadRoute } from '@/lib/api/admin';
@@ -68,6 +68,7 @@ export function OffloadRoutePanel({
   routeLabel,
   onChange,
 }: OffloadRoutePanelProps) {
+  const toast = useAccountToast();
   const [draftRouteId, setDraftRouteId] = useState(offload?.route_id ?? '');
   const [draftWait, setDraftWait] = useState(
     offload ? String(offload.wait_seconds) : DEFAULT_WAIT_SECONDS,

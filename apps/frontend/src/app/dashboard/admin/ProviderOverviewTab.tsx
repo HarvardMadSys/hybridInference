@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import type {
   ProviderDefinitionItem,
   ProbeProviderDefinitionResponse,
@@ -67,6 +67,7 @@ interface AddProviderModalProps {
 }
 
 function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
+  const toast = useAccountToast();
   const [displayName, setDisplayName] = useState('');
   const [provider, setProvider] = useState('');
   const [providerTouched, setProviderTouched] = useState(false);
@@ -352,6 +353,7 @@ interface EditProviderModalProps {
 }
 
 function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalProps) {
+  const toast = useAccountToast();
   const [displayName, setDisplayName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -596,6 +598,7 @@ interface DeleteProviderModalProps {
 }
 
 function DeleteProviderModal({ provider, onClose, onDeleted }: DeleteProviderModalProps) {
+  const toast = useAccountToast();
   const [confirmValue, setConfirmValue] = useState('');
   const [deleting, setDeleting] = useState(false);
 
@@ -678,6 +681,7 @@ interface ProviderOverviewTabProps {
 }
 
 export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) {
+  const toast = useAccountToast();
   const [providers, setProviders] = useState<ProviderDefinitionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -706,7 +710,7 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void loadProviders();

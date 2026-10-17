@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { updatePassword, updateProfile } from '@/lib/api/user';
 import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -37,6 +37,7 @@ const changePasswordSchema = z
 type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 
 function SettingsContent() {
+  const toast = useAccountToast();
   const { state, refreshUser } = useAuth();
   const { branding, features } = useSiteConfig();
   const t = useT();

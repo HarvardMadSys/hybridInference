@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   OffloadRoute,
   OpenRouterProviderOption,
@@ -556,6 +556,7 @@ interface ProviderRoutesTabProps {
 }
 
 export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
+  const toast = useAccountToast();
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
   const [draftWeights, setDraftWeights] = useState<Record<string, string>>({});
@@ -643,7 +644,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void loadRoutes();
@@ -1012,39 +1013,45 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     ];
   }, [form.baseUrl, form.upstreamProvider, providerSelectBaseOptions]);
 
-  const loadKeys = useCallback(async (provider: string) => {
-    if (!provider) {
-      setKeyOptions([]);
-      return;
-    }
-    setKeysLoading(true);
-    try {
-      const resp = await listProviderKeys(provider);
-      setKeyOptions(resp.keys.filter((key) => key.id));
-    } catch (err) {
-      setKeyOptions([]);
-      toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
-    } finally {
-      setKeysLoading(false);
-    }
-  }, []);
+  const loadKeys = useCallback(
+    async (provider: string) => {
+      if (!provider) {
+        setKeyOptions([]);
+        return;
+      }
+      setKeysLoading(true);
+      try {
+        const resp = await listProviderKeys(provider);
+        setKeyOptions(resp.keys.filter((key) => key.id));
+      } catch (err) {
+        setKeyOptions([]);
+        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+      } finally {
+        setKeysLoading(false);
+      }
+    },
+    [toast],
+  );
 
-  const loadCreateKeys = useCallback(async (provider: string) => {
-    if (!provider) {
-      setCreateKeyOptions([]);
-      return;
-    }
-    setCreateKeysLoading(true);
-    try {
-      const resp = await listProviderKeys(provider);
-      setCreateKeyOptions(resp.keys.filter((key) => key.id));
-    } catch (err) {
-      setCreateKeyOptions([]);
-      toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
-    } finally {
-      setCreateKeysLoading(false);
-    }
-  }, []);
+  const loadCreateKeys = useCallback(
+    async (provider: string) => {
+      if (!provider) {
+        setCreateKeyOptions([]);
+        return;
+      }
+      setCreateKeysLoading(true);
+      try {
+        const resp = await listProviderKeys(provider);
+        setCreateKeyOptions(resp.keys.filter((key) => key.id));
+      } catch (err) {
+        setCreateKeyOptions([]);
+        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+      } finally {
+        setCreateKeysLoading(false);
+      }
+    },
+    [toast],
+  );
 
   useEffect(() => {
     if (!editingRoute || !keyProvider) return;

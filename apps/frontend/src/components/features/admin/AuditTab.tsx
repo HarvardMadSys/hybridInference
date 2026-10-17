@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { AuditLogEntry, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -104,6 +104,7 @@ function RawJsonDetails({ data }: { data: unknown }) {
 }
 
 export function AuditTab() {
+  const toast = useAccountToast();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -149,7 +150,7 @@ export function AuditTab() {
     } finally {
       if (auditReqIdRef.current === reqId) setAuditLoading(false);
     }
-  }, [auditFilter, auditUserFilter, auditOffset]);
+  }, [auditFilter, auditUserFilter, auditOffset, toast]);
 
   useEffect(() => {
     loadAudit();

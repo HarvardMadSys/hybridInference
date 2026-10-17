@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -78,6 +78,7 @@ function statusClassName(status: string): string {
 }
 
 export function ApiKeyManager(): JSX.Element {
+  const toast = useAccountToast();
   const branding = useBranding();
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);

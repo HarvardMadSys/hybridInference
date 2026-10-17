@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -31,6 +31,7 @@ function relTime(s: string | null): string {
 }
 
 export function BroadcastsTab() {
+  const toast = useAccountToast();
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
   const [broadcastLoading, setBroadcastLoading] = useState(false);
