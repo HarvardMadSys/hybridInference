@@ -1,9 +1,8 @@
 """``python -m serving.auth.reset_password`` against PostgreSQL, before and after the upgrade.
 
-The command is how an operator gets back in, including while an upgraded
-backend keeps restarting because another session holds the users table and
-the users migration cannot run. It must work on that database as it is, and on
-the current schema.
+The command is how an operator gets back in, including while another session
+holds the users table and the upgraded backend's users migration cannot run
+yet. It must work on that database as it is, and on the current schema.
 """
 
 from __future__ import annotations
@@ -125,13 +124,14 @@ async def test_before_the_users_migration_while_a_reader_holds_the_table(databas
             OLD_USER,
         )
         await _add_session(conn, OLD_USER)
-    # What the backend's own lookup does on this database.
+    # What a store that has not read the catalog does on this database; the
+    # command never initializes one.
     with pytest.raises(asyncpg.UndefinedColumnError):
         await PostgresOperationalStore(pool).get_user_by_email("old-reset@example.com")
 
     # A long reader, as the nightly pg_dump: the upgrade's ALTER TABLE cannot
-    # get its lock, so the backend refuses to start, and the reset must not
-    # need that lock either.
+    # get its lock, so the backend defers its users migration, and the reset
+    # must not need that lock either.
     reader = await pool.acquire()
     transaction = reader.transaction()
     await transaction.start()

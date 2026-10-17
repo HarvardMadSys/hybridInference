@@ -399,6 +399,24 @@ describe('step 1: create administrator', () => {
     expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
   });
 
+  it("shows the backend's reason for a 503", async () => {
+    vi.mocked(createSetupAdmin).mockRejectedValueOnce(
+      new APIError(
+        'SERVICE_UNAVAILABLE',
+        'The database upgrade is still in progress; try again shortly.',
+        503,
+      ),
+    );
+    renderPage();
+    await screen.findByLabelText('Setup code');
+
+    fillAdmin();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The database upgrade is still in progress; try again shortly.',
+    );
+  });
+
   it('explains the rate limit', async () => {
     vi.mocked(createSetupAdmin).mockRejectedValueOnce(
       new APIError('RATE_LIMIT_EXCEEDED', 'Too many requests', 429),

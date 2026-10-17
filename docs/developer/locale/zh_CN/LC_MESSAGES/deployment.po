@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 19:08-0400\n"
+"POT-Creation-Date: 2026-10-16 22:57-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -991,23 +991,41 @@ msgstr ""
 
 #: ../developer/deployment.md:448
 msgid ""
-"**Choose a username that is hard to guess.** Sign-in allows five attempts"
-" per username in 15 minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), and counts "
-"each attempt before it checks the password, so anyone who knows a "
-"username can keep that account locked out — and `admin` is the first name"
-" anyone tries. A lockout lasts as long as the attempts keep coming and "
-"ends 15 minutes after they stop, or when the backend restarts, because "
-"the counts are held in memory. Nothing below needs a sign-in: "
-"`ADMIN_TOKEN`, when set, still reaches the admin API, and the command-"
-"line tools work on the database directly."
+"**Choose a username that is hard to guess.** Sign-in counts each attempt "
+"before it checks the password: five per username from one address in 15 "
+"minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
+"addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
+"the attempts the other limits let through), and twenty per address in an "
+"hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
+"to the account before, including the one you used for setup, holds a "
+"device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to "
+"`/auth`, kept on sign-out, valid for 180 days) and gets five attempts per"
+" 15 minutes of its own, so other people's guesses never lock it out. "
+"Changing `JWT_SECRET_KEY` invalidates every device cookie until that "
+"browser's next sign-in."
 msgstr ""
-"**选一个难猜的用户名**。登录对每个用户名每 15 "
-"分钟只允许尝试五次（`LOGIN_RATE_LIMIT_PER_15MIN`），而且在检查密码之前就计数，所以知道用户名的人可以让这个账号一直处于锁定状态——`admin`"
-" 又恰恰是谁都会先试的名字。只要尝试还在继续，锁定就一直持续，尝试停止 15 "
-"分钟后解除；后端重启也会解除，因为这些计数只保存在内存里。下面这些都不需要登录：设置了 `ADMIN_TOKEN` 时，它照样能访问管理 "
-"API，命令行工具则直接操作数据库。"
+"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同一个地址每 15 "
+"分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备"
+" cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有效期 180"
+" 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住它。修改 `JWT_SECRET_KEY` 会让所有设备 cookie "
+"失效，直到那个浏览器下次登录。"
 
-#: ../developer/deployment.md:457
+#: ../developer/deployment.md:460
+msgid ""
+"Other browsers share the limits with their address, and behind the "
+"bundled Compose file's console proxy every browser has the same address "
+"unless [trusted-proxy settings](trusted-proxies-and-client-ips.md) name "
+"the console; `admin` is the first username anyone tries. The counts are "
+"held in memory, so a backend restart clears them. Nothing below needs a "
+"sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API, and the "
+"command-line tools work on the database directly."
+msgstr ""
+"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台代理后面，除非[可信代理设置](trusted-proxies-"
+"and-client-ips.md)指明了控制台，所有浏览器的地址都相同；`admin` "
+"又恰恰是谁都会先试的用户名。这些计数只保存在内存里，所以重启后端会把它们清空。下面这些都不需要登录：设置了 `ADMIN_TOKEN` "
+"时，它照样能访问管理 API，命令行工具则直接操作数据库。"
+
+#: ../developer/deployment.md:468
 msgid ""
 "**Without the browser.** `ops/admin/create_admin.py` writes the account "
 "directly: it creates it with `role='admin'`, `status='active'`, "
@@ -1019,7 +1037,7 @@ msgstr ""
 "`role='admin'`、`status='active'`、`email_verified=TRUE` "
 "的账号；如果同一地址的账号已经存在，就把它提升为管理员。后端至少启动过一次之后（表结构由后端创建），在仓库根目录运行："
 
-#: ../developer/deployment.md:467
+#: ../developer/deployment.md:478
 msgid ""
 "Run it inside the project environment (`source .venv/bin/activate` after "
 "`make setup-dev`) so the `serving` package is importable. It reads "
@@ -1035,14 +1053,14 @@ msgstr ""
 "`--password` 时它会提示你输入密码，这样密码就不会留在 shell "
 "历史里。用这种方式创建任何账号，也同样完成了首次运行设置：有账号的数据库永远不会出现设置页面。"
 
-#: ../developer/deployment.md:475
+#: ../developer/deployment.md:486
 msgid ""
 "**A forgotten password.** The setup administrator has no email address, "
 "so there is no reset link to send. Reset its password where the backend "
 "runs:"
 msgstr "**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在后端运行的地方重置它的密码："
 
-#: ../developer/deployment.md:482
+#: ../developer/deployment.md:493
 msgid ""
 "It reads only the `DB_*` settings, asks twice for the new password — or, "
 "with `--generate`, prints a strong one — and revokes the account's "
@@ -1050,17 +1068,17 @@ msgid ""
 "as well, for any other account. From a source checkout, run `uv run "
 "python -m serving.auth.reset_password <username>` in the repository root."
 " It also works on a database the backend's upgrade has not migrated yet —"
-" while an upgraded backend keeps restarting because another session holds"
-" the users table, say — and changes no schema. Such a database has no "
-"login names yet, so name the account by its email address there."
+" while an upgrade's users migration is still waiting for the table's "
+"lock, say — and changes no schema. Such a database has no login names "
+"yet, so name the account by its email address there."
 msgstr ""
 "它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` "
 "则直接生成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 "
 "`uv run python -m serving.auth.reset_password "
-"<username>`。它也能在后端的升级还没迁移过的数据库上运行（比如升级后的后端因为另一个会话占着 users "
-"表而一直在重启时），而且不改动任何表结构。这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
+"<username>`。它也能在后端的升级还没迁移过的数据库上运行（比如升级对 users "
+"表的迁移还在等待表锁时），而且不改动任何表结构。这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
 
-#: ../developer/deployment.md:492
+#: ../developer/deployment.md:503
 msgid ""
 "**A setting that breaks the console.** Settings live in the database, so "
 "a value that stops sign-in from working cannot be fixed by editing "
@@ -1070,7 +1088,7 @@ msgstr ""
 "**把控制台弄坏的设置项**。设置项存放在数据库里，所以一个让登录失效的值，既没法靠改 `.env` "
 "修好，也没法在谁都登录不了的控制台里修好。用命令行把它改回来："
 
-#: ../developer/deployment.md:500
+#: ../developer/deployment.md:511
 msgid ""
 "`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the "
 "Configuration tab, with its validation, and never print a secret's value;"
@@ -1082,17 +1100,17 @@ msgstr ""
 "标签页一样，校验规则也相同，而且从不打印密钥的值；见[不通过控制台](configuration.md#without-the-"
 "console)。正在运行的后端会在大约十秒内读到改动；标着 **Restart required** 的设置项则要重启之后才生效。"
 
-#: ../developer/deployment.md:506
+#: ../developer/deployment.md:517
 msgid ""
 "With an administrator in place the instance can run with signup closed: "
 "turn off `signup_enabled` on the **Settings** tab."
 msgstr "有了管理员，实例就可以关闭注册运行：在 **Settings** 标签页上关掉 `signup_enabled`。"
 
-#: ../developer/deployment.md:509
+#: ../developer/deployment.md:520
 msgid "Promoting accounts with `ADMIN_EMAILS`"
 msgstr "用 `ADMIN_EMAILS` 提升账号"
 
-#: ../developer/deployment.md:511
+#: ../developer/deployment.md:522
 msgid ""
 "`ADMIN_EMAILS`, under **Security** on the **Configuration** tab, makes a "
 "listed address an administrator when that account signs in. It is not "
@@ -1102,7 +1120,7 @@ msgstr ""
 "`ADMIN_EMAILS` 位于 **Configuration** 标签页的 **Security** "
 "分类下，列在其中的地址对应的账号登录时会成为管理员。创建第一个管理员用不到它，而且在没有邮箱验证时它并不安全："
 
-#: ../developer/deployment.md:516
+#: ../developer/deployment.md:527
 msgid ""
 "Do not combine open signup (`signup_enabled`), disabled email "
 "verification (`signup_require_email_verification` off) and `ADMIN_EMAILS`"
@@ -1112,13 +1130,13 @@ msgstr ""
 "在别人能访问到的实例上，不要同时开放注册（`signup_enabled`）、关闭邮箱验证（`signup_require_email_verification`"
 " 关掉）并使用 `ADMIN_EMAILS`。三者组合起来就是一条现成的提权路径："
 
-#: ../developer/deployment.md:520
+#: ../developer/deployment.md:531
 msgid ""
 "with verification disabled, `POST /auth/signup` marks any address as "
 "verified without sending mail to it;"
 msgstr "关闭验证后，`POST /auth/signup` 会把任何地址都标记为已验证，却根本不往这个地址发邮件；"
 
-#: ../developer/deployment.md:522
+#: ../developer/deployment.md:533
 msgid ""
 "on login *and* on every token refresh, the backend promotes any account "
 "whose address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no"
@@ -1127,13 +1145,13 @@ msgstr ""
 "登录时*以及*每一次 token 刷新时，后端都会把地址列在 `ADMIN_EMAILS` 里的账号从 `free` 提升为 "
 "`admin`，并不检查注册的人是否真的拥有那个地址。"
 
-#: ../developer/deployment.md:526
+#: ../developer/deployment.md:537
 msgid ""
 "So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up "
 "with that address and is an admin on their first login."
 msgstr "于是，陌生人只要猜到或看到了你的 `ADMIN_EMAILS`，用那个地址注册，第一次登录就是管理员。"
 
-#: ../developer/deployment.md:530
+#: ../developer/deployment.md:541
 msgid ""
 "Email verification is on by default, and with it on an account cannot log"
 " in until it has followed a link sent to the address, which restores the "
@@ -1145,7 +1163,7 @@ msgstr ""
 "自己不做的地址归属检查。这需要一套可用的 SMTP；没有 SMTP，谁都无法完成注册，控制台也会把 `SMTP_USER` 和 "
 "`SMTP_PASSWORD` 报为缺失的设置项。"
 
-#: ../developer/deployment.md:536
+#: ../developer/deployment.md:547
 msgid ""
 "`ADMIN_EMAILS` also picks the default recipients for signup approval "
 "mail. To narrow the notification list without changing who holds the "
@@ -1155,7 +1173,7 @@ msgstr ""
 "`ADMIN_EMAILS` 还决定注册审批邮件的默认收件人。如果只想缩小通知名单、不想改变谁是管理员，就设置 "
 "`SIGNUP_NOTIFY_EMAILS`（逗号分隔）；它为空时，通知仍发给 `ADMIN_EMAILS`。"
 
-#: ../developer/deployment.md:541
+#: ../developer/deployment.md:552
 msgid ""
 "Both `signup_enabled` and `signup_require_email_verification` are runtime"
 " settings on the **Settings** tab. A `SIGNUP_ENABLED` or "
@@ -1167,11 +1185,11 @@ msgstr ""
 "标签页上的运行时设置。`.env` 里的 `SIGNUP_ENABLED` 或 "
 "`SIGNUP_REQUIRE_EMAIL_VERIFICATION` 只在那个存储里还没有值时，才会在启动时被复制过去，此后以存储里的值为准。"
 
-#: ../developer/deployment.md:547
+#: ../developer/deployment.md:558
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:549
+#: ../developer/deployment.md:560
 msgid ""
 "PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
 "volume `hybridinference_postgres_data`. A psql shell:"
@@ -1179,11 +1197,11 @@ msgstr ""
 "PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
 "`hybridinference_postgres_data` 中。开一个 psql shell："
 
-#: ../developer/deployment.md:556
+#: ../developer/deployment.md:567
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
-#: ../developer/deployment.md:559
+#: ../developer/deployment.md:570
 msgid ""
 "The database holds every setting in plaintext: provider keys, the SMTP "
 "password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` "
@@ -1198,11 +1216,11 @@ msgstr ""
 " 会话，就能看到所有这些内容，持有者可以用它们调用你的 provider、解密用户存下的 API key，并签发管理员 "
 "token。要像保护一份存着这些凭据的 `.env` 那样，保护数据库备份和数据库访问权限。"
 
-#: ../developer/deployment.md:568
+#: ../developer/deployment.md:579
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
-#: ../developer/deployment.md:574
+#: ../developer/deployment.md:585
 msgid ""
 "pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
 "an SSH tunnel to that port is enough to reach it. The console can also "
@@ -1215,7 +1233,7 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` "
 "检查是否为管理员会话；遇到任何意外情况它都会拒绝访问，包括连不上后端的时候。"
 
-#: ../developer/deployment.md:580
+#: ../developer/deployment.md:591
 msgid ""
 "One thing to get right: whether pgAdmin *also* asks for its own login is "
 "set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
@@ -1227,15 +1245,15 @@ msgstr ""
 "决定，而两处的默认值不一致。Compose 服务在未设置时取 `False`，pgAdmin 完全不需要登录；`.env.example` "
 "建议设为 `True`，即在控制台这道关卡之后，再加一道 pgAdmin 自己的登录。`True` 更安全。"
 
-#: ../developer/deployment.md:586
+#: ../developer/deployment.md:597
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:588
+#: ../developer/deployment.md:599
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:595
+#: ../developer/deployment.md:606
 #, python-brace-format
 msgid ""
 "`required variable DB_NAME is missing a value: DB_NAME must be set in "
@@ -1249,19 +1267,19 @@ msgstr ""
 "`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
 "文件自己写的文案，也是这一行里最好 grep 的部分。"
 
-#: ../developer/deployment.md:600
+#: ../developer/deployment.md:611
 msgid ""
 "Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT`."
 msgstr "端口已被占用——换一个 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
 
-#: ../developer/deployment.md:601
+#: ../developer/deployment.md:612
 msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
 
-#: ../developer/deployment.md:602
+#: ../developer/deployment.md:613
 msgid ""
 "`Configuration load failed after 3 attempts`, then `Authentication "
 "configuration incomplete` — the backend could not read its settings from "
@@ -1273,11 +1291,11 @@ msgstr ""
 "incomplete`——后端没能从数据库读到它的设置项，退回到了环境变量，而环境变量里没有密钥。应该修好数据库连接，而不是往 `.env` "
 "里加密钥。"
 
-#: ../developer/deployment.md:607
+#: ../developer/deployment.md:618
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:609
+#: ../developer/deployment.md:620
 msgid ""
 "`Too many authentication failures from this IP. Temporarily blocked.` is "
 "the gateway's own abuse defense, not a provider error and not a quota. "
@@ -1290,7 +1308,7 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_WINDOW_SEC` 内累计 `AUTH_FAILURE_BLOCK_THRESHOLD` "
 "次认证失败（默认是一天 200 次）后，接下来的 `AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）内都会被拒绝。"
 
-#: ../developer/deployment.md:615
+#: ../developer/deployment.md:626
 msgid ""
 "The awkward case is a caller you own — a status monitor, a CI job, a "
 "service account — whose key was rotated, revoked, or never reached its "
@@ -1300,21 +1318,21 @@ msgstr ""
 "麻烦的是你自己的调用方——状态监控、CI 任务、服务账号——它的 key "
 "被轮换或吊销了，或者压根没配置到它的运行环境里。它按计划不断重试，越过阈值，然后在*检查 key 之前*就被拒绝。这会带来两个后果："
 
-#: ../developer/deployment.md:620
+#: ../developer/deployment.md:631
 msgid ""
 "**Repairing the credential does not lift the block.** The blocklist is "
 "consulted before the presented key is read, so a corrected key gets the "
 "same 429 until the deadline passes."
 msgstr "**修好凭据并不会解除封禁**。黑名单在读取请求带的 key 之前就做了判断，所以在封禁到期之前，换上正确的 key 也还是 429。"
 
-#: ../developer/deployment.md:623
+#: ../developer/deployment.md:634
 msgid ""
 "**The 429 hides the original error.** Whatever the caller reports after "
 "the block is in place says nothing about whether the underlying 401/403 "
 "was fixed."
 msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
 
-#: ../developer/deployment.md:626
+#: ../developer/deployment.md:637
 msgid ""
 "Which caller is it? Turn on the `log_rejected_requests` admin setting and"
 " the refusals land in Recent Requests as `ip_blocked` rows. Each row "
@@ -1331,11 +1349,11 @@ msgstr ""
 "key（卡住的监控带的正是这种），并在用户旁边标出凭据状态（`revoked`、`expired`、`user_suspended`）。没有用户的行只是没查出来，不能证明是陌生人：可能这个"
 " key 根本不是本部署签发的，也可能查询被放弃了。这个查询的预算很紧，而封禁正在挡的那种流量洪峰，恰恰最容易让它放弃。"
 
-#: ../developer/deployment.md:636
+#: ../developer/deployment.md:647
 msgid "To recover, first fix the credential, then clear the block:"
 msgstr "要恢复，先修好凭据，再解除封禁："
 
-#: ../developer/deployment.md:651
+#: ../developer/deployment.md:662
 msgid ""
 "`cleared: false` means there was nothing to lift — it lapsed, or that "
 "bucket was never blocked. Clearing grants no immunity: a caller still "
@@ -1348,7 +1366,7 @@ msgstr ""
 "key，越过阈值后会再次被封。对于永远不该被封的来源，应该把它加进 "
 "`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
 
-#: ../developer/deployment.md:657
+#: ../developer/deployment.md:668
 msgid ""
 "The blocklist is per-process, in-memory state. On the single-process "
 "default both endpoints are exact, and a restart also clears every block. "
@@ -1358,15 +1376,15 @@ msgstr ""
 "黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 "
 "worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
 
-#: ../developer/deployment.md:662
+#: ../developer/deployment.md:673
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:664
+#: ../developer/deployment.md:675
 msgid "**Stop and start, keeping data:**"
 msgstr "**停止再启动，保留数据：**"
 
-#: ../developer/deployment.md:670
+#: ../developer/deployment.md:681
 msgid ""
 "**Destroy the database and start clean.** `docker compose down -v` does "
 "*not* do this. `postgres_data` is declared `external: true` in "
@@ -1378,7 +1396,7 @@ msgstr ""
 "`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
 "从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，所以 `make up` 之后还是原来那份数据。要按名字删除这个卷："
 
-#: ../developer/deployment.md:682
+#: ../developer/deployment.md:693
 msgid ""
 "The backend then starts as on a new deployment: it generates new secrets "
 "unless `.env` supplies them, imports whatever settings `.env` still "
@@ -1387,7 +1405,7 @@ msgstr ""
 "随后后端会像在新部署上一样启动：生成新的密钥（除非 `.env` 里已经提供），导入 `.env` "
 "里还留着的设置项，并打印一个设置码，供创建新的管理员。"
 
-#: ../developer/deployment.md:687
+#: ../developer/deployment.md:698
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key, "
 "request log and stored setting with it. Take a `pg_dump` first if any of "
@@ -1396,7 +1414,7 @@ msgstr ""
 "`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随之删除。只要其中有任何数据还有用，先做一次 "
 "`pg_dump`。"
 
-#: ../developer/deployment.md:691
+#: ../developer/deployment.md:702
 msgid ""
 "pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary "
 "local volume that `make down` leaves in place. To clear pgAdmin's saved "
@@ -1406,7 +1424,7 @@ msgstr ""
 "pgAdmin 自己的卷（`hybridinference_pgadmin_data`）是普通的本地卷，`make down` 不会动它。要清掉 "
 "pgAdmin 保存的状态，参照[重置 pgAdmin](database.md#resetting-pgadmin)，按名字删除这个卷。"
 
-#: ../developer/deployment.md:695
+#: ../developer/deployment.md:706
 msgid "Rebuilding after code changes"
 msgstr "改动代码后重新构建"
 
@@ -1624,3 +1642,29 @@ msgstr "改动代码后重新构建"
 #~ " setup is complete, so use the "
 #~ "newest:"
 #~ msgstr "从后端日志里读出设置码。在设置完成之前，后端每次启动都会打印一个新的，所以要用最新的那个："
+
+#~ msgid ""
+#~ "**Choose a username that is hard "
+#~ "to guess.** Sign-in allows five "
+#~ "attempts per username in 15 minutes "
+#~ "(`LOGIN_RATE_LIMIT_PER_15MIN`), and counts each "
+#~ "attempt before it checks the password,"
+#~ " so anyone who knows a username "
+#~ "can keep that account locked out —"
+#~ " and `admin` is the first name "
+#~ "anyone tries. A lockout lasts as "
+#~ "long as the attempts keep coming "
+#~ "and ends 15 minutes after they "
+#~ "stop, or when the backend restarts, "
+#~ "because the counts are held in "
+#~ "memory. Nothing below needs a sign-"
+#~ "in: `ADMIN_TOKEN`, when set, still "
+#~ "reaches the admin API, and the "
+#~ "command-line tools work on the "
+#~ "database directly."
+#~ msgstr ""
+#~ "**选一个难猜的用户名**。登录对每个用户名每 15 "
+#~ "分钟只允许尝试五次（`LOGIN_RATE_LIMIT_PER_15MIN`），而且在检查密码之前就计数，所以知道用户名的人可以让这个账号一直处于锁定状态——`admin`"
+#~ " 又恰恰是谁都会先试的名字。只要尝试还在继续，锁定就一直持续，尝试停止 15 "
+#~ "分钟后解除；后端重启也会解除，因为这些计数只保存在内存里。下面这些都不需要登录：设置了 `ADMIN_TOKEN` "
+#~ "时，它照样能访问管理 API，命令行工具则直接操作数据库。"

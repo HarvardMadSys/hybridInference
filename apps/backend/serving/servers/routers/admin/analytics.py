@@ -25,6 +25,7 @@ from serving.servers.deps import (
     get_db_logger,
     verify_admin_access,
 )
+from serving.storage import account_schema
 
 router = APIRouter(prefix="/admin")
 
@@ -203,6 +204,12 @@ async def admin_get_analytics(
         raise HTTPException(500, "Database not configured")
 
     lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
+    # ``email`` is the user's display label: the email, else the login name
+    # of an account created without one, else the id of a deleted account.
+    # A login name column the upgrade has not added yet holds nothing.
+    users = account_schema.current()
+    login_name = users.column("login_name", "u")
+    group_login_name = ", u.login_name" if users.has("login_name") else ""
 
     # Acquire ONE connection and run all queries sequentially. Acquiring 5
     # connections via asyncio.gather can starve the pool when two admin
@@ -234,10 +241,8 @@ async def admin_get_analytics(
             else None
         )
 
-        # ``email`` is the user's display label: the email, else the login name
-        # of an account created without one, else the id of a deleted account.
         top_users_rows = await conn.fetch(
-            """
+            f"""
             WITH totals AS (
                 SELECT COUNT(*) AS grand_total
                 FROM api_logs
@@ -247,13 +252,13 @@ async def admin_get_analytics(
             ranked AS (
                 SELECT
                     l.user_id,
-                    COALESCE(u.email, u.login_name, l.user_id) AS email,
+                    COALESCE(u.email, {login_name}, l.user_id) AS email,
                     COUNT(*) AS req_count
                 FROM api_logs l
                 LEFT JOIN users u ON u.id = l.user_id
                 WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
                   AND l.user_id IS NOT NULL
-                GROUP BY l.user_id, u.email, u.login_name
+                GROUP BY l.user_id, u.email{group_login_name}
                 ORDER BY req_count DESC
                 LIMIT 10
             )
@@ -344,12 +349,12 @@ async def admin_get_analytics(
         # Tokens = prompt + completion (total_tokens is only populated when the
         # provider returns it, so SUM(total_tokens) would undercount).
         by_model_top_users_rows = await conn.fetch(
-            """
+            f"""
             WITH per_user AS (
                 SELECT
                     l.model_id,
                     l.user_id,
-                    COALESCE(u.email, u.login_name, l.user_id) AS email,
+                    COALESCE(u.email, {login_name}, l.user_id) AS email,
                     COUNT(*) AS req_count,
                     COALESCE(
                         SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
@@ -359,7 +364,7 @@ async def admin_get_analytics(
                 LEFT JOIN users u ON u.id = l.user_id
                 WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
                   AND l.user_id IS NOT NULL
-                GROUP BY l.model_id, l.user_id, u.email, u.login_name
+                GROUP BY l.model_id, l.user_id, u.email{group_login_name}
             ),
             model_totals AS (
                 -- SUM(bigint) returns numeric (asyncpg Decimal); cast back to int.

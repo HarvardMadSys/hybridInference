@@ -399,7 +399,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "login_rate_limit_per_15min",
         "security",
-        "Sign-in attempts allowed per email address in 15 minutes.",
+        "Sign-in attempts allowed per email address or username from one client address in "
+        "15 minutes (IPv6 is bucketed to /64).",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "login_account_rate_limit_per_15min",
+        "security",
+        "Sign-in attempts allowed per email address or username from all client addresses "
+        "together in 15 minutes, bounding password guessing spread across many addresses. "
+        "Only attempts that are let through count, so each address adds at most its "
+        "per-address allowance.",
         "int",
         minimum=1,
     ),

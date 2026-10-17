@@ -17,8 +17,9 @@ or, with ``--generate``, creates and prints a strong one, stores its Argon2
 hash, and revokes the account's sessions so every browser must sign in again.
 
 It also works on a database the backend's upgrade has not migrated yet, as
-while an upgraded backend keeps restarting because another session holds the
-users table: it reads only the columns that exist and changes no schema.
+while another session holds the users table and the upgraded backend serves
+on the old one until its migration can land: it reads only the columns that
+exist and changes no schema.
 """
 
 from __future__ import annotations
@@ -52,10 +53,12 @@ class ResetPasswordError(Exception):
 class AccountStore:
     """What the reset needs from the database, on any release's users table.
 
-    The operational store's lookups select every users column the current
-    release defines, so on a database its upgrade has not migrated yet they
-    fail with ``column "login_name" does not exist``. These read the catalog
-    first and select only the columns the reset uses that are there.
+    An operational store selects the users columns its own catalog read found
+    when it initialized; this command never initializes one, and an
+    uninitialized store selects every column the current release defines, so
+    on a database the upgrade has not migrated yet its lookups fail with
+    ``column "login_name" does not exist``. These read the catalog first and
+    select only the columns the reset uses that are there.
 
     Nothing here changes the schema. Adding the missing column needs the users
     table's ACCESS EXCLUSIVE lock, which is the lock the stalled upgrade cannot

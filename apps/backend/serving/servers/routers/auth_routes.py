@@ -53,6 +53,7 @@ from serving.servers.deps import get_current_user, get_db_logger, get_operationa
 from serving.servers.routers.phone_auth_routes import router as phone_auth_router
 from serving.setup_state import refresh_setup_state
 from serving.utils import password as password_utils
+from serving.utils.device_cookie import recognized_device, remember_device
 from serving.utils.email import (
     is_email_enabled,
     send_new_registration_admin_email,
@@ -94,6 +95,7 @@ async def start_user_session(
     user_row: dict[str, Any],
     *,
     user_role: str,
+    request: Request | None = None,
 ) -> LoginResponse:
     """Sign *user_row* in: open a session and return the login response body.
 
@@ -102,6 +104,12 @@ async def start_user_session(
     caller's ``prepare_sign_in`` result, as its active account; the accounts
     already signed in there stay signed in. *user_role* is the role the caller
     has settled on (login may just have promoted an ``ADMIN_EMAILS`` account).
+
+    The response also gives the browser a device cookie entry for the account,
+    which exempts its later sign-ins from limits other clients' attempts can
+    exhaust (:mod:`serving.utils.device_cookie`). The entries for other
+    accounts that *request* carries are kept; without it (first-run setup,
+    where no other account exists yet) the cookie holds this one alone.
     """
     session_id = generate_session_id()
     is_admin = user_role == "admin"
@@ -128,6 +136,7 @@ async def start_user_session(
     await complete_sign_in(
         op_store, response, browser, user_id=user_row["id"], auth_session_id=auth_session_id
     )
+    remember_device(response, user_row, request)
 
     return LoginResponse(
         access_token=access_token,
@@ -332,10 +341,14 @@ async def login(
     Returns access token (15 min) and sets refresh token as HttpOnly cookie
     (30 days by default).
 
-    Rate limits (configurable via settings.login_rate_limit_per_15min and
+    Rate limits (configurable via settings.login_rate_limit_per_15min,
+    settings.login_account_rate_limit_per_15min and
     settings.login_rate_limit_per_hour_per_ip):
-    - 5 attempts per 15 minutes per email or login name
+    - 5 attempts per 15 minutes per email or login name from one client address
+    - 50 attempts per 15 minutes per email or login name from all addresses
     - 20 attempts per hour per IP
+    A browser presenting a device cookie entry for the identifier, from an
+    earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -372,8 +385,14 @@ async def login(
                 failure_reason or "-",
             )
 
-    allowed, reason = await check_and_record_login(identifier, client_ip)
+    # Only rate limiting differs for a recognized browser: the password is
+    # checked, and every outcome answered, exactly as for any other client.
+    device = recognized_device(request, identifier)
+    allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
     if not allowed:
+        # "ip" is the hourly per-IP window; "email" (this account from this
+        # address), "account" (from every address) and "device" (this
+        # browser) are 15-minute windows.
         retry_after = "3600" if reason == "ip" else "900"
         await _record("failure", failure_reason="rate_limited", user_id=None)
         raise HTTPException(
@@ -477,7 +496,7 @@ async def login(
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin (ADMIN_EMAILS)")
 
     login_response = await start_user_session(
-        op_store, response, browser, user_row, user_role=user_role
+        op_store, response, browser, user_row, user_role=user_role, request=request
     )
 
     logger.info(f"User logged in: {user_row['id']} ({identifier})")

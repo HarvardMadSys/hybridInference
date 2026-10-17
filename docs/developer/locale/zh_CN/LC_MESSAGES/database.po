@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 19:08-0400\n"
+"POT-Creation-Date: 2026-10-16 22:57-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -352,15 +352,27 @@ msgstr ""
 
 #: ../developer/database.md:91
 msgid ""
+"This includes the account columns (login names, phone numbers). Until "
+"they land, email sign-in, token refresh, API keys and admin pages work on"
+" the old table, while first-run setup and phone sign-in answer `503` with"
+" \"The database upgrade is still in progress; try again shortly.\" Only "
+"the hard-delete claim columns still block startup."
+msgstr ""
+"账号相关的字段（登录名、手机号）也是如此。在它们加上之前，邮箱登录、令牌刷新、API key "
+"和管理页面都在旧表上照常工作，而首次运行设置和手机号登录会返回 `503`，提示“The database upgrade is still in"
+" progress; try again shortly.”。只有硬删除认领（hard-delete claim）相关的字段仍会阻止启动。"
+
+#: ../developer/database.md:97
+msgid ""
 "If you are contributing a column to `api_logs`, add it in `log_schema.py`"
 " only; that is the one place the request log's schema is defined."
 msgstr "如果你要给 `api_logs` 加一列，只在 `log_schema.py` 里加；请求日志的表结构只在那一处定义。"
 
-#: ../developer/database.md:94
+#: ../developer/database.md:100
 msgid "Secrets for deleting accounts"
 msgstr "删除账号相关的密钥"
 
-#: ../developer/database.md:96
+#: ../developer/database.md:102
 msgid ""
 "When an admin permanently deletes a user, the gateway also records a "
 "keyed fingerprint of that account in the `erasure_fence` table, so a "
@@ -370,7 +382,7 @@ msgstr ""
 "管理员永久删除用户时，网关还会在 `erasure_fence` "
 "表里记下这个账号的带密钥指纹，这样即使有请求日志正在写入，也没法把这个用户的数据写回来。这由两项设置控制："
 
-#: ../developer/database.md:101
+#: ../developer/database.md:107
 msgid ""
 "`ERASURE_FENCE_SECRET` is the key for those fingerprints. The first time "
 "the gateway starts against a database, it records a fingerprint of this "
@@ -400,7 +412,7 @@ msgstr ""
 "就会用它，后端也会因此拒绝启动，所以要把它删掉。如果遇到不匹配（比如把备份恢复到了另一套密钥旁边），恢复原来的值即可；千万不要为了绕过它去删除 "
 "fence 行或它们的元数据。"
 
-#: ../developer/database.md:117
+#: ../developer/database.md:123
 msgid ""
 "`ERASURE_FENCE_PROTOCOL_READY=true` turns permanent deletion on. Leave it"
 " `false` until every process that writes `api_logs` runs a version that "
@@ -409,7 +421,7 @@ msgstr ""
 "`ERASURE_FENCE_PROTOCOL_READY=true` 开启永久删除。要等所有写 `api_logs` 的进程都升级到会检查 "
 "fence 的版本，才能打开它；在那之前保持 `false`。"
 
-#: ../developer/database.md:121
+#: ../developer/database.md:127
 msgid "What the tables hold"
 msgstr "各张表存了什么"
 
@@ -584,15 +596,15 @@ msgid ""
 "deleting accounts](#secrets-for-deleting-accounts)"
 msgstr "已永久删除账号的带密钥指纹；见[删除账号相关的密钥](#secrets-for-deleting-accounts)"
 
-#: ../developer/database.md:137
+#: ../developer/database.md:143
 msgid "`\\dt` on a live database lists every table."
 msgstr "在运行中的数据库上执行 `\\dt`，就能列出所有表。"
 
-#: ../developer/database.md:139
+#: ../developer/database.md:145
 msgid "Settings and first-run setup"
 msgstr "设置项与首次运行设置"
 
-#: ../developer/database.md:141
+#: ../developer/database.md:147
 msgid ""
 "`app_config` holds one row per stored setting: `key` (the environment-"
 "variable name), `value` (in the string form that variable takes, such as "
@@ -609,7 +621,7 @@ msgstr ""
 "从不返回它们。哪怕值为空，这一行也优先于环境变量。见[存储在数据库中的设置项](configuration.md#settings-stored-"
 "in-the-database)。"
 
-#: ../developer/database.md:148
+#: ../developer/database.md:154
 msgid ""
 "`site_settings` holds the runtime switches of the admin Settings tab and,"
 " once the first administrator exists, the row `setup_completed_at`, which"
@@ -622,7 +634,7 @@ msgstr ""
 "`setup_completed_at`，标记首次运行设置已经完成。应用从不清除这一行。设置完成之前，`setup_code` "
 "这一行保存着后端打印在日志里的一次性设置码，所以只要能读数据库，就足以创建第一个管理员；设置完成时这一行会被删除。"
 
-#: ../developer/database.md:154
+#: ../developer/database.md:160
 msgid ""
 "`users.email` is empty for the administrator that first-run setup "
 "creates; that account signs in with `users.login_name`, which is unique "
@@ -631,11 +643,11 @@ msgstr ""
 "首次运行设置创建的管理员，其 `users.email` 为空；这个账号用 `users.login_name` "
 "登录，登录名不区分大小写地保持唯一。通过注册得到的账号都有邮箱地址。"
 
-#: ../developer/database.md:158
+#: ../developer/database.md:164
 msgid "Request logging and privacy"
 msgstr "请求日志与隐私"
 
-#: ../developer/database.md:160
+#: ../developer/database.md:166
 msgid ""
 "`DB_STORE_FULL_CONTENT` defaults to `false`, and that default is not a "
 "redaction of the stored text — the text is never written. It is a setting"
@@ -649,7 +661,7 @@ msgstr ""
 "分类下的一个设置项，改动在重启后端后生效。关闭时，`api_logs.prompt`、`api_logs.response` 和 "
 "`api_logs.request_payload` 都写入 `NULL`，`/v1/responses` 的状态也不会保存。"
 
-#: ../developer/database.md:167
+#: ../developer/database.md:173
 msgid ""
 "Derived, non-content columns are recorded either way, because the "
 "dashboards read them instead of de-TOASTing payloads: token counts, cost,"
@@ -660,17 +672,17 @@ msgstr ""
 "不管开没开，不含内容的派生列都会记录，因为仪表盘读的是这些列，不必去 de-TOAST 请求载荷。这些列包括：token 数、成本、延迟和 "
 "TTFT，对话结构（`num_turns`、`num_user_turns`、`num_tool_calls`），以及最新一条用户消息的指纹（`last_user_msg_chars`、`last_user_msg_entropy`、`last_user_msg_hash`）。"
 
-#: ../developer/database.md:173
+#: ../developer/database.md:179
 msgid ""
 "Turning it on stores full prompts and responses. Weigh that against your "
 "users' expectations before you do."
 msgstr "打开后会保存完整的 prompt 和响应。打开之前，先想清楚你的用户能否接受。"
 
-#: ../developer/database.md:176
+#: ../developer/database.md:182
 msgid "Which session a request belongs to"
 msgstr "请求属于哪个会话"
 
-#: ../developer/database.md:178
+#: ../developer/database.md:184
 msgid ""
 "`api_logs.session_id` groups one conversation's requests together. A "
 "client can set it with the gateway's `X-Session-ID` header, but coding "
@@ -747,7 +759,7 @@ msgid ""
 " `user_id` field. Two shapes — see below"
 msgstr "Claude Code，它把设备、账号和本次运行的信息都塞进 Anthropic 的 `user_id` 这一个字段里。有两种格式，见下文"
 
-#: ../developer/database.md:192
+#: ../developer/database.md:198
 #, python-brace-format
 msgid ""
 "Since version 2.1.78, Claude Code sends `metadata.user_id` as a JSON "
@@ -763,7 +775,7 @@ msgstr ""
 "形式的字符串。网关两种都认。subagent 的请求里还带有 `parent_session_id`，网关不用它：这个字段指的是启动这个 "
 "subagent 的会话，不是当前会话。"
 
-#: ../developer/database.md:198
+#: ../developer/database.md:204
 msgid ""
 "Some OpenCode versions and the Kilo Code fork send no session id on their"
 " newer request path. OpenCode fixed this upstream (`sst/opencode#43188`);"
@@ -773,13 +785,13 @@ msgstr ""
 "部分 OpenCode 版本和 Kilo Code 分支在较新的请求路径上不发送会话 id。OpenCode "
 "已经在上游修复了这个问题（`sst/opencode#43188`）；在 Kilo Code 跟进同样的修复之前，它的请求都会记录为没有会话。"
 
-#: ../developer/database.md:202
+#: ../developer/database.md:208
 msgid ""
 "The admin console's Recent Requests view shows the session under each "
 "row's client, and clicking it filters the list to that one conversation."
 msgstr "管理控制台的 Recent Requests 视图会在每一行的客户端下方显示会话，点击会话，列表就只显示这段对话的请求。"
 
-#: ../developer/database.md:205
+#: ../developer/database.md:211
 msgid ""
 "`metadata.session_id_source` on the same row names which of those sources"
 " the session came from. Every source is client-supplied, and nothing is "
@@ -794,25 +806,25 @@ msgstr ""
 "会直接丢弃，不做记录。和上面的派生列一样，无论 `DB_STORE_FULL_CONTENT` "
 "是否打开，会话都会被记录：它只是客户端给请求打的标签，不属于对话内容。"
 
-#: ../developer/database.md:213
+#: ../developer/database.md:219
 msgid "Backup"
 msgstr "备份"
 
-#: ../developer/database.md:215
+#: ../developer/database.md:221
 msgid "`pg_dump` in custom format, straight out of the container:"
 msgstr "直接从容器里做 custom 格式的 `pg_dump`："
 
-#: ../developer/database.md:222
+#: ../developer/database.md:228
 msgid ""
 "Do not add `-t` to `docker exec`: allocating a TTY corrupts the binary "
 "stream."
 msgstr "不要给 `docker exec` 加 `-t`：分配 TTY 会破坏二进制流。"
 
-#: ../developer/database.md:224
+#: ../developer/database.md:230
 msgid "Restore into an existing, running database:"
 msgstr "恢复到已有的、正在运行的数据库："
 
-#: ../developer/database.md:231
+#: ../developer/database.md:237
 msgid ""
 "Stop the backend with `docker stop hybridinference-backend` before "
 "restoring over a live database; `make down` would stop Postgres too."
@@ -820,7 +832,7 @@ msgstr ""
 "往正在运行的数据库上做恢复之前，先用 `docker stop hybridinference-backend` 停掉后端；不要用 `make "
 "down`，它会连 Postgres 一起停掉。"
 
-#: ../developer/database.md:234
+#: ../developer/database.md:240
 msgid ""
 "The backup contains every stored setting in plaintext — provider keys, "
 "the SMTP password, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that "
@@ -835,11 +847,11 @@ msgstr ""
 "`DB_STORE_FULL_CONTENT` 打开过，还有用户的 prompt 内容。拿到备份的人可以使用你的 provider "
 "key、解密用户存下的 API key，并签发管理员 token，所以要像保管这些凭据本身一样保管它。"
 
-#: ../developer/database.md:241
+#: ../developer/database.md:247
 msgid "Reset"
 msgstr "重置"
 
-#: ../developer/database.md:243
+#: ../developer/database.md:249
 msgid ""
 "Deleting the database is more awkward than it looks, because the Postgres"
 " volume is declared `external:` in `deploy/docker/docker-compose.yml`:"
@@ -847,7 +859,7 @@ msgstr ""
 "删除数据库没有看上去那么简单，因为 Postgres 的卷在 `deploy/docker/docker-compose.yml` 里声明成了 "
 "`external:`："
 
-#: ../developer/database.md:253
+#: ../developer/database.md:259
 msgid ""
 "**`docker compose down --volumes` does not delete an external volume.** "
 "Nor does `make down`, which passes no `--volumes` at all. A reset that "
@@ -857,7 +869,7 @@ msgstr ""
 "**`docker compose down --volumes` 不会删除外部卷**。`make down` 也不会，它根本不传 "
 "`--volumes`。靠这两个命令来「重置」，所有数据都会原封不动地留着，而且没有任何提示。要按名字删除这个卷："
 
-#: ../developer/database.md:263
+#: ../developer/database.md:269
 msgid ""
 "`make up` depends on the `docker-volumes` target, which recreates the "
 "named volume if it is missing, so the stack comes back on an empty "
@@ -870,7 +882,7 @@ msgstr ""
 "target，它会在具名卷不存在时重新创建，所以服务栈会连上一个空数据库启动，由启动时的初始化逻辑重建表结构。随后后端会生成新的密钥（除非环境变量里已经提供），并打印一个设置码，供创建新的管理员。只要以后还有可能想找回这些数据，就先做一份"
 " dump。"
 
-#: ../developer/database.md:270
+#: ../developer/database.md:276
 msgid ""
 "The runnable example (`make demo-reset DISTRIBUTION=example`) uses its "
 "own, example-scoped volume and cannot delete "
@@ -879,11 +891,11 @@ msgstr ""
 "可运行的示例（`make demo-reset DISTRIBUTION=example`）用的是示例专属的卷，不会删掉 "
 "`hybridinference_postgres_data`。"
 
-#: ../developer/database.md:273
+#: ../developer/database.md:279
 msgid "Inspecting the database"
 msgstr "查看数据库"
 
-#: ../developer/database.md:279
+#: ../developer/database.md:285
 msgid ""
 "Useful starting points: `\\dt` for the table list and `\\d api_logs` for "
 "the request log's columns. `make ps` shows the published bindings — "
@@ -893,11 +905,11 @@ msgstr ""
 "可以先从这两条命令开始：`\\dt` 查看所有表，`\\d api_logs` 查看请求日志的列。`make ps` "
 "会列出端口绑定，Postgres 和 pgAdmin 都应该显示为 `127.0.0.1:...`；如果不是，说明数据库对本机以外也开放了监听。"
 
-#: ../developer/database.md:284
+#: ../developer/database.md:290
 msgid "Optional: pgAdmin"
 msgstr "可选：pgAdmin"
 
-#: ../developer/database.md:286
+#: ../developer/database.md:292
 msgid ""
 "The Compose stack ships a pgAdmin service for people who prefer a GUI. It"
 " is **profile-gated** — nothing starts it unless the `admin` profile is "
@@ -906,15 +918,15 @@ msgstr ""
 "Compose 服务栈自带一个 pgAdmin 服务，给喜欢图形界面的人用。它**受 profile 控制**：不指定 `admin` "
 "profile，它就不会启动。它完全是可选的，上面的 `psql` 什么都能做。"
 
-#: ../developer/database.md:290
+#: ../developer/database.md:296
 msgid "Starting and restarting it"
 msgstr "启动与重启"
 
-#: ../developer/database.md:292
+#: ../developer/database.md:298
 msgid "The profile must be on *every* Compose command, not just the first:"
 msgstr "这个 profile 必须带在*每一条* Compose 命令上，而不只是第一条："
 
-#: ../developer/database.md:299
+#: ../developer/database.md:305
 msgid ""
 "Omitting it does not fail loudly, it just does the wrong thing in both "
 "directions: a plain `make up` starts every other service and skips "
@@ -926,17 +938,17 @@ msgstr ""
 "profile 的 `make down` 会删掉其他所有东西，却留着 pgAdmin 容器继续运行（Compose "
 "随后会报告网络仍在使用）。所以重启时，停止和启动两步都要带上 `COMPOSE_PROFILES=admin`。"
 
-#: ../developer/database.md:305
+#: ../developer/database.md:311
 msgid "Authentication"
 msgstr "认证"
 
-#: ../developer/database.md:307
+#: ../developer/database.md:313
 msgid ""
 "Two separate gates can protect pgAdmin, and by default only the console's"
 " is on:"
 msgstr "有两道关卡可以保护 pgAdmin，默认只开了控制台那一道："
 
-#: ../developer/database.md:309
+#: ../developer/database.md:315
 msgid ""
 "`PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin "
 "with **no login of its own**. Set it to `True` in `.env` and pgAdmin asks"
@@ -947,7 +959,7 @@ msgstr ""
 "`.env` 里把它设为 `True`，pgAdmin 就会要求输入 `PGADMIN_EMAIL` / "
 "`PGADMIN_PASSWORD`（这两个变量的默认值分别是 `admin@local.dev` / `admin`，启用前先改掉）。"
 
-#: ../developer/database.md:313
+#: ../developer/database.md:319
 #, python-brace-format
 msgid ""
 "Reached through the console at `/pgadmin/`, the request is gated on an "
@@ -962,7 +974,7 @@ msgstr ""
 " pgAdmin 发布的端口（`127.0.0.1:${PGADMIN_PORT:-5050}`，只监听回环地址）时，这道关卡不起作用，请用 "
 "SSH 隧道："
 
-#: ../developer/database.md:324
+#: ../developer/database.md:330
 msgid ""
 "pgAdmin's *master password* prompt never appears: "
 "`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `\"False\"` in the"
@@ -972,19 +984,19 @@ msgstr ""
 "password）提示永远不会出现：`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` 在 Compose "
 "文件里写死为 `\"False\"`，没有环境变量可以修改。"
 
-#: ../developer/database.md:328
+#: ../developer/database.md:334
 msgid "Registering the database"
 msgstr "注册数据库"
 
-#: ../developer/database.md:330
+#: ../developer/database.md:336
 msgid "`Servers` → right-click → `Register` → `Server`."
 msgstr "`Servers` → 右键 → `Register` → `Server`。"
 
-#: ../developer/database.md:331
+#: ../developer/database.md:337
 msgid "**General**: any name."
 msgstr "**General**：名字随便起。"
 
-#: ../developer/database.md:332
+#: ../developer/database.md:338
 msgid ""
 "**Connection**: host `postgres`, port `5432`, maintenance database "
 "`DB_NAME`, username `DB_USER`, password `DB_PASSWORD` — the container-"
@@ -994,11 +1006,11 @@ msgstr ""
 "`DB_NAME`，username 填 `DB_USER`，password 填 "
 "`DB_PASSWORD`——都用容器内部的值，不是宿主机那侧的端口映射。"
 
-#: ../developer/database.md:336
+#: ../developer/database.md:342
 msgid "Resetting pgAdmin"
 msgstr "重置 pgAdmin"
 
-#: ../developer/database.md:338
+#: ../developer/database.md:344
 msgid ""
 "Its saved connections live in `hybridinference_pgadmin_data`, an ordinary"
 " project-local volume (not external, unlike the Postgres one):"

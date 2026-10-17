@@ -445,14 +445,25 @@ create this account, so keep both as private as the host. Wrong codes are
 rate limited per client address, ten in 15 minutes; the right code is never
 refused.
 
-**Choose a username that is hard to guess.** Sign-in allows five attempts per
-username in 15 minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), and counts each attempt
-before it checks the password, so anyone who knows a username can keep that
-account locked out — and `admin` is the first name anyone tries. A lockout
-lasts as long as the attempts keep coming and ends 15 minutes after they stop,
-or when the backend restarts, because the counts are held in memory. Nothing
-below needs a sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API,
-and the command-line tools work on the database directly.
+**Choose a username that is hard to guess.** Sign-in counts each attempt
+before it checks the password: five per username from one address in 15
+minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all addresses
+together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only the attempts the
+other limits let through), and twenty per address in an hour
+(`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in to the
+account before, including the one you used for setup, holds a device cookie
+(`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
+valid for 180 days) and gets five attempts per 15 minutes of its own, so other
+people's guesses never lock it out. Changing `JWT_SECRET_KEY` invalidates
+every device cookie until that browser's next sign-in.
+
+Other browsers share the limits with their address, and behind the bundled
+Compose file's console proxy every browser has the same address unless
+[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
+`admin` is the first username anyone tries. The counts are held in memory, so
+a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
+when set, still reaches the admin API, and the command-line tools work on the
+database directly.
 
 **Without the browser.** `ops/admin/create_admin.py` writes the account
 directly: it creates it with `role='admin'`, `status='active'`,
@@ -485,9 +496,9 @@ every browser must sign in again. It takes an email address as well, for any
 other account. From a source checkout, run
 `uv run python -m serving.auth.reset_password <username>` in the repository
 root. It also works on a database the backend's upgrade has not migrated yet —
-while an upgraded backend keeps restarting because another session holds the
-users table, say — and changes no schema. Such a database has no login names
-yet, so name the account by its email address there.
+while an upgrade's users migration is still waiting for the table's lock, say —
+and changes no schema. Such a database has no login names yet, so name the
+account by its email address there.
 
 **A setting that breaks the console.** Settings live in the database, so a
 value that stops sign-in from working cannot be fixed by editing `.env`, nor

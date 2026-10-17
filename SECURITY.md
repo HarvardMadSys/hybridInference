@@ -46,9 +46,10 @@ of this software rather than the software itself.
   until someone creates the first administrator with the one-time setup code
   the backend keeps in its database and prints in its log, so treat both as
   privileged until setup is done. Give that administrator a username that is
-  hard to guess: the per-account sign-in limit counts attempts before it
-  checks the password, so anyone who knows a username can lock that account
-  out for a while.
+  hard to guess: the sign-in limits count attempts before they check the
+  password, so anyone who knows a username can lock that account out of every
+  browser that has not signed in to it before. A browser that has holds a
+  device cookie with attempts of its own.
 - **Exposure.** The supplied Compose stack publishes the frontend, backend and
   database on loopback by default. `FRONTEND_HOST` and `BACKEND_HOST` can
   explicitly expose the application ports on another interface. The console

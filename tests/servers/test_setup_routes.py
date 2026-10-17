@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.exceptions import AccountSchemaPending
 from serving.servers.deps import get_db_logger, get_operational_store
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers import auth_routes, setup as setup_routes
@@ -237,6 +238,18 @@ class TestCreateAdmin:
         app.dependency_overrides[get_operational_store] = lambda: None
         resp = await client.post("/auth/setup/admin", json=_body())
         assert resp.status_code == 503
+
+    async def test_a_database_upgrade_still_in_progress_is_503(self, client, pending, op_store):
+        """The users table has no login names until its deferred migration lands."""
+        op_store.create_first_admin = AsyncMock(side_effect=AccountSchemaPending())
+
+        resp = await client.post("/auth/setup/admin", json=_body())
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == AccountSchemaPending.MESSAGE
+        # Nothing was created, so the same code works once the upgrade is done.
+        assert is_setup_required() is True
+        op_store.create_session.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("field", "value"),

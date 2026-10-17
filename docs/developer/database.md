@@ -88,6 +88,12 @@ usual lock holder is a long-running `pg_dump`, which can hold `ACCESS SHARE` ove
 `api_logs` for hours. If you take backups on a schedule, expect an occasional
 deferred-migration line in the log after a deploy that adds a column.
 
+This includes the account columns (login names, phone numbers). Until they
+land, email sign-in, token refresh, API keys and admin pages work on the old
+table, while first-run setup and phone sign-in answer `503` with "The database
+upgrade is still in progress; try again shortly." Only the hard-delete claim
+columns still block startup.
+
 If you are contributing a column to `api_logs`, add it in `log_schema.py` only;
 that is the one place the request log's schema is defined.
 

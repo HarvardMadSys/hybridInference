@@ -121,6 +121,14 @@ class OperationalStore(ABC):
 
     # -- phone authentication (optional for legacy store implementations) ----
 
+    async def require_phone_accounts(self) -> None:  # noqa: B027
+        """Raise ``AccountSchemaPending`` while the database cannot hold phone accounts yet.
+
+        An upgrade adds the phone columns from the background when it cannot
+        get the users table's lock at startup; until then phone routes answer
+        503. The base implementation has nothing pending.
+        """
+
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
         raise RuntimeError("Phone authentication is unavailable in this store")

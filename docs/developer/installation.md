@@ -86,9 +86,11 @@ and:
    phone, so nobody else can claim the first account.
 2. Create the administrator: a username and a password. The account has no
    email address; it signs in with the username. Pick a username that is hard
-   to guess, not `admin`: sign-in allows five attempts per username in 15
-   minutes, counted before the password is checked, so anyone who knows the
-   username can lock the account out.
+   to guess, not `admin`: sign-in counts attempts per username before it
+   checks the password, so anyone who knows the username can lock the account
+   out of every browser that has not signed in to it before. The browser you
+   set up with keeps a device cookie that gives it attempts of its own; see
+   [The first admin account](deployment.md#the-first-admin-account).
 3. Fill in the settings the page lists. Out of the box the gateway serves the
    three example models in `config/examples/models.openrouter.yaml`, which all
    use [OpenRouter](https://openrouter.ai) (one tries a local Ollama server

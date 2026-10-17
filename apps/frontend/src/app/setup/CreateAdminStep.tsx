@@ -143,8 +143,11 @@ export function CreateAdminStep({ onCreated }: { onCreated: () => void }) {
           );
           return;
         case 503:
+          // The backend says which: no database at all, or an upgrade whose
+          // account columns are still waiting for the table lock.
           setFormError(
-            'The backend cannot reach its database. Check the database, then try again.',
+            err.message ||
+              'The backend cannot reach its database. Check the database, then try again.',
           );
           return;
         default:

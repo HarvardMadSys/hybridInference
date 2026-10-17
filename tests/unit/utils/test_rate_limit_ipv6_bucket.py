@@ -75,6 +75,20 @@ async def test_login_per_ip_limit_survives_ipv6_rotation():
 
 
 @pytest.mark.asyncio
+async def test_login_per_account_address_limit_survives_ipv6_rotation():
+    """Guessing at one account from one /64 shares a window; another /64 does not."""
+    per_address = settings.login_rate_limit_per_15min
+    addresses = _SAME_PREFIX[: per_address + 1]
+
+    results = [await check_and_record_login("admin", ip) for ip in addresses]
+
+    assert all(allowed for allowed, _ in results[:per_address])
+    assert results[-1] == (False, "email")
+    # The owner, on a separate /64, still signs in.
+    assert await check_and_record_login("admin", _OTHER_PREFIX) == (True, None)
+
+
+@pytest.mark.asyncio
 async def test_login_ipv4_buckets_remain_per_address():
     """IPv4 keeps full-address buckets — /64 folding is IPv6-only."""
     per_ip = settings.login_rate_limit_per_hour_per_ip

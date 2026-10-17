@@ -280,6 +280,16 @@ This is correct: if the socket peer is a Docker bridge and there is no
 trustworthy forwarding provenance, `"unknown"` is more useful than
 `172.19.0.1`.
 
+Sign-in limits are a consumer you will notice. They count attempts per
+address — five per username from one address in 15 minutes, twenty per
+address in an hour — and every browser whose address resolves to `"unknown"`
+shares one. Behind the bundled Compose file's console proxy, without
+`TRUST_PROXY_HEADERS` and a `TRUSTED_PROXIES` entry for the console, that is
+every browser: anyone's wrong passwords then count against everyone else's
+sign-ins. Only a browser that has signed in to the account before escapes
+this, with the device cookie that gives it attempts of its own; see
+[The first admin account](deployment.md#the-first-admin-account).
+
 Downstream consumers that key on `client_ip` (rate limits, auth-failure
 blocklist, routing affinity) must inspect `ClientIpInfo.resolved` and handle
 `"unknown"` explicitly — it is a legitimate outcome, not an error. New
