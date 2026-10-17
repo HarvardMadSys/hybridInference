@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -67,6 +67,8 @@ export default function SignupPage() {
   const { branding, features } = useSiteConfig();
   const turnstileSiteKey = branding.turnstileSiteKey;
   const [step, setStep] = useState<SignupStep>('consent');
+  const [accountStarted, setAccountStarted] = useState(false);
+  const accountFormRef = useRef<HTMLDivElement>(null);
   const [consent, setConsent] = useState<ConsentProgress>(NO_CONSENT);
   const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
@@ -94,6 +96,12 @@ export default function SignupPage() {
     mode: 'onTouched',
   });
   const password = watch('password') ?? '';
+
+  useEffect(() => {
+    if (step === 'form') {
+      accountFormRef.current?.querySelector<HTMLElement>('[data-auth="control"]')?.focus();
+    }
+  }, [step]);
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
@@ -179,20 +187,7 @@ export default function SignupPage() {
     );
   }
 
-  if (step === 'consent') {
-    return (
-      <SignupConsentStep
-        progress={consent}
-        onProgress={setConsent}
-        onContinue={() => {
-          setStep('form');
-          window.scrollTo({ top: 0 });
-        }}
-      />
-    );
-  }
-
-  return (
+  const accountForm = (
     <AuthPageFrame
       page="signup"
       kicker={t('auth.signup.kicker', 'START BUILDING')}
@@ -379,5 +374,27 @@ export default function SignupPage() {
         </form>
       )}
     </AuthPageFrame>
+  );
+
+  return (
+    <>
+      {step === 'consent' && (
+        <SignupConsentStep
+          progress={consent}
+          onProgress={setConsent}
+          onContinue={() => {
+            setAccountStarted(true);
+            setStep('form');
+            window.scrollTo({ top: 0 });
+          }}
+        />
+      )}
+      {/* Retain the phone draft, pending request and absolute resend deadline while reviewing. */}
+      {accountStarted && (
+        <div ref={accountFormRef} hidden={step !== 'form'}>
+          {accountForm}
+        </div>
+      )}
+    </>
   );
 }
