@@ -90,8 +90,8 @@
 
 | 位置 | 内容 | 用途 |
 |---|---|---|
-| cookie `hi_locale` | `locale`、`chosen_at`（毫秒时间戳）、`pending`（是否尚未存入账户），编码为 `zh-CN\|1760700000000\|p`（`s` 表示已存入） | 每个请求在服务端直接读取，不需要后端调用 |
-| `users.preferences.locale` | `{ "value": "zh-CN", "chosen_at": "<ISO 时间>" }` | 跨设备、跨浏览器保留选择 |
+| cookie `hi_locale` | `locale`、`chosen_at`（毫秒时间戳）、归属与状态，见下 | 每个请求在服务端直接读取，不需要后端调用 |
+| `users.preferences.locale` | `{ "value": "zh-CN", "chosen_at": "<定宽 ISO 时间>" }` | 跨设备、跨浏览器保留选择 |
 
 **每个请求**（根布局，服务端）按以下顺序确定语言：
 
@@ -100,24 +100,44 @@
    忽略），所有 `zh`、`zh-*` 都归为 `zh-CN`；
 3. `en`。
 
-**账户同步**不在每个请求上执行，只在当前账户或它存的选择变化时进行（登录、
-切换账户、读取 `/me`），规则是“以最近一次选择为准”（`planLocaleSync`）：
+**选择的归属。** 一个浏览器可以先后登录多个账户（多账户设计 #1524），因此 cookie
+中的每条选择都记录它属于谁、是否已存入：
+
+| 编码 | 含义 |
+|---|---|
+| `zh-CN\|<ms>\|a` | 未登录时做出的选择，不属于任何账户，从未存入 |
+| `zh-CN\|<ms>\|p\|<账户 id>` | 该账户登录时做出、尚未确认存入（请求未返回或失败） |
+| `zh-CN\|<ms>\|s\|<账户 id>` | 已存入该账户 |
+
+（初版只有一个 `pending` 标记，把“未登录的选择”和“某账户存失败的选择”混在
+一起，导致 A 账户存失败的选择会在切换到 B 后被写进 B。评审中复现，已据此修订。）
+
+**账户同步**（`planLocaleSync(browser, account, userId)`）的规则是“以最近一次
+选择为准，但选择只属于做出它的账户”：
 
 | cookie 中的记录 | 账户中的记录 | 动作 |
 |---|---|---|
 | 无 | 无 | 不做任何事，继续按系统语言显示 |
-| 无 | 有 | 用账户记录写 cookie，然后 `router.refresh()`（例如换了一台新设备） |
-| `pending`，且账户无记录或比账户记录新 | 任意 | 把 cookie 中的选择写入账户（例如用户在登录页切换了语言，然后登录） |
-| 已存入（`s`） | 无 | 不做任何事 |
-| 其他情况 | 有 | 以账户记录为准，重写 cookie，语言不同时刷新 |
+| 无 | 有 | 用账户记录写 cookie（归当前账户、已存入），语言不同时刷新 |
+| 未登录的选择，或当前账户未存入的选择 | 无，或比 cookie 旧 | 写入当前账户（失败的重试也走这里） |
+| 未登录的选择，或当前账户未存入的选择 | 比 cookie 新 | 采用账户记录 |
+| 当前账户已存入的选择 | 与之相同 | 不做任何事 |
+| 当前账户已存入的选择 | 不同 | 采用账户记录 |
+| 其他账户的选择（无论是否存入） | 有 | 采用账户记录；**绝不**写入当前账户 |
+| 其他账户的选择 | 无 | 不做任何事（浏览器继续显示它，但不写入） |
 
-“已存入”的选择不比较时间、直接以账户为准，是为了处理多账户：一个浏览器同时只有
-一个活跃账户（见多账户设计 #1524）。A 账户刚选了中文并存入 A，随后切换到 B 账户，
-A 的选择不应该改写 B 的偏好。只有尚未存入任何账户的选择（未登录时做出的，或登录时
-写账户失败的）才会被带进当前账户，并且只在它确实更新时才写入。
+**写回保护。** 无论是切换语言（`useChooseLocale`）还是同步（`LocaleAccountSync`），
+请求返回后只在两个条件同时成立时才写回 cookie：当前登录的仍是发请求时的账户；
+cookie 中仍是发出的那一条选择（四个字段完全相同，`replaceBrowserChoiceIf`）。
+否则说明期间已切换账户并采用了新账户的选择，或用户又做了新的选择，旧响应被丢弃。
 
-服务端也执行“最新者胜”：`PUT` 带来的 `chosen_at` 早于账户已存的记录时，保留已存
-的记录并返回它，客户端随之显示返回的语言。这处理了两个浏览器先后选择的竞争。
+**重试。** 同步在以下时机重新执行：每次加载 profile（`refreshUser` 产生新的 user
+对象，即使字段没变）、浏览器恢复联网（`online`）、窗口重新获得焦点（`focus`）。
+计划是幂等的，两边一致时什么都不做；同一条选择同时只有一个请求在途。
+
+**服务端“最新者胜”。** `PUT` 的比较与写入是同一条 `UPDATE ... WHERE` 语句，在
+数据库中执行（§6）。并发时较旧的请求即使后落库，也会在行锁释放后重新检查条件
+而放弃写入，返回已存的更新记录，客户端随之显示返回的语言。
 
 **导航后的补刷新**：登录成功后同步逻辑会写 cookie 并调用 `router.refresh()`，
 但登录页紧接着的 `router.push('/dashboard')` 会丢掉这次刷新，而页面间的客户端
@@ -190,13 +210,13 @@ apps/frontend/scripts/i18n/check-catalogs.mjs   # 字典检查（§7）
   正文保持英文。admin 内容容器标注 `lang="en"`，让屏幕阅读器和浏览器翻译
   正确识别这部分语言。
 - **切换**：`setLocale(next)` 依次执行：
-  1. 写 cookie `hi_locale`（`locale`、当前时间 `chosen_at`、是否未登录
-     `anon`；`Path=/; Max-Age=1y; SameSite=Lax`）；
+  1. 写 cookie `hi_locale`（`locale`、当前时间 `chosen_at`、归属：未登录为
+     `a`，登录时为 `p|<账户 id>`；`Path=/; Max-Age=1y; SameSite=Lax`）；
   2. `router.refresh()`，让服务端组件、`<html lang>` 和 metadata 用新语言
      重新渲染，client 状态保留；
   3. 已登录时调用 `PUT /user/preferences/locale`，由服务端记录 `chosen_at`，
-     成功后把 cookie 标为已存入。失败时不提示、不回滚界面，cookie 保持
-     `pending`，下次同步时再写入账户。
+     成功且通过写回保护（§4.2）后把 cookie 标为已存入。失败时不提示、不回滚
+     界面，cookie 保持“该账户未存入”，由同步的重试时机再写入。
 - **`<html lang>`**：`SiteDocument` 的判断改为
   `moduleRenders && moduleLocale ? moduleLocale : activeLocale`（`documentLocale()`），
   `useT` 用同一个函数决定页面语言，见 §5。“当前路由是否由模块渲染”由
@@ -273,13 +293,26 @@ const schema = useMemo(() => makeChangePasswordSchema(t), [t]);
 只增加一个用户偏好字段，不做数据库迁移：
 
 - `preferences.locale`：`{ "value": "en" | "zh-CN", "chosen_at": "<ISO 时间>" }`，
-  或不存在（表示从未选择过）。无法识别的值按“从未选择”处理；
+  或不存在（表示从未选择过）。`chosen_at` 以定宽格式写入
+  （`2026-10-17T08:00:00.000000Z`）。无法识别的值按“从未选择”处理；
 - `PUT /user/preferences/locale`，请求体为 `{ "locale": "zh-CN", "chosen_at": "<可选>" }`，
-  `locale` 按白名单（`ConsoleLocale`）校验。`chosen_at` 只在把 `pending`
-  选择写入账户时由客户端传入，服务端会把它截断到不晚于当前时间；其他情况取
-  当前时间。已存记录更新时保留已存记录并返回它（§4.2）。写法与
-  `llm-prober-layout` 一致，对 preferences 做读取—修改—写回；
+  `locale` 按白名单（`ConsoleLocale`）校验。`chosen_at` 只在把未存入的选择写入
+  账户时由客户端传入，服务端会把它截断到不晚于当前时间；其他情况取当前时间；
 - `GET /user/me` 的响应中增加 `locale`（可为空）。
+
+**偏好按 key 原子写入。** 初版沿用 `llm-prober-layout` 的“读取整列 → 修改 →
+整列写回”，评审复现了两类丢失：较旧的语言选择后落库覆盖较新的；并发修改的
+`llm_prober_layout` 被整列写回抹掉。修订后：
+
+- 存储接口去掉 `update_user_preferences`（整列替换），改为
+  `set_user_preference` / `delete_user_preference`（`jsonb_set` 与 `-`，只动一个
+  key），以及 `set_user_preference_if_newer`：比较与写入在同一条
+  `UPDATE ... WHERE NOT (stored.chosen_at >= new.chosen_at)` 中完成，行被并发
+  更新锁住时，Postgres 会在锁释放后对最新版本重新检查条件；
+- `llm_prober_layout` 的 PUT/DELETE 和管理员设置 `disabled_models` 都改用按 key
+  写入，任何偏好写入都不再覆盖其他 key；
+- 存储的 `chosen_at` 先用正则确认是 ISO 时间再转换为 `timestamptz`（放在 `CASE`
+  中，保证不合法的值不会触发转换错误），不合法的值视为“没有选择”。
 
 **未实现**：运行时 site-config 中的 `i18n: { default_locale, enabled_locales }`
 开关。目前所有部署都同时提供两种语言；如果需要按部署关闭中文，再单独加这个开关

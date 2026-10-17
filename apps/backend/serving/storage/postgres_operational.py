@@ -45,6 +45,15 @@ _USER_COLUMNS = (
     "signup_reason, admin_note, suspension_message"
 )
 
+# The preferences column as a JSON object, whatever an older row holds there
+# (SQL NULL, or a JSON scalar), so a key can be set on it or removed from it.
+_PREFERENCES_OBJECT = (
+    "(CASE WHEN jsonb_typeof(preferences) = 'object' THEN preferences ELSE '{}'::jsonb END)"
+)
+
+# What a stored `chosen_at` must look like before it is cast to timestamptz.
+_ISO_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+
 # Serializes first-run setup claims across every process sharing the database.
 _FIRST_RUN_SETUP_LOCK_SQL = (
     "SELECT pg_advisory_xact_lock(hashtext('hybridinference:first-run-setup'))"
@@ -2913,18 +2922,68 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         coerced = _coerce_user_row(row)
         return coerced["preferences"] if coerced else {}
 
-    async def update_user_preferences(
+    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+        """Set one preference key in place, leaving every other key as it is."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
+                "ARRAY[$2::text], $3::jsonb, true) WHERE id = $1",
+                user_id,
+                key,
+                json.dumps(value),
+            )
+        return status == "UPDATE 1"
+
+    async def delete_user_preference(self, user_id: str, key: str) -> bool:
+        """Remove one preference key in place, leaving every other key as it is."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                f"UPDATE users SET preferences = {_PREFERENCES_OBJECT} - $2::text WHERE id = $1",
+                user_id,
+                key,
+            )
+        return status == "UPDATE 1"
+
+    async def set_user_preference_if_newer(
         self,
         user_id: str,
-        preferences: dict[str, Any],
-    ) -> None:
-        """Atomically replace the full preferences JSONB column."""
+        key: str,
+        value: dict[str, Any],
+        chosen_at: datetime,
+    ) -> dict[str, Any] | None:
+        """Set a timestamped preference unless the stored one is at least as recent.
+
+        The comparison is in the UPDATE's WHERE, so it is re-checked against
+        the latest row version when a concurrent update holds the row: an
+        older choice cannot overwrite a newer one by landing second. A stored
+        ``chosen_at`` that is not an ISO 8601 timestamp counts as no choice
+        (the CASE keeps the cast from running on it).
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
-                json.dumps(preferences),
+            updated = await conn.fetchval(
+                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
+                "ARRAY[$2::text], $3::jsonb, true) "
+                "WHERE id = $1 AND NOT COALESCE(CASE "
+                "  WHEN preferences -> $2::text ->> 'chosen_at' ~ $5 "
+                "  THEN (preferences -> $2::text ->> 'chosen_at')::timestamptz >= $4 "
+                "END, false) "
+                "RETURNING preferences -> $2::text",
                 user_id,
+                key,
+                json.dumps(value),
+                chosen_at,
+                _ISO_TIMESTAMP_PATTERN,
             )
+            if updated is None:
+                # Not written: either there is no such user, or a newer choice
+                # is stored. Read it in a new statement, which sees it committed.
+                updated = await conn.fetchval(
+                    "SELECT preferences -> $2::text FROM users WHERE id = $1", user_id, key
+                )
+        if updated is None:
+            return None
+        stored = json.loads(updated) if isinstance(updated, str) else updated
+        return stored if isinstance(stored, dict) else None
 
     async def get_user_avatar(self, user_id: str) -> str | None:
         """Return the user's portrait data URL, or None."""

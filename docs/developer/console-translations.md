@@ -5,7 +5,7 @@ language gets the one their browser asks for; once they choose — from the
 header, or under Account Settings — the console keeps their most recent
 choice, in this browser and, once they sign in, in their account, so it
 follows them to other browsers. The design record is
-[2026-10-17 console language switching](../agents/specs/2026-10-17-console-language-switching-design.zh.md).
+[2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md).
 
 This page is for anyone who adds console text or translates it. Translating
 these pages, the documentation, is a separate workflow:

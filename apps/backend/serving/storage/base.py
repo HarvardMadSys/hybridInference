@@ -1022,13 +1022,34 @@ class OperationalStore(ABC):
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
         """Return the preferences JSONB column for *user_id*, parsed as dict."""
 
+    # Preferences are written one key at a time, in the database. A whole-column
+    # write from a value read earlier loses whatever another request wrote to a
+    # different key in between, so there is deliberately no such method.
+
     @abstractmethod
-    async def update_user_preferences(
+    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+        """Set one preference key atomically; return False when there is no such user."""
+
+    @abstractmethod
+    async def delete_user_preference(self, user_id: str, key: str) -> bool:
+        """Remove one preference key atomically; return False when there is no such user."""
+
+    @abstractmethod
+    async def set_user_preference_if_newer(
         self,
         user_id: str,
-        preferences: dict[str, Any],
-    ) -> None:
-        """Atomically replace the full preferences JSONB column."""
+        key: str,
+        value: dict[str, Any],
+        chosen_at: datetime,
+    ) -> dict[str, Any] | None:
+        """Set a timestamped preference unless the stored one is at least as recent.
+
+        ``value`` carries its own ``chosen_at`` (ISO 8601). The comparison and
+        the write are one statement, so of two overlapping requests the more
+        recent choice is the one kept whichever lands last. Returns the value
+        now stored — this one, or the newer one already there — or ``None``
+        when there is no such user.
+        """
 
     @abstractmethod
     async def get_user_avatar(self, user_id: str) -> str | None:

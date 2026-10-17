@@ -207,6 +207,11 @@ def _as_utc(moment: datetime) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
+def _iso_utc(moment: datetime) -> str:
+    """ISO 8601 in UTC with a fixed width, e.g. ``2026-10-17T08:00:00.000000Z``."""
+    return _as_utc(moment).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 async def get_default_daily_quota_for_role(
     role: str,
     runtime_settings: "RuntimeSettings | None",
@@ -355,12 +360,10 @@ async def update_llm_prober_layout(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    preferences = await op_store.get_user_preferences(current_user["user_id"])
-    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
+    if not await op_store.set_user_preference(
+        current_user["user_id"], LLM_PROBER_LAYOUT_KEY, body.model_dump()
+    ):
         raise UserNotFoundError(current_user["user_id"])
-
-    preferences[LLM_PROBER_LAYOUT_KEY] = body.model_dump()
-    await op_store.update_user_preferences(current_user["user_id"], preferences)
 
     logger.info("llm_prober_layout_updated user_id=%s", current_user["user_id"])
     return LLMProberLayoutResponse(layout=body)
@@ -375,12 +378,8 @@ async def reset_llm_prober_layout(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    preferences = await op_store.get_user_preferences(current_user["user_id"])
-    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
+    if not await op_store.delete_user_preference(current_user["user_id"], LLM_PROBER_LAYOUT_KEY):
         raise UserNotFoundError(current_user["user_id"])
-
-    preferences.pop(LLM_PROBER_LAYOUT_KEY, None)
-    await op_store.update_user_preferences(current_user["user_id"], preferences)
 
     logger.info("llm_prober_layout_reset user_id=%s", current_user["user_id"])
     return LLMProberLayoutResponse(layout=LLMProberLayoutState())
@@ -395,31 +394,39 @@ async def update_locale_preference(
     """Store the account's interface language; the most recent choice wins.
 
     A choice carried in from a signed-out browser keeps the time it was made,
-    never later than now. If the account already holds a more recent choice —
-    made on another browser meanwhile — that one is kept and returned, and the
-    console shows it instead.
+    never later than now. If the account already holds a choice at least as
+    recent — made on another browser meanwhile — that one is kept and
+    returned, and the console shows it instead. The comparison happens in the
+    database, in the same statement as the write, so overlapping requests
+    cannot leave the older choice stored; and only this one key is written,
+    so the account's other preferences are untouched.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    preferences = await op_store.get_user_preferences(current_user["user_id"])
-    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
-        raise UserNotFoundError(current_user["user_id"])
-
+    user_id = current_user["user_id"]
     now = datetime.now(timezone.utc)
     chosen_at = now if body.chosen_at is None else min(_as_utc(body.chosen_at), now)
-    stored = _extract_locale_preference(preferences)
-    if stored is not None and _as_utc(stored.chosen_at) > chosen_at:
-        return stored
-
     choice = LocalePreference(value=body.locale, chosen_at=chosen_at)
-    preferences[LOCALE_PREFERENCE_KEY] = choice.model_dump(mode="json")
-    await op_store.update_user_preferences(current_user["user_id"], preferences)
+    value = {"value": choice.value, "chosen_at": _iso_utc(chosen_at)}
+
+    stored = await op_store.set_user_preference_if_newer(
+        user_id, LOCALE_PREFERENCE_KEY, value, chosen_at
+    )
+    if stored is None:
+        raise UserNotFoundError(user_id)
+
+    kept = _extract_locale_preference({LOCALE_PREFERENCE_KEY: stored})
+    if kept is None:
+        # A newer entry this build cannot read (written outside the API) is
+        # "no choice" everywhere else; replace it rather than report it.
+        await op_store.set_user_preference(user_id, LOCALE_PREFERENCE_KEY, value)
+        kept = choice
 
     logger.info(
-        "locale_preference_updated user_id=%s locale=%s", current_user["user_id"], body.locale
+        "locale_preference_updated user_id=%s locale=%s kept=%s", user_id, body.locale, kept.value
     )
-    return choice
+    return kept
 
 
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
