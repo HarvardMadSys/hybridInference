@@ -151,11 +151,13 @@ describe('phone verification', () => {
     const onSuccess = vi.fn().mockResolvedValue(undefined);
     vi.mocked(bindPhone).mockResolvedValueOnce({ message: 'Phone bound.' });
     render(<PhoneAuthForm purpose="bind" onSuccess={onSuccess} />);
-    enterPhone();
+    fireEvent.click(screen.getByLabelText('Country code'));
+    fireEvent.click(screen.getByText('United Kingdom'));
+    enterPhone('7911123456');
     fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Bind mobile number' }));
     expect(await screen.findByText('Phone bound.')).toBeInTheDocument();
-    expect(bindPhone).toHaveBeenCalledWith({ phone: '13812345678', code: '123456' });
+    expect(bindPhone).toHaveBeenCalledWith({ phone: '+447911123456', code: '123456' });
     expect(onSuccess).toHaveBeenCalledOnce();
   });
 

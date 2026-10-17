@@ -282,6 +282,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "suspension_message",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
                 ),
+                # The user's portrait, a small image data URL. A column of its
+                # own rather than a preference: preferences ride along on every
+                # API-key authentication, and a portrait has no business there.
+                (
+                    "avatar_data_url",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
+                ),
             ],
         )
 
@@ -569,9 +576,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id TEXT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 expires_at TIMESTAMPTZ NOT NULL,
-                used_at TIMESTAMPTZ
+                used_at TIMESTAMPTZ,
+                pending_email TEXT
             )
         """)
+        await apply_column_migrations(
+            conn,
+            "email_verification_tokens",
+            [
+                (
+                    "pending_email",
+                    "ALTER TABLE email_verification_tokens ADD COLUMN IF NOT EXISTS pending_email TEXT",
+                ),
+            ],
+        )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_email_verification_user "
             "ON email_verification_tokens(user_id)"
@@ -2579,22 +2597,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         token: str,
         user_id: str,
         expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Insert a new email verification token."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO email_verification_tokens (token, user_id, expires_at) "
-                "VALUES ($1, $2, $3)",
-                token,
-                user_id,
-                expires_at,
-            )
+            if pending_email is not None:
+                await conn.execute(
+                    "INSERT INTO email_verification_tokens "
+                    "(token, user_id, expires_at, pending_email) "
+                    "VALUES ($1, $2, $3, $4)",
+                    token,
+                    user_id,
+                    expires_at,
+                    pending_email,
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO email_verification_tokens (token, user_id, expires_at) "
+                    "VALUES ($1, $2, $3)",
+                    token,
+                    user_id,
+                    expires_at,
+                )
 
     async def get_verification_token(self, token: str) -> Row | None:
         """Fetch verification token row."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT token, user_id, created_at, expires_at, used_at "
+                "SELECT token, user_id, created_at, expires_at, used_at, pending_email "
                 "FROM email_verification_tokens WHERE token = $1",
                 token,
             )
@@ -2894,6 +2924,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
                 json.dumps(preferences),
                 user_id,
+            )
+
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Return the user's portrait data URL, or None."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
+
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Replace the user's portrait; None removes it."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
             )
 
     # -- signup domain allowlist --------------------------------------------

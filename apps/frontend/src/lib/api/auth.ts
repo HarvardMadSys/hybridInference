@@ -54,7 +54,13 @@ export interface LoginResponse {
   };
 }
 
-export type PhoneCodePurpose = 'signup' | 'login' | 'bind' | 'delete_account';
+export type PhoneCodePurpose =
+  | 'signup'
+  | 'login'
+  | 'bind'
+  | 'delete_account'
+  | 'bind_email'
+  | 'set_password';
 
 export interface PhoneSignupRequest {
   phone: string;
@@ -79,9 +85,10 @@ export async function sendPhoneCode(data: {
     }),
     credentials: 'include',
   };
-  // Binding and deleting act on the signed-in account, so they carry its token.
+  // Every purpose but signing up and in acts on the signed-in account, so it
+  // carries the account's token.
   const resp =
-    data.purpose === 'bind' || data.purpose === 'delete_account'
+    data.purpose !== 'signup' && data.purpose !== 'login'
       ? await fetchWithAuth(API_BASE, '/auth/phone/code', options)
       : await safeFetch(`${API_BASE}/auth/phone/code`, options);
   return jsonOrThrow(resp);
@@ -110,6 +117,30 @@ export async function loginPhone(data: { phone: string; code: string }): Promise
   const result = await jsonOrThrow<LoginResponse>(resp);
   setAccessToken(result.access_token);
   return result;
+}
+
+export interface BindEmailResponse {
+  message: string;
+  email: string;
+  email_verified: boolean;
+}
+
+/**
+ * Bind or change the signed-in account's email. Its owner confirms with the
+ * account's password, or a `bind_email` code when it has none; the address is
+ * then proven by a link sent to it.
+ */
+export async function bindEmail(data: {
+  email: string;
+  password?: string;
+  phone_code?: string;
+}): Promise<BindEmailResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/auth/email/bind', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return jsonOrThrow(resp);
 }
 
 export async function bindPhone(data: {

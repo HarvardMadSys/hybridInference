@@ -7,7 +7,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response
 
 from serving.schemas_auth import DeleteAccountRequest, PhoneCodeRequest, PhoneVerifyRequest
-from serving.servers.routers import auth_routes, phone_auth_routes
+from serving.servers.routers import auth_routes, phone_auth_routes, reauth
 from serving.utils import password as password_utils
 from tests.fixtures import browser_sessions
 
@@ -100,8 +100,8 @@ def setup(monkeypatch):
     monkeypatch.setattr(get_settings(), "jwt_secret_key", secret)
     monkeypatch.setattr(phone_auth_routes.settings, "jwt_secret_key", secret)
     monkeypatch.setattr(phone_auth_routes.settings, "signup_require_email_verification", False)
-    monkeypatch.setattr(auth_routes, "check_and_record_login", AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(auth_routes, "is_sms_enabled", lambda: True)
+    monkeypatch.setattr(reauth, "check_and_record_login", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(reauth, "is_sms_enabled", lambda: True)
     monkeypatch.setattr(auth_routes, "is_email_enabled", lambda: True)
     monkeypatch.setattr(phone_auth_routes, "is_sms_enabled", lambda: True)
     monkeypatch.setattr(phone_auth_routes, "verify_turnstile_token", AsyncMock(return_value=True))
@@ -181,7 +181,7 @@ async def test_wrong_or_missing_password_deletes_nothing(setup, password):
 @pytest.mark.asyncio
 async def test_password_attempts_share_the_login_rate_limit(setup, monkeypatch):
     limiter = AsyncMock(return_value=(False, "email"))
-    monkeypatch.setattr(auth_routes, "check_and_record_login", limiter)
+    monkeypatch.setattr(reauth, "check_and_record_login", limiter)
     store = Store(account())
     with pytest.raises(HTTPException) as exc:
         await delete(store, DeleteAccountRequest(confirm="owner@example.org", password=PASSWORD))
@@ -236,7 +236,7 @@ async def test_failed_phone_code_deletes_nothing(setup, result, status):
 
 @pytest.mark.asyncio
 async def test_phone_account_cannot_delete_while_sms_is_off(setup, monkeypatch):
-    monkeypatch.setattr(auth_routes, "is_sms_enabled", lambda: False)
+    monkeypatch.setattr(reauth, "is_sms_enabled", lambda: False)
     store = Store(phone_account())
     with pytest.raises(HTTPException) as exc:
         await delete(store, DeleteAccountRequest(confirm=PHONE, phone_code="123456"))

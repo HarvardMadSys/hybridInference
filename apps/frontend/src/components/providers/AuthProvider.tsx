@@ -55,6 +55,7 @@ export interface AuthUser {
   phone_verified?: boolean;
   has_password?: boolean;
   user_name?: string | null;
+  avatar_url?: string | null;
   role: string;
   is_admin: boolean;
 }
@@ -192,6 +193,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           phone_verified: me.phone_verified,
           has_password: me.has_password,
           user_name: me.user_name,
+          avatar_url: me.avatar_url ?? null,
           role: me.role || 'free',
           is_admin: me.is_admin,
         },

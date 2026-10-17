@@ -21,6 +21,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.storage.phone_auth import OWNER_PURPOSES
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
 from serving.utils.jwt import (
     create_access_token,
@@ -88,7 +89,7 @@ async def send_phone_code(
     user_id = None
     if body.purpose == "signup":
         await _require_signup()
-    elif body.purpose in ("bind", "delete_account"):
+    elif body.purpose == "bind" or body.purpose in OWNER_PURPOSES:
         current_user = await get_current_user(request.headers.get("authorization"), op_store)
         user_id = current_user["user_id"]
     client_ip = get_client_ip(request)
@@ -128,8 +129,8 @@ async def send_phone_code(
         eligible = bool(existing_user)
     elif body.purpose == "signup":
         eligible = existing_user is None
-    elif body.purpose == "delete_account":
-        # Only the number verified on this very account can confirm its deletion.
+    elif body.purpose in OWNER_PURPOSES:
+        # Only the number verified on this very account can confirm its owner.
         eligible = bool(
             existing_user and existing_user["id"] == user_id and existing_user.get("phone_verified")
         )

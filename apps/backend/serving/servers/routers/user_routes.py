@@ -59,6 +59,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.models import _build_model_list_async
+from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
@@ -269,6 +270,7 @@ async def get_current_user_info(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
+        avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -802,6 +804,9 @@ async def update_profile(
             current_user["user_id"], user_name=update_data["user_name"]
         )
 
+    if "avatar_url" in update_data:
+        await op_store.set_user_avatar(current_user["user_id"], update_data["avatar_url"] or None)
+
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -816,6 +821,7 @@ async def update_profile(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
+        avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -827,13 +833,15 @@ async def update_profile(
 
 @router.post("/change-password", response_model=ChangePasswordResponse)
 async def change_password(
+    request: Request,
     body: ChangePasswordRequest,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> ChangePasswordResponse:
-    """Change password for logged-in user.
+    """Change the signed-in account's password, or give it a first one.
 
-    Requires old password verification for security.
+    An account with a password must give it. One without (a phone account)
+    must give a ``set_password`` code sent to its verified phone.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -846,15 +854,25 @@ async def change_password(
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not user_row.get("password_hash"):
-        raise HTTPException(400, "This account uses phone verification and has no password.")
+    if user_row.get("password_hash"):
+        if not body.old_password or not password_utils.verify_password(
+            body.old_password, user_row["password_hash"]
+        ):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
 
-    if not password_utils.verify_password(body.old_password, user_row["password_hash"]):
-        raise HTTPException(status_code=400, detail="Current password is incorrect.")
-
-    if body.new_password == body.old_password:
-        raise HTTPException(
-            status_code=400, detail="New password must be different from current password."
+        if body.new_password == body.old_password:
+            raise HTTPException(
+                status_code=400, detail="New password must be different from current password."
+            )
+    else:
+        # A first password is a new way in; the session alone cannot add one.
+        await confirm_account_owner(
+            request,
+            op_store,
+            user_row,
+            password=None,
+            phone_code=body.phone_code,
+            purpose="set_password",
         )
 
     new_password_hash = password_utils.hash_password(body.new_password)

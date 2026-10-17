@@ -133,6 +133,10 @@ class OperationalStore(ABC):
         """Bind a verified phone atomically without replacing or merging identities."""
         raise RuntimeError("Phone authentication is unavailable in this store")
 
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        raise RuntimeError("Email binding is unavailable in this store")
+
     async def reserve_phone_code(self, **fields: Any) -> int:
         """Reserve a send within shared quotas and install an inactive challenge."""
         raise RuntimeError("Phone authentication is unavailable in this store")
@@ -741,6 +745,7 @@ class OperationalStore(ABC):
         token: str,
         user_id: str,
         expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Insert a new email verification token."""
 
@@ -1024,6 +1029,18 @@ class OperationalStore(ABC):
         preferences: dict[str, Any],
     ) -> None:
         """Atomically replace the full preferences JSONB column."""
+
+    @abstractmethod
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Return the user's portrait data URL, or None.
+
+        Kept out of the user row the hot paths read, so a portrait never
+        travels with an authentication lookup.
+        """
+
+    @abstractmethod
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Replace the user's portrait; None removes it."""
 
     # -- signup domain allowlist --------------------------------------------
 
