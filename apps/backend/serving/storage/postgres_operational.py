@@ -1184,10 +1184,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert are atomic (single transaction).
+        *self_service* marks the audit entry as the owner's own deletion.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("UPDATE users SET status = 'deleted' WHERE id = $1", user_id)
@@ -1212,7 +1214,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 admin_ip,
                 "delete_user",
                 user_id,
-                json.dumps({"email": email, "reason": reason}),
+                json.dumps(
+                    {"email": email, "reason": reason}
+                    | ({"self_service": True} if self_service else {})
+                ),
                 True,
             )
 

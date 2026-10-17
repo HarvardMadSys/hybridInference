@@ -274,11 +274,13 @@ class OperationalStore(ABC):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert must be atomic (single
-        transaction).
+        transaction). *self_service* marks the audit entry as the account
+        owner's own deletion rather than an administrator's.
         """
 
     @abstractmethod

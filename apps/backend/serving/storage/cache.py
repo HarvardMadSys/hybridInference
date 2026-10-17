@@ -298,10 +298,16 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.delete_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            user_id,
+            admin_ip=admin_ip,
+            admin_id=admin_id,
+            reason=reason,
+            email=email,
+            self_service=self_service,
         )
         await self._cache.delete(self._user_key(user_id))
         # Also purge any auth entries referencing this user's keys

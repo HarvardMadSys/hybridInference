@@ -17,6 +17,7 @@ import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { DangerZone } from '@/components/features/auth/DeleteAccount';
 
 const changePasswordSchema = z
   .object({
@@ -247,21 +248,7 @@ function SettingsContent() {
         </Card>
       )}
 
-      {/* Placeholder: Danger Zone */}
-      <Card>
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 h-5 w-5 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
-            !
-          </div>
-          <div>
-            <h2 className="text-lg font-medium mb-1 text-red-700">Danger Zone</h2>
-            <p className="text-sm text-gray-600">
-              Account deletion is not enabled yet. We will add secure flows with password
-              confirmation and email verification.
-            </p>
-          </div>
-        </div>
-      </Card>
+      <DangerZone />
     </div>
   );
 }
