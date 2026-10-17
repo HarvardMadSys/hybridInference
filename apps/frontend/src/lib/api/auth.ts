@@ -54,7 +54,7 @@ export interface LoginResponse {
   };
 }
 
-export type PhoneCodePurpose = 'signup' | 'login' | 'bind';
+export type PhoneCodePurpose = 'signup' | 'login' | 'bind' | 'delete_account';
 
 export interface PhoneSignupRequest {
   phone: string;
@@ -79,8 +79,9 @@ export async function sendPhoneCode(data: {
     }),
     credentials: 'include',
   };
+  // Binding and deleting act on the signed-in account, so they carry its token.
   const resp =
-    data.purpose === 'bind'
+    data.purpose === 'bind' || data.purpose === 'delete_account'
       ? await fetchWithAuth(API_BASE, '/auth/phone/code', options)
       : await safeFetch(`${API_BASE}/auth/phone/code`, options);
   return jsonOrThrow(resp);
@@ -181,6 +182,29 @@ export async function logout(): Promise<void> {
   } finally {
     setAccessToken(null);
   }
+}
+
+/**
+ * Delete the signed-in account. `confirm` is its sign-in identifier, typed by
+ * its owner; an account with a password proves itself with it, a phone-only
+ * account with a `delete_account` code. The response retires the browser's
+ * cookie when no other account is signed in there.
+ */
+export async function deleteAccount(data: {
+  confirm: string;
+  password?: string;
+  phone_code?: string;
+}): Promise<{ message: string }> {
+  // Like logout, not under the session lock: fetchWithAuth may refresh.
+  const resp = await fetchWithAuth(API_BASE, '/auth/delete-account', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    credentials: 'include',
+  });
+  const result = await jsonOrThrow<{ message: string }>(resp);
+  setAccessToken(null);
+  return result;
 }
 
 /** One account signed in on this browser, as the account chooser shows it. */

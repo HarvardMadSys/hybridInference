@@ -12,7 +12,18 @@ from serving.storage.log_schema import (
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
+    constraint_admitted_values,
+    constraint_definition,
     execute_ddl,
+)
+
+#: What a code may be spent on. ``bind`` and ``delete_account`` codes belong to
+#: a signed-in account, which must still be active when the code is sent and
+#: when it is spent.
+PHONE_CODE_PURPOSES = ("signup", "login", "bind", "delete_account")
+_ACCOUNT_PURPOSES = ("bind", "delete_account")
+_PURPOSE_CHECK = "CHECK (purpose IN ({}))".format(
+    ", ".join(f"'{purpose}'" for purpose in PHONE_CODE_PURPOSES)
 )
 
 
@@ -37,10 +48,10 @@ async def initialize_phone_auth(conn: Any) -> None:
     await conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL"
     )
-    await conn.execute("""
+    await conn.execute(f"""
         CREATE TABLE IF NOT EXISTS phone_auth_codes (
             phone TEXT NOT NULL,
-            purpose TEXT NOT NULL CHECK (purpose IN ('signup', 'login', 'bind')),
+            purpose TEXT NOT NULL {_PURPOSE_CHECK},
             user_id TEXT NOT NULL DEFAULT '',
             challenge_id TEXT NOT NULL,
             code_hash TEXT NOT NULL,
@@ -51,6 +62,24 @@ async def initialize_phone_auth(conn: Any) -> None:
             PRIMARY KEY (phone, purpose, user_id)
         )
     """)
+    # A table created before ``delete_account`` existed keeps its old CHECK.
+    # Rebuild it only when it does not admit exactly the current purposes, so
+    # a settled restart takes no ACCESS EXCLUSIVE lock.
+    definition = await constraint_definition(
+        conn, "phone_auth_codes", "phone_auth_codes_purpose_check"
+    )
+    if constraint_admitted_values(definition) != set(PHONE_CODE_PURPOSES):
+        async with bounded_ddl(conn), conn.transaction():
+            await execute_ddl(
+                conn,
+                "ALTER TABLE phone_auth_codes "
+                "DROP CONSTRAINT IF EXISTS phone_auth_codes_purpose_check",
+            )
+            await execute_ddl(
+                conn,
+                "ALTER TABLE phone_auth_codes "
+                f"ADD CONSTRAINT phone_auth_codes_purpose_check {_PURPOSE_CHECK}",
+            )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS phone_auth_attempts (
             id BIGSERIAL PRIMARY KEY,
@@ -157,7 +186,7 @@ class PostgresPhoneAuthMixin:
                 if (
                     not owner
                     or owner["status"] == "deleted"
-                    or (purpose == "bind" and owner["status"] != "active")
+                    or (purpose in _ACCOUNT_PURPOSES and owner["status"] != "active")
                 ):
                     return 86400
             await _lock(conn, phone, ip, "send")
@@ -250,7 +279,7 @@ class PostgresPhoneAuthMixin:
                 if (
                     not owner
                     or owner["status"] == "deleted"
-                    or (purpose == "bind" and owner["status"] != "active")
+                    or (purpose in _ACCOUNT_PURPOSES and owner["status"] != "active")
                 ):
                     return "invalid"
             await _lock(conn, phone, ip, "verify")

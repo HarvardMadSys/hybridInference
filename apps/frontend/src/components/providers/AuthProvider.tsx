@@ -13,6 +13,7 @@ import {
 import { AccountChangedNotice } from '@/components/features/auth/AccountChangedNotice';
 import {
   agentSessionUser,
+  deleteAccount as deleteAccountApi,
   endAgentSession,
   listAccounts,
   login as loginApi,
@@ -89,6 +90,16 @@ interface AuthContextValue {
   /** Sign one account out of this browser, the current one included. */
   removeAccount: (userId: string) => Promise<void>;
   logoutAll: () => Promise<void>;
+  /**
+   * Delete the current account, then leave it signed out like `logout`. A
+   * refused request (wrong password, wrong confirmation) throws and changes
+   * nothing.
+   */
+  deleteAccount: (data: {
+    confirm: string;
+    password?: string;
+    phoneCode?: string;
+  }) => Promise<void>;
 }
 
 const ROLE_RANK: Record<string, number> = {
@@ -331,6 +342,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [signedOut]);
 
+  const deleteAccount = useCallback(
+    async (data: { confirm: string; password?: string; phoneCode?: string }) => {
+      const userId = userIdRef.current;
+      await deleteAccountApi({
+        confirm: data.confirm,
+        ...(data.password !== undefined ? { password: data.password } : {}),
+        ...(data.phoneCode !== undefined ? { phone_code: data.phoneCode } : {}),
+      });
+      await signedOut(userId ? [userId] : null);
+    },
+    [signedOut],
+  );
+
   const removeAccount = useCallback(
     async (userId: string) => {
       if (userId === userIdRef.current) {
@@ -359,6 +383,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     switchAccount,
     removeAccount,
     logoutAll,
+    deleteAccount,
   };
 
   return (

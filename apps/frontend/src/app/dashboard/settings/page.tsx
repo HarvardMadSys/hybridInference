@@ -18,6 +18,7 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { DangerZone } from '@/components/features/auth/DeleteAccount';
 
 function createPasswordSchema(requireOldPassword: boolean) {
   return z
@@ -397,10 +398,7 @@ function SettingsContent() {
         description="Irreversible actions that permanently affect your account."
         tone="danger"
       >
-        <div className="rounded-lg border border-red-100 bg-red-50/50 px-4 py-3.5 text-sm text-gray-700">
-          Account deletion is not enabled yet. We will add secure flows with password confirmation
-          and email verification.
-        </div>
+        <DangerZone />
       </SettingsSection>
     </div>
   );

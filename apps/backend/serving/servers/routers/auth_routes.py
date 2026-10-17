@@ -30,16 +30,19 @@ from serving.auth.signup_policy import (
     is_public_signup_enabled,
 )
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
-from serving.exceptions import AccountSuspendedError
+from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
 from serving.schemas_auth import (
     AccountsResponse,
     BindEmailRequest,
     BindEmailResponse,
+    DeleteAccountRequest,
+    DeleteAccountResponse,
     ForgotPasswordRequest,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
     PasswordResetResponse,
+    PhoneVerifyRequest,
     RefreshResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
@@ -52,11 +55,15 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
-from serving.servers.routers.phone_auth_routes import router as phone_auth_router
+from serving.servers.routers.phone_auth_routes import (
+    router as phone_auth_router,
+    verify_phone_code,
+)
 from serving.setup_state import refresh_setup_state
 from serving.utils import password as password_utils
 from serving.utils.email import (
     is_email_enabled,
+    send_account_deleted_email,
     send_new_registration_admin_email,
     send_verification_email,
 )
@@ -74,6 +81,7 @@ from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
 from serving.utils.signup_rate_limit import check_and_record_signup
+from serving.utils.sms import is_sms_enabled
 from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -492,11 +500,12 @@ async def _sign_out_of_browser(
 ) -> int:
     """Sign one account out of a browser; return how many accounts remain there.
 
-    The cookie is retired with the browser's last account.
+    The cookie is retired with the browser's last account. The store retires
+    the browser session itself in the detaching transaction, so a sign-in in
+    another tab cannot land in between and be signed out with it.
     """
     remaining = await op_store.detach_browser_session_account(browser.id, user_id)
     if remaining == 0:
-        await op_store.revoke_browser_session(browser.id)
         delete_refresh_token_cookie(response)
     else:
         send_pending_cookie(response, browser)
@@ -515,6 +524,12 @@ async def logout(
     Other accounts signed in on the browser stay signed in, with none of them
     active; the cookie goes with the last one. Access tokens already issued
     expire on their own (15 minutes).
+
+    A cookie that names no browser is cleared. Unlike deleting an account,
+    which takes it off every browser first, logout cannot tell which browser
+    still holds the account when the cookie was rotated by another tab, and
+    leaving it would let the account be chosen again without a password;
+    signing the browser's other accounts out is the safe way to fail.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -554,6 +569,116 @@ async def logout_all(
                 await op_store.revoke_session(session_row["id"])
     delete_refresh_token_cookie(response)
     return LogoutResponse(message="Logged out of all accounts")
+
+
+def account_identifier(user_row: dict[str, Any]) -> str | None:
+    """The name an account signs in with: its email, else login name, else phone.
+
+    It is what the owner types to confirm deleting the account, so that a
+    browser holding several accounts cannot delete one in place of another.
+    """
+    return user_row.get("email") or user_row.get("login_name") or user_row.get("phone")
+
+
+@router.post("/delete-account", response_model=DeleteAccountResponse)
+async def delete_own_account(
+    request: Request,
+    response: Response,
+    body: DeleteAccountRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> DeleteAccountResponse:
+    """Delete the signed-in account at its owner's request.
+
+    The same soft delete an administrator performs: the account is marked
+    ``deleted``, its keys are revoked and its sessions end, while its request
+    history is kept and an administrator can still resume it. The owner types
+    the account's identifier and proves it is theirs the way it signs in --
+    its password, or a code sent to its verified phone when it has none.
+    Administrator accounts are refused, so a deployment cannot lose its last
+    administrator this way.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    user_id = current_user["user_id"]
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if (user_row.get("role") or "free") == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="An administrator account cannot delete itself. "
+            "Ask another administrator to delete it.",
+        )
+
+    identifier = account_identifier(user_row)
+    if not identifier or body.confirm.strip().lower() != identifier.lower():
+        raise HTTPException(status_code=400, detail="The confirmation does not match this account.")
+
+    client_ip = get_client_ip(request)
+    if user_row.get("password_hash"):
+        # Shares the login buckets: this endpoint must not be a second place
+        # to guess the account's password.
+        allowed, reason = await check_and_record_login(identifier, client_ip)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts. Please try again later.",
+                headers={"Retry-After": "3600" if reason == "ip" else "900"},
+            )
+        if not body.password or not password_utils.verify_password(
+            body.password, user_row["password_hash"]
+        ):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    elif user_row.get("phone") and user_row.get("phone_verified"):
+        if not is_sms_enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Phone verification is currently unavailable. Please contact support.",
+            )
+        if not body.phone_code:
+            raise HTTPException(
+                status_code=400, detail="Enter the verification code sent to your phone."
+            )
+        # The stored number is canonical already; re-validating it against
+        # today's send policy could refuse a number that policy once allowed.
+        code = PhoneVerifyRequest.model_construct(phone=user_row["phone"], code=body.phone_code)
+        await verify_phone_code(request, code, "delete_account", op_store, user_id)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="This account cannot confirm its deletion here. Please contact support.",
+        )
+
+    browser = await resolve_browser_session(op_store, request)
+    try:
+        await op_store.delete_user(
+            user_id,
+            admin_ip=client_ip,
+            admin_id=user_id,
+            reason="Deleted by the account owner",
+            email=user_row.get("email"),
+            self_service=True,
+        )
+    except SelfDeleteRefused:
+        raise HTTPException(
+            status_code=409,
+            detail="This account changed while it was being deleted, so it was not deleted.",
+        ) from None
+    # The account is off every browser now; retire this browser's cookie if it
+    # was the last account here, and leave the others signed in otherwise. A
+    # cookie that names no browser is left alone: another tab may have just
+    # rotated it, and clearing it would sign every other account out.
+    if browser is not None:
+        await _sign_out_of_browser(op_store, response, browser, user_id)
+
+    if user_row.get("email") and is_email_enabled():
+        background_tasks.add_task(send_account_deleted_email, user_row["email"])
+
+    logger.info(f"User deleted their own account: {user_id}")
+    return DeleteAccountResponse(message="Your account has been deleted.")
 
 
 async def _usable_account(browser: BrowserSession, user_id: str | None) -> dict[str, Any]:

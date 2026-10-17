@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
-from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged
+from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged, SelfDeleteRefused
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
@@ -1195,12 +1195,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert are atomic (single transaction).
+        *self_service* marks the audit entry as the owner's own deletion, and
+        requires the account to still be active and not an administrator
+        under the row lock; otherwise ``SelfDeleteRefused`` rolls it all back.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            if self_service:
+                # The route checked these before proving ownership; a promotion
+                # or suspension committed since must win over the deletion.
+                owner = await conn.fetchrow(
+                    "SELECT status, role FROM users WHERE id = $1 FOR UPDATE", user_id
+                )
+                if owner is None or owner["status"] != "active" or owner["role"] == "admin":
+                    raise SelfDeleteRefused(user_id)
             await conn.execute("UPDATE users SET status = 'deleted' WHERE id = $1", user_id)
             await conn.execute(
                 "UPDATE api_keys SET status = 'revoked' "
@@ -1223,7 +1235,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 admin_ip,
                 "delete_user",
                 user_id,
-                json.dumps({"email": email, "reason": reason}),
+                json.dumps(
+                    {"email": email, "reason": reason}
+                    | ({"self_service": True} if self_service else {})
+                ),
                 True,
             )
 
@@ -2399,13 +2414,22 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Make *auth_session_id* the browser's session for *user_id*, and its active account.
 
         A session the browser already held for the same account is revoked:
         signing in again replaces it, and nothing can reach the old one.
+        Returns False, changing nothing, when the browser session has been
+        retired; the browser row lock orders this against a sign-out that
+        retires it.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            revoked = await conn.fetchval(
+                "SELECT revoked FROM browser_sessions WHERE id = $1 FOR UPDATE",
+                browser_session_id,
+            )
+            if revoked is None or revoked:
+                return False
             previous = await conn.fetchval(
                 "SELECT auth_session_id FROM browser_session_accounts "
                 "WHERE browser_session_id = $1 AND user_id = $2 FOR UPDATE",
@@ -2430,6 +2454,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
                 browser_session_id,
             )
+        return True
 
     async def set_browser_session_active(
         self, browser_session_id: str, user_id: str | None
@@ -2444,8 +2469,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
 
     async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
-        """Sign *user_id* out of one browser; return how many accounts remain there."""
+        """Sign *user_id* out of one browser; return how many accounts remain there.
+
+        A browser left with no account is retired in the same transaction,
+        under the browser row lock a sign-in also takes, so a sign-in racing
+        it either lands before (and the browser is kept) or finds it retired.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
+            )
             auth_session_id = await conn.fetchval(
                 "DELETE FROM browser_session_accounts "
                 "WHERE browser_session_id = $1 AND user_id = $2 RETURNING auth_session_id",
@@ -2462,15 +2495,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 browser_session_id,
                 user_id,
             )
-            remaining = await conn.fetchval(
-                "SELECT COUNT(*) FROM browser_session_accounts WHERE browser_session_id = $1",
-                browser_session_id,
+            remaining = int(
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM browser_session_accounts WHERE browser_session_id = $1",
+                    browser_session_id,
+                )
+                or 0
             )
-        return int(remaining or 0)
+            if remaining == 0:
+                await conn.execute(
+                    "UPDATE browser_sessions SET revoked = TRUE, active_user_id = NULL "
+                    "WHERE id = $1",
+                    browser_session_id,
+                )
+        return remaining
 
     async def revoke_browser_session(self, browser_session_id: str) -> None:
         """Sign every account out of one browser and retire its cookie."""
         async with self._pool.acquire() as conn, conn.transaction():
+            # Same lock as attach: a racing sign-in starts a fresh browser.
+            await conn.execute(
+                "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
+            )
             await conn.execute(
                 "UPDATE auth_sessions SET revoked = TRUE WHERE id IN ("
                 "SELECT auth_session_id FROM browser_session_accounts "
