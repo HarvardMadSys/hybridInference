@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -36,6 +36,7 @@ const MD_CLASSES =
   'text-[13px] text-gray-700 [&_a]:text-blue-600 [&_a]:underline [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5';
 
 export function SiteUpdatesTab() {
+  const toast = useAccountToast();
   const [updates, setUpdates] = useState<SiteUpdateItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -52,7 +53,7 @@ export function SiteUpdatesTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     load();

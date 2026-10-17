@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { getUserAutomationScore } from '@/lib/api/admin';
 import type { UserAutomationScore } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -88,6 +88,7 @@ function ScoreCard({ score }: { score: UserAutomationScore }) {
  * (it is comparatively expensive), mirroring the on-demand UserRecentRequests.
  */
 export function UserAutomationPanel({ userId }: { userId: string }) {
+  const toast = useAccountToast();
   const [score, setScore] = useState<UserAutomationScore | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

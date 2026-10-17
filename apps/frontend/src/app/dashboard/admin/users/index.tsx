@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel } from '@/lib/utils/userLabel';
 import {
@@ -35,6 +35,7 @@ const PAGE_SIZE_KEY = 'admin.users.pageSize';
 const DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[1]; // 100
 
 export default function UsersTab() {
+  const toast = useAccountToast();
   // Filter state — initialized from URL on mount so reload + shared links
   // preserve filters. `applyFilterState` (below) keeps state and URL in sync.
   const router = useRouter();
@@ -110,7 +111,7 @@ export default function UsersTab() {
     if (usersQuery.error) {
       toast.error(getErrorMessage(usersQuery.error));
     }
-  }, [usersQuery.error]);
+  }, [toast, usersQuery.error]);
 
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
@@ -170,7 +171,7 @@ export default function UsersTab() {
 
   useEffect(() => {
     if (scoreQuery.error) toast.error(getErrorMessage(scoreQuery.error));
-  }, [scoreQuery.error]);
+  }, [scoreQuery.error, toast]);
 
   // Re-gate scoring whenever the visible set of users changes (pagination,
   // page-size, or filters). Without this, a single header click would leave

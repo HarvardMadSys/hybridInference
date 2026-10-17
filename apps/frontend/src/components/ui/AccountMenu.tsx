@@ -126,6 +126,9 @@ export function AccountMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
+        // The visible name is hidden below `sm` and the initial is aria-hidden,
+        // so on a phone the button would otherwise have no accessible name.
+        aria-label={userDisplayName(user)}
         onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
       >

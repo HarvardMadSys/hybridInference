@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminRecentRequestItem,
   getRecentRequestContent,
@@ -41,6 +41,7 @@ interface RequestContentState {
  * the admin expand a row to inspect the prompt/response payload on demand.
  */
 export function UserRecentRequests({ userId }: { userId: string }) {
+  const toast = useAccountToast();
   const [entries, setEntries] = useState<AdminRecentRequestItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -65,7 +66,7 @@ export function UserRecentRequests({ userId }: { userId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [userId, offset]);
+  }, [offset, userId, toast]);
 
   useEffect(() => {
     load();

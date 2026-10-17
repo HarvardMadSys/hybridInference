@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import { ConfigEntryField } from '@/components/features/configuration/ConfigEntryField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
@@ -49,6 +49,7 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * missing" banner.
  */
 export function ConfigurationTab({ initialMissingOnly = false }: { initialMissingOnly?: boolean }) {
+  const toast = useAccountToast();
   const router = useRouter();
   const searchId = useId();
   const [config, setConfig] = useState<ConfigResponse | null>(null);

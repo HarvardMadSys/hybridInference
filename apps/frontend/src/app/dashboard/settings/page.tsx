@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { updatePassword, updateProfile } from '@/lib/api/user';
 import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -82,6 +82,7 @@ function SettingsSection({
 }
 
 function SettingsContent() {
+  const toast = useAccountToast();
   const { state, refreshUser } = useAuth();
   const { branding, features } = useSiteConfig();
   const t = useT();
