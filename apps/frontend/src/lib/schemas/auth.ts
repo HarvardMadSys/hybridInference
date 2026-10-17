@@ -9,7 +9,7 @@ import { translate, type Translate } from '@/lib/i18n/translate';
 export const LOGIN_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}$/;
 
 export function normalizePhoneWithCountry(raw: string, countryCode = '+1'): string {
-  const trimmed = raw.trim();
+  const trimmed = raw.replace(/[\s()-]/g, '');
   if (!trimmed) return '';
   if (trimmed.startsWith('+')) return trimmed;
   return `${countryCode}${trimmed}`;

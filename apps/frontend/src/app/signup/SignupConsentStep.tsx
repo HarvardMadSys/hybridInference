@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import Link from 'next/link';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
@@ -10,6 +10,7 @@ import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 import { fill } from '@/lib/utils/interpolate';
 import { TermsSections } from '@/site-ui/terms-sections';
+import { CheckIcon, SignupSteps } from './SignupSteps';
 
 /**
  * The step shows one of two sets of legal text and confirmations: the
@@ -26,7 +27,20 @@ import { TermsSections } from '@/site-ui/terms-sections';
 const CONSOLE_CONSENT_IDS = ['age', 'terms', 'research', 'sharing'] as const;
 
 const checkboxClassName =
-  'mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500';
+  'mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed';
+
+/**
+ * One confirmation's row: a box of its own, so the sentence a visitor agrees
+ * to stands apart from the text around it, and the whole row is the target.
+ */
+function confirmationClassName(checked: boolean, enabled: boolean): string {
+  const base = 'flex items-start gap-3 rounded-md border px-3 py-2.5 font-medium transition-colors';
+  if (!enabled)
+    return `${base} cursor-not-allowed border-dashed border-gray-300 bg-white/60 text-gray-400`;
+  return checked
+    ? `${base} cursor-pointer border-blue-500 bg-blue-50 text-gray-900`
+    : `${base} cursor-pointer border-gray-300 bg-white text-gray-900 hover:border-gray-400`;
+}
 
 // Tolerance for sub-pixel scroll positions at the end of the terms box.
 const SCROLL_END_SLACK_PX = 8;
@@ -38,13 +52,28 @@ function isScrolledToEnd(el: HTMLElement): boolean {
 /** A checkbox's controlled state, for one confirmation id. */
 type Confirm = (id: string) => { checked: boolean; onChange: () => void };
 
+/**
+ * What the visitor has done on this step. The page keeps it, so going back
+ * from the account form finds every box as it was left.
+ */
+export interface ConsentProgress {
+  accepted: ReadonlySet<string>;
+  /** The embedded terms have been scrolled to the end once. */
+  termsRead: boolean;
+}
+
+export const NO_CONSENT: ConsentProgress = { accepted: new Set(), termsRead: false };
+
 function ConsentBlock({
   step,
+  done = false,
   title,
   children,
 }: {
   /** The section's number, when the step has more than one. */
   step?: number;
+  /** Every confirmation in the section is checked: the number becomes a tick. */
+  done?: boolean;
   title: string;
   children: React.ReactNode;
 }): JSX.Element {
@@ -54,10 +83,14 @@ function ConsentBlock({
       className={`rounded-lg border px-4 py-4 ${skin.consentBlock}`}
       data-auth="consent-section"
     >
-      <h2 className="text-sm font-semibold text-gray-900">
+      <h2 className="flex items-center text-sm font-semibold text-gray-900">
         {step === undefined ? null : (
-          <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-900 text-xs font-medium text-white">
-            {step}
+          <span
+            className={`mr-2 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-medium text-white transition-colors ${
+              done ? 'bg-emerald-600' : 'bg-gray-900'
+            }`}
+          >
+            {done ? <CheckIcon /> : step}
           </span>
         )}
         {title}
@@ -67,7 +100,15 @@ function ConsentBlock({
   );
 }
 
-export function SignupConsentStep({ onContinue }: { onContinue: () => void }): JSX.Element {
+export function SignupConsentStep({
+  progress,
+  onProgress,
+  onContinue,
+}: {
+  progress: ConsentProgress;
+  onProgress: (update: (current: ConsentProgress) => ConsentProgress) => void;
+  onContinue: () => void;
+}): JSX.Element {
   const t = useT();
   const skin = useAuthAppearance();
   const branding = useBranding();
@@ -75,46 +116,61 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
   const required: readonly string[] = legal
     ? legal.consentItems.map((item) => item.id)
     : CONSOLE_CONSENT_IDS;
-  const [accepted, setAccepted] = useState<ReadonlySet<string>>(() => new Set());
+  const { accepted, termsRead } = progress;
   // The confirmations about the terms stay disabled until the embedded terms
   // have been scrolled to the end once; scrolling back up does not re-lock them.
-  const [termsRead, setTermsRead] = useState(false);
+  const markTermsRead = () => onProgress((current) => ({ ...current, termsRead: true }));
   const termsRef = useRef<HTMLDivElement>(null);
-  const allChecked = required.every((id) => accepted.has(id));
+  const checkedCount = required.filter((id) => accepted.has(id)).length;
+  const allChecked = checkedCount === required.length;
+  // Only the console's own card is known to pad its body by `p-8`, which the
+  // sticky bar bleeds into so the text scrolling under it stays hidden.
+  const inConsoleCard = !SITE_UI_CLIENT.AuthFrame;
 
   useEffect(() => {
     // Terms short enough to need no scrolling count as read on first paint.
     const el = termsRef.current;
-    if (el && el.clientHeight > 0 && el.scrollHeight <= el.clientHeight) setTermsRead(true);
+    if (el && el.clientHeight > 0 && el.scrollHeight <= el.clientHeight) markTermsRead();
+    // Once, on mount: `markTermsRead` is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const confirm: Confirm = (id) => ({
     checked: accepted.has(id),
     onChange: () =>
-      setAccepted((current) => {
-        const next = new Set(current);
+      onProgress((current) => {
+        const next = new Set(current.accepted);
         if (!next.delete(id)) next.add(id);
-        return next;
+        return { ...current, accepted: next };
       }),
   });
 
   // The terms both lists embed: the module's own text when it publishes one,
   // the console's otherwise — the same component `/terms` renders.
   const terms = (
-    <div
-      ref={termsRef}
-      role="region"
-      aria-label={t('auth.consent.terms_title', 'Terms of Service')}
-      tabIndex={0}
-      className={`max-h-56 overflow-y-auto rounded-md border bg-white px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/40 ${skin.consentBlock}`}
-      onScroll={(event) => {
-        if (!termsRead && isScrolledToEnd(event.currentTarget)) setTermsRead(true);
-      }}
-    >
-      {legal ? (
-        <legal.TermsContent headingLevel={3} compact />
-      ) : (
-        <TermsSections headingLevel={3} compact />
+    <div className="relative">
+      <div
+        ref={termsRef}
+        role="region"
+        aria-label={t('auth.consent.terms_title', 'Terms of Service')}
+        tabIndex={0}
+        className={`max-h-64 overflow-y-auto rounded-md border bg-white px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/40 ${skin.consentBlock}`}
+        onScroll={(event) => {
+          if (!termsRead && isScrolledToEnd(event.currentTarget)) markTermsRead();
+        }}
+      >
+        {legal ? (
+          <legal.TermsContent headingLevel={3} compact />
+        ) : (
+          <TermsSections headingLevel={3} compact />
+        )}
+      </div>
+      {/* A fade over the last lines says there is more to read. */}
+      {!termsRead && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-px bottom-px h-12 rounded-b-md bg-gradient-to-t from-white to-transparent"
+        />
       )}
     </div>
   );
@@ -122,6 +178,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
   return (
     <AuthPageFrame
       page="signup"
+      wide
       kicker={t('auth.consent.kicker', 'BEFORE YOU START')}
       title={t('auth.consent.title', 'Before you create an account')}
       subtitle={fill(
@@ -146,6 +203,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
         </>
       }
     >
+      <SignupSteps current="consent" />
       <div className={skin.form} data-auth="form">
         {legal ? (
           <ModuleConfirmations
@@ -158,7 +216,31 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
           <ConsoleConfirmations terms={terms} termsRead={termsRead} confirm={confirm} />
         )}
 
-        <div className="mt-6 space-y-4">
+        {/* Stays in view while the visitor reads, so how far they are and the
+            way on are never a long scroll away. */}
+        <div
+          className={`sticky bottom-0 z-10 mt-6 space-y-2.5 border-t border-gray-200 bg-white/95 py-3 backdrop-blur ${
+            inConsoleCard ? '-mx-8 px-8' : ''
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex flex-1 gap-1" aria-hidden="true">
+              {required.map((id) => (
+                <span
+                  key={id}
+                  className={`h-1.5 flex-1 rounded-full transition-colors ${
+                    accepted.has(id) ? 'bg-emerald-600' : 'bg-gray-200'
+                  }`}
+                />
+              ))}
+            </div>
+            <p className="shrink-0 text-xs font-medium text-gray-600" aria-live="polite">
+              {fill(t('auth.consent.progress', '{done} of {total} confirmed'), {
+                done: String(checkedCount),
+                total: String(required.length),
+              })}
+            </p>
+          </div>
           <button
             type="button"
             className={skin.submit}
@@ -169,7 +251,7 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
             {t('auth.consent.continue', 'Continue')}
           </button>
           {!allChecked && (
-            <p className="text-center text-xs">
+            <p className="text-center text-xs text-gray-500">
               {t(
                 'auth.consent.all_required',
                 legal
@@ -181,6 +263,27 @@ export function SignupConsentStep({ onContinue }: { onContinue: () => void }): J
         </div>
       </div>
     </AuthPageFrame>
+  );
+}
+
+/** Why the confirmations under the terms are still locked. */
+function ScrollHint({ children }: { children: React.ReactNode }): JSX.Element {
+  return (
+    <p className="flex items-center gap-1.5 text-xs text-gray-500">
+      <svg
+        className="h-3.5 w-3.5 shrink-0 animate-bounce"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M10 4v12m0 0-4.5-4.5M10 16l4.5-4.5" />
+      </svg>
+      {children}
+    </p>
   );
 }
 
@@ -236,9 +339,7 @@ function ModuleConfirmations({
         return (
           <div key={item.id}>
             <label
-              className={`flex items-start gap-3 font-medium ${
-                termsRead ? 'text-gray-900' : 'text-gray-400'
-              }`}
+              className={confirmationClassName(confirm(item.id).checked, termsRead)}
               data-auth="consent"
             >
               <input
@@ -251,7 +352,7 @@ function ModuleConfirmations({
               <span>{item.label}</span>
             </label>
             {item.description ? (
-              <p id={describedBy} className="mt-1 pl-7 text-xs text-gray-500">
+              <p id={describedBy} className="mt-1 pl-10 text-xs text-gray-500">
                 {item.description}
               </p>
             ) : null}
@@ -259,12 +360,12 @@ function ModuleConfirmations({
         );
       })}
       {!termsRead && (
-        <p className="text-xs text-gray-500">
+        <ScrollHint>
           {t(
             'auth.consent.terms_scroll_hint',
             'Scroll to the end of the terms to enable the confirmations.',
           )}
-        </p>
+        </ScrollHint>
       )}
     </ConsentBlock>
   );
@@ -298,20 +399,28 @@ function ConsoleConfirmations({
       );
   return (
     <>
-      <ConsentBlock step={1} title={t('auth.consent.age_title', 'Age requirement')}>
+      <ConsentBlock
+        step={1}
+        done={confirm('age').checked}
+        title={t('auth.consent.age_title', 'Age requirement')}
+      >
         <p>
           {fill(
             t('auth.consent.age_body', '{app_name} is available only to adults age 18 or older.'),
             { app_name: branding.appName },
           )}
         </p>
-        <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
+        <label className={confirmationClassName(confirm('age').checked, true)} data-auth="consent">
           <input type="checkbox" className={checkboxClassName} {...confirm('age')} />
           <span>{t('auth.consent.age_confirm', 'I confirm that I am at least 18 years old.')}</span>
         </label>
       </ConsentBlock>
 
-      <ConsentBlock step={2} title={t('auth.consent.terms_title', 'Terms of Service')}>
+      <ConsentBlock
+        step={2}
+        done={confirm('terms').checked}
+        title={t('auth.consent.terms_title', 'Terms of Service')}
+      >
         <p>
           {t(
             'auth.consent.terms_body',
@@ -321,9 +430,7 @@ function ConsoleConfirmations({
         {terms}
         <FullTermsLink />
         <label
-          className={`flex items-start gap-3 font-medium ${
-            termsRead ? 'text-gray-900' : 'text-gray-400'
-          }`}
+          className={confirmationClassName(confirm('terms').checked, termsRead)}
           data-auth="consent"
         >
           <input
@@ -335,16 +442,20 @@ function ConsoleConfirmations({
           <span>{t('auth.consent.terms_agree', 'I agree to the Terms of Service.')}</span>
         </label>
         {!termsRead && (
-          <p className="text-xs text-gray-500">
+          <ScrollHint>
             {t(
               'auth.consent.terms_scroll_hint',
               'Scroll to the end of the terms to enable this checkbox.',
             )}
-          </p>
+          </ScrollHint>
         )}
       </ConsentBlock>
 
-      <ConsentBlock step={3} title={t('auth.consent.research_title', 'Research participation')}>
+      <ConsentBlock
+        step={3}
+        done={confirm('research').checked}
+        title={t('auth.consent.research_title', 'Research participation')}
+      >
         <p>
           {fill(
             t(
@@ -392,7 +503,10 @@ function ConsoleConfirmations({
           )}
         </p>
         <p>{researchContact}</p>
-        <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
+        <label
+          className={confirmationClassName(confirm('research').checked, true)}
+          data-auth="consent"
+        >
           <input type="checkbox" className={checkboxClassName} {...confirm('research')} />
           <span>
             {fill(
@@ -406,7 +520,11 @@ function ConsoleConfirmations({
         </label>
       </ConsentBlock>
 
-      <ConsentBlock step={4} title={t('auth.consent.sharing_title', 'Research data sharing')}>
+      <ConsentBlock
+        step={4}
+        done={confirm('sharing').checked}
+        title={t('auth.consent.sharing_title', 'Research data sharing')}
+      >
         <p>
           {t(
             'auth.consent.sharing_body_1',
@@ -431,7 +549,10 @@ function ConsoleConfirmations({
             'Once de-identified data have been publicly released, it may no longer be possible to withdraw or delete those copies.',
           )}
         </p>
-        <label className="flex items-start gap-3 font-medium text-gray-900" data-auth="consent">
+        <label
+          className={confirmationClassName(confirm('sharing').checked, true)}
+          data-auth="consent"
+        >
           <input type="checkbox" className={checkboxClassName} {...confirm('sharing')} />
           <span>
             {fill(

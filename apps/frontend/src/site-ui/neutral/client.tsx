@@ -42,10 +42,11 @@ export function NeutralAuthCard({
   title,
   subtitle,
   topbar,
+  wide = false,
   children,
-}: Pick<AuthFrameProps, 'title' | 'subtitle' | 'topbar' | 'children'>) {
+}: Pick<AuthFrameProps, 'title' | 'subtitle' | 'topbar' | 'children'> & { wide?: boolean }) {
   return (
-    <div className="mx-auto w-full max-w-md">
+    <div className={`mx-auto w-full ${wide ? 'max-w-xl' : 'max-w-md'}`}>
       <Card>
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">{title}</h1>
