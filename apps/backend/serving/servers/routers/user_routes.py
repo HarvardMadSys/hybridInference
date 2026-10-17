@@ -34,6 +34,8 @@ from serving.schemas_auth import (
     ChangePasswordResponse,
     LLMProberLayoutResponse,
     LLMProberLayoutState,
+    LocalePreference,
+    LocalePreferenceUpdate,
     QuotaInfo,
     RecentRequestItem,
     RecentRequestsResponse,
@@ -69,6 +71,7 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
+LOCALE_PREFERENCE_KEY = "locale"
 
 
 def _quota_contact() -> str:
@@ -181,6 +184,29 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
         return LLMProberLayoutState()
 
 
+def _extract_locale_preference(preferences: dict[str, Any]) -> LocalePreference | None:
+    """Parse the stored interface language, or ``None`` when there is none to show.
+
+    A value this build cannot render (a language since removed, a malformed
+    entry) reads as "never chose", so the console falls back to the browser's
+    language instead of failing the profile request.
+    """
+    raw = preferences.get(LOCALE_PREFERENCE_KEY)
+    if raw is None:
+        return None
+    try:
+        return LocalePreference.model_validate(raw)
+    except Exception:
+        return None
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """Return *moment* as an aware UTC datetime; a naive one is taken as UTC."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
 async def get_default_daily_quota_for_role(
     role: str,
     runtime_settings: "RuntimeSettings | None",
@@ -277,6 +303,7 @@ async def get_current_user_info(
         is_admin=current_user.get("is_admin", False),
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
+        locale=_extract_locale_preference(_coerce_preferences(user_row.get("preferences"))),
     )
 
 
@@ -357,6 +384,42 @@ async def reset_llm_prober_layout(
 
     logger.info("llm_prober_layout_reset user_id=%s", current_user["user_id"])
     return LLMProberLayoutResponse(layout=LLMProberLayoutState())
+
+
+@router.put("/preferences/locale", response_model=LocalePreference)
+async def update_locale_preference(
+    body: LocalePreferenceUpdate,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> LocalePreference:
+    """Store the account's interface language; the most recent choice wins.
+
+    A choice carried in from a signed-out browser keeps the time it was made,
+    never later than now. If the account already holds a more recent choice —
+    made on another browser meanwhile — that one is kept and returned, and the
+    console shows it instead.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    preferences = await op_store.get_user_preferences(current_user["user_id"])
+    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
+        raise UserNotFoundError(current_user["user_id"])
+
+    now = datetime.now(timezone.utc)
+    chosen_at = now if body.chosen_at is None else min(_as_utc(body.chosen_at), now)
+    stored = _extract_locale_preference(preferences)
+    if stored is not None and _as_utc(stored.chosen_at) > chosen_at:
+        return stored
+
+    choice = LocalePreference(value=body.locale, chosen_at=chosen_at)
+    preferences[LOCALE_PREFERENCE_KEY] = choice.model_dump(mode="json")
+    await op_store.update_user_preferences(current_user["user_id"], preferences)
+
+    logger.info(
+        "locale_preference_updated user_id=%s locale=%s", current_user["user_id"], body.locale
+    )
+    return choice
 
 
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)

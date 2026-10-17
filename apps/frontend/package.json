@@ -16,7 +16,8 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "type-check": "npm run prepare:site-ui --silent && tsc -p tsconfig.generated.json --noEmit",
     "test": "npm run prepare:site-ui --silent && vitest run",
-    "type-check:base": "tsc -p tsconfig.json --noEmit"
+    "type-check:base": "tsc -p tsconfig.json --noEmit",
+    "i18n:check": "node scripts/i18n/check-catalogs.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.3",

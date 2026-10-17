@@ -3,7 +3,7 @@
 import { usePathname } from 'next/navigation';
 
 import { TermsContent as ConsoleTerms } from '@/app/terms/TermsContent';
-import { ConsoleCopyProvider } from '@/site-ui/appearance';
+import { ConsoleCopyProvider, ModuleRendersRouteProvider } from '@/site-ui/appearance';
 import { NeutralAuthCard } from '@/site-ui/neutral/body';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { SiteUiProvider } from '@/site-ui/SiteUiCore';
@@ -67,13 +67,19 @@ export function useModuleRendersRoute(): boolean {
  * take the whole application down with it rather than one page.
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
-  // A console route keeps the neutral appearance and English copy even when it
-  // mounts a shared form. Every public route keeps the module's styling: its
-  // `Landing` and legal frame may read `useAuthAppearance` through the host.
-  if (usePublicRoute() === null) {
+  // A console route keeps the neutral appearance and the console's copy even
+  // when it mounts a shared form. Every public route keeps the module's
+  // styling: its `Landing` and legal frame may read `useAuthAppearance` through
+  // the host.
+  const route = usePublicRoute();
+  if (route === null) {
     return <ConsoleCopyProvider value={true}>{children}</ConsoleCopyProvider>;
   }
-  return <SiteUiProvider>{children}</SiteUiProvider>;
+  return (
+    <ModuleRendersRouteProvider value={moduleRendersRoute(route)}>
+      <SiteUiProvider>{children}</SiteUiProvider>
+    </ModuleRendersRouteProvider>
+  );
 }
 
 /**

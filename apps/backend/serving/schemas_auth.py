@@ -178,6 +178,34 @@ class VerifyEmailResponse(BaseModel):
 
 
 # User info schemas
+# The console's interface languages. Kept in step with SUPPORTED_LOCALES in
+# apps/frontend/src/lib/i18n/locales.ts: a language the console cannot render
+# is refused here rather than stored and then ignored.
+ConsoleLocale = Literal["en", "zh-CN"]
+
+
+class LocalePreference(BaseModel):
+    """The interface language an account last chose, and when.
+
+    ``chosen_at`` is what lets the most recent choice win when the browser and
+    the account disagree.
+    """
+
+    value: ConsoleLocale
+    chosen_at: datetime
+
+
+class LocalePreferenceUpdate(BaseModel):
+    """Choose the account's interface language.
+
+    ``chosen_at`` is sent only for a choice made earlier, signed out, that the
+    console is carrying into the account; it is otherwise the server's time.
+    """
+
+    locale: ConsoleLocale
+    chosen_at: datetime | None = None
+
+
 class UserInfo(BaseModel):
     """User information (public).
 
@@ -199,6 +227,7 @@ class UserInfo(BaseModel):
     is_admin: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
+    locale: LocalePreference | None = None
 
 
 # Accounts signed in on one browser

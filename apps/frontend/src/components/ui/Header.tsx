@@ -3,11 +3,15 @@
 import Link from 'next/link';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useT } from '@/components/providers/useT';
+import { fill } from '@/lib/utils/interpolate';
 import { AccountMenu } from './AccountMenu';
+import { LanguageSwitcher } from './LanguageSwitcher';
 
 export function Header() {
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
+  const t = useT();
 
   return (
     <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
@@ -23,7 +27,9 @@ export function Header() {
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={branding.logoUrl}
-              alt={`${branding.appName} logo`}
+              alt={fill(t('chrome.header.logo_alt', '{app_name} logo'), {
+                app_name: branding.appName,
+              })}
               className="h-8 w-auto shrink-0 object-contain"
             />
           ) : null}
@@ -48,7 +54,7 @@ export function Header() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            Status
+            {t('chrome.header.status', 'Status')}
           </a>
         )}
         {features.publicStats && (
@@ -57,7 +63,7 @@ export function Header() {
             prefetch={false}
             className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
           >
-            Stats
+            {t('chrome.header.stats', 'Stats')}
           </Link>
         )}
         {branding.navLinks.map((link) => (
@@ -71,6 +77,7 @@ export function Header() {
             {link.label}
           </a>
         ))}
+        <LanguageSwitcher />
         {state.isAuthenticated && (
           <>
             {features.rag && (
@@ -79,14 +86,14 @@ export function Header() {
                 prefetch={false}
                 className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
               >
-                Docs Assistant
+                {t('chrome.header.docs_assistant', 'Docs Assistant')}
               </Link>
             )}
             <Link
               href="/dashboard"
               className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
             >
-              Dashboard
+              {t('chrome.header.dashboard', 'Dashboard')}
             </Link>
             <AccountMenu />
           </>

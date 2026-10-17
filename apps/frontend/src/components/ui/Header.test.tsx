@@ -3,6 +3,9 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { LocaleProvider } from '@/components/providers/LocaleProvider';
+import type { Catalog } from '@/lib/i18n/translate';
+import zhCN from '@/lib/i18n/messages/zh-CN.json';
 import { Header } from './Header';
 
 const replace = vi.fn();
@@ -167,5 +170,27 @@ describe('Header', () => {
     render(<Header />);
 
     expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/dashboard');
+  });
+});
+
+describe('Header, for a reader who chose Chinese', () => {
+  afterEach(cleanup);
+
+  it('shows the console links in Chinese and offers English by name', () => {
+    brandingOverride = configuredBranding;
+    featuresOverride = { rag: true, publicStats: true };
+    authState = { isAuthenticated: true };
+
+    render(
+      <LocaleProvider locale="zh-CN" catalog={zhCN as Catalog} moduleLocale="">
+        <Header />
+      </LocaleProvider>,
+    );
+
+    for (const name of ['服务状态', '统计', '文档助手', '控制台']) {
+      expect(screen.getByRole('link', { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole('img', { name: 'Example Inference 标志' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('lang', 'en');
   });
 });

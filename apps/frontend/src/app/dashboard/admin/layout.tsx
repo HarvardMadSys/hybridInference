@@ -20,7 +20,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   return (
     <ProtectedRoute>
       {!state.user?.is_admin ? (
-        <div className="flex min-h-[50vh] flex-col items-center justify-center text-center">
+        <div
+          lang="en"
+          className="flex min-h-[50vh] flex-col items-center justify-center text-center"
+        >
           <h1 className="text-lg font-semibold text-gray-900">Admin access required</h1>
           <p className="mt-1 text-sm text-gray-500">
             You don&apos;t have permission to view this page.
@@ -33,7 +36,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </Link>
         </div>
       ) : (
-        <div className="mx-auto w-full max-w-4xl pb-20">
+        // Administration is not translated: it is for the operators, not the
+        // console's users, and stays in English whatever language the reader
+        // chose. `lang` says so to screen readers and browser translation.
+        <div lang="en" className="mx-auto w-full max-w-4xl pb-20">
           {/* Nav */}
           <div className="mb-10 flex items-center justify-between">
             <Link

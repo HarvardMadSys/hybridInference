@@ -1,0 +1,876 @@
+{
+  "auth.accounts.add_title": {
+    "source": "Add another account",
+    "text": "添加其他账户"
+  },
+  "auth.accounts.back": {
+    "source": "Back to your accounts",
+    "text": "返回账户列表"
+  },
+  "auth.accounts.cancel_add": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "auth.accounts.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "auth.accounts.signed_out": {
+    "source": "Signed out",
+    "text": "已退出登录"
+  },
+  "auth.accounts.subtitle": {
+    "source": "Accounts signed in on this browser",
+    "text": "已在此浏览器登录的账户"
+  },
+  "auth.accounts.switched_toast": {
+    "source": "Continuing as {name}",
+    "text": "已切换为 {name}"
+  },
+  "auth.accounts.title": {
+    "source": "Choose an account",
+    "text": "选择账户"
+  },
+  "auth.accounts.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.authorize.account_legend": {
+    "source": "Account",
+    "text": "账户"
+  },
+  "auth.authorize.cancel": {
+    "source": "Cancel and return to dashboard",
+    "text": "取消并返回控制台"
+  },
+  "auth.authorize.choose_account": {
+    "source": "Choose the account to sign in to",
+    "text": "选择要登录的账户"
+  },
+  "auth.authorize.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.authorize.continue_title": {
+    "source": "Continue to",
+    "text": "继续前往"
+  },
+  "auth.authorize.failed_title": {
+    "source": "Sign-in failed",
+    "text": "登录失败"
+  },
+  "auth.authorize.incomplete": {
+    "source": "This sign-in link is incomplete. Please start again from the application.",
+    "text": "此登录链接不完整，请从应用中重新开始。"
+  },
+  "auth.authorize.invalid_redirect": {
+    "source": "This sign-in link has an invalid return address. Please start again from the application.",
+    "text": "此登录链接的返回地址无效，请从应用中重新开始。"
+  },
+  "auth.authorize.no_agent_access": {
+    "source": "No access to this application",
+    "text": "无权访问此应用"
+  },
+  "auth.authorize.sign_in_again": {
+    "source": "Sign in again",
+    "text": "重新登录"
+  },
+  "auth.authorize.signin_as": {
+    "source": "as",
+    "text": "，使用账户"
+  },
+  "auth.authorize.signin_lead": {
+    "source": "Sign in to",
+    "text": "登录"
+  },
+  "auth.authorize.unknown_client": {
+    "source": "This sign-in link is for an application this deployment does not know.",
+    "text": "此登录链接对应的应用不在本部署的已知应用之列。"
+  },
+  "auth.authorize.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.consent.all_required": [
+    {
+      "source": "All confirmations are required to continue.",
+      "text": "需要勾选全部确认项才能继续。"
+    },
+    {
+      "source": "All four confirmations are required to continue.",
+      "text": "需要勾选全部四项确认才能继续。"
+    }
+  ],
+  "auth.consent.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.consent.intro": [
+    {
+      "source": "Please read the terms and confirm each item below.",
+      "text": "请阅读条款，并逐项确认以下内容。"
+    },
+    {
+      "source": "{app_name} is an experimental research service. Please read and confirm each item below.",
+      "text": "{app_name} 是一项实验性研究服务。请阅读并逐项确认以下内容。"
+    }
+  ],
+  "auth.consent.kicker": {
+    "source": "BEFORE YOU START",
+    "text": "开始之前"
+  },
+  "auth.consent.terms_body": [
+    {
+      "source": "Please read the terms in full. The confirmations below unlock once you reach the end.",
+      "text": "请完整阅读条款。滚动到末尾后，下方的确认项才可勾选。"
+    },
+    {
+      "source": "Please read the terms in full. The checkbox unlocks once you reach the end.",
+      "text": "请完整阅读条款。滚动到末尾后，复选框才可勾选。"
+    }
+  ],
+  "auth.consent.terms_link": {
+    "source": "Open the full Terms of Service in a new tab",
+    "text": "在新标签页中打开完整的服务条款"
+  },
+  "auth.consent.terms_scroll_hint": [
+    {
+      "source": "Scroll to the end of the terms to enable the confirmations.",
+      "text": "滚动到条款末尾即可勾选确认项。"
+    },
+    {
+      "source": "Scroll to the end of the terms to enable this checkbox.",
+      "text": "滚动到条款末尾即可勾选此复选框。"
+    }
+  ],
+  "auth.consent.terms_title": {
+    "source": "Terms of Service",
+    "text": "服务条款"
+  },
+  "auth.consent.title": {
+    "source": "Before you create an account",
+    "text": "创建账户之前"
+  },
+  "auth.forgot.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.forgot.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.forgot.kicker": {
+    "source": "RESET YOUR PASSWORD",
+    "text": "重置密码"
+  },
+  "auth.forgot.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.forgot.remember": {
+    "source": "Remember your password?",
+    "text": "想起密码了？"
+  },
+  "auth.forgot.submit": {
+    "source": "Send Reset Link",
+    "text": "发送重置链接"
+  },
+  "auth.forgot.submitting": {
+    "source": "Sending…",
+    "text": "发送中…"
+  },
+  "auth.forgot.subtitle": {
+    "source": "Enter your email address and we'll send you a link to reset your password",
+    "text": "输入你的邮箱地址，我们会发送一个重置密码的链接"
+  },
+  "auth.forgot.success_body": {
+    "source": "If an account exists with this email, we've sent a password reset link. Please check your inbox.",
+    "text": "如果该邮箱对应的账户存在，我们已发送密码重置链接，请查收邮件。"
+  },
+  "auth.forgot.success_kicker": {
+    "source": "CHECK YOUR INBOX",
+    "text": "请查收邮件"
+  },
+  "auth.forgot.success_title": {
+    "source": "Check Your Email",
+    "text": "请查看你的邮箱"
+  },
+  "auth.forgot.title": {
+    "source": "Forgot Password",
+    "text": "忘记密码"
+  },
+  "auth.legal.see": {
+    "source": "See",
+    "text": "参见"
+  },
+  "auth.login.email_label": {
+    "source": "Email or username",
+    "text": "邮箱或用户名"
+  },
+  "auth.login.forgot_password": {
+    "source": "Forgot password?",
+    "text": "忘记密码？"
+  },
+  "auth.login.kicker": {
+    "source": "GOOD TO SEE YOU AGAIN",
+    "text": "欢迎回来"
+  },
+  "auth.login.no_account": {
+    "source": "Don't have an account?",
+    "text": "还没有账户？"
+  },
+  "auth.login.password_label": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "auth.login.resend_button": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.login.resend_prompt": {
+    "source": "Didn't get the verification email?",
+    "text": "没有收到验证邮件？"
+  },
+  "auth.login.resent_notice": {
+    "source": "A new verification email is on its way to {email}. Please check your inbox (and spam folder).",
+    "text": "新的验证邮件已发送至 {email}，请查收（也请检查垃圾邮件文件夹）。"
+  },
+  "auth.login.resent_toast": {
+    "source": "Verification email sent. Please check your inbox.",
+    "text": "验证邮件已发送，请查收。"
+  },
+  "auth.login.signup_link": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.login.submit": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.login.submitting": {
+    "source": "Logging in…",
+    "text": "登录中…"
+  },
+  "auth.login.subtitle": {
+    "source": "Welcome back, please log in",
+    "text": "欢迎回来，请登录"
+  },
+  "auth.login.success_toast": {
+    "source": "Login successful!",
+    "text": "登录成功！"
+  },
+  "auth.login.title": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.phone.bind_hint": {
+    "source": "Bind a mobile number to log in to this account with a verification code.",
+    "text": "绑定手机号后，可以用验证码登录此账户。"
+  },
+  "auth.phone.bind_submit": {
+    "source": "Bind mobile number",
+    "text": "绑定手机号"
+  },
+  "auth.phone.bind_success": {
+    "source": "Phone number bound successfully.",
+    "text": "手机号绑定成功。"
+  },
+  "auth.phone.bound_number": {
+    "source": "Verified mobile number: {phone}",
+    "text": "已验证的手机号：{phone}"
+  },
+  "auth.phone.code_label": {
+    "source": "Verification code",
+    "text": "验证码"
+  },
+  "auth.phone.code_sent": {
+    "source": "If this phone number is eligible, a verification code has been sent.",
+    "text": "如果该手机号符合条件，验证码已发送。"
+  },
+  "auth.phone.email_method": {
+    "source": "Email and password",
+    "text": "邮箱和密码"
+  },
+  "auth.phone.login_subtitle": {
+    "source": "Welcome back, please log in",
+    "text": "欢迎回来，请登录"
+  },
+  "auth.phone.method_label": {
+    "source": "Account method",
+    "text": "账户方式"
+  },
+  "auth.phone.phone_hint": [
+    {
+      "source": "Select your country code or enter a full number with +country code.",
+      "text": "选择国家或地区代码，或输入带 +国家代码 的完整号码。"
+    },
+    {
+      "source": "Include the country code, such as +12025550123.",
+      "text": "请包含国家代码，例如 +12025550123。"
+    }
+  ],
+  "auth.phone.phone_label": {
+    "source": "Mobile number",
+    "text": "手机号"
+  },
+  "auth.phone.phone_method": {
+    "source": "Phone verification code",
+    "text": "手机验证码"
+  },
+  "auth.phone.retry_in": {
+    "source": "Send again in {seconds}s",
+    "text": "{seconds} 秒后可重新发送"
+  },
+  "auth.phone.send_code": {
+    "source": "Send verification code",
+    "text": "发送验证码"
+  },
+  "auth.phone.sending": {
+    "source": "Sending…",
+    "text": "发送中…"
+  },
+  "auth.phone.settings_title": {
+    "source": "Mobile Number",
+    "text": "手机号"
+  },
+  "auth.phone.signup_pending": {
+    "source": "Account created successfully. Your registration is pending admin approval.",
+    "text": "账户创建成功，注册申请正在等待管理员审核。"
+  },
+  "auth.phone.signup_success": {
+    "source": "Account created successfully. You can now log in.",
+    "text": "账户创建成功，现在可以登录了。"
+  },
+  "auth.phone.submitting": {
+    "source": "Verifying…",
+    "text": "验证中…"
+  },
+  "auth.reset.confirm_password_label": {
+    "source": "Confirm New Password",
+    "text": "确认新密码"
+  },
+  "auth.reset.go_to_login": {
+    "source": "Go to Login",
+    "text": "前往登录"
+  },
+  "auth.reset.invalid_token": {
+    "source": "Invalid or missing reset token",
+    "text": "重置令牌无效或缺失"
+  },
+  "auth.reset.kicker": {
+    "source": "CHOOSE A NEW PASSWORD",
+    "text": "设置新密码"
+  },
+  "auth.reset.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.reset.new_password_hint": {
+    "source": "At least 8 characters with uppercase, lowercase, and numbers",
+    "text": "至少 8 个字符，包含大写字母、小写字母和数字"
+  },
+  "auth.reset.new_password_label": {
+    "source": "New Password",
+    "text": "新密码"
+  },
+  "auth.reset.remember": {
+    "source": "Remember your password?",
+    "text": "想起密码了？"
+  },
+  "auth.reset.submit": {
+    "source": "Reset Password",
+    "text": "重置密码"
+  },
+  "auth.reset.submitting": {
+    "source": "Resetting…",
+    "text": "重置中…"
+  },
+  "auth.reset.subtitle": {
+    "source": "Enter your new password below",
+    "text": "请在下方输入新密码"
+  },
+  "auth.reset.success_body": {
+    "source": "Your password has been reset successfully. You can now log in with your new password.",
+    "text": "密码已重置成功，现在可以用新密码登录。"
+  },
+  "auth.reset.success_kicker": {
+    "source": "ALL SET",
+    "text": "设置完成"
+  },
+  "auth.reset.success_title": {
+    "source": "Password Reset Successful!",
+    "text": "密码重置成功！"
+  },
+  "auth.reset.title": {
+    "source": "Reset Password",
+    "text": "重置密码"
+  },
+  "auth.signup.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.signup.captcha_required": {
+    "source": "Please complete the captcha.",
+    "text": "请完成人机验证。"
+  },
+  "auth.signup.confirm_password_label": {
+    "source": "Confirm Password",
+    "text": "确认密码"
+  },
+  "auth.signup.discovery_hint": {
+    "source": "Optional, but helpful for improving outreach.",
+    "text": "选填，可帮助我们改进推广。"
+  },
+  "auth.signup.discovery_label": {
+    "source": "How did you find us?",
+    "text": "你是如何了解到我们的？"
+  },
+  "auth.signup.discovery_placeholder": {
+    "source": "Friend/classmate, search engine, social media, course link, etc.",
+    "text": "朋友/同学、搜索引擎、社交媒体、课程链接等"
+  },
+  "auth.signup.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.signup.fast_track": {
+    "source": "Open to {org} students — sign up with your @{domain} email for instant access. Everyone else: please describe your use case below — we review and approve manually.",
+    "text": "向 {org} 的学生开放：使用 @{domain} 邮箱注册即可立即获得访问权限。其他用户请在下方描述你的用途，我们会人工审核。"
+  },
+  "auth.signup.have_account": {
+    "source": "Already have an account?",
+    "text": "已有账户？"
+  },
+  "auth.signup.kicker": {
+    "source": "START BUILDING",
+    "text": "开始构建"
+  },
+  "auth.signup.kicker_result": {
+    "source": "ALMOST THERE",
+    "text": "即将完成"
+  },
+  "auth.signup.kicker_unavailable": {
+    "source": "REGISTRATION CLOSED",
+    "text": "暂停注册"
+  },
+  "auth.signup.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.signup.password_hint": {
+    "source": "At least 8 characters with uppercase, lowercase, and numbers.",
+    "text": "至少 8 个字符，包含大写字母、小写字母和数字。"
+  },
+  "auth.signup.password_label": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "auth.signup.pending_title": {
+    "source": "Registration Submitted",
+    "text": "注册申请已提交"
+  },
+  "auth.signup.result_subtitle": {
+    "source": "Here is what happens with your account next.",
+    "text": "以下是你的账户接下来的处理流程。"
+  },
+  "auth.signup.signin_link": {
+    "source": "Sign in",
+    "text": "登录"
+  },
+  "auth.signup.submit": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.signup.submitting": {
+    "source": "Creating your account…",
+    "text": "正在创建账户…"
+  },
+  "auth.signup.subtitle": {
+    "source": "Create an account to manage API keys and usage",
+    "text": "创建账户以管理 API key 和用量"
+  },
+  "auth.signup.success_title": {
+    "source": "Registration Successful!",
+    "text": "注册成功！"
+  },
+  "auth.signup.title": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.signup.unavailable_body": {
+    "source": "This distribution does not currently accept public registrations.",
+    "text": "本部署目前不开放公开注册。"
+  },
+  "auth.signup.unavailable_title": {
+    "source": "Public signup is unavailable",
+    "text": "暂不开放公开注册"
+  },
+  "auth.signup.use_case_hint": {
+    "source": "Helps admins review signups faster.",
+    "text": "有助于管理员更快完成审核。"
+  },
+  "auth.signup.use_case_label": {
+    "source": "Use case",
+    "text": "用途"
+  },
+  "auth.signup.use_case_placeholder": {
+    "source": "Tell us briefly what you plan to use the service for (research project, course, app prototype, etc.).",
+    "text": "简要说明你打算如何使用本服务（研究项目、课程、应用原型等）。"
+  },
+  "auth.signup.username_hint": {
+    "source": "This name is shown in your account and admin review.",
+    "text": "此名称会显示在你的账户和管理员审核页面中。"
+  },
+  "auth.signup.username_label": {
+    "source": "Username",
+    "text": "用户名"
+  },
+  "auth.validation.combined_max": {
+    "source": "Combined use case and discovery response is too long (max 2000 characters)",
+    "text": "用途和来源两项回答合计过长（最多 2000 个字符）"
+  },
+  "auth.validation.discovery_max": {
+    "source": "Response cannot exceed 500 characters",
+    "text": "回答不能超过 500 个字符"
+  },
+  "auth.validation.email_invalid": {
+    "source": "Please enter a valid email address",
+    "text": "请输入有效的邮箱地址"
+  },
+  "auth.validation.email_too_long": {
+    "source": "Email address is too long",
+    "text": "邮箱地址过长"
+  },
+  "auth.validation.identifier_required": {
+    "source": "Please enter your email or username",
+    "text": "请输入邮箱或用户名"
+  },
+  "auth.validation.login_name_invalid": {
+    "source": "Please enter a valid email address or username",
+    "text": "请输入有效的邮箱地址或用户名"
+  },
+  "auth.validation.password_lower": {
+    "source": "Password must contain at least one lowercase letter",
+    "text": "密码必须包含至少一个小写字母"
+  },
+  "auth.validation.password_min": {
+    "source": "Password must be at least 8 characters",
+    "text": "密码长度至少为 8 个字符"
+  },
+  "auth.validation.password_number": {
+    "source": "Password must contain at least one number",
+    "text": "密码必须包含至少一个数字"
+  },
+  "auth.validation.password_required": {
+    "source": "Please enter your password",
+    "text": "请输入密码"
+  },
+  "auth.validation.password_upper": {
+    "source": "Password must contain at least one uppercase letter",
+    "text": "密码必须包含至少一个大写字母"
+  },
+  "auth.validation.passwords_differ": {
+    "source": "Passwords do not match",
+    "text": "两次输入的密码不一致"
+  },
+  "auth.validation.phone_code_invalid": {
+    "source": "Enter the six-digit verification code.",
+    "text": "请输入 6 位验证码。"
+  },
+  "auth.validation.phone_invalid": {
+    "source": "Enter a phone number with its country code.",
+    "text": "请输入带国家代码的手机号。"
+  },
+  "auth.validation.use_case_max": {
+    "source": "Use case cannot exceed 2000 characters",
+    "text": "用途不能超过 2000 个字符"
+  },
+  "auth.validation.username_max": {
+    "source": "Username cannot exceed 50 characters",
+    "text": "用户名不能超过 50 个字符"
+  },
+  "auth.validation.username_min": {
+    "source": "Username must be at least 2 characters",
+    "text": "用户名至少为 2 个字符"
+  },
+  "auth.verify.already_body": {
+    "source": "Your email is already verified. You can log in to continue.",
+    "text": "你的邮箱已验证，可以直接登录。"
+  },
+  "auth.verify.already_message": {
+    "source": "Your email has already been verified. You can login now.",
+    "text": "你的邮箱已经验证过了，现在可以登录。"
+  },
+  "auth.verify.already_title": {
+    "source": "Already Verified",
+    "text": "已验证"
+  },
+  "auth.verify.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.verify.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.verify.error_body": {
+    "source": "We were unable to verify your email.",
+    "text": "我们无法验证你的邮箱。"
+  },
+  "auth.verify.error_title": {
+    "source": "Verification Failed",
+    "text": "验证失败"
+  },
+  "auth.verify.go_to_login": {
+    "source": "Go to Login",
+    "text": "前往登录"
+  },
+  "auth.verify.kicker": {
+    "source": "EMAIL VERIFICATION",
+    "text": "邮箱验证"
+  },
+  "auth.verify.loading_body": {
+    "source": "Please wait while we verify your email address.",
+    "text": "正在验证你的邮箱地址，请稍候。"
+  },
+  "auth.verify.loading_title": {
+    "source": "Verifying Email",
+    "text": "正在验证邮箱"
+  },
+  "auth.verify.missing_token": {
+    "source": "Missing verification token",
+    "text": "缺少验证令牌"
+  },
+  "auth.verify.resend_button": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.verify.resend_prompt": {
+    "source": "Need a new link? Enter your email and we'll send a fresh verification email.",
+    "text": "需要新的链接？输入邮箱，我们会重新发送验证邮件。"
+  },
+  "auth.verify.resent_notice": {
+    "source": "A new verification email is on its way to {email}. Please check your inbox (and spam folder), then follow the link to finish verifying.",
+    "text": "新的验证邮件已发送至 {email}。请查收（也请检查垃圾邮件文件夹），然后点击邮件中的链接完成验证。"
+  },
+  "auth.verify.resent_toast": {
+    "source": "Verification email sent. Please check your inbox.",
+    "text": "验证邮件已发送，请查收。"
+  },
+  "auth.verify.signup_again": {
+    "source": "Sign Up Again",
+    "text": "重新注册"
+  },
+  "auth.verify.success_body": {
+    "source": "Your account is now active. You can log in to continue.",
+    "text": "你的账户已激活，可以登录了。"
+  },
+  "auth.verify.success_fallback": {
+    "source": "Email verified successfully!",
+    "text": "邮箱验证成功！"
+  },
+  "auth.verify.success_title": {
+    "source": "Email Verified",
+    "text": "邮箱已验证"
+  },
+  "auth.verify.try_another": {
+    "source": "Entered the wrong email? Try another one",
+    "text": "邮箱填错了？换一个试试"
+  },
+  "chat.empty_hint": {
+    "source": "Try one of these to get started:",
+    "text": "可以试试这些问题："
+  },
+  "chat.error_generic": {
+    "source": "Something went wrong. Please try again.",
+    "text": "出了点问题，请重试。"
+  },
+  "chat.example_1": {
+    "source": "How do I get an API key?",
+    "text": "如何获取 API key？"
+  },
+  "chat.example_2": {
+    "source": "Which models can I use for coding?",
+    "text": "哪些模型适合写代码？"
+  },
+  "chat.example_3": {
+    "source": "How do I set up Cursor with {app_name}?",
+    "text": "如何在 Cursor 中配置 {app_name}？"
+  },
+  "chat.example_4": {
+    "source": "What request headers does the API accept?",
+    "text": "API 支持哪些请求头？"
+  },
+  "chat.input_placeholder": {
+    "source": "Ask a question about {app_name}…",
+    "text": "询问关于 {app_name} 的问题…"
+  },
+  "chat.official_docs": {
+    "source": "official documentation",
+    "text": "官方文档"
+  },
+  "chat.send": {
+    "source": "Send",
+    "text": "发送"
+  },
+  "chat.sources_label": {
+    "source": "Sources",
+    "text": "来源"
+  },
+  "chat.stop": {
+    "source": "Stop",
+    "text": "停止"
+  },
+  "chat.subtitle_grounded": {
+    "source": "Answers are grounded in the",
+    "text": "回答依据"
+  },
+  "chat.subtitle_lead": {
+    "source": "Ask anything about {app_name}.",
+    "text": "关于 {app_name} 的任何问题都可以问。"
+  },
+  "chat.thinking": {
+    "source": "Thinking…",
+    "text": "思考中…"
+  },
+  "chat.title": {
+    "source": "Docs Assistant",
+    "text": "文档助手"
+  },
+  "chat.unavailable": {
+    "source": "The documentation assistant is not enabled for this distribution.",
+    "text": "本部署未启用文档助手。"
+  },
+  "chrome.account_menu.add_account": {
+    "source": "Add another account",
+    "text": "添加其他账户"
+  },
+  "chrome.account_menu.label": {
+    "source": "Account",
+    "text": "账户"
+  },
+  "chrome.account_menu.limit_reached": {
+    "source": "This browser holds {max} accounts, the most it can. Sign one out to add another.",
+    "text": "此浏览器已登录 {max} 个账户，已达上限。请先退出一个账户再添加。"
+  },
+  "chrome.account_menu.log_out": {
+    "source": "Log out",
+    "text": "退出登录"
+  },
+  "chrome.account_menu.log_out_all": {
+    "source": "Log out of all accounts",
+    "text": "退出所有账户"
+  },
+  "chrome.account_menu.signed_out": {
+    "source": "Signed out · sign in again",
+    "text": "已退出 · 请重新登录"
+  },
+  "chrome.account_menu.switched": {
+    "source": "Switched to {name}",
+    "text": "已切换到 {name}"
+  },
+  "chrome.footer.docs": {
+    "source": "Docs",
+    "text": "文档"
+  },
+  "chrome.footer.no_warranty": {
+    "source": "Service is provided without guarantee.",
+    "text": "本服务不提供任何保证。"
+  },
+  "chrome.footer.privacy": {
+    "source": "Privacy",
+    "text": "隐私"
+  },
+  "chrome.footer.stats": {
+    "source": "Stats",
+    "text": "统计"
+  },
+  "chrome.footer.status": {
+    "source": "Status",
+    "text": "服务状态"
+  },
+  "chrome.footer.team": {
+    "source": "Team",
+    "text": "团队"
+  },
+  "chrome.footer.terms": {
+    "source": "Terms",
+    "text": "条款"
+  },
+  "chrome.footer.terms_lead": {
+    "source": "See our",
+    "text": "参见我们的"
+  },
+  "chrome.footer.terms_link": {
+    "source": "Terms of Service",
+    "text": "服务条款"
+  },
+  "chrome.header.dashboard": {
+    "source": "Dashboard",
+    "text": "控制台"
+  },
+  "chrome.header.docs_assistant": {
+    "source": "Docs Assistant",
+    "text": "文档助手"
+  },
+  "chrome.header.logo_alt": {
+    "source": "{app_name} logo",
+    "text": "{app_name} 标志"
+  },
+  "chrome.header.stats": {
+    "source": "Stats",
+    "text": "统计"
+  },
+  "chrome.header.status": {
+    "source": "Status",
+    "text": "服务状态"
+  },
+  "chrome.language.label": {
+    "source": "Interface language",
+    "text": "界面语言"
+  },
+  "chrome.language.switch_title": {
+    "source": "Change the interface language",
+    "text": "切换界面语言"
+  },
+  "meta.team.description": {
+    "source": "The people building {app_name}.",
+    "text": "打造 {app_name} 的团队成员。"
+  },
+  "meta.team.title": {
+    "source": "Team",
+    "text": "团队"
+  },
+  "settings.language.description": {
+    "source": "The language of this console. Your choice is saved to your account and follows you to other browsers.",
+    "text": "控制台的显示语言。你的选择会保存到账户中，在其他浏览器登录时同样生效。"
+  },
+  "settings.language.title": {
+    "source": "Language",
+    "text": "语言"
+  },
+  "team.avatar_label": {
+    "source": "Placeholder avatar for {name}",
+    "text": "{name} 的占位头像"
+  },
+  "team.eyebrow": {
+    "source": "Our team",
+    "text": "我们的团队"
+  },
+  "team.photo_alt": {
+    "source": "Photo of {name}",
+    "text": "{name} 的照片"
+  },
+  "team.subtitle": {
+    "source": "A small research team building free, open LLM inference",
+    "text": "一个致力于提供免费、开放的 LLM 推理服务的小型研究团队"
+  },
+  "team.subtitle_org_lead": {
+    "source": "at",
+    "text": "，来自"
+  },
+  "team.title_prefix": {
+    "source": "The people behind",
+    "text": "幕后团队 ·"
+  }
+}

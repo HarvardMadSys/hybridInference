@@ -11,6 +11,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
+import { LanguagePicker } from '@/components/ui/LanguageSwitcher';
 import { cropImageToDataUrl, UserAvatar } from '@/components/ui/UserAvatar';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
@@ -228,6 +229,16 @@ function SettingsContent() {
           )}
         </div>
       </div>
+
+      <SettingsSection
+        title={t('settings.language.title', 'Language')}
+        description={t(
+          'settings.language.description',
+          'The language of this console. Your choice is saved to your account and follows you to other browsers.',
+        )}
+      >
+        <LanguagePicker />
+      </SettingsSection>
 
       <SettingsSection
         title="Change Username"
