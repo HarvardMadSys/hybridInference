@@ -220,4 +220,49 @@ describe('the root layout', () => {
 
     expectErrorPage();
   });
+
+  it('keeps console routes on the neutral appearance and English copy when a module supplies authAppearance, fieldLayout, and authMessages', async () => {
+    const renderRoute = await compileIn({
+      authAppearance: {
+        form: 'module-form',
+        field: 'module-field',
+        label: 'module-label',
+        labelRow: 'module-row',
+        input: 'module-input',
+        inputError: 'module-input-error',
+        hint: 'module-hint',
+        error: 'module-error',
+        linkButton: 'module-link',
+        submit: 'module-submit',
+        notice: 'module-notice',
+        noticeError: 'module-notice-error',
+        noticeOk: 'module-notice-ok',
+        consentBlock: 'module-consent',
+        loading: 'module-loading',
+        loadingWrap: 'module-loading-wrap',
+      },
+      fieldLayout: Fails,
+      authMessages: {
+        'auth.phone.phone_label': '手机号',
+      },
+    });
+    const { AuthField } = await import('@/components/auth/AuthForm');
+    const { useT } = await import('@/components/providers/useT');
+
+    function ConsoleSettingsField() {
+      const t = useT();
+      return (
+        <AuthField id="bind-phone" label={t('auth.phone.phone_label', 'Mobile number')}>
+          <input id="bind-phone" />
+        </AuthField>
+      );
+    }
+
+    renderRoute('/dashboard/settings', <ConsoleSettingsField />);
+
+    const label = screen.getByText('Mobile number');
+    expect(label).toHaveClass('text-gray-700');
+    expect(label).not.toHaveClass('module-label');
+    expect(screen.queryByText('手机号')).toBeNull();
+  });
 });

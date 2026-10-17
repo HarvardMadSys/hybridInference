@@ -66,7 +66,11 @@ export function useModuleRendersRoute(): boolean {
  * take the whole application down with it rather than one page.
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
-  return <SiteUiProvider>{children}</SiteUiProvider>;
+  const route = usePublicRoute();
+  if (route !== null && isAuthRoute(route)) {
+    return <SiteUiProvider>{children}</SiteUiProvider>;
+  }
+  return <>{children}</>;
 }
 
 /**
