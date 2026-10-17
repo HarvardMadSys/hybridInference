@@ -7,6 +7,7 @@ import { Header } from '@/components/ui/Header';
 import { SiteFooter } from '@/components/ui/SiteFooter';
 import { useModuleRendersRoute } from '@/site-ui/SiteUiBoundary';
 import { publicRouteFor } from '@/site-ui/routes';
+import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 /**
  * Exactly one layer owns the header, main and footer. A supplied Landing,
@@ -32,11 +33,14 @@ export function PublicRouteBoundary({ children }: { children: React.ReactNode })
  * whose chrome the module owns, where the module is what failed.
  */
 export function ConsoleChrome({ children }: { children: React.ReactNode }) {
+  const consoleWidth = useConsoleWidth();
   return (
     <>
       <Header />
       <ConfigurationBanner />
-      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">{children}</main>
+      <main className={`mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-6 py-12`}>
+        {children}
+      </main>
       <SiteFooter />
     </>
   );

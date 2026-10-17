@@ -33,7 +33,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </Link>
         </div>
       ) : (
-        <div className="mx-auto w-full max-w-4xl pb-20">
+        <div className="w-full pb-20">
           {/* Nav */}
           <div className="mb-10 flex items-center justify-between">
             <Link

@@ -18,7 +18,10 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
   const activeId = current.view;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+        Views
+      </span>
       {all.map((v) => (
         // Wrap in a div so the two sibling buttons are valid interactive elements
         // (no nested buttons — that's invalid HTML and breaks a11y).
@@ -26,12 +29,12 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
           <button
             type="button"
             onClick={() => onApply(v.filterState)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
               v.builtin ? '' : 'rounded-r-none border-r-0'
             } ${
               activeId === v.id
-                ? 'border-blue-600 bg-blue-600 text-white'
-                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                ? 'border-gray-900 bg-gray-900 text-white'
+                : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-900'
             }`}
           >
             {v.name}
@@ -43,8 +46,8 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
               onClick={() => remove(v.id)}
               className={`rounded-r-full border border-l-0 px-2 text-xs transition-colors ${
                 activeId === v.id
-                  ? 'border-blue-600 bg-blue-600 text-blue-200 hover:text-white'
-                  : 'border-gray-300 bg-white text-gray-400 hover:bg-red-50 hover:text-red-500'
+                  ? 'border-gray-900 bg-gray-900 text-gray-400 hover:text-white'
+                  : 'border-gray-200 bg-white text-gray-400 hover:bg-red-50 hover:text-red-500'
               }`}
             >
               ×
@@ -55,7 +58,7 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
       <button
         type="button"
         onClick={() => setShowSaveDialog(true)}
-        className="rounded-full border border-dashed border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+        className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-[12px] font-medium text-gray-500 transition hover:border-gray-400 hover:text-gray-900"
       >
         + Save current
       </button>
@@ -99,25 +102,31 @@ function SaveDialog({
 }) {
   const [name, setName] = useState('');
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="w-80 rounded-lg bg-white p-4 shadow-lg">
-        <h3 className="mb-2 text-sm font-semibold">Save current filter as a view</h3>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-[2px]">
+      <div className="mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
+        <h3 className="mb-3 text-[15px] font-semibold text-gray-900">
+          Save current filter as a view
+        </h3>
         <input
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. High-cost free users"
-          className="w-full rounded border px-2 py-1 text-sm"
+          className="h-9 w-full rounded-md border border-gray-200 px-3 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
         />
-        <div className="mt-3 flex justify-end gap-2 text-sm">
-          <button type="button" onClick={onCancel} className="rounded bg-gray-100 px-3 py-1">
+        <div className="mt-4 flex justify-end gap-2 text-[13px]">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-3 py-1.5 text-gray-500 transition hover:text-gray-900"
+          >
             Cancel
           </button>
           <button
             type="button"
             onClick={() => name.trim() && onSave(name)}
             disabled={!name.trim()}
-            className="rounded bg-blue-600 px-3 py-1 text-white disabled:bg-gray-300"
+            className="rounded-md bg-gray-900 px-3 py-1.5 font-semibold text-white transition hover:bg-gray-800 disabled:opacity-40"
           >
             Save
           </button>

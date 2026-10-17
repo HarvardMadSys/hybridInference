@@ -1,6 +1,7 @@
 'use client';
 
 import type { QuotaStateFilter } from '../types';
+import { CONTROL } from '../ui';
 
 const OPTIONS: Array<{ value: QuotaStateFilter | ''; label: string }> = [
   { value: '', label: 'Any quota' },
@@ -20,7 +21,7 @@ export function QuotaFilter({ value, onChange }: Props) {
     <select
       value={value ?? ''}
       onChange={(e) => onChange((e.target.value as QuotaStateFilter) || null)}
-      className="rounded border bg-white px-2 py-1 text-sm"
+      className={CONTROL}
     >
       {OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>

@@ -1,5 +1,10 @@
 import { LogTab } from '@/components/features/admin/LogTab';
+import { AdminFormWidth } from '@/components/features/admin/AdminFormWidth';
 
 export default function Page() {
-  return <LogTab />;
+  return (
+    <AdminFormWidth>
+      <LogTab />
+    </AdminFormWidth>
+  );
 }

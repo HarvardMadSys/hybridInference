@@ -1,6 +1,7 @@
 'use client';
 
 import type { UserStatus } from '../types';
+import { CONTROL } from '../ui';
 
 const OPTIONS: Array<{ value: UserStatus | ''; label: string }> = [
   { value: '', label: 'All statuses' },
@@ -21,7 +22,7 @@ export function StatusFilter({ value, onChange }: Props) {
     <select
       value={value ?? ''}
       onChange={(e) => onChange((e.target.value as UserStatus) || null)}
-      className="rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+      className={CONTROL}
     >
       {OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>

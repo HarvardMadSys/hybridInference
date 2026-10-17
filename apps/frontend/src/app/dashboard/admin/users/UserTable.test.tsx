@@ -635,3 +635,22 @@ describe('UserTable for an account without an email', () => {
     await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', ''));
   });
 });
+
+describe('UserTable column visibility', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('drops hidden metric columns and their empty group header', () => {
+    renderTable(baseUser, {
+      hiddenColumns: ['avgTurns', 'avgUserTurns', 'askQuestion', 'automation'],
+    });
+
+    expect(screen.queryByText('Ask-question')).not.toBeInTheDocument();
+    expect(screen.queryByText('Avg turns')).not.toBeInTheDocument();
+    expect(screen.queryByText('Behavior')).not.toBeInTheDocument();
+    // Columns that were not hidden stay.
+    expect(screen.getByText('Requests')).toBeInTheDocument();
+    expect(screen.getByText('Spend (USD)')).toBeInTheDocument();
+  });
+});
