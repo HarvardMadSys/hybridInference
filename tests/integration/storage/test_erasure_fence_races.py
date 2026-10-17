@@ -644,8 +644,10 @@ def test_resolve_fence_secret_falls_back(monkeypatch):
 
     monkeypatch.setattr(
         "serving.config.settings.get_settings",
-        lambda: Settings(api_key_secret="fallback-secret"),
+        lambda: Settings(erasure_fence_secret="", api_key_secret="fallback-secret"),
     )
+    # Explicitly clear the dedicated setting so a CI/local test secret does
+    # not leak into this unit test and the API-key fallback is exercised.
     assert resolve_fence_secret(None) == "fallback-secret"
 
 

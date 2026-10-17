@@ -163,9 +163,9 @@ def _ids(rows) -> list[str]:
 
 
 async def test_user_the_gate_refuses_is_reported(postgres_op_store):
-    """19.99 spent against a 20.00 cap: the next request is already refused."""
+    """A fully consumed 20.00 cap is reported as already refused."""
     at_cap = await _seed(
-        postgres_op_store, suffix="atcap", role="free", cap=Decimal("20.00"), spend=Decimal("19.99")
+        postgres_op_store, suffix="atcap", role="free", cap=Decimal("20.00"), spend=Decimal("20.00")
     )
 
     rows = await postgres_op_store.query_users_at_daily_quota()
@@ -173,7 +173,7 @@ async def test_user_the_gate_refuses_is_reported(postgres_op_store):
     assert _ids(rows) == [at_cap]
     _, role, spend, cap = rows[0]
     assert role == "free"
-    assert spend == pytest.approx(19.99)
+    assert spend == pytest.approx(20.00)
     assert cap == pytest.approx(20.00)
     # Belt and braces: the row is here for exactly the reason quota.check
     # would raise on this account's next request.

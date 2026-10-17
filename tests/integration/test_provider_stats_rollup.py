@@ -15,7 +15,7 @@ from serving.storage.database import DatabaseLogger
 if TYPE_CHECKING:
     import asyncpg
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
 @pytest.fixture(scope="session")
