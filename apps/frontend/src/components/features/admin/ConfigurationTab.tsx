@@ -4,7 +4,10 @@ import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
-import { ConfigEntryField } from '@/components/features/configuration/ConfigEntryField';
+import {
+  ConfigEntryField,
+  NOT_A_LOGIN_FIELD,
+} from '@/components/features/configuration/ConfigEntryField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { KeyList } from '@/components/features/configuration/KeyList';
 import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
@@ -18,6 +21,7 @@ import {
   countDirty,
   errorForKey,
   groupEntries,
+  isDirty,
   looksSecret,
   matchesQuery,
   withoutKeys,
@@ -27,6 +31,7 @@ import {
 } from '@/components/features/configuration/configDrafts';
 import {
   getConfig,
+  markConfigSecret,
   patchConfig,
   resetConfigKey,
   type ConfigEntry,
@@ -64,6 +69,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [resetTarget, setResetTarget] = useState<ConfigEntry | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  // The key alone: the entry still holds the value that is about to be hidden.
+  const [markSecretKey, setMarkSecretKey] = useState<string | null>(null);
+  const [markingSecret, setMarkingSecret] = useState(false);
+  const [markSecretError, setMarkSecretError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
@@ -181,6 +190,33 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     }
   };
 
+  const confirmMarkSecret = async () => {
+    if (!markSecretKey) return;
+    const key = markSecretKey;
+    setMarkingSecret(true);
+    setMarkSecretError(null);
+    try {
+      const next = await markConfigSecret(key);
+      // Claim nothing the response does not show: a backend that ignored the
+      // flag would answer with the variable unchanged.
+      if (!next.entries.some((candidate) => candidate.key === key && candidate.secret)) {
+        setMarkSecretError(`The backend answered, but ${key} is still not secret.`);
+        return;
+      }
+      // Drops the key's draft and errors too: whatever the field held is the
+      // plaintext the console no longer shows.
+      applyResponse(next, [key]);
+      const category = next.entries.find((candidate) => candidate.key === key)?.category;
+      if (category !== undefined) setGroupErrors((prev) => withoutKeys(prev, [category]));
+      setMarkSecretKey(null);
+      toast.success(`${key} is now secret.`);
+    } catch (e) {
+      setMarkSecretError(getErrorMessage(e));
+    } finally {
+      setMarkingSecret(false);
+    }
+  };
+
   if (loading && !config) {
     return <div className="mt-5 py-8 text-center text-[13px] text-gray-400">Loading...</div>;
   }
@@ -197,6 +233,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   }
 
   const existingKeys = new Set(config.entries.map((entry) => entry.key));
+  const markSecretTarget = markSecretKey
+    ? config.entries.find((entry) => entry.key === markSecretKey)
+    : undefined;
 
   return (
     <div className="mt-5 space-y-6">
@@ -320,51 +359,87 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
               </div>
             ) : null}
 
-            <div className="mt-1 divide-y divide-gray-100">
-              {visible.entries.map((entry) => (
-                <ConfigEntryField
-                  key={entry.key}
-                  entry={entry}
-                  draft={drafts[entry.key]}
-                  onChange={onDraftChange}
-                  serverError={entryErrors[entry.key]}
-                  onReset={(target) => {
-                    setResetError(null);
-                    setResetTarget(target);
-                  }}
-                  disabled={saving}
-                />
-              ))}
-            </div>
-
-            {dirty > 0 ? (
-              <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
-                <span className="mr-auto text-[12px] text-gray-500">
-                  {plural(dirty, 'unsaved change')}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => discardGroup(group)}
-                  disabled={saving}
-                  className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
-                >
-                  Discard
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void saveGroup(group)}
-                  disabled={saving}
-                  aria-busy={saving || undefined}
-                  aria-label={`Save ${group.label}`}
-                  className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
+            {/* A form, so Enter saves the category, and one browsers do not
+                offer to remember: a secret typed here is not a login. The
+                console checks the values itself, so the browser does not. */}
+            <form
+              autoComplete="off"
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!saving) void saveGroup(group);
+              }}
+            >
+              <div className="mt-1 divide-y divide-gray-100">
+                {visible.entries.map((entry) => (
+                  <ConfigEntryField
+                    key={entry.key}
+                    entry={entry}
+                    draft={drafts[entry.key]}
+                    onChange={onDraftChange}
+                    serverError={entryErrors[entry.key]}
+                    onReset={(target) => {
+                      setResetError(null);
+                      setResetTarget(target);
+                    }}
+                    onMarkSecret={(target) => {
+                      setMarkSecretError(null);
+                      setMarkSecretKey(target.key);
+                    }}
+                    disabled={saving}
+                  />
+                ))}
               </div>
-            ) : null}
+
+              {dirty > 0 ? (
+                <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
+                  <span className="mr-auto text-[12px] text-gray-500">
+                    {plural(dirty, 'unsaved change')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => discardGroup(group)}
+                    disabled={saving}
+                    className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    aria-busy={saving || undefined}
+                    aria-label={`Save ${group.label}`}
+                    className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              ) : null}
+            </form>
           </section>
         );
       })}
+
+      {markSecretTarget ? (
+        <ConfirmDialog
+          title={`Mark ${markSecretTarget.key} as secret?`}
+          confirmLabel="Mark as secret"
+          busyLabel="Marking…"
+          busy={markingSecret}
+          error={markSecretError}
+          onConfirm={() => void confirmMarkSecret()}
+          onCancel={() => setMarkSecretKey(null)}
+        >
+          <p>
+            The value stays as it is, but the console stops showing it: like any secret, it can only
+            be replaced or cleared from then on.
+          </p>
+          <p className="font-medium text-gray-800">This cannot be undone from the console.</p>
+          {isDirty(markSecretTarget, drafts[markSecretTarget.key]) ? (
+            <p>Your unsaved change to it is discarded.</p>
+          ) : null}
+        </ConfirmDialog>
+      ) : null}
 
       {resetTarget ? (
         <ConfirmDialog
@@ -410,11 +485,14 @@ function AddVariableForm({
   const baseId = useId();
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
-  // Follows the name (the backend's own rule) until the administrator decides.
-  const [secretChoice, setSecretChoice] = useState<boolean | null>(null);
+  // The backend's rule: a name that looks like a credential's is secret
+  // whatever the request says (a flag only ever adds secrecy). Any other name
+  // is the administrator's choice.
+  const [secretChoice, setSecretChoice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const secret = secretChoice ?? looksSecret(name);
+  const secretByName = looksSecret(name);
+  const secret = secretByName || secretChoice;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -442,8 +520,11 @@ function AddVariableForm({
   };
 
   return (
+    // `autoComplete="off"` and the value field's attributes: a name and a
+    // secret are not a login, and the browser must not offer to save them.
     <form
       onSubmit={(event) => void submit(event)}
+      autoComplete="off"
       aria-labelledby={`${baseId}-title`}
       className="rounded-xl border border-gray-200 bg-white p-5"
     >
@@ -466,6 +547,7 @@ function AddVariableForm({
             placeholder="MY_PROVIDER_API_KEY"
             spellCheck={false}
             autoComplete="off"
+            {...NOT_A_LOGIN_FIELD}
             autoFocus
             className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 font-mono text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
           />
@@ -481,8 +563,7 @@ function AddVariableForm({
             onChange={(event) => setValue(event.target.value)}
             spellCheck={false}
             autoComplete={secret ? 'new-password' : 'off'}
-            data-1p-ignore
-            data-lpignore="true"
+            {...NOT_A_LOGIN_FIELD}
             className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
           />
         </div>
@@ -491,11 +572,18 @@ function AddVariableForm({
         <input
           type="checkbox"
           checked={secret}
+          disabled={secretByName}
+          aria-describedby={secretByName ? `${baseId}-secret-note` : undefined}
           onChange={(event) => setSecretChoice(event.target.checked)}
-          className="h-4 w-4 rounded border-gray-300"
+          className="h-4 w-4 rounded border-gray-300 disabled:opacity-60"
         />
         Secret (write-only; never shown again)
       </label>
+      {secretByName ? (
+        <p id={`${baseId}-secret-note`} className="mt-1 text-[11px] text-gray-500">
+          A name like this one is always secret.
+        </p>
+      ) : null}
       {error ? (
         <p className="mt-2 text-[12px] text-red-600" role="alert">
           {error}

@@ -288,18 +288,13 @@ async def test_a_stored_value_satisfies_a_rule_the_environment_alone_breaks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "stored",
-    [[], [row("TRUST_PROXY_HEADERS", "false")]],
-    ids=["nothing stored", "stored value breaks it too"],
-)
 async def test_startup_refuses_a_rule_the_configuration_in_force_breaks(
-    boot_env, monkeypatch, stored
+    boot_env, monkeypatch
 ) -> None:
     monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
     monkeypatch.setenv("TRUST_X_REAL_IP", "true")
     get_settings.cache_clear()
-    store = FakeAppConfigStore(stored)
+    store = FakeAppConfigStore()
     monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
     monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
 
@@ -313,6 +308,29 @@ async def test_startup_refuses_a_rule_the_configuration_in_force_breaks(
     assert "manage set" in message
     # Neither side was imported: which one is wrong is the operator's call.
     assert "TRUST_X_REAL_IP" not in store.rows
+
+
+@pytest.mark.asyncio
+async def test_a_stored_value_wins_over_the_environments_side_of_a_rule(
+    boot_env, monkeypatch, caplog
+) -> None:
+    """The environment value that breaks the rule with the stored one counts as unset."""
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.setenv("TRUST_X_REAL_IP", "true")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUST_PROXY_HEADERS", "false")])
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        await bootstrap._load_app_config()
+    app_config.require_valid_environment()
+
+    assert get_settings().trust_proxy_headers is False
+    assert get_settings().trust_x_real_ip is False
+    # Stored, it would break the rule for good.
+    assert "TRUST_X_REAL_IP" not in store.rows
+    assert "Not importing TRUST_X_REAL_IP from the environment" in caplog.text
 
 
 @pytest.mark.asyncio

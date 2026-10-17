@@ -3,7 +3,9 @@
 ``DatabaseLogger._create_tables`` (bootstrap) and
 ``PostgresOperationalStore.initialize`` each carry a copy of the users DDL and
 its migrations; a fresh database and an upgraded one must both end up with a
-nullable ``email`` and a case-insensitively unique ``login_name``.
+nullable ``email`` and a case-insensitively unique ``login_name``. What the
+operational store does while that migration waits for its lock is in
+``test_account_schema.py``.
 """
 
 from __future__ import annotations
@@ -110,16 +112,26 @@ async def test_upgrade_adds_login_name_then_indexes_it(builder):
     )
 
 
+def _inside_lock_guard(sql: list[str], position: int) -> bool:
+    """Whether statement *position* runs between a ``lock_timeout`` and its reset."""
+    before = [s for s in sql[:position] if s.startswith("SET lock_timeout")]
+    after = [s for s in sql[position + 1 :] if s.startswith("SET lock_timeout")]
+    return (
+        bool(before)
+        and before[-1].startswith("SET lock_timeout = '")
+        and bool(after)
+        and after[0] == "SET lock_timeout = DEFAULT"
+    )
+
+
 @pytest.mark.parametrize("builder", BUILDERS)
 async def test_email_not_null_is_dropped_under_the_lock_guard(builder):
     pool, statements = _recording_pool(email_not_null=True)
     await _run_builder(builder, pool)
     sql = _sql(statements)
 
-    drop = sql.index(_EMAIL_DROP_NOT_NULL)
     # bounded_ddl brackets the strong-lock statement with a lock_timeout.
-    assert sql[drop - 1].startswith("SET lock_timeout = '")
-    assert sql[drop + 1] == "SET lock_timeout = DEFAULT"
+    assert _inside_lock_guard(sql, sql.index(_EMAIL_DROP_NOT_NULL))
 
 
 @pytest.mark.parametrize("builder", BUILDERS)
@@ -143,9 +155,33 @@ async def test_no_admin_emails_no_seeding(builder, monkeypatch):
 
 
 @pytest.mark.parametrize("locked", [_LOGIN_NAME_ADD, _EMAIL_DROP_NOT_NULL])
-async def test_the_operational_store_refuses_to_serve_without_the_sign_in_schema(locked):
-    """Every account lookup selects login_name: a deferred migration would break sign-in."""
-    pool, _statements = _recording_pool(email_not_null=True, locked=locked)
+async def test_a_locked_sign_in_migration_defers_instead_of_refusing_to_serve(locked):
+    """Lookups select only the columns that exist, so the store may serve meanwhile.
+
+    Refusing here crash-looped the first boot of an upgrade for as long as the
+    nightly pg_dump held the users table.
+    """
+    pool, statements = _recording_pool(email_not_null=True, locked=locked)
+
+    with pytest.raises(SchemaLockUnavailable) as excinfo:
+        await PostgresOperationalStore(pool).initialize()
+
+    assert not isinstance(excinfo.value, RequiredOperationalSchemaUnavailable)
+    # Deferred, not abandoned: every table after the users migration still exists.
+    assert any(
+        "CREATE TABLE IF NOT EXISTS provider_env_key_min_roles" in s for s in _sql(statements)
+    )
+
+
+async def test_a_locked_hard_delete_column_still_refuses_to_serve():
+    """The hard-delete claim is erasure safety: no store without it."""
+    pool, _statements = _recording_pool(
+        email_not_null=True,
+        locked=(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+    )
 
     with pytest.raises(RequiredOperationalSchemaUnavailable):
         await PostgresOperationalStore(pool).initialize()

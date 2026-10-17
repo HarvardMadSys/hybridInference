@@ -52,22 +52,35 @@ _MAX_KEYS = 20
 def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
     """Discover all configured API keys via numbered setting suffixes.
 
-    Returns list of ``(index, value)``.  ``index=1`` for *base_var*,
-    ``index=N`` for ``{numbered_prefix}{N}``.  Numbered suffixes are
-    only scanned when the base var is set.  Stops at the first missing
-    numbered var. Each name resolves through ``config_value``: the
-    database-backed setting, then the environment.
+    Returns list of ``(index, value)``: ``index=1`` for *base_var*, ``index=N``
+    for ``{numbered_prefix}{N}``, so an operator can map a card back to its
+    setting. Every suffix from 1 to ``_MAX_KEYS`` is read, whether or not the
+    base is set — the same keys ``dynamic_keys.configured_env_keys_for_provider``
+    pools. A blank setting is skipped rather than ending the scan, and a value
+    already found is not listed again. ``{numbered_prefix}1`` beside a set base
+    cannot have the base's ``1``, and takes the next number no setting uses.
+    Each name resolves through ``config_value``: the database-backed setting,
+    then the environment.
     """
-    keys: list[tuple[int, str]] = []
-    val = config_value(base_var, "") or ""
-    if not val:
-        return keys
-    keys.append((1, val))
-    for i in range(2, _MAX_KEYS + 1):
+    base = config_value(base_var, "") or ""
+    configured = [(1, base)] if base.strip() else []
+    for i in range(1, _MAX_KEYS + 1):
         val = config_value(f"{numbered_prefix}{i}", "") or ""
-        if not val:
-            break
-        keys.append((i, val))
+        if val.strip():
+            configured.append((i, val))
+
+    keys: list[tuple[int, str]] = []
+    displaced: list[str] = []
+    for index, val in configured:
+        if any(index == taken for taken, _ in keys):
+            displaced.append(val)  # {numbered_prefix}1 beside the base
+        elif all(val != seen for _, seen in keys):
+            keys.append((index, val))
+    next_index = max((index for index, _ in configured), default=0) + 1
+    for val in displaced:
+        if all(val != seen for _, seen in keys):
+            keys.append((next_index, val))
+            next_index += 1
     return keys
 
 

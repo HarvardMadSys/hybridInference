@@ -166,18 +166,68 @@ class TestDiscoverEnvKeys:
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
         assert keys == []
 
-    def test_gap_stops_discovery(self, monkeypatch):
+    def test_a_gap_does_not_end_discovery(self, monkeypatch):
+        """A key cleared from the middle used to hide every key after it.
+
+        The pool and the Configuration tab take ZAI_API_KEY1..20 whatever is
+        missing between them, so the quota cards must too.
+        """
         monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
         monkeypatch.delenv("ZAI_API_KEY2", raising=False)
         monkeypatch.setenv("ZAI_API_KEY3", "key3_long_enough_9012")
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
-        assert keys == [(1, "key1_long_enough_1234")]
+        assert keys == [(1, "key1_long_enough_1234"), (3, "key3_long_enough_9012")]
 
-    def test_numbered_only_without_base_returns_empty(self, monkeypatch):
+    def test_numbered_keys_are_discovered_without_a_base(self, monkeypatch):
+        """The pool uses ZAI_API_KEY2 with no ZAI_API_KEY; its card used to be missing."""
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
-        assert keys == []
+        assert keys == [(2, "key2_long_enough_5678")]
+
+    def test_blank_and_repeated_keys_are_skipped(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
+        monkeypatch.setenv("ZAI_API_KEY2", "   ")
+        monkeypatch.setenv("ZAI_API_KEY3", "key1_long_enough_1234")
+        monkeypatch.setenv("ZAI_API_KEY20", "key20_long_enough_000")
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == [(1, "key1_long_enough_1234"), (20, "key20_long_enough_000")]
+
+    def test_key1_beside_a_base_takes_the_next_free_number(self, monkeypatch):
+        """The base is #1, so ZAI_API_KEY1 cannot be; two cards must not share a number."""
+        monkeypatch.setenv("ZAI_API_KEY", "key0_long_enough_0000")
+        monkeypatch.setenv("ZAI_API_KEY1", "key1_long_enough_1234")
+        monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == [
+            (1, "key0_long_enough_0000"),
+            (2, "key2_long_enough_5678"),
+            (3, "key1_long_enough_1234"),
+        ]
+        monkeypatch.setenv("ZAI_API_KEY1", "key0_long_enough_0000")  # the base again
+        assert _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY") == [
+            (1, "key0_long_enough_0000"),
+            (2, "key2_long_enough_5678"),
+        ]
+
+    def test_the_cards_cover_exactly_the_pooled_keys(self, monkeypatch):
+        """Two copies of one scan: quota discovery and the key pool must agree."""
+        for name, value in {
+            "ZAI_API_KEY": "key0_long_enough_0000",
+            "ZAI_API_KEY1": "key1_long_enough_1234",
+            "ZAI_API_KEY4": "key4_long_enough_4444",
+            "ZAI_API_KEY7": "key0_long_enough_0000",
+            "ZAI_API_KEY9": "",
+            "ZAI_API_KEY12": "key12_long_enough_1212",
+        }.items():
+            monkeypatch.setenv(name, value)
+        for index in (2, 3, 5, 6, 8, 10, 11, *range(13, 21)):
+            monkeypatch.delenv(f"ZAI_API_KEY{index}", raising=False)
+
+        cards = [key for _index, key in _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")]
+        pooled = dynamic_keys.configured_env_keys_for_provider("zai")
+        assert sorted(cards) == sorted(pooled)
+        assert len(set(pooled)) == len(pooled) == 4
 
 
 class TestDiscoverProviderKeys:

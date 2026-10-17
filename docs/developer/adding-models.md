@@ -91,8 +91,9 @@ A value in `.env` also reaches a gateway with a database: at startup the
 backend copies it into the database, unless the database already has a value
 of that name.
 
-If a `${VAR}` used for `api_key`, `api_keys` or `base_url` is unset or empty,
-the gateway skips the whole model and logs which variable was missing. Mark a route `optional: true` to
+If a `${VAR}` used for `api_key`, `api_keys` or `base_url` is empty, or unset
+with no default registered for that setting, the gateway skips the whole model
+and logs which variable was missing. Mark a route `optional: true` to
 skip only that route instead. Until such a variable has a value, the console
 also reports it as a missing setting to every signed-in user, so mark a route
 you leave unconfigured on purpose `optional: true` as well.

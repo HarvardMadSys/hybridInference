@@ -110,28 +110,62 @@ describe('createSetupAdmin', () => {
     );
   });
 
+  // Each in the gateway's envelope, which is what its HTTPException handler
+  // answers in production, and as FastAPI's own `{detail}`.
   it.each([
-    [403, { detail: 'Invalid setup code' }],
-    [409, { detail: 'Setup is already complete' }],
-    [503, { detail: 'Database unavailable' }],
-  ])('keeps the %i status and the server message', async (status, body) => {
-    fetchMock.mockResolvedValueOnce(json(body, status));
+    [403, "That setup code is not valid. Copy the code from the backend's startup log."],
+    [409, 'This deployment has already been set up.'],
+    [503, 'First-run setup needs a database, and none is available.'],
+  ])('keeps the %i status and the server message', async (status, message) => {
+    for (const body of [
+      { error: { type: 'invalid_request_error', message, code: status } },
+      { detail: message },
+    ]) {
+      fetchMock.mockResolvedValueOnce(json(body, status));
 
-    const error = await createSetupAdmin({
-      setup_code: 'ABCD-EFGH-JKLM',
-      login_name: 'admin',
-      password: 'Secret123',
-    }).catch((e: unknown) => e);
+      const error = await createSetupAdmin({
+        setup_code: 'ABCD-EFGH-JKLM',
+        login_name: 'admin',
+        password: 'Secret123',
+      }).catch((e: unknown) => e);
 
-    expect(error).toBeInstanceOf(APIError);
-    expect((error as APIError).statusCode).toBe(status);
-    // Verbatim: not reclassified by keyword ("expired", "token"…) into a
-    // login error the page would then mis-explain.
-    expect(getErrorMessage(error)).toBe(body.detail);
-    expect(getAccessToken()).toBeNull();
+      expect(error).toBeInstanceOf(APIError);
+      expect((error as APIError).statusCode).toBe(status);
+      // Verbatim: not reclassified by keyword ("expired", "token"…) into a
+      // login error the page would then mis-explain.
+      expect(getErrorMessage(error)).toBe(message);
+      expect(getAccessToken()).toBeNull();
+    }
   });
 
-  it('maps a validation error to the request fields', async () => {
+  it("names the fields the gateway's validation error lists, without reasons", async () => {
+    // The production 422: the field paths, never the submitted values.
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: {
+            type: 'validation_error',
+            message: 'Invalid request: body.password, body.login_name',
+            code: 422,
+          },
+        },
+        422,
+      ),
+    );
+
+    const error = (await createSetupAdmin({
+      setup_code: 'ABCD-EFGH-JKLM',
+      login_name: '-x',
+      password: 'Secret',
+    }).catch((e: unknown) => e)) as APIError;
+
+    expect(error.statusCode).toBe(422);
+    expect(error.code).toBe('VALIDATION_ERROR');
+    expect(error.message).toBe('Invalid request: body.password, body.login_name');
+    expect(error.details?.fields).toEqual({ password: '', login_name: '' });
+  });
+
+  it("maps FastAPI's own validation error to the request fields, with reasons", async () => {
     fetchMock.mockResolvedValueOnce(
       json(
         {
@@ -163,6 +197,25 @@ describe('createSetupAdmin', () => {
       login_name: 'String should match pattern',
       password: 'Password must contain at least one number',
     });
+  });
+
+  it('names no field when the validation error is about the whole body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        { error: { type: 'validation_error', message: 'Invalid request: body', code: 422 } },
+        422,
+      ),
+    );
+
+    const error = (await createSetupAdmin({
+      setup_code: 'ABCD-EFGH-JKLM',
+      login_name: 'admin',
+      password: 'Secret123',
+    }).catch((e: unknown) => e)) as APIError;
+
+    expect(error.statusCode).toBe(422);
+    expect(error.message).toBe('Invalid request: body');
+    expect(error.details).toBeUndefined();
   });
 
   it('reports a rate limit as such', async () => {

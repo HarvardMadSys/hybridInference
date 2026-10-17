@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +12,61 @@ from serving.auth import reset_password as cli
 from serving.utils import password as password_utils
 
 STRONG = "Str0ngPassword"
+
+# users columns of a release from before login names and phone numbers, and
+# of the current one.
+COLUMNS_BEFORE_LOGIN_NAMES = (
+    "id",
+    "email",
+    "password_hash",
+    "user_name",
+    "role",
+    "status",
+    "email_verified",
+    "created_at",
+    "last_login_at",
+)
+CURRENT_COLUMNS = (*COLUMNS_BEFORE_LOGIN_NAMES, "login_name", "phone", "phone_verified")
+
+
+class _Connection:
+    """Answers the catalog query with *columns* and every lookup with *row*; records SQL."""
+
+    def __init__(self, columns: tuple[str, ...], row: dict[str, Any] | None) -> None:
+        self.columns = columns
+        self.row = row
+        self.sql: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, str]]:
+        self.sql.append((sql, args))
+        assert "pg_attribute" in sql
+        return [{"attname": column} for column in self.columns]
+
+    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        self.sql.append((sql, args))
+        return self.row
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.sql.append((sql, args))
+        return "UPDATE 1"
+
+
+class _Pool:
+    def __init__(self, conn: _Connection) -> None:
+        self.conn = conn
+        self.closed = False
+
+    @contextlib.asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _database(columns: tuple[str, ...], row: dict[str, Any] | None) -> tuple[_Pool, _Connection]:
+    conn = _Connection(columns, row)
+    return _Pool(conn), conn
 
 
 def _store(account: dict[str, Any] | None) -> MagicMock:
@@ -109,6 +165,90 @@ class TestDescribe:
     def test_inactive_account_is_flagged(self):
         lines = cli.describe_reset({**ADMIN, "status": "suspended"}, None)
         assert lines[-1] == "Note: the account is suspended, so it still cannot sign in."
+
+    def test_a_row_without_status_gets_no_note(self):
+        lines = cli.describe_reset({"id": "u1", "email": "a@example.com"}, None)
+        assert lines == [
+            "Password reset for a@example.com (user id u1).",
+            "Every session of the account was revoked; it must sign in again.",
+        ]
+
+
+class TestAccountStore:
+    """Lookups that work before and after the users table gains login names."""
+
+    async def test_before_login_names_selects_only_the_columns_it_has(self):
+        # The operational store would select login_name and phone here and fail
+        # with UndefinedColumnError.
+        row = {"id": "u1", "email": "a@example.com", "status": "active"}
+        pool, conn = _database(COLUMNS_BEFORE_LOGIN_NAMES, row)
+
+        account = await cli.AccountStore(pool).get_user_by_email("A@Example.com")
+
+        assert account == row
+        (sql, args) = conn.sql[-1]
+        assert sql == "SELECT id, email, status FROM users WHERE email = $1"
+        assert args == ("a@example.com",)
+
+    async def test_before_login_names_a_login_name_is_refused_with_the_way_out(self):
+        pool, conn = _database(COLUMNS_BEFORE_LOGIN_NAMES, None)
+
+        with pytest.raises(cli.ResetPasswordError, match="no login names yet") as refused:
+            await cli.AccountStore(pool).get_user_by_login_name("admin")
+
+        assert "email address" in str(refused.value)
+        assert "Nothing was changed" in str(refused.value)
+        assert len(conn.sql) == 1  # the catalog read; users itself is never queried
+
+    async def test_current_schema_finds_a_login_name(self):
+        row = {"id": "u-admin", "email": None, "login_name": "admin", "status": "active"}
+        pool, conn = _database(CURRENT_COLUMNS, row)
+        store = cli.AccountStore(pool)
+
+        assert await store.get_user_by_login_name(" Admin ") == row
+        await store.get_user_by_email("a@example.com")
+
+        catalog_reads = [sql for sql, _ in conn.sql if "pg_attribute" in sql]
+        assert len(catalog_reads) == 1
+        (sql, args) = conn.sql[1]
+        assert sql == (
+            "SELECT id, email, login_name, status FROM users "
+            "WHERE lower(login_name) = $1 AND login_name IS NOT NULL"
+        )
+        assert args == ("admin",)
+
+    async def test_no_users_table(self):
+        pool, _ = _database((), None)
+
+        with pytest.raises(cli.ResetPasswordError, match="no users table"):
+            await cli.AccountStore(pool).get_user_by_email("a@example.com")
+
+    async def test_reset_before_login_names_changes_no_schema(self):
+        row = {"id": "u1", "email": "a@example.com", "status": "active"}
+        pool, conn = _database(COLUMNS_BEFORE_LOGIN_NAMES, row)
+
+        account = await cli.reset_password(cli.AccountStore(pool), "a@example.com", STRONG)
+
+        assert account == row
+        update, revoke = conn.sql[-2:]
+        assert update[0] == "UPDATE users SET password_hash = $2 WHERE id = $1"
+        assert update[1][0] == "u1"
+        assert password_utils.verify_password(STRONG, update[1][1])
+        assert revoke == ("DELETE FROM auth_sessions WHERE user_id = $1", ("u1",))
+        # Reads and the two writes; no DDL.
+        assert {sql.split()[0] for sql, _ in conn.sql} == {"SELECT", "UPDATE", "DELETE"}
+
+    async def test_the_command_uses_it(self, monkeypatch, tmp_path):
+        import asyncpg
+
+        monkeypatch.chdir(tmp_path)  # no .env here
+        row = {"id": "u1", "email": "a@example.com", "status": "active"}
+        pool, conn = _database(COLUMNS_BEFORE_LOGIN_NAMES, row)
+        monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
+
+        assert await cli._reset_with_database("a@example.com", STRONG) == row
+        assert pool.closed
+        assert ("DELETE FROM auth_sessions WHERE user_id = $1", ("u1",)) in conn.sql
 
 
 class TestMain:

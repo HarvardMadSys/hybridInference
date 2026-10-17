@@ -6,14 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
 import type { ConfigEntry, ConfigResponse } from '@/lib/api/config';
+import { apiErrorFromResponse } from '@/lib/api/detail';
 import { APIError } from '@/lib/utils/errors';
 
 const replaceMock = vi.fn();
+const refreshMock = vi.fn();
 const navigateToMock = vi.fn();
 const adoptSession = vi.fn();
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: replaceMock, push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ replace: replaceMock, push: vi.fn(), refresh: refreshMock }),
   usePathname: () => '/setup',
 }));
 
@@ -145,6 +147,21 @@ function renderPage(siteSaysRequired = true) {
 
 function type(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label, { exact: false }), { target: { value } });
+}
+
+/** The error the API client makes of a response with this body. */
+function errorFrom(body: unknown, status: number): Promise<APIError> {
+  return apiErrorFromResponse(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+}
+
+/** What the gateway answers for a request that fails validation: field paths only. */
+function gatewayValidationError(message: string) {
+  return { error: { type: 'validation_error', message, code: 422 } };
 }
 
 interface AdminInput {
@@ -312,11 +329,50 @@ describe('step 1: create administrator', () => {
     expect(navigateToMock).toHaveBeenCalledWith('/login');
   });
 
-  it('puts a validation error on the field it names', async () => {
+  it("puts the gateway's validation error on each field it names, with the field's rule", async () => {
+    // What production sends: which fields, and no reason (it never echoes input).
     vi.mocked(createSetupAdmin).mockRejectedValueOnce(
-      new APIError('VALIDATION_ERROR', 'login_name: reserved', 422, {
-        fields: { login_name: 'This username is reserved' },
-      }),
+      await errorFrom(
+        gatewayValidationError('Invalid request: body.password, body.login_name'),
+        422,
+      ),
+    );
+    renderPage();
+    await screen.findByLabelText('Setup code');
+
+    fillAdmin();
+
+    expect(
+      await screen.findByText(
+        'Use at least 8 characters, with an uppercase letter, a lowercase letter and a number.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true');
+    const username = screen.getByLabelText('Username', { exact: false });
+    expect(username).toHaveAttribute('aria-invalid', 'true');
+    expect(username).toHaveAccessibleDescription(
+      /Use 3–32 letters, digits, dots, underscores or hyphens, starting with a letter or digit\./,
+    );
+    expect(screen.getByLabelText('Setup code')).not.toHaveAttribute('aria-invalid');
+    // On the fields, not in a banner that quotes request paths.
+    expect(screen.queryByText(/body\.password/)).not.toBeInTheDocument();
+    expect(adoptSession).not.toHaveBeenCalled();
+  });
+
+  it("puts FastAPI's own validation reason on the field it names", async () => {
+    vi.mocked(createSetupAdmin).mockRejectedValueOnce(
+      await errorFrom(
+        {
+          detail: [
+            {
+              loc: ['body', 'login_name'],
+              msg: 'Value error, This username is reserved',
+              type: 'value_error',
+            },
+          ],
+        },
+        422,
+      ),
     );
     renderPage();
     await screen.findByLabelText('Setup code');
@@ -327,6 +383,37 @@ describe('step 1: create administrator', () => {
     expect(screen.getByLabelText('Username', { exact: false })).toHaveAttribute(
       'aria-invalid',
       'true',
+    );
+  });
+
+  it('explains a validation error that names none of the fields above the form', async () => {
+    vi.mocked(createSetupAdmin).mockRejectedValueOnce(
+      await errorFrom(gatewayValidationError('Invalid request: body'), 422),
+    );
+    renderPage();
+    await screen.findByLabelText('Setup code');
+
+    fillAdmin();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid request: body');
+    expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
+  });
+
+  it("shows the backend's reason for a 503", async () => {
+    vi.mocked(createSetupAdmin).mockRejectedValueOnce(
+      new APIError(
+        'SERVICE_UNAVAILABLE',
+        'The database upgrade is still in progress; try again shortly.',
+        503,
+      ),
+    );
+    renderPage();
+    await screen.findByLabelText('Setup code');
+
+    fillAdmin();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The database upgrade is still in progress; try again shortly.',
     );
   });
 
@@ -387,6 +474,20 @@ describe('step 2: configure', () => {
       vi.mocked(patchConfig).mock.invocationCallOrder[0],
     );
     expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
+    // The server-rendered site configuration follows both.
+    expect(refreshMock).toHaveBeenCalled();
+  });
+
+  it('re-reads the site configuration after a sign-up change alone', async () => {
+    await reachConfigureStep();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Allow public sign-up' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
+    expect(updateRuntimeSetting).toHaveBeenCalledWith('signup_enabled', false);
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(refreshMock).toHaveBeenCalled();
   });
 
   it('re-reads the configuration when nothing changed', async () => {
@@ -399,6 +500,31 @@ describe('step 2: configure', () => {
     expect(patchConfig).not.toHaveBeenCalled();
     expect(updateRuntimeSetting).not.toHaveBeenCalled();
     expect(getConfig).toHaveBeenCalledTimes(1);
+    expect(refreshMock).not.toHaveBeenCalled();
+  });
+
+  it('saves on Enter, from a form browsers do not offer to remember', async () => {
+    await reachConfigureStep();
+    const host = screen.getByLabelText('SMTP_HOST');
+    const form = host.closest('form');
+    expect(form).toHaveAttribute('autocomplete', 'off');
+    const key = screen.getByLabelText('ZAI_API_KEY');
+    expect(key.closest('form')).toBe(form);
+    expect(key).toHaveAttribute('autocomplete', 'new-password');
+    expect(key).toHaveAttribute('data-1p-ignore', 'true');
+    expect(screen.getByRole('button', { name: 'Save and continue' })).toHaveAttribute(
+      'type',
+      'submit',
+    );
+
+    fireEvent.change(host, { target: { value: 'smtp.example.test' } });
+    // Enter in a field submits the form.
+    fireEvent.submit(form as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_HOST: 'smtp.example.test' } }),
+    );
+    expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
   });
 
   it('stays on the step with the reason when a value is refused', async () => {
@@ -412,6 +538,21 @@ describe('step 2: configure', () => {
 
     expect(await screen.findByText('must be between 1 and 65535')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Finish' })).not.toBeInTheDocument();
+  });
+
+  it('re-reads the site configuration when sign-up saved before a value was refused', async () => {
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'SMTP_PORT: must be between 1 and 65535', 400),
+    );
+    await reachConfigureStep();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Require email verification' }));
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '99999' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+
+    expect(await screen.findByText('must be between 1 and 65535')).toBeInTheDocument();
+    expect(updateRuntimeSetting).toHaveBeenCalledWith('signup_require_email_verification', false);
+    expect(refreshMock).toHaveBeenCalled();
   });
 });
 

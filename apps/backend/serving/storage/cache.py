@@ -726,6 +726,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.revoke_browser_session(browser_session_id)
 
+    async def require_phone_accounts(self) -> None:
+        """Delegate to wrapped store."""
+        await self._store.require_phone_accounts()
+
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
         return await self._store.get_user_by_phone(phone)

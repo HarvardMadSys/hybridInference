@@ -10,7 +10,7 @@ const replaceMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
-  useRouter: () => ({ replace: replaceMock }),
+  useRouter: () => ({ replace: replaceMock, refresh: vi.fn() }),
 }));
 
 vi.mock('@/lib/api/admin', async () => {

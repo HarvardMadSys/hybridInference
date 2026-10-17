@@ -1,9 +1,11 @@
 """Database-backed application configuration.
 
 Settings are resolved **database row → environment → built-in default**, and a
-row wins even when its value is empty. The registry of settings lives in
-:mod:`serving.config.app_config_registry`, the table in
-:mod:`serving.config.app_config_store`.
+row wins even when its value is empty. A stored row is never overridden by an
+environment value, not even through a rule between settings: an environment
+value that breaks one with a stored value counts as unset (:func:`_in_force`).
+The registry of settings lives in :mod:`serving.config.app_config_registry`,
+the table in :mod:`serving.config.app_config_store`.
 
 How values reach the code that reads them:
 
@@ -39,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from serving.config import app_config_registry as registry
-from serving.config.app_config_store import AppConfigStore, ConfigRow, connect
+from serving.config.app_config_store import RESET_SOURCE, AppConfigStore, ConfigRow, connect
 from serving.config.settings import (
     CONNECTION_FIELDS,
     DatabaseSettings,
@@ -105,11 +107,20 @@ class ConfigChange:
     secret: bool
     old_value: Any = None
     new_value: Any = None
+    #: The change made the setting secret.
+    marked_secret: bool = False
+    #: Only the secret flag changed; the value did not.
+    flag_only: bool = False
 
     def audit_details(self) -> dict[str, Any]:
         """Return the audit record; a secret's values are never part of it."""
+        if self.flag_only:
+            return {"key": self.key, "marked_secret": True}
         if self.secret:
-            return {"key": self.key, "changed": True}
+            details: dict[str, Any] = {"key": self.key, "changed": True}
+            if self.marked_secret:
+                details["marked_secret"] = True
+            return details
         return {"key": self.key, "old_value": self.old_value, "new_value": self.new_value}
 
 
@@ -117,8 +128,10 @@ class ConfigChange:
 class _State:
     """Everything loaded, replaced wholesale by :func:`reset_state`."""
 
-    #: ``app_config`` as last read.
+    #: ``app_config`` as last read: the rows that store a value.
     rows: dict[str, ConfigRow] = field(default_factory=dict)
+    #: The reset rows, which store no value but keep the setting's secret flag.
+    resets: dict[str, ConfigRow] = field(default_factory=dict)
     #: The rows this process booted with; restart-required settings keep them.
     boot_rows: dict[str, ConfigRow] = field(default_factory=dict)
     #: The rows :func:`config_value` serves: current for live settings, boot
@@ -130,6 +143,9 @@ class _State:
     discovered: dict[str, DiscoveredReference] = field(default_factory=dict)
     #: Stored values that could not be applied, with the reason.
     invalid: dict[str, str] = field(default_factory=dict)
+    #: Environment values that break a rule with a stored value, with the rule.
+    #: The stored value wins, so their default applies instead.
+    environment_aside: dict[str, str] = field(default_factory=dict)
     health: ConfigHealth = field(default_factory=ConfigHealth)
     database_enabled: bool = False
     #: Rows have been read from the database at least once.
@@ -197,18 +213,7 @@ def _notify() -> None:
 
 # --- values ------------------------------------------------------------------
 
-_TRUE_WORDS = frozenset({"1", "on", "t", "true", "y", "yes"})
-_FALSE_WORDS = frozenset({"0", "off", "f", "false", "n", "no"})
-
-
-def _parse_bool(raw: str) -> bool:
-    """Parse a boolean the way ``Settings`` does."""
-    word = raw.strip().lower()
-    if word in _TRUE_WORDS:
-        return True
-    if word in _FALSE_WORDS:
-        return False
-    raise ValueError(raw)
+_parse_bool = registry.parse_bool
 
 
 def _typed(entry: ConfigEntry, raw: str | None) -> Any:
@@ -307,9 +312,36 @@ def _resolve(rows: Mapping[str, ConfigRow], key: str, entry: ConfigEntry | None)
     return entry.default if entry is not None else None
 
 
+def _refusal(key: str, entry: ConfigEntry | None) -> str | None:
+    """Return why *key*'s stored row is not in force, when it has one that is not."""
+    row = _STATE.rows.get(key)
+    if row is None:
+        return None
+    problem = _STATE.invalid.get(key)
+    if problem is None and entry is not None:
+        problem = _value_problem(entry, row.value)
+    return problem
+
+
+def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]:
+    """Return the value configured for *key* and its source: database, environment or default.
+
+    A stored row that cannot apply is passed over, and so is an environment
+    value that breaks a rule with a stored value, which wins. (One not valid on
+    its own is reported as it is: the gateway does not start on it.)
+    """
+    row = _STATE.rows.get(key)
+    if row is not None and _refusal(key, entry) is None:
+        return row.value, "database"
+    value = _environ_value(key, entry)
+    if value is not None and key not in _STATE.environment_aside:
+        return value, "environment"
+    return (entry.default if entry is not None else None), "default"
+
+
 def _configured(key: str) -> str:
     """Return the value currently configured for *key*, or ""."""
-    return _resolve(_STATE.rows, key, _STATE.entries.get(key)) or ""
+    return _in_force_raw(key, _STATE.entries.get(key))[0] or ""
 
 
 # --- Settings overlay --------------------------------------------------------
@@ -363,11 +395,15 @@ class _InForce:
     #: Environment values not valid on their own that no applied stored value
     #: replaces, with the reason. Their default applies instead.
     set_aside: dict[str, str]
+    #: Environment values that break a rule with an applied stored value, with
+    #: the rule. A stored value wins over the environment, so their default
+    #: applies instead.
+    overridden: dict[str, str]
     #: The rules between settings the configuration in force still breaks, with
     #: the settings each one ties. Only the environment breaks one here: a
-    #: stored value that would is refused instead.
+    #: stored value that would is refused, or wins over the environment's side.
     broken: dict[str, tuple[str, ...]]
-    #: The settings each rule named in ``refused`` or ``broken`` ties.
+    #: The settings each rule named in ``refused``, ``overridden`` or ``broken`` ties.
     rules: dict[str, tuple[str, ...]]
 
 
@@ -375,18 +411,28 @@ def _rule_keys(fields: Iterable[str]) -> tuple[str, ...]:
     return tuple(registry.settings_env_name(name) for name in fields)
 
 
+def _field_default(name: str) -> Any:
+    return Settings.model_fields[name].get_default(call_default_factory=True)
+
+
 def _in_force(stored: Mapping[str, str]) -> _InForce:
     """Judge stored ``Settings``-backed values over the environment, as the overlay applies them.
+
+    A stored value is never overridden by an environment value:
 
     - A stored value that is not valid on its own is refused.
     - An environment value that is not valid on its own is set aside, and its
       default applies, unless an applied stored value replaces it.
-    - Then the rules between settings. The stored values are taken in the order
-      given, and one is refused when it breaks a rule that holds without it. A
-      refused value is tried again after each acceptance, so it is not refused
-      merely because the value it needs comes later.
-    - A rule the result still breaks is one the environment breaks and no stored
-      value repairs. Startup refuses it (:func:`require_valid_environment`).
+    - Then the rules between settings. Where a stored value and an environment
+      value break one together, the environment's side is set aside: it counts
+      as unset, and its default applies. A stored value is refused only when
+      it breaks a rule all the same, with other stored values or with
+      defaults. The stored values are taken in the order given, and one is
+      refused when it breaks a rule that holds without it. A refused value is
+      tried again after each acceptance, so it is not refused merely because
+      the value it needs comes later.
+    - A rule the result still breaks is one the environment alone breaks and no
+      stored value repairs. Startup refuses it (:func:`require_valid_environment`).
 
     Args:
         stored: ``Settings``-backed keys and their stored values, in registry
@@ -396,20 +442,25 @@ def _in_force(stored: Mapping[str, str]) -> _InForce:
     rules: dict[str, tuple[str, ...]] = {}
     # Setting -> why its environment value is not valid, found as builds fail.
     unusable: dict[str, str] = {}
+    # Setting -> the rule its environment value breaks with an accepted stored value.
+    overridden: dict[str, str] = {}
 
-    def build(values: Mapping[str, str]) -> Settings:
+    def build(values: Mapping[str, str], aside: Iterable[str] = ()) -> Settings:
         """Build *values* over the environment, its invalid values set aside.
+
+        Args:
+            values: Stored values, by key.
+            aside: Further settings whose environment value counts as unset.
 
         Raises:
             ValidationError: A value in *values* is not valid, or the
                 environment fails in a way that cannot be set aside.
         """
+        unset = tuple(aside)
         while True:
             defaults = {
-                registry.settings_init_name(name): Settings.model_fields[name].get_default(
-                    call_default_factory=True
-                )
-                for name in unusable
+                registry.settings_init_name(name): _field_default(name)
+                for name in (*unusable, *overridden, *unset)
                 if registry.settings_env_name(name) not in values
             }
             try:
@@ -433,20 +484,60 @@ def _in_force(stored: Mapping[str, str]) -> _InForce:
         rules.update(broken)
         return broken
 
+    def settle(
+        trial: Mapping[str, str],
+    ) -> tuple[Settings, dict[str, tuple[str, ...]], dict[str, str]]:
+        """Build *trial*, the environment's side of each rule it breaks with a stored value set aside.
+
+        Returns:
+            The settings, the rules they still break, and the settings whose
+            environment value was set aside, each with the rule it broke.
+
+        Raises:
+            ValidationError: As :func:`build`.
+        """
+        aside: dict[str, str] = {}
+        built = build(trial)
+        while True:
+            broken = broken_by(built)
+            more: dict[str, str] = {}
+            for rule, fields in built.broken_rules().items():
+                if not any(registry.settings_env_name(name) in trial for name in fields):
+                    continue  # The environment alone breaks it.
+                for name in fields:
+                    if (
+                        registry.settings_env_name(name) not in trial
+                        and name not in aside
+                        and name not in overridden
+                        and name not in unusable
+                        # At its default already, it is not the environment's.
+                        and getattr(built, name) != _field_default(name)
+                    ):
+                        more.setdefault(name, rule)
+            if not more:
+                return built, broken, aside
+            aside.update(more)
+            built = build(trial, aside)
+
     def result(settings: Settings | None, accepted: Mapping[str, str]) -> _InForce:
         set_aside = {
             key: problem
             for name, problem in unusable.items()
             if (key := registry.settings_env_name(name)) not in accepted
         }
+        conflicts = {
+            key: rule
+            for name, rule in overridden.items()
+            if (key := registry.settings_env_name(name)) not in accepted
+        }
         broken = broken_by(settings) if settings is not None else {}
-        return _InForce(settings, refused, set_aside, broken, rules)
+        return _InForce(settings, refused, set_aside, conflicts, broken, rules)
 
     # Field-level errors name their value: refuse it and try again.
     values = dict(stored)
     while True:
         try:
-            candidate = build(values)
+            candidate, broken, aside = settle(values)
             break
         except ValidationError as exc:
             blamed = _blame(exc, values)
@@ -455,7 +546,8 @@ def _in_force(stored: Mapping[str, str]) -> _InForce:
             for key, message in blamed.items():
                 refused[key] = message
                 del values[key]
-    if not broken_by(candidate):
+    if not broken:
+        overridden.update(aside)
         return result(candidate, values)
     # A rule between settings is broken, and it names no single value: take the
     # stored values one at a time.
@@ -473,17 +565,17 @@ def _in_force(stored: Mapping[str, str]) -> _InForce:
         for key, value in list(waiting.items()):
             trial = {**accepted, key: value}
             try:
-                built = build(trial)
+                built, trial_broken, aside = settle(trial)
             except ValidationError as exc:
                 errors = exc.errors()
                 reasons[key] = _error_message(errors[0]) if errors else "invalid value"
                 continue
-            trial_broken = broken_by(built)
             added = [rule for rule in trial_broken if rule not in broken]
             if added:
                 reasons[key] = added[0]
                 continue
             accepted, candidate, broken = trial, built, trial_broken
+            overridden.update(aside)
             del waiting[key]
             progress = True
     for key in waiting:
@@ -517,12 +609,19 @@ def _copy_settings(candidate: Settings, field_names: Iterable[str]) -> None:
     object.__setattr__(live, "__pydantic_fields_set__", fields_set)
 
 
-def _overlay_settings(*, boot: bool, refused: Mapping[str, str]) -> dict[str, str]:
-    """Apply stored values of ``Settings``-backed entries; return those that failed.
+def _overlay_settings(
+    *, boot: bool, refused: Mapping[str, str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Apply stored values of ``Settings``-backed entries.
 
     Args:
         boot: Whether this is the load the process starts on.
         refused: Stored values the registry already refused, left out here.
+
+    Returns:
+        The stored values that failed, with the reason, and the environment
+        values a stored value wins over (:attr:`_InForce.overridden`), with
+        the rule.
     """
     state = _STATE
     backed = [entry for entry in state.entries.values() if entry.field is not None]
@@ -535,12 +634,12 @@ def _overlay_settings(*, boot: bool, refused: Mapping[str, str]) -> dict[str, st
         # Nothing stored has ever been applied: the live object already holds
         # the environment's values, and rebuilding it would only discard any
         # adjustment made to it in-process.
-        return {}
+        return {}, {}
     in_force = _in_force(stored)
     candidate, invalid = in_force.settings, dict(in_force.refused)
     if candidate is None:
         logger.error("Configuration overlay skipped: the environment itself does not validate")
-        return invalid
+        return invalid, state.environment_aside
     if not boot:
         frozen = [entry.key for entry in backed if entry.key not in state.live_keys]
         if any(state.rows.get(key) != state.boot_rows.get(key) for key in frozen):
@@ -564,7 +663,16 @@ def _overlay_settings(*, boot: bool, refused: Mapping[str, str]) -> dict[str, st
                 "keeping the values in force",
                 "; ".join(broken),
             )
-            return invalid
+            return invalid, state.environment_aside
+        # At boot, the import has already named each of these.
+        for key, rule in in_force.overridden.items():
+            if key not in state.environment_aside:
+                logger.warning(
+                    "Ignoring %s from the environment: it breaks a rule with a value stored in "
+                    "the database (%s), and the stored value wins",
+                    key,
+                    rule,
+                )
     targets = [
         entry.field
         for entry in backed
@@ -576,7 +684,7 @@ def _overlay_settings(*, boot: bool, refused: Mapping[str, str]) -> dict[str, st
         state.applied_at_boot = frozenset(key for key in stored if key not in invalid)
     for key, message in invalid.items():
         logger.warning("Ignoring stored %s: %s", key, message)
-    return invalid
+    return invalid, in_force.overridden
 
 
 # --- health ------------------------------------------------------------------
@@ -686,10 +794,23 @@ def _discover() -> dict[str, DiscoveredReference]:
     return registry.discover_references(paths["models"], paths["routing"], paths["alerts"])
 
 
-def _build_entries(rows: Mapping[str, ConfigRow]) -> dict[str, ConfigEntry]:
+def _build_entries(
+    rows: Mapping[str, ConfigRow], resets: Mapping[str, ConfigRow] | None = None
+) -> dict[str, ConfigEntry]:
     return registry.build_entries(
-        _STATE.discovered, {key: row.secret for key, row in rows.items()}, os.environ
+        _STATE.discovered,
+        {key: row.secret for key, row in rows.items()},
+        os.environ,
+        {key: row.secret for key, row in (resets or {}).items()},
     )
+
+
+async def _read(store: AppConfigStore) -> tuple[dict[str, ConfigRow], dict[str, ConfigRow]]:
+    """Return the rows that store a value and the reset rows, each keyed by name."""
+    fetched = await store.fetch_all(include_reset=True)
+    rows = {key: row for key, row in fetched.items() if row.source != RESET_SOURCE}
+    resets = {key: row for key, row in fetched.items() if row.source == RESET_SOURCE}
+    return rows, resets
 
 
 def _row_problem(key: str, row: ConfigRow) -> str | None:
@@ -698,14 +819,23 @@ def _row_problem(key: str, row: ConfigRow) -> str | None:
     return _value_problem(entry, row.value) if entry is not None else None
 
 
-def _apply(rows: dict[str, ConfigRow], *, boot: bool) -> None:
-    """Make *rows* the configuration in force, and tell everything that reads it."""
+def _apply(
+    rows: dict[str, ConfigRow], *, boot: bool, resets: Mapping[str, ConfigRow] | None = None
+) -> None:
+    """Make *rows* the configuration in force, and tell everything that reads it.
+
+    Args:
+        rows: The rows that store a value.
+        boot: Whether this is the load the process starts on.
+        resets: The reset rows, for the secret flag they keep.
+    """
     state = _STATE
     state.generation += 1
     if boot:
         state.boot_rows = dict(rows)
     state.rows = rows
-    state.entries = _build_entries(rows)
+    state.resets = dict(resets or {})
+    state.entries = _build_entries(rows, state.resets)
     state.live_keys = frozenset(
         key
         for key, entry in state.entries.items()
@@ -721,7 +851,9 @@ def _apply(rows: dict[str, ConfigRow], *, boot: bool) -> None:
     refused = {key: problem for key, row in rows.items() if (problem := _row_problem(key, row))}
     state.effective = {key: row for key, row in effective.items() if not _row_problem(key, row)}
     try:
-        state.invalid = {**refused, **_overlay_settings(boot=boot, refused=refused)}
+        overlay_refused, environment_aside = _overlay_settings(boot=boot, refused=refused)
+        state.invalid = {**refused, **overlay_refused}
+        state.environment_aside = environment_aside
     except Exception:
         state.invalid = refused
         logger.exception("Applying stored settings failed; keeping the previous values")
@@ -739,7 +871,8 @@ async def load(
 
     Creates the table and applies what is stored. At boot it first imports
     every registered setting that has a non-empty environment value and no row,
-    and generates the secrets the deployment cannot start without.
+    generates the secrets the deployment cannot start without, and marks secret
+    the stored rows of secret settings (:func:`_record_secrets`).
 
     Args:
         store: The table, on the caller's connection.
@@ -759,11 +892,12 @@ async def load(
         async with store.transaction() as transaction:
             rows = await transaction.fetch_all()
             rows = await _import_environment(transaction, rows)
-            rows = await _generate_secrets(transaction, rows)
+            await _generate_secrets(transaction, rows)
+            rows, resets = await _record_secrets(transaction)
     else:
-        rows = await store.fetch_all()
+        rows, resets = await _read(store)
     _STATE.loaded = True
-    _apply(rows, boot=True)
+    _apply(rows, boot=True, resets=resets)
 
 
 async def _import_environment(
@@ -780,7 +914,15 @@ async def _import_environment(
     table's values over the environment, not on the environment alone: a value
     whose rule a stored value satisfies is imported like any other. Importing
     a value changes nothing in force (it applies already, from the
-    environment); it only keeps it once the variable is gone.
+    environment); it only keeps it once the variable is gone. Left out, each
+    with a warning:
+
+    - A value that breaks a rule with a stored value. The stored value wins,
+      so this one does not apply; stored, it would break the rule for good.
+    - The value of an immutable setting the table already settles: the fence
+      secret, say, once the gateway uses ``API_KEY_SECRET`` in its place.
+      Stored, it could never be taken back; left in the environment, removing
+      the variable does.
     """
     entries = _build_entries(rows)
     unusable = {registry.settings_env_name(name) for name in invalid_environment()}
@@ -793,6 +935,27 @@ async def _import_environment(
     for key, entry in entries.items():
         value = _environ_value(key, entry)
         if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
+            continue
+        rule = in_force.overridden.get(key)
+        if rule is not None:
+            logger.warning(
+                "Not importing %s from the environment: it breaks a rule with a value stored "
+                "in the database (%s), and the stored value wins, so %s keeps its default. "
+                "Change both on the Configuration tab (or with `python -m "
+                "serving.config.manage set`), or remove the variable.",
+                key,
+                rule,
+                key,
+            )
+            continue
+        reason = _immutable_reason(entry, rows, environment=False)
+        if reason is not None:
+            logger.warning(
+                "Not importing %s from the environment: %s Remove the variable; until then "
+                "it applies from the environment only.",
+                key,
+                reason,
+            )
             continue
         imports.append(
             ConfigRow(key, value, secret=entry.secret, source="env_import", updated_by="env-import")
@@ -849,6 +1012,29 @@ async def _generate_secrets(
         logger.info("Generated %s into the database", ", ".join(sorted(added)))
     # Another worker may have won the race; re-read whichever value stuck.
     return await store.fetch_all()
+
+
+async def _record_secrets(
+    store: AppConfigStore,
+) -> tuple[dict[str, ConfigRow], dict[str, ConfigRow]]:
+    """Mark secret each stored row of a secret setting; return the rows and reset rows.
+
+    The flag is one-way, so a setting that is secret today stays secret if what
+    makes it one goes away: a row stored before its reference or its name
+    counted as a credential's, whose reference is later dropped from the model
+    registry, is never shown again.
+    """
+    rows, resets = await _read(store)
+    entries = _build_entries(rows, resets)
+    unmarked = sorted(
+        key
+        for key, stored in {**resets, **rows}.items()
+        if not stored.secret and (entry := entries.get(key)) is not None and entry.secret
+    )
+    if not unmarked or not await store.mark_secret(unmarked):
+        return rows, resets
+    logger.info("Marked %s secret in the database", ", ".join(unmarked))
+    return await _read(store)
 
 
 def require_valid_environment() -> None:
@@ -941,12 +1127,12 @@ async def refresh() -> None:
     if not _STATE.loaded:
         await store.ensure_schema()
     generation = _STATE.generation
-    rows = await store.fetch_all()
+    rows, resets = await _read(store)
     if generation != _STATE.generation:
         return  # A newer read was applied while this one ran.
-    if not _STATE.loaded or rows != _STATE.rows:
+    if not _STATE.loaded or rows != _STATE.rows or resets != _STATE.resets:
         _STATE.loaded = True
-        _apply(rows, boot=False)
+        _apply(rows, boot=False, resets=resets)
     else:
         # Runtime settings (signup, verification) feed the required rules.
         refresh_health()
@@ -985,10 +1171,10 @@ async def _reload(store: AppConfigStore) -> None:
     """Re-read and apply, so a write takes effect in this process at once."""
     while True:
         generation = _STATE.generation
-        rows = await store.fetch_all()
+        rows, resets = await _read(store)
         if generation == _STATE.generation:
             _STATE.loaded = True
-            _apply(rows, boot=False)
+            _apply(rows, boot=False, resets=resets)
             return
 
 
@@ -1031,12 +1217,22 @@ def reset_state() -> None:
 # --- administration ----------------------------------------------------------
 
 
-def _entry_for(key: str, rows: Mapping[str, ConfigRow]) -> ConfigEntry | None:
-    entry = _build_entries(rows).get(key)
+def _entry_for(
+    key: str, rows: Mapping[str, ConfigRow], resets: Mapping[str, ConfigRow] | None = None
+) -> ConfigEntry | None:
+    entry = _build_entries(rows, resets).get(key)
     return entry if entry is not None else registry.numbered_key_entry(key)
 
 
-def _writable_entry(key: str, rows: Mapping[str, ConfigRow], *, new_secret: bool) -> ConfigEntry:
+def _writable_entry(
+    key: str, rows: Mapping[str, ConfigRow], resets: Mapping[str, ConfigRow]
+) -> ConfigEntry:
+    """Return the entry an administrator's write to *key* stores, a custom one for a new name.
+
+    Raises:
+        ConfigUpdateError: 403 for an environment-only name, 400 for a runtime
+            setting or a name that is not well formed.
+    """
     if registry.is_environment_only(key):
         raise ConfigUpdateError(
             403,
@@ -1045,24 +1241,43 @@ def _writable_entry(key: str, rows: Mapping[str, ConfigRow], *, new_secret: bool
         )
     if registry.is_runtime_setting_name(key):
         raise ConfigUpdateError(400, f"{key}: change it on the Settings tab.")
-    entry = _entry_for(key, rows)
+    entry = _entry_for(key, rows, resets)
     if entry is not None:
         return entry
     if not registry.CUSTOM_KEY_RE.fullmatch(key):
         raise ConfigUpdateError(
             400, f"{key}: a name is an uppercase letter followed by A-Z, 0-9 or _."
         )
-    return registry.custom_entry(key, secret=new_secret)
+    reset = resets.get(key)
+    return registry.custom_entry(key, secret=reset is not None and reset.secret)
 
 
-def _immutable_reason(entry: ConfigEntry, rows: Mapping[str, ConfigRow]) -> str | None:
-    """Return why an immutable entry can no longer change, if it cannot."""
+def _immutable_reason(
+    entry: ConfigEntry, rows: Mapping[str, ConfigRow], *, environment: bool = True
+) -> str | None:
+    """Return why an immutable entry can no longer change, if it cannot.
+
+    Args:
+        entry: The entry.
+        rows: The stored values.
+        environment: Count values from the environment, as a write must. The
+            boot import judges the table alone: whether it already settles
+            the entry, so that storing the environment's value would pin
+            another one.
+    """
     if not entry.immutable:
         return None
-    if (_resolve(rows, entry.key, entry) or "").strip():
+
+    def configured(key: str, key_entry: ConfigEntry | None) -> str:
+        if environment:
+            return _resolve(rows, key, key_entry) or ""
+        row = rows.get(key)
+        return row.value if row is not None else ""
+
+    if configured(entry.key, entry).strip():
         return f"{entry.key} is already set and cannot be changed."
     fallback = entry.fallback_key
-    if fallback and (_resolve(rows, fallback, registry.static_entry(fallback)) or "").strip():
+    if fallback and configured(fallback, registry.static_entry(fallback)).strip():
         return (
             f"{entry.key} cannot be set: the gateway already uses {fallback} in its place, "
             "and records depend on that value."
@@ -1165,6 +1380,8 @@ def _damage(
 
     - a written value that cannot apply;
     - a stored value that applies now and would not;
+    - an environment value that applies now and would be set aside, because
+      it breaks a rule with a written value;
     - a rule between settings broken that holds now;
     - an environment value that is not valid back in force (a reset of the
       stored value that replaces it).
@@ -1207,6 +1424,12 @@ def _damage(
         blamed = blamed or involved(then.rules.get(reason, ()))
         reasons.append(reason)
         others.append(key)
+    for key, rule in then.overridden.items():
+        if key in now.overridden:
+            continue
+        blamed = blamed or involved(then.rules.get(rule, ()))
+        reasons.append(rule)
+        others.append(key)
     for rule, keys in then.broken.items():
         if rule in now.broken:
             continue
@@ -1244,41 +1467,50 @@ async def update(
     *,
     updated_by: str,
 ) -> list[ConfigChange]:
-    """Validate and store a batch of values, then apply it.
+    """Validate and store a batch of values and secret flags, then apply it.
 
     Args:
         values: Setting name to its JSON value: a boolean for ``bool``, a number
             for ``int``/``float``, a string otherwise.
-        new_secrets: The secret flag for custom variables this batch adds.
+        new_secrets: Keys to mark secret. Only ``True`` counts: a secret is
+            never made public again, so ``False`` changes nothing. Honored for
+            custom, discovered and numbered keys; a built-in setting keeps the
+            registry's flag. A key named here but not in *values* keeps its
+            value and has only its flag set, which needs a stored row (a value
+            or a reset). A custom variable is secret anyway when its name
+            looks like a credential's.
         updated_by: Identity of the administrator.
 
     Returns:
-        One change per stored value, for the audit log.
+        One change per stored value or flag, for the audit log.
 
     Raises:
-        ConfigUpdateError: 400 for an invalid value, or for a batch that would
+        ConfigUpdateError: 400 for an invalid value, for a batch that would
             leave the configuration in force worse (another stored value that
-            could no longer apply, a rule between settings broken); 403 for an
-            environment-only name, 409 for an immutable setting already set,
-            503 without a database. Nothing is stored when any value fails.
+            could no longer apply, a rule between settings broken), or for a
+            flag alone on a key with no stored row or on a built-in setting
+            the registry keeps public; 403 for an environment-only name, 409
+            for an immutable setting already set, 503 without a database.
+            Nothing is stored when any of it fails.
     """
-    if not values:
+    flags = new_secrets or {}
+    marking = [key for key, flag in flags.items() if flag]
+    if not values and not marking:
         return []
     store = await _writable_store()
     async with store.transaction() as transaction:
-        rows = await transaction.fetch_all()
+        rows, resets = await _read(transaction)
         pending: list[ConfigRow] = []
         changes: list[ConfigChange] = []
         for key, value in values.items():
-            is_new = key not in rows
-            entry = _writable_entry(
-                key, rows, new_secret=bool((new_secrets or {}).get(key)) and is_new
-            )
+            entry = _writable_entry(key, rows, resets)
             reason = _immutable_reason(entry, rows)
             if reason is not None:
                 raise ConfigUpdateError(409, reason)
             raw = _stored_form(entry, value)
-            secret = entry.secret or (not is_new and rows[key].secret)
+            # entry.secret already holds the stored flag; a write only adds one.
+            marked = key in marking and not entry.secret and entry.origin != "static"
+            secret = entry.secret or marked
             pending.append(
                 ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
             )
@@ -1288,12 +1520,35 @@ async def update(
                     secret,
                     old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
                     new_value=None if secret else _typed(entry, raw),
+                    marked_secret=marked,
                 )
             )
+        flagged: list[str] = []
+        for key in marking:
+            if key in values:
+                continue
+            entry = _writable_entry(key, rows, resets)
+            if entry.secret:
+                continue
+            if entry.origin == "static":
+                raise ConfigUpdateError(
+                    400, f"{key}: a built-in setting keeps the registry's secret flag."
+                )
+            if key not in rows and key not in resets:
+                raise ConfigUpdateError(
+                    400,
+                    f"{key} has no stored value to protect yet: set a value and mark it secret "
+                    "in the same save.",
+                )
+            flagged.append(key)
+            changes.append(ConfigChange(key, True, marked_secret=True, flag_only=True))
         damage = _damage(rows, {**rows, **{row.key: row for row in pending}}, list(values))
         if damage is not None:
             raise ConfigUpdateError(400, damage.saving())
-        await transaction.write(pending)
+        if pending:
+            await transaction.write(pending)
+        if flagged:
+            await transaction.mark_secret(flagged)
     await _reload(store)
     return changes
 
@@ -1318,8 +1573,8 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
         )
     store = await _writable_store()
     async with store.transaction() as transaction:
-        rows = await transaction.fetch_all()
-        entry = _entry_for(key, rows)
+        rows, resets = await _read(transaction)
+        entry = _entry_for(key, rows, resets)
         if entry is not None and entry.immutable:
             raise ConfigUpdateError(409, f"{key} cannot be changed.")
         row = rows.get(key)
@@ -1359,17 +1614,16 @@ def describe() -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for key, entry in state.entries.items():
         row = state.rows.get(key)
+        # A reset row stores no value but still records who reset the setting
+        # and when; the console offers "Mark as secret" on it by that stamp.
+        stamped = row if row is not None else state.resets.get(key)
         environ_value = _environ_value(key, entry)
-        if row is not None:
-            raw, source = row.value, "database"
-        elif environ_value is not None:
-            raw, source = environ_value, "environment"
-        else:
-            raw, source = entry.default, "default"
+        # What is in force: a refused row reports the environment or default
+        # that applies in its place, and an environment value a stored value
+        # wins over reports its default.
+        raw, source = _in_force_raw(key, entry)
         secret = entry.secret or (row is not None and row.secret)
-        invalid = state.invalid.get(key)
-        if invalid is None and row is not None:
-            invalid = _value_problem(entry, row.value)
+        invalid = _refusal(key, entry)
         entries.append(
             {
                 "key": key,
@@ -1385,18 +1639,22 @@ def describe() -> dict[str, Any]:
                 "source": source,
                 "restart_required": entry.restart_required,
                 "pending_restart": key in pending,
-                # Compared as typed values: an environment "1" and a stored
-                # "true" are the same setting, not one overriding the other.
-                "environment_ignored": row is not None
+                # Only a stored row in force overrides the environment. Compared
+                # as typed values: an environment "1" and a stored "true" are
+                # the same setting, not one overriding the other.
+                "environment_ignored": source == "database"
                 and bool(environ_value and environ_value.strip())
-                and _comparable(entry, environ_value) != _comparable(entry, row.value),
+                and _comparable(entry, environ_value) != _comparable(entry, raw),
                 "immutable": entry.immutable,
+                # Immutable and already settled: no value can be stored now.
+                "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
+                "origin": entry.origin,
                 "custom": entry.origin == "custom",
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
-                "updated_at": row.updated_at if row is not None else None,
-                "updated_by": row.updated_by if row is not None else None,
+                "updated_at": stamped.updated_at if stamped is not None else None,
+                "updated_by": stamped.updated_by if stamped is not None else None,
             }
         )
     return {

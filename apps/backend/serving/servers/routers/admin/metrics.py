@@ -49,6 +49,7 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
     resolve_request_outcome_filter,
 )
+from serving.storage import account_schema
 from serving.storage.utils import coerce_json_object
 from serving.utils.request_ip import get_client_ip
 
@@ -789,11 +790,13 @@ def _build_recent_requests_filters(
         # window, so it isn't limited to the current page of results.
         params.append(_escape_ilike_substring_term(user_id))
         idx = len(params)
+        # A login name column the upgrade has not added yet matches nothing.
+        login_name = account_schema.current().column("login_name", "u")
         clauses.append(
             f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
-            f"OR u.login_name ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+            f"OR {login_name} ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
         )
         needs_user_join = True
 

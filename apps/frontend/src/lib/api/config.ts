@@ -11,8 +11,18 @@ const API_BASE = env.apiBase;
 
 export type ConfigValueType = 'str' | 'text' | 'int' | 'float' | 'bool' | 'list';
 
-/** Where the effective value came from. A database row wins even when empty. */
+/**
+ * Where the value in force comes from. A database row wins even when empty; one
+ * that cannot apply reports the environment or default in its place.
+ */
 export type ConfigSource = 'database' | 'environment' | 'default';
+
+/**
+ * Where an entry comes from: built in (`static`), a `${VAR}` reference in a
+ * configuration file (`discovered`), a numbered provider key, or added by an
+ * administrator (`custom`). Only a static entry's secret flag is fixed.
+ */
+export type ConfigOrigin = 'static' | 'discovered' | 'numbered' | 'custom';
 
 /** A value in its typed form; a `list` travels as its comma-separated string. */
 export type ConfigScalar = string | number | boolean;
@@ -29,7 +39,7 @@ export interface ConfigEntry {
   category: string;
   description: string;
   type: ConfigValueType;
-  /** Write-only: `value` and `default` are always `null`. */
+  /** Write-only: `value` and `default` are always `null` (the client enforces it). */
   secret: boolean;
   required: boolean;
   /** Required and empty. */
@@ -46,14 +56,26 @@ export interface ConfigEntry {
   environment_ignored: boolean;
   /** Cannot be changed once set. */
   immutable: boolean;
+  /**
+   * Accepts no change now. Usually an immutable setting that is set, but not
+   * only: `ERASURE_FENCE_SECRET` is locked, though empty, once the erasure
+   * fence runs on `API_KEY_SECRET`. An older backend omits it; see `isLocked`.
+   */
+  locked?: boolean;
   /** Shown on the first-run configuration step. */
   setup: boolean;
-  /** Added by an administrator; removed by a reset. */
+  /** Absent from an older backend, which cannot mark a stored variable secret. */
+  origin?: ConfigOrigin;
+  /** Added by an administrator (`origin` is `custom`); removed by a reset. */
   custom: boolean;
-  /** Why the stored value could not be applied, when it could not. */
+  /**
+   * Why the stored value could not be applied, when it could not. The entry
+   * then reports the environment value or default in force instead.
+   */
   invalid: string | null;
   /** Model ids whose routes reference this variable. */
   used_by: string[];
+  /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;
 }
@@ -72,7 +94,11 @@ export interface ConfigResponse {
 export interface ConfigPatchRequest {
   /** A JSON boolean for `bool`, a number for `int`/`float`, a string otherwise. */
   values: Record<string, ConfigScalar>;
-  /** The secret flag for keys this request adds as custom variables. */
+  /**
+   * The secret flag for keys this request adds as custom variables, and — on a
+   * backend that supports it — `true` to mark a stored discovered, numbered or
+   * custom variable secret. One-way: `false` never makes a secret readable.
+   */
   secrets?: Record<string, boolean>;
 }
 
@@ -80,6 +106,28 @@ export interface RestartResponse {
   restarting: boolean;
   /** The process that is exiting; `/health` names a different one once it is back. */
   instance?: string;
+}
+
+/**
+ * The configuration with no secret's value or default in it.
+ *
+ * The backend sends `null` for both. Dropping whatever a misbehaving or older
+ * backend sent instead keeps a secret out of the console's state altogether,
+ * so no component can render it by mistake.
+ */
+function withoutSecretValues(config: ConfigResponse): ConfigResponse {
+  return {
+    ...config,
+    entries: config.entries.map((entry) =>
+      entry.secret && (entry.value != null || entry.default != null)
+        ? { ...entry, value: null, default: null }
+        : entry,
+    ),
+  };
+}
+
+async function readConfig(resp: Response): Promise<ConfigResponse> {
+  return withoutSecretValues(await readJson<ConfigResponse>(resp));
 }
 
 /**
@@ -93,7 +141,7 @@ export async function getConfig(): Promise<ConfigResponse> {
     headers: { accept: 'application/json' },
     cache: 'no-store',
   });
-  return readJson<ConfigResponse>(resp);
+  return readConfig(resp);
 }
 
 /**
@@ -109,7 +157,22 @@ export async function patchConfig(request: ConfigPatchRequest): Promise<ConfigRe
     headers: { 'Content-Type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(request),
   });
-  return readJson<ConfigResponse>(resp);
+  return readConfig(resp);
+}
+
+/**
+ * Mark a stored variable secret, leaving its value as it is: from then on the
+ * console shows only whether it is set. One-way — nothing in the API makes a
+ * secret readable again.
+ *
+ * For a discovered, numbered or custom variable with a row stored, a value or
+ * a reset. 400 otherwise, verbatim: "K has no stored value to protect yet: …",
+ * "K: a built-in setting keeps the registry's secret flag." A backend that
+ * predates this sends entries without `origin`, and would answer 200 without
+ * marking anything.
+ */
+export async function markConfigSecret(key: string): Promise<ConfigResponse> {
+  return patchConfig({ values: {}, secrets: { [key]: true } });
 }
 
 /**
@@ -121,7 +184,7 @@ export async function resetConfigKey(key: string): Promise<ConfigResponse> {
     method: 'DELETE',
     headers: { accept: 'application/json' },
   });
-  return readJson<ConfigResponse>(resp);
+  return readConfig(resp);
 }
 
 /**

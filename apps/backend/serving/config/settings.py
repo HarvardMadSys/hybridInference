@@ -149,10 +149,17 @@ class Settings(BaseSettings):
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
     signup_rate_limit_per_day: int = 10
-    # Per-email window (default 5 attempts / 15 min) and per-IP window
-    # (default 20 attempts / hour). The login limiter records attempts on
-    # entry so probing varied passwords cannot bypass the limit.
+    # Sign-in windows. Per account per client address (default 5 attempts /
+    # 15 min, IPv6 bucketed to /64): whoever guesses from their own address
+    # cannot lock the owner out of the account from another. Per account from
+    # every address together (default 50 / 15 min): bounds guessing spread
+    # across many addresses, counting only attempts that are let through, so
+    # filling it takes ten addresses at the defaults.
+    # Per IP across every account (default 20 attempts / hour). The login
+    # limiter records attempts on entry so probing varied passwords cannot
+    # bypass the limit.
     login_rate_limit_per_15min: int = 5
+    login_account_rate_limit_per_15min: int = Field(default=50, ge=1)
     login_rate_limit_per_hour_per_ip: int = 20
     # Auto-block a source IP at the API-key auth layer after repeated auth
     # failures. Once an IP (IPv6 bucketed to /64) reaches

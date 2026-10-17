@@ -379,6 +379,29 @@ def test_configured_env_keys_support_numbered_only_env_keys(monkeypatch):
     ]
 
 
+def test_configured_env_keys_read_every_numbered_setting(monkeypatch):
+    """The base plus KEY1 and KEY3 used to pool the base alone.
+
+    The scan started at 2 beside a base and stopped at the first gap, while the
+    Configuration tab accepts KEY1..KEY20 as pooled with the base.
+    """
+    for index in range(1, 21):
+        monkeypatch.delenv(f"CHUTES_API_KEY{index}", raising=False)
+    monkeypatch.setenv("CHUTES_API_KEY", "chutes-key-base")
+    monkeypatch.setenv("CHUTES_API_KEY1", "chutes-key-one")
+    monkeypatch.setenv("CHUTES_API_KEY2", "   ")  # blank: skipped, not the end
+    monkeypatch.setenv("CHUTES_API_KEY3", "chutes-key-three")
+    monkeypatch.setenv("CHUTES_API_KEY5", "chutes-key-base")  # the same key twice
+    monkeypatch.setenv("CHUTES_API_KEY20", "chutes-key-twenty")
+
+    assert dynamic_keys.configured_env_keys_for_provider("chutes") == [
+        "chutes-key-base",
+        "chutes-key-one",
+        "chutes-key-three",
+        "chutes-key-twenty",
+    ]
+
+
 def test_configured_env_keys_include_provider_overview_builtin_names(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.setenv("STAGING_API_KEY", "staging-key")

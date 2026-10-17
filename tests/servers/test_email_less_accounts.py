@@ -223,7 +223,9 @@ class TestLogin:
     async def test_login_rate_limit_is_keyed_by_login_name(self, client, monkeypatch):
         seen: list[str] = []
 
-        async def _record(identifier: str, ip: str) -> tuple[bool, str | None]:
+        async def _record(
+            identifier: str, ip: str, *, device: str | None = None
+        ) -> tuple[bool, str | None]:
             seen.append(identifier)
             return True, None
 

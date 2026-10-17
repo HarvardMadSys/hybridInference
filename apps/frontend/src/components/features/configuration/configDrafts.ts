@@ -22,9 +22,12 @@ export type ConfigDrafts = Record<string, ConfigDraft>;
 
 const INTEGER_PATTERN = /^[+-]?\d+$/;
 
-/** An immutable setting that already has a value accepts no edit at all. */
+/**
+ * A setting that accepts no edit at all, as the backend reports it. A backend
+ * that predates `locked` locks an immutable setting once it has a value.
+ */
 export function isLocked(entry: ConfigEntry): boolean {
-  return entry.immutable && entry.is_set;
+  return entry.locked ?? (entry.immutable && entry.is_set);
 }
 
 /** What a non-secret editor shows before any edit. */
@@ -212,7 +215,52 @@ export function errorForKey(
 /** A custom variable name the backend accepts. */
 export const CUSTOM_KEY_PATTERN = /^[A-Z][A-Z0-9_]{1,127}$/;
 
-/** The backend's own rule for which discovered names are secret. */
+/**
+ * Words that make a name a credential's: the backend's `SECRET_NAME_WORDS`
+ * (serving/config/app_config_registry.py), which it matches anywhere in the
+ * upper-cased name. Keep the two in step.
+ */
+const SECRET_NAME_WORDS = [
+  'KEY',
+  'TOKEN',
+  'SECRET',
+  'PASSWORD',
+  'PASS',
+  'PWD',
+  'WEBHOOK',
+  'PRIVATE',
+  'AUTH',
+  'CREDENTIAL',
+  'BEARER',
+  'CERT',
+  'DSN',
+  'SA_JSON',
+] as const;
+
+/** The backend's own rule (`is_secret_name`) for which variable names are secret. */
 export function looksSecret(name: string): boolean {
-  return /KEY|TOKEN|SECRET|PASSWORD|WEBHOOK|PRIVATE/.test(name);
+  const upper = name.toUpperCase();
+  return SECRET_NAME_WORDS.some((word) => upper.includes(word));
+}
+
+/**
+ * Whether a database row holds a value for the entry, so Reset has something
+ * to remove: one in force (`source` is `database`), or one refused (`invalid`
+ * says why, and the environment or default applies in its place). A reset row
+ * stores no value, and `DELETE` answers 404 for it.
+ */
+export function hasStoredValue(entry: ConfigEntry): boolean {
+  return entry.updated_at != null && (entry.source === 'database' || entry.invalid != null);
+}
+
+/**
+ * Whether "Mark as secret" applies: a variable from a configuration file, a
+ * numbered provider key or a custom one (a built-in setting's flag is fixed)
+ * that is not secret yet, is not locked, and has a row in the database — a
+ * value or a reset — for the flag to stay on. A backend that does not report
+ * `origin` predates marking, so it is offered nothing.
+ */
+export function canMarkSecret(entry: ConfigEntry): boolean {
+  if (entry.origin === undefined || entry.origin === 'static') return false;
+  return !entry.secret && !isLocked(entry) && entry.updated_at != null;
 }

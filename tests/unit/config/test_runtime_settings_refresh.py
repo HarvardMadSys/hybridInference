@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -171,8 +172,11 @@ class _Pool:
 
 @pytest.fixture
 def clean_runtime_env(monkeypatch):
-    for key in RUNTIME_SETTINGS_REGISTRY:
-        monkeypatch.delenv(key.upper(), raising=False)
+    """Remove every spelling of every runtime setting's variable."""
+    names = {key.upper() for key in RUNTIME_SETTINGS_REGISTRY}
+    for variable in list(os.environ):
+        if variable.upper() in names:
+            monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.mark.asyncio
@@ -225,4 +229,47 @@ async def test_import_never_replaces_a_stored_value(monkeypatch, clean_runtime_e
     assert imported == ["signup_enabled"]
     assert pool.connection.table["user_auth_enabled"] == ("False", "bool")
     # Twice is the same as once.
+    assert await import_environment_values(pool) == []
+
+
+@pytest.mark.asyncio
+async def test_import_finds_a_lower_case_variable_settings_reads(
+    monkeypatch, clean_runtime_env
+) -> None:
+    """``signup_enabled=false`` in .env turns signup off; trimming .env must not reopen it.
+
+    ``Settings`` matches variable names case-insensitively, so that value is in
+    force. The import used to look for the upper-case name only, store nothing,
+    and leave signup to reopen once the line was deleted.
+    """
+    monkeypatch.setenv("signup_enabled", "false")
+    get_settings.cache_clear()
+    assert (
+        RuntimeSettings._fallback("signup_enabled", RUNTIME_SETTINGS_REGISTRY["signup_enabled"])
+        is False
+    )
+    pool = _Pool()
+
+    assert await import_environment_values(pool) == ["signup_enabled"]
+    assert pool.connection.table["signup_enabled"] == ("False", "bool")
+
+
+@pytest.mark.asyncio
+async def test_import_prefers_the_upper_case_spelling(monkeypatch, clean_runtime_env) -> None:
+    monkeypatch.setenv("user_auth_enabled", "false")
+    monkeypatch.setenv("USER_AUTH_ENABLED", "true")
+    pool = _Pool()
+
+    assert await import_environment_values(pool) == ["user_auth_enabled"]
+    assert pool.connection.table["user_auth_enabled"] == ("True", "bool")
+
+
+@pytest.mark.asyncio
+async def test_import_reads_other_spellings_only_where_settings_does(
+    monkeypatch, clean_runtime_env
+) -> None:
+    """A runtime setting ``Settings`` does not define has only ever been read upper-case."""
+    monkeypatch.setenv("user_concurrency_free", "7")
+    pool = _Pool()
+
     assert await import_environment_values(pool) == []

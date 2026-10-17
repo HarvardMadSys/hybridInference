@@ -175,13 +175,16 @@ For the full diagram (network layer, observability, storage), see
 | `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
 | `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
-| `app_config` table (Admin → Configuration) | Every other application setting — provider keys, SMTP, secrets, proxy trust, routing knobs. Resolved DB row → env → default by `config_value()` and the `Settings` overlay; registry in `apps/backend/serving/config/app_config_registry.py`. Env keeps only DB connection + wiring |
+| `app_config` table (Admin → Configuration) | Every other application setting — provider keys, SMTP, secrets, proxy trust, routing knobs. Resolved DB row → env → default by `config_value()` and the `Settings` overlay; a stored row also wins a cross-field rule (the conflicting env value is set aside, with a WARNING). Registry in `apps/backend/serving/config/app_config_registry.py`. Env keeps only DB connection + wiring |
 
 YAML supports env var interpolation, in two dialects: the model registry
 substitutes only a whole `${VAR}` value, while the routing and alert files also
 handle `${VAR:-default}` and variables embedded in longer strings. Either way
 `${VAR}` resolves through the database-backed setting first, then the
-environment.
+environment, then (routing and alerts) the inline `:-default`, then the
+setting's registered default. A `${VAR}` used in a credential field
+(`api_key`, `token`, an `Authorization` header) is a secret setting whatever
+its name.
 
 ### 6.4 Tests: markers and tiers
 

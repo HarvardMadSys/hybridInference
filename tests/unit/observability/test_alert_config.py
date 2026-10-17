@@ -277,3 +277,32 @@ def test_new_rules_can_be_turned_off(tmp_path: Path):
     cfg = load_alert_config(p)
     assert cfg.rules.client_error_burst.enabled is False
     assert cfg.rules.stream_failure_rate.enabled is False
+
+
+def test_a_registered_setting_falls_back_to_its_registered_default(tmp_path: Path, monkeypatch):
+    """Row, environment, inline ``:-default``, registered default, then ``""``.
+
+    ``${FAILED_REQUEST_ALERT_THRESHOLD}`` unset used to expand to "", which no
+    count accepts, so the whole file failed to load.
+    """
+    from serving.observability.alert_config import _expand_env
+
+    monkeypatch.delenv("FAILED_REQUEST_ALERT_THRESHOLD", raising=False)
+    monkeypatch.delenv("NOT_A_REGISTERED_NAME", raising=False)
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        "rules:\n"
+        "  client_error_burst:\n"
+        "    threshold_count: ${FAILED_REQUEST_ALERT_THRESHOLD}\n"
+        "  stream_failure_rate:\n"
+        "    threshold_count: ${FAILED_REQUEST_ALERT_THRESHOLD:-9}\n"
+    )
+
+    cfg = load_alert_config(p)
+
+    assert cfg.rules.client_error_burst.threshold_count == 200
+    assert cfg.rules.stream_failure_rate.threshold_count == 9  # the inline default wins
+    assert _expand_env("${FAILED_REQUEST_ALERT_THRESHOLD:-}") == ""
+    assert _expand_env("${NOT_A_REGISTERED_NAME}") == ""
+    monkeypatch.setenv("FAILED_REQUEST_ALERT_THRESHOLD", "40")
+    assert load_alert_config(p).rules.client_error_burst.threshold_count == 40

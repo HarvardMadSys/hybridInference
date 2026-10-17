@@ -274,7 +274,26 @@ def test_load_stored_configuration_keeps_the_environment_when_unreachable(
     assert "using the environment's" in capsys.readouterr().err
 
 
-def test_the_ingest_cli_loads_stored_settings_except_for_check(monkeypatch, tmp_path) -> None:
+def test_load_stored_configuration_keeps_the_environment_when_db_settings_are_invalid(
+    monkeypatch, capsys
+) -> None:
+    """A DB_PORT that is not a port cannot reach a database: warn, do not crash."""
+    monkeypatch.setattr(manage, "_database_enabled", lambda: True)
+    monkeypatch.setenv("DB_PORT", "not-a-port")
+
+    assert manage.load_stored_configuration() is False
+    err = capsys.readouterr().err
+    assert "using the environment's" in err
+    assert "the DB_* settings are not valid" in err
+
+    # Asking whether there is a database at all builds Settings, which fails the same way.
+    monkeypatch.setattr(manage, "_database_enabled", lambda: DatabaseSettings(db_port="x"))
+    assert manage.load_stored_configuration() is False
+    assert "using the environment's" in capsys.readouterr().err
+
+
+def test_the_ingest_cli_loads_stored_settings_for_check_too(monkeypatch, tmp_path) -> None:
+    """The corpus and the index can be stored settings, and --check must compare those."""
     from serving.rag import ingest
 
     calls: list[str] = []
@@ -285,8 +304,65 @@ def test_the_ingest_cli_loads_stored_settings_except_for_check(monkeypatch, tmp_
     (corpus / "a.md").write_text("# A\n\nText.\n")
 
     assert ingest.main(["--check"]) == 0
-    assert calls == []
+    assert calls == ["load"]
 
     out = tmp_path / "index.json"
     assert ingest.main(["--corpus", str(corpus), "--out", str(out), "--embedder", "hash"]) == 0
-    assert calls == ["load"]
+    assert calls == ["load", "load"]
+
+
+# --- .env, read as the gateway reads it --------------------------------------
+
+
+def _dotenv(monkeypatch, values: dict[str, str]) -> list[tuple]:
+    """Stand in for load_dotenv: put *values* in the environment, record the call."""
+    calls: list[tuple] = []
+
+    def load(*args, **kwargs) -> bool:
+        calls.append((args, kwargs))
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+        return True
+
+    monkeypatch.setattr(manage, "load_dotenv", load)
+    return calls
+
+
+def test_a_value_only_dotenv_holds_is_the_environment_value(store, monkeypatch, capsys) -> None:
+    calls = _dotenv(monkeypatch, {"SITE_NAME": "Only In Dotenv"})
+
+    assert manage.main(["get", "SITE_NAME"]) == 0
+
+    # Called as bootstrap.initialize calls it: no path, existing variables kept.
+    assert calls == [((), {})]
+    out = capsys.readouterr().out
+    assert "SITE_NAME=Only In Dotenv" in out
+    assert "source: environment" in out
+
+
+def test_a_generated_secret_resets_to_its_dotenv_value(store, monkeypatch, capsys) -> None:
+    """Refused for lack of an environment value while .env went unread."""
+    store.rows["JWT_SECRET_KEY"] = row("JWT_SECRET_KEY", "generated", secret=True)
+
+    _dotenv(monkeypatch, {})
+    assert manage.main(["reset", "JWT_SECRET_KEY"]) == 1
+    assert "no environment value to fall back to" in capsys.readouterr().err
+
+    _dotenv(monkeypatch, {"JWT_SECRET_KEY": "the-dotenv-secret"})
+    assert manage.main(["reset", "JWT_SECRET_KEY"]) == 0
+    assert store.resets == ["JWT_SECRET_KEY"]
+    assert "the-dotenv-secret" not in capsys.readouterr().out
+
+
+def test_db_enabled_false_in_dotenv_is_honoured(monkeypatch, capsys) -> None:
+    @contextlib.asynccontextmanager
+    async def never():  # pragma: no cover - must never run
+        raise AssertionError("DB_ENABLED=false in .env, yet the database was contacted")
+        yield
+
+    monkeypatch.setattr(app_config, "command_line_session", never)
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    _dotenv(monkeypatch, {"DB_ENABLED": "false"})
+
+    assert manage.main(["list"]) == 1
+    assert "DB_ENABLED=false" in capsys.readouterr().err

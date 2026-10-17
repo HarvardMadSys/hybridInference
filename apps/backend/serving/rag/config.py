@@ -4,7 +4,9 @@ Every ``RAG_*`` setting is read through the database-backed configuration
 (``config_value``: database row, then environment variable) with sensible
 defaults, so the prototype can be pointed at a different corpus, index, or
 model without code changes. Defaults resolve relative to the repo root so it
-works out of the box.
+works out of the box. The settings whose description says what an empty value
+uses — ``RAG_CORPUS_DIR``, ``RAG_INDEX_PATH``, ``RAG_GATEWAY_API_KEY`` — treat a
+blank value as unset.
 """
 
 from __future__ import annotations
@@ -144,6 +146,16 @@ def _setting(name: str, default: str) -> str:
     return default if value is None else value
 
 
+def _setting_or_fallback(name: str, fallback: str) -> str:
+    """Read a setting whose registry description says what an empty value uses.
+
+    A blank value counts as unset: an administrator who clears the field and
+    saves stores ``""``, and ``Path("")`` is the working directory.
+    """
+    value = config_value(name)
+    return value if value is not None and value.strip() else fallback
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return int(_setting(name, str(default)))
@@ -164,8 +176,9 @@ def load_rag_settings() -> RagSettings:
     if mode not in EMBEDDER_MODES:
         mode = "gateway"
     return RagSettings(
-        corpus_dir=Path(_setting("RAG_CORPUS_DIR", str(DEFAULT_CORPUS_DIR))),
-        index_path=Path(_setting("RAG_INDEX_PATH", str(DEFAULT_INDEX_PATH))),
+        # "Empty uses the distribution overlay's" (the registry's promise).
+        corpus_dir=Path(_setting_or_fallback("RAG_CORPUS_DIR", str(DEFAULT_CORPUS_DIR))),
+        index_path=Path(_setting_or_fallback("RAG_INDEX_PATH", str(DEFAULT_INDEX_PATH))),
         embedder_mode=mode,
         embed_model=_setting("RAG_EMBED_MODEL", "bge-m3"),
         chat_model=_setting("RAG_CHAT_MODEL", "qwen3.6-35b"),
@@ -179,5 +192,6 @@ def load_rag_settings() -> RagSettings:
         # The ingest CLI embeds through a gateway; defaulting to a specific
         # deployment would send another operator's corpus to it.
         gateway_base_url=_setting("RAG_GATEWAY_BASE_URL", "http://localhost:8080/v1"),
-        gateway_api_key=_setting("RAG_GATEWAY_API_KEY", _setting("LOCAL_API_KEY", "")),
+        # "Empty uses LOCAL_API_KEY".
+        gateway_api_key=_setting_or_fallback("RAG_GATEWAY_API_KEY", _setting("LOCAL_API_KEY", "")),
     )

@@ -148,6 +148,19 @@ def create_app() -> FastAPI:
         anthropic_messages.anthropic_aware_http_exception_handler,
     )
 
+    # A write that needs account columns an upgrade has not added yet (the
+    # migration waits for the users table's lock). Routes that expect it answer
+    # the same 503 themselves; this covers every other one with an identical
+    # body, rather than a 500.
+    from serving.exceptions import AccountSchemaPending as _AccountSchemaPending
+
+    async def _account_schema_pending(request, exc):
+        return await anthropic_messages.anthropic_aware_http_exception_handler(
+            request, _HTTPException(status_code=503, detail=_AccountSchemaPending.MESSAGE)
+        )
+
+    app.add_exception_handler(_AccountSchemaPending, _account_schema_pending)
+
     # Override FastAPI's own RequestValidationError handler, which it installs
     # in FastAPI.__init__ and which answers a schema mismatch with
     # {"detail": exc.errors()} -- a body that echoes the caller's submitted

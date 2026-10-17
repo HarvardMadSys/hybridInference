@@ -25,6 +25,7 @@ from serving.adapters import (
     OpenRouterAdapter,
 )
 from serving.config.app_config import config_value
+from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
@@ -83,6 +84,21 @@ def _template_var(value: object) -> str | None:
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
         return value[2:-1]
     return None
+
+
+def resolve_reference(name: str) -> str | None:
+    """Resolve the setting a ``${VAR}`` reference names, as the Configuration tab reports it.
+
+    The stored setting, then the environment (``config_value``), then the
+    registered default of a static setting that has one — ``${CHUTES_BASE_URL}``
+    works unset, the way the console shows it configured. ``None`` when nothing
+    sets it. A stored or environment value wins even when empty.
+    """
+    value = config_value(name)
+    if value is not None:
+        return value
+    entry = static_entry(name)
+    return entry.default if entry is not None and entry.default else None
 
 
 class EmbeddingsPathConfigError(ValueError):
@@ -469,10 +485,11 @@ def register_from_models_yaml(
                 )
 
             # ${VAR} expansion for base_url/api_key in both top-level and route
-            # entries: the database-backed setting, then the environment.
+            # entries: the database-backed setting, then the environment, then
+            # the setting's registered default (resolve_reference).
             def expand_env(val: str | None) -> str | None:
                 var = _template_var(val)
-                return config_value(var) if var is not None else val
+                return resolve_reference(var) if var is not None else val
 
             # Build primary config
             # Only carry keys the YAML actually sets: `m.get(k)` would inject

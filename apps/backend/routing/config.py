@@ -9,6 +9,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from serving.config.app_config import config_value
+from serving.config.app_config_registry import static_entry
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -19,12 +20,19 @@ _logger = get_logger(__name__)
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-(.*?))?\}")
 
 
+def _registered_default(key: str) -> str | None:
+    """Return the registered default of a static setting, the value the console reports unset."""
+    entry = static_entry(key)
+    return entry.default if entry is not None and entry.default else None
+
+
 def _expand_env_value(val: Any) -> Any:
     """Recursively expand ``${VAR}`` references in configuration values.
 
     Supports ${VAR} and ${VAR:-default} syntax. Applies to strings, lists, and
-    dicts. A variable resolves through ``config_value``: its database-backed
-    setting, then the environment.
+    dicts. A variable resolves through ``config_value`` — its database-backed
+    setting, then the environment — then the inline ``:-default``, then the
+    registered default of a static setting that has one, and else to ``""``.
 
     Args:
         val: Configuration value to process (str, list, dict, or other).
@@ -36,8 +44,11 @@ def _expand_env_value(val: Any) -> Any:
 
         def repl(match: re.Match[str]) -> str:
             key = match.group(1)
-            default = match.group(2)
-            return config_value(key, default if default is not None else "") or ""
+            inline_default = match.group(2)
+            value = config_value(key)
+            if value is None:
+                value = inline_default if inline_default is not None else _registered_default(key)
+            return value or ""
 
         return _ENV_PATTERN.sub(repl, val)
     if isinstance(val, list):

@@ -18,6 +18,10 @@ Run it where the backend runs, for example::
 
 Running backends apply a change within ten seconds; a setting marked
 restart-required waits for the next restart.
+
+Like the gateway at startup, it first reads ``.env`` into the environment
+(without replacing a variable already set), so a value kept only there is the
+one it shows and the one a reset falls back to.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+from dotenv import load_dotenv
+from pydantic import ValidationError
 
 from serving.config import app_config, app_config_registry as registry
 from serving.config.settings import DatabaseSettings
@@ -54,7 +60,10 @@ def _database_enabled() -> bool:
 
 
 def _where() -> str:
-    settings = DatabaseSettings()
+    try:
+        settings = DatabaseSettings()
+    except ValidationError:
+        return "(the DB_* settings are not valid)"
     return f"{settings.db_user}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
 
 
@@ -63,23 +72,29 @@ def load_stored_configuration() -> bool:
 
     For tools that run outside the gateway but read its settings, such as the
     documentation indexer: without this they would see the environment alone.
-    Read-only; nothing is imported or generated.
+    Read-only; nothing is imported or generated. The connection gives up after
+    the boot connection's deadline (``app_config_store.CONNECT_TIMEOUT_SECONDS``),
+    so an unreachable host costs seconds, not minutes.
 
     Returns:
         Whether stored settings were loaded. A deployment without a database
-        has none, and one whose database cannot be reached keeps the
-        environment's values, with a warning on stderr.
+        (``DB_ENABLED=false``) has none and is not contacted, and one whose
+        database cannot be reached — refused, timed out, or ``DB_*`` settings
+        that do not validate — keeps the environment's values, with a warning
+        on stderr.
     """
-    if not _database_enabled():
-        return False
 
     async def _load() -> None:
         async with app_config.command_line_session():
             pass
 
     try:
+        # Inside the try: finding out imports the gateway's dependencies, which
+        # build Settings, and DB_* settings that do not validate fail there.
+        if not _database_enabled():
+            return False
         asyncio.run(_load())
-    except _DATABASE_ERRORS as exc:
+    except (*_DATABASE_ERRORS, ValidationError) as exc:
         print(
             f"warning: stored settings not loaded, using the environment's "
             f"(database {_where()}: {exc})",
@@ -214,7 +229,10 @@ def build_parser() -> argparse.ArgumentParser:
     store.add_argument(
         "--secret",
         action="store_true",
-        help="mark a custom variable this command adds as secret",
+        help=(
+            "mark the variable secret (discovered, numbered and custom variables; "
+            "only ever turns secrecy on)"
+        ),
     )
     reset = commands.add_parser(
         "reset", help="remove the stored value; the environment or the default applies"
@@ -231,6 +249,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         or the database could not be reached.
     """
     args = build_parser().parse_args(argv)
+    # Before anything is resolved, read .env the way the gateway does at startup
+    # (bootstrap.initialize): a value only .env holds, as under a systemd unit
+    # without EnvironmentFile, is then the environment value this tool shows,
+    # and the one a reset falls back to. A variable already set is kept.
+    load_dotenv()
     if not _database_enabled():
         print(
             "This deployment runs without a database (DB_ENABLED=false): its settings "

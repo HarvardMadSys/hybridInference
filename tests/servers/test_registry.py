@@ -161,6 +161,98 @@ def test_top_level_env_base_url_unset_skips_default_route(tmp_path, monkeypatch)
     assert "top-level-test" not in exe2.routes
 
 
+_CHUTES_DEMO = (
+    "models:\n"
+    "  - id: demo-model\n"
+    "    name: Demo\n"
+    "    route:\n"
+    "      - kind: chutes\n"
+    "        base_url: ${CHUTES_BASE_URL}\n"
+    "        api_key: ${CHUTES_DEMO_KEY}\n"
+)
+
+
+def _chutes_demo(tmp_path, monkeypatch) -> Path:
+    monkeypatch.delenv("CHUTES_BASE_URL", raising=False)
+    monkeypatch.setenv("CHUTES_DEMO_KEY", "literal-key")
+    path = tmp_path / "models.yaml"
+    path.write_text(_CHUTES_DEMO)
+    for name, target in (
+        ("MODELS_CONFIG_PATH", path),
+        ("ROUTING_CONFIG_PATH", tmp_path / "none.yaml"),
+        ("ALERTS_CONFIG_PATH", tmp_path / "none.yaml"),
+    ):
+        monkeypatch.setenv(name, str(target))
+    return path
+
+
+@pytest.mark.unit
+def test_a_reference_to_a_registered_setting_uses_its_default(tmp_path, monkeypatch):
+    """Unset, ``${CHUTES_BASE_URL}`` is the default the Configuration tab shows in force.
+
+    The registry used to resolve it to nothing and skip the model, while the
+    console reported the setting configured and nothing missing.
+    """
+    from serving.config import app_config
+
+    path = _chutes_demo(tmp_path, monkeypatch)
+    app_config.use_environment(database_enabled=False)
+    entry = next(e for e in app_config.describe()["entries"] if e["key"] == "CHUTES_BASE_URL")
+    assert (entry["source"], entry["missing"]) == ("default", False)
+
+    exe = RouteExecutor()
+    report = registry.ModelLoadReport()
+    _count, infos = registry.register_from_models_yaml(
+        exe, path, continue_on_missing_env=True, report=report
+    )
+
+    assert [info.model_id for info in infos] == ["demo-model"]
+    assert report.skipped_models == {}
+    assert exe.routes["demo-model"].adapters[0][0].config.base_url == entry["value"]
+    assert entry["value"] == "https://llm.chutes.ai/v1"
+
+
+@pytest.mark.unit
+def test_a_value_set_anywhere_wins_over_the_registered_default(tmp_path, monkeypatch):
+    from serving.config import app_config
+    from tests.fixtures.app_config_store import row
+
+    path = _chutes_demo(tmp_path, monkeypatch)
+    monkeypatch.setenv("CHUTES_BASE_URL", "https://chutes.env.example/v1")
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, path)
+    assert exe.routes["demo-model"].adapters[0][0].config.base_url == (
+        "https://chutes.env.example/v1"
+    )
+
+    # A stored value wins, and an empty one is a value: the model is skipped.
+    app_config._apply({"CHUTES_BASE_URL": row("CHUTES_BASE_URL", "")}, boot=True)
+    report = registry.ModelLoadReport()
+    registry.register_from_models_yaml(
+        RouteExecutor(), path, continue_on_missing_env=True, report=report
+    )
+    assert report.skipped_models == {"demo-model": []}
+    assert report.unset_env_vars == {"CHUTES_BASE_URL"}
+
+
+@pytest.mark.unit
+def test_only_a_registered_default_fills_a_reference(tmp_path, monkeypatch):
+    """Unregistered names and secrets — which carry no default — still skip the model."""
+    path = _chutes_demo(tmp_path, monkeypatch)
+    monkeypatch.delenv("CHUTES_DEMO_KEY")
+    path.write_text(_CHUTES_DEMO.replace("${CHUTES_DEMO_KEY}", "${CHUTES_API_KEY}"))
+    monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+
+    report = registry.ModelLoadReport()
+    registry.register_from_models_yaml(
+        RouteExecutor(), path, continue_on_missing_env=True, report=report
+    )
+
+    assert report.skipped_models == {"demo-model": []}
+    assert report.unset_env_vars == {"CHUTES_API_KEY"}
+    assert registry.resolve_reference("NOT_A_REGISTERED_NAME") is None
+
+
 @pytest.mark.unit
 def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
     yaml_text = (

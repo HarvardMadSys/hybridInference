@@ -4,7 +4,29 @@ import { useId } from 'react';
 
 import type { ConfigEntry } from '@/lib/api/config';
 
-import { currentInput, draftError, isLocked, settleDraft, type ConfigDraft } from './configDrafts';
+import {
+  canMarkSecret,
+  currentInput,
+  draftError,
+  hasStoredValue,
+  isLocked,
+  settleDraft,
+  type ConfigDraft,
+} from './configDrafts';
+
+/**
+ * Marks a field that holds a credential other than the administrator's own, so
+ * password-manager extensions (1Password, LastPass, Bitwarden, Dashlane)
+ * neither fill it nor offer to save what is typed into it. Browsers' built-in
+ * managers go by `autocomplete` instead: give the field `"new-password"` (or
+ * `"off"`) and its form `autoComplete="off"`.
+ */
+export const NOT_A_LOGIN_FIELD = {
+  'data-1p-ignore': true,
+  'data-lpignore': 'true',
+  'data-bwignore': true,
+  'data-form-type': 'other',
+} as const;
 
 type BadgeTone = 'red' | 'amber' | 'blue' | 'gray';
 
@@ -65,6 +87,9 @@ const LINK_BUTTON_CLASS =
  * `null` for it, and the component does not read `value` for a secret even if
  * a misbehaving backend sent one: the editor shows "Set" / "Not set", and a
  * replacement is typed into an empty field.
+ *
+ * Render it inside a `<form autoComplete="off">`, so that browsers do not
+ * offer to save a secret typed here as a password for the console.
  */
 export function ConfigEntryField({
   entry,
@@ -72,6 +97,7 @@ export function ConfigEntryField({
   onChange,
   serverError,
   onReset,
+  onMarkSecret,
   disabled = false,
 }: {
   entry: ConfigEntry;
@@ -81,6 +107,8 @@ export function ConfigEntryField({
   serverError?: string;
   /** Offer Reset (remove the database row). Omitted in the setup wizard. */
   onReset?: (entry: ConfigEntry) => void;
+  /** Offer "Mark as secret" where it applies. Omitted in the setup wizard. */
+  onMarkSecret?: (entry: ConfigEntry) => void;
   disabled?: boolean;
 }) {
   const baseId = useId();
@@ -97,7 +125,10 @@ export function ConfigEntryField({
     [entry.description ? descriptionId : null, notesId, error ? errorId : null]
       .filter(Boolean)
       .join(' ') || undefined;
-  const canReset = Boolean(onReset) && entry.source === 'database' && !entry.immutable;
+  // Also for a stored value the backend refused: that entry reports what
+  // applies in its place, and the row is still there to remove.
+  const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
+  const offerMarkSecret = Boolean(onMarkSecret) && canMarkSecret(entry);
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -105,10 +136,16 @@ export function ConfigEntryField({
 
   let control: React.ReactNode;
   if (locked) {
+    // Locked need not mean set: an immutable setting is also locked, empty,
+    // once what it falls back to is in use.
+    let shown = 'Not set';
+    if (entry.is_set) shown = entry.secret ? 'Set' : String(entry.value ?? '');
     control = (
       <output id={controlId} className="text-[12px] text-gray-600" aria-describedby={describedBy}>
-        {entry.secret ? 'Set' : String(entry.value ?? '')}
-        <span className="ml-1 text-gray-400">· cannot be changed once set</span>
+        {shown}{' '}
+        <span className="text-gray-400">
+          · {entry.is_set ? 'cannot be changed once set' : 'can no longer be set'}
+        </span>
       </output>
     );
   } else if (entry.secret) {
@@ -156,6 +193,8 @@ export function ConfigEntryField({
         id={controlId}
         rows={4}
         spellCheck={false}
+        autoComplete="off"
+        {...NOT_A_LOGIN_FIELD}
         value={String(currentInput(entry, draft))}
         placeholder={entry.default !== null ? String(entry.default) : undefined}
         disabled={disabled}
@@ -176,7 +215,9 @@ export function ConfigEntryField({
         }
         step={entry.type === 'int' ? 1 : entry.type === 'float' ? 'any' : undefined}
         spellCheck={false}
+        // Not a login either: SMTP_USERNAME is no username for the console.
         autoComplete="off"
+        {...NOT_A_LOGIN_FIELD}
         value={String(currentInput(entry, draft))}
         placeholder={entry.default !== null ? String(entry.default) : undefined}
         disabled={disabled}
@@ -216,16 +257,31 @@ export function ConfigEntryField({
             </p>
           ) : null}
         </div>
-        {canReset && onReset ? (
-          <button
-            type="button"
-            onClick={() => onReset(entry)}
-            disabled={disabled}
-            aria-label={`${entry.custom ? 'Delete' : 'Reset'} ${entry.key}`}
-            className={LINK_BUTTON_CLASS}
-          >
-            {entry.custom ? 'Delete' : 'Reset'}
-          </button>
+        {offerMarkSecret || canReset ? (
+          <div className="flex items-center gap-1">
+            {offerMarkSecret && onMarkSecret ? (
+              <button
+                type="button"
+                onClick={() => onMarkSecret(entry)}
+                disabled={disabled}
+                aria-label={`Mark ${entry.key} as secret`}
+                className={LINK_BUTTON_CLASS}
+              >
+                Mark as secret
+              </button>
+            ) : null}
+            {canReset && onReset ? (
+              <button
+                type="button"
+                onClick={() => onReset(entry)}
+                disabled={disabled}
+                aria-label={`${entry.custom ? 'Delete' : 'Reset'} ${entry.key}`}
+                className={LINK_BUTTON_CLASS}
+              >
+                {entry.custom ? 'Delete' : 'Reset'}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
@@ -245,7 +301,7 @@ export function ConfigEntryField({
             Default: <span className="font-mono">{String(entry.default)}</span>
           </p>
         ) : null}
-        {entry.immutable && !entry.is_set ? (
+        {entry.immutable && !entry.is_set && !locked ? (
           <p className="text-gray-500">Cannot be changed once it is set.</p>
         ) : null}
         {entry.environment_ignored ? (
@@ -256,7 +312,7 @@ export function ConfigEntryField({
         {entry.invalid ? (
           <p className="text-red-600">The stored value could not be applied: {entry.invalid}</p>
         ) : null}
-        {entry.source === 'database' && entry.updated_at ? (
+        {entry.updated_at ? (
           <p className="text-gray-400">
             Updated {relativeTime(entry.updated_at)}
             {entry.updated_by ? ` by ${entry.updated_by}` : ''}
@@ -359,9 +415,9 @@ function SecretEditor({
     spellCheck: false,
     'aria-describedby': describedBy,
     'aria-invalid': invalid ? true : undefined,
-    // Keep password managers from offering the administrator's own password.
-    'data-1p-ignore': true,
-    'data-lpignore': 'true',
+    // Keep password managers from offering the administrator's own password,
+    // or from offering to save this secret as one.
+    ...NOT_A_LOGIN_FIELD,
     autoFocus: entry.is_set,
   } as const;
 
@@ -372,6 +428,7 @@ function SecretEditor({
           <textarea
             {...shared}
             rows={4}
+            autoComplete="off"
             onChange={(event) => update(event.target.value)}
             className={`${invalid ? INPUT_ERROR_CLASS : INPUT_CLASS} font-mono`}
           />

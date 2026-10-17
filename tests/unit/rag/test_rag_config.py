@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from serving.config import app_config
+from serving.rag import config as rag_config
 from serving.rag.config import _repo_root_for, load_rag_settings
+from tests.fixtures.app_config_store import row
 
 
 def test_repo_root_survives_flattened_docker_layout():
@@ -127,3 +130,56 @@ def test_ingest_cli_builds_settings_with_all_required_fields(tmp_path, monkeypat
     out = tmp_path / "index.json"
     assert main(["--corpus", str(corpus), "--out", str(out), "--embedder", "hash"]) == 0
     assert out.exists()
+
+
+# --- "Empty uses ..." --------------------------------------------------------
+#
+# The console stores "" when an administrator clears a field and saves. For the
+# settings whose description says what an empty value uses, that must mean the
+# fallback: Path("") is the working directory, and an empty ingest key is no key.
+
+
+def _stored(**values: str) -> None:
+    app_config._apply({key: row(key, value) for key, value in values.items()}, boot=True)
+
+
+def test_a_cleared_index_or_corpus_path_uses_the_overlays(monkeypatch):
+    _stored(RAG_INDEX_PATH="", RAG_CORPUS_DIR="  ")
+
+    settings = load_rag_settings()
+    assert settings.index_path == rag_config.DEFAULT_INDEX_PATH
+    assert settings.corpus_dir == rag_config.DEFAULT_CORPUS_DIR
+    assert str(settings.index_path) != "."
+
+    app_config.reset_state()
+    monkeypatch.setenv("RAG_INDEX_PATH", "")  # an empty .env line, no row
+    assert load_rag_settings().index_path == rag_config.DEFAULT_INDEX_PATH
+
+
+def test_a_cleared_ingest_key_uses_local_api_key(monkeypatch):
+    monkeypatch.setenv("LOCAL_API_KEY", "local-proxy-key")
+    _stored(RAG_GATEWAY_API_KEY="")
+
+    assert load_rag_settings().gateway_api_key == "local-proxy-key"
+
+
+def test_a_value_still_wins_over_the_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCAL_API_KEY", "local-proxy-key")
+    _stored(
+        RAG_GATEWAY_API_KEY="ingest-key",
+        RAG_INDEX_PATH=str(tmp_path / "index.json"),
+        RAG_CORPUS_DIR=str(tmp_path / "docs"),
+    )
+
+    settings = load_rag_settings()
+    assert settings.gateway_api_key == "ingest-key"
+    assert settings.index_path == tmp_path / "index.json"
+    assert settings.corpus_dir == tmp_path / "docs"
+
+
+def test_an_empty_assistant_key_still_disables_it(monkeypatch):
+    """RAG_API_KEY promises no fallback: empty disables the assistant."""
+    monkeypatch.setenv("LOCAL_API_KEY", "local-proxy-key")
+    _stored(RAG_API_KEY="")
+
+    assert load_rag_settings().api_key == ""

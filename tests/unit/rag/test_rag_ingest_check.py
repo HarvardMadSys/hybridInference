@@ -9,17 +9,21 @@ check that drifts from the builder is worse than no check at all.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 import random
+import socket
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from serving.config import app_config, app_config_store
 from serving.rag import ingest
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
 from serving.rag.embedder import (
@@ -30,6 +34,17 @@ from serving.rag.embedder import (
 )
 from serving.rag.pipeline import format_context, sources_payload
 from serving.rag.store import VectorStore, index_document_problem
+from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
+
+@pytest.fixture(autouse=True)
+def _no_configuration_database(monkeypatch):
+    """``--check`` reads stored settings when a database is configured; these use none.
+
+    Left unset, ``DB_ENABLED`` means a database at ``localhost:5432``, which on a
+    developer machine may be a real deployment's.
+    """
+    monkeypatch.setenv("DB_ENABLED", "false")
 
 
 def _settings(tmp_path, **overrides) -> RagSettings:
@@ -237,6 +252,7 @@ def _run_check(settings: RagSettings, **env_extra) -> subprocess.CompletedProces
         "RAG_EMBEDDER": settings.embedder_mode,
         "RAG_CORPUS_DIR": str(settings.corpus_dir),
         "RAG_INDEX_PATH": str(settings.index_path),
+        "DB_ENABLED": "false",
         **env_extra,
     }
     return subprocess.run(
@@ -321,6 +337,136 @@ def test_the_cli_reconstructs_every_settings_field(tmp_path, monkeypatch):
     assert seen[0] == replace(
         load_rag_settings(), corpus_dir=settings.corpus_dir, index_path=settings.index_path
     )
+
+
+# --- --check reads the stored settings ---------------------------------------
+#
+# RAG_CORPUS_DIR, RAG_INDEX_PATH and RAG_EMBEDDER can live in the configuration
+# database. A check reading the environment alone compared some other corpus,
+# or reported drift the stored settings do not have. It must still never hang
+# or fail where there is no database, as in CI.
+
+
+def _stored_settings(monkeypatch, tmp_path, rows) -> None:
+    """Make *rows* the configuration database load_stored_configuration reads."""
+    store = FakeAppConfigStore(rows)
+    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "no-models.yaml"))
+    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "no-routing.yaml"))
+    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "no-alerts.yaml"))
+
+    @contextlib.asynccontextmanager
+    async def session():
+        await app_config.load(store, bootstrap=False)
+        yield
+
+    monkeypatch.setenv("DB_ENABLED", "true")
+    monkeypatch.setattr(app_config, "command_line_session", session)
+
+
+def _closed_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_check_compares_the_corpus_the_stored_settings_name(tmp_path, monkeypatch, capsys):
+    (tmp_path / "stored").mkdir()
+    stored = _settings(tmp_path / "stored")
+    _write(stored, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(stored)
+    # The environment still names an older corpus, with no index at all.
+    monkeypatch.setenv("RAG_CORPUS_DIR", str(tmp_path / "old-corpus"))
+    monkeypatch.setenv("RAG_INDEX_PATH", str(tmp_path / "old-index.json"))
+    monkeypatch.setenv("RAG_EMBEDDER", "gateway")
+    _stored_settings(
+        monkeypatch,
+        tmp_path,
+        [
+            row("RAG_CORPUS_DIR", str(stored.corpus_dir)),
+            row("RAG_INDEX_PATH", str(stored.index_path)),
+            row("RAG_EMBEDDER", "hash"),
+        ],
+    )
+
+    assert ingest.main(["--check"]) == 0
+    assert "index current" in capsys.readouterr().out
+
+
+def test_check_without_a_database_contacts_none(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+
+    @contextlib.asynccontextmanager
+    async def explode():  # pragma: no cover - must never run
+        raise AssertionError("DB_ENABLED=false, yet the configuration database was contacted")
+        yield
+
+    monkeypatch.setattr(app_config, "command_line_session", explode)
+    monkeypatch.setenv("RAG_CORPUS_DIR", str(settings.corpus_dir))
+    monkeypatch.setenv("RAG_INDEX_PATH", str(settings.index_path))
+    monkeypatch.setenv("RAG_EMBEDDER", "hash")
+
+    assert ingest.main(["--check"]) == 0
+
+
+def test_check_with_an_unreachable_database_uses_the_environment(tmp_path, monkeypatch, capsys):
+    """CI has no database: the check warns and answers from the environment."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    monkeypatch.setenv("DB_ENABLED", "true")
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("DB_PORT", str(_closed_port()))
+    monkeypatch.setenv("RAG_CORPUS_DIR", str(settings.corpus_dir))
+    monkeypatch.setenv("RAG_INDEX_PATH", str(settings.index_path))
+    monkeypatch.setenv("RAG_EMBEDDER", "hash")
+
+    assert ingest.main(["--check"]) == 0
+    assert "stored settings not loaded, using the environment's" in capsys.readouterr().err
+
+    # The command line the workflows run, likewise.
+    result = _run_check(
+        settings, DB_ENABLED="true", DB_HOST="127.0.0.1", DB_PORT=str(_closed_port())
+    )
+    assert result.returncode == 0, result.stderr
+    assert "stored settings not loaded" in result.stderr
+
+
+def test_check_gives_up_on_a_database_that_never_answers(tmp_path, monkeypatch, capsys):
+    """Accepting the connection and then saying nothing must not hold the check."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    monkeypatch.setattr(app_config_store, "CONNECT_TIMEOUT_SECONDS", 0.5)
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(8)  # the kernel completes the handshake; nothing ever replies
+        monkeypatch.setenv("DB_ENABLED", "true")
+        monkeypatch.setenv("DB_HOST", "127.0.0.1")
+        monkeypatch.setenv("DB_PORT", str(silent.getsockname()[1]))
+        monkeypatch.setenv("RAG_CORPUS_DIR", str(settings.corpus_dir))
+        monkeypatch.setenv("RAG_INDEX_PATH", str(settings.index_path))
+        monkeypatch.setenv("RAG_EMBEDDER", "hash")
+
+        started = time.monotonic()
+        assert ingest.main(["--check"]) == 0
+        assert time.monotonic() - started < 10
+
+    assert "stored settings not loaded" in capsys.readouterr().err
+
+
+def test_settings_that_cannot_be_read_are_not_reported_as_drift(tmp_path, monkeypatch, capsys):
+    """Exit 1 sends a caller off to rebuild; a loading fault decides nothing."""
+
+    def broken() -> bool:
+        raise RuntimeError("stored rows unreadable")
+
+    monkeypatch.setattr(ingest, "load_stored_configuration", broken)
+    monkeypatch.setattr(ingest, "check_index", lambda settings: 1)
+
+    assert ingest.main(["--check"]) == 2
+    assert "index not checked: stored settings not loaded: RuntimeError" in capsys.readouterr().err
 
 
 def test_a_nested_corpus_is_walked(tmp_path):

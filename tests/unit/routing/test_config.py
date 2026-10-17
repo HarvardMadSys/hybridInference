@@ -89,3 +89,44 @@ def test_whitespace_endpoint_is_dropped(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="routing.config"):
         cfg = load_routing_config(yaml_path)
     assert cfg.local_deployment == []
+
+
+@pytest.mark.unit
+def test_a_registered_setting_falls_back_to_its_registered_default(monkeypatch):
+    """Row, environment, inline ``:-default``, registered default, then ``""``."""
+    from routing.config import _expand_env_value
+    from serving.config import app_config
+    from tests.fixtures.app_config_store import row
+
+    monkeypatch.delenv("CHUTES_BASE_URL", raising=False)
+    monkeypatch.delenv("NOT_A_REGISTERED_NAME", raising=False)
+    assert _expand_env_value("${CHUTES_BASE_URL}") == "https://llm.chutes.ai/v1"
+    # An inline default, even an empty one, still wins over the registered one.
+    assert _expand_env_value("${CHUTES_BASE_URL:-https://inline.example/v1}") == (
+        "https://inline.example/v1"
+    )
+    assert _expand_env_value("${CHUTES_BASE_URL:-}") == ""
+    assert _expand_env_value("${NOT_A_REGISTERED_NAME}") == ""
+
+    monkeypatch.setenv("CHUTES_BASE_URL", "https://env.example/v1")
+    assert _expand_env_value("${CHUTES_BASE_URL:-https://inline.example/v1}") == (
+        "https://env.example/v1"
+    )
+    app_config._apply(
+        {"CHUTES_BASE_URL": row("CHUTES_BASE_URL", "https://db.example/v1")}, boot=True
+    )
+    assert _expand_env_value("${CHUTES_BASE_URL}") == "https://db.example/v1"
+
+
+@pytest.mark.unit
+def test_a_deployment_on_a_registered_default_is_kept(tmp_path, monkeypatch):
+    """It used to expand to "" and be dropped as unset, though the console shows it set."""
+    monkeypatch.delenv("CHUTES_BASE_URL", raising=False)
+    yaml_path = tmp_path / "routing.yaml"
+    yaml_path.write_text(
+        "remote_deployment:\n  - endpoint: ${CHUTES_BASE_URL}\n    models:\n      - glm-4.7\n"
+    )
+
+    cfg = load_routing_config(yaml_path)
+
+    assert [d.endpoint for d in cfg.remote_deployment] == ["https://llm.chutes.ai/v1"]

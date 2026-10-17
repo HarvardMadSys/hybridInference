@@ -156,6 +156,12 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
     ``initialize`` is catalog-gated and idempotent, so the retry re-issues only
     what is still missing.
 
+    That includes the account columns an upgrade adds to ``users`` (login
+    names, phone numbers): the store reads which of them exist and queries
+    only those, so sign-in by email and API keys keep working while first-run
+    setup and phone sign-in answer 503 until the retry lands them. Only the
+    hard-delete claim columns are required up front.
+
     Anything other than a lock timeout still propagates — startup must not
     mask a genuinely broken schema.
     """
@@ -164,8 +170,8 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
     except RequiredOperationalSchemaUnavailable:
         logger.error(
             "Operational store cannot start until the required users columns "
-            "(hard-delete claim, login name) are installed; refusing to serve "
-            "against an unsafe schema."
+            "(hard-delete claim) are installed; refusing to serve against an "
+            "unsafe schema."
         )
         raise
     except SchemaLockUnavailable as lock_exc:

@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from serving.auth.browser_sessions import complete_sign_in, hash_refresh_token, prepare_sign_in
 from serving.auth.signup_policy import allowlist_is_empty, is_public_signup_enabled
 from serving.config.settings import get_signup_notify_emails, settings
-from serving.exceptions import AccountSuspendedError
+from serving.exceptions import AccountSchemaPending, AccountSuspendedError
 from serving.schemas_auth import (
     LoginResponse,
     PhoneCodeRequest,
@@ -21,6 +21,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.setup_state import refresh_setup_state
 from serving.storage.phone_auth import OWNER_PURPOSES
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
 from serving.utils.jwt import (
@@ -49,7 +50,31 @@ def _require_enabled(op_store) -> None:
         raise HTTPException(503, "Database not available")
 
 
+async def _require_phone_accounts(op_store) -> None:
+    """Answer 503 until the database upgrade has added the phone columns.
+
+    An upgrade that met a long-held users table lock at startup (the nightly
+    ``pg_dump``) adds them from the background; sign-in by email works
+    meanwhile. Each route calls this after its own gates and before it
+    reserves, sends or consumes a code, so a refused request costs nothing.
+    """
+    try:
+        await op_store.require_phone_accounts()
+    except AccountSchemaPending as exc:
+        raise HTTPException(503, AccountSchemaPending.MESSAGE) from exc
+
+
 async def _require_signup() -> None:
+    """Refuse phone registration unless setup is complete and public signup is open.
+
+    While first-run setup is pending this answers 503, as ``POST /auth/signup``
+    does: any account completes setup, so a stranger's would leave the
+    operator's ``/auth/setup/admin`` a 409 and the deployment without an
+    administrator. Both registration steps call this before the captcha, the
+    quotas and the SMS, so a refused request costs nothing.
+    """
+    if await refresh_setup_state():
+        raise HTTPException(503, "This deployment has not been set up yet.")
     if not await is_public_signup_enabled():
         raise HTTPException(
             403, "Public signup is currently disabled. Please contact administrator."
@@ -92,6 +117,7 @@ async def send_phone_code(
     elif body.purpose == "bind" or body.purpose in OWNER_PURPOSES:
         current_user = await get_current_user(request.headers.get("authorization"), op_store)
         user_id = current_user["user_id"]
+    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     if not await verify_turnstile_token(body.turnstile_token, client_ip):
         raise HTTPException(400, "Captcha verification failed")
@@ -166,6 +192,7 @@ async def phone_signup(
     """Create a verified phone identity while respecting registration approval policy."""
     _require_enabled(op_store)
     await _require_signup()
+    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
     if not allowed:
@@ -239,6 +266,7 @@ async def phone_login(
 ) -> LoginResponse:
     """Consume a login code and add the account to the browser's session."""
     _require_enabled(op_store)
+    await _require_phone_accounts(op_store)
     user = await op_store.get_user_by_phone(body.phone)
 
     async def record(outcome: str, reason: str | None):
@@ -356,6 +384,7 @@ async def bind_phone(
 ) -> dict[str, str]:
     """Bind a phone explicitly to the authenticated account without merging users."""
     _require_enabled(op_store)
+    await _require_phone_accounts(op_store)
     await verify_phone_code(request, body, "bind", op_store, current_user["user_id"])
     if not await op_store.bind_user_phone(current_user["user_id"], body.phone):
         raise HTTPException(409, "Phone number cannot be bound to this account.")

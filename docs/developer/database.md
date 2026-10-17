@@ -88,6 +88,12 @@ usual lock holder is a long-running `pg_dump`, which can hold `ACCESS SHARE` ove
 `api_logs` for hours. If you take backups on a schedule, expect an occasional
 deferred-migration line in the log after a deploy that adds a column.
 
+This includes the account columns (login names, phone numbers). Until they
+land, email sign-in, token refresh, API keys and admin pages work on the old
+table, while first-run setup and phone sign-in answer `503` with "The database
+upgrade is still in progress; try again shortly." Only the hard-delete claim
+columns still block startup.
+
 If you are contributing a column to `api_logs`, add it in `log_schema.py` only;
 that is the one place the request log's schema is defined.
 
@@ -106,7 +112,11 @@ settings govern this:
   environment supplies one, and that value is the one recorded. To give the
   fence its own secret, set `ERASURE_FENCE_SECRET` to a random value in `.env`
   before the first start; the backend copies it into the database then. After
-  that neither secret can be changed: the **Configuration** tab refuses both.
+  that neither secret can be changed: the **Configuration** tab refuses both,
+  and shows `ERASURE_FENCE_SECRET` locked once the fence uses
+  `API_KEY_SECRET`. An `ERASURE_FENCE_SECRET` added to the environment later
+  is not copied in either, with a warning in the log; but while the variable
+  is set, the fence uses it and the backend refuses to start, so remove it.
   If you hit a mismatch — say, after restoring a backup next to different
   secrets — restore the original value; never delete fence rows or their
   metadata to get past it.

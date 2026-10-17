@@ -235,6 +235,59 @@ async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> Non
 
 
 @pytest.mark.asyncio
+async def test_reset_rows_are_returned_on_request_with_their_secret_flag(pool) -> None:
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    await store.write([ConfigRow("SITE_NAME", "Stored"), ConfigRow("BOX_URL", "u", secret=True)])
+    await store.reset("BOX_URL", secret=True, updated_by="admin@example.com")
+
+    assert set(await store.fetch_all()) == {"SITE_NAME"}
+    everything = await store.fetch_all(include_reset=True)
+    assert set(everything) == {"SITE_NAME", "BOX_URL"}
+    assert everything["BOX_URL"].source == "reset"
+    assert everything["BOX_URL"].value == ""
+    assert everything["BOX_URL"].secret is True
+
+
+@pytest.mark.asyncio
+async def test_the_secret_flag_is_one_way(pool) -> None:
+    store = AppConfigStore(pool)
+    await store.ensure_schema()
+    await store.write(
+        [
+            ConfigRow("BOX_REGION", "east", updated_by="admin@example.com"),
+            ConfigRow("BOX_URL", "u", source="env_import", updated_by="env-import"),
+        ]
+    )
+    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com")
+    before = (await store.fetch_all(include_reset=True))["BOX_REGION"]
+
+    assert sorted(await store.mark_secret(["BOX_REGION", "BOX_URL", "NOT_STORED"])) == [
+        "BOX_REGION",
+        "BOX_URL",
+    ]
+    assert await store.mark_secret(["BOX_REGION"]) == []  # already secret
+    assert await store.mark_secret([]) == []
+    rows = await store.fetch_all(include_reset=True)
+    assert rows["BOX_REGION"].secret and rows["BOX_URL"].secret
+    # Only the flag: the value and who last set it are unchanged.
+    assert (rows["BOX_REGION"].value, rows["BOX_REGION"].updated_by) == (
+        "east",
+        "admin@example.com",
+    )
+    assert rows["BOX_REGION"].updated_at == before.updated_at
+    assert rows["BOX_URL"].source == "reset"
+
+    # Neither a write nor a reset clears it.
+    await store.write([ConfigRow("BOX_REGION", "west", secret=False)])
+    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com")
+    await store.write([ConfigRow("BOX_URL", "v", secret=False)])
+    rows = await store.fetch_all(include_reset=True)
+    assert rows["BOX_REGION"].value == "west" and rows["BOX_REGION"].secret
+    assert rows["BOX_URL"].value == "v" and rows["BOX_URL"].secret
+
+
+@pytest.mark.asyncio
 async def test_concurrent_workers_replace_a_reset_secret_once(pool) -> None:
     store = AppConfigStore(pool)
     await store.ensure_schema()
