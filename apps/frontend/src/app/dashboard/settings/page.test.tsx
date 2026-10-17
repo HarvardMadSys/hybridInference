@@ -49,7 +49,7 @@ describe('account phone binding', () => {
 
   it('offers binding for an existing email account when SMS is enabled', () => {
     renderSettings(true);
-    expect(screen.getByText('user@example.test')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('user@example.test')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Change Email' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Bind mobile number' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Change Password' })).toBeInTheDocument();

@@ -89,7 +89,6 @@ function SettingsContent() {
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [avatarDraft, setAvatarDraft] = useState<string | null>(state.user?.avatar_url ?? null);
   const [avatarSaving, setAvatarSaving] = useState(false);
-  const [editingEmail, setEditingEmail] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [passwordLoading, setPasswordLoading] = useState(false);
@@ -305,59 +304,7 @@ function SettingsContent() {
               : 'Bind an email address to receive notifications and sign in with email.'
           }
         >
-          {state.user?.email ? (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                <div className="flex min-w-0 items-center gap-3">
-                  <span
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600"
-                    aria-hidden="true"
-                  >
-                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                      <path d="M3 4a2 2 0 00-2 2v1.161l8.441 4.221a1.25 1.25 0 001.118 0L19 7.162V6a2 2 0 00-2-2H3z" />
-                      <path d="M19 8.839l-7.77 3.885a2.75 2.75 0 01-2.46 0L1 8.839V14a2 2 0 002 2h14a2 2 0 002-2V8.839z" />
-                    </svg>
-                  </span>
-                  <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-                    <span className="truncate text-sm font-medium text-gray-900">
-                      {state.user.email}
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                      <svg
-                        className="h-3 w-3 text-emerald-600"
-                        viewBox="0 0 20 20"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                      Verified
-                    </span>
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant={editingEmail ? 'subtle' : 'secondary'}
-                  size="sm"
-                  onClick={() => setEditingEmail((prev) => !prev)}
-                >
-                  {editingEmail ? 'Cancel' : 'Change Email'}
-                </Button>
-              </div>
-
-              {editingEmail && (
-                <div className="border-t border-gray-100 pt-4">
-                  <EmailBindForm onSuccess={refreshUser} isChanging />
-                </div>
-              )}
-            </div>
-          ) : (
-            <EmailBindForm onSuccess={refreshUser} />
-          )}
+          <EmailBindForm currentEmail={state.user?.email} onSuccess={refreshUser} />
         </SettingsSection>
       )}
 
