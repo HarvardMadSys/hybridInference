@@ -42,7 +42,6 @@ from serving.schemas_auth import (
     LoginResponse,
     LogoutResponse,
     PasswordResetResponse,
-    PhoneVerifyRequest,
     RefreshResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
@@ -55,15 +54,14 @@ from serving.schemas_auth import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
-from serving.servers.routers.phone_auth_routes import (
-    router as phone_auth_router,
-    verify_phone_code,
-)
+from serving.servers.routers.phone_auth_routes import router as phone_auth_router
+from serving.servers.routers.reauth import account_identifier, confirm_account_owner
 from serving.setup_state import refresh_setup_state
 from serving.utils import password as password_utils
 from serving.utils.email import (
     is_email_enabled,
     send_account_deleted_email,
+    send_email_changed_email,
     send_new_registration_admin_email,
     send_verification_email,
 )
@@ -81,7 +79,6 @@ from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
 from serving.utils.signup_rate_limit import check_and_record_signup
-from serving.utils.sms import is_sms_enabled
 from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -571,15 +568,6 @@ async def logout_all(
     return LogoutResponse(message="Logged out of all accounts")
 
 
-def account_identifier(user_row: dict[str, Any]) -> str | None:
-    """The name an account signs in with: its email, else login name, else phone.
-
-    It is what the owner types to confirm deleting the account, so that a
-    browser holding several accounts cannot delete one in place of another.
-    """
-    return user_row.get("email") or user_row.get("login_name") or user_row.get("phone")
-
-
 @router.post("/delete-account", response_model=DeleteAccountResponse)
 async def delete_own_account(
     request: Request,
@@ -617,41 +605,16 @@ async def delete_own_account(
     if not identifier or body.confirm.strip().lower() != identifier.lower():
         raise HTTPException(status_code=400, detail="The confirmation does not match this account.")
 
-    client_ip = get_client_ip(request)
-    if user_row.get("password_hash"):
-        # Shares the login buckets: this endpoint must not be a second place
-        # to guess the account's password.
-        allowed, reason = await check_and_record_login(identifier, client_ip)
-        if not allowed:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many attempts. Please try again later.",
-                headers={"Retry-After": "3600" if reason == "ip" else "900"},
-            )
-        if not body.password or not password_utils.verify_password(
-            body.password, user_row["password_hash"]
-        ):
-            raise HTTPException(status_code=400, detail="Current password is incorrect.")
-    elif user_row.get("phone") and user_row.get("phone_verified"):
-        if not is_sms_enabled():
-            raise HTTPException(
-                status_code=503,
-                detail="Phone verification is currently unavailable. Please contact support.",
-            )
-        if not body.phone_code:
-            raise HTTPException(
-                status_code=400, detail="Enter the verification code sent to your phone."
-            )
-        # The stored number is canonical already; re-validating it against
-        # today's send policy could refuse a number that policy once allowed.
-        code = PhoneVerifyRequest.model_construct(phone=user_row["phone"], code=body.phone_code)
-        await verify_phone_code(request, code, "delete_account", op_store, user_id)
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="This account cannot confirm its deletion here. Please contact support.",
-        )
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=body.password,
+        phone_code=body.phone_code,
+        purpose="delete_account",
+    )
 
+    client_ip = get_client_ip(request)
     browser = await resolve_browser_session(op_store, request)
     try:
         await op_store.delete_user(
@@ -851,11 +814,15 @@ async def remove_account(
 @router.get("/verify-email", response_model=VerifyEmailResponse)
 async def verify_email(
     token: str,
+    background_tasks: BackgroundTasks,
     op_store=Depends(get_operational_store),
 ) -> VerifyEmailResponse:
     """Verify user email address using token from email.
 
-    Marks user's email as verified, allowing them to generate API keys.
+    Marks user's email as verified, allowing them to generate API keys. A
+    token issued by ``POST /auth/email/bind`` carries the address it proves;
+    following it makes that the account's address and tells the address it
+    replaced. Such a token applies once: following it again changes nothing.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -873,24 +840,15 @@ async def verify_email(
             raise HTTPException(status_code=400, detail="Invalid verification token.")
 
         if pending_email:
+            # Re-applying a used link could put back an address the account
+            # has since replaced; it only reports what already happened.
             if user_row.get("email") == pending_email and user_row.get("email_verified"):
                 return VerifyEmailResponse(
                     message="Your email has already been verified. You can log in now.",
                     email_verified=True,
                 )
-            if token_row["expires_at"] < datetime.now(timezone.utc):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Verification token has expired. Please request a new one.",
-                )
-            if not await op_store.bind_user_email(token_row["user_id"], pending_email):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Email address cannot be bound to this account.",
-                )
-            return VerifyEmailResponse(
-                message="Your email has already been verified. You can log in now.",
-                email_verified=True,
+            raise HTTPException(
+                status_code=400, detail="This verification link has already been used."
             )
 
         if not user_row["email_verified"]:
@@ -918,11 +876,15 @@ async def verify_email(
         )
 
     if pending_email:
+        owner = await op_store.get_user_by_id(token_row["user_id"])
+        previous_email = owner.get("email") if owner else None
         if not await op_store.bind_user_email(token_row["user_id"], pending_email):
             raise HTTPException(
                 status_code=409,
                 detail="Email address cannot be bound to this account.",
             )
+        if previous_email and previous_email.lower() != pending_email.lower():
+            background_tasks.add_task(send_email_changed_email, previous_email, pending_email)
     else:
         await op_store.mark_user_email_verified(token_row["user_id"])
     await op_store.mark_verification_used(token)
@@ -1083,7 +1045,16 @@ async def bind_email(
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> BindEmailResponse:
-    """Bind or update the email address on an authenticated account."""
+    """Bind an email address to the signed-in account, or change it.
+
+    The owner confirms first (``confirm_account_owner``), because the address
+    becomes a way in: it signs in and it receives password resets. The new
+    address is then always proven by a link sent to it, whatever the signup
+    verification setting -- an address nobody proved must never be recorded as
+    verified, not least because an ``ADMIN_EMAILS`` address is promoted to
+    administrator on its next token. The current address stays until the link
+    is followed, and it is told when it is replaced.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -1107,59 +1078,47 @@ async def bind_email(
             email_verified=True,
         )
 
+    if not is_email_enabled():
+        raise HTTPException(status_code=503, detail="Email verification is currently unavailable.")
+
+    # Before anything about the address is revealed: whether it is taken is
+    # not something a stolen session should be able to ask.
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=body.password,
+        phone_code=body.phone_code,
+        purpose="bind_email",
+    )
+
     existing_user = await op_store.get_user_by_email(normalized_email)
     if existing_user and existing_user["id"] != user_id:
         raise HTTPException(
             status_code=409, detail="Email address cannot be bound to this account."
         )
 
-    require_verification = await email_verification_required()
-    client_ip = get_client_ip(request)
-
-    if require_verification:
-        if not is_email_enabled():
-            raise HTTPException(
-                status_code=503, detail="Email verification is currently unavailable."
-            )
-        verification_token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-        await op_store.delete_user_verification_tokens(user_id)
-        await op_store.create_verification_token(
-            token=verification_token,
-            user_id=user_id,
-            expires_at=expires_at,
-            pending_email=normalized_email,
-        )
-        base_url = get_base_url(request)
-        background_tasks.add_task(
-            send_verification_email, normalized_email, verification_token, base_url
-        )
-        await log_admin_action(
-            db_logger,
-            client_ip,
-            "request_bind_email",
-            user_id,
-            {"email": normalized_email},
-        )
-        return BindEmailResponse(
-            message="Verification email sent. Please check your inbox to complete binding.",
-            email=normalized_email,
-            email_verified=False,
-        )
-
-    if not await op_store.bind_user_email(user_id, normalized_email):
-        raise HTTPException(
-            status_code=409, detail="Email address cannot be bound to this account."
-        )
+    verification_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    await op_store.delete_user_verification_tokens(user_id)
+    await op_store.create_verification_token(
+        token=verification_token,
+        user_id=user_id,
+        expires_at=expires_at,
+        pending_email=normalized_email,
+    )
+    background_tasks.add_task(
+        send_verification_email, normalized_email, verification_token, get_base_url(request)
+    )
     await log_admin_action(
         db_logger,
-        client_ip,
-        "bind_email",
+        get_client_ip(request),
+        "request_bind_email",
         user_id,
         {"email": normalized_email},
     )
     return BindEmailResponse(
-        message="Email address updated successfully.",
+        message="Verification email sent. Please check your inbox to complete binding.",
         email=normalized_email,
-        email_verified=True,
+        email_verified=False,
     )

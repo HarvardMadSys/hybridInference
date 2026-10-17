@@ -48,9 +48,9 @@ class PhoneRequest(BaseModel):
 
 
 class PhoneCodeRequest(PhoneRequest):
-    """Issue a code scoped to registration, login, binding, or account deletion."""
+    """Issue a code scoped to registration, login, binding, or confirming the owner."""
 
-    purpose: Literal["signup", "login", "bind", "delete_account"]
+    purpose: Literal["signup", "login", "bind", "delete_account", "bind_email", "set_password"]
     turnstile_token: str | None = None
 
 
@@ -86,9 +86,15 @@ class PhoneSignupResponse(BaseModel):
 
 
 class BindEmailRequest(BaseModel):
-    """Bind or update the email address on an authenticated account."""
+    """Bind or update the email address on an authenticated account.
+
+    The owner confirms with ``password``, or with ``phone_code`` (a
+    ``bind_email`` code) when the account has no password.
+    """
 
     email: EmailStr
+    password: str | None = Field(default=None, max_length=1024)
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 class BindEmailResponse(BaseModel):
@@ -458,10 +464,15 @@ class ResendVerificationResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """Change or set password request (for logged-in users)."""
+    """Change or set password request (for logged-in users).
+
+    An account with a password gives ``old_password``; one without (a phone
+    account) gives ``phone_code``, a ``set_password`` code sent to its phone.
+    """
 
     old_password: str = ""
     new_password: str  # Validate strength in handler to return 400
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 class ChangePasswordResponse(BaseModel):

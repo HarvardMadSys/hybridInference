@@ -19,6 +19,7 @@ import { useT } from '@/components/providers/useT';
 import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 import { DangerZone } from '@/components/features/auth/DeleteAccount';
+import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
 
 function createPasswordSchema(requireOldPassword: boolean) {
   return z
@@ -95,6 +96,9 @@ function SettingsContent() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+  // A first password is confirmed with a code sent to the account's phone.
+  const [setPasswordCode, setSetPasswordCode] = useState('');
+  const verifiedPhone = state.user?.phone_verified ? (state.user.phone ?? null) : null;
 
   const passwordSchema = useMemo(() => createPasswordSchema(hasPassword), [hasPassword]);
   const passwordForm = useForm<ChangePasswordFormData>({
@@ -167,12 +171,21 @@ function SettingsContent() {
   };
 
   const onPasswordSubmit = async (data: ChangePasswordFormData) => {
+    if (!hasPassword && !isCompleteCode(setPasswordCode)) {
+      setPasswordError('Enter the verification code sent to your phone.');
+      return;
+    }
     setPasswordLoading(true);
     setPasswordError(null);
     setPasswordSuccess(null);
 
     try {
-      const result = await updatePassword(data.oldPassword || '', data.newPassword);
+      const result = await updatePassword(
+        data.oldPassword || '',
+        data.newPassword,
+        hasPassword ? undefined : setPasswordCode,
+      );
+      setSetPasswordCode('');
       await refreshUser();
       setPasswordSuccess(result.message);
       toast.success(hasPassword ? 'Password updated successfully!' : 'Password set successfully!');
@@ -305,7 +318,12 @@ function SettingsContent() {
               : 'Bind an email address to receive notifications and sign in with email.'
           }
         >
-          <EmailBindForm currentEmail={state.user?.email} onSuccess={refreshUser} />
+          <EmailBindForm
+            currentEmail={state.user?.email}
+            hasPassword={hasPassword}
+            phone={state.user?.phone_verified ? state.user.phone : null}
+            onSuccess={refreshUser}
+          />
         </SettingsSection>
       )}
 
@@ -334,13 +352,15 @@ function SettingsContent() {
         </SettingsSection>
       )}
 
-      {(hasPassword || features.phoneAuth) && (
+      {(hasPassword || (features.phoneAuth && verifiedPhone)) && (
         <SettingsSection
           title={hasPassword ? 'Change Password' : 'Set Password'}
           description={
             hasPassword
               ? 'Update your password to keep your account secure.'
-              : 'Set a password so you can also sign in with your email address.'
+              : state.user?.email
+                ? 'Set a password so you can also sign in with your email address.'
+                : 'Set a password. To sign in with it, also add an email address above.'
           }
         >
           <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="space-y-4">
@@ -355,7 +375,7 @@ function SettingsContent() {
               </div>
             )}
 
-            {hasPassword && (
+            {hasPassword ? (
               <InputField
                 label="Current Password"
                 type="password"
@@ -363,7 +383,15 @@ function SettingsContent() {
                 error={passwordForm.formState.errors.oldPassword?.message}
                 {...passwordForm.register('oldPassword')}
               />
-            )}
+            ) : verifiedPhone ? (
+              <OwnerPhoneCode
+                phone={verifiedPhone}
+                purpose="set_password"
+                value={setPasswordCode}
+                onChange={setSetPasswordCode}
+                disabled={passwordLoading}
+              />
+            ) : null}
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <InputField

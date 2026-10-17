@@ -282,6 +282,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "suspension_message",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
                 ),
+                # The user's portrait, a small image data URL. A column of its
+                # own rather than a preference: preferences ride along on every
+                # API-key authentication, and a portrait has no business there.
+                (
+                    "avatar_data_url",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
+                ),
             ],
         )
 
@@ -2917,6 +2924,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
                 json.dumps(preferences),
                 user_id,
+            )
+
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Return the user's portrait data URL, or None."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
+
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Replace the user's portrait; None removes it."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
             )
 
     # -- signup domain allowlist --------------------------------------------

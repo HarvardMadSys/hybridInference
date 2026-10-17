@@ -9,13 +9,26 @@ import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { useT } from '@/components/providers/useT';
 import { NEUTRAL_AUTH_APPEARANCE, useAuthAppearance } from '@/site-ui/appearance';
+import { InputField } from '@/components/ui/InputField';
+import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
 import { AuthField, AuthNotice } from './AuthForm';
 
+/**
+ * Bind an email to the signed-in account, or change it.
+ *
+ * The owner confirms the way the account signs in: its current password, or,
+ * for an account without one, a code sent to its verified `phone`. The address
+ * itself is then proven by a link sent to it.
+ */
 export function EmailBindForm({
   currentEmail,
+  hasPassword,
+  phone,
   onSuccess,
 }: {
   currentEmail?: string | null;
+  hasPassword: boolean;
+  phone?: string | null;
   onSuccess: () => Promise<void>;
 }) {
   const t = useT();
@@ -31,6 +44,8 @@ export function EmailBindForm({
     resolver: zodResolver(schemas.emailBindSchema),
     defaultValues: { email: currentEmail || '' },
   });
+  const [password, setPassword] = useState('');
+  const [phoneCode, setPhoneCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -51,13 +66,23 @@ export function EmailBindForm({
       setError('Please enter a different email address to change your email.');
       return;
     }
+    if (hasPassword ? !password : !isCompleteCode(phoneCode)) {
+      setError(
+        hasPassword
+          ? 'Enter your current password to confirm this change.'
+          : 'Enter the verification code sent to your phone.',
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
     setNotice(null);
     try {
-      const result = await bindEmail({
-        email: trimmed,
-      });
+      const result = await bindEmail(
+        hasPassword ? { email: trimmed, password } : { email: trimmed, phone_code: phoneCode },
+      );
+      setPassword('');
+      setPhoneCode('');
       await onSuccess();
       setNotice(
         result.email_verified
@@ -148,6 +173,31 @@ export function EmailBindForm({
           )}
         </div>
       </AuthField>
+      {hasPassword ? (
+        <InputField
+          label="Current password"
+          type="password"
+          autoComplete="current-password"
+          hint="Confirms that this change is yours."
+          value={password}
+          onChange={(event) => {
+            setPassword(event.target.value);
+            setError(null);
+          }}
+          disabled={loading}
+        />
+      ) : phone ? (
+        <OwnerPhoneCode
+          phone={phone}
+          purpose="bind_email"
+          value={phoneCode}
+          onChange={(code) => {
+            setPhoneCode(code);
+            setError(null);
+          }}
+          disabled={loading}
+        />
+      ) : null}
       {isNeutral ? <div className="flex justify-end">{submitButton}</div> : submitButton}
     </form>
   );

@@ -1030,6 +1030,18 @@ class OperationalStore(ABC):
     ) -> None:
         """Atomically replace the full preferences JSONB column."""
 
+    @abstractmethod
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Return the user's portrait data URL, or None.
+
+        Kept out of the user row the hot paths read, so a portrait never
+        travels with an authentication lookup.
+        """
+
+    @abstractmethod
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Replace the user's portrait; None removes it."""
+
     # -- signup domain allowlist --------------------------------------------
 
     @abstractmethod

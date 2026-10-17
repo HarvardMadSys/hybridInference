@@ -453,6 +453,8 @@ async def test_purpose_check_from_before_delete_account_is_rebuilt(phone_store):
         "login",
         "bind",
         "delete_account",
+        "bind_email",
+        "set_password",
     }
     await phone_store.create_user(
         user_id="user-a", email="owner@example.test", password_hash="test-hash"
@@ -534,3 +536,17 @@ async def test_admin_soft_delete_is_not_gated_on_role(phone_store):
     await phone_store.delete_user("user-a", admin_ip=IP, admin_id="someone-else")
     async with phone_store._pool.acquire() as conn:
         assert await conn.fetchval("SELECT status FROM users WHERE id = 'user-a'") == "deleted"
+
+
+async def test_portrait_is_kept_out_of_the_user_row(phone_store):
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    portrait = "data:image/webp;base64,UklGRg=="
+    await phone_store.set_user_avatar("user-a", portrait)
+    assert await phone_store.get_user_avatar("user-a") == portrait
+    row = await phone_store.get_user_by_id("user-a")
+    assert "avatar_data_url" not in row
+    assert "avatar_url" not in (row.get("preferences") or {})
+    await phone_store.set_user_avatar("user-a", None)
+    assert await phone_store.get_user_avatar("user-a") is None

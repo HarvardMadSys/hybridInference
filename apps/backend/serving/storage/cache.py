@@ -988,6 +988,14 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
 
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Delegate to wrapped store; portraits are not cached."""
+        return await self._store.get_user_avatar(user_id)
+
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_user_avatar(user_id, avatar_data_url)
+
     # -- signup domain allowlist (pass-through) ------------------------------
 
     async def list_signup_allowed_domains(self) -> list[Row]:

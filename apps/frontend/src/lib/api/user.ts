@@ -146,14 +146,23 @@ export async function updateProfile(data: {
   return jsonOrThrow<User>(resp);
 }
 
+/**
+ * Change the password, or set a first one. An account without a password
+ * confirms its owner with `phoneCode`, a `set_password` code.
+ */
 export async function updatePassword(
   currentPassword: string,
   newPassword: string,
+  phoneCode?: string,
 ): Promise<{ message: string }> {
   const resp = await fetchWithAuth(API_BASE, '/user/change-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ old_password: currentPassword, new_password: newPassword }),
+    body: JSON.stringify({
+      old_password: currentPassword,
+      new_password: newPassword,
+      ...(phoneCode ? { phone_code: phoneCode } : {}),
+    }),
   });
   return jsonOrThrow<{ message: string }>(resp);
 }

@@ -17,11 +17,13 @@ from serving.storage.log_schema import (
     execute_ddl,
 )
 
-#: What a code may be spent on. ``bind`` and ``delete_account`` codes belong to
-#: a signed-in account, which must still be active when the code is sent and
-#: when it is spent.
-PHONE_CODE_PURPOSES = ("signup", "login", "bind", "delete_account")
-_ACCOUNT_PURPOSES = ("bind", "delete_account")
+#: What a code may be spent on. Every purpose but ``signup`` and ``login``
+#: belongs to a signed-in account, which must still be active when the code is
+#: sent and when it is spent. ``OWNER_PURPOSES`` confirm the account's owner
+#: for a sensitive change, so their codes go only to its own verified number.
+OWNER_PURPOSES = ("delete_account", "bind_email", "set_password")
+PHONE_CODE_PURPOSES = ("signup", "login", "bind", *OWNER_PURPOSES)
+_ACCOUNT_PURPOSES = ("bind", *OWNER_PURPOSES)
 _PURPOSE_CHECK = "CHECK (purpose IN ({}))".format(
     ", ".join(f"'{purpose}'" for purpose in PHONE_CODE_PURPOSES)
 )

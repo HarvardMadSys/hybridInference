@@ -14,7 +14,7 @@ from serving.schemas_auth import (
     PhoneVerifyRequest,
 )
 from serving.servers.deps import get_current_user
-from serving.servers.routers import auth_routes, phone_auth_routes as routes, user_routes
+from serving.servers.routers import auth_routes, phone_auth_routes as routes, reauth, user_routes
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
 from tests.fixtures import browser_sessions
@@ -105,6 +105,7 @@ class Store:
         self.update_user_last_login = AsyncMock()
         self.bind_user_phone = AsyncMock(return_value=True)
         self.bind_user_email = AsyncMock(return_value=True)
+        self.get_user_avatar = AsyncMock(return_value=None)
         self.get_user_by_email = AsyncMock(return_value=None)
         self.delete_user_verification_tokens = AsyncMock()
         self.create_verification_token = AsyncMock()
@@ -471,11 +472,12 @@ async def test_deleted_after_code_consumption_cannot_create_session_or_cookie(en
 @pytest.mark.asyncio
 async def test_bind_email_issues_pending_verification_and_completes_on_verify(enabled, monkeypatch):
     monkeypatch.setattr(auth_routes, "is_email_enabled", lambda: True)
+    monkeypatch.setattr(reauth, "is_sms_enabled", lambda: True)
     store = Store(user())
     tasks = BackgroundTasks()
     res = await auth_routes.bind_email(
         request(),
-        BindEmailRequest(email="NewUser@tencent.com"),
+        BindEmailRequest(email="NewUser@tencent.com", phone_code="123456"),
         tasks,
         {"user_id": "existing-user"},
         store,
@@ -497,7 +499,7 @@ async def test_bind_email_issues_pending_verification_and_completes_on_verify(en
         "used_at": None,
         "pending_email": "newuser@tencent.com",
     }
-    verified = await auth_routes.verify_email(token_kwargs["token"], store)
+    verified = await auth_routes.verify_email(token_kwargs["token"], BackgroundTasks(), store)
     assert verified.email_verified is True
     store.bind_user_email.assert_awaited_once_with("existing-user", "newuser@tencent.com")
     store.mark_verification_used.assert_awaited_once_with(token_kwargs["token"])

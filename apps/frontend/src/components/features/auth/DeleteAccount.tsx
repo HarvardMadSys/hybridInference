@@ -2,15 +2,12 @@
 
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import toast from 'react-hot-toast';
-import { TurnstileChallenge } from '@/components/auth/TurnstileChallenge';
 import { useAuth } from '@/components/providers';
 import type { AuthUser } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
-import { useT } from '@/components/providers/useT';
-import { sendPhoneCode } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { fill } from '@/lib/utils/interpolate';
 import { userAccountLabel } from '@/lib/utils/userLabel';
+import { isCompleteCode, OwnerPhoneCode } from './OwnerPhoneCode';
 
 /** How the signed-in account proves it is its owner's, or why it cannot here. */
 export type DeletionProof = 'password' | 'phone' | 'admin' | 'unavailable';
@@ -90,8 +87,6 @@ function DeleteAccountDialog({
   onClose: () => void;
 }) {
   const { deleteAccount } = useAuth();
-  const { branding } = useSiteConfig();
-  const t = useT();
   const identifier = userAccountLabel(user);
   const titleId = useId();
   const confirmId = useId();
@@ -104,13 +99,6 @@ function DeleteAccountDialog({
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const [sending, setSending] = useState(false);
-  const [deadline, setDeadline] = useState(0);
-  const [seconds, setSeconds] = useState(0);
-  const captcha = useRef<string | null>(null);
-  const [captchaReset, setCaptchaReset] = useState(0);
 
   // The key handler is installed once; these keep it reading the latest values.
   const busyRef = useRef(busy);
@@ -154,45 +142,9 @@ function DeleteAccountDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => {
-    if (!deadline) return;
-    const tick = () => setSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
-    tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => window.clearInterval(timer);
-  }, [deadline]);
-
   const matches = confirmationMatches(typed, identifier);
-  const proven = proof === 'password' ? password !== '' : /^[0-9]{6}$/.test(code);
+  const proven = proof === 'password' ? password !== '' : isCompleteCode(code);
   const canDelete = matches && proven && !busy;
-
-  const sendCode = async () => {
-    if (sending || seconds > 0 || !user.phone) return;
-    if (branding.turnstileSiteKey && !captcha.current) {
-      setError(t('auth.signup.captcha_required', 'Please complete the captcha.'));
-      return;
-    }
-    setSending(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await sendPhoneCode({
-        phone: user.phone,
-        purpose: 'delete_account',
-        turnstileToken: captcha.current ?? undefined,
-      });
-      const retryAfter = Number.isFinite(result.retry_after) ? Math.max(1, result.retry_after) : 60;
-      setSeconds(retryAfter);
-      setDeadline(Date.now() + retryAfter * 1000);
-      setNotice(fill('A verification code has been sent to {phone}.', { phone: user.phone ?? '' }));
-    } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      captcha.current = null;
-      setCaptchaReset((value) => value + 1);
-      setSending(false);
-    }
-  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -282,55 +234,15 @@ function DeleteAccountDialog({
               />
             </div>
           ) : (
-            <div>
-              <div className="flex items-center justify-between">
-                <label htmlFor={secretId} className="block text-[13px] text-gray-700">
-                  {t('auth.phone.code_label', 'Verification code')}
-                </label>
-                <button
-                  type="button"
-                  onClick={sendCode}
-                  disabled={busy || sending || seconds > 0}
-                  aria-busy={sending || undefined}
-                  className="text-[13px] font-medium text-blue-600 hover:text-blue-700 disabled:text-gray-400"
-                >
-                  {sending
-                    ? t('auth.phone.sending', 'Sending…')
-                    : seconds > 0
-                      ? fill(t('auth.phone.retry_in', 'Send again in {seconds}s'), {
-                          seconds: String(seconds),
-                        })
-                      : t('auth.phone.send_code', 'Send verification code')}
-                </button>
-              </div>
-              <input
-                id={secretId}
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={6}
-                value={code}
-                onChange={(event) => setCode(event.target.value.trim())}
-                disabled={busy}
-                className={inputClass}
-              />
-              {branding.turnstileSiteKey ? (
-                <div className="mt-2">
-                  <TurnstileChallenge
-                    siteKey={branding.turnstileSiteKey}
-                    onToken={(value) => {
-                      captcha.current = value;
-                    }}
-                    resetKey={captchaReset}
-                  />
-                </div>
-              ) : null}
-            </div>
+            <OwnerPhoneCode
+              phone={user.phone ?? ''}
+              purpose="delete_account"
+              value={code}
+              onChange={setCode}
+              disabled={busy}
+            />
           )}
 
-          {notice ? (
-            <p className="rounded-lg bg-green-50 px-3 py-2 text-[12px] text-green-700">{notice}</p>
-          ) : null}
           {error ? (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700" role="alert">
               {error}

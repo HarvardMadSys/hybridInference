@@ -59,6 +59,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.models import _build_model_list_async
+from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
@@ -180,13 +181,6 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
         return LLMProberLayoutState()
 
 
-def _extract_avatar_url(preferences: Any) -> str | None:
-    """Extract the user's portrait from preferences, if set."""
-    prefs = _coerce_preferences(preferences)
-    raw = prefs.get("avatar_url")
-    return raw if isinstance(raw, str) and raw.strip() else None
-
-
 async def get_default_daily_quota_for_role(
     role: str,
     runtime_settings: "RuntimeSettings | None",
@@ -276,7 +270,7 @@ async def get_current_user_info(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
-        avatar_url=_extract_avatar_url(user_row.get("preferences")),
+        avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -811,14 +805,7 @@ async def update_profile(
         )
 
     if "avatar_url" in update_data:
-        preferences = _coerce_preferences(
-            await op_store.get_user_preferences(current_user["user_id"])
-        )
-        if update_data["avatar_url"]:
-            preferences["avatar_url"] = update_data["avatar_url"]
-        else:
-            preferences.pop("avatar_url", None)
-        await op_store.update_user_preferences(current_user["user_id"], preferences)
+        await op_store.set_user_avatar(current_user["user_id"], update_data["avatar_url"] or None)
 
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
@@ -834,7 +821,7 @@ async def update_profile(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
-        avatar_url=_extract_avatar_url(user_row.get("preferences")),
+        avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -846,13 +833,15 @@ async def update_profile(
 
 @router.post("/change-password", response_model=ChangePasswordResponse)
 async def change_password(
+    request: Request,
     body: ChangePasswordRequest,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> ChangePasswordResponse:
-    """Change password for logged-in user.
+    """Change the signed-in account's password, or give it a first one.
 
-    Requires old password verification for security.
+    An account with a password must give it. One without (a phone account)
+    must give a ``set_password`` code sent to its verified phone.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -875,6 +864,16 @@ async def change_password(
             raise HTTPException(
                 status_code=400, detail="New password must be different from current password."
             )
+    else:
+        # A first password is a new way in; the session alone cannot add one.
+        await confirm_account_owner(
+            request,
+            op_store,
+            user_row,
+            password=None,
+            phone_code=body.phone_code,
+            purpose="set_password",
+        )
 
     new_password_hash = password_utils.hash_password(body.new_password)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
