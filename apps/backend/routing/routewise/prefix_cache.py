@@ -33,6 +33,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
@@ -498,6 +499,7 @@ class _Entry:
 
     blocks: tuple[Block, ...]
     last_seen_at: float
+    generation: int = 0
 
 
 class SessionProviderPrefixMemory:
@@ -550,12 +552,74 @@ class SessionProviderPrefixMemory:
                 last_seen_at=entry.last_seen_at,
             )
 
+    def refresh_liveness(
+        self,
+        scope: CacheScope,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Refresh an existing entry's recency WITHOUT replacing its blocks.
+
+        A response that completed but produced no useful work still proves the
+        scope is live: the provider answered. Aging the entry out through the TTL
+        on the strength of a warmup notice would discard strong locality evidence
+        that a transient hiccup never actually contradicted.
+
+        Crucially this does not overwrite what the entry asserts. The original
+        defect was that a short transient response replaced the blocks describing
+        a warm conversation, so every later request matched almost nothing and
+        the estimate stayed at zero. Here the stored blocks are left untouched
+        and only ``last_seen_at`` moves forward.
+
+        Returns ``True`` when a current entry was refreshed, ``False`` when
+        there is nothing to refresh.
+        """
+        ts = self._time() if now is None else now
+        with self._lock:
+            entry = self._entries.get(scope)
+            if entry is None:
+                return False
+            if self._ttl_sec > 0 and (ts - entry.last_seen_at) > self._ttl_sec:
+                # Already aged out; nothing strong is left to protect.
+                return False
+            entry.last_seen_at = ts
+            self._entries.move_to_end(scope)
+            return True
+
+    def refresh_liveness_for_generation(
+        self,
+        scope: CacheScope,
+        *,
+        generation: int,
+        now: float | None = None,
+    ) -> bool:
+        """Atomically validate a generation and refresh the associated entry.
+
+        The coordinator validates the dispatch generation while holding the
+        generation guard, then this method rechecks it under the memory lock. This
+        keeps a stale completion from extending a newer entry's lifetime even when
+        the newer entry is installed between generation validation and mutation.
+        """
+        ts = self._time() if now is None else now
+        with self._lock:
+            entry = self._entries.get(scope)
+            if entry is None:
+                return False
+            if entry.generation != generation:
+                return False
+            if self._ttl_sec > 0 and (ts - entry.last_seen_at) > self._ttl_sec:
+                return False
+            entry.last_seen_at = ts
+            self._entries.move_to_end(scope)
+            return True
+
     def observe(
         self,
         scope: CacheScope,
         blocks: Sequence[Block],
         *,
         now: float | None = None,
+        generation: int = 0,
     ) -> None:
         """Store a selected-success request for future prefix matches."""
         ts = self._time() if now is None else now
@@ -568,6 +632,7 @@ class SessionProviderPrefixMemory:
             self._entries[scope] = _Entry(
                 blocks=new_blocks,
                 last_seen_at=ts,
+                generation=generation,
             )
             self._entries.move_to_end(scope)
             self._evict_locked()
@@ -931,6 +996,92 @@ class PrefixCacheCoordinator:
             for scope in unique_scopes:
                 self._track_generation(scope, generation)
             return dict.fromkeys(unique_scopes, generation)
+
+    def record_outcome(
+        self,
+        *,
+        scope: CacheScope,
+        blocks: Sequence[Block],
+        outcome: Any,
+        observed_cached_tokens: int | None = None,
+        generation: int | None = None,
+    ) -> bool:
+        """Apply one completed request's result to remembered prefix state.
+
+        Defense in depth for the incident invariant: the gate is re-derived from
+        ``outcome`` here rather than trusting the caller, so the guarantee holds
+        even if the router-level check is bypassed.
+
+        * An outcome that admits real work replaces the remembered blocks and
+          records authoritative observed cache usage when the provider supplied
+          it.
+        * Any other outcome refreshes liveness only. The stored blocks are left
+          exactly as they are, so a warmup notice or an indeterminate result can
+          neither overwrite nor age out strong locality evidence.
+        """
+        # Resolve and validate the generation BEFORE touching memory, on both the
+        # positive and the negative path. _claim_generation returns None for a
+        # supplied generation whose guard was evicted or superseded.
+        with self._generation_lock:
+            generation = self._claim_generation(scope, generation)
+        if generation is None:
+            return False
+
+        # Warming requires positive evidence that work happened. Admitting on the
+        # absence of a negative -- admitting UNKNOWN because it is not on a
+        # blacklist -- would make a caller that forgot to classify silently
+        # restore the incident, so the test is admits_real_work and nothing else.
+        if not bool(getattr(outcome, "admits_real_work", False)):
+            # The provider answered, so the scope is provably live and a
+            # transient hiccup must not age strong evidence out through the TTL.
+            # But the stored blocks are left exactly as they are: a short
+            # transient response must not overwrite what a warm conversation
+            # established.
+            self._memory.refresh_liveness_for_generation(
+                scope,
+                generation=generation,
+            )
+            return False
+
+        if not self.remember(scope, tuple(blocks), generation=generation):
+            return False
+        if observed_cached_tokens is not None:
+            self.record_evidence(
+                scope,
+                observed_cached_tokens,
+                generation=generation,
+                blocks=tuple(blocks),
+                materialization_candidate=True,
+            )
+        else:
+            self.record_dispatch(scope, generation=generation)
+        return True
+
+    def lookup_state(self, scope: CacheScope) -> Any:
+        """Return the remembered blocks plus their evidence state for ``scope``.
+
+        Lets tests and diagnostics assert on what is actually believed -- both
+        the blocks and whether they are backed by verified reuse evidence --
+        rather than inferring it from a cost estimate.
+        """
+        blocks = self._memory.current_blocks(scope)
+        state = CacheLocalityEvidenceState.UNKNOWN
+        confidence = 0.0
+        with self._evidence._lock:
+            found = self._evidence._evidence.get(scope)
+        if found is not None:
+            state = found.state
+            confidence = found.confidence
+        return SimpleNamespace(
+            blocks=blocks,
+            # ``present`` is the honest question for "is anything remembered
+            # here at all": a scope with no entry must report False so callers
+            # never read ``None`` blocks as a remembered-but-empty prefix.
+            present=blocks is not None,
+            verified=state == CacheLocalityEvidenceState.VERIFIED_REUSABLE,
+            evidence=state,
+            confidence=confidence,
+        )
 
     def _claim_generation(self, scope: CacheScope, generation: int | None) -> int | None:
         if generation is None:

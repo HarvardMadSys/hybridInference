@@ -65,11 +65,17 @@ class _FakeEventSink:
 
     def __init__(self) -> None:
         self.successes: list[str] = []
+        self.success_outcomes: list[Any] = []
+        self.liveness: list[str] = []
         self.failures: list[tuple[str, str]] = []
         self.failure_excs: list[BaseException | None] = []
 
-    def record_success(self, endpoint_id: str) -> None:
+    def record_liveness(self, endpoint_id: str) -> None:
+        self.liveness.append(endpoint_id)
+
+    def record_success(self, endpoint_id: str, *, outcome: Any) -> None:
         self.successes.append(endpoint_id)
+        self.success_outcomes.append(outcome)
 
     def record_failure(
         self,

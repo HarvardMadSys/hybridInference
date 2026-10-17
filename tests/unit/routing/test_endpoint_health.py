@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.config import RouteWiseConfig
@@ -31,7 +32,7 @@ async def test_registry_circuit_lifecycle(monkeypatch):
         assert registry.begin_dispatch(endpoint_id) is not None
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.HALF_OPEN
 
-        registry.record_success(endpoint_id)
+        registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
         await asyncio.sleep(0)
 
@@ -39,7 +40,7 @@ async def test_registry_circuit_lifecycle(monkeypatch):
 def test_snapshot_is_independent_from_registry_state():
     endpoint_id = "openai:api.example.com:443"
     registry = EndpointHealthRegistry()
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     expected = registry.snapshot()
 
     snapshot = registry.snapshot()
@@ -118,7 +119,7 @@ async def test_registry_instances_are_isolated(monkeypatch):
     first = EndpointHealthRegistry()
     second = EndpointHealthRegistry()
 
-    second.record_success(endpoint_id)
+    second.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         first.record_failure(endpoint_id, reason="upstream_502")
         await asyncio.sleep(0)
