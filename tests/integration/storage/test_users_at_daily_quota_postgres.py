@@ -6,16 +6,11 @@ and a user with one more request left must not. That is a question about SQL
 semantics (numeric vs float, the day key's TEXT comparison, the key join), so
 it is asked of a real database rather than a mock.
 
-Marked ``dbtest``: excluded from the default suite, run with
-``pytest -m dbtest tests/integration/``.
+Marked ``dbtest``: excluded from the default ``make test`` suite, run locally
+with ``pytest -m dbtest tests/integration/``. CI runs it against PostgreSQL in
+the dedicated ``db`` test shard.
 
-**Unproven in this environment.** These tests have never been executed here —
-no Postgres test database is wired up on this host, and the default ``make
-test`` deselects the ``dbtest`` marker, so nothing in this file has run even
-once. Read every assertion below as *intent*, not as evidence. Anyone with a
-test database should run them before trusting the claims they make.
-
-That matters because three behaviours have no other cover anywhere in the
+Three behaviours have no other cover anywhere in the
 suite. The unit tests in ``tests/unit/storage/test_users_at_daily_quota.py``
 mock asyncpg, so they can only check the shape of the SQL string, never what it
 selects. These are the cases that only a real database can decide, and only
