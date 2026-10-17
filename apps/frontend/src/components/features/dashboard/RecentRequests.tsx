@@ -6,6 +6,9 @@ import { DragScrollArea } from '@/components/ui/DragScrollArea';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
+import { useT, type Translate } from '@/components/providers/useT';
+import { useFormatter, type Formatter } from '@/lib/i18n/useFormatter';
+import { fill } from '@/lib/utils/interpolate';
 
 const PAGE_SIZE = 20;
 
@@ -25,22 +28,28 @@ function StatusBadge({ code }: { code: number | null | undefined }) {
   );
 }
 
-function formatTimestamp(iso: string): string {
+function formatTimestamp(iso: string, t: Translate, fmt: Formatter): string {
   const d = new Date(iso);
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.floor(diffMs / 60000);
 
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 1) return t('dashboard.requests.just_now', 'just now');
+  if (diffMin < 60) {
+    return fill(t('dashboard.requests.minutes_ago', '{n}m ago'), { n: String(diffMin) });
+  }
 
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) {
+    return fill(t('dashboard.requests.hours_ago', '{n}h ago'), { n: String(diffHr) });
+  }
 
   const diffDays = Math.floor(diffHr / 24);
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 7) {
+    return fill(t('dashboard.requests.days_ago', '{n}d ago'), { n: String(diffDays) });
+  }
 
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return fmt.date(d, { month: 'short', day: 'numeric' });
 }
 
 function formatTokens(n: number | null | undefined): string {
@@ -75,6 +84,8 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
 }
 
 function RequestRow({ req }: { req: RecentRequestItem }) {
+  const t = useT();
+  const fmt = useFormatter();
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
   const isEmbedding = req.request_type === 'embedding';
@@ -106,12 +117,12 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
             </span>
             {isEmbedding && (
               <span className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20">
-                embedding
+                {t('dashboard.requests.badge_embedding', 'embedding')}
               </span>
             )}
             {req.stream && (
               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">
-                stream
+                {t('dashboard.requests.badge_stream', 'stream')}
               </span>
             )}
           </div>
@@ -132,7 +143,12 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <span className="mx-0.5 text-gray-300">/</span>
                 <span
                   className="inline-flex items-center rounded bg-purple-50 px-1 text-[10px] font-medium text-purple-700"
-                  title={`${req.reasoning_tokens.toLocaleString()} reasoning tokens`}
+                  title={fill(
+                    t('dashboard.requests.reasoning_tokens', '{count} reasoning tokens'),
+                    {
+                      count: fmt.number(req.reasoning_tokens),
+                    },
+                  )}
                 >
                   R {formatTokens(req.reasoning_tokens)}
                 </span>
@@ -143,7 +159,12 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <span className="mx-0.5 text-gray-300">/</span>
                 <span
                   className="inline-flex items-center rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700"
-                  title={`${cachedTokens.toLocaleString()} cached token${cachedTokens !== 1 ? 's' : ''}`}
+                  title={fill(
+                    cachedTokens === 1
+                      ? t('dashboard.requests.cached_tokens_one', '{count} cached token')
+                      : t('dashboard.requests.cached_tokens_other', '{count} cached tokens'),
+                    { count: fmt.number(cachedTokens) },
+                  )}
                 >
                   C {formatTokens(cachedTokens)}
                 </span>
@@ -155,9 +176,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
           {formatCost(req.cost_usd)}
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-gray-500">
-          <span title={new Date(req.timestamp).toLocaleString()}>
-            {formatTimestamp(req.timestamp)}
-          </span>
+          <span title={fmt.dateTime(req.timestamp)}>{formatTimestamp(req.timestamp, t, fmt)}</span>
         </td>
       </tr>
       {expanded && (
@@ -167,7 +186,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               <div className="flex flex-col gap-3 border-b border-gray-200/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500">
-                    Request Details
+                    {t('dashboard.requests.details', 'Request Details')}
                   </div>
                   <div className="mt-2 break-all font-mono text-sm text-gray-700">
                     {req.request_id}
@@ -179,21 +198,39 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               </div>
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <DetailStat label="Model" value={req.model_id} />
-                <DetailStat label="Latency" value={formatLatency(req.latency_ms)} />
-                <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
-                <DetailStat label="Total Tokens" value={formatTokens(req.total_tokens)} />
-                <DetailStat label="Cached Tokens" value={formatTokens(cachedTokens)} />
+                <DetailStat label={t('dashboard.requests.model', 'Model')} value={req.model_id} />
                 <DetailStat
-                  label="Streaming"
-                  value={req.stream != null ? (req.stream ? 'Enabled' : 'Disabled') : '—'}
+                  label={t('dashboard.requests.latency', 'Latency')}
+                  value={formatLatency(req.latency_ms)}
+                />
+                <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
+                <DetailStat
+                  label={t('dashboard.requests.total_tokens', 'Total Tokens')}
+                  value={formatTokens(req.total_tokens)}
                 />
                 <DetailStat
-                  label="Prompt / Output"
+                  label={t('dashboard.requests.cached_tokens', 'Cached Tokens')}
+                  value={formatTokens(cachedTokens)}
+                />
+                <DetailStat
+                  label={t('dashboard.requests.streaming', 'Streaming')}
+                  value={
+                    req.stream != null
+                      ? req.stream
+                        ? t('dashboard.requests.enabled', 'Enabled')
+                        : t('dashboard.requests.disabled', 'Disabled')
+                      : '—'
+                  }
+                />
+                <DetailStat
+                  label={t('dashboard.requests.prompt_output', 'Prompt / Output')}
                   value={`${formatTokens(req.prompt_tokens)} / ${formatTokens(req.completion_tokens)}`}
                 />
                 {throughputTps != null && (
-                  <DetailStat label="Throughput" value={`${throughputTps.toFixed(1)} tok/s`} />
+                  <DetailStat
+                    label={t('dashboard.requests.throughput', 'Throughput')}
+                    value={`${throughputTps.toFixed(1)} tok/s`}
+                  />
                 )}
                 {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
               </div>
@@ -201,7 +238,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               {req.error && (
                 <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
                   <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-red-500">
-                    Request Error
+                    {t('dashboard.requests.error', 'Request Error')}
                   </div>
                   <div className="mt-1 break-words">{req.error}</div>
                 </div>
@@ -220,6 +257,8 @@ export function RecentRequests(): JSX.Element {
   const jumpInputId = useId();
   const offset = page * PAGE_SIZE;
   const { data, isLoading, error } = useRecentRequests(PAGE_SIZE, offset);
+  const t = useT();
+  const fmt = useFormatter();
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
@@ -236,18 +275,26 @@ export function RecentRequests(): JSX.Element {
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
-          Recent Requests
+          {t('dashboard.requests.title', 'Recent Requests')}
         </h2>
         {data && (
           <span className="text-xs text-gray-500">
-            {data.total.toLocaleString()} total request{data.total !== 1 ? 's' : ''}
+            {fill(
+              data.total === 1
+                ? t('dashboard.requests.total_one', '{count} total request')
+                : t('dashboard.requests.total_other', '{count} total requests'),
+              { count: fmt.number(data.total) },
+            )}
           </span>
         )}
       </div>
 
       {error && (
         <div className="rounded-md bg-red-50 px-4 py-3 text-red-700 ring-1 ring-inset ring-red-200">
-          Failed to load recent requests. Please try again later.
+          {t(
+            'dashboard.requests.load_failed',
+            'Failed to load recent requests. Please try again later.',
+          )}
         </div>
       )}
 
@@ -272,31 +319,39 @@ export function RecentRequests(): JSX.Element {
               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
             />
           </svg>
-          <p className="text-sm">No requests yet</p>
-          <p className="mt-1 text-xs">Requests will appear here once you start using the API.</p>
+          <p className="text-sm">{t('dashboard.requests.empty', 'No requests yet')}</p>
+          <p className="mt-1 text-xs">
+            {t(
+              'dashboard.requests.empty_hint',
+              'Requests will appear here once you start using the API.',
+            )}
+          </p>
         </div>
       )}
 
       {!isLoading && data && data.requests.length > 0 && (
         <>
-          <DragScrollArea className="-mx-6" ariaLabel="Recent requests table">
+          <DragScrollArea
+            className="-mx-6"
+            ariaLabel={t('dashboard.requests.table_label', 'Recent requests table')}
+          >
             <table className="min-w-full">
               <thead>
                 <tr className="border-b border-gray-200">
                   <th className="py-2.5 pl-10 pr-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Model
+                    {t('dashboard.requests.model', 'Model')}
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Status
+                    {t('dashboard.requests.status', 'Status')}
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Tokens
+                    {t('dashboard.requests.tokens', 'Tokens')}
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Cost
+                    {t('dashboard.requests.cost', 'Cost')}
                   </th>
                   <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500 pr-10">
-                    Time
+                    {t('dashboard.requests.time', 'Time')}
                   </th>
                 </tr>
               </thead>
@@ -317,22 +372,25 @@ export function RecentRequests(): JSX.Element {
                   disabled={page === 0}
                   className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  ← Previous
+                  {t('dashboard.requests.previous', '← Previous')}
                 </button>
                 <span className="text-xs text-gray-500 tabular-nums">
-                  Page {page + 1} of {totalPages}
+                  {fill(t('dashboard.requests.page_of', 'Page {page} of {total}'), {
+                    page: String(page + 1),
+                    total: String(totalPages),
+                  })}
                 </span>
                 <button
                   onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
                   disabled={page >= totalPages - 1}
                   className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Next →
+                  {t('dashboard.requests.next', 'Next →')}
                 </button>
               </div>
               <div className="flex items-center justify-center gap-2 sm:justify-end">
                 <label htmlFor={jumpInputId} className="text-xs text-gray-500 whitespace-nowrap">
-                  Jump to page
+                  {t('dashboard.requests.jump_label', 'Jump to page')}
                 </label>
                 <input
                   id={jumpInputId}
@@ -346,14 +404,14 @@ export function RecentRequests(): JSX.Element {
                     if (e.key === 'Enter') applyJumpToPage();
                   }}
                   className="w-16 rounded-md border border-gray-200 px-2 py-1 text-center text-sm text-gray-900 tabular-nums focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  aria-label="Page number to jump to"
+                  aria-label={t('dashboard.requests.jump_input', 'Page number to jump to')}
                 />
                 <button
                   type="button"
                   onClick={applyJumpToPage}
                   className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
                 >
-                  Go
+                  {t('dashboard.requests.go', 'Go')}
                 </button>
               </div>
             </div>

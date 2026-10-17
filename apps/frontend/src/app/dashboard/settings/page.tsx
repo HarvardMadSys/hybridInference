@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { updatePassword, updateProfile } from '@/lib/api/user';
-import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
+import { createAuthSchemas, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { Button } from '@/components/ui/Button';
@@ -16,28 +16,43 @@ import { cropImageToDataUrl, UserAvatar } from '@/components/ui/UserAvatar';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
-import { useT } from '@/components/providers/useT';
+import { useT, type Translate } from '@/components/providers/useT';
 import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 import { DangerZone } from '@/components/features/auth/DeleteAccount';
 import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
 
-function createPasswordSchema(requireOldPassword: boolean) {
+function createPasswordSchema(requireOldPassword: boolean, t: Translate) {
   return z
     .object({
       oldPassword: requireOldPassword
-        ? z.string().min(1, 'Current password is required')
+        ? z.string().min(1, t('settings.password.current_required', 'Current password is required'))
         : z.string().optional(),
       newPassword: z
         .string()
-        .min(8, 'Password must be at least 8 characters')
-        .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
-        .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
-        .regex(/[0-9]/, 'Password must contain at least one number'),
+        .min(8, t('auth.validation.password_min', 'Password must be at least 8 characters'))
+        .regex(
+          /[A-Z]/,
+          t(
+            'auth.validation.password_upper',
+            'Password must contain at least one uppercase letter',
+          ),
+        )
+        .regex(
+          /[a-z]/,
+          t(
+            'auth.validation.password_lower',
+            'Password must contain at least one lowercase letter',
+          ),
+        )
+        .regex(
+          /[0-9]/,
+          t('auth.validation.password_number', 'Password must contain at least one number'),
+        ),
       confirmPassword: z.string(),
     })
     .refine((data) => data.newPassword === data.confirmPassword, {
-      message: 'Passwords do not match',
+      message: t('auth.validation.passwords_differ', 'Passwords do not match'),
       path: ['confirmPassword'],
     });
 }
@@ -102,7 +117,8 @@ function SettingsContent() {
   const [setPasswordCode, setSetPasswordCode] = useState('');
   const verifiedPhone = state.user?.phone_verified ? (state.user.phone ?? null) : null;
 
-  const passwordSchema = useMemo(() => createPasswordSchema(hasPassword), [hasPassword]);
+  const passwordSchema = useMemo(() => createPasswordSchema(hasPassword, t), [hasPassword, t]);
+  const profileUpdateSchema = useMemo(() => createAuthSchemas(t).profileUpdateSchema, [t]);
   const passwordForm = useForm<ChangePasswordFormData>({
     resolver: zodResolver(passwordSchema),
   });
@@ -128,8 +144,8 @@ function SettingsContent() {
     try {
       await updateProfile({ avatar_url: nextAvatar ?? '' });
       await refreshUser();
-      setProfileSuccess('Portrait updated successfully.');
-      toast.success('Portrait updated!');
+      setProfileSuccess(t('settings.portrait.updated', 'Portrait updated successfully.'));
+      toast.success(t('settings.portrait.updated_toast', 'Portrait updated!'));
     } catch (err) {
       const errorMsg = getErrorMessage(err);
       setProfileError(errorMsg);
@@ -144,7 +160,7 @@ function SettingsContent() {
     event.target.value = '';
     if (!file) return;
     try {
-      const dataUrl = await cropImageToDataUrl(file, 128);
+      const dataUrl = await cropImageToDataUrl(file, 128, t);
       await handleAvatarChange(dataUrl);
     } catch (err) {
       const errorMsg = getErrorMessage(err);
@@ -161,8 +177,8 @@ function SettingsContent() {
     try {
       await updateProfile({ user_name: data.userName?.trim() });
       await refreshUser();
-      setProfileSuccess('Username updated successfully.');
-      toast.success('Username updated successfully!');
+      setProfileSuccess(t('settings.username.updated', 'Username updated successfully.'));
+      toast.success(t('settings.username.updated_toast', 'Username updated successfully!'));
     } catch (err) {
       const errorMsg = getErrorMessage(err);
       setProfileError(errorMsg);
@@ -174,7 +190,9 @@ function SettingsContent() {
 
   const onPasswordSubmit = async (data: ChangePasswordFormData) => {
     if (!hasPassword && !isCompleteCode(setPasswordCode)) {
-      setPasswordError('Enter the verification code sent to your phone.');
+      setPasswordError(
+        t('settings.password.code_required', 'Enter the verification code sent to your phone.'),
+      );
       return;
     }
     setPasswordLoading(true);
@@ -190,7 +208,11 @@ function SettingsContent() {
       setSetPasswordCode('');
       await refreshUser();
       setPasswordSuccess(result.message);
-      toast.success(hasPassword ? 'Password updated successfully!' : 'Password set successfully!');
+      toast.success(
+        hasPassword
+          ? t('settings.password.updated_toast', 'Password updated successfully!')
+          : t('settings.password.set_toast', 'Password set successfully!'),
+      );
       passwordForm.reset();
     } catch (err) {
       const errorMsg = getErrorMessage(err);
@@ -205,9 +227,11 @@ function SettingsContent() {
     <div className="mx-auto w-full max-w-4xl space-y-6">
       <div className="flex items-start justify-between border-b border-gray-200 pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Account Settings</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">
+            {t('settings.title', 'Account Settings')}
+          </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Manage your profile, sign-in methods, and account security
+            {t('settings.subtitle', 'Manage your profile, sign-in methods, and account security')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -215,7 +239,7 @@ function SettingsContent() {
             href="/dashboard"
             className="inline-flex items-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
           >
-            ← Back
+            {t('settings.back', '← Back')}
           </a>
           {branding.docsUrl && (
             <a
@@ -224,7 +248,7 @@ function SettingsContent() {
               rel="noopener noreferrer"
               className="inline-flex items-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
             >
-              Docs
+              {t('dashboard.docs_link', 'Docs')}
             </a>
           )}
         </div>
@@ -241,8 +265,11 @@ function SettingsContent() {
       </SettingsSection>
 
       <SettingsSection
-        title="Change Username"
-        description="This name is shown on your dashboard and admin request views."
+        title={t('settings.username.title', 'Change Username')}
+        description={t(
+          'settings.username.description',
+          'This name is shown on your dashboard and admin request views.',
+        )}
       >
         <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="space-y-5">
           {profileError && (
@@ -267,9 +294,14 @@ function SettingsContent() {
                 size="lg"
               />
               <div>
-                <div className="text-sm font-medium text-gray-900">Portrait</div>
+                <div className="text-sm font-medium text-gray-900">
+                  {t('settings.portrait.label', 'Portrait')}
+                </div>
                 <p className="text-xs text-gray-500">
-                  PNG, JPEG, or WebP up to 8 MB. Defaults to your initials.
+                  {t(
+                    'settings.portrait.hint',
+                    'PNG, JPEG, or WebP up to 8 MB. Defaults to your initials.',
+                  )}
                 </p>
               </div>
             </div>
@@ -288,7 +320,7 @@ function SettingsContent() {
                 disabled={avatarSaving}
                 onClick={() => fileInputRef.current?.click()}
               >
-                Upload Photo
+                {t('settings.portrait.upload', 'Upload Photo')}
               </Button>
               {avatarDraft && (
                 <Button
@@ -298,24 +330,24 @@ function SettingsContent() {
                   disabled={avatarSaving}
                   onClick={() => handleAvatarChange(null)}
                 >
-                  Remove
+                  {t('settings.portrait.remove', 'Remove')}
                 </Button>
               )}
             </div>
           </div>
 
           <InputField
-            label="Username"
+            label={t('settings.username.label', 'Username')}
             type="text"
             autoComplete="username"
-            hint="Use 2-50 characters."
+            hint={t('settings.username.hint', 'Use 2-50 characters.')}
             error={profileForm.formState.errors.userName?.message}
             {...profileForm.register('userName')}
           />
 
           <div className="flex justify-end">
             <Button type="submit" isLoading={profileLoading}>
-              Update Username
+              {t('settings.username.submit', 'Update Username')}
             </Button>
           </div>
         </form>
@@ -323,11 +355,17 @@ function SettingsContent() {
 
       {!state.user?.login_name && (
         <SettingsSection
-          title="Email Address"
+          title={t('settings.email.title', 'Email Address')}
           description={
             state.user?.email
-              ? 'Your verified email address for signing in and receiving account notifications.'
-              : 'Bind an email address to receive notifications and sign in with email.'
+              ? t(
+                  'settings.email.description_bound',
+                  'Your verified email address for signing in and receiving account notifications.',
+                )
+              : t(
+                  'settings.email.description_unbound',
+                  'Bind an email address to receive notifications and sign in with email.',
+                )
           }
         >
           <EmailBindForm
@@ -355,7 +393,7 @@ function SettingsContent() {
                 })}
               </span>
               <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                Verified
+                {t('settings.phone.verified', 'Verified')}
               </span>
             </div>
           ) : (
@@ -366,13 +404,26 @@ function SettingsContent() {
 
       {(hasPassword || (features.phoneAuth && verifiedPhone)) && (
         <SettingsSection
-          title={hasPassword ? 'Change Password' : 'Set Password'}
+          title={
+            hasPassword
+              ? t('settings.password.change_title', 'Change Password')
+              : t('settings.password.set_title', 'Set Password')
+          }
           description={
             hasPassword
-              ? 'Update your password to keep your account secure.'
+              ? t(
+                  'settings.password.change_description',
+                  'Update your password to keep your account secure.',
+                )
               : state.user?.email
-                ? 'Set a password so you can also sign in with your email address.'
-                : 'Set a password. To sign in with it, also add an email address above.'
+                ? t(
+                    'settings.password.set_description_email',
+                    'Set a password so you can also sign in with your email address.',
+                  )
+                : t(
+                    'settings.password.set_description_no_email',
+                    'Set a password. To sign in with it, also add an email address above.',
+                  )
           }
         >
           <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="space-y-4">
@@ -389,7 +440,7 @@ function SettingsContent() {
 
             {hasPassword ? (
               <InputField
-                label="Current Password"
+                label={t('settings.password.current', 'Current Password')}
                 type="password"
                 autoComplete="current-password"
                 error={passwordForm.formState.errors.oldPassword?.message}
@@ -407,16 +458,19 @@ function SettingsContent() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <InputField
-                label="New Password"
+                label={t('settings.password.new', 'New Password')}
                 type="password"
-                hint="At least 8 characters with uppercase, lowercase, and numbers"
+                hint={t(
+                  'auth.reset.new_password_hint',
+                  'At least 8 characters with uppercase, lowercase, and numbers',
+                )}
                 autoComplete="new-password"
                 error={passwordForm.formState.errors.newPassword?.message}
                 {...passwordForm.register('newPassword')}
               />
 
               <InputField
-                label="Confirm New Password"
+                label={t('settings.password.confirm', 'Confirm New Password')}
                 type="password"
                 autoComplete="new-password"
                 error={passwordForm.formState.errors.confirmPassword?.message}
@@ -426,7 +480,9 @@ function SettingsContent() {
 
             <div className="flex justify-end">
               <Button type="submit" isLoading={passwordLoading}>
-                {hasPassword ? 'Update Password' : 'Set Password'}
+                {hasPassword
+                  ? t('settings.password.update_submit', 'Update Password')
+                  : t('settings.password.set_title', 'Set Password')}
               </Button>
             </div>
           </form>
@@ -434,8 +490,11 @@ function SettingsContent() {
       )}
 
       <SettingsSection
-        title="Danger Zone"
-        description="Irreversible actions that permanently affect your account."
+        title={t('settings.danger.title', 'Danger Zone')}
+        description={t(
+          'settings.danger.description',
+          'Irreversible actions that permanently affect your account.',
+        )}
         tone="danger"
       >
         <DangerZone />

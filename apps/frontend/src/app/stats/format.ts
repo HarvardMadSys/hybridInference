@@ -30,15 +30,17 @@ export const CONTINENTS: Record<string, string> = {
   AN: 'Antarctica',
 };
 
-const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
-const whole = new Intl.NumberFormat('en-US');
+// Every formatter takes the `Intl` locale to write in; the default is the
+// page's original English. `useStatsFormat` binds them to the reader's language.
 
-export function fmtCompact(n: number): string {
-  return Math.abs(n) >= 10_000 ? compact.format(n) : whole.format(Math.round(n));
+export function fmtCompact(n: number, locale = 'en-US'): string {
+  return Math.abs(n) >= 10_000
+    ? new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
+    : new Intl.NumberFormat(locale).format(Math.round(n));
 }
 
-export function fmtWhole(n: number): string {
-  return whole.format(n);
+export function fmtWhole(n: number, locale = 'en-US'): string {
+  return new Intl.NumberFormat(locale).format(n);
 }
 
 export function fmtPercent(share: number): string {
@@ -46,17 +48,17 @@ export function fmtPercent(share: number): string {
   return `${pct >= 10 || pct === 0 ? pct.toFixed(0) : pct >= 1 ? pct.toFixed(1) : pct.toFixed(2)}%`;
 }
 
-export function fmtDay(iso: string): string {
+export function fmtDay(iso: string, locale = 'en-US'): string {
   // Dates in the snapshot are UTC calendar days; render them as such.
-  return new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-US', {
+  return new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
     timeZone: 'UTC',
   });
 }
 
-export function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
+export function fmtDate(iso: string, locale = 'en-US'): string {
+  return new Date(iso).toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -73,12 +75,12 @@ function displayName(type: 'region' | 'language', locale: string, code: string):
   }
 }
 
-export function countryName(code: string, alpha2: string | null): string {
-  return (alpha2 && displayName('region', 'en', alpha2)) || code;
+export function countryName(code: string, alpha2: string | null, locale = 'en'): string {
+  return (alpha2 && displayName('region', locale, alpha2)) || code;
 }
 
-export function languageName(code: string): { name: string; native: string | null } {
-  const name = displayName('language', 'en', code) ?? code;
+export function languageName(code: string, locale = 'en'): { name: string; native: string | null } {
+  const name = displayName('language', locale, code) ?? code;
   const native = displayName('language', code, code);
   return { name, native: native && native.toLowerCase() !== name.toLowerCase() ? native : null };
 }

@@ -9,6 +9,7 @@ import type { AccountSummary } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { userAccountLabel, userDisplayName } from '@/lib/utils/userLabel';
+import { roleLabel } from '@/lib/utils/roleLabel';
 
 function Initial({ name, avatarUrl }: { name: string; avatarUrl?: string | null }) {
   if (avatarUrl && avatarUrl.startsWith('data:image/')) {
@@ -156,7 +157,7 @@ export function AccountMenu() {
                 {userDisplayName(user)}
               </p>
               <p className="truncate text-xs text-gray-500">
-                {userAccountLabel(user)} · {user.role}
+                {userAccountLabel(user)} · {roleLabel(user.role, t)}
               </p>
             </div>
           </div>

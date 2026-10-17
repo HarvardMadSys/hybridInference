@@ -1,5 +1,6 @@
 import React from 'react';
 import clsx from 'clsx';
+import { useT } from '@/components/providers/useT';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'subtle';
 type ButtonSize = 'sm' | 'md' | 'lg';
@@ -36,6 +37,7 @@ export function Button({
   disabled,
   ...props
 }: ButtonProps): JSX.Element {
+  const t = useT();
   return (
     <button
       className={clsx(base, sizes[size], variants[variant], className)}
@@ -46,7 +48,7 @@ export function Button({
       {isLoading ? (
         <span className="flex items-center gap-2">
           <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-solid border-current border-r-transparent"></span>
-          <span>Loading...</span>
+          <span>{t('common.loading', 'Loading...')}</span>
         </span>
       ) : (
         children

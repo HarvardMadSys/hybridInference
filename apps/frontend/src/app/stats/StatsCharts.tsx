@@ -15,15 +15,9 @@ import {
   YAxis,
 } from 'recharts';
 import type { ClientKind, PublicStats } from '@/lib/api/publicStats';
-import {
-  KIND_COLORS,
-  KIND_LABELS,
-  KIND_ORDER,
-  fmtCompact,
-  fmtDay,
-  fmtPercent,
-  weekLabel,
-} from './format';
+import { fill } from '@/lib/utils/interpolate';
+import { KIND_COLORS, KIND_ORDER } from './format';
+import { useStatsFormat } from './useStatsFormat';
 
 const AXIS_TICK = { fontSize: 11, fill: '#9ca3af' };
 const GRID = '#f3f4f6';
@@ -41,6 +35,8 @@ export function DailyTokensChart({
   daily: PublicStats['daily'];
   metric: 'tokens' | 'requests';
 }): JSX.Element {
+  const f = useStatsFormat();
+  const { t } = f;
   const data = daily.map((d, i) => ({
     ...d,
     tokens: d.input_tokens + d.output_tokens,
@@ -53,7 +49,7 @@ export function DailyTokensChart({
           <CartesianGrid stroke={GRID} vertical={false} />
           <XAxis
             dataKey="date"
-            tickFormatter={fmtDay}
+            tickFormatter={(v) => f.day(v as string)}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={{ stroke: '#e5e7eb' }}
@@ -64,24 +60,28 @@ export function DailyTokensChart({
             tickLine={false}
             axisLine={false}
             width={44}
-            tickFormatter={(v) => fmtCompact(v as number)}
+            tickFormatter={(v) => f.compact(v as number)}
           />
           <Tooltip
             cursor={{ fill: 'rgba(42,120,214,0.06)' }}
             contentStyle={TOOLTIP_STYLE}
             labelFormatter={(label, payload) =>
               payload?.[0]?.payload?.partial
-                ? `${fmtDay(label as string)} · partial day`
-                : fmtDay(label as string)
+                ? f.partialDay(label as string)
+                : f.day(label as string)
             }
             formatter={(_value, _name, item) => {
               const d = item.payload as (typeof data)[number];
               return metric === 'tokens'
                 ? [
-                    `${fmtCompact(d.tokens)} (${fmtCompact(d.input_tokens)} in, ${fmtCompact(d.output_tokens)} out)`,
-                    'Tokens',
+                    fill(t('stats.tooltip_tokens', '{total} ({input} in, {output} out)'), {
+                      total: f.compact(d.tokens),
+                      input: f.compact(d.input_tokens),
+                      output: f.compact(d.output_tokens),
+                    }),
+                    t('stats.tokens', 'Tokens'),
                   ]
-                : [fmtCompact(d.requests), 'Requests'];
+                : [f.compact(d.requests), t('stats.requests', 'Requests')];
             }}
           />
           <Bar dataKey={metric} radius={[3, 3, 0, 0]} isAnimationActive={false} maxBarSize={24}>
@@ -120,7 +120,8 @@ export function WeeklyLinesChart({
     for (const s of series) row[s.key] = s.values[i];
     return row;
   });
-  const label = (week: string) => weekLabel(week, weeks, firstPartial, lastPartial);
+  const f = useStatsFormat();
+  const label = (week: string) => f.week(week, weeks, firstPartial, lastPartial);
   return (
     <div className="h-[200px]">
       <ResponsiveContainer width="100%" height="100%">
@@ -128,7 +129,7 @@ export function WeeklyLinesChart({
           <CartesianGrid stroke={GRID} vertical={false} />
           <XAxis
             dataKey="week"
-            tickFormatter={fmtDay}
+            tickFormatter={(v) => f.day(v as string)}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={{ stroke: '#e5e7eb' }}
@@ -172,6 +173,7 @@ export function KindShareChart({
   firstPartial: boolean;
   lastPartial: boolean;
 }): JSX.Element {
+  const f = useStatsFormat();
   const data = weeks.map((week, i) => ({ week, ...kindWeekly[i] }));
   return (
     <div className="h-[200px]">
@@ -180,7 +182,7 @@ export function KindShareChart({
           <CartesianGrid stroke={GRID} vertical={false} />
           <XAxis
             dataKey="week"
-            tickFormatter={fmtDay}
+            tickFormatter={(v) => f.day(v as string)}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={{ stroke: '#e5e7eb' }}
@@ -198,14 +200,14 @@ export function KindShareChart({
           <Tooltip
             contentStyle={TOOLTIP_STYLE}
             cursor={{ fill: 'rgba(0,0,0,0.03)' }}
-            labelFormatter={(w) => weekLabel(w as string, weeks, firstPartial, lastPartial)}
-            formatter={(value, name) => [fmtPercent(value as number), name as string]}
+            labelFormatter={(w) => f.week(w as string, weeks, firstPartial, lastPartial)}
+            formatter={(value, name) => [f.percent(value as number), name as string]}
           />
           {KIND_ORDER.map((kind) => (
             <Bar
               key={kind}
               dataKey={kind}
-              name={KIND_LABELS[kind]}
+              name={f.kind(kind)}
               stackId="share"
               fill={KIND_COLORS[kind]}
               stroke="#ffffff"

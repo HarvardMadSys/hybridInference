@@ -2,17 +2,25 @@
 
 import { useEffect, useId, useRef } from 'react';
 import type { AccountChangeReason } from '@/lib/api/client';
+import { useT, type Translate } from '@/components/providers/useT';
 
-const WORDING: Record<AccountChangeReason, { title: string; body: string }> = {
-  switched: {
-    title: 'You switched accounts in another tab',
-    body: 'This browser is now using a different account. Reload this page to continue with that account.',
-  },
-  'signed-out': {
-    title: 'You signed out in another tab',
-    body: 'This account is no longer signed in on this browser. Reload this page to choose an account.',
-  },
-};
+function wordingFor(reason: AccountChangeReason, t: Translate): { title: string; body: string } {
+  return reason === 'switched'
+    ? {
+        title: t('chrome.account_changed.switched_title', 'You switched accounts in another tab'),
+        body: t(
+          'chrome.account_changed.switched_body',
+          'This browser is now using a different account. Reload this page to continue with that account.',
+        ),
+      }
+    : {
+        title: t('chrome.account_changed.signed_out_title', 'You signed out in another tab'),
+        body: t(
+          'chrome.account_changed.signed_out_body',
+          'This account is no longer signed in on this browser. Reload this page to choose an account.',
+        ),
+      };
+}
 
 /**
  * Covers the page once another tab has moved this browser to a different
@@ -24,7 +32,8 @@ const WORDING: Record<AccountChangeReason, { title: string; body: string }> = {
  * dismissed: a dismissed notice would leave a page whose every action fails.
  */
 export function AccountChangedNotice({ reason }: { reason: AccountChangeReason }) {
-  const wording = WORDING[reason];
+  const t = useT();
+  const wording = wordingFor(reason, t);
   const titleId = useId();
   const bodyId = useId();
   const reloadRef = useRef<HTMLButtonElement>(null);
@@ -55,7 +64,7 @@ export function AccountChangedNotice({ reason }: { reason: AccountChangeReason }
             onClick={() => window.location.reload()}
             className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2"
           >
-            Reload
+            {t('chrome.account_changed.reload', 'Reload')}
           </button>
         </div>
       </div>

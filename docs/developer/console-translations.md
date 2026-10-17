@@ -27,14 +27,17 @@ const t = useT();
 - Translate whole sentences, and put values in with `fill()` from
   `@/lib/utils/interpolate`, so a language with a different word order can move
   them: `fill(t('chrome.account_menu.switched', 'Switched to {name}'), { name })`.
-- A server component uses the same pair through `translate` from
-  `@/lib/i18n/translate`.
+- A server component gets the same function, in the request's language, from
+  `await requestTranslator()` (`@/lib/i18n/request.server`).
+- Dates and numbers go through `useFormatter()` (`@/lib/i18n/useFormatter`)
+  rather than `toLocaleString()`, so a Chinese page does not print an English
+  month beside its words. Amounts stay in US dollars.
 - Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so the
   catalog check can read them.
 
 Administration pages (`/dashboard/admin`) are for operators, not users, and stay
 in English: they do not go through `t()`, and their container is marked
-`lang="en"`.
+`lang="en"`. The rest of what stays in English is listed below.
 
 ## The catalog
 
@@ -72,11 +75,19 @@ prune in the same change that edits the English.
 
 ## What stays in English
 
-- The Terms of Service and the research-consent statements at sign-up. They
-  are binding text; a translation needs review by whoever owns the terms and
-  the study, so the catalog leaves them out on purpose.
+- What only the people running the deployment see: administration
+  (`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, and
+  the API Playground, which only internal accounts can open.
+- The last-resort error screens (`global-error` and the boundary around the
+  whole application), which render outside the language provider.
 - Error messages from the gateway, model names, and Markdown written by
   administrators (broadcasts, site updates).
+
+The Terms of Service and the research-consent statements at sign-up are
+translated in full, and the Chinese is shown on its own, not as a reference
+beside the English. Because they are binding, an edit to the English text must
+come with its translation in the same change; the catalog test refuses a stale
+entry.
 
 ## Chinese terminology
 

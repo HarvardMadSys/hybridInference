@@ -1,13 +1,12 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { fill } from '@/lib/utils/interpolate';
-import { translate } from '@/lib/i18n/translate';
+import { requestTranslator } from '@/lib/i18n/request.server';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { pageMetadata } from '@/config/site-metadata';
 
 export async function generateMetadata(): Promise<Metadata> {
-  const siteConfig = await loadRuntimeSiteConfig();
-  const t = translate;
+  const [siteConfig, t] = await Promise.all([loadRuntimeSiteConfig(), requestTranslator()]);
   return pageMetadata(
     siteConfig,
     t('meta.team.title', 'Team'),
@@ -27,11 +26,8 @@ function initials(name: string): string {
 }
 
 export default async function TeamPage(): Promise<JSX.Element> {
-  const { branding } = await loadRuntimeSiteConfig();
-  // The console has one language: `translate` returns the English literal each
-  // call site passes. It exists as a function so a server page reads the same
-  // way as a client one.
-  const t = translate;
+  // Rendered on the server, so it reads the request's language itself.
+  const [{ branding }, t] = await Promise.all([loadRuntimeSiteConfig(), requestTranslator()]);
   const members = branding.team;
   if (members.length === 0) notFound();
   return (

@@ -1,3 +1,5 @@
+import { useT, type Translate } from '@/components/providers/useT';
+
 interface UseCaseApp {
   name: string;
   href?: string;
@@ -10,10 +12,13 @@ interface UseCase {
   icon: JSX.Element;
 }
 
-const USE_CASES: UseCase[] = [
+const useCaseList = (t: Translate): UseCase[] => [
   {
-    title: 'Coding agents',
-    body: 'Power autonomous and assisted coding workflows with frontier models via OpenAI- or Anthropic-compatible endpoints.',
+    title: t('landing.use_cases.coding_title', 'Coding agents'),
+    body: t(
+      'landing.use_cases.coding_body',
+      'Power autonomous and assisted coding workflows with frontier models via OpenAI- or Anthropic-compatible endpoints.',
+    ),
     apps: [
       { name: 'Claude Code', href: 'https://claude.com/claude-code' },
       { name: 'Kilo', href: 'https://kilocode.ai' },
@@ -36,8 +41,11 @@ const USE_CASES: UseCase[] = [
     ),
   },
   {
-    title: 'Personal assistants',
-    body: 'Build conversational assistants and agents that plan, reason, and act on your behalf.',
+    title: t('landing.use_cases.assistants_title', 'Personal assistants'),
+    body: t(
+      'landing.use_cases.assistants_body',
+      'Build conversational assistants and agents that plan, reason, and act on your behalf.',
+    ),
     apps: [{ name: 'Hermes' }, { name: 'OpenClaw' }],
     icon: (
       <svg
@@ -59,20 +67,26 @@ const USE_CASES: UseCase[] = [
 ];
 
 export function UseCases(): JSX.Element {
+  const t = useT();
   return (
-    <section className="w-full py-16" aria-label="use cases">
+    <section className="w-full py-16" aria-label={t('landing.use_cases.label', 'use cases')}>
       <div className="mx-auto max-w-3xl text-center">
-        <p className="text-sm font-semibold uppercase tracking-wider text-crimson">Use cases</p>
+        <p className="text-sm font-semibold uppercase tracking-wider text-crimson">
+          {t('landing.use_cases.eyebrow', 'Use cases')}
+        </p>
         <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Supported use cases
+          {t('landing.use_cases.title', 'Supported use cases')}
         </h2>
         <p className="mt-3 text-base text-gray-600">
-          Drop us in wherever you need an OpenAI- or Anthropic-compatible endpoint.
+          {t(
+            'landing.use_cases.subtitle',
+            'Drop us in wherever you need an OpenAI- or Anthropic-compatible endpoint.',
+          )}
         </p>
       </div>
 
       <div className="mx-auto mt-12 grid max-w-4xl gap-6 sm:grid-cols-2">
-        {USE_CASES.map((useCase) => (
+        {useCaseList(t).map((useCase) => (
           <div
             key={useCase.title}
             className="group relative overflow-hidden rounded-2xl border border-gray-200 bg-white p-6 shadow-subtle transition-all duration-200 hover:-translate-y-1 hover:border-crimson/30 hover:shadow-card"
@@ -93,7 +107,9 @@ export function UseCases(): JSX.Element {
                       className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700 transition-colors duration-200 hover:border-crimson hover:bg-crimson/5 hover:text-crimson"
                     >
                       {app.name}
-                      <span className="sr-only"> (opens in a new tab)</span>
+                      <span className="sr-only">
+                        {t('common.opens_new_tab', ' (opens in a new tab)')}
+                      </span>
                     </a>
                   ) : (
                     <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700">

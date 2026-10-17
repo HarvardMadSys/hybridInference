@@ -2,7 +2,7 @@ import { cookies, headers } from 'next/headers';
 
 import { LOCALE_COOKIE, resolveRequestLocale } from './choice';
 import type { Locale } from './locales';
-import type { Catalog } from './translate';
+import { catalogTranslator, type Catalog, type Translate } from './translate';
 import zhCN from './messages/zh-CN.json';
 
 /**
@@ -17,6 +17,15 @@ const CATALOGS: Readonly<Partial<Record<Locale, Catalog>>> = {
 /** A language's catalog; `undefined` for English, which is the source. */
 export function catalogFor(locale: Locale): Catalog | undefined {
   return CATALOGS[locale];
+}
+
+/**
+ * A translator for a server component, in this request's language — what
+ * `useT` is to a client one. It has no module wording: a module's messages
+ * reach only the public pages, which are client components.
+ */
+export async function requestTranslator(): Promise<Translate> {
+  return catalogTranslator(catalogFor(await requestLocale()));
 }
 
 /** This request's console language: the reader's choice, else their browser's. */

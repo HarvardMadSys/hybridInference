@@ -1,36 +1,45 @@
+import { useT, type Translate } from '@/components/providers/useT';
+
 interface Step {
   number: string;
   title: string;
   body: string;
 }
 
-const STEPS: Step[] = [
+const stepList = (t: Translate): Step[] => [
   {
     number: '1',
-    title: 'Sign up',
-    body: 'Create a free account with your email — no credit card needed.',
+    title: t('landing.steps.signup_title', 'Sign up'),
+    body: t(
+      'landing.steps.signup_body',
+      'Create a free account with your email — no credit card needed.',
+    ),
   },
   {
     number: '2',
-    title: 'Create an API key',
-    body: 'Generate a key from your dashboard in one click.',
+    title: t('landing.steps.key_title', 'Create an API key'),
+    body: t('landing.steps.key_body', 'Generate a key from your dashboard in one click.'),
   },
   {
     number: '3',
-    title: 'Call the API',
-    body: 'Use any OpenAI-compatible client. Just change the base URL.',
+    title: t('landing.steps.call_title', 'Call the API'),
+    body: t(
+      'landing.steps.call_body',
+      'Use any OpenAI-compatible client. Just change the base URL.',
+    ),
   },
 ];
 
 export function HowItWorks(): JSX.Element {
+  const t = useT();
   return (
     <section className="w-full py-16">
       <div className="mx-auto max-w-3xl text-center">
         <p className="text-sm font-semibold uppercase tracking-wider text-crimson">
-          Getting started
+          {t('landing.steps.eyebrow', 'Getting started')}
         </p>
         <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Get started in three steps
+          {t('landing.steps.title', 'Get started in three steps')}
         </h2>
       </div>
 
@@ -40,7 +49,7 @@ export function HowItWorks(): JSX.Element {
           className="absolute left-0 right-0 top-6 hidden h-px bg-gradient-to-r from-transparent via-crimson/30 to-transparent md:block"
         />
         <ol className="relative grid gap-10 md:grid-cols-3">
-          {STEPS.map((step) => (
+          {stepList(t).map((step) => (
             <li key={step.number} className="flex flex-col items-center text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-crimson font-serif text-xl font-bold text-white shadow-card ring-4 ring-white">
                 {step.number}

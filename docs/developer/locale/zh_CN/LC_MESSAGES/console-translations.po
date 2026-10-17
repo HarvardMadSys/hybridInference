@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-17 05:06-0400\n"
+"POT-Creation-Date: 2026-10-17 05:40-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -83,34 +83,47 @@ msgstr ""
 
 #: ../developer/console-translations.md:30
 msgid ""
-"A server component uses the same pair through `translate` from "
-"`@/lib/i18n/translate`."
-msgstr "服务端组件通过 `@/lib/i18n/translate` 中的 `translate` 使用同样的一对参数。"
+"A server component gets the same function, in the request's language, "
+"from `await requestTranslator()` (`@/lib/i18n/request.server`)."
+msgstr ""
+"服务端组件通过 `await "
+"requestTranslator()`（`@/lib/i18n/request.server`）拿到同样的函数，语言跟随当前请求。"
 
 #: ../developer/console-translations.md:32
+msgid ""
+"Dates and numbers go through `useFormatter()` (`@/lib/i18n/useFormatter`)"
+" rather than `toLocaleString()`, so a Chinese page does not print an "
+"English month beside its words. Amounts stay in US dollars."
+msgstr ""
+"日期和数字通过 `useFormatter()`（`@/lib/i18n/useFormatter`）格式化，而不是直接调用 "
+"`toLocaleString()`，这样中文页面上不会冒出英文的月份。金额仍然以美元显示。"
+
+#: ../developer/console-translations.md:35
 msgid ""
 "Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so"
 " the catalog check can read them."
 msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a' : 'b'`），字典检查才能读出它们。"
 
-#: ../developer/console-translations.md:35
+#: ../developer/console-translations.md:38
 msgid ""
 "Administration pages (`/dashboard/admin`) are for operators, not users, "
 "and stay in English: they do not go through `t()`, and their container is"
-" marked `lang=\"en\"`."
-msgstr "管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：它们不经过 `t()`，容器标注为 `lang=\"en\"`。"
+" marked `lang=\"en\"`. The rest of what stays in English is listed below."
+msgstr ""
+"管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：它们不经过 `t()`，容器标注为 "
+"`lang=\"en\"`。其他保留英文的内容见下文。"
 
-#: ../developer/console-translations.md:39
+#: ../developer/console-translations.md:42
 msgid "The catalog"
 msgstr "字典"
 
-#: ../developer/console-translations.md:41
+#: ../developer/console-translations.md:44
 msgid ""
 "`apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the "
 "English it translates and the translation:"
 msgstr "`apps/frontend/src/lib/i18n/messages/zh-CN.json` 把每个 slot 映射到它所翻译的英文以及译文："
 
-#: ../developer/console-translations.md:48
+#: ../developer/console-translations.md:51
 msgid ""
 "The runtime uses an entry only while its `source` is exactly the English "
 "the call site passes. Changing a sentence therefore shows the new English"
@@ -122,17 +135,17 @@ msgstr ""
 "与调用处传入的英文完全一致时，运行时才使用它。因此修改一句英文后，页面会显示新的英文，直到重新翻译为止，而不是显示旧句子的译文。在不同位置传入不同英文的"
 " slot 保存一个条目列表，每句英文一条。"
 
-#: ../developer/console-translations.md:54
+#: ../developer/console-translations.md:57
 msgid ""
 "Only the active language's catalog is sent to the browser, as part of the"
 " page; English has none."
 msgstr "只有当前语言的字典会随页面发送到浏览器；英文没有字典。"
 
-#: ../developer/console-translations.md:57
+#: ../developer/console-translations.md:60
 msgid "Checking a catalog"
 msgstr "检查字典"
 
-#: ../developer/console-translations.md:66
+#: ../developer/console-translations.md:69
 #, python-brace-format
 msgid ""
 "The report counts translated, missing, stale (the English changed) and "
@@ -145,28 +158,45 @@ msgstr ""
 "报告统计已翻译、缺失、过期（英文已改）和孤立的条目。缺失和过期的条目回退为英文，不会导致失败。测试套件（`src/lib/i18n/catalog.test.ts`）会在以下情况失败：条目格式错误、译文的"
 " `{placeholders}` 与原文不一致、随镜像发布的字典中存在过期或孤立条目。请在修改英文的同一个变更里重新翻译或清理。"
 
-#: ../developer/console-translations.md:73
+#: ../developer/console-translations.md:76
 msgid "What stays in English"
 msgstr "保留英文的内容"
 
-#: ../developer/console-translations.md:75
-msgid ""
-"The Terms of Service and the research-consent statements at sign-up. They"
-" are binding text; a translation needs review by whoever owns the terms "
-"and the study, so the catalog leaves them out on purpose."
-msgstr "服务条款，以及注册时的研究知情同意声明。它们是有约束力的文本，翻译需要由条款和研究的负责方审核，因此字典有意不包含它们。"
-
 #: ../developer/console-translations.md:78
+msgid ""
+"What only the people running the deployment see: administration "
+"(`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, "
+"and the API Playground, which only internal accounts can open."
+msgstr ""
+"只有运维和内部人员会看到的页面：管理后台（`/dashboard/admin`）、首次运行设置（`/setup`）、配置页，以及只有 "
+"internal 账户能打开的 API 调试台。"
+
+#: ../developer/console-translations.md:81
+msgid ""
+"The last-resort error screens (`global-error` and the boundary around the"
+" whole application), which render outside the language provider."
+msgstr "最后兜底的错误页（`global-error` 以及包住整个应用的错误边界），它们渲染在语言 provider 之外。"
+
+#: ../developer/console-translations.md:83
 msgid ""
 "Error messages from the gateway, model names, and Markdown written by "
 "administrators (broadcasts, site updates)."
 msgstr "网关返回的错误信息、模型名称，以及管理员撰写的 Markdown 内容（广播、站点更新）。"
 
-#: ../developer/console-translations.md:81
+#: ../developer/console-translations.md:86
+msgid ""
+"The Terms of Service and the research-consent statements at sign-up are "
+"translated in full, and the Chinese is shown on its own, not as a "
+"reference beside the English. Because they are binding, an edit to the "
+"English text must come with its translation in the same change; the "
+"catalog test refuses a stale entry."
+msgstr "服务条款和注册时的研究知情同意声明已完整翻译，中文版单独展示，并不是附在英文旁边的参考译文。由于它们具有约束力，修改英文原文时必须在同一个变更里更新译文；字典测试会拒绝过期条目。"
+
+#: ../developer/console-translations.md:92
 msgid "Chinese terminology"
 msgstr "中文术语"
 
-#: ../developer/console-translations.md:83
+#: ../developer/console-translations.md:94
 msgid ""
 "Keep one Chinese term per English term across the console, as the docs do"
 " (see [Chinese terminology](translations.md#chinese-terminology))."
@@ -235,4 +265,13 @@ msgstr "API key、token、model id、endpoint、Playground"
 #: ../developer/console-translations.md
 msgid "unchanged"
 msgstr "保持英文"
+
+#~ msgid ""
+#~ "The Terms of Service and the "
+#~ "research-consent statements at sign-up. "
+#~ "They are binding text; a translation "
+#~ "needs review by whoever owns the "
+#~ "terms and the study, so the "
+#~ "catalog leaves them out on purpose."
+#~ msgstr "服务条款，以及注册时的研究知情同意声明。它们是有约束力的文本，翻译需要由条款和研究的负责方审核，因此字典有意不包含它们。"
 

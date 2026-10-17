@@ -1,16 +1,20 @@
 'use client';
 
 import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useT, type Translate } from '@/components/providers/useT';
 interface Feature {
   title: string;
   body: string;
   icon: JSX.Element;
 }
 
-const FEATURES: Feature[] = [
+const featureList = (t: Translate): Feature[] => [
   {
-    title: 'Free to use',
-    body: 'No credit card required. Generous quota for research and prototyping.',
+    title: t('landing.features.free_title', 'Free to use'),
+    body: t(
+      'landing.features.free_body',
+      'No credit card required. Generous quota for research and prototyping.',
+    ),
     icon: (
       <svg
         className="h-6 w-6"
@@ -29,8 +33,11 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    title: 'Drop-in OpenAI replacement',
-    body: 'Point your existing OpenAI client at our base_url. No code changes required.',
+    title: t('landing.features.dropin_title', 'Drop-in OpenAI replacement'),
+    body: t(
+      'landing.features.dropin_body',
+      'Point your existing OpenAI client at our base_url. No code changes required.',
+    ),
     icon: (
       <svg
         className="h-6 w-6"
@@ -49,8 +56,11 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    title: 'Frontier models',
-    body: 'Reach every model your deployment routes to behind a single unified API.',
+    title: t('landing.features.models_title', 'Frontier models'),
+    body: t(
+      'landing.features.models_body',
+      'Reach every model your deployment routes to behind a single unified API.',
+    ),
     icon: (
       <svg
         className="h-6 w-6"
@@ -72,20 +82,27 @@ const FEATURES: Feature[] = [
 
 export function Features(): JSX.Element {
   const branding = useBranding();
+  const t = useT();
   return (
     <section className="w-full py-16">
       <div className="mx-auto max-w-3xl text-center">
-        <p className="text-sm font-semibold uppercase tracking-wider text-crimson">Features</p>
+        <p className="text-sm font-semibold uppercase tracking-wider text-crimson">
+          {t('landing.features.eyebrow', 'Features')}
+        </p>
         <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Why <span className="text-crimson">{branding.siteHost}</span>
+          {t('landing.features.why', 'Why')}{' '}
+          <span className="text-crimson">{branding.siteHost}</span>
         </h2>
         <p className="mt-3 text-base text-gray-600">
-          Everything you need to build and ship LLM-powered applications.
+          {t(
+            'landing.features.subtitle',
+            'Everything you need to build and ship LLM-powered applications.',
+          )}
         </p>
       </div>
 
       <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {FEATURES.map((feature) => (
+        {featureList(t).map((feature) => (
           <div
             key={feature.title}
             className="group relative overflow-hidden rounded-2xl border border-gray-200 bg-white p-6 shadow-subtle transition-all duration-200 hover:-translate-y-1 hover:border-crimson/30 hover:shadow-card"
