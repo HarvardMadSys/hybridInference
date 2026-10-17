@@ -85,6 +85,20 @@ class PhoneSignupResponse(BaseModel):
     requires_approval: bool = False
 
 
+class BindEmailRequest(BaseModel):
+    """Bind or update the email address on an authenticated account."""
+
+    email: EmailStr
+
+
+class BindEmailResponse(BaseModel):
+    """Result of requesting or completing email binding."""
+
+    message: str
+    email: str
+    email_verified: bool
+
+
 # Authentication request/response schemas
 class SignupRequest(BaseModel):
     """User signup request."""
@@ -172,6 +186,7 @@ class UserInfo(BaseModel):
     phone_verified: bool = False
     has_password: bool = True
     user_name: str | None = None
+    avatar_url: str | None = None
     role: str = "free"
     status: str = "active"
     email_verified: bool = False
@@ -265,10 +280,24 @@ class SetupAdminRequest(BaseModel):
         return value
 
 
+AVATAR_URL_PATTERN = re.compile(r"^data:image/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$")
+
+
 class UserProfileUpdate(BaseModel):
     """User profile update request."""
 
     user_name: UserName | None = None
+    avatar_url: str | None = Field(default=None, max_length=65536)
+
+    @field_validator("avatar_url")
+    @classmethod
+    def _check_avatar_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not AVATAR_URL_PATTERN.fullmatch(value):
+            raise ValueError("Portrait must be a PNG, JPEG, or WebP data URL")
+        return value
 
 
 class LLMProberLayoutState(BaseModel):
@@ -429,9 +458,9 @@ class ResendVerificationResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """Change password request (for logged-in users)."""
+    """Change or set password request (for logged-in users)."""
 
-    old_password: str
+    old_password: str = ""
     new_password: str  # Validate strength in handler to return 400
 
 

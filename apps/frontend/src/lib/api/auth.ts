@@ -111,6 +111,21 @@ export async function loginPhone(data: { phone: string; code: string }): Promise
   return result;
 }
 
+export interface BindEmailResponse {
+  message: string;
+  email: string;
+  email_verified: boolean;
+}
+
+export async function bindEmail(data: { email: string }): Promise<BindEmailResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/auth/email/bind', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return jsonOrThrow(resp);
+}
+
 export async function bindPhone(data: {
   phone: string;
   code: string;

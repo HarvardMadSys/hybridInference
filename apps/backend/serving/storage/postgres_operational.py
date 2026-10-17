@@ -569,9 +569,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id TEXT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 expires_at TIMESTAMPTZ NOT NULL,
-                used_at TIMESTAMPTZ
+                used_at TIMESTAMPTZ,
+                pending_email TEXT
             )
         """)
+        await apply_column_migrations(
+            conn,
+            "email_verification_tokens",
+            [
+                (
+                    "pending_email",
+                    "ALTER TABLE email_verification_tokens ADD COLUMN IF NOT EXISTS pending_email TEXT",
+                ),
+            ],
+        )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_email_verification_user "
             "ON email_verification_tokens(user_id)"
@@ -2533,22 +2544,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         token: str,
         user_id: str,
         expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Insert a new email verification token."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO email_verification_tokens (token, user_id, expires_at) "
-                "VALUES ($1, $2, $3)",
-                token,
-                user_id,
-                expires_at,
-            )
+            if pending_email is not None:
+                await conn.execute(
+                    "INSERT INTO email_verification_tokens "
+                    "(token, user_id, expires_at, pending_email) "
+                    "VALUES ($1, $2, $3, $4)",
+                    token,
+                    user_id,
+                    expires_at,
+                    pending_email,
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO email_verification_tokens (token, user_id, expires_at) "
+                    "VALUES ($1, $2, $3)",
+                    token,
+                    user_id,
+                    expires_at,
+                )
 
     async def get_verification_token(self, token: str) -> Row | None:
         """Fetch verification token row."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT token, user_id, created_at, expires_at, used_at "
+                "SELECT token, user_id, created_at, expires_at, used_at, pending_email "
                 "FROM email_verification_tokens WHERE token = $1",
                 token,
             )

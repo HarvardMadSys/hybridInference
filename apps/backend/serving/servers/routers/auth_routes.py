@@ -33,6 +33,8 @@ from serving.config.settings import get_signup_notify_emails, is_admin_email, se
 from serving.exceptions import AccountSuspendedError
 from serving.schemas_auth import (
     AccountsResponse,
+    BindEmailRequest,
+    BindEmailResponse,
     ForgotPasswordRequest,
     LoginRequest,
     LoginResponse,
@@ -738,10 +740,33 @@ async def verify_email(
     if not token_row:
         raise HTTPException(status_code=400, detail="Invalid verification token.")
 
+    pending_email = token_row.get("pending_email")
+
     if token_row["used_at"]:
         user_row = await op_store.get_user_by_id(token_row["user_id"])
         if not user_row:
             raise HTTPException(status_code=400, detail="Invalid verification token.")
+
+        if pending_email:
+            if user_row.get("email") == pending_email and user_row.get("email_verified"):
+                return VerifyEmailResponse(
+                    message="Your email has already been verified. You can log in now.",
+                    email_verified=True,
+                )
+            if token_row["expires_at"] < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Verification token has expired. Please request a new one.",
+                )
+            if not await op_store.bind_user_email(token_row["user_id"], pending_email):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Email address cannot be bound to this account.",
+                )
+            return VerifyEmailResponse(
+                message="Your email has already been verified. You can log in now.",
+                email_verified=True,
+            )
 
         if not user_row["email_verified"]:
             if token_row["expires_at"] < datetime.now(timezone.utc):
@@ -767,8 +792,14 @@ async def verify_email(
             detail="Verification token has expired. Please request a new one.",
         )
 
-    # Mark email as verified and token as used
-    await op_store.mark_user_email_verified(token_row["user_id"])
+    if pending_email:
+        if not await op_store.bind_user_email(token_row["user_id"], pending_email):
+            raise HTTPException(
+                status_code=409,
+                detail="Email address cannot be bound to this account.",
+            )
+    else:
+        await op_store.mark_user_email_verified(token_row["user_id"])
     await op_store.mark_verification_used(token)
 
     logger.info(f"Email verified for user: {token_row['user_id']}")
@@ -916,3 +947,94 @@ async def resend_verification(
     logger.info(f"Verification email resent for user: {user_row['id']}")
 
     return generic_response
+
+
+@router.post("/email/bind", response_model=BindEmailResponse)
+async def bind_email(
+    request: Request,
+    body: BindEmailRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> BindEmailResponse:
+    """Bind or update the email address on an authenticated account."""
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    normalized_email = body.email.strip().lower()
+    if is_email_domain_blocked(normalized_email):
+        raise HTTPException(status_code=400, detail="This email domain is not allowed")
+
+    user_id = current_user["user_id"]
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row or user_row.get("status") != "active":
+        raise HTTPException(
+            status_code=403, detail="Account is not active. Please contact support."
+        )
+
+    if (user_row.get("email") or "").strip().lower() == normalized_email and user_row.get(
+        "email_verified"
+    ):
+        return BindEmailResponse(
+            message="This email address is already bound to your account.",
+            email=normalized_email,
+            email_verified=True,
+        )
+
+    existing_user = await op_store.get_user_by_email(normalized_email)
+    if existing_user and existing_user["id"] != user_id:
+        raise HTTPException(
+            status_code=409, detail="Email address cannot be bound to this account."
+        )
+
+    require_verification = await email_verification_required()
+    client_ip = get_client_ip(request)
+
+    if require_verification:
+        if not is_email_enabled():
+            raise HTTPException(
+                status_code=503, detail="Email verification is currently unavailable."
+            )
+        verification_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+        await op_store.delete_user_verification_tokens(user_id)
+        await op_store.create_verification_token(
+            token=verification_token,
+            user_id=user_id,
+            expires_at=expires_at,
+            pending_email=normalized_email,
+        )
+        base_url = get_base_url(request)
+        background_tasks.add_task(
+            send_verification_email, normalized_email, verification_token, base_url
+        )
+        await log_admin_action(
+            db_logger,
+            client_ip,
+            "request_bind_email",
+            user_id,
+            {"email": normalized_email},
+        )
+        return BindEmailResponse(
+            message="Verification email sent. Please check your inbox to complete binding.",
+            email=normalized_email,
+            email_verified=False,
+        )
+
+    if not await op_store.bind_user_email(user_id, normalized_email):
+        raise HTTPException(
+            status_code=409, detail="Email address cannot be bound to this account."
+        )
+    await log_admin_action(
+        db_logger,
+        client_ip,
+        "bind_email",
+        user_id,
+        {"email": normalized_email},
+    )
+    return BindEmailResponse(
+        message="Email address updated successfully.",
+        email=normalized_email,
+        email_verified=True,
+    )

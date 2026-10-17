@@ -49,11 +49,13 @@ describe('account phone binding', () => {
 
   it('offers binding for an existing email account when SMS is enabled', () => {
     renderSettings(true);
+    expect(screen.getByText('Verified email: user@example.test')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change Email' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Bind mobile number' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Change Password' })).toBeInTheDocument();
   });
 
-  it('shows verified phone identity and retains profile settings for a phone-only account', () => {
+  it('shows verified phone identity, offers email binding and password setup, and retains profile settings for a phone-only account', () => {
     user = {
       ...user,
       email: null,
@@ -63,6 +65,8 @@ describe('account phone binding', () => {
     };
     renderSettings(true);
     expect(screen.getByText('Verified mobile number: +8613812345678')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send verification email' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Set Password' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Change Username' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Bind mobile number' })).not.toBeInTheDocument();

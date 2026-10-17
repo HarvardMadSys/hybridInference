@@ -180,6 +180,13 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
         return LLMProberLayoutState()
 
 
+def _extract_avatar_url(preferences: Any) -> str | None:
+    """Extract the user's portrait from preferences, if set."""
+    prefs = _coerce_preferences(preferences)
+    raw = prefs.get("avatar_url")
+    return raw if isinstance(raw, str) and raw.strip() else None
+
+
 async def get_default_daily_quota_for_role(
     role: str,
     runtime_settings: "RuntimeSettings | None",
@@ -269,6 +276,7 @@ async def get_current_user_info(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
+        avatar_url=_extract_avatar_url(user_row.get("preferences")),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -802,6 +810,16 @@ async def update_profile(
             current_user["user_id"], user_name=update_data["user_name"]
         )
 
+    if "avatar_url" in update_data:
+        preferences = _coerce_preferences(
+            await op_store.get_user_preferences(current_user["user_id"])
+        )
+        if update_data["avatar_url"]:
+            preferences["avatar_url"] = update_data["avatar_url"]
+        else:
+            preferences.pop("avatar_url", None)
+        await op_store.update_user_preferences(current_user["user_id"], preferences)
+
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -816,6 +834,7 @@ async def update_profile(
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
         user_name=user_row["user_name"],
+        avatar_url=_extract_avatar_url(user_row.get("preferences")),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -846,16 +865,16 @@ async def change_password(
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not user_row.get("password_hash"):
-        raise HTTPException(400, "This account uses phone verification and has no password.")
+    if user_row.get("password_hash"):
+        if not body.old_password or not password_utils.verify_password(
+            body.old_password, user_row["password_hash"]
+        ):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
 
-    if not password_utils.verify_password(body.old_password, user_row["password_hash"]):
-        raise HTTPException(status_code=400, detail="Current password is incorrect.")
-
-    if body.new_password == body.old_password:
-        raise HTTPException(
-            status_code=400, detail="New password must be different from current password."
-        )
+        if body.new_password == body.old_password:
+            raise HTTPException(
+                status_code=400, detail="New password must be different from current password."
+            )
 
     new_password_hash = password_utils.hash_password(body.new_password)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)

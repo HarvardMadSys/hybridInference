@@ -8,7 +8,18 @@ import type { AccountSummary } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel, userDisplayName } from '@/lib/utils/userLabel';
 
-function Initial({ name }: { name: string }) {
+function Initial({ name, avatarUrl }: { name: string; avatarUrl?: string | null }) {
+  if (avatarUrl && avatarUrl.startsWith('data:image/')) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={avatarUrl}
+        alt=""
+        aria-hidden="true"
+        className="h-7 w-7 shrink-0 rounded-full object-cover ring-1 ring-gray-900/10"
+      />
+    );
+  }
   return (
     <span
       aria-hidden="true"
@@ -118,7 +129,7 @@ export function AccountMenu() {
         onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
       >
-        <Initial name={userDisplayName(user)} />
+        <Initial name={userDisplayName(user)} avatarUrl={user.avatar_url} />
         <span className="hidden max-w-[10rem] truncate sm:inline">{userDisplayName(user)}</span>
       </button>
       {open && (
@@ -129,7 +140,7 @@ export function AccountMenu() {
           className="absolute right-0 z-40 mt-2 w-72 rounded-xl bg-white p-2 shadow-lg ring-1 ring-gray-200"
         >
           <div className="flex items-center gap-3 px-3 py-2">
-            <Initial name={userDisplayName(user)} />
+            <Initial name={userDisplayName(user)} avatarUrl={user.avatar_url} />
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-gray-900">
                 {userDisplayName(user)}

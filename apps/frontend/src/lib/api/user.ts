@@ -12,6 +12,7 @@ export interface User {
   phone_verified?: boolean;
   has_password?: boolean;
   user_name?: string;
+  avatar_url?: string | null;
   role: string;
   status: string;
   email_verified: boolean;
@@ -133,7 +134,10 @@ export async function getUsage(period: 'today' | 'month' | 'all' = 'today'): Pro
   return jsonOrThrow<UsageStats>(resp);
 }
 
-export async function updateProfile(data: { user_name?: string }): Promise<User> {
+export async function updateProfile(data: {
+  user_name?: string;
+  avatar_url?: string | null;
+}): Promise<User> {
   const resp = await fetchWithAuth(API_BASE, '/user/profile', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

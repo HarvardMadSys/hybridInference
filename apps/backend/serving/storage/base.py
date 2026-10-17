@@ -133,6 +133,10 @@ class OperationalStore(ABC):
         """Bind a verified phone atomically without replacing or merging identities."""
         raise RuntimeError("Phone authentication is unavailable in this store")
 
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        raise RuntimeError("Email binding is unavailable in this store")
+
     async def reserve_phone_code(self, **fields: Any) -> int:
         """Reserve a send within shared quotas and install an inactive challenge."""
         raise RuntimeError("Phone authentication is unavailable in this store")
@@ -733,6 +737,7 @@ class OperationalStore(ABC):
         token: str,
         user_id: str,
         expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Insert a new email verification token."""
 

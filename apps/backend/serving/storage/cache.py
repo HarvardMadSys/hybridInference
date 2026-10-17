@@ -733,6 +733,16 @@ class CachedOperationalStore(OperationalStore):
             await self._cache.delete_pattern("auth_light:*")
         return bound
 
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        bound = await self._store.bind_user_email(user_id, email)
+        if bound:
+            await self._cache.delete(self._user_key(user_id))
+            await self._cache.delete(self._email_key(email))
+            await self._cache.delete_pattern("auth:*")
+            await self._cache.delete_pattern("auth_light:*")
+        return bound
+
     async def reserve_phone_code(self, **fields: Any) -> int:
         """Reserve a send within shared quotas and install an inactive challenge."""
         return await self._store.reserve_phone_code(**fields)
@@ -793,9 +803,21 @@ class CachedOperationalStore(OperationalStore):
     # -- tokens (pass-through) -----------------------------------------------
 
     async def create_verification_token(
-        self, *, token: str, user_id: str, expires_at: datetime
+        self,
+        *,
+        token: str,
+        user_id: str,
+        expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
+        if pending_email is not None:
+            return await self._store.create_verification_token(
+                token=token,
+                user_id=user_id,
+                expires_at=expires_at,
+                pending_email=pending_email,
+            )
         return await self._store.create_verification_token(
             token=token, user_id=user_id, expires_at=expires_at
         )

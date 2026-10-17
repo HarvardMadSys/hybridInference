@@ -119,6 +119,24 @@ class PostgresPhoneAuthMixin:
         except asyncpg.UniqueViolationError:
             return False
 
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        import asyncpg
+
+        normalized = email.strip().lower()
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "UPDATE users SET email = $2, email_verified = TRUE "
+                    "WHERE id = $1 AND status = 'active' "
+                    "RETURNING id",
+                    user_id,
+                    normalized,
+                )
+            return row is not None
+        except asyncpg.UniqueViolationError:
+            return False
+
     async def reserve_phone_code(
         self,
         *,
