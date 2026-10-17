@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
@@ -95,6 +96,44 @@ class CompletionsLogger:
 
     # -- Routing observation forwarding -------------------------------------
 
+    @staticmethod
+    def classify_outcome(
+        *,
+        success: bool,
+        response_body: Any,
+        usage: dict[str, Any] | None,
+    ) -> CompletionOutcome:
+        """Classify a completed response once, for every routing consumer.
+
+        This is the single authoritative classification point. Both the streaming
+        and non-streaming completion paths funnel through
+        ``record_routing_observation``, so classifying here -- rather than at
+        each downstream consumer -- gives locality admission and endpoint health
+        one shared authority instead of letting each reconstruct a verdict from
+        partial local information.
+
+        Transport success is not semantic success: a provider can answer HTTP 200
+        with a well-formed body whose only content is a warmup notice. On the
+        success path the upstream status is necessarily 2xx (a failure would have
+        raised), so the status is known without re-reading the response. The
+        failure path has no body worth trusting and reports as a provider error.
+        """
+        if not success:
+            return CompletionOutcome.PROVIDER_ERROR
+
+        content = ""
+        if isinstance(response_body, dict):
+            choices = response_body.get("choices") or [{}]
+            message = (choices[0] or {}).get("message") or {}
+            content = message.get("content") or message.get("reasoning_content") or ""
+
+        return classify_completion_outcome(
+            content=content if isinstance(content, str) else None,
+            usage=usage,
+            http_status=200,
+            terminal=True,
+        )
+
     def record_routing_observation(
         self,
         active_router: Any,
@@ -108,6 +147,7 @@ class CompletionsLogger:
         completion_tokens: int,
         success: bool,
         cached_tokens: int | None = None,
+        response_body: Any = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -146,12 +186,18 @@ class CompletionsLogger:
                     success=False,
                     request_id=request_id,
                     terminal=False,
+                    outcome=CompletionOutcome.PROVIDER_ERROR,
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
             )
 
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
+        outcome = self.classify_outcome(
+            success=success,
+            response_body=response_body,
+            usage={"completion_tokens": completion_tokens} if completion_tokens else None,
+        )
         obs = RoutingObservation(
             model_id=model_id,
             endpoint_id=endpoint_id or provider or "unknown",
@@ -163,6 +209,7 @@ class CompletionsLogger:
             success=success,
             request_id=request_id,
             terminal=True,
+            outcome=outcome,
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
         )
