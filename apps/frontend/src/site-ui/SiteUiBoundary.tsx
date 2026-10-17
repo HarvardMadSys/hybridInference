@@ -67,14 +67,13 @@ export function useModuleRendersRoute(): boolean {
  * take the whole application down with it rather than one page.
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
-  const route = usePublicRoute();
-  if (route === null) {
+  // A console route keeps the neutral appearance and English copy even when it
+  // mounts a shared form. Every public route keeps the module's styling: its
+  // `Landing` and legal frame may read `useAuthAppearance` through the host.
+  if (usePublicRoute() === null) {
     return <ConsoleCopyProvider value={true}>{children}</ConsoleCopyProvider>;
   }
-  if (isAuthRoute(route)) {
-    return <SiteUiProvider>{children}</SiteUiProvider>;
-  }
-  return <>{children}</>;
+  return <SiteUiProvider>{children}</SiteUiProvider>;
 }
 
 /**

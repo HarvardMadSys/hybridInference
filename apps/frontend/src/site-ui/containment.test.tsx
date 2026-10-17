@@ -266,3 +266,21 @@ describe('the root layout', () => {
     expect(screen.queryByText('手机号')).toBeNull();
   });
 });
+
+describe('the module styling', () => {
+  it.each(['/', '/terms', '/login'])(
+    'reaches a module component on the public route %s',
+    async (path) => {
+      const renderRoute = await compileIn({ authAppearance: { form: 'module-form' } });
+      const { useAuthAppearance } = await import('@/site-ui/host');
+      // A module's Landing or legal frame may style a call to action this way.
+      function ModulePart() {
+        return <span data-testid="module-part" className={useAuthAppearance().form} />;
+      }
+
+      renderRoute(path, <ModulePart />);
+
+      expect(screen.getByTestId('module-part')).toHaveClass('module-form');
+    },
+  );
+});
