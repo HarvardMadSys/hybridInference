@@ -159,7 +159,7 @@ class PricingLookup:
                     continue
                 if getattr(config, "endpoint_id", None) == routing.endpoint_id:
                     pricing = getattr(config, "pricing", None)
-                    if isinstance(pricing, dict) and pricing:
+                    if has_scheduled_pricing(config) or (isinstance(pricing, dict) and pricing):
                         return config
                     return None
 
@@ -177,7 +177,7 @@ class PricingLookup:
             if base_url and getattr(config, "base_url", None) and config.base_url != base_url:
                 continue
             pricing = getattr(config, "pricing", None)
-            if isinstance(pricing, dict) and pricing:
+            if has_scheduled_pricing(config) or (isinstance(pricing, dict) and pricing):
                 return config
             return None
         return None

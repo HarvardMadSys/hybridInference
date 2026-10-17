@@ -9,6 +9,8 @@ admin-disabled provider must not serve traffic here.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from routing.endpoints import endpoint_id_for_adapter
@@ -31,6 +33,33 @@ _PRICING = {
     "input_cache_reads": "0",
     "input_cache_writes": "0",
 }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_missing_source_quote_refuses_before_anthropic_dispatch(
+    anthropic_test_client, anthropic_app_services, monkeypatch, stream
+):
+    from serving.utils import context as req_ctx
+
+    adapter = anthropic_app_services.router.routes[SINGLE_MODEL].adapters[0][0]
+    adapter.config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
+    dispatch = AsyncMock()
+    monkeypatch.setattr(adapter, "messages", dispatch)
+    monkeypatch.setattr(adapter, "stream_messages", dispatch)
+    with req_ctx.push(pricing_snapshot=None):
+        response = await anthropic_test_client.post(
+            "/v1/messages",
+            headers=_auth(),
+            json={
+                "model": SINGLE_MODEL,
+                "max_tokens": 16,
+                "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 503
+    dispatch.assert_not_called()
 
 
 def _auth():

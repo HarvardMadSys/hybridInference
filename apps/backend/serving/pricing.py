@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
+
+from fastapi import HTTPException
 
 from serving.utils import context as req_ctx
 
@@ -24,7 +27,7 @@ if TYPE_CHECKING:
 class _DailyPricingWindow:
     start_minute: int
     end_minute: int
-    pricing: dict[str, str]
+    pricing: Mapping[str, str]
 
     def contains(self, minute: int) -> bool:
         if self.start_minute < self.end_minute:
@@ -47,7 +50,7 @@ class PricingSchedule:
     """
 
     effective_at: dt.datetime
-    default: dict[str, str]
+    default: Mapping[str, str]
     windows: tuple[_DailyPricingWindow, ...]
     weekdays: frozenset[int] = frozenset(range(1, 8))
     excluded_dates: frozenset[dt.date] = frozenset()
@@ -134,6 +137,83 @@ class PricingSchedule:
         return {**base, **override}
 
 
+class PricingUnavailableError(HTTPException):
+    """An opted-in source cannot safely price a request at its start time."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=503,
+            detail="Official model pricing is temporarily unavailable. Please retry later.",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PricingSnapshot:
+    """One validated source revision, retained unchanged by in-flight requests."""
+
+    revision: str
+    fetched_at: dt.datetime
+    calendar_years: frozenset[int]
+    tariffs: Mapping[str, PricingSchedule]
+    model_versions: Mapping[str, str]
+
+    def resolve(self, model: str, *, at: dt.datetime) -> dict[str, str]:
+        """Refuse unknown years instead of treating missing holidays as weekdays."""
+        schedule = self.tariffs.get(model)
+        if schedule is None or at.year not in self.calendar_years:
+            raise PricingUnavailableError()
+        return schedule.resolve({}, at=at)
+
+
+_snapshot_provider: Callable[[], PricingSnapshot | None] | None = None
+
+
+def bind_pricing_snapshot_provider(provider: Callable[[], PricingSnapshot | None] | None) -> None:
+    """Attach the boot-owned resolver, or detach it during shutdown."""
+    global _snapshot_provider
+    _snapshot_provider = provider
+
+
+def get_pricing_snapshot() -> PricingSnapshot | None:
+    """Read the current immutable revision, outside any request's frozen view."""
+    return _snapshot_provider() if _snapshot_provider is not None else None
+
+
+def freeze_schedule(schedule: PricingSchedule) -> PricingSchedule:
+    """Copy mutable parser output before exposing it to request contexts."""
+    return PricingSchedule(
+        effective_at=schedule.effective_at,
+        default=MappingProxyType(dict(schedule.default)),
+        windows=tuple(
+            _DailyPricingWindow(
+                window.start_minute, window.end_minute, MappingProxyType(dict(window.pricing))
+            )
+            for window in schedule.windows
+        ),
+        weekdays=schedule.weekdays,
+        excluded_dates=schedule.excluded_dates,
+    )
+
+
+def require_source_pricing(config: Any) -> None:
+    """Check a source-backed endpoint before upstream work can create usage."""
+    if isinstance(getattr(config, "pricing_source", None), Mapping):
+        effective_pricing(config)
+
+
+def require_embedding_pricing(adapter: Any) -> None:
+    """Validate the primary and ordered fallback embedding endpoints."""
+    require_source_pricing(getattr(adapter, "config", None))
+    for child in getattr(adapter, "_adapters", ()):
+        require_embedding_pricing(child)
+
+
+def require_route_pricing(route: Any) -> None:
+    """Check every eligible endpoint, including fallback endpoints, before dispatch."""
+    for entry in getattr(route, "adapters", ()):
+        require_source_pricing(entry[0].config)
+
+
 def pricing_time(at: dt.datetime | None = None) -> dt.datetime:
     """Return a timezone-aware UTC timestamp for pricing resolution.
 
@@ -162,6 +242,17 @@ def effective_pricing(
     For configs without a schedule the original dictionary is returned, which
     preserves existing identity/caching behavior for static pricing consumers.
     """
+    source = getattr(config, "pricing_source", None)
+    if isinstance(source, Mapping):
+        context = req_ctx.get()
+        snapshot = (
+            context[req_ctx.PRICING_SNAPSHOT]
+            if req_ctx.PRICING_SNAPSHOT in context
+            else get_pricing_snapshot()
+        )
+        if not isinstance(snapshot, PricingSnapshot) or source.get("provider") != "deepseek":
+            raise PricingUnavailableError()
+        return snapshot.resolve(str(source.get("model", "")), at=pricing_time(at))
     base = getattr(config, "pricing", None)
     if not isinstance(base, dict):
         return None
@@ -175,7 +266,9 @@ def effective_pricing(
 
 def has_scheduled_pricing(config: ModelConfig | Any) -> bool:
     """Return whether *config* has a dynamic pricing schedule."""
-    return isinstance(getattr(config, "pricing_schedule", None), (PricingSchedule, Mapping))
+    return isinstance(
+        getattr(config, "pricing_schedule", None), (PricingSchedule, Mapping)
+    ) or isinstance(getattr(config, "pricing_source", None), Mapping)
 
 
 def _parse_effective_at(raw: Any) -> dt.datetime:

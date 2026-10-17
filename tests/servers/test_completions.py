@@ -301,6 +301,31 @@ async def test_non_streaming_basic(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_source_pricing_unavailable_is_503_before_any_upstream_usage(
+    completions_client, completions_app, monkeypatch, stream
+):
+    from serving.utils import context as req_ctx
+
+    adapter = completions_app.state.services.router.routes["gpt-4"].adapters[0][0]
+    adapter.config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
+    dispatched = AsyncMock()
+    monkeypatch.setattr(adapter, "chat_completion", dispatched)
+    monkeypatch.setattr(adapter, "stream_chat_completion", dispatched)
+    with req_ctx.push(pricing_snapshot=None):
+        response = await completions_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": stream,
+            },
+        )
+    assert response.status_code == 503
+    dispatched.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_upstream_401_reaches_the_request_log_attributed_and_at_info(
     monkeypatch, mock_db_logger, mock_log_store, caplog
 ):

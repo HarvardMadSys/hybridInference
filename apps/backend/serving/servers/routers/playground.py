@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
+from serving.pricing import require_route_pricing
 from serving.servers.deps import get_router, require_role
 from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
 
@@ -262,6 +263,9 @@ async def playground_chat(
     router_exec=Depends(get_router),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""
+    route = router_exec.routes.get(body.model)
+    if route is not None:
+        require_route_pricing(route)
     effective_messages = body.messages
     if body.system_prompt.strip():
         effective_messages = [

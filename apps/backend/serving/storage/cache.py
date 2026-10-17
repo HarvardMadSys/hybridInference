@@ -1048,6 +1048,19 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_setting(key)
 
+    async def compare_and_set_setting(
+        self,
+        key: str,
+        expected: str | None,
+        value: str,
+        value_type: str,
+        updated_by: str | None,
+    ) -> bool:
+        """Delegate atomic publication without a process-local cache."""
+        return await self._store.compare_and_set_setting(
+            key, expected, value, value_type, updated_by
+        )
+
     async def list_settings(self) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_settings()

@@ -114,6 +114,19 @@ async def models_client(models_app: FastAPI) -> AsyncGenerator[AsyncClient, None
 
 
 @pytest.mark.asyncio
+async def test_unavailable_official_quote_does_not_remove_models_or_report_zero(
+    models_client, models_app
+):
+    config = models_app.state.services.router.routes["canonical-model"].adapters[0][0].config
+    config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
+    with req_ctx.push(pricing_snapshot=None):
+        response = await models_client.get("/v1/models")
+    assert response.status_code == 200
+    entry = next(item for item in response.json()["data"] if item["id"] == "canonical-model")
+    assert entry["pricing"] == {}
+
+
+@pytest.mark.asyncio
 async def test_models_aggregation_and_slug(models_client: AsyncClient):
     resp = await models_client.get("/v1/models")
     assert resp.status_code == status.HTTP_200_OK
