@@ -200,7 +200,9 @@ function LoginContent() {
         />
       ) : (
         <>
-          {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
+          {features.phoneAuth && (
+            <AuthMethodSelector purpose="login" value={method} onChange={setMethod} />
+          )}
           {addMode ? (
             <button type="button" className={skin.linkButton} onClick={() => router.push(nextPath)}>
               {t('auth.accounts.cancel_add', 'Cancel')}
