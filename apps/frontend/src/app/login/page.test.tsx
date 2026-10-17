@@ -105,9 +105,7 @@ describe('signup navigation', () => {
     authState.isAuthenticated = false;
     loginMock.mockResolvedValueOnce(undefined);
     render(<LoginPage />);
-    expect(
-      screen.queryByRole('button', { name: 'Phone verification code' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'SMS code login' })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Email or username'), {
       target: { value: 'email@example.test' },
     });
@@ -131,8 +129,8 @@ describe('signup navigation', () => {
         <LoginPage />
       </SiteConfigProvider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Phone verification code' }));
-    expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'SMS code login' }));
+    expect(screen.queryByLabelText('Email or username')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '13812345678' } });
     fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Log In' }));

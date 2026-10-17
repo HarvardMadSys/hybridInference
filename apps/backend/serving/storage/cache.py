@@ -666,6 +666,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_sessions(user_id)
 
+    async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.revoke_user_sessions(user_id, except_sid=except_sid)
+
     # -- browser sessions (pass-through) -------------------------------------
 
     async def create_browser_session(

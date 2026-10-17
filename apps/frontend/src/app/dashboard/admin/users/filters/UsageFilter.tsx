@@ -62,37 +62,40 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
   };
 
   return (
-    <div className="flex items-center gap-2 text-sm">
-      <label className="flex items-center gap-1">
-        <span className="text-xs text-gray-500">today ≥ $</span>
+    <div className="flex flex-wrap items-center gap-2 text-[13px]">
+      <label className="flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white pl-2.5 pr-1 focus-within:border-gray-400">
+        <span className="whitespace-nowrap text-[12px] text-gray-500">Today ≥ $</span>
         <input
           type="number"
           min={0}
           step="0.01"
           value={todayInput}
           onChange={(e) => handleTodayChange(e.target.value)}
-          className="w-16 rounded border px-1 py-0.5"
+          className="w-16 bg-transparent px-1 text-[13px] tabular-nums text-gray-900 placeholder:text-gray-300 focus:outline-none"
+          placeholder="any"
         />
       </label>
-      <label className="flex items-center gap-1">
-        <span className="text-xs text-gray-500">month ≥ $</span>
+      <label className="flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white pl-2.5 pr-1 focus-within:border-gray-400">
+        <span className="whitespace-nowrap text-[12px] text-gray-500">Month ≥ $</span>
         <input
           type="number"
           min={0}
           step="0.01"
           value={monthInput}
           onChange={(e) => handleMonthChange(e.target.value)}
-          className="w-16 rounded border px-1 py-0.5"
+          className="w-16 bg-transparent px-1 text-[13px] tabular-nums text-gray-900 placeholder:text-gray-300 focus:outline-none"
+          placeholder="any"
         />
       </label>
-      <label className="flex items-center gap-1">
-        <span className="text-xs text-gray-500">active in last (h)</span>
+      <label className="flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white pl-2.5 pr-1 focus-within:border-gray-400">
+        <span className="whitespace-nowrap text-[12px] text-gray-500">Active in last (h)</span>
         <input
           type="number"
           min={1}
           value={hoursInput}
           onChange={(e) => handleHoursChange(e.target.value)}
-          className="w-16 rounded border px-1 py-0.5"
+          className="w-16 bg-transparent px-1 text-[13px] tabular-nums text-gray-900 placeholder:text-gray-300 focus:outline-none"
+          placeholder="any"
         />
       </label>
     </div>

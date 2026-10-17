@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -13,17 +13,63 @@ import { fill } from '@/lib/utils/interpolate';
 import { AuthField, AuthNotice } from '@/components/auth/AuthForm';
 import { useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
-import { SignupConsentStep } from './SignupConsentStep';
+import { NO_CONSENT, SignupConsentStep, type ConsentProgress } from './SignupConsentStep';
+import { SignupSteps, type SignupStep } from './SignupSteps';
 import { AuthMethodSelector } from '@/components/auth/AuthMethodSelector';
+import { PasswordInput, PasswordRules } from '@/components/auth/PasswordInput';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { SignupDetailsHeading } from '@/components/auth/SignupDetailsHeading';
 import { TurnstileChallenge } from '@/components/auth/TurnstileChallenge';
+
+/** The result's mark: a tick for an account that is ready, a clock for one in review. */
+function ResultIcon({ pending }: { pending: boolean }): JSX.Element {
+  return (
+    <div
+      aria-hidden="true"
+      className={`mx-auto flex h-12 w-12 items-center justify-center rounded-full ${
+        pending ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'
+      }`}
+    >
+      <svg
+        className="h-6 w-6"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {pending ? (
+          <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </>
+        ) : (
+          <path d="m5 12.5 4.5 4.5L19 7.5" />
+        )}
+      </svg>
+    </div>
+  );
+}
+
+function Spinner(): JSX.Element {
+  return (
+    <svg className="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 export default function SignupPage() {
   const t = useT();
   const skin = useAuthAppearance();
   const { branding, features } = useSiteConfig();
   const turnstileSiteKey = branding.turnstileSiteKey;
-  const [step, setStep] = useState<'consent' | 'form'>('consent');
+  const [step, setStep] = useState<SignupStep>('consent');
+  const [accountStarted, setAccountStarted] = useState(false);
+  const accountFormRef = useRef<HTMLDivElement>(null);
+  const [consent, setConsent] = useState<ConsentProgress>(NO_CONSENT);
   const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,10 +87,21 @@ export default function SignupPage() {
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors },
   } = useForm<SignupFormData>({
     resolver: zodResolver(runtimeSignupSchema),
+    // A field reports a problem once the visitor leaves it, and from then on
+    // as they fix it, rather than all at once on submit.
+    mode: 'onTouched',
   });
+  const password = watch('password') ?? '';
+
+  useEffect(() => {
+    if (step === 'form') {
+      accountFormRef.current?.querySelector<HTMLElement>('[data-auth="control"]')?.focus();
+    }
+  }, [step]);
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
@@ -120,6 +177,7 @@ export default function SignupPage() {
         subtitle={t('auth.signup.result_subtitle', 'Here is what happens with your account next.')}
       >
         <div className={skin.form} data-auth="form">
+          <ResultIcon pending={isPendingApproval} />
           <AuthNotice tone={isPendingApproval ? 'info' : 'ok'}>{signupResult.message}</AuthNotice>
           <Link href="/login" className={skin.submit} data-auth="submit" prefetch={false}>
             {t('auth.signup.back_to_login', 'Back to Login')}
@@ -129,11 +187,7 @@ export default function SignupPage() {
     );
   }
 
-  if (step === 'consent') {
-    return <SignupConsentStep onContinue={() => setStep('form')} />;
-  }
-
-  return (
+  const accountForm = (
     <AuthPageFrame
       page="signup"
       kicker={t('auth.signup.kicker', 'START BUILDING')}
@@ -156,6 +210,7 @@ export default function SignupPage() {
         </>
       }
     >
+      <SignupSteps current="form" onBack={() => setStep('consent')} />
       {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
       {features.phoneAuth && method === 'phone' ? (
         <PhoneAuthForm purpose="signup" onSuccess={setSignupResult} />
@@ -186,6 +241,9 @@ export default function SignupPage() {
               data-auth="control"
               type="email"
               autoComplete="email"
+              // The visitor just pressed Continue to reach this form.
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
               {...register('email')}
             />
           </AuthField>
@@ -212,17 +270,21 @@ export default function SignupPage() {
           <AuthField
             id="password"
             label={t('auth.signup.password_label', 'Password')}
-            hint={t(
-              'auth.signup.password_hint',
-              'At least 8 characters with uppercase, lowercase, and numbers.',
-            )}
+            hint={
+              <PasswordRules
+                value={password}
+                hint={t(
+                  'auth.signup.password_hint',
+                  'At least 8 characters with uppercase, lowercase, and numbers.',
+                )}
+              />
+            }
             error={errors.password?.message}
           >
-            <input
+            <PasswordInput
               id="password"
               className={errors.password?.message ? skin.inputError : skin.input}
               data-auth="control"
-              type="password"
               autoComplete="new-password"
               {...register('password')}
             />
@@ -233,15 +295,16 @@ export default function SignupPage() {
             label={t('auth.signup.confirm_password_label', 'Confirm Password')}
             error={errors.confirmPassword?.message}
           >
-            <input
+            <PasswordInput
               id="confirmPassword"
               className={errors.confirmPassword?.message ? skin.inputError : skin.input}
               data-auth="control"
-              type="password"
               autoComplete="new-password"
               {...register('confirmPassword')}
             />
           </AuthField>
+
+          <SignupDetailsHeading />
 
           <AuthField
             id="discoverySource"
@@ -284,13 +347,16 @@ export default function SignupPage() {
           </AuthField>
 
           {turnstileSiteKey && (
-            <TurnstileChallenge
-              siteKey={turnstileSiteKey}
-              onToken={(token) => {
-                turnstileTokenRef.current = token;
-              }}
-              resetKey={captchaReset}
-            />
+            // The widget's height, held before it loads so the button does not jump.
+            <div className="min-h-[65px]">
+              <TurnstileChallenge
+                siteKey={turnstileSiteKey}
+                onToken={(token) => {
+                  turnstileTokenRef.current = token;
+                }}
+                resetKey={captchaReset}
+              />
+            </div>
           )}
 
           <button
@@ -300,6 +366,7 @@ export default function SignupPage() {
             disabled={isLoading}
             aria-busy={isLoading}
           >
+            {isLoading && <Spinner />}
             {isLoading
               ? t('auth.signup.submitting', 'Creating your account…')
               : t('auth.signup.submit', 'Sign Up')}
@@ -307,5 +374,27 @@ export default function SignupPage() {
         </form>
       )}
     </AuthPageFrame>
+  );
+
+  return (
+    <>
+      {step === 'consent' && (
+        <SignupConsentStep
+          progress={consent}
+          onProgress={setConsent}
+          onContinue={() => {
+            setAccountStarted(true);
+            setStep('form');
+            window.scrollTo({ top: 0 });
+          }}
+        />
+      )}
+      {/* Retain the phone draft, pending request and absolute resend deadline while reviewing. */}
+      {accountStarted && (
+        <div ref={accountFormRef} hidden={step !== 'form'}>
+          {accountForm}
+        </div>
+      )}
+    </>
   );
 }

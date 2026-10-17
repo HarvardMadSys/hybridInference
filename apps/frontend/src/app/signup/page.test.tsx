@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('next/script', () => ({
@@ -13,7 +13,7 @@ vi.mock('@/lib/api/auth', () => ({
   sendPhoneCode: vi.fn(),
 }));
 
-import { signup, signupPhone, type SignupResponse } from '@/lib/api/auth';
+import { signup, signupPhone, sendPhoneCode, type SignupResponse } from '@/lib/api/auth';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
 import { NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
@@ -85,6 +85,8 @@ describe('SignupPage', () => {
     cleanup();
     mockedSignup.mockReset();
     vi.mocked(signupPhone).mockReset();
+    vi.mocked(sendPhoneCode).mockReset();
+    vi.useRealTimers();
   });
 
   describe('consent step', () => {
@@ -210,6 +212,17 @@ describe('SignupPage', () => {
       expect(continueButton).toBeDisabled();
     });
 
+    it('counts the confirmations as they are checked', () => {
+      render(<SignupPage />);
+      expect(screen.getByText('0 of 4 confirmed')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[0] }));
+      scrollTermsTo(1);
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[1] }));
+
+      expect(screen.getByText('2 of 4 confirmed')).toBeInTheDocument();
+    });
+
     it('reveals the account form after Continue', () => {
       render(<SignupPage />);
 
@@ -224,6 +237,56 @@ describe('SignupPage', () => {
   });
 
   describe('account step', () => {
+    it('goes back to the confirmations with every box and field as it was left', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      fillAccountForm();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+
+      // Checked, and the terms still count as read: nothing has to be redone.
+      for (const name of CONSENT_CHECKBOXES) {
+        expect(screen.getByRole('checkbox', { name })).toBeChecked();
+        expect(screen.getByRole('checkbox', { name })).toBeEnabled();
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(screen.getByLabelText('Email')).toHaveValue('admin@local.dev');
+      expect(screen.getByLabelText(/^Username/)).toHaveValue('Local Admin');
+      expect(screen.getByLabelText(/^Password/)).toHaveValue('LocalDemo1');
+    });
+
+    it('shows and hides the password on request', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      const password = screen.getByLabelText(/^Password/);
+      const [toggle] = screen.getAllByRole('button', { name: 'Show password' });
+
+      expect(password).toHaveAttribute('type', 'password');
+      fireEvent.click(toggle);
+      expect(password).toHaveAttribute('type', 'text');
+      expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(toggle);
+      expect(password).toHaveAttribute('type', 'password');
+    });
+
+    it('ticks each password rule as it is met, keeping the hint sentence for screen readers', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      const password = screen.getByLabelText(/^Password/);
+      const rule = (label: string) => screen.getByText(label).closest('span');
+
+      fireEvent.change(password, { target: { value: 'abc1' } });
+      expect(rule('Lowercase')).toHaveClass('text-emerald-700');
+      expect(rule('Number')).toHaveClass('text-emerald-700');
+      expect(rule('Uppercase')).not.toHaveClass('text-emerald-700');
+      expect(rule('8+ characters')).not.toHaveClass('text-emerald-700');
+
+      expect(password).toHaveAccessibleDescription(
+        'At least 8 characters with uppercase, lowercase, and numbers.',
+      );
+    });
+
     it('keeps phone signup hidden by default', () => {
       render(<SignupPage />);
       completeConsentStep();
@@ -272,6 +335,118 @@ describe('SignupPage', () => {
         accepted_tos: true,
       });
       expect(signup).not.toHaveBeenCalled();
+    });
+
+    it('preserves the phone draft and elapsed resend cooldown when reviewing agreements', async () => {
+      vi.useFakeTimers();
+      vi.mocked(sendPhoneCode).mockResolvedValue({ message: 'Code sent.', retry_after: 60 });
+      render(
+        <SiteConfigProvider
+          initialConfig={{
+            ...buildTimeSiteConfig,
+            features: { ...buildTimeSiteConfig.features, phoneAuth: true },
+          }}
+        >
+          <SignupPage />
+        </SiteConfigProvider>,
+      );
+      completeConsentStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Phone verification code' }));
+      fireEvent.change(screen.getByLabelText('Mobile number'), {
+        target: { value: '+8613812345678' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }));
+      });
+      expect(screen.getByRole('button', { name: 'Send again in 60s' })).toBeDisabled();
+      for (const [label, value] of [
+        ['Verification code', '123456'],
+        ['Username', 'Phone User'],
+        ['How did you find us?', 'A colleague'],
+        ['Use case', 'Testing an inference gateway'],
+      ]) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+      expect(screen.queryByRole('textbox', { name: 'Mobile number' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Sign Up' })).not.toBeInTheDocument();
+      // Reopening the agreements must still require every confirmation.
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[0] }));
+      expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+      act(() => vi.advanceTimersByTime(20_000));
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[0] }));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(screen.getByRole('button', { name: 'Phone verification code' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+      expect(screen.getByLabelText('Mobile number')).toHaveValue('13812345678');
+      expect(screen.getByRole('button', { name: 'Country code' })).toHaveAccessibleDescription(
+        'China +86',
+      );
+      expect(screen.getByLabelText('Verification code')).toHaveValue('123456');
+      expect(screen.getByLabelText('Username')).toHaveValue('Phone User');
+      expect(screen.getByLabelText('How did you find us?')).toHaveValue('A colleague');
+      expect(screen.getByLabelText('Use case')).toHaveValue('Testing an inference gateway');
+      expect(screen.getByRole('button', { name: 'Send again in 40s' })).toBeDisabled();
+      expect(sendPhoneCode).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+      act(() => vi.advanceTimersByTime(40_000));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(screen.getByRole('button', { name: 'Send verification code' })).toBeEnabled();
+      expect(screen.getByLabelText('Verification code')).toHaveValue('123456');
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }));
+      });
+      expect(sendPhoneCode).toHaveBeenCalledTimes(2);
+      expect(sendPhoneCode).toHaveBeenLastCalledWith(
+        expect.objectContaining({ phone: '+8613812345678', purpose: 'signup' }),
+      );
+    });
+
+    it('keeps an in-flight phone-code request and its resulting cooldown across agreements', async () => {
+      vi.useFakeTimers();
+      let finishSend!: (result: { message: string; retry_after: number }) => void;
+      vi.mocked(sendPhoneCode).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishSend = resolve;
+        }),
+      );
+      render(
+        <SiteConfigProvider
+          initialConfig={{
+            ...buildTimeSiteConfig,
+            features: { ...buildTimeSiteConfig.features, phoneAuth: true },
+          }}
+        >
+          <SignupPage />
+        </SiteConfigProvider>,
+      );
+      completeConsentStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Phone verification code' }));
+      fireEvent.change(screen.getByLabelText('Mobile number'), {
+        target: { value: '+8613812345678' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }));
+      });
+      expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
+      expect(sendPhoneCode).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+      await act(async () => finishSend({ message: 'Code sent.', retry_after: 60 }));
+      act(() => vi.advanceTimersByTime(15_000));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(screen.getByRole('button', { name: 'Send again in 45s' })).toBeDisabled();
+      expect(screen.getByText('Code sent.')).toBeVisible();
+      expect(screen.getByLabelText('Mobile number')).toHaveValue('13812345678');
+      expect(sendPhoneCode).toHaveBeenCalledTimes(1);
     });
 
     it('closes both signup methods when public registration is disabled', () => {

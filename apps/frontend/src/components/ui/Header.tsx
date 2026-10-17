@@ -4,13 +4,17 @@ import Link from 'next/link';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { AccountMenu } from './AccountMenu';
+import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 export function Header() {
+  const consoleWidth = useConsoleWidth();
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
 
   return (
-    <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
+    <header
+      className={`mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-6 py-6`}
+    >
       <div className="flex min-w-0 items-baseline gap-2">
         <Link
           href="/"

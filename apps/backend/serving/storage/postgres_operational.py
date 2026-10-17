@@ -545,6 +545,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             CREATE TABLE IF NOT EXISTS api_keys (
                 id BIGSERIAL PRIMARY KEY,
                 key_hash TEXT NOT NULL UNIQUE,
+                api_key_encrypted TEXT,
                 key_prefix TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 user_name TEXT,
@@ -585,6 +586,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "quota_monthly_cost_usd",
                     "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
                     "quota_monthly_cost_usd DECIMAL(10, 4)",
+                ),
+                (
+                    "api_key_encrypted",
+                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
                 ),
                 ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
             ],
@@ -2548,6 +2553,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Delete all sessions for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
+
+    async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
+        """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
+
+        The rows stay, so a browser that listed the account shows it signed
+        out rather than forgetting it.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE "
+                "WHERE user_id = $1 AND revoked IS NOT TRUE AND sid IS DISTINCT FROM $2::text",
+                user_id,
+                except_sid,
+            )
+        return int(result.split()[-1])
 
     # -- browser sessions ----------------------------------------------------
 

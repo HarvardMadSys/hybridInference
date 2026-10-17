@@ -75,6 +75,7 @@ class Store:
         self.mark_user_email_verified = AsyncMock()
         self.bind_user_email = AsyncMock(return_value=True)
         self.update_user_fields = AsyncMock()
+        self.revoke_user_sessions = AsyncMock(return_value=0)
 
 
 @pytest.fixture
@@ -222,8 +223,10 @@ async def test_a_used_link_never_binds_again(setup):
 # -- a first password ---------------------------------------------------------
 
 
-async def change(store, body):
-    return await user_routes.change_password(request(), body, {"user_id": "owner"}, store)
+async def change(store, body, tasks=None):
+    return await user_routes.change_password(
+        request(), body, tasks or BackgroundTasks(), {"user_id": "owner", "sid": "here"}, store
+    )
 
 
 @pytest.mark.asyncio
@@ -249,6 +252,90 @@ async def test_a_failed_code_sets_no_password(setup):
         )
     assert exc.value.status_code == 400
     store.update_user_fields.assert_not_awaited()
+
+
+# -- changing the password ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guessing_the_current_password_counts_against_the_login_limit(setup, monkeypatch):
+    limiter = AsyncMock(return_value=(False, "email"))
+    monkeypatch.setattr(reauth, "check_and_record_login", limiter)
+    store = Store(account())
+    with pytest.raises(HTTPException) as exc:
+        await change(
+            store, ChangePasswordRequest(old_password=PASSWORD, new_password="Brand-New-Pass-1")
+        )
+    assert exc.value.status_code == 429
+    assert limiter.await_args.args[0] == "owner@e2e-mail.org"
+    store.update_user_fields.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_password", ["", "Wrong-Horse-1"])
+async def test_a_wrong_current_password_changes_nothing(setup, old_password):
+    store = Store(account())
+    with pytest.raises(HTTPException) as exc:
+        await change(
+            store,
+            ChangePasswordRequest(old_password=old_password, new_password="Brand-New-Pass-1"),
+        )
+    assert exc.value.status_code == 400
+    store.update_user_fields.assert_not_awaited()
+    store.revoke_user_sessions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_changing_the_password_signs_other_sessions_out_and_tells_the_owner(
+    setup, monkeypatch
+):
+    monkeypatch.setattr(user_routes, "is_email_enabled", lambda: True)
+    store = Store(account())
+    tasks = BackgroundTasks()
+    result = await change(
+        store,
+        ChangePasswordRequest(old_password=PASSWORD, new_password="Brand-New-Pass-1"),
+        tasks=tasks,
+    )
+    assert "signed out" in result.message
+    store.revoke_user_sessions.assert_awaited_once_with("owner", except_sid="here")
+    [task] = tasks.tasks
+    assert task.func is user_routes.send_password_changed_email
+    assert task.args == ("owner@e2e-mail.org",)
+    assert task.kwargs == {"first_password": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row", [phone_account(), account(email_verified=False)], ids=["no-email", "unverified"]
+)
+async def test_no_notice_goes_to_an_address_the_owner_never_proved(setup, monkeypatch, row):
+    monkeypatch.setattr(user_routes, "is_email_enabled", lambda: True)
+    store = Store(row)
+    tasks = BackgroundTasks()
+    await change(
+        store,
+        ChangePasswordRequest(
+            old_password=PASSWORD, new_password="Brand-New-Pass-1", phone_code="123456"
+        ),
+        tasks=tasks,
+    )
+    store.revoke_user_sessions.assert_awaited_once_with("owner", except_sid="here")
+    assert tasks.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_a_first_password_on_an_account_with_an_email_says_set(setup, monkeypatch):
+    monkeypatch.setattr(user_routes, "is_email_enabled", lambda: True)
+    store = Store(phone_account(email="owner@e2e-mail.org"))
+    tasks = BackgroundTasks()
+    await change(
+        store,
+        ChangePasswordRequest(new_password="Brand-New-Pass-1", phone_code="123456"),
+        tasks=tasks,
+    )
+    [task] = tasks.tasks
+    assert task.kwargs == {"first_password": True}
 
 
 # -- sending the codes --------------------------------------------------------
