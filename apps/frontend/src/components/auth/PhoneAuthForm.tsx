@@ -137,7 +137,7 @@ export function PhoneAuthForm(props: Props) {
   }, [dropdownOpen]);
 
   const resolvePhone = (raw: string) =>
-    isNeutral ? normalizePhoneWithCountry(raw, countryCode) : raw.trim();
+    isNeutralBind ? normalizePhoneWithCountry(raw, countryCode) : raw.trim();
 
   const sendCode = async () => {
     if (sendingRef.current || submittingRef.current || Date.now() < deadline) return;
@@ -282,13 +282,17 @@ export function PhoneAuthForm(props: Props) {
       <AuthField
         id={`${purpose}-phone`}
         label={t('auth.phone.phone_label', 'Mobile number')}
-        hint={t(
-          'auth.phone.phone_hint',
-          'Select your country code or enter a full number with +country code.',
-        )}
+        hint={
+          isNeutralBind
+            ? t(
+                'auth.phone.phone_hint',
+                'Select your country code or enter a full number with +country code.',
+              )
+            : t('auth.phone.phone_hint', 'Include the country code, such as +12025550123.')
+        }
         error={errors.phone?.message}
       >
-        {isNeutral ? (
+        {isNeutralBind ? (
           <div ref={dropdownRef} className="relative mt-1.5">
             <div
               className={clsx(
