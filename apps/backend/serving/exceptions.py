@@ -22,6 +22,15 @@ class HybridInferenceError(Exception):
     pass
 
 
+class SelfDeleteRefused(Exception):
+    """The account could no longer delete itself when its deletion ran.
+
+    Raised from inside the soft-delete transaction when, under the row lock,
+    the account is no longer active or has become an administrator since the
+    route checked it. Nothing has been changed when it is raised.
+    """
+
+
 class HardDeleteStateChanged(Exception):
     """The target account's state changed during hard-delete.
 

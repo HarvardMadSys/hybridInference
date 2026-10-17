@@ -279,27 +279,28 @@ async def complete_sign_in(
 ) -> None:
     """Add a freshly created session to the browser and make its account active.
 
-    A browser with no session gets one. One that already has a session for
-    this account has it replaced, and revoked. Either way the cookie value
-    changes, because what the browser can act as just did.
+    A browser with no session gets one, and so does one whose session was
+    retired after it was resolved (its last account signed out meanwhile).
+    One that already has a session for this account has it replaced, and
+    revoked. Either way the cookie value changes, because what the browser
+    can act as just did.
     """
-    if browser is None:
-        secret = create_refresh_token()
-        browser_session_id = generate_ulid()
-        await op_store.create_browser_session(
-            browser_session_id=browser_session_id,
-            secret_hash=hash_refresh_token(secret),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days()),
-        )
-        await op_store.attach_browser_session_account(
-            browser_session_id, user_id=user_id, auth_session_id=auth_session_id
-        )
-        set_refresh_token_cookie(response, secret)
-        return
-    await op_store.attach_browser_session_account(
+    if browser is not None and await op_store.attach_browser_session_account(
         browser.id, user_id=user_id, auth_session_id=auth_session_id
+    ):
+        await rotate_cookie(op_store, response, browser, extend=True)
+        return
+    secret = create_refresh_token()
+    browser_session_id = generate_ulid()
+    await op_store.create_browser_session(
+        browser_session_id=browser_session_id,
+        secret_hash=hash_refresh_token(secret),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days()),
     )
-    await rotate_cookie(op_store, response, browser, extend=True)
+    await op_store.attach_browser_session_account(
+        browser_session_id, user_id=user_id, auth_session_id=auth_session_id
+    )
+    set_refresh_token_cookie(response, secret)
 
 
 async def issue_account_token(op_store: Any, account: dict[str, Any]) -> tuple[str, str]:

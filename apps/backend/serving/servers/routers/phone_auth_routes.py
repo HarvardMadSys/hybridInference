@@ -55,9 +55,10 @@ async def _require_signup() -> None:
         )
 
 
-async def _consume(
+async def verify_phone_code(
     request: Request, body: PhoneVerifyRequest, purpose: str, op_store, user_id=None
-):
+) -> None:
+    """Spend one code for *purpose*, raising 429 or 400 when it does not verify."""
     result = await op_store.consume_phone_code(
         phone=body.phone,
         purpose=purpose,
@@ -87,7 +88,7 @@ async def send_phone_code(
     user_id = None
     if body.purpose == "signup":
         await _require_signup()
-    elif body.purpose == "bind":
+    elif body.purpose in ("bind", "delete_account"):
         current_user = await get_current_user(request.headers.get("authorization"), op_store)
         user_id = current_user["user_id"]
     client_ip = get_client_ip(request)
@@ -127,6 +128,11 @@ async def send_phone_code(
         eligible = bool(existing_user)
     elif body.purpose == "signup":
         eligible = existing_user is None
+    elif body.purpose == "delete_account":
+        # Only the number verified on this very account can confirm its deletion.
+        eligible = bool(
+            existing_user and existing_user["id"] == user_id and existing_user.get("phone_verified")
+        )
     elif existing_user and existing_user["id"] != user_id:
         eligible = False
     if eligible:
@@ -169,7 +175,7 @@ async def phone_signup(
         )
     if not body.accepted_tos:
         raise HTTPException(400, "You must agree to the Terms of Service to create an account")
-    await _consume(request, body, "signup", op_store)
+    await verify_phone_code(request, body, "signup", op_store)
     status = "active" if await allowlist_is_empty(op_store) else "pending_approval"
     user_id = generate_ulid()
     created = await op_store.create_phone_user(
@@ -249,7 +255,7 @@ async def phone_login(
             logger.warning("Phone login event could not be recorded (outcome=%s).", outcome)
 
     try:
-        await _consume(request, body, "login", op_store, user["id"] if user else None)
+        await verify_phone_code(request, body, "login", op_store, user["id"] if user else None)
     except HTTPException as exc:
         await record("failure", "rate_limited" if exc.status_code == 429 else "invalid_code")
         raise
@@ -349,7 +355,7 @@ async def bind_phone(
 ) -> dict[str, str]:
     """Bind a phone explicitly to the authenticated account without merging users."""
     _require_enabled(op_store)
-    await _consume(request, body, "bind", op_store, current_user["user_id"])
+    await verify_phone_code(request, body, "bind", op_store, current_user["user_id"])
     if not await op_store.bind_user_phone(current_user["user_id"], body.phone):
         raise HTTPException(409, "Phone number cannot be bound to this account.")
     await log_admin_action(

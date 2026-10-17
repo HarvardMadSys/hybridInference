@@ -298,10 +298,16 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.delete_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            user_id,
+            admin_ip=admin_ip,
+            admin_id=admin_id,
+            reason=reason,
+            email=email,
+            self_service=self_service,
         )
         await self._cache.delete(self._user_key(user_id))
         # Also purge any auth entries referencing this user's keys
@@ -696,7 +702,7 @@ class CachedOperationalStore(OperationalStore):
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Delegate to wrapped store."""
         return await self._store.attach_browser_session_account(
             browser_session_id, user_id=user_id, auth_session_id=auth_session_id

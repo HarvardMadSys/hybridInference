@@ -48,9 +48,9 @@ class PhoneRequest(BaseModel):
 
 
 class PhoneCodeRequest(PhoneRequest):
-    """Issue a code scoped to registration, login, or account binding."""
+    """Issue a code scoped to registration, login, binding, or account deletion."""
 
-    purpose: Literal["signup", "login", "bind"]
+    purpose: Literal["signup", "login", "bind", "delete_account"]
     turnstile_token: str | None = None
 
 
@@ -437,6 +437,26 @@ class ChangePasswordRequest(BaseModel):
 
 class ChangePasswordResponse(BaseModel):
     """Change password response."""
+
+    message: str
+
+
+class DeleteAccountRequest(BaseModel):
+    """Delete the signed-in account, confirmed the way that account signs in.
+
+    ``confirm`` is the account's sign-in identifier (see
+    ``account_identifier``), typed by its owner. An account with a password
+    confirms with it; a phone-only account with a ``delete_account`` code
+    sent to its verified number.
+    """
+
+    confirm: str = Field(max_length=320)
+    password: str | None = Field(default=None, max_length=1024)
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+
+
+class DeleteAccountResponse(BaseModel):
+    """Self-service account deletion result."""
 
     message: str
 
