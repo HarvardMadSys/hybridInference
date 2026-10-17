@@ -498,11 +498,12 @@ async def _sign_out_of_browser(
 ) -> int:
     """Sign one account out of a browser; return how many accounts remain there.
 
-    The cookie is retired with the browser's last account.
+    The cookie is retired with the browser's last account. The store retires
+    the browser session itself in the detaching transaction, so a sign-in in
+    another tab cannot land in between and be signed out with it.
     """
     remaining = await op_store.detach_browser_session_account(browser.id, user_id)
     if remaining == 0:
-        await op_store.revoke_browser_session(browser.id)
         delete_refresh_token_cookie(response)
     else:
         send_pending_cookie(response, browser)
@@ -521,6 +522,12 @@ async def logout(
     Other accounts signed in on the browser stay signed in, with none of them
     active; the cookie goes with the last one. Access tokens already issued
     expire on their own (15 minutes).
+
+    A cookie that names no browser is cleared. Unlike deleting an account,
+    which takes it off every browser first, logout cannot tell which browser
+    still holds the account when the cookie was rotated by another tab, and
+    leaving it would let the account be chosen again without a password;
+    signing the browser's other accounts out is the safe way to fail.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")

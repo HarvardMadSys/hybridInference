@@ -669,10 +669,11 @@ class OperationalStore(ABC):
     @abstractmethod
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Make *auth_session_id* the browser's session for *user_id* and its active account.
 
         Revokes the session the browser held for that account before, if any.
+        Returns False, changing nothing, when the browser session is retired.
         """
 
     @abstractmethod
@@ -685,8 +686,10 @@ class OperationalStore(ABC):
     async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
         """Revoke and remove one account's session in a browser.
 
-        Clears the active account when it was this one. Returns how many
-        accounts remain signed in to the browser.
+        Clears the active account when it was this one, and retires the
+        browser session in the same transaction when no account remains, so a
+        concurrent attach either precedes it or sees the browser retired.
+        Returns how many accounts remain signed in to the browser.
         """
 
     @abstractmethod

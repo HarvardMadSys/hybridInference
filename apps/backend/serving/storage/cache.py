@@ -702,7 +702,7 @@ class CachedOperationalStore(OperationalStore):
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Delegate to wrapped store."""
         return await self._store.attach_browser_session_account(
             browser_session_id, user_id=user_id, auth_session_id=auth_session_id

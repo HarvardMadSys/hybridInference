@@ -398,3 +398,27 @@ async def test_cookie_rotated_by_another_tab_is_left_alone(setup):
     browser = store.browser_sessions.browsers[browser_id]
     assert browser["revoked"] is False
     assert list(store.browser_sessions.members) == [(browser_id, "other-user")]
+
+
+@pytest.mark.asyncio
+async def test_sign_in_racing_the_last_sign_out_starts_a_fresh_browser(setup):
+    from serving.auth.browser_sessions import complete_sign_in, resolve_browser_session
+
+    store = Store(phone_account())
+    cookie = await signed_in(store)
+    [browser_id] = store.browser_sessions.browsers
+    # Another tab's sign-in resolved the browser while it still held an account...
+    browser = await resolve_browser_session(store, request(cookie=f"refresh_token={cookie}"))
+    # ...and the last account signed out before the sign-in attached to it.
+    assert await store.browser_sessions.detach_browser_session_account(browser_id, "owner") == 0
+    assert store.browser_sessions.browsers[browser_id]["revoked"] is True
+
+    response = Response()
+    await complete_sign_in(
+        store, response, browser, user_id="newcomer", auth_session_id="newcomer-session"
+    )
+
+    [fresh_id] = [bid for bid in store.browser_sessions.browsers if bid != browser_id]
+    assert store.browser_sessions.browsers[fresh_id]["active_user_id"] == "newcomer"
+    assert (fresh_id, "newcomer") in store.browser_sessions.members
+    assert issued_cookie(response)

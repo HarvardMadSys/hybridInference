@@ -2403,13 +2403,22 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Make *auth_session_id* the browser's session for *user_id*, and its active account.
 
         A session the browser already held for the same account is revoked:
         signing in again replaces it, and nothing can reach the old one.
+        Returns False, changing nothing, when the browser session has been
+        retired; the browser row lock orders this against a sign-out that
+        retires it.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            revoked = await conn.fetchval(
+                "SELECT revoked FROM browser_sessions WHERE id = $1 FOR UPDATE",
+                browser_session_id,
+            )
+            if revoked is None or revoked:
+                return False
             previous = await conn.fetchval(
                 "SELECT auth_session_id FROM browser_session_accounts "
                 "WHERE browser_session_id = $1 AND user_id = $2 FOR UPDATE",
@@ -2434,6 +2443,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
                 browser_session_id,
             )
+        return True
 
     async def set_browser_session_active(
         self, browser_session_id: str, user_id: str | None
@@ -2448,8 +2458,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
 
     async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
-        """Sign *user_id* out of one browser; return how many accounts remain there."""
+        """Sign *user_id* out of one browser; return how many accounts remain there.
+
+        A browser left with no account is retired in the same transaction,
+        under the browser row lock a sign-in also takes, so a sign-in racing
+        it either lands before (and the browser is kept) or finds it retired.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
+            )
             auth_session_id = await conn.fetchval(
                 "DELETE FROM browser_session_accounts "
                 "WHERE browser_session_id = $1 AND user_id = $2 RETURNING auth_session_id",
@@ -2466,15 +2484,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 browser_session_id,
                 user_id,
             )
-            remaining = await conn.fetchval(
-                "SELECT COUNT(*) FROM browser_session_accounts WHERE browser_session_id = $1",
-                browser_session_id,
+            remaining = int(
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM browser_session_accounts WHERE browser_session_id = $1",
+                    browser_session_id,
+                )
+                or 0
             )
-        return int(remaining or 0)
+            if remaining == 0:
+                await conn.execute(
+                    "UPDATE browser_sessions SET revoked = TRUE, active_user_id = NULL "
+                    "WHERE id = $1",
+                    browser_session_id,
+                )
+        return remaining
 
     async def revoke_browser_session(self, browser_session_id: str) -> None:
         """Sign every account out of one browser and retire its cookie."""
         async with self._pool.acquire() as conn, conn.transaction():
+            # Same lock as attach: a racing sign-in starts a fresh browser.
+            await conn.execute(
+                "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
+            )
             await conn.execute(
                 "UPDATE auth_sessions SET revoked = TRUE WHERE id IN ("
                 "SELECT auth_session_id FROM browser_session_accounts "
