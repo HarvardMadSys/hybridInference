@@ -219,6 +219,10 @@
     "source": "GOOD TO SEE YOU AGAIN",
     "text": "欢迎回来"
   },
+  "auth.login.method_label": {
+    "source": "Login method",
+    "text": "登录方式"
+  },
   "auth.login.no_account": {
     "source": "Don't have an account?",
     "text": "还没有账户？"
@@ -226,6 +230,10 @@
   "auth.login.password_label": {
     "source": "Password",
     "text": "密码"
+  },
+  "auth.login.password_method": {
+    "source": "Password login",
+    "text": "密码登录"
   },
   "auth.login.resend_button": {
     "source": "Resend verification email",
@@ -246,6 +254,10 @@
   "auth.login.signup_link": {
     "source": "Sign Up",
     "text": "注册"
+  },
+  "auth.login.sms_method": {
+    "source": "SMS code login",
+    "text": "短信验证码登录"
   },
   "auth.login.submit": {
     "source": "Log In",
