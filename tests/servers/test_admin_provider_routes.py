@@ -2080,6 +2080,8 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
         {
             "effective_at": "2026-08-16T16:00:00Z",
             "timezone": "UTC",
+            "weekdays": [1, 2, 3, 4, 5],
+            "excluded_dates": ["2026-08-18"],
             "default": {"prompt": "0.22", "completion": "0.66"},
             "windows": [{"start": "01:00", "end": "04:00", "pricing": {"prompt": "0.44"}}],
         }
@@ -2155,6 +2157,12 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
     assert restored_adapter.config.pricing_schedule == schedule
     assert effective_pricing(restored_adapter.config, at=_PEAK_INSTANT) == effective_pricing(
         created_adapter.config, at=_PEAK_INSTANT
+    )
+    assert (
+        effective_pricing(
+            restored_adapter.config, at=datetime(2026, 8, 18, 2, tzinfo=timezone.utc)
+        )["prompt"]
+        == "0.22"
     )
 
 

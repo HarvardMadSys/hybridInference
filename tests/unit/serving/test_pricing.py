@@ -156,3 +156,80 @@ def test_schedule_supports_window_across_midnight() -> None:
     assert schedule.resolve(base, at=_at(17, 23))["prompt"] == "0.44"
     assert schedule.resolve(base, at=_at(18, 1))["prompt"] == "0.44"
     assert schedule.resolve(base, at=_at(18, 2))["prompt"] == "0.22"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("timestamp", "peak"),
+    [
+        ("2026-09-28T01:00:00Z", True),  # Monday
+        ("2026-09-29T06:00:00Z", True),
+        ("2026-09-30T03:59:59Z", True),
+        ("2026-10-01T02:00:00Z", False),  # National Day
+        ("2026-10-07T09:59:59Z", False),  # Last holiday
+        ("2026-10-08T01:00:00Z", True),
+        ("2026-10-09T09:59:59Z", True),  # Friday
+        ("2026-10-10T02:00:00Z", False),  # Make-up working Saturday
+        ("2026-10-11T06:00:00Z", False),  # Sunday
+        ("2026-10-12T09:00:00+08:00", True),
+        ("2026-10-12T12:00:00+08:00", False),
+    ],
+)
+def test_calendar_restricts_all_prices(timestamp: str, peak: bool) -> None:
+    raw = _schedule()
+    raw["weekdays"] = [1, 2, 3, 4, 5]
+    raw["excluded_dates"] = [f"2026-10-{day:02d}" for day in range(1, 8)]
+    config = _config(pricing_schedule=raw)
+    expected = raw["windows"][0]["pricing"] if peak else raw["default"]
+
+    assert effective_pricing(
+        config, at=dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    ) == {
+        **config.pricing,
+        **expected,
+    }
+
+
+@pytest.mark.unit
+def test_overnight_windows_use_the_current_utc_calendar_date() -> None:
+    raw = _schedule()
+    raw["weekdays"] = [1, 2, 3, 4, 5]
+    raw["excluded_dates"] = [dt.date(2026, 8, 18)]  # YAML date value
+    raw["windows"] = [{"start": "22:00", "end": "02:00", "pricing": {"prompt": "0.44"}}]
+    schedule = PricingSchedule.from_raw(raw)
+
+    assert schedule.resolve({}, at=_at(17, 23))["prompt"] == "0.44"
+    assert schedule.resolve({}, at=_at(18, 1))["prompt"] == "0.22"
+    assert schedule.resolve({}, at=_at(18, 23))["prompt"] == "0.22"
+    assert schedule.resolve({}, at=_at(19, 1))["prompt"] == "0.44"
+    assert schedule.resolve({}, at=_at(22, 1))["prompt"] == "0.22"  # Saturday
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", [None, [], "1,2", [0], [8], [True], [1.0], ["1"], [1, 1]])
+def test_schedule_rejects_invalid_weekdays(invalid) -> None:
+    raw = _schedule()
+    raw["weekdays"] = invalid
+    with pytest.raises(ValueError, match="weekdays"):
+        PricingSchedule.from_raw(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        "2026-10-01",
+        ["2026-02-30"],
+        ["20261001"],
+        ["2026-10-01T00:00:00Z"],
+        [True],
+        [dt.datetime(2026, 10, 1)],
+        ["2026-10-01", dt.date(2026, 10, 1)],
+    ],
+)
+def test_schedule_rejects_invalid_excluded_dates(invalid) -> None:
+    raw = _schedule()
+    raw["excluded_dates"] = invalid
+    with pytest.raises(ValueError, match="excluded_dates"):
+        PricingSchedule.from_raw(raw)

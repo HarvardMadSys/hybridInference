@@ -187,12 +187,40 @@ itself and are read only at the model level.
 | `priority_scheduling` | bool | No | The endpoint runs an sglang server started with `--enable-priority-scheduling`; see [Prioritizing decode on an sglang route](add-local-model.md#prioritizing-decode-on-an-sglang-route). Normally set per route, not per model |
 | `route_metadata` | dict | No | Free-form per-route metadata consumed by routing strategies |
 | `pricing` | dict | No | Base cost information. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are USD per 1M tokens; `request` is USD per request and `image` USD per image |
-| `pricing_schedule` | dict | No | UTC-only activation time plus recurring daily price windows: `pricing` stays active before `effective_at`; afterwards `default` applies outside each half-open `[start, end)` window, and a window's own `pricing` overrides the base fields |
+| `pricing_schedule` | dict | No | UTC-only activation time plus recurring price windows: `pricing` stays active before `effective_at`; afterwards `default` applies outside each half-open `[start, end)` window, and a window's own `pricing` overrides the base fields. Optional `weekdays` (ISO integers 1=Monday through 7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC dates can use windows |
 
 A model entry also accepts `route` (below), `router` and `router_params` (see
 [Choosing a router per model](routing.md#choosing-a-router-per-model)), and
 `required_role`, the lowest user role that can see and call the model
 (`admin_only: true` is an older way to write `required_role: admin`).
+
+### Calendar-aware prices
+
+For example, apply higher prices on weekdays except configured public holidays:
+
+```yaml
+pricing: {prompt: "0.15", completion: "0.60", input_cache_reads: "0.003"}
+pricing_schedule:
+  effective_at: "2026-10-17T00:00:00Z"
+  timezone: UTC
+  weekdays: [1, 2, 3, 4, 5]
+  excluded_dates: ["2026-12-25"]  # Example only; supply the provider's calendar.
+  default: {prompt: "0.15", completion: "0.60", input_cache_reads: "0.003"}
+  windows:
+    - start: "01:00"
+      end: "04:00"
+      pricing: {prompt: "0.30", completion: "1.20", input_cache_reads: "0.006"}
+    - start: "06:00"
+      end: "10:00"
+      pricing: {prompt: "0.30", completion: "1.20", input_cache_reads: "0.006"}
+```
+
+Omitting the calendar fields preserves daily schedules. On excluded dates and
+non-selected weekdays, all windows are skipped and `default` applies. Overnight
+windows use the current UTC date for both restrictions. Deployment owners must
+maintain holiday exclusions from the provider's calendar each year; the gateway
+does not fetch holiday or price changes from the internet. A request keeps the
+prices selected at its start, even if a stream finishes across a boundary.
 
 ### Route configuration
 

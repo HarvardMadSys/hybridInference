@@ -265,19 +265,29 @@ async def test_models_pricing_primary_config_behavior():
 
 
 @pytest.mark.asyncio
-async def test_models_pricing_resolves_current_schedule_window():
+@pytest.mark.parametrize(
+    ("day", "expected"),
+    [
+        (17, ("0.44", "1.32", "0.014")),
+        (18, ("0.22", "0.66", "0.007")),
+        (22, ("0.22", "0.66", "0.007")),
+    ],
+)
+async def test_models_pricing_resolves_current_schedule_window(day, expected):
     router = RouteExecutor()
     adapter = _Adapter(_cfg(id="scheduled-price", provider="deepseek"))
     adapter.config.pricing = {"prompt": "0.14", "completion": "0.28"}
     adapter.config.pricing_schedule = {
         "effective_at": "2026-08-16T16:00:00Z",
         "timezone": "UTC",
-        "default": {"prompt": "0.22", "completion": "0.66"},
+        "weekdays": [1, 2, 3, 4, 5],
+        "excluded_dates": ["2026-08-18"],
+        "default": {"prompt": "0.22", "completion": "0.66", "input_cache_reads": "0.007"},
         "windows": [
             {
                 "start": "01:00",
                 "end": "04:00",
-                "pricing": {"prompt": "0.44", "completion": "1.32"},
+                "pricing": {"prompt": "0.44", "completion": "1.32", "input_cache_reads": "0.014"},
             }
         ],
     }
@@ -287,13 +297,15 @@ async def test_models_pricing_resolves_current_schedule_window():
     app.include_router(models.router)
     transport = ASGITransport(app=app)
 
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 2, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, day, 2, tzinfo=dt.timezone.utc)):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/v1/models")
 
     item = next(model for model in response.json()["data"] if model["id"] == "scheduled-price")
-    assert item["pricing"]["prompt"] == "0.44"
-    assert item["pricing"]["completion"] == "1.32"
+    assert (
+        tuple(item["pricing"][key] for key in ("prompt", "completion", "input_cache_reads"))
+        == expected
+    )
 
 
 @pytest.mark.asyncio
