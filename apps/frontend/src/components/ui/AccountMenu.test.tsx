@@ -73,6 +73,13 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('AccountMenu', () => {
+  it('names the account button even where the visible name is hidden', () => {
+    render(<AccountMenu />);
+    // Below `sm` the name span is hidden and the initial is aria-hidden: only
+    // the label names the button for a screen reader on a phone.
+    expect(screen.getByRole('button', { name: 'Ada' })).toHaveAttribute('aria-label', 'Ada');
+  });
+
   it('shows the current account and the browser’s others', () => {
     render(<AccountMenu />);
     openMenu();
