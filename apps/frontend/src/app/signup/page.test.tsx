@@ -210,6 +210,17 @@ describe('SignupPage', () => {
       expect(continueButton).toBeDisabled();
     });
 
+    it('counts the confirmations as they are checked', () => {
+      render(<SignupPage />);
+      expect(screen.getByText('0 of 4 confirmed')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[0] }));
+      scrollTermsTo(1);
+      fireEvent.click(screen.getByRole('checkbox', { name: CONSENT_CHECKBOXES[1] }));
+
+      expect(screen.getByText('2 of 4 confirmed')).toBeInTheDocument();
+    });
+
     it('reveals the account form after Continue', () => {
       render(<SignupPage />);
 
@@ -224,6 +235,56 @@ describe('SignupPage', () => {
   });
 
   describe('account step', () => {
+    it('goes back to the confirmations with every box and field as it was left', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      fillAccountForm();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review agreements' }));
+
+      // Checked, and the terms still count as read: nothing has to be redone.
+      for (const name of CONSENT_CHECKBOXES) {
+        expect(screen.getByRole('checkbox', { name })).toBeChecked();
+        expect(screen.getByRole('checkbox', { name })).toBeEnabled();
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(screen.getByLabelText('Email')).toHaveValue('admin@local.dev');
+      expect(screen.getByLabelText(/^Username/)).toHaveValue('Local Admin');
+      expect(screen.getByLabelText(/^Password/)).toHaveValue('LocalDemo1');
+    });
+
+    it('shows and hides the password on request', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      const password = screen.getByLabelText(/^Password/);
+      const [toggle] = screen.getAllByRole('button', { name: 'Show password' });
+
+      expect(password).toHaveAttribute('type', 'password');
+      fireEvent.click(toggle);
+      expect(password).toHaveAttribute('type', 'text');
+      expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(toggle);
+      expect(password).toHaveAttribute('type', 'password');
+    });
+
+    it('ticks each password rule as it is met, keeping the hint sentence for screen readers', () => {
+      render(<SignupPage />);
+      completeConsentStep();
+      const password = screen.getByLabelText(/^Password/);
+      const rule = (label: string) => screen.getByText(label).closest('span');
+
+      fireEvent.change(password, { target: { value: 'abc1' } });
+      expect(rule('Lowercase')).toHaveClass('text-emerald-700');
+      expect(rule('Number')).toHaveClass('text-emerald-700');
+      expect(rule('Uppercase')).not.toHaveClass('text-emerald-700');
+      expect(rule('8+ characters')).not.toHaveClass('text-emerald-700');
+
+      expect(password).toHaveAccessibleDescription(
+        'At least 8 characters with uppercase, lowercase, and numbers.',
+      );
+    });
+
     it('keeps phone signup hidden by default', () => {
       render(<SignupPage />);
       completeConsentStep();

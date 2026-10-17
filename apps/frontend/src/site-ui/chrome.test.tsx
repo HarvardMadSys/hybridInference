@@ -80,7 +80,7 @@ vi.mock('@/components/ui/SiteFooter', () => ({
 }));
 
 import { SITE_UI_CLIENT } from '@/site-ui/module';
-import { SignupConsentStep } from '@/app/signup/SignupConsentStep';
+import { NO_CONSENT, SignupConsentStep } from '@/app/signup/SignupConsentStep';
 
 import { PublicRouteBoundary } from './PublicRouteBoundary';
 import { AuthPageFrame } from './SiteUiBoundary';
@@ -267,7 +267,14 @@ describe('the account pages inside both module shapes', () => {
     // The step hands its cross-link to the frame like every account page. A
     // step that also drew its own showed two, whichever frame placed the first.
     install();
-    renderAt('/signup', <SignupConsentStep onContinue={() => undefined} />);
+    renderAt(
+      '/signup',
+      <SignupConsentStep
+        progress={NO_CONSENT}
+        onProgress={() => undefined}
+        onContinue={() => undefined}
+      />,
+    );
 
     expect(screen.getAllByRole('link', { name: /Log In/ })).toHaveLength(1);
   });
