@@ -97,3 +97,11 @@ export const AuthFieldLayoutProvider = AuthFieldLayoutContext.Provider;
 export function useAuthFieldLayout(): AuthFieldLayout {
   return useContext(AuthFieldLayoutContext) ?? DefaultAuthFieldLayout;
 }
+
+const ConsoleCopyContext = createContext<boolean>(false);
+
+export const ConsoleCopyProvider = ConsoleCopyContext.Provider;
+
+export function useIsConsoleCopy(): boolean {
+  return useContext(ConsoleCopyContext);
+}

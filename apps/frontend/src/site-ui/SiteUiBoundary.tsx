@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation';
 
 import { TermsContent as ConsoleTerms } from '@/app/terms/TermsContent';
+import { ConsoleCopyProvider } from '@/site-ui/appearance';
 import { NeutralAuthCard } from '@/site-ui/neutral/body';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
 import { SiteUiProvider } from '@/site-ui/SiteUiCore';
@@ -67,7 +68,10 @@ export function useModuleRendersRoute(): boolean {
  */
 export function SiteUiBoundary({ children }: { children: React.ReactNode }) {
   const route = usePublicRoute();
-  if (route !== null && isAuthRoute(route)) {
+  if (route === null) {
+    return <ConsoleCopyProvider value={true}>{children}</ConsoleCopyProvider>;
+  }
+  if (isAuthRoute(route)) {
     return <SiteUiProvider>{children}</SiteUiProvider>;
   }
   return <>{children}</>;

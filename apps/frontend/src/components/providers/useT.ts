@@ -1,10 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
-import { usePathname } from 'next/navigation';
 
+import { useIsConsoleCopy } from '@/site-ui/appearance';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
-import { publicRouteFor } from '@/site-ui/routes';
 import { translate, translator, type Translate } from '@/lib/i18n/translate';
 
 /**
@@ -24,14 +23,13 @@ import { translate, translator, type Translate } from '@/lib/i18n/translate';
  *
  * `SITE_UI_CLIENT.authMessages` holds only the keys the contract declares —
  * `module.tsx` drops the rest — so a module can supply wording only for those.
- * Console routes (where `publicRouteFor` is `null`) always keep the shared
- * English copy (`CONSOLE_LANGUAGE = 'en'`), even when they mount a shared
- * component such as `PhoneAuthForm`.
+ * Console routes (marked by `SiteUiBoundary` when `usePublicRoute()` is `null`)
+ * always keep the shared English copy (`CONSOLE_LANGUAGE = 'en'`), even when
+ * they mount a shared component such as `PhoneAuthForm`.
  */
 export function useT(): Translate {
-  const pathname = usePathname();
-  const isPublicRoute = publicRouteFor(pathname ?? '/') !== null;
-  const messages = isPublicRoute ? SITE_UI_CLIENT.authMessages : undefined;
+  const isConsoleRoute = useIsConsoleCopy();
+  const messages = isConsoleRoute ? undefined : SITE_UI_CLIENT.authMessages;
   return useMemo(() => (messages ? translator(messages) : translate), [messages]);
 }
 
