@@ -14,14 +14,17 @@ import type { Locale } from '@/lib/i18n/locales';
 
 const refresh = vi.fn();
 const nav = vi.hoisted(() => ({ pathname: '/dashboard' }));
+// One router for every render, as Next's is.
+const router = { refresh };
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh }),
+  useRouter: () => router,
   usePathname: () => nav.pathname,
 }));
 
 let user: AuthUser | null;
+const refreshUser = vi.fn();
 vi.mock('./AuthProvider', () => ({
-  useAuth: () => ({ state: { isAuthenticated: user !== null, loading: false, user } }),
+  useAuth: () => ({ state: { isAuthenticated: user !== null, loading: false, user }, refreshUser }),
 }));
 
 const updateLocalePreference = vi.fn();
@@ -69,6 +72,7 @@ let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   nav.pathname = '/dashboard';
   refresh.mockReset();
+  refreshUser.mockReset().mockResolvedValue(undefined);
   updateLocalePreference.mockReset();
   document.cookie = 'hi_locale=; Path=/; Max-Age=0';
   user = null;
@@ -114,6 +118,52 @@ describe('LocaleAccountSync', () => {
     render(tree('zh-CN'));
 
     await waitFor(() => expect(cookie()).toBe(`en|${T0 + 1}|s|a`));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the choice it just stored when the window regains focus with the older profile', async () => {
+    // Signed in with English stored; a Chinese choice made signed out is stored.
+    setCookie(`zh-CN|${T0 + 5_000}|a`);
+    signIn('a', { value: 'en', chosen_at: iso(T0) });
+    updateLocalePreference.mockResolvedValue({ value: 'zh-CN', chosen_at: iso(T0 + 5_000) });
+
+    render(tree('zh-CN'));
+    await waitFor(() => expect(cookie()).toBe(`zh-CN|${T0 + 5_000}|s|a`));
+    expect(refreshUser).toHaveBeenCalledTimes(1);
+
+    // The profile in hand still says English until that reload lands.
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    expect(cookie()).toBe(`zh-CN|${T0 + 5_000}|s|a`);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(updateLocalePreference).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows the choice another tab stored, rather than undoing it with this tab's profile", () => {
+    signIn('a', { value: 'en', chosen_at: iso(T0) });
+    setCookie(`en|${T0}|s|a`);
+    render(tree('en'));
+
+    // Another tab chose Chinese and stored it; this tab's profile is older.
+    setCookie(`zh-CN|${T0 + 9_000}|s|a`);
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    expect(cookie()).toBe(`zh-CN|${T0 + 9_000}|s|a`);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(updateLocalePreference).not.toHaveBeenCalled();
+  });
+
+  it("still takes the account's choice once a fresh profile shows a newer one", () => {
+    setCookie(`zh-CN|${T0}|s|a`);
+    signIn('a', { value: 'en', chosen_at: iso(T0 + 1) });
+
+    render(tree('zh-CN'));
+
+    expect(cookie()).toBe(`en|${T0 + 1}|s|a`);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 

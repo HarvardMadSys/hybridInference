@@ -1,0 +1,238 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-17 05:06-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/console-translations.md:1
+msgid "Translating the Console"
+msgstr "翻译控制台"
+
+#: ../developer/console-translations.md:3
+msgid ""
+"The console can be read in English or Chinese. A reader who never chose a"
+" language gets the one their browser asks for; once they choose — from "
+"the header, or under Account Settings — the console keeps their most "
+"recent choice, in this browser and, once they sign in, in their account, "
+"so it follows them to other browsers. The design record is [2026-10-17 "
+"console language "
+"switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17"
+"-console-language-switching-design.zh.md)."
+msgstr ""
+"控制台可以用英文或中文阅读。从未选择过语言的读者，看到的是浏览器请求的语言；一旦在顶栏或账户设置中做出选择，控制台就会保留最近一次选择：保存在当前浏览器中，登录后也保存到账户里，因此换一个浏览器也能沿用。设计记录见"
+" [2026-10-17 "
+"控制台语言切换](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17"
+"-console-language-switching-design.zh.md)。"
+
+#: ../developer/console-translations.md:10
+msgid ""
+"This page is for anyone who adds console text or translates it. "
+"Translating these pages, the documentation, is a separate workflow: "
+"[Translating the Docs](translations.md)."
+msgstr "本页面向新增控制台文案或翻译文案的人。翻译这些文档页面是另一套流程，见 [翻译文档](translations.md)。"
+
+#: ../developer/console-translations.md:14
+msgid "Writing a console string"
+msgstr "编写控制台文案"
+
+#: ../developer/console-translations.md:16
+msgid "Every string a reader sees goes through `t(slot, English)`:"
+msgstr "读者看到的每一条文案都经过 `t(slot, English)`："
+
+#: ../developer/console-translations.md:23
+msgid ""
+"The English at the call site is the source text. Edit it there; there is "
+"no English catalog to keep in step."
+msgstr "调用处的英文就是源文本，直接在那里修改；不存在需要同步维护的英文字典。"
+
+#: ../developer/console-translations.md:25
+msgid ""
+"Name the slot `<area>.<page or component>.<meaning>`, like the existing "
+"`auth.login.title` and `chrome.header.dashboard`."
+msgstr ""
+"slot 按 `<area>.<page or component>.<meaning>` 命名，与现有的 "
+"`auth.login.title`、`chrome.header.dashboard` 一致。"
+
+#: ../developer/console-translations.md:27
+#, python-brace-format
+msgid ""
+"Translate whole sentences, and put values in with `fill()` from "
+"`@/lib/utils/interpolate`, so a language with a different word order can "
+"move them: `fill(t('chrome.account_menu.switched', 'Switched to {name}'),"
+" { name })`."
+msgstr ""
+"按整句翻译，用 `@/lib/utils/interpolate` 中的 `fill()` "
+"填入变量，这样语序不同的语言可以调整变量的位置：`fill(t('chrome.account_menu.switched', 'Switched"
+" to {name}'), { name })`。"
+
+#: ../developer/console-translations.md:30
+msgid ""
+"A server component uses the same pair through `translate` from "
+"`@/lib/i18n/translate`."
+msgstr "服务端组件通过 `@/lib/i18n/translate` 中的 `translate` 使用同样的一对参数。"
+
+#: ../developer/console-translations.md:32
+msgid ""
+"Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so"
+" the catalog check can read them."
+msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a' : 'b'`），字典检查才能读出它们。"
+
+#: ../developer/console-translations.md:35
+msgid ""
+"Administration pages (`/dashboard/admin`) are for operators, not users, "
+"and stay in English: they do not go through `t()`, and their container is"
+" marked `lang=\"en\"`."
+msgstr "管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：它们不经过 `t()`，容器标注为 `lang=\"en\"`。"
+
+#: ../developer/console-translations.md:39
+msgid "The catalog"
+msgstr "字典"
+
+#: ../developer/console-translations.md:41
+msgid ""
+"`apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the "
+"English it translates and the translation:"
+msgstr "`apps/frontend/src/lib/i18n/messages/zh-CN.json` 把每个 slot 映射到它所翻译的英文以及译文："
+
+#: ../developer/console-translations.md:48
+msgid ""
+"The runtime uses an entry only while its `source` is exactly the English "
+"the call site passes. Changing a sentence therefore shows the new English"
+" until it is translated again, instead of a translation of what the page "
+"used to say. A slot that passes different English in different places "
+"holds a list of entries, one per English string."
+msgstr ""
+"只有当条目的 `source` "
+"与调用处传入的英文完全一致时，运行时才使用它。因此修改一句英文后，页面会显示新的英文，直到重新翻译为止，而不是显示旧句子的译文。在不同位置传入不同英文的"
+" slot 保存一个条目列表，每句英文一条。"
+
+#: ../developer/console-translations.md:54
+msgid ""
+"Only the active language's catalog is sent to the browser, as part of the"
+" page; English has none."
+msgstr "只有当前语言的字典会随页面发送到浏览器；英文没有字典。"
+
+#: ../developer/console-translations.md:57
+msgid "Checking a catalog"
+msgstr "检查字典"
+
+#: ../developer/console-translations.md:66
+#, python-brace-format
+msgid ""
+"The report counts translated, missing, stale (the English changed) and "
+"orphaned entries. Missing and stale entries fall back to English and do "
+"not fail anything. The test suite (`src/lib/i18n/catalog.test.ts`) does "
+"fail on a malformed entry, on a translation whose `{placeholders}` differ"
+" from its source, and on stale or orphaned entries in a shipped catalog —"
+" re-translate or prune in the same change that edits the English."
+msgstr ""
+"报告统计已翻译、缺失、过期（英文已改）和孤立的条目。缺失和过期的条目回退为英文，不会导致失败。测试套件（`src/lib/i18n/catalog.test.ts`）会在以下情况失败：条目格式错误、译文的"
+" `{placeholders}` 与原文不一致、随镜像发布的字典中存在过期或孤立条目。请在修改英文的同一个变更里重新翻译或清理。"
+
+#: ../developer/console-translations.md:73
+msgid "What stays in English"
+msgstr "保留英文的内容"
+
+#: ../developer/console-translations.md:75
+msgid ""
+"The Terms of Service and the research-consent statements at sign-up. They"
+" are binding text; a translation needs review by whoever owns the terms "
+"and the study, so the catalog leaves them out on purpose."
+msgstr "服务条款，以及注册时的研究知情同意声明。它们是有约束力的文本，翻译需要由条款和研究的负责方审核，因此字典有意不包含它们。"
+
+#: ../developer/console-translations.md:78
+msgid ""
+"Error messages from the gateway, model names, and Markdown written by "
+"administrators (broadcasts, site updates)."
+msgstr "网关返回的错误信息、模型名称，以及管理员撰写的 Markdown 内容（广播、站点更新）。"
+
+#: ../developer/console-translations.md:81
+msgid "Chinese terminology"
+msgstr "中文术语"
+
+#: ../developer/console-translations.md:83
+msgid ""
+"Keep one Chinese term per English term across the console, as the docs do"
+" (see [Chinese terminology](translations.md#chinese-terminology))."
+msgstr "与文档一样，控制台中每个英文术语只对应一个中文译法（见 [中文术语](translations.md#chinese-terminology)）。"
+
+#: ../developer/console-translations.md
+msgid "English"
+msgstr "英文"
+
+#: ../developer/console-translations.md
+msgid "Chinese"
+msgstr "中文"
+
+#: ../developer/console-translations.md
+msgid "Dashboard (the console)"
+msgstr "Dashboard（控制台）"
+
+#: ../developer/console-translations.md
+msgid "控制台"
+msgstr "控制台"
+
+#: ../developer/console-translations.md
+msgid "Log in / Sign up"
+msgstr "Log in / Sign up"
+
+#: ../developer/console-translations.md
+msgid "登录 / 注册"
+msgstr "登录 / 注册"
+
+#: ../developer/console-translations.md
+msgid "Usage"
+msgstr "Usage"
+
+#: ../developer/console-translations.md
+msgid "用量"
+msgstr "用量"
+
+#: ../developer/console-translations.md
+msgid "Quota"
+msgstr "Quota"
+
+#: ../developer/console-translations.md
+msgid "额度"
+msgstr "额度"
+
+#: ../developer/console-translations.md
+msgid "Docs Assistant"
+msgstr "Docs Assistant"
+
+#: ../developer/console-translations.md
+msgid "文档助手"
+msgstr "文档助手"
+
+#: ../developer/console-translations.md
+msgid "Status (page)"
+msgstr "Status（页面）"
+
+#: ../developer/console-translations.md
+msgid "服务状态"
+msgstr "服务状态"
+
+#: ../developer/console-translations.md
+msgid "API key, token, model id, endpoint, Playground"
+msgstr "API key、token、model id、endpoint、Playground"
+
+#: ../developer/console-translations.md
+msgid "unchanged"
+msgstr "保持英文"
+

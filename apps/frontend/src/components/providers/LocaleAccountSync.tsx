@@ -32,7 +32,7 @@ import { accountChoice, encodeLocaleChoice, planLocaleSync } from '@/lib/i18n/ch
 export function LocaleAccountSync() {
   const router = useRouter();
   const current = useLocale();
-  const { state } = useAuth();
+  const { state, refreshUser } = useAuth();
   const user = state.user;
   const userId = user?.id ?? null;
 
@@ -42,6 +42,8 @@ export function LocaleAccountSync() {
   const shown = useRef(current);
   shown.current = current;
   const inFlight = useRef(new Set<string>());
+  const reloadProfile = useRef(refreshUser);
+  reloadProfile.current = refreshUser;
 
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -58,6 +60,13 @@ export function LocaleAccountSync() {
     if (!user || !userId) return;
     const plan = planLocaleSync(readBrowserChoice(), accountChoice(user.locale), userId);
 
+    if (plan.kind === 'none') {
+      // Another tab may have chosen since this page rendered: show its choice.
+      const browser = readBrowserChoice();
+      if (browser && browser.locale !== shown.current) router.refresh();
+      return;
+    }
+
     if (plan.kind === 'adopt') {
       writeBrowserChoice({
         locale: plan.locale,
@@ -68,7 +77,6 @@ export function LocaleAccountSync() {
       if (plan.locale !== shown.current) router.refresh();
       return;
     }
-    if (plan.kind !== 'store') return;
 
     const sent = plan.choice;
     const key = `${userId}:${encodeLocaleChoice(sent)}`;
@@ -81,6 +89,8 @@ export function LocaleAccountSync() {
         if (!replaceBrowserChoiceIf(sent, { ...kept, owner: userId, stored: true })) return;
         // The account kept a more recent choice made on another browser.
         if (kept.locale !== shown.current) router.refresh();
+        // Bring the profile up to date with what the account now holds.
+        void reloadProfile.current();
       })
       .catch((error) => {
         console.warn('Could not store the language choice in the account:', error);

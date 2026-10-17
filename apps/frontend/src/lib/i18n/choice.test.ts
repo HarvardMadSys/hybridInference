@@ -203,6 +203,19 @@ describe('syncing the browser with the signed-in account', () => {
     expect(planLocaleSync(storedInA, null, B)).toEqual({ kind: 'none' });
   });
 
+  it('does not step back to a copy of the account older than a choice it stored', () => {
+    // The profile was read before this account stored Chinese (here, or in
+    // another tab); the account holds Chinese now.
+    const storedLater: LocaleChoice = { locale: 'zh-CN', chosenAt: T0 + 5, owner: A, stored: true };
+    expect(planLocaleSync(storedLater, accountEn, A)).toEqual({ kind: 'none' });
+    // A newer account choice, from a fresh profile, is still adopted.
+    expect(planLocaleSync(storedLater, { locale: 'en', chosenAt: T0 + 6 }, A)).toEqual({
+      kind: 'adopt',
+      locale: 'en',
+      chosenAt: T0 + 6,
+    });
+  });
+
   it('does nothing once the two agree', () => {
     const agreed: LocaleChoice = { locale: 'en', chosenAt: T0, owner: A, stored: true };
     expect(planLocaleSync(agreed, accountEn, A)).toEqual({ kind: 'none' });

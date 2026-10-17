@@ -130,6 +130,10 @@ export type LocaleSyncPlan =
  * another account, stored or not — is never written here; the account's own
  * choice is shown when it has one, and the browser's is left alone when it has
  * none.
+ *
+ * `account` is a copy read at some point, and may be older than a choice this
+ * account has stored since. Such a copy never takes the browser back: only an
+ * account choice at least as recent as this account's stored one is adopted.
  */
 export function planLocaleSync(
   browser: LocaleChoice | null,
@@ -142,14 +146,15 @@ export function planLocaleSync(
     return { kind: 'store', choice: browser };
   }
   if (!account) return { kind: 'none' };
-  if (
-    browser &&
-    browser.owner === userId &&
-    browser.stored &&
-    browser.locale === account.locale &&
-    browser.chosenAt === account.chosenAt
-  ) {
-    return { kind: 'none' };
+  if (browser && browser.owner === userId && browser.stored) {
+    // The account stored this choice, so it holds this one or a newer one. A
+    // copy of the account that is older than it was read before the store —
+    // a profile this tab loaded earlier, or one another tab has since moved
+    // past — and is not a reason to go back.
+    if (browser.chosenAt > account.chosenAt) return { kind: 'none' };
+    if (browser.chosenAt === account.chosenAt && browser.locale === account.locale) {
+      return { kind: 'none' };
+    }
   }
   return { kind: 'adopt', locale: account.locale, chosenAt: account.chosenAt };
 }
