@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from serving.servers.routers.auth_routes import verify_email
 
@@ -40,7 +40,7 @@ async def test_verify_email_used_token_repairs_unverified_user() -> None:
     """A used token should not trap its user in an unverified login state."""
     store = _UsedTokenStore(email_verified=False)
 
-    response = await verify_email("already-used-token", op_store=store)
+    response = await verify_email("already-used-token", BackgroundTasks(), op_store=store)
 
     assert response.email_verified is True
     assert store.email_verified is True
@@ -56,7 +56,7 @@ async def test_verify_email_used_token_skips_repair_for_verified_user() -> None:
         expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
     )
 
-    response = await verify_email("already-used-token", op_store=store)
+    response = await verify_email("already-used-token", BackgroundTasks(), op_store=store)
 
     assert response.email_verified is True
     assert store.email_verified is True
@@ -73,7 +73,7 @@ async def test_verify_email_expired_used_token_does_not_repair_unverified_user()
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await verify_email("expired-used-token", op_store=store)
+        await verify_email("expired-used-token", BackgroundTasks(), op_store=store)
 
     assert exc_info.value.status_code == 400
     assert "expired" in str(exc_info.value.detail).lower()

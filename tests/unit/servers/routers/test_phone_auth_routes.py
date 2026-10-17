@@ -8,9 +8,14 @@ from fastapi import BackgroundTasks, HTTPException, Request, Response
 from pydantic import ValidationError
 
 from serving.exceptions import AccountSchemaPending
-from serving.schemas_auth import PhoneCodeRequest, PhoneSignupRequest, PhoneVerifyRequest
+from serving.schemas_auth import (
+    BindEmailRequest,
+    PhoneCodeRequest,
+    PhoneSignupRequest,
+    PhoneVerifyRequest,
+)
 from serving.servers.deps import get_current_user
-from serving.servers.routers import auth_routes, phone_auth_routes as routes, user_routes
+from serving.servers.routers import auth_routes, phone_auth_routes as routes, reauth, user_routes
 from serving.setup_state import init_setup_state
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
@@ -102,6 +107,13 @@ class Store:
         self.create_phone_session = AsyncMock(return_value=True)
         self.update_user_last_login = AsyncMock()
         self.bind_user_phone = AsyncMock(return_value=True)
+        self.bind_user_email = AsyncMock(return_value=True)
+        self.get_user_avatar = AsyncMock(return_value=None)
+        self.get_user_by_email = AsyncMock(return_value=None)
+        self.delete_user_verification_tokens = AsyncMock()
+        self.create_verification_token = AsyncMock()
+        self.get_verification_token = AsyncMock()
+        self.mark_verification_used = AsyncMock()
         self.record_phone_login_event = AsyncMock()
         self.get_session_by_token_hash = AsyncMock(
             return_value={
@@ -596,3 +608,39 @@ async def test_deleted_after_code_consumption_cannot_create_session_or_cookie(en
     assert "set-cookie" not in response.headers
     store.update_user_last_login.assert_not_called()
     assert store.record_phone_login_event.call_args.kwargs["outcome"] == "failure"
+
+
+@pytest.mark.asyncio
+async def test_bind_email_issues_pending_verification_and_completes_on_verify(enabled, monkeypatch):
+    monkeypatch.setattr(auth_routes, "is_email_enabled", lambda: True)
+    monkeypatch.setattr(reauth, "is_sms_enabled", lambda: True)
+    store = Store(user())
+    tasks = BackgroundTasks()
+    res = await auth_routes.bind_email(
+        request(),
+        BindEmailRequest(email="NewUser@tencent.com", phone_code="123456"),
+        tasks,
+        {"user_id": "existing-user"},
+        store,
+        None,
+    )
+    assert res.email == "newuser@tencent.com"
+    assert res.email_verified is False
+    store.delete_user_verification_tokens.assert_awaited_once_with("existing-user")
+    token_kwargs = store.create_verification_token.call_args.kwargs
+    assert token_kwargs["user_id"] == "existing-user"
+    assert token_kwargs["pending_email"] == "newuser@tencent.com"
+    store.bind_user_email.assert_not_called()
+
+    store.get_verification_token.return_value = {
+        "token": token_kwargs["token"],
+        "user_id": "existing-user",
+        "created_at": datetime.now(UTC),
+        "expires_at": datetime.now(UTC) + timedelta(hours=24),
+        "used_at": None,
+        "pending_email": "newuser@tencent.com",
+    }
+    verified = await auth_routes.verify_email(token_kwargs["token"], BackgroundTasks(), store)
+    assert verified.email_verified is True
+    store.bind_user_email.assert_awaited_once_with("existing-user", "newuser@tencent.com")
+    store.mark_verification_used.assert_awaited_once_with(token_kwargs["token"])

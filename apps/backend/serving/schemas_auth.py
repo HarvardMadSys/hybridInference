@@ -48,9 +48,9 @@ class PhoneRequest(BaseModel):
 
 
 class PhoneCodeRequest(PhoneRequest):
-    """Issue a code scoped to registration, login, or account binding."""
+    """Issue a code scoped to registration, login, binding, or confirming the owner."""
 
-    purpose: Literal["signup", "login", "bind"]
+    purpose: Literal["signup", "login", "bind", "delete_account", "bind_email", "set_password"]
     turnstile_token: str | None = None
 
 
@@ -83,6 +83,26 @@ class PhoneSignupResponse(BaseModel):
     email: None = None
     phone: str
     requires_approval: bool = False
+
+
+class BindEmailRequest(BaseModel):
+    """Bind or update the email address on an authenticated account.
+
+    The owner confirms with ``password``, or with ``phone_code`` (a
+    ``bind_email`` code) when the account has no password.
+    """
+
+    email: EmailStr
+    password: str | None = Field(default=None, max_length=1024)
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+
+
+class BindEmailResponse(BaseModel):
+    """Result of requesting or completing email binding."""
+
+    message: str
+    email: str
+    email_verified: bool
 
 
 # Authentication request/response schemas
@@ -172,6 +192,7 @@ class UserInfo(BaseModel):
     phone_verified: bool = False
     has_password: bool = True
     user_name: str | None = None
+    avatar_url: str | None = None
     role: str = "free"
     status: str = "active"
     email_verified: bool = False
@@ -265,10 +286,24 @@ class SetupAdminRequest(BaseModel):
         return value
 
 
+AVATAR_URL_PATTERN = re.compile(r"^data:image/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$")
+
+
 class UserProfileUpdate(BaseModel):
     """User profile update request."""
 
     user_name: UserName | None = None
+    avatar_url: str | None = Field(default=None, max_length=65536)
+
+    @field_validator("avatar_url")
+    @classmethod
+    def _check_avatar_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not AVATAR_URL_PATTERN.fullmatch(value):
+            raise ValueError("Portrait must be a PNG, JPEG, or WebP data URL")
+        return value
 
 
 class LLMProberLayoutState(BaseModel):
@@ -429,14 +464,39 @@ class ResendVerificationResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """Change password request (for logged-in users)."""
+    """Change or set password request (for logged-in users).
 
-    old_password: str
+    An account with a password gives ``old_password``; one without (a phone
+    account) gives ``phone_code``, a ``set_password`` code sent to its phone.
+    """
+
+    old_password: str = ""
     new_password: str  # Validate strength in handler to return 400
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 class ChangePasswordResponse(BaseModel):
     """Change password response."""
+
+    message: str
+
+
+class DeleteAccountRequest(BaseModel):
+    """Delete the signed-in account, confirmed the way that account signs in.
+
+    ``confirm`` is the account's sign-in identifier (see
+    ``account_identifier``), typed by its owner. An account with a password
+    confirms with it; a phone-only account with a ``delete_account`` code
+    sent to its verified number.
+    """
+
+    confirm: str = Field(max_length=320)
+    password: str | None = Field(default=None, max_length=1024)
+    phone_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+
+
+class DeleteAccountResponse(BaseModel):
+    """Self-service account deletion result."""
 
     message: str
 

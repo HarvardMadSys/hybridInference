@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
+import toast, { resolveValue, useToasterStore } from 'react-hot-toast';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig, withAgentsUrl } from '@/config/site-config';
 import { ACCOUNT_CHANGED_EVENT, getAccessToken, setAccessToken } from '@/lib/api/client';
@@ -390,6 +391,108 @@ describe('AuthProvider and what a page holds itself', () => {
 
     expect(controller.state.user?.id).toBe('next-user');
     expect(screen.getByLabelText('Email')).toHaveValue('next@example.test');
+  });
+});
+
+describe('AuthProvider and the toasts on screen', () => {
+  // What an administrator's action leaves on screen, as the provider keys tab's
+  // reset does. It must not still be showing once the browser is someone else's.
+  const ADMIN_TOAST = 'Reset OPENROUTER_API_KEY.';
+
+  // Every toast react-hot-toast holds, fading or not: the ones the console's
+  // toaster would draw.
+  function Toasts() {
+    const { toasts } = useToasterStore();
+    return (
+      <ul aria-label="Toasts">
+        {toasts.map((entry) => (
+          <li key={entry.id}>{resolveValue(entry.message, entry)}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  async function adminWithToast(others: string[] = []) {
+    getMe.mockResolvedValue({ ...me('admin-user'), role: 'admin', is_admin: true });
+    listAccounts.mockResolvedValue({
+      active_user_id: 'admin-user',
+      accounts: [account('admin-user', { active: true }), ...others.map((other) => account(other))],
+      max_accounts: 5,
+    });
+    await renderWithAgents('/agents', <Toasts />);
+    await waitFor(() => expect(controller.state.user?.id).toBe('admin-user'));
+    act(() => {
+      toast.success(ADMIN_TOAST);
+    });
+    expect(screen.getByText(ADMIN_TOAST)).toBeInTheDocument();
+  }
+
+  beforeEach(() => {
+    toast.remove();
+  });
+
+  it('clears them on a switch, before the switch’s own confirmation', async () => {
+    await adminWithToast(['other-user']);
+    getMe.mockResolvedValue(me('other-user'));
+
+    // As the account menu does: switch, then say so.
+    await act(async () => {
+      await controller.switchAccount('other-user');
+      toast.success('Switched to other-user');
+    });
+
+    expect(controller.state.user?.id).toBe('other-user');
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+    expect(screen.getByText('Switched to other-user')).toBeInTheDocument();
+  });
+
+  it('clears them on logout, even when the gateway logout fails', async () => {
+    logoutApi.mockRejectedValueOnce(new Error('network'));
+    await adminWithToast();
+
+    await act(() => controller.logout().catch(() => undefined));
+
+    expect(controller.state.isAuthenticated).toBe(false);
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('clears them when every account signs out', async () => {
+    await adminWithToast(['other-user']);
+
+    await act(() => controller.logoutAll());
+
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('clears them when another account signs in on this browser', async () => {
+    await adminWithToast();
+    loginApi.mockResolvedValueOnce({ user: { id: 'second-user' } });
+    getMe.mockResolvedValue(me('second-user'));
+
+    await act(() => controller.login('second@example.test', 'pw'));
+
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('clears them when another tab moves the browser to another account', async () => {
+    await adminWithToast();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: 'switched' }));
+    });
+
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('keeps them when the switch fails, as the account stays', async () => {
+    await adminWithToast(['other-user']);
+    switchAccountApi.mockRejectedValueOnce(new Error('session ended'));
+
+    await act(() => controller.switchAccount('other-user').catch(() => undefined));
+
+    expect(controller.state.user?.id).toBe('admin-user');
+    expect(screen.getByText(ADMIN_TOAST)).toBeInTheDocument();
   });
 });
 

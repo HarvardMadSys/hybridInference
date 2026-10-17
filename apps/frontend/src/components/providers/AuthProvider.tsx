@@ -13,6 +13,7 @@ import {
 import { AccountChangedNotice } from '@/components/features/auth/AccountChangedNotice';
 import {
   agentSessionUser,
+  deleteAccount as deleteAccountApi,
   endAgentSession,
   listAccounts,
   login as loginApi,
@@ -32,7 +33,9 @@ import {
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
 import { getMe } from '@/lib/api/user';
+import { AccountToastContext, type AccountToastScope } from '@/lib/hooks/useAccountToast';
 import { useSiteConfig } from './SiteConfigProvider';
+import { clearToasts } from './ToastProvider';
 
 /**
  * Exported because the host facade re-exports them: a distribution's UI reads
@@ -52,6 +55,7 @@ export interface AuthUser {
   phone_verified?: boolean;
   has_password?: boolean;
   user_name?: string | null;
+  avatar_url?: string | null;
   role: string;
   is_admin: boolean;
 }
@@ -88,6 +92,16 @@ interface AuthContextValue {
   /** Sign one account out of this browser, the current one included. */
   removeAccount: (userId: string) => Promise<void>;
   logoutAll: () => Promise<void>;
+  /**
+   * Delete the current account, then leave it signed out like `logout`. A
+   * refused request (wrong password, wrong confirmation) throws and changes
+   * nothing.
+   */
+  deleteAccount: (data: {
+    confirm: string;
+    password?: string;
+    phoneCode?: string;
+  }) => Promise<void>;
 }
 
 const ROLE_RANK: Record<string, number> = {
@@ -107,6 +121,25 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { agentsUrl } = useSiteConfig();
   const queryClient = useQueryClient();
+  const accountRevision = useRef(0);
+  const toastScopeRef = useRef<AccountToastScope>({ userId: null, active: true });
+  const [toastScope, setToastScope] = useState(toastScopeRef.current);
+  const invalidateAccountToasts = useCallback(() => {
+    accountRevision.current += 1;
+    toastScopeRef.current.active = false;
+    clearToasts();
+  }, []);
+  const activateAccountToasts = useCallback(
+    (userId: string) => {
+      const previous = toastScopeRef.current;
+      if (previous.active && previous.userId === userId) return;
+      invalidateAccountToasts();
+      const next = { userId, active: true };
+      toastScopeRef.current = next;
+      setToastScope(next);
+    },
+    [invalidateAccountToasts],
+  );
   const [state, setState] = useState<AuthState>({
     isAuthenticated: false,
     loading: true,
@@ -142,8 +175,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   accountsRef.current = accounts;
 
   const refreshUser = useCallback(async () => {
+    const revision = accountRevision.current;
     try {
       const me = await getMe();
+      // An earlier profile request must not reactivate an account that left
+      // while it was in flight (including an other-tab account-change notice).
+      if (revision !== accountRevision.current) return;
+      activateAccountToasts(me.id);
       setState({
         isAuthenticated: true,
         loading: false,
@@ -155,14 +193,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           phone_verified: me.phone_verified,
           has_password: me.has_password,
           user_name: me.user_name,
+          avatar_url: me.avatar_url ?? null,
           role: me.role || 'free',
           is_admin: me.is_admin,
         },
       });
     } catch {
+      if (revision !== accountRevision.current) return;
+      invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
     }
-  }, []);
+  }, [activateAccountToasts, invalidateAccountToasts]);
 
   const refreshAccounts = useCallback(async () => {
     try {
@@ -188,20 +229,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handleAuthExpired = () => {
+      invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
-  }, []);
+  }, [invalidateAccountToasts]);
 
   useEffect(() => {
     const handleAccountChanged = (event: Event) => {
       const reason = (event as CustomEvent<AccountChangeReason>).detail;
+      // The page's toasts went with its account, and would sit above the notice.
+      invalidateAccountToasts();
       setAccountChanged(reason === 'signed-out' ? 'signed-out' : 'switched');
     };
     window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
     return () => window.removeEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged);
-  }, []);
+  }, [invalidateAccountToasts]);
 
   useEffect(
     () =>
@@ -239,20 +283,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [agentsUrl],
   );
 
+  // What the tab holds for the account it showed, outside any page: the query
+  // cache, and the toasts that account's actions raised. Dropped whenever that
+  // account changes — by every sign-in, switch and sign-out.
+  const forgetPreviousAccount = useCallback(() => {
+    queryClient.clear();
+    invalidateAccountToasts();
+  }, [invalidateAccountToasts, queryClient]);
+
   // What every sign-in does once its request has installed the new token.
   // Queries are cached under keys that name no account, so the previous
-  // account's answers go first. The Agent session stays when the account joins
-  // a browser that has others signed in — it is one of theirs — and ends on a
-  // browser that had none, where it can only belong to someone who left.
+  // account's answers go first, and its toasts with them. The Agent session
+  // stays when the account joins a browser that has others signed in — it is
+  // one of theirs — and ends on a browser that had none, where it can only
+  // belong to someone who left.
   const startSession = useCallback(
     async (userId: string, hadAccounts: boolean) => {
-      queryClient.clear();
+      forgetPreviousAccount();
       if (!hadAccounts) await endAgentSession(agentsUrl);
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId });
     },
-    [agentsUrl, queryClient, refreshAccounts, refreshUser],
+    [agentsUrl, forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const signedInHere = () => accountsRef.current.some((account) => account.signed_in);
@@ -271,13 +324,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (accessToken: string) => {
       const hadAccounts = signedInHere();
       setAccessToken(accessToken);
-      queryClient.clear();
+      forgetPreviousAccount();
       if (!hadAccounts) await endAgentSession(agentsUrl);
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId: userIdRef.current });
     },
-    [agentsUrl, queryClient, refreshAccounts, refreshUser],
+    [agentsUrl, forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const loginPhone = useCallback(
@@ -292,24 +345,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const switchAccount = useCallback(
     async (userId: string) => {
       await switchAccountApi(userId);
-      queryClient.clear();
+      forgetPreviousAccount();
       await refreshUser();
       await refreshAccounts();
       announceAccounts({ type: 'active', userId });
     },
-    [queryClient, refreshAccounts, refreshUser],
+    [forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
   const signedOut = useCallback(
     async (userIds: string[] | null) => {
-      queryClient.clear();
+      forgetPreviousAccount();
       if (userIds) await endAgentSessionOf(userIds);
       else await endAgentSession(agentsUrl);
       setState({ isAuthenticated: false, loading: false, user: null });
       await refreshAccounts();
       announceAccounts({ type: 'active', userId: null });
     },
-    [agentsUrl, endAgentSessionOf, queryClient, refreshAccounts],
+    [agentsUrl, endAgentSessionOf, forgetPreviousAccount, refreshAccounts],
   );
 
   const logout = useCallback(async () => {
@@ -328,6 +381,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await signedOut(null);
     }
   }, [signedOut]);
+
+  const deleteAccount = useCallback(
+    async (data: { confirm: string; password?: string; phoneCode?: string }) => {
+      const userId = userIdRef.current;
+      await deleteAccountApi({
+        confirm: data.confirm,
+        ...(data.password !== undefined ? { password: data.password } : {}),
+        ...(data.phoneCode !== undefined ? { phone_code: data.phoneCode } : {}),
+      });
+      await signedOut(userId ? [userId] : null);
+    },
+    [signedOut],
+  );
 
   const removeAccount = useCallback(
     async (userId: string) => {
@@ -357,11 +423,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     switchAccount,
     removeAccount,
     logoutAll,
+    deleteAccount,
   };
 
   return (
     <AuthContext.Provider value={value}>
-      <Fragment key={pageOwner.generation}>{children}</Fragment>
+      <AccountToastContext.Provider value={toastScope}>
+        <Fragment key={pageOwner.generation}>{children}</Fragment>
+      </AccountToastContext.Provider>
       {accountChanged ? <AccountChangedNotice reason={accountChanged} /> : null}
     </AuthContext.Provider>
   );

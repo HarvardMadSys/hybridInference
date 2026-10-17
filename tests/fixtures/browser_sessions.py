@@ -125,12 +125,16 @@ class BrowserSessionFake:
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
+        browser = self.browsers.get(browser_session_id)
+        if browser is None or browser["revoked"]:
+            return False
         previous = self.members.get((browser_session_id, user_id))
         if previous is not None and previous != auth_session_id and self._session(previous):
             self.sessions[previous]["revoked"] = True
         self.members[(browser_session_id, user_id)] = auth_session_id
-        self.browsers[browser_session_id]["active_user_id"] = user_id
+        browser["active_user_id"] = user_id
+        return True
 
     async def set_browser_session_active(
         self, browser_session_id: str, user_id: str | None
@@ -144,7 +148,10 @@ class BrowserSessionFake:
         browser = self.browsers[browser_session_id]
         if browser["active_user_id"] == user_id:
             browser["active_user_id"] = None
-        return sum(1 for bid, _ in self.members if bid == browser_session_id)
+        remaining = sum(1 for bid, _ in self.members if bid == browser_session_id)
+        if remaining == 0:
+            browser.update(revoked=True, active_user_id=None)
+        return remaining
 
     async def revoke_browser_session(self, browser_session_id: str) -> None:
         for key in [key for key in self.members if key[0] == browser_session_id]:

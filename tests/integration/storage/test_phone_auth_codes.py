@@ -430,3 +430,123 @@ async def test_broadcast_recipient_query_excludes_accounts_without_email(phone_s
         recipients = await conn.fetch(f"SELECT id,email FROM users WHERE {where}", *params)
     assert count == 1
     assert [row["id"] for row in recipients] == ["email-user"]
+
+
+async def test_purpose_check_from_before_delete_account_is_rebuilt(phone_store):
+    from serving.storage.log_schema import constraint_admitted_values, constraint_definition
+    from serving.storage.phone_auth import initialize_phone_auth
+
+    async with phone_store._pool.acquire() as conn:
+        await conn.execute(
+            "ALTER TABLE phone_auth_codes DROP CONSTRAINT phone_auth_codes_purpose_check"
+        )
+        await conn.execute(
+            "ALTER TABLE phone_auth_codes ADD CONSTRAINT phone_auth_codes_purpose_check "
+            "CHECK (purpose IN ('signup', 'login', 'bind'))"
+        )
+        await initialize_phone_auth(conn)
+        definition = await constraint_definition(
+            conn, "phone_auth_codes", "phone_auth_codes_purpose_check"
+        )
+    assert constraint_admitted_values(definition) == {
+        "signup",
+        "login",
+        "bind",
+        "delete_account",
+        "bind_email",
+        "set_password",
+    }
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    await _issue(phone_store, purpose="delete_account", user_id="user-a")
+    assert await _consume(phone_store, purpose="delete_account", user_id="user-a") == "ok"
+
+
+async def test_delete_account_code_needs_an_active_owner(phone_store):
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    await _issue(phone_store, purpose="delete_account", user_id="user-a")
+    async with phone_store._pool.acquire() as conn:
+        await conn.execute("UPDATE users SET status = 'suspended' WHERE id = 'user-a'")
+    assert await _consume(phone_store, purpose="delete_account", user_id="user-a") == "invalid"
+    retry, _challenge = await _reserve(phone_store, purpose="delete_account", user_id="user-a")
+    assert retry == 86400
+
+
+async def test_self_service_soft_delete_is_marked_in_the_audit_log(phone_store):
+    import json
+
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    await phone_store.delete_user(
+        "user-a",
+        admin_ip=IP,
+        admin_id="user-a",
+        reason="Deleted by the account owner",
+        email="owner@example.test",
+        self_service=True,
+    )
+    async with phone_store._pool.acquire() as conn:
+        status = await conn.fetchval("SELECT status FROM users WHERE id = 'user-a'")
+        details = await conn.fetchval(
+            "SELECT details FROM admin_audit_log WHERE target_user_id = 'user-a' "
+            "AND action = 'delete_user'"
+        )
+    assert status == "deleted"
+    assert json.loads(details)["self_service"] is True
+
+
+async def test_self_service_delete_refuses_an_account_promoted_meanwhile(phone_store):
+    from serving.exceptions import SelfDeleteRefused
+
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    async with phone_store._pool.acquire() as promoter:
+        # An administrator's promotion holds the row when the deletion starts.
+        tx = promoter.transaction()
+        await tx.start()
+        await promoter.execute("UPDATE users SET role = 'admin' WHERE id = 'user-a'")
+        deletion = asyncio.create_task(
+            phone_store.delete_user("user-a", admin_ip=IP, admin_id="user-a", self_service=True)
+        )
+        await asyncio.sleep(0.3)
+        assert not deletion.done()
+        await tx.commit()
+        with pytest.raises(SelfDeleteRefused):
+            await deletion
+    async with phone_store._pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status, role FROM users WHERE id = 'user-a'")
+        audited = await conn.fetchval(
+            "SELECT count(*) FROM admin_audit_log WHERE target_user_id = 'user-a'"
+        )
+    assert (row["status"], row["role"]) == ("active", "admin")
+    assert audited == 0
+
+
+async def test_admin_soft_delete_is_not_gated_on_role(phone_store):
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    async with phone_store._pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = 'admin' WHERE id = 'user-a'")
+    await phone_store.delete_user("user-a", admin_ip=IP, admin_id="someone-else")
+    async with phone_store._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT status FROM users WHERE id = 'user-a'") == "deleted"
+
+
+async def test_portrait_is_kept_out_of_the_user_row(phone_store):
+    await phone_store.create_user(
+        user_id="user-a", email="owner@example.test", password_hash="test-hash"
+    )
+    portrait = "data:image/webp;base64,UklGRg=="
+    await phone_store.set_user_avatar("user-a", portrait)
+    assert await phone_store.get_user_avatar("user-a") == portrait
+    row = await phone_store.get_user_by_id("user-a")
+    assert "avatar_data_url" not in row
+    assert "avatar_url" not in (row.get("preferences") or {})
+    await phone_store.set_user_avatar("user-a", None)
+    assert await phone_store.get_user_avatar("user-a") is None

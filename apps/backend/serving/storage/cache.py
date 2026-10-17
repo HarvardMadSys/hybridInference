@@ -298,10 +298,16 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.delete_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            user_id,
+            admin_ip=admin_ip,
+            admin_id=admin_id,
+            reason=reason,
+            email=email,
+            self_service=self_service,
         )
         await self._cache.delete(self._user_key(user_id))
         # Also purge any auth entries referencing this user's keys
@@ -696,7 +702,7 @@ class CachedOperationalStore(OperationalStore):
 
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Delegate to wrapped store."""
         return await self._store.attach_browser_session_account(
             browser_session_id, user_id=user_id, auth_session_id=auth_session_id
@@ -733,6 +739,16 @@ class CachedOperationalStore(OperationalStore):
         bound = await self._store.bind_user_phone(user_id, phone)
         if bound:
             await self._cache.delete(self._user_key(user_id))
+            await self._cache.delete_pattern("auth:*")
+            await self._cache.delete_pattern("auth_light:*")
+        return bound
+
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        bound = await self._store.bind_user_email(user_id, email)
+        if bound:
+            await self._cache.delete(self._user_key(user_id))
+            await self._cache.delete(self._email_key(email))
             await self._cache.delete_pattern("auth:*")
             await self._cache.delete_pattern("auth_light:*")
         return bound
@@ -797,9 +813,21 @@ class CachedOperationalStore(OperationalStore):
     # -- tokens (pass-through) -----------------------------------------------
 
     async def create_verification_token(
-        self, *, token: str, user_id: str, expires_at: datetime
+        self,
+        *,
+        token: str,
+        user_id: str,
+        expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
+        if pending_email is not None:
+            return await self._store.create_verification_token(
+                token=token,
+                user_id=user_id,
+                expires_at=expires_at,
+                pending_email=pending_email,
+            )
         return await self._store.create_verification_token(
             token=token, user_id=user_id, expires_at=expires_at
         )
@@ -963,6 +991,14 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
+
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Delegate to wrapped store; portraits are not cached."""
+        return await self._store.get_user_avatar(user_id)
+
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_user_avatar(user_id, avatar_data_url)
 
     # -- signup domain allowlist (pass-through) ------------------------------
 

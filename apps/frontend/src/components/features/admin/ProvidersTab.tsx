@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   ProviderQuotaResult,
   RoutableProvider,
@@ -265,6 +265,7 @@ function ProviderCard({
 }
 
 function QuotasSection() {
+  const toast = useAccountToast();
   // Deployment docs may describe an operator's service, not backend extensions.
   const quotaDocsUrl =
     'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/backend-extensions.md#quota-reporting';
@@ -283,26 +284,29 @@ function QuotasSection() {
     } finally {
       setProviderQuotasLoading(false);
     }
-  }, []);
+  }, [toast]);
 
-  const handleToggle = useCallback(async (provider: ProviderQuotaResult) => {
-    const next = !provider.disabled;
-    setTogglingProvider(provider.name);
-    try {
-      await setProviderDisabled(provider.name, next);
-      // Reflect the new state on every card sharing this provider label.
-      setProviderQuotas((prev) =>
-        prev.map((p) => (p.name === provider.name ? { ...p, disabled: next } : p)),
-      );
-      toast.success(
-        `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
-      );
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setTogglingProvider(null);
-    }
-  }, []);
+  const handleToggle = useCallback(
+    async (provider: ProviderQuotaResult) => {
+      const next = !provider.disabled;
+      setTogglingProvider(provider.name);
+      try {
+        await setProviderDisabled(provider.name, next);
+        // Reflect the new state on every card sharing this provider label.
+        setProviderQuotas((prev) =>
+          prev.map((p) => (p.name === provider.name ? { ...p, disabled: next } : p)),
+        );
+        toast.success(
+          `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
+        );
+      } catch (e) {
+        toast.error(getErrorMessage(e));
+      } finally {
+        setTogglingProvider(null);
+      }
+    },
+    [toast],
+  );
 
   const handleToggleKey = useCallback(
     async (provider: ProviderQuotaResult) => {
@@ -334,7 +338,7 @@ function QuotasSection() {
         setTogglingKeyRef(null);
       }
     },
-    [loadProviderQuotas],
+    [loadProviderQuotas, toast],
   );
 
   useEffect(() => {
@@ -394,6 +398,7 @@ function QuotasSection() {
 }
 
 function AvailabilitySection() {
+  const toast = useAccountToast();
   const [providers, setProviders] = useState<RoutableProvider[]>([]);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
@@ -408,25 +413,28 @@ function AvailabilitySection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
-  const handleToggle = useCallback(async (provider: RoutableProvider) => {
-    const next = !provider.disabled;
-    setToggling(provider.provider);
-    try {
-      await setProviderDisabled(provider.provider, next);
-      setProviders((prev) =>
-        prev.map((p) => (p.provider === provider.provider ? { ...p, disabled: next } : p)),
-      );
-      toast.success(
-        `${provider.provider} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
-      );
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setToggling(null);
-    }
-  }, []);
+  const handleToggle = useCallback(
+    async (provider: RoutableProvider) => {
+      const next = !provider.disabled;
+      setToggling(provider.provider);
+      try {
+        await setProviderDisabled(provider.provider, next);
+        setProviders((prev) =>
+          prev.map((p) => (p.provider === provider.provider ? { ...p, disabled: next } : p)),
+        );
+        toast.success(
+          `${provider.provider} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
+        );
+      } catch (e) {
+        toast.error(getErrorMessage(e));
+      } finally {
+        setToggling(null);
+      }
+    },
+    [toast],
+  );
 
   useEffect(() => {
     load();

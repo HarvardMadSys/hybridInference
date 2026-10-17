@@ -6,6 +6,7 @@ import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
+import { UserAvatar } from '@/components/ui/UserAvatar';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
@@ -36,9 +37,12 @@ export function DashboardView() {
 
       <div className="mb-8">
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-            <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
+          <div className="flex items-center gap-3.5">
+            <UserAvatar user={state.user} size="lg" />
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+              <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Link

@@ -141,6 +141,10 @@ class OperationalStore(ABC):
         """Bind a verified phone atomically without replacing or merging identities."""
         raise RuntimeError("Phone authentication is unavailable in this store")
 
+    async def bind_user_email(self, user_id: str, email: str) -> bool:
+        """Bind or update a verified email atomically without merging identities."""
+        raise RuntimeError("Email binding is unavailable in this store")
+
     async def reserve_phone_code(self, **fields: Any) -> int:
         """Reserve a send within shared quotas and install an inactive challenge."""
         raise RuntimeError("Phone authentication is unavailable in this store")
@@ -282,11 +286,16 @@ class OperationalStore(ABC):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        self_service: bool = False,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert must be atomic (single
-        transaction).
+        transaction). *self_service* marks the audit entry as the account
+        owner's own deletion rather than an administrator's, and must raise
+        ``SelfDeleteRefused`` without changing anything unless the account,
+        read under the same transaction's row lock, is still active and not
+        an administrator.
         """
 
     @abstractmethod
@@ -672,10 +681,11 @@ class OperationalStore(ABC):
     @abstractmethod
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
-    ) -> None:
+    ) -> bool:
         """Make *auth_session_id* the browser's session for *user_id* and its active account.
 
         Revokes the session the browser held for that account before, if any.
+        Returns False, changing nothing, when the browser session is retired.
         """
 
     @abstractmethod
@@ -688,8 +698,10 @@ class OperationalStore(ABC):
     async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
         """Revoke and remove one account's session in a browser.
 
-        Clears the active account when it was this one. Returns how many
-        accounts remain signed in to the browser.
+        Clears the active account when it was this one, and retires the
+        browser session in the same transaction when no account remains, so a
+        concurrent attach either precedes it or sees the browser retired.
+        Returns how many accounts remain signed in to the browser.
         """
 
     @abstractmethod
@@ -741,6 +753,7 @@ class OperationalStore(ABC):
         token: str,
         user_id: str,
         expires_at: datetime,
+        pending_email: str | None = None,
     ) -> None:
         """Insert a new email verification token."""
 
@@ -1024,6 +1037,18 @@ class OperationalStore(ABC):
         preferences: dict[str, Any],
     ) -> None:
         """Atomically replace the full preferences JSONB column."""
+
+    @abstractmethod
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """Return the user's portrait data URL, or None.
+
+        Kept out of the user row the hot paths read, so a portrait never
+        travels with an authentication lookup.
+        """
+
+    @abstractmethod
+    async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
+        """Replace the user's portrait; None removes it."""
 
     # -- signup domain allowlist --------------------------------------------
 
