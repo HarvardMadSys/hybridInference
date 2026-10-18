@@ -55,6 +55,8 @@ def _make_db_logger_with_capture() -> tuple[Any, dict[str, list[Any]]]:
     conn = MagicMock()
     conn.fetchrow = AsyncMock(side_effect=_fetchrow)
     conn.fetch = AsyncMock(side_effect=_fetch)
+    # The list's COUNT sets its own statement timeout first.
+    conn.execute = AsyncMock(return_value="SET")
 
     acquire = MagicMock()
     acquire.__aenter__ = AsyncMock(return_value=conn)
@@ -71,12 +73,14 @@ def _make_db_logger_with_capture() -> tuple[Any, dict[str, list[Any]]]:
 
 @pytest.fixture(autouse=True)
 def _isolate_perf_breakdown_cache():
-    """Clear the per-filter breakdown cache so each test issues its own query."""
+    """Clear the per-filter caches so each test issues its own queries."""
     from serving.servers.routers.admin import metrics as admin_metrics
 
     admin_metrics._PERF_BREAKDOWN_CACHE.clear()
+    admin_metrics._RECENT_REQUESTS_COUNT_CACHE.clear()
     yield
     admin_metrics._PERF_BREAKDOWN_CACHE.clear()
+    admin_metrics._RECENT_REQUESTS_COUNT_CACHE.clear()
 
 
 @pytest.fixture

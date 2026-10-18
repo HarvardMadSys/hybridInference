@@ -44,6 +44,10 @@ export function UserRecentRequests({ userId }: { userId: string }) {
   const toast = useAccountToast();
   const [entries, setEntries] = useState<AdminRecentRequestItem[]>([]);
   const [total, setTotal] = useState(0);
+  // As on the Recent Requests tab: an inexact total is a lower bound, so the
+  // pager follows has_more instead.
+  const [totalExact, setTotalExact] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -52,21 +56,36 @@ export function UserRecentRequests({ userId }: { userId: string }) {
     () => new Map(),
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const d = await listRecentRequests(PAGE_SIZE, offset, userId);
-      setEntries(d.requests);
-      setTotal(d.total);
-    } catch (e) {
-      const msg = getErrorMessage(e);
-      setError(msg);
-      toast.error(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [offset, userId, toast]);
+  const load = useCallback(
+    async (refresh = false) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const d = await listRecentRequests(
+          PAGE_SIZE,
+          offset,
+          userId,
+          undefined,
+          'all',
+          undefined,
+          undefined,
+          undefined,
+          refresh,
+        );
+        setEntries(d.requests);
+        setTotal(d.total);
+        setTotalExact(d.total_exact ?? true);
+        setHasMore(d.has_more ?? offset + d.requests.length < d.total);
+      } catch (e) {
+        const msg = getErrorMessage(e);
+        setError(msg);
+        toast.error(msg);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [offset, userId, toast],
+  );
 
   useEffect(() => {
     load();
@@ -132,11 +151,12 @@ export function UserRecentRequests({ userId }: { userId: string }) {
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
           <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-gray-600">
-            {total.toLocaleString()} total
+            {total.toLocaleString()}
+            {totalExact ? '' : '+'} total
           </span>
           <button
             type="button"
-            onClick={load}
+            onClick={() => load(true)}
             disabled={loading}
             className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
           >
@@ -335,10 +355,11 @@ export function UserRecentRequests({ userId }: { userId: string }) {
           </div>
         )}
 
-        {total > PAGE_SIZE && (
+        {(offset > 0 || hasMore) && (
           <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/40 px-3 py-2">
             <span className="text-[11px] tabular-nums text-gray-400">
-              {offset + 1}&ndash;{Math.min(offset + PAGE_SIZE, total)} of {total.toLocaleString()}
+              {offset + 1}&ndash;{offset + entries.length}
+              {totalExact && <> of {total.toLocaleString()}</>}
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -358,7 +379,7 @@ export function UserRecentRequests({ userId }: { userId: string }) {
                   setOffset(offset + PAGE_SIZE);
                   setExpandedId(null);
                 }}
-                disabled={offset + PAGE_SIZE >= total || loading}
+                disabled={!hasMore || loading}
                 className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition hover:bg-gray-100 disabled:opacity-30"
               >
                 Next

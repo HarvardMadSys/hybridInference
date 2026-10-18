@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AdminRecentRequestItem } from '@/lib/api/admin';
+import type { AdminRecentRequestItem, AdminRecentRequestsResponse } from '@/lib/api/admin';
 import { RequestsTab } from './RequestsTab';
 
 vi.mock('react-hot-toast', () => ({
@@ -629,5 +629,102 @@ describe('RequestsTab credential state', () => {
 
     await screen.findAllByText('Ada');
     expect(screen.queryByText('active key')).not.toBeInTheDocument();
+  });
+});
+
+describe('RequestsTab total and paging', () => {
+  function mockPage(page: Partial<AdminRecentRequestsResponse>) {
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [],
+    });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: Array.from({ length: 50 }, (_, i) => makeRequest({ request_id: `req_${i}` })),
+      total: 50,
+      limit: 50,
+      offset: 0,
+      ...page,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(cleanup);
+
+  it('shows a total the backend could not finish counting as a lower bound', async () => {
+    // The count ran past the backend's budget, so the total is only the rows
+    // through this page. Paging follows has_more: a page count would be made up.
+    mockPage({ total: 50, total_exact: false, has_more: true });
+
+    render(<RequestsTab />);
+
+    expect(await screen.findByText('50+ entries')).toBeInTheDocument();
+    expect(screen.getByText('(page 1)')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Page number to jump to')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() =>
+      // offset is the 2nd positional argument of listRecentRequests.
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[1]).toBe(50),
+    );
+  });
+
+  it('keeps the exact total and page count when the backend counted in time', async () => {
+    mockPage({ total: 120, total_exact: true, has_more: true });
+
+    render(<RequestsTab />);
+
+    expect(await screen.findByText('120 entries')).toBeInTheDocument();
+    expect(screen.getByText('(page 1 of 3)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Page number to jump to')).toBeInTheDocument();
+  });
+
+  it('pages by has_more, not by a total that trails rows logged since', async () => {
+    // The backend reuses a total for a minute. By it, page 2 of 100 rows is the
+    // last; the page itself, read just now, says there is more.
+    mockPage({ total: 100, total_exact: true, has_more: true });
+
+    render(<RequestsTab />);
+
+    await screen.findByText('100 entries');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[1]).toBe(50));
+    await screen.findByText(/^51\D100 of 100$/);
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+
+    // And the last page is where has_more runs out.
+    mockPage({ total: 100, total_exact: true, has_more: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[1]).toBe(100));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled());
+  });
+
+  it('asks for a fresh total on Refresh, not on an ordinary load', async () => {
+    mockPage({ total: 120, has_more: true });
+
+    render(<RequestsTab />);
+
+    await screen.findByText('120 entries');
+    // refresh is the 9th positional argument of listRecentRequests.
+    expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[8]).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[8]).toBe(true));
   });
 });
