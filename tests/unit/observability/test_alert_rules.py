@@ -1102,10 +1102,11 @@ async def test_user_cost_overrun_job_fires(monkeypatch):
 
     cfg = AlertConfig()
     cfg.cost.user_overrun.cooldown_sec = 1
-    # (user_id, role, spend, their own key's cap) — 19.99 against a 20.00 cap
+    # (user_id, role, spend, their own key's cap) — 19.991 against a 20.00 cap
     # is what the gate refusing a request actually looks like, since it
-    # pre-charges the estimate.
-    op_store = _FakeOpStore([("u1", "free", 19.99, 20.0)])
+    # pre-charges the estimate. Exactly 19.99 is not refused: 19.99 + 0.01
+    # equals the cap.
+    op_store = _FakeOpStore([("u1", "free", 19.991, 20.0)])
 
     job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
 
@@ -1285,7 +1286,7 @@ async def test_user_cost_overrun_job_never_claims_inactive_when_the_recheck_fail
 
 
 async def test_user_cost_overrun_boundary_card_is_not_self_contradictory(monkeypatch):
-    """$19.99 against a $20.00 cap is a refusal, and must not read as "-$0.01".
+    """$19.991 against a $20.00 cap is a refusal, and must not read as "-$0.01".
 
     The predicate that selects these users includes the gate's optimistic
     pre-charge, so the boundary row is genuinely *under* the cap in raw spend.
@@ -1299,7 +1300,7 @@ async def test_user_cost_overrun_boundary_card_is_not_self_contradictory(monkeyp
     reset_dedupe_state()
 
     cfg = AlertConfig()
-    op_store = _FakeOpStore([("u1", "free", 19.99, 20.0)])
+    op_store = _FakeOpStore([("u1", "free", 19.991, 20.0)])
     job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
 
     with patch(

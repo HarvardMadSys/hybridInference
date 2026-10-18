@@ -3979,9 +3979,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         API-key gate silently disagree about who is out of quota. Change one,
         change the other.
 
-        Note also that a user can appear here *just under* their cap (19.99
+        Note also that a user can appear here *just under* their cap (19.991
         against 20.00): that is not an off-by-one, it is the optimistic
-        pre-charge, and the gate has already started refusing them. The
+        pre-charge, and the gate has already started refusing them. Exactly
+        19.99 does not appear: 19.99 + 0.01 equals the cap, and both the gate
+        and this query refuse only when the sum exceeds it. The
         comparison is done in float8 rather than ``numeric`` for a related
         reason — both doors compare Python floats, and matching that arithmetic
         exactly is worth more here than numeric's extra precision.
