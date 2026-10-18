@@ -81,7 +81,7 @@ export function Header() {
             {link.label}
           </a>
         ))}
-        <LanguageSwitcher />
+        {!state.isAuthenticated && <LanguageSwitcher />}
         {state.isAuthenticated && (
           <>
             {features.rag && (

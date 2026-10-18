@@ -35,14 +35,14 @@ export function PublicRouteBoundary({ children }: { children: React.ReactNode })
 export function ConsoleChrome({ children }: { children: React.ReactNode }) {
   const consoleWidth = useConsoleWidth();
   return (
-    <>
+    <div className="console-theme flex min-h-screen flex-1 flex-col bg-gray-50 text-gray-900">
       <Header />
       <ConfigurationBanner />
       <main className={`mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-6 py-12`}>
         {children}
       </main>
       <SiteFooter />
-    </>
+    </div>
   );
 }
 

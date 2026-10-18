@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
@@ -9,7 +9,13 @@ import zhCN from '@/lib/i18n/messages/zh-CN.json';
 import { Header } from './Header';
 
 const replace = vi.fn();
-let authState = {
+vi.mock('@/components/providers/ThemeProvider', () => ({
+  useTheme: () => ({ theme: 'system', resolvedTheme: 'light', setTheme: vi.fn() }),
+}));
+let authState: {
+  isAuthenticated: boolean;
+  user?: { id: string; user_name: string; role: string };
+} = {
   isAuthenticated: false,
 };
 
@@ -179,7 +185,7 @@ describe('Header, for a reader who chose Chinese', () => {
   it('shows the console links in Chinese and offers English by name', () => {
     brandingOverride = configuredBranding;
     featuresOverride = { rag: true, publicStats: true };
-    authState = { isAuthenticated: true };
+    authState = { isAuthenticated: true, user: { id: 'ada', user_name: 'Ada', role: 'admin' } };
 
     render(
       <LocaleProvider locale="zh-CN" catalog={zhCN as Catalog} moduleLocale="">
@@ -191,6 +197,13 @@ describe('Header, for a reader who chose Chinese', () => {
       expect(screen.getByRole('link', { name })).toBeInTheDocument();
     }
     expect(screen.getByRole('img', { name: 'Example Inference 标志' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('lang', 'en');
+    expect(screen.queryByRole('button', { name: 'English' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ada' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '语言' }));
+    expect(screen.getByRole('menuitemradio', { name: 'English' })).toHaveAttribute('lang', 'en');
+    expect(screen.getByRole('menuitemradio', { name: '简体中文' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
   });
 });

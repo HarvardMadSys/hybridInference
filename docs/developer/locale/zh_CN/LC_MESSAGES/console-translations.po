@@ -25,43 +25,39 @@ msgid "Translating the Console"
 msgstr "翻译控制台"
 
 #: ../developer/console-translations.md:3
-msgid ""
-"The console can be read in English or Chinese. A reader who never chose a"
-" language gets the one their browser asks for; once they choose — from "
-"the header, or under Account Settings — the console keeps their most "
-"recent choice, in this browser and, once they sign in, in their account, "
-"so it follows them to other browsers. The design record is [2026-10-17 "
-"console language "
-"switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17"
-"-console-language-switching-design.zh.md)."
-msgstr ""
-"控制台可以用英文或中文阅读。从未选择过语言的读者，看到的是浏览器请求的语言；一旦在顶栏或账户设置中做出选择，控制台就会保留最近一次选择：保存在当前浏览器中，登录后也保存到账户里，因此换一个浏览器也能沿用。设计记录见"
-" [2026-10-17 "
-"控制台语言切换](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17"
-"-console-language-switching-design.zh.md)。"
+msgid "The console can be read in English or Chinese. A reader who never chose a language gets the one their browser asks for. Signed-in readers choose Language from the account menu; signed-out readers use the header switcher. The language setting also remains available under Account Settings. The console keeps the most recent choice in this browser and, once they sign in, in their account, so it follows them to other browsers. The design record is [2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)."
+msgstr "控制台可以用英文或中文阅读。从未选择过语言的读者，看到的是浏览器请求的语言。已登录的读者从账户菜单中选择语言；未登录的读者使用顶栏的语言切换入口。账户设置中也保留语言设置。控制台会在当前浏览器中保留最近一次选择，登录后也保存到账户里，因此换一个浏览器也能沿用。设计记录见 [2026-10-17 控制台语言切换](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)。"
 
-#: ../developer/console-translations.md:10
+#: ../developer/console-translations.md:11
 msgid ""
 "This page is for anyone who adds console text or translates it. "
 "Translating these pages, the documentation, is a separate workflow: "
 "[Translating the Docs](translations.md)."
 msgstr "本页面向新增控制台文案或翻译文案的人。翻译这些文档页面是另一套流程，见 [翻译文档](translations.md)。"
 
-#: ../developer/console-translations.md:14
+#: ../developer/console-translations.md:15
+msgid "Appearance preferences"
+msgstr "外观偏好"
+
+#: ../developer/console-translations.md:17
+msgid "The account menu also offers Appearance: Light, Dark, or System. System is the default and follows the operating system's appearance. An explicit selection is saved in the current browser, independently of the account's language preference; it does not follow the account to another browser. The theme applies to the console; pages owned by a Site UI module keep that module's appearance."
+msgstr "账户菜单还提供外观选项：浅色、深色和跟随系统。默认选择跟随系统，外观随操作系统变化。主动选择的选项保存在当前浏览器中，与账户的语言偏好独立；它不会随账户同步到其他浏览器。主题适用于控制台；由 Site UI 模块负责的页面保留该模块的外观。"
+
+#: ../developer/console-translations.md:23
 msgid "Writing a console string"
 msgstr "编写控制台文案"
 
-#: ../developer/console-translations.md:16
+#: ../developer/console-translations.md:25
 msgid "Every string a reader sees goes through `t(slot, English)`:"
 msgstr "读者看到的每一条文案都经过 `t(slot, English)`："
 
-#: ../developer/console-translations.md:23
+#: ../developer/console-translations.md:32
 msgid ""
 "The English at the call site is the source text. Edit it there; there is "
 "no English catalog to keep in step."
 msgstr "调用处的英文就是源文本，直接在那里修改；不存在需要同步维护的英文字典。"
 
-#: ../developer/console-translations.md:25
+#: ../developer/console-translations.md:34
 msgid ""
 "Name the slot `<area>.<page or component>.<meaning>`, like the existing "
 "`auth.login.title` and `chrome.header.dashboard`."
@@ -69,7 +65,7 @@ msgstr ""
 "slot 按 `<area>.<page or component>.<meaning>` 命名，与现有的 "
 "`auth.login.title`、`chrome.header.dashboard` 一致。"
 
-#: ../developer/console-translations.md:27
+#: ../developer/console-translations.md:36
 #, python-brace-format
 msgid ""
 "Translate whole sentences, and put values in with `fill()` from "
@@ -81,7 +77,7 @@ msgstr ""
 "填入变量，这样语序不同的语言可以调整变量的位置：`fill(t('chrome.account_menu.switched', 'Switched"
 " to {name}'), { name })`。"
 
-#: ../developer/console-translations.md:30
+#: ../developer/console-translations.md:39
 msgid ""
 "A server component gets the same function, in the request's language, "
 "from `await requestTranslator()` (`@/lib/i18n/request.server`)."
@@ -89,7 +85,7 @@ msgstr ""
 "服务端组件通过 `await "
 "requestTranslator()`（`@/lib/i18n/request.server`）拿到同样的函数，语言跟随当前请求。"
 
-#: ../developer/console-translations.md:32
+#: ../developer/console-translations.md:41
 msgid ""
 "Dates and numbers go through `useFormatter()` (`@/lib/i18n/useFormatter`)"
 " rather than `toLocaleString()`, so a Chinese page does not print an "
@@ -98,13 +94,13 @@ msgstr ""
 "日期和数字通过 `useFormatter()`（`@/lib/i18n/useFormatter`）格式化，而不是直接调用 "
 "`toLocaleString()`，这样中文页面上不会冒出英文的月份。金额仍然以美元显示。"
 
-#: ../developer/console-translations.md:35
+#: ../developer/console-translations.md:44
 msgid ""
 "Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so"
 " the catalog check can read them."
 msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a' : 'b'`），字典检查才能读出它们。"
 
-#: ../developer/console-translations.md:38
+#: ../developer/console-translations.md:47
 msgid ""
 "Administration pages (`/dashboard/admin`) are for operators, not users, "
 "and stay in English: they do not go through `t()`, and their container is"
@@ -113,17 +109,17 @@ msgstr ""
 "管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：它们不经过 `t()`，容器标注为 "
 "`lang=\"en\"`。其他保留英文的内容见下文。"
 
-#: ../developer/console-translations.md:42
+#: ../developer/console-translations.md:51
 msgid "The catalog"
 msgstr "字典"
 
-#: ../developer/console-translations.md:44
+#: ../developer/console-translations.md:53
 msgid ""
 "`apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the "
 "English it translates and the translation:"
 msgstr "`apps/frontend/src/lib/i18n/messages/zh-CN.json` 把每个 slot 映射到它所翻译的英文以及译文："
 
-#: ../developer/console-translations.md:51
+#: ../developer/console-translations.md:60
 msgid ""
 "The runtime uses an entry only while its `source` is exactly the English "
 "the call site passes. Changing a sentence therefore shows the new English"
@@ -135,17 +131,17 @@ msgstr ""
 "与调用处传入的英文完全一致时，运行时才使用它。因此修改一句英文后，页面会显示新的英文，直到重新翻译为止，而不是显示旧句子的译文。在不同位置传入不同英文的"
 " slot 保存一个条目列表，每句英文一条。"
 
-#: ../developer/console-translations.md:57
+#: ../developer/console-translations.md:66
 msgid ""
 "Only the active language's catalog is sent to the browser, as part of the"
 " page; English has none."
 msgstr "只有当前语言的字典会随页面发送到浏览器；英文没有字典。"
 
-#: ../developer/console-translations.md:60
+#: ../developer/console-translations.md:69
 msgid "Checking a catalog"
 msgstr "检查字典"
 
-#: ../developer/console-translations.md:69
+#: ../developer/console-translations.md:78
 #, python-brace-format
 msgid ""
 "The report counts translated, missing, stale (the English changed) and "
@@ -158,11 +154,11 @@ msgstr ""
 "报告统计已翻译、缺失、过期（英文已改）和孤立的条目。缺失和过期的条目回退为英文，不会导致失败。测试套件（`src/lib/i18n/catalog.test.ts`）会在以下情况失败：条目格式错误、译文的"
 " `{placeholders}` 与原文不一致、随镜像发布的字典中存在过期或孤立条目。请在修改英文的同一个变更里重新翻译或清理。"
 
-#: ../developer/console-translations.md:76
+#: ../developer/console-translations.md:85
 msgid "What stays in English"
 msgstr "保留英文的内容"
 
-#: ../developer/console-translations.md:78
+#: ../developer/console-translations.md:87
 msgid ""
 "What only the people running the deployment see: administration "
 "(`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, "
@@ -171,19 +167,19 @@ msgstr ""
 "只有运维和内部人员会看到的页面：管理后台（`/dashboard/admin`）、首次运行设置（`/setup`）、配置页，以及只有 "
 "internal 账户能打开的 API 调试台。"
 
-#: ../developer/console-translations.md:81
+#: ../developer/console-translations.md:90
 msgid ""
 "The last-resort error screens (`global-error` and the boundary around the"
 " whole application), which render outside the language provider."
 msgstr "最后兜底的错误页（`global-error` 以及包住整个应用的错误边界），它们渲染在语言 provider 之外。"
 
-#: ../developer/console-translations.md:83
+#: ../developer/console-translations.md:92
 msgid ""
 "Error messages from the gateway, model names, and Markdown written by "
 "administrators (broadcasts, site updates)."
 msgstr "网关返回的错误信息、模型名称，以及管理员撰写的 Markdown 内容（广播、站点更新）。"
 
-#: ../developer/console-translations.md:86
+#: ../developer/console-translations.md:95
 msgid ""
 "The Terms of Service and the research-consent statements at sign-up are "
 "translated in full, and the Chinese is shown on its own, not as a "
@@ -192,11 +188,11 @@ msgid ""
 "catalog test refuses a stale entry."
 msgstr "服务条款和注册时的研究知情同意声明已完整翻译，中文版单独展示，并不是附在英文旁边的参考译文。由于它们具有约束力，修改英文原文时必须在同一个变更里更新译文；字典测试会拒绝过期条目。"
 
-#: ../developer/console-translations.md:92
+#: ../developer/console-translations.md:101
 msgid "Chinese terminology"
 msgstr "中文术语"
 
-#: ../developer/console-translations.md:94
+#: ../developer/console-translations.md:103
 msgid ""
 "Keep one Chinese term per English term across the console, as the docs do"
 " (see [Chinese terminology](translations.md#chinese-terminology))."

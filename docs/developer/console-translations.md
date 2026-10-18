@@ -1,15 +1,24 @@
 # Translating the Console
 
 The console can be read in English or Chinese. A reader who never chose a
-language gets the one their browser asks for; once they choose — from the
-header, or under Account Settings — the console keeps their most recent
-choice, in this browser and, once they sign in, in their account, so it
-follows them to other browsers. The design record is
+language gets the one their browser asks for. Signed-in readers choose Language
+from the account menu; signed-out readers use the header switcher. The language
+setting also remains available under Account Settings. The console keeps the
+most recent choice in this browser and, once they sign in, in their account,
+so it follows them to other browsers. The design record is
 [2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md).
 
 This page is for anyone who adds console text or translates it. Translating
 these pages, the documentation, is a separate workflow:
 [Translating the Docs](translations.md).
+
+## Appearance preferences
+
+The account menu also offers Appearance: Light, Dark, or System. System is the
+default and follows the operating system's appearance. An explicit selection is
+saved in the current browser, independently of the account's language preference;
+it does not follow the account to another browser. The theme applies to the
+console; pages owned by a Site UI module keep that module's appearance.
 
 ## Writing a console string
 
