@@ -141,7 +141,7 @@ async def test_unresolved_identity_stays_nonsticky_across_key_rotation():
 
 
 @pytest.mark.unit
-async def test_unresolved_identity_stays_nonsticky_after_stream_abandonment():
+async def test_unresolved_identity_stays_nonsticky_after_stream_abandonment(monkeypatch):
     """Closing an opened stream does not bind an unresolved caller to a key."""
     adapter = _make_adapter(["k1", "k2"])
 
@@ -149,7 +149,10 @@ async def test_unresolved_identity_stays_nonsticky_after_stream_abandonment():
         yield 'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
         await asyncio.Event().wait()
 
-    adapter.http.stream_post = fake_stream_post
+    # ``adapter.http`` is the process-wide ``AsyncHTTPClient.shared()``; a bare
+    # assignment would leave this never-ending stream on it for every later
+    # test in the worker.
+    monkeypatch.setattr(adapter.http, "stream_post", fake_stream_post)
     req_ctx.set(
         {
             "affinity_key": None,
