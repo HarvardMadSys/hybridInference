@@ -949,29 +949,32 @@ async def initialize() -> AppServices:
                                 "Slack alerter not registered: APScheduler did not start"
                             )
 
-                            # Run backfill in the background so a slow 30-day
-                            # aggregation on a large api_logs table cannot
-                            # block server startup or trip readiness checks.
-                            async def _run_backfill(pool=db_logger.pool):
-                                try:
-                                    await backfill_if_empty(pool, days=30)
-                                except Exception as bf_exc:
-                                    logger.warning(
-                                        f"provider-stats backfill failed (non-fatal): {bf_exc}"
-                                    )
-                                try:
-                                    await backfill_token_columns(pool, days=30)
-                                except Exception as bf_exc:
-                                    logger.warning(
-                                        f"provider-stats token backfill failed (non-fatal): {bf_exc}"
-                                    )
+                        # Seed provider_hourly_stats with the last 30 days when it
+                        # is empty, and fill the token totals that rows from
+                        # before those columns lack. Both are cheap no-ops on a
+                        # complete table. Run in the background so a slow 30-day
+                        # aggregation on a large api_logs table cannot block
+                        # server startup or trip readiness checks.
+                        async def _run_backfill(pool=db_logger.pool):
+                            try:
+                                await backfill_if_empty(pool, days=30)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                )
+                            try:
+                                await backfill_token_columns(pool, days=30)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"provider-stats token backfill failed (non-fatal): {bf_exc}"
+                                )
 
-                            _bf_task = asyncio.create_task(_run_backfill())
-                            _BACKGROUND_TASKS.add(_bf_task)
-                            _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        _bf_task = asyncio.create_task(_run_backfill())
+                        _BACKGROUND_TASKS.add(_bf_task)
+                        _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
-                        # Geo coverage is new and must backfill independently of
-                        # the existing provider-rollup bootstrap branch.
+                        # Geo coverage backfills in its own task, independently
+                        # of the provider-stats backfill above.
                         async def _run_geo_backfill(pool=db_logger.pool):
                             try:
                                 await backfill_geo_demand(pool, days=90)

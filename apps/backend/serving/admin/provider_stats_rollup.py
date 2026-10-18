@@ -295,46 +295,57 @@ async def backfill_token_columns(
     *,
     days: int = 30,
 ) -> int:
-    """Re-run the rollup hour-by-hour to fill NULL token-total columns.
+    """Re-run the rollup over the chunks that hold NULL token-total columns.
 
-    Used once after the migration that adds total_prompt_tokens /
-    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd
-    to provider_hourly_stats. No-op when no NULL rows are detected.
+    Fills rows written before the migration that added total_prompt_tokens /
+    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd to
+    provider_hourly_stats. Startup calls it on every boot, so it looks only
+    at the last ``days`` days -- the window it re-rolls -- and skips chunks
+    without a NULL row. A row it cannot fill, older than the window or with
+    no api_logs rows left behind it, therefore never costs a whole-window
+    re-roll on each start. No-op when the window has no NULL rows.
 
     Returns the number of chunks processed (0 when skipped). Idempotent:
     the same UPSERT runs as the hourly job, so calling repeatedly is safe.
     """
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
     async with pool.acquire() as conn:
         any_null = await conn.fetchval(
-            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL "
+            "AND hour_bucket >= $1 AND hour_bucket < $2 LIMIT 1",
+            start,
+            end,
         )
     if any_null is None:
-        logger.info("backfill_token_columns: no NULL rows, skipping")
+        logger.info("backfill_token_columns: no NULL rows in window, skipping")
         return 0
 
     processed = 0
 
     async def _do(conn) -> None:
         nonlocal processed
-        any_null = await conn.fetchval(
-            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        null_hours = await conn.fetch(
+            "SELECT DISTINCT hour_bucket FROM provider_hourly_stats "
+            "WHERE total_prompt_tokens IS NULL AND hour_bucket >= $1 AND hour_bucket < $2",
+            start,
+            end,
         )
-        if any_null is None:
+        if not null_hours:
             logger.info("backfill_token_columns: filled by another replica, skipping")
             return
 
         # Chunk the window so we issue ~120 UPSERTs over 30 days instead
         # of 720, while still bounding each statement to a small enough
-        # window that it cannot lock the table for long.
-        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=days)
+        # window that it cannot lock the table for long. Only the chunks
+        # holding a NULL row are re-rolled.
         chunk = timedelta(hours=BACKFILL_CHUNK_HOURS)
-        h = start
-        while h < end:
-            next_h = min(h + chunk, end)
-            await conn.execute(ROLLUP_SQL, h, next_h)
+        chunk_starts = sorted(
+            {start + (row["hour_bucket"] - start) // chunk * chunk for row in null_hours}
+        )
+        for chunk_start in chunk_starts:
+            await conn.execute(ROLLUP_SQL, chunk_start, min(chunk_start + chunk, end))
             processed += 1
-            h = next_h
         logger.info(
             "backfill_token_columns: window=[%s, %s) chunks=%d chunk_hours=%d",
             start.isoformat(),

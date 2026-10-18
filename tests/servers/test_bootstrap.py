@@ -1,6 +1,8 @@
 """Tests for bootstrap module."""
 
+import asyncio
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +28,52 @@ def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
     router = MagicMock(spec=RouteWiseRouter)
     router.config = config or RouteWiseConfig()
     return router
+
+
+@contextmanager
+def _provider_stats_startup(*, scheduler, backfill_if_empty, backfill_token_columns):
+    """Stub a database-backed initialize() around its provider-stats backfill.
+
+    The stores and the email scheduler are doubles, ``scheduler`` is what
+    ``get_scheduler()`` reports, and the two backfills are replaced. Yields
+    the pool the backfills should be handed.
+    """
+    db_logger = AsyncMock()
+    db_logger.pool = object()
+    with (
+        patch("serving.servers.bootstrap._init_db_logger", return_value=db_logger),
+        patch(
+            "serving.servers.bootstrap._init_router_and_models",
+            new=AsyncMock(return_value=({}, [])),
+        ),
+        patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+        patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=AsyncMock()),
+        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=MagicMock()),
+        patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
+        patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
+        patch(
+            "serving.servers.bootstrap.email_scheduler.rehydrate_scheduled_broadcasts",
+            new=AsyncMock(),
+        ),
+        patch(
+            "serving.servers.bootstrap.email_scheduler.get_scheduler",
+            return_value=scheduler,
+        ),
+        patch("serving.admin.provider_stats_rollup.backfill_if_empty", new=backfill_if_empty),
+        patch(
+            "serving.admin.provider_stats_rollup.backfill_token_columns",
+            new=backfill_token_columns,
+        ),
+    ):
+        yield db_logger.pool
+
+
+async def _until_awaited(mock: AsyncMock) -> None:
+    """Let startup's background tasks run until *mock* has been awaited."""
+    for _ in range(50):
+        if mock.await_count:
+            return
+        await asyncio.sleep(0)
 
 
 class TestBootstrapInitialization:
@@ -255,6 +303,59 @@ class TestBootstrapInitialization:
             mock_logger.warning.assert_any_call(
                 "Model visibility resolver initialization failed: boom"
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scheduler_started", [True, False], ids=["scheduler", "no-scheduler"])
+    async def test_initialize_schedules_provider_stats_backfill(
+        self, mock_env, monkeypatch, scheduler_started
+    ):
+        """Startup backfills provider_hourly_stats whether or not APScheduler started.
+
+        The backfill used to sit under the Slack-alerter ``elif``, so it ran
+        only when APScheduler failed to start and SLACK_WEBHOOK_URL was set: a
+        normal start never seeded the table or filled its token totals.
+        """
+        # Empty rather than unset, so a developer's .env cannot supply one.
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
+        backfill_if_empty = AsyncMock(return_value=0)
+        backfill_token_columns = AsyncMock(return_value=0)
+
+        with _provider_stats_startup(
+            scheduler=MagicMock() if scheduler_started else None,
+            backfill_if_empty=backfill_if_empty,
+            backfill_token_columns=backfill_token_columns,
+        ) as pool:
+            await bootstrap.initialize()
+            await _until_awaited(backfill_token_columns)
+
+        backfill_if_empty.assert_awaited_once_with(pool, days=30)
+        backfill_token_columns.assert_awaited_once_with(pool, days=30)
+
+    @pytest.mark.asyncio
+    async def test_initialize_survives_failing_provider_stats_backfill(self, mock_env):
+        """A failing backfill step is logged; the next step and startup go on."""
+        backfill_if_empty = AsyncMock(side_effect=RuntimeError("seed failed"))
+        backfill_token_columns = AsyncMock(side_effect=RuntimeError("fill failed"))
+
+        with (
+            _provider_stats_startup(
+                scheduler=MagicMock(),
+                backfill_if_empty=backfill_if_empty,
+                backfill_token_columns=backfill_token_columns,
+            ),
+            patch("serving.servers.bootstrap.logger") as mock_logger,
+        ):
+            services = await bootstrap.initialize()
+            await _until_awaited(backfill_token_columns)
+
+        assert isinstance(services, AppServices)
+        backfill_token_columns.assert_awaited_once()
+        mock_logger.warning.assert_any_call(
+            "provider-stats backfill failed (non-fatal): seed failed"
+        )
+        mock_logger.warning.assert_any_call(
+            "provider-stats token backfill failed (non-fatal): fill failed"
+        )
 
     @pytest.mark.asyncio
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):

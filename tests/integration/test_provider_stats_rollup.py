@@ -822,3 +822,65 @@ async def test_backfill_token_columns_is_idempotent(db_logger: DatabaseLogger):
             "SELECT total_prompt_tokens FROM provider_hourly_stats WHERE provider='zai'"
         )
     assert row["total_prompt_tokens"] == 700
+
+
+async def _insert_legacy_stats_row(pool, hour_bucket: datetime, model_id: str = "m") -> None:
+    """Insert a stats row shaped like one written before the token-total columns."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            ) VALUES ($1, 'p', $2, 1, 0, 1, 100)
+            """,
+            hour_bucket,
+            model_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_ignores_null_rows_outside_window(
+    db_logger: DatabaseLogger,
+):
+    """A NULL row older than the window cannot be re-rolled, so it starts no work."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    await _insert_legacy_stats_row(pool, now - timedelta(days=3))
+
+    assert await backfill_token_columns(pool, days=1) == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_rerolls_only_chunks_with_null_rows(
+    db_logger: DatabaseLogger,
+):
+    """A pass re-rolls only the chunks that hold NULL rows.
+
+    These rows have no api_logs behind them, so they stay NULL, and the next
+    start pays the same two chunks again rather than the whole window.
+    """
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    # Two hours in the newest 6h chunk and one in the oldest of the day's four.
+    await _insert_legacy_stats_row(pool, now - timedelta(hours=2), model_id="m1")
+    await _insert_legacy_stats_row(pool, now - timedelta(hours=3), model_id="m2")
+    await _insert_legacy_stats_row(pool, now - timedelta(hours=20), model_id="m3")
+
+    assert await backfill_token_columns(pool, days=1) == 2
+    assert await backfill_token_columns(pool, days=1) == 2
+
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL"
+        )
+    assert remaining == 3
