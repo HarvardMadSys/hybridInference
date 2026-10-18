@@ -234,6 +234,8 @@ class TestRequestLogMiddleware:
         assert record.remote_ip == "8.8.8.8"
         assert record.peer_ip
         assert record.ip_source == "x-forwarded-for"
+        assert record.ip_resolved is True
+        assert record.trusted_forwarded_headers is True
         assert record.x_forwarded_for == "8.8.8.8"
         assert record.x_real_ip == "8.8.8.8"
         assert record.user_agent == "pytest-client"
@@ -277,8 +279,45 @@ class TestRequestLogMiddleware:
         assert payload["cf_connecting_ip"] == "2606:4700:4700::1111"
         assert payload["remote_ip"] == "2606:4700:4700::1111"
         assert payload["ip_source"] == "cf-connecting-ip"
+        assert payload["ip_resolved"] is True
+        assert payload["trusted_cloudflare_headers"] is True
         # The spoofable header is retained so an attempt stays visible.
         assert payload["x_forwarded_for"] == "1.2.3.4, 2606:4700:4700::1111"
+
+    def test_unresolved_provenance_warning_survives_json_formatting(self, caplog):
+        """The resolver's warning retains its outcome and source in JSON logs."""
+        import json
+
+        from starlette.requests import Request
+
+        from serving.utils.logging import JsonFormatter
+        from serving.utils.request_ip import get_client_ip_info
+
+        with caplog.at_level(logging.WARNING, logger="serving.utils.request_ip"):
+            get_client_ip_info(
+                Request(
+                    {
+                        "type": "http",
+                        "method": "GET",
+                        "path": "/",
+                        "headers": [],
+                        "client": ("127.0.0.1", 12345),
+                    }
+                )
+            )
+
+        records = [
+            record
+            for record in caplog.records
+            if record.getMessage() == "client_ip_resolution_unresolved"
+        ]
+        assert records
+        record = records[-1]
+        payload = json.loads(JsonFormatter().format(record))
+        assert payload["event"] == "client_ip_resolution"
+        assert payload["result"] == "unresolved"
+        assert payload["source"] == record.source
+        assert payload["peer_ip"] == record.peer_ip
 
     @pytest.mark.asyncio
     async def test_unauthorized_path_is_silent_at_info(self, app_with_middleware, caplog):
