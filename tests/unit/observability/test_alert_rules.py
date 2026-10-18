@@ -941,6 +941,77 @@ async def test_auth_ip_blocked_wiring_from_the_real_blocklist(monkeypatch):
         reset_auth_failure_block_state()
 
 
+async def test_unresolved_auth_block_transition_reaches_alert(monkeypatch):
+    """The coarse unresolved block is visible to the existing block alert."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.config.settings import settings
+    from serving.observability.alerts import reset_dedupe_state
+    from serving.utils.auth_failure_blocklist import (
+        record_auth_failure,
+        reset_auth_failure_block_state,
+    )
+    from serving.utils.request_ip import ClientIpInfo
+
+    reset_dedupe_state()
+    reset_auth_failure_block_state()
+
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 2)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 1000)
+
+    cfg = AlertConfig()
+    cfg.rules.auth_ip_blocked.cooldown_sec = 1
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    unresolved = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="10.0.0.2",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        with patch(
+            "serving.observability.alerts.alert_slack",
+            new=AsyncMock(),
+        ) as mock_alert:
+            await engine.start()
+            try:
+                assert await record_auth_failure(unresolved) is False
+                assert await record_auth_failure(unresolved) is True
+
+                await _drain_until(handler, mock_alert)
+                blocked = [
+                    call
+                    for call in mock_alert.await_args_list
+                    if call.args[1] == "Auth-failure blocklist refusing a source"
+                ]
+                assert blocked, mock_alert.await_args_list
+                context = blocked[-1].args[2]
+                assert context["ip_bucket"] == "unresolved-global"
+                assert "trusted-proxy" in context["remedy"]
+                assert "not listed" in context["all_active_blocks"]
+            finally:
+                await engine.stop()
+    finally:
+        root.removeHandler(handler)
+        reset_auth_failure_block_state()
+
+
 async def test_concurrency_rejected_never_alerts(monkeypatch):
     """A user exhausting its quota/concurrency must never page Slack.
 

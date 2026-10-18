@@ -449,6 +449,27 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     _setting(
+        "unresolved_auth_failure_block_threshold",
+        "security",
+        "Unresolved authentication failures within the window that block unresolved traffic.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "unresolved_auth_failure_block_window_sec",
+        "security",
+        "Window, in seconds, over which unresolved authentication failures are counted.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "unresolved_auth_failure_block_duration_sec",
+        "security",
+        "How long, in seconds, unresolved traffic stays blocked.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
         "auth_failure_block_exempt_ips",
         "security",
         "Comma-separated addresses or CIDR ranges never blocked, such as a campus NAT "

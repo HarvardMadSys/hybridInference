@@ -171,6 +171,13 @@ class Settings(BaseSettings):
     auth_failure_block_threshold: int = 200
     auth_failure_block_window_sec: int = 86400
     auth_failure_block_duration_sec: int = 86400
+    # When client provenance is unresolved, use one coarse process-local
+    # circuit breaker. It sheds anonymous failure floods without attributing
+    # them to the transport peer; every unresolved client shares its brief
+    # block, so a trusted proxy configuration is still needed to isolate users.
+    unresolved_auth_failure_block_threshold: int = 200
+    unresolved_auth_failure_block_window_sec: int = 60
+    unresolved_auth_failure_block_duration_sec: int = 60
     # Comma-separated IPs or CIDR ranges (e.g. "203.0.113.7,198.51.100.0/24")
     # that are exempt from auth-failure blocking: their failures are never
     # counted and an existing block never applies to them. For trusted shared

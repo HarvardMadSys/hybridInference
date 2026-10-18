@@ -623,7 +623,8 @@ class AuthFailureSpikeRule:
 class AuthIpBlockedRule:
     """Alert when the auth-failure blocklist starts refusing a source.
 
-    Fires on ``auth_ip_blocked``, which
+    Fires on ``auth_ip_blocked`` for resolved sources and the coarse unresolved
+    bucket, which uses the ``unresolved-global`` value in ``ip_bucket``;
     ``utils/auth_failure_blocklist.py`` emits once per blocking transition --
     not on the failures leading up to it, which is
     :class:`AuthFailureSpikeRule` and is off by default. One record means one
@@ -693,19 +694,29 @@ class AuthIpBlockedRule:
             # built here would either be a total nobody receives or, worse, a
             # "1 of 12" that reads as the whole picture. The live list is one
             # request away, and the context says where.
+            unresolved_global = getattr(record, "ip_bucket", None) == "unresolved-global"
             return {
                 "ip_bucket": getattr(record, "ip_bucket", None) or "unknown",
                 "block_seconds": getattr(record, "block_seconds", None) or "n/a",
                 "blocks_in_window": len(items),
                 "window_sec": self._cfg.window_sec,
-                "all_active_blocks": "GET /admin/auth-blocks",
+                "all_active_blocks": (
+                    "process-local unresolved block; not listed by GET /admin/auth-blocks"
+                    if unresolved_global
+                    else "GET /admin/auth-blocks"
+                ),
                 # Spelled out because the remedy is counter-intuitive: the
                 # block is consulted before the presented key is read, so
                 # repairing a stale credential does not lift it.
                 "remedy": (
-                    "if this is a deployment-owned caller (monitor, CI job, service "
-                    "account), repair its credential and then clear the block via "
-                    "/admin/auth-blocks -- a corrected key does not lift it"
+                    "inspect client-IP resolution and trusted-proxy configuration; "
+                    "this process-local unresolved block expires automatically"
+                    if unresolved_global
+                    else (
+                        "if this is a deployment-owned caller (monitor, CI job, service "
+                        "account), repair its credential and then clear the block via "
+                        "/admin/auth-blocks -- a corrected key does not lift it"
+                    )
                 ),
             }
 
