@@ -195,6 +195,39 @@ async def test_closed_signup_blocks_code_and_submit(enabled, monkeypatch):
     store.consume_phone_code.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason,status,retry_after",
+    [
+        ("hour", 429, "3600"),
+        ("unresolved_hour", 429, "3600"),
+        ("day", 429, "86400"),
+        ("unresolved_day", 429, "86400"),
+        ("unresolved", 503, None),
+    ],
+)
+async def test_phone_signup_maps_unresolved_rate_limit_reasons(
+    enabled, monkeypatch, reason, status, retry_after
+):
+    check_signup = AsyncMock(return_value=(False, reason))
+    monkeypatch.setattr(routes, "check_and_record_signup", check_signup)
+    store = Store()
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.phone_signup(
+            request(),
+            PhoneSignupRequest(phone=PHONE, code="123456", user_name="Tester", accepted_tos=True),
+            BackgroundTasks(),
+            store,
+            None,
+        )
+
+    assert exc.value.status_code == status
+    assert (exc.value.headers or {}).get("Retry-After") == retry_after
+    check_signup.assert_awaited_once_with("unknown")
+    store.consume_phone_code.assert_not_called()
+
+
 @pytest.fixture
 async def setup_pending():
     """First-run setup is pending: no account exists and the setup code is stored."""

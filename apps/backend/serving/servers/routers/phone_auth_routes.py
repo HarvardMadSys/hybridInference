@@ -196,10 +196,25 @@ async def phone_signup(
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
     if not allowed:
+        if reason == "unresolved":
+            raise HTTPException(
+                503,
+                "Signup is temporarily unavailable because client network provenance "
+                "could not be verified.",
+            )
+        retry_after_by_reason = {
+            "hour": 3600,
+            "unresolved_hour": 3600,
+            "day": 86400,
+            "unresolved_day": 86400,
+        }
+        retry_after = retry_after_by_reason.get(reason)
+        if retry_after is None:
+            raise RuntimeError(f"Unexpected signup rate-limit reason: {reason!r}")
         raise HTTPException(
             429,
             "Too many signup attempts. Please try again later.",
-            headers={"Retry-After": "3600" if reason == "hour" else "86400"},
+            headers={"Retry-After": str(retry_after)},
         )
     if not body.accepted_tos:
         raise HTTPException(400, "You must agree to the Terms of Service to create an account")

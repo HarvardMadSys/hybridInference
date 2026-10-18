@@ -149,6 +149,11 @@ class Settings(BaseSettings):
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
     signup_rate_limit_per_day: int = 10
+    # Public signups without established client provenance share coarse
+    # process-local budgets; deployments can fail closed instead.
+    signup_require_resolved_client_ip: bool = False
+    unresolved_signup_rate_limit_per_hour: int = 5
+    unresolved_signup_rate_limit_per_day: int = 10
     # Sign-in windows. Per account per client address (default 5 attempts /
     # 15 min, IPv6 bucketed to /64): whoever guesses from their own address
     # cannot lock the owner out of the account from another. Per account from

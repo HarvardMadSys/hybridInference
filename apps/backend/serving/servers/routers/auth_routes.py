@@ -78,7 +78,7 @@ from serving.utils.jwt import (
 from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
@@ -195,10 +195,26 @@ async def signup(
             detail="Public signup is currently disabled. Please contact administrator.",
         )
 
-    # Record on entry so probing with varied payloads cannot bypass the limit.
-    client_ip = get_client_ip(request)
-    allowed, reason = await check_and_record_signup(client_ip)
+    # Count only admitted attempts; refusals do not grow or extend a bucket.
+    client_ip_info = get_client_ip_info(request)
+    client_ip = client_ip_info.client_ip if client_ip_info.resolved else "unknown"
+    allowed, reason = await check_and_record_signup(client_ip_info)
     if not allowed:
+        if reason == "unresolved":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Signup is temporarily unavailable because client network "
+                    "provenance could not be verified."
+                ),
+            )
+        if reason in {"unresolved_hour", "unresolved_day"}:
+            retry_after = "86400" if reason == "unresolved_day" else "3600"
+            raise HTTPException(
+                status_code=429,
+                detail="Too many unresolved signup attempts. Please try again later.",
+                headers={"Retry-After": retry_after},
+            )
         retry_after = "3600" if reason == "hour" else "86400"
         raise HTTPException(
             status_code=429,
@@ -212,7 +228,10 @@ async def signup(
             detail="You must agree to the Terms of Service to create an account",
         )
 
-    if not await verify_turnstile_token(body.turnstile_token, client_ip):
+    if not await verify_turnstile_token(
+        body.turnstile_token,
+        client_ip if client_ip_info.resolved else None,
+    ):
         raise HTTPException(status_code=400, detail="Captcha verification failed")
 
     if is_email_domain_blocked(body.email):

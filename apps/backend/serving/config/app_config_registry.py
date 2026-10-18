@@ -514,6 +514,26 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     _setting(
+        "signup_require_resolved_client_ip",
+        "signup",
+        "Reject signup when no client address can be resolved.",
+        "bool",
+    ),
+    _setting(
+        "unresolved_signup_rate_limit_per_hour",
+        "signup",
+        "Signups allowed per hour when no client address can be resolved.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "unresolved_signup_rate_limit_per_day",
+        "signup",
+        "Signups allowed per day when no client address can be resolved.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
         "turnstile_secret_key",
         "signup",
         "Cloudflare Turnstile secret for the signup captcha. Empty turns verification off.",

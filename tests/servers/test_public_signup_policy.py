@@ -4,8 +4,9 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 from serving.auth.signup_policy import (
     invalidate_allowlist_cache,
@@ -16,6 +17,7 @@ from serving.config.runtime_settings import init_runtime_settings
 from serving.config.settings import get_settings
 from serving.servers.deps import get_db_logger, get_operational_store
 from serving.servers.routers import auth_routes, site_config
+from serving.utils.request_ip import ClientIpInfo
 from tests.fixtures.auth_factories import create_signup_request
 
 
@@ -130,6 +132,49 @@ async def test_signup_policy_without_runtime_settings(signup_client, monkeypatch
     assert response.status_code == (201 if enabled else 403)
     assert configuration.json()["features"]["public_signup"] is enabled
     assert store.create_user.await_count == int(enabled)
+
+
+@pytest.mark.asyncio
+async def test_signup_turnstile_omits_unresolved_remote_ip(monkeypatch):
+    """Unresolved provenance must not be sent as Turnstile's ``remoteip``."""
+    monkeypatch.setattr(auth_routes, "refresh_setup_state", AsyncMock(return_value=False))
+    monkeypatch.setattr(auth_routes, "is_public_signup_enabled", AsyncMock(return_value=True))
+    unresolved = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="10.0.0.2",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    monkeypatch.setattr(auth_routes, "get_client_ip_info", lambda _request: unresolved)
+    check_signup = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(auth_routes, "check_and_record_signup", check_signup)
+    verify = AsyncMock(return_value=False)
+    monkeypatch.setattr(auth_routes, "verify_turnstile_token", verify)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/auth/signup",
+            "headers": [],
+            "client": ("10.0.0.2", 12345),
+        }
+    )
+    body = auth_routes.SignupRequest(
+        email="new-user@signuptest.dev",
+        password="SecurePass123!",
+        user_name="New User",
+        accepted_tos=True,
+        turnstile_token="valid-token",
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await auth_routes.signup(request, body, BackgroundTasks(), object(), None)
+
+    assert excinfo.value.status_code == 400
+    check_signup.assert_awaited_once_with(unresolved)
+    verify.assert_awaited_once_with("valid-token", None)
 
 
 @pytest.mark.asyncio
