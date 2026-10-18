@@ -6,6 +6,7 @@ import datetime as dt
 import secrets
 from typing import TYPE_CHECKING
 
+from serving.pricing import get_pricing_snapshot
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ class RequestIdMiddleware:
             request_id=req_id,
             client_user_agent=user_agent or None,
             pricing_time=dt.datetime.now(dt.timezone.utc),
+            pricing_snapshot=get_pricing_snapshot(),
         )
 
         req_id_bytes = req_id.encode("latin-1")

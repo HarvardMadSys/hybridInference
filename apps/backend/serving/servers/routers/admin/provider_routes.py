@@ -1281,6 +1281,7 @@ async def _apply_openrouter_endpoint_pricing(
             # left behind would layer real per-token prices back on top of those
             # zeros — billing a route whose price was deliberately withdrawn.
             cfg.pop("pricing_schedule", None)
+            cfg.pop("pricing_source", None)
             route_metadata.pop("pricing_source", None)
             route_metadata.pop("pricing_provider", None)
             cfg["route_metadata"] = route_metadata
@@ -1289,6 +1290,7 @@ async def _apply_openrouter_endpoint_pricing(
     # OpenRouter's endpoint-specific price is authoritative for this route; a
     # model-level provider schedule must not overwrite it later.
     cfg["pricing_schedule"] = None
+    cfg["pricing_source"] = None
     route_metadata = dict(cfg.get("route_metadata") or {})
     route_metadata["pricing_source"] = "openrouter_endpoint"
     route_metadata["pricing_provider"] = endpoint_pricing.provider

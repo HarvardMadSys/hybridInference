@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from serving.config.routewise_model_settings import RouteWiseSettingsResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
+    from serving.pricing_sources.sync import PricingSyncService
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
@@ -108,6 +109,7 @@ class AppServices:
     runtime_settings: Any | None = None
     completions_logger: CompletionsLogger | None = None
     pricing_lookup: PricingLookup | None = None
+    pricing_sync: PricingSyncService | None = None
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     # The ``auto:`` section of models.yaml, when it loaded cleanly. Served only

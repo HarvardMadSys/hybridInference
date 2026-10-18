@@ -123,6 +123,7 @@ class ModelConfig:
         }
     )
     pricing_schedule: PricingSchedule | dict[str, Any] | None = None
+    pricing_source: dict[str, str] | None = None
     # Output processor override for OpenAICompatAdapter.
     # When set, bypasses auto-detection based on model ID.
     # Values: "default", "glm", "qwen_coder", "think_block".
@@ -214,6 +215,21 @@ class ModelConfig:
             self.pricing_schedule, PricingSchedule
         ):
             raise ValueError("pricing_schedule must be a mapping or PricingSchedule")
+        if self.pricing_source is not None:
+            source = self.pricing_source
+            if (
+                not isinstance(source, dict)
+                or set(source) != {"provider", "model"}
+                or source.get("provider") != "deepseek"
+                or source.get("model") not in ("deepseek-flash", "deepseek-v4-pro")
+            ):
+                raise ValueError(
+                    "pricing_source must name provider=deepseek and model=deepseek-flash "
+                    "or deepseek-v4-pro"
+                )
+            if self.pricing_schedule is not None:
+                raise ValueError("pricing_source and pricing_schedule cannot be combined")
+            self.pricing_source = dict(source)
 
 
 class BaseAdapter(ABC):

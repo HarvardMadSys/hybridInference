@@ -11,6 +11,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
@@ -67,6 +68,25 @@ class _CapturingLogger:
 
     def schedule_log(self, request_id: str, log_data: dict[str, Any]) -> None:
         self.calls.append((request_id, log_data))
+
+
+@pytest.mark.asyncio
+async def test_unknown_fallback_source_price_stops_embedding_before_primary_usage(monkeypatch):
+    from serving.utils import context as req_ctx
+
+    primary, fallback = _FakeAdapter(), _FakeAdapter()
+    fallback.config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
+    primary_dispatch, fallback_dispatch = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(primary, "embeddings", primary_dispatch)
+    monkeypatch.setattr(fallback, "embeddings", fallback_dispatch)
+    logger = _CapturingLogger()
+    app = _build_app(FallbackEmbeddingAdapter([primary, fallback]), logger)
+    with req_ctx.push(pricing_snapshot=None):
+        response = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert response.status_code == 503
+    primary_dispatch.assert_not_called()
+    fallback_dispatch.assert_not_called()
+    assert logger.calls == []
 
 
 class _CapturingOpStore:

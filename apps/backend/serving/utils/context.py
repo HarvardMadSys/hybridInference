@@ -31,6 +31,7 @@ USER_ROLE = "user_role"
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
 PRICING_TIME = "pricing_time"
+PRICING_SNAPSHOT = "pricing_snapshot"
 
 # req_ctx key holding the scheduling priority assigned to this request, read by
 # the OpenAI-compatible adapter for endpoints configured with
@@ -108,6 +109,7 @@ REQUEST_SCOPED_KEYS = (
     "affinity_key",
     USER_ROLE,
     PRICING_TIME,
+    PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,
     PROVIDER,
     # Trusted-probe verdict published by the inference handlers.
@@ -216,6 +218,7 @@ def mark_model_not_found() -> None:
 __all__ = [
     "CLIENT_ERROR_KIND",
     "MODEL_NOT_FOUND",
+    "PRICING_SNAPSHOT",
     "PRICING_TIME",
     "PROVIDER",
     "REQUEST_SCOPED_KEYS",

@@ -31,6 +31,7 @@ from serving.exceptions import scrub_error_for_user
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
+from serving.pricing import require_route_pricing
 from serving.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -780,6 +781,8 @@ async def chat_completions(
             )
         req_ctx.mark_model_not_found()
         raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
+
+    require_route_pricing(route)
 
     # Extract parameters
     params: dict[str, Any] = {"stream": effective_stream}

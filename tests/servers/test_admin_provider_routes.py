@@ -630,6 +630,7 @@ async def test_openrouter_endpoint_price_clears_inherited_schedule(monkeypatch):
     cfg = {
         "pricing": RUNTIME_PRICING,
         "pricing_schedule": {"inherited": True},
+        "pricing_source": {"provider": "deepseek", "model": "deepseek-flash"},
         "route_metadata": {},
     }
 
@@ -642,6 +643,7 @@ async def test_openrouter_endpoint_price_clears_inherited_schedule(monkeypatch):
 
     assert cfg["pricing"] == OPENROUTER_DEEPINFRA_PRICING
     assert cfg["pricing_schedule"] is None
+    assert cfg["pricing_source"] is None
 
 
 @pytest.mark.asyncio
@@ -654,6 +656,7 @@ async def test_openrouter_pricing_failure_drops_inherited_schedule(monkeypatch):
     cfg = {
         "pricing": OPENROUTER_DEEPINFRA_PRICING,
         "pricing_schedule": {"inherited": True},
+        "pricing_source": {"provider": "deepseek", "model": "deepseek-flash"},
         "route_metadata": {
             "pricing_source": "openrouter_endpoint",
             "pricing_provider": "deepinfra/fp8",
@@ -672,6 +675,7 @@ async def test_openrouter_pricing_failure_drops_inherited_schedule(monkeypatch):
     # surviving schedule would layer real per-token prices back onto those zeros.
     assert "pricing" not in cfg
     assert "pricing_schedule" not in cfg
+    assert "pricing_source" not in cfg
     assert "pricing_source" not in cfg["route_metadata"]
 
 
