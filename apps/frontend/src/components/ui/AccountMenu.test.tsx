@@ -10,6 +10,14 @@ const replace = vi.fn();
 const switchAccount = vi.fn();
 const logout = vi.fn();
 const logoutAll = vi.fn();
+const chooseLocale = vi.fn();
+const setTheme = vi.fn();
+let selectedTheme = 'system';
+
+vi.mock('@/components/providers/localeChoice', () => ({ useChooseLocale: () => chooseLocale }));
+vi.mock('@/components/providers/ThemeProvider', () => ({
+  useTheme: () => ({ theme: selectedTheme, resolvedTheme: 'light', setTheme }),
+}));
 
 type Account = {
   id: string;
@@ -65,6 +73,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   accounts = [account('ada', { active: true, role: 'admin' }), account('bob')];
   maxAccounts = 5;
+  selectedTheme = 'system';
+  chooseLocale.mockResolvedValue(undefined);
   switchAccount.mockResolvedValue(undefined);
   logout.mockResolvedValue(undefined);
   logoutAll.mockResolvedValue(undefined);
@@ -168,5 +178,114 @@ describe('AccountMenu', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
 
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+  it('links to settings without duplicating the header dashboard entry', () => {
+    render(<AccountMenu />);
+    openMenu();
+    expect(screen.queryByRole('menuitem', { name: 'Dashboard' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'My settings' })).toHaveAttribute(
+      'href',
+      '/dashboard/settings',
+    );
+  });
+
+  it('opens language options without changing preference and marks the current language', () => {
+    render(<AccountMenu />);
+    openMenu();
+    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: 'Language' }));
+    expect(screen.getByRole('menuitemradio', { name: 'English' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('menuitemradio', { name: '简体中文' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    expect(chooseLocale).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '简体中文' }));
+    expect(chooseLocale).toHaveBeenCalledWith('zh-CN');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ada' })).toHaveFocus();
+  });
+
+  it('leaves an already selected language alone', () => {
+    render(<AccountMenu />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Language' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'English' }));
+    expect(chooseLocale).not.toHaveBeenCalled();
+  });
+
+  it('offers explicit light, dark, and system appearance choices', () => {
+    render(<AccountMenu />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
+    expect(screen.getByRole('menuitemradio', { name: 'System' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('menuitemradio', { name: 'Light' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'System' }));
+    expect(setTheme).not.toHaveBeenCalled();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Dark' }));
+    expect(setTheme).toHaveBeenCalledTimes(1);
+    expect(setTheme).toHaveBeenCalledWith('dark');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('navigates menus by keyboard and restores focus one level at a time', () => {
+    render(<AccountMenu />);
+    const trigger = screen.getByRole('button', { name: 'Ada' });
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'My settings' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+    const appearance = screen.getByRole('menuitem', { name: 'Appearance' });
+    expect(appearance).toHaveFocus();
+    fireEvent.keyDown(appearance, { key: 'ArrowRight' });
+    expect(screen.getByRole('menuitemradio', { name: 'Light' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'End' });
+    expect(screen.getByRole('menuitemradio', { name: 'System' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Home' });
+    expect(screen.getByRole('menuitemradio', { name: 'Light' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(appearance).toHaveFocus();
+    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('wraps keyboard navigation and opens at the end with ArrowUp', () => {
+    render(<AccountMenu />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Ada' }), { key: 'ArrowUp' });
+    expect(screen.getByRole('menuitem', { name: 'Log out of all accounts' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'My settings' })).toHaveFocus();
+  });
+
+  it('returns from a submenu with ArrowLeft and dismisses on outside pointer down', () => {
+    render(<AccountMenu />);
+    openMenu();
+    const language = screen.getByRole('menuitem', { name: 'Language' });
+    fireEvent.click(language);
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
+    expect(language).toHaveFocus();
+    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+  it('dismisses on Tab without trapping focus inside a removed submenu', () => {
+    render(<AccountMenu />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ada' })).toHaveFocus();
   });
 });

@@ -1,6 +1,7 @@
 'use client';
 
 import { AuthProvider } from './AuthProvider';
+import { ThemeProvider } from './ThemeProvider';
 import { LocaleProvider } from './LocaleProvider';
 import { LocaleAccountSync } from './LocaleAccountSync';
 import { QueryProvider } from './QueryProvider';
@@ -28,19 +29,21 @@ export function Providers({
   moduleLocale?: string;
 }) {
   return (
-    <SiteConfigProvider initialConfig={initialSiteConfig}>
-      <LocaleProvider locale={locale} catalog={catalog} moduleLocale={moduleLocale}>
-        <QueryProvider>
-          <AuthProvider>
-            <LocaleAccountSync />
-            {/* Above every route, including those a Site UI module renders, so
+    <ThemeProvider>
+      <SiteConfigProvider initialConfig={initialSiteConfig}>
+        <LocaleProvider locale={locale} catalog={catalog} moduleLocale={moduleLocale}>
+          <QueryProvider>
+            <AuthProvider>
+              <LocaleAccountSync />
+              {/* Above every route, including those a Site UI module renders, so
                 a deployment without an administrator opens on /setup. */}
-            <SetupGate>{children}</SetupGate>
-            <ToastProvider />
-          </AuthProvider>
-        </QueryProvider>
-      </LocaleProvider>
-    </SiteConfigProvider>
+              <SetupGate>{children}</SetupGate>
+              <ToastProvider />
+            </AuthProvider>
+          </QueryProvider>
+        </LocaleProvider>
+      </SiteConfigProvider>
+    </ThemeProvider>
   );
 }
 

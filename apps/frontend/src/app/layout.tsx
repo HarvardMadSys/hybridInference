@@ -4,6 +4,7 @@ import Script from 'next/script';
 import { Crimson_Text } from 'next/font/google';
 import type { Metadata } from 'next';
 import { Providers } from '@/components/providers';
+import { THEME_BOOTSTRAP_SCRIPT } from '@/components/providers/theme';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { PublicRouteBoundary } from '@/site-ui/PublicRouteBoundary';
 import { SiteUiBoundary } from '@/site-ui/SiteUiBoundary';
@@ -43,6 +44,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`h-full ${crimsonText.variable}`}
     >
       <head>
+        <script id="console-theme" dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
         {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
             the empty string as a text node. A text node inside <head> is invalid
             HTML, so the parser hoists it out, server and client trees diverge,

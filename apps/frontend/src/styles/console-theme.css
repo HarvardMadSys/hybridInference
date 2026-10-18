@@ -1,0 +1,281 @@
+/* Appearance belongs to the first-party console. Distribution Landing,
+   AuthFrame and legal pages keep their own palette, even with a saved choice. */
+.console-theme {
+  color-scheme: light;
+}
+
+:root[data-console-theme='dark'] .console-theme {
+  color-scheme: dark;
+  --console-canvas: #101722;
+  --console-surface: #182230;
+  --console-subtle: #1e2a3a;
+  --console-hover: #273549;
+  --console-border: #354356;
+  --console-text: #eef2f7;
+  --console-muted: #b0bdce;
+  background-color: var(--console-canvas);
+  color: var(--console-text);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.bg-white, .bg-white\/95, .bg-white\/90, .bg-white\/80, .bg-white\/70, .bg-white\/50) {
+  background-color: var(--console-surface);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .bg-gray-50,
+    .bg-gray-50\/40,
+    .bg-gray-50\/50,
+    .bg-gray-50\/60,
+    .bg-gray-50\/70,
+    .bg-gray-50\/80,
+    .bg-gray-50\/95
+  ) {
+  background-color: var(--console-canvas);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.bg-gray-100, .bg-gray-100\/80, .bg-gray-200, .bg-gray-200\/70) {
+  background-color: var(--console-subtle);
+}
+
+:root[data-console-theme='dark'] .console-theme .bg-gray-300 {
+  background-color: var(--console-border);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .hover\:bg-white:hover,
+    .hover\:bg-gray-50:hover,
+    .hover\:bg-gray-100:hover,
+    .hover\:bg-gray-200:hover,
+    .focus\:bg-gray-100:focus
+  ) {
+  background-color: var(--console-hover);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .text-black,
+    .text-gray-950,
+    .text-gray-900,
+    .text-gray-800,
+    .text-gray-700,
+    .hover\:text-black:hover,
+    .hover\:text-gray-900:hover,
+    .hover\:text-gray-800:hover,
+    .hover\:text-gray-700:hover
+  ) {
+  color: var(--console-text);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.text-gray-600, .text-gray-500) {
+  color: var(--console-muted);
+}
+
+:root[data-console-theme='dark'] .console-theme .text-gray-400 {
+  color: #93a3b8;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.placeholder\:text-gray-400, .placeholder\:text-gray-500)::placeholder {
+  color: #93a3b8;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .border-gray-50,
+    .border-gray-100,
+    .border-gray-200,
+    .border-gray-200\/80,
+    .border-gray-300,
+    .border-gray-400
+  ) {
+  border-color: var(--console-border);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.divide-gray-50, .divide-gray-100, .divide-gray-200)
+  > :not([hidden])
+  ~ :not([hidden]) {
+  border-color: var(--console-border);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .ring-gray-100,
+    .ring-gray-200,
+    .ring-gray-200\/50,
+    .ring-gray-300,
+    .ring-gray-900\/5,
+    .ring-gray-900\/10
+  ) {
+  --tw-ring-color: var(--console-border);
+}
+
+:root[data-console-theme='dark'] .console-theme .focus\:ring-offset-2:focus,
+:root[data-console-theme='dark'] .console-theme .focus-visible\:ring-offset-2:focus-visible {
+  --tw-ring-offset-color: var(--console-canvas);
+}
+
+/* Preserve contrast for neutral primary actions and avatars. Dark code blocks
+   use text-gray-100 instead of text-white and keep their original palette. */
+:root[data-console-theme='dark'] .console-theme :is(.bg-black, .bg-gray-900).text-white {
+  background-color: #eef2f7;
+  color: #111827;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.bg-black, .bg-gray-900).text-white:hover {
+  background-color: #d6dfeb;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.bg-amber-50, .bg-amber-100, .bg-yellow-50) {
+  background-color: #332a1b;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(
+    .text-amber-600,
+    .text-amber-700,
+    .text-amber-800,
+    .text-amber-900,
+    .text-amber-950,
+    .text-yellow-700,
+    .text-yellow-800
+  ) {
+  color: #f4cc7c;
+}
+
+:root[data-console-theme='dark'] .console-theme .border-amber-200 {
+  border-color: #6b512b;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.bg-red-50, .bg-red-50\/50, .bg-red-50\/60, .bg-red-100, .bg-red-200\/40, .bg-rose-50) {
+  background-color: #36212b;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.text-red-600, .text-red-700, .text-red-800, .text-red-900, .text-rose-700) {
+  color: #fca5ad;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.border-red-100, .border-red-200, .border-red-200\/80, .border-red-300) {
+  border-color: #77404d;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.bg-blue-50, .bg-blue-100, .bg-sky-50) {
+  background-color: #192e47;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.text-blue-600, .text-blue-700, .text-blue-800, .text-blue-900, .text-blue-950) {
+  color: #9ac8ff;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.border-blue-100, .border-blue-200) {
+  border-color: #36597d;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.bg-green-50, .bg-emerald-50) {
+  background-color: #18352e;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.text-green-600, .text-green-700, .text-emerald-600, .text-emerald-700, .text-emerald-800) {
+  color: #8cdbc0;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.border-green-200, .border-emerald-200) {
+  border-color: #376b5c;
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.text-crimson, .hover\:text-crimson:hover) {
+  color: color-mix(in srgb, rgb(var(--brand-accent)) 50%, #fff);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.from-white, .from-gray-50, .from-slate-50) {
+  --tw-gradient-from: var(--console-surface) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(24 34 48 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.to-white, .to-gray-50) {
+  --tw-gradient-to: var(--console-canvas) var(--tw-gradient-to-position);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.to-red-50\/40, .to-crimson\/5) {
+  --tw-gradient-to: #29212e var(--tw-gradient-to-position);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.shadow-sm, .shadow-md, .shadow-lg, .shadow-xl, .shadow-card, .shadow-subtle) {
+  --tw-shadow-color: rgb(0 0 0 / 0.3);
+  --tw-shadow: var(--tw-shadow-colored);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.via-white, .via-gray-50) {
+  --tw-gradient-stops:
+    var(--tw-gradient-from), var(--console-surface) var(--tw-gradient-via-position),
+    var(--tw-gradient-to);
+}
+
+:root[data-console-theme='dark'] .console-theme .recharts-cartesian-grid line {
+  stroke: var(--console-border);
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.recharts-cartesian-axis-tick-value, .recharts-polar-angle-axis-tick-value, .recharts-label) {
+  fill: var(--console-muted);
+}
+
+:root[data-console-theme='dark'] .console-theme .recharts-default-tooltip {
+  background-color: var(--console-surface) !important;
+  border-color: var(--console-border) !important;
+  color: var(--console-text);
+}
+
+:root[data-console-theme='dark'] .console-theme :is(.bg-violet-50, .bg-purple-50, .bg-indigo-50) {
+  background-color: #2b2442;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  :is(.text-violet-700, .text-purple-700, .text-indigo-600, .text-indigo-700) {
+  color: #c4b5fd;
+}
+
+:root[data-console-theme='dark'] .console-theme .text-sky-700 {
+  color: #9ac8ff;
+}
+
+:root[data-console-theme='dark'] .console-theme .bg-rose-50 {
+  background-color: #36212b;
+}
+
+:root[data-console-theme='dark'] .console-theme .text-rose-700 {
+  color: #fca5ad;
+}
+
+:root[data-console-theme='dark'] .console-theme .border-indigo-200 {
+  border-color: #66518a;
+}

@@ -1051,6 +1051,10 @@
     "source": "Account",
     "text": "账户"
   },
+  "chrome.account_menu.language": {
+    "source": "Language",
+    "text": "语言"
+  },
   "chrome.account_menu.limit_reached": {
     "source": "This browser holds {max} accounts, the most it can. Sign one out to add another.",
     "text": "这个浏览器已经登录了 {max} 个账户，到上限了。退出一个才能再添加。"
@@ -1063,6 +1067,10 @@
     "source": "Log out of all accounts",
     "text": "退出所有账户"
   },
+  "chrome.account_menu.settings": {
+    "source": "My settings",
+    "text": "我的设置"
+  },
   "chrome.account_menu.signed_out": {
     "source": "Signed out · sign in again",
     "text": "已退出 · 请重新登录"
@@ -1070,6 +1078,22 @@
   "chrome.account_menu.switched": {
     "source": "Switched to {name}",
     "text": "已切换到 {name}"
+  },
+  "chrome.appearance.dark": {
+    "source": "Dark",
+    "text": "深色"
+  },
+  "chrome.appearance.label": {
+    "source": "Appearance",
+    "text": "外观"
+  },
+  "chrome.appearance.light": {
+    "source": "Light",
+    "text": "浅色"
+  },
+  "chrome.appearance.system": {
+    "source": "System",
+    "text": "跟随系统"
   },
   "chrome.configuration.user_notice": {
     "source": "This service is missing required configuration, so some features may not work. Please contact your administrator.",

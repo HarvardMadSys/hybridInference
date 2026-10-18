@@ -1,4 +1,5 @@
 @import '@xterm/xterm/css/xterm.css';
+@import './console-theme.css';
 
 @tailwind base;
 @tailwind components;

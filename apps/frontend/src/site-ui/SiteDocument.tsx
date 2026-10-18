@@ -46,7 +46,7 @@ export function SiteDocument({
   const lang = documentLocale(useModuleRendersRoute(), moduleLocale, consoleLocale);
 
   return (
-    <html lang={lang} className={className}>
+    <html lang={lang} className={className} suppressHydrationWarning>
       {children}
     </html>
   );
