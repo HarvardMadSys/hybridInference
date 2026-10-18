@@ -27,7 +27,7 @@ from typing import Any
 from fastapi import HTTPException, Request, Response
 
 from serving.agent_access import AgentAccessPolicyUnavailable, resolve_agent_access_permissions
-from serving.config.settings import is_admin_email, settings
+from serving.config.settings import get_settings, is_admin_email
 from serving.schemas_auth import AccountSummary, UserInfo
 from serving.utils.jwt import (
     create_access_token,
@@ -51,7 +51,7 @@ def hash_refresh_token(token: str) -> str:
 
 def get_refresh_token_cookie(request: Request) -> str | None:
     """Read the deployment-scoped session cookie from an incoming request."""
-    return request.cookies.get(settings.refresh_token_cookie_name)
+    return request.cookies.get(get_settings().refresh_token_cookie_name)
 
 
 def _refresh_cookie_options() -> dict[str, object]:
@@ -61,6 +61,7 @@ def _refresh_cookie_options() -> dict[str, object]:
     field defaults are the single source of truth. Defaults: secure=True,
     samesite=lax, domain unset.
     """
+    settings = get_settings()
     return {
         "httponly": True,
         "secure": settings.cookie_secure,
@@ -74,7 +75,7 @@ def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
     """Set the persistent session cookie."""
     refresh_token_max_age = get_refresh_token_expire_days() * 24 * 60 * 60
     response.set_cookie(
-        key=settings.refresh_token_cookie_name,
+        key=get_settings().refresh_token_cookie_name,
         value=refresh_token,
         max_age=refresh_token_max_age,
         expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
@@ -85,14 +86,14 @@ def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
 def delete_refresh_token_cookie(response: Response) -> None:
     """Delete the session cookie using the same domain/path settings."""
     response.delete_cookie(
-        key=settings.refresh_token_cookie_name,
+        key=get_settings().refresh_token_cookie_name,
         **_refresh_cookie_options(),
     )
 
 
 async def email_verification_required() -> bool:
     """Whether an account must have verified its email to stay signed in."""
-    require_verification = settings.signup_require_email_verification
+    require_verification = get_settings().signup_require_email_verification
     try:
         from serving.config.runtime_settings import get_runtime_settings_instance
 

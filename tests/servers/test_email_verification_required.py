@@ -9,19 +9,36 @@ Run with: make test-db
 import os
 
 import pytest
+import pytest_asyncio
 
 pytestmark = pytest.mark.dbtest
 
 
-# New helper and fixture
-@pytest.fixture
-def email_verification_flag(monkeypatch):
-    """Temporarily set SIGNUP_REQUIRE_EMAIL_VERIFICATION for a test."""
+@pytest_asyncio.fixture
+async def email_verification_flag(auth_app, require_db):
+    """Temporarily set the persisted email-verification runtime setting."""
 
-    def _setter(enabled: bool) -> None:
-        monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1" if enabled else "0")
+    runtime_settings = auth_app.state.services.runtime_settings
+    setting_key = "signup_require_email_verification"
+    previous_setting = await require_db.get_setting(setting_key)
 
-    return _setter
+    async def _setter(enabled: bool) -> None:
+        await require_db.set_setting(setting_key, str(enabled), "bool", "email-verification-test")
+        runtime_settings.invalidate_key(setting_key)
+
+    try:
+        yield _setter
+    finally:
+        if previous_setting is None:
+            await require_db.delete_setting(setting_key)
+        else:
+            await require_db.set_setting(
+                setting_key,
+                previous_setting["value"],
+                previous_setting["value_type"],
+                previous_setting["updated_by"],
+            )
+        runtime_settings.invalidate_key(setting_key)
 
 
 async def set_email_verified(op_store, user_id: str, verified: bool) -> None:
@@ -62,7 +79,7 @@ async def test_unverified_user_cannot_login(auth_client, require_db, email_verif
     from logging in when SIGNUP_REQUIRE_EMAIL_VERIFICATION is enabled.
     """
     # Enable email verification for this test
-    email_verification_flag(True)
+    await email_verification_flag(True)
 
     # Sign up a new user
     signup_data = {
@@ -93,7 +110,7 @@ async def test_verified_user_can_login(auth_client, require_db, email_verificati
     normal login flow for verified users.
     """
     # Enable email verification for this test
-    email_verification_flag(True)
+    await email_verification_flag(True)
 
     # Sign up a new user
     signup_data = {
@@ -130,7 +147,7 @@ async def test_unverified_user_cannot_refresh_token(
     (e.g., after changing email), they cannot refresh their tokens.
     """
     # Enable email verification for this test
-    email_verification_flag(True)
+    await email_verification_flag(True)
 
     # Sign up a new user
     signup_data = {
@@ -172,7 +189,7 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
     is disabled, users can login without verifying their email.
     """
     # Disable email verification for this test
-    email_verification_flag(False)
+    await email_verification_flag(False)
 
     # Sign up a new user
     signup_data = {
@@ -206,7 +223,7 @@ async def test_disabled_verification_marks_new_user_verified(
     users created while verification was disabled permanently unverified (and
     locked out if verification was later re-enabled).
     """
-    email_verification_flag(False)
+    await email_verification_flag(False)
 
     signup_data = {
         "email": f"disabledverify_{os.urandom(4).hex()}@signuptest.dev",
@@ -227,7 +244,7 @@ async def test_required_verification_marks_new_user_unverified(
     auth_client, require_db, email_verification_flag
 ):
     """New users remain unverified when verification is required."""
-    email_verification_flag(True)
+    await email_verification_flag(True)
 
     signup_data = {
         "email": f"requiredverify_{os.urandom(4).hex()}@signuptest.dev",
@@ -248,7 +265,7 @@ async def test_unverified_user_cannot_access_protected_endpoint(
     auth_client, require_db, email_verification_flag
 ):
     """Test that unverified users cannot call protected user endpoints."""
-    email_verification_flag(True)
+    await email_verification_flag(True)
 
     signup_data = {
         "email": f"protected_{os.urandom(4).hex()}@signuptest.dev",

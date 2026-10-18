@@ -157,7 +157,11 @@ def auth_test_env():
             "DB_PASSWORD": _db_pass,
             "TEST_DB_HOST": _db_host,
             "TEST_DB_PORT": _db_port,
-            "TEST_DB_NAME": _db_name,
+            # Keep TEST_DB_NAME as the unsuffixed base. Direct integration
+            # fixtures append their xdist worker id themselves; mutating this
+            # value to _db_name makes those fixtures look for *_gw0_gw0 after
+            # a server test has initialized the session environment.
+            "TEST_DB_NAME": _base_db_name,
             "TEST_DB_USER": _db_user,
             "TEST_DB_PASSWORD": _db_pass,
             "COOKIE_SECURE": "0",
@@ -394,7 +398,7 @@ async def test_client(test_app):
 
 
 @pytest_asyncio.fixture
-async def auth_app(auth_test_env):
+async def auth_app(auth_test_env, monkeypatch):
     """App instance with lifespan context for auth tests.
 
     This fixture creates a fresh app instance and manages its lifespan,
@@ -412,10 +416,15 @@ async def auth_app(auth_test_env):
     await _skip_if_test_db_unavailable(context="auth_app pre-flight connection")
 
     # Clear settings cache to pick up test environment variables
+    from serving.config import settings as settings_module
     from serving.config.settings import get_settings
     from serving.servers.app import create_app
+    from serving.servers.routers import auth_routes
 
     get_settings.cache_clear()
+    test_settings = get_settings()
+    monkeypatch.setattr(settings_module, "settings", test_settings)
+    monkeypatch.setattr(auth_routes, "settings", test_settings)
 
     app = create_app()
 
