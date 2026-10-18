@@ -1,0 +1,377 @@
+# 测试数据库契约设计：一个入口、一种失败方式
+
+- 日期：2026-10-18
+- 状态：草案，待 review
+- 范围：`tests/` 下所有连接 PostgreSQL 的 fixture、`.github/workflows/ci.yml` 的测试 job、
+  `Makefile` 的 `test-db` 目标。**不改任何生产代码。**
+- 相关记录：#1466（CI 中真正执行数据库测试）、#1472（operational store 缺列）、
+  #1545（#1466 暴露的配额注释错误）、#1546（共享 HTTP 客户端的测试污染）
+
+## 1. 背景
+
+#1466 之前，CI 里约 300 个数据库测试一直被跳过：PostgreSQL service 的端口是随机映射的，
+CI 只导出了 `DB_PORT`，而多数 fixture 读的是 `TEST_DB_PORT`，没读到就回退到 5432，
+连接失败后执行 `pytest.skip(...)`。skip 不算失败，所以 CI 长期是绿的。
+#1472 修复的缺列 bug、#1545 修正的错误断言，都是这些测试从未执行而遗留下来的。
+
+#1466 在 CI 这一侧把问题堵上了：导出完整的 `TEST_DB_*`，新增串行的 `db` 分片，
+在测试前建好表结构并为每个 xdist worker 复制一份库，最后用
+`ops/ci/check_pytest_skips.sh` grep 日志，发现与数据库相关的 SKIPPED 就判失败。
+
+但根因没有变：**每个测试文件各自决定连哪个库、连不上怎么办。** #1466 只是让 CI
+恰好提供了所有文件各自需要的变量，并在事后用文字匹配兜底。
+
+## 2. 现状（基于 `dev` @ `c870fed8`）
+
+### 2.1 连接配置有三套来源，散落在约 29 个文件里
+
+完整清单见附录 A。归纳如下：
+
+| 来源 | 文件数 | 读法 | 没设置时 |
+|---|---|---|---|
+| `TEST_DB_HOST/PORT/NAME/USER/PASSWORD` | 16 | 逐个 `os.getenv`，多数自己拼 xdist 后缀 | 回退到 `localhost:5432` |
+| `TEST_PG_DSN` | 12 | 一个 DSN | 直接 skip："TEST_PG_DSN is not set" |
+| `PG_TEST_DSN` | 1（`unit/storage/test_login_events.py`） | 一个 DSN | 直接 skip |
+| `DB_HOST/PORT/NAME/...` | 4（`TEST_PG_DSN` 的后备） | 应用自己的变量 | 回退到 `localhost:5432` |
+
+此外：
+
+- xdist worker 后缀（`<base>_gwN`）在 15 个文件里各自拼接。#1466 修过的
+  `_gw0_gw0` 重复后缀，就是 `tests/servers/conftest.py` 把带后缀的库名写回
+  `TEST_DB_NAME` 造成的。`test_browser_session_races`、`test_phone_auth_codes`、
+  `test_revoke_user_sessions` 不加后缀，所有 worker 连同一个基础库，靠每个测试自建
+  schema 隔离。这是一种合理做法，但它是第三种约定。
+- 哪个 fixture 负责**创建** worker 库也不统一：`tests/servers/conftest.py` 和少数
+  integration fixture 会 `CREATE DATABASE`，其余默认它已经存在（见 §2.5）。
+- "库名必须包含 `_test_`"的安全检查，有的文件调用 `tests/fixtures/auth_helpers.py`
+  的 `assert_test_db_name`，有的自己写一份，DSN 一类的文件没有这项检查。
+- 新代码还在继续发明变量：未合并的 #1517 新增了 `CACHE_TELEMETRY_TEST_DB_PORT` /
+  `CACHE_TELEMETRY_TEST_DB_NAME`，并且注释说明要"优先 `DB_*`，因为 runner 上的
+  `TEST_PG_DSN` 可能指向别的端口"。
+
+### 2.2 连不上时的处理：约 30 处 skip，8 种措辞
+
+`pytest.skip` 的原因包括 `PostgreSQL not available: …`（14 处）、
+`TEST_PG_DSN is not set; …`（8 处）、`PostgreSQL test database not available: …`、
+`PostgreSQL auth test database is not available.`、`PG_TEST_DSN not set; …`、
+`This test requires PostgreSQL (auth_db_logger)`、
+`Database not available (start PostgreSQL or check DB config)` 等。
+
+CI 的 grep 兜底依赖这些措辞，而且已经有漏洞：普通分片用的正则是
+`SKIPPED.*(PostgreSQL .*not available|…)`，匹配不到 `tests/servers/conftest.py`
+里 `require_db` 的 `Database not available (start PostgreSQL …)`，因为在这句话里
+"PostgreSQL" 出现在 "not available" 之后。`tests/servers/test_admin.py`、
+`tests/servers/test_concurrency_endpoint.py` 用到了 `require_db` / `auth_app`，
+却没有 `dbtest` 标记，会在普通分片中运行，正好落在这个漏洞上。
+
+### 2.3 表结构准备只在 CI 里做
+
+`ci.yml` 的 "Prepare PostgreSQL test databases" 步骤内嵌了一段 Python：依次执行
+`DatabaseLogger.initialize()`、`PostgresOperationalStore.initialize()`、
+`ResponseStore.initialize()`，再用这个库作模板 `CREATE DATABASE … TEMPLATE …`
+复制出 `_gw0 … _gwN`。
+
+本地没有对应的步骤。`tests/servers/conftest_auth.py::_init_pg_backend` 只执行
+`DatabaseLogger.initialize()`，而 `storage/database.py` 和
+`storage/postgres_operational.py` 各有一份 `users` / `api_keys` 建表语句（#1472 的
+review 中已指出），`signup_reason` 等 operational 列只由后者的 `initialize()`
+（含补列迁移）添加。在一个只执行过 `DatabaseLogger.initialize()` 的库上，这些列就不存在。
+
+串行跑整套时这一点被掩盖了：默认收集顺序下 `tests/integration/` 排在
+`tests/servers/` 之前，前者的 fixture 已经在同一个库上执行过
+`PostgresOperationalStore.initialize()`。这依赖测试顺序，并不是有意设计的保证。
+实测：在空库上单独串行运行 `tests/servers/test_user_routes.py -m dbtest`，
+结果是 3 passed、33 errors，全部是
+`column "signup_reason" of relation "users" does not exist`。
+
+### 2.4 实测：照 `make test-db` 的提示在本地跑
+
+`make test-db` 的帮助文字是 "set TEST_DB_* env vars"。在一个全新的 PostgreSQL 16
+（`127.0.0.1:55450`）上，只设置 `TEST_DB_*`，串行执行
+`pytest -m "dbtest and not external"`：
+
+```text
+252 passed, 92 skipped
+```
+
+92 个 skip 中，3 个是缺少外部 API key（预期内），其余 89 个都是数据库相关：
+
+| 原因 | 数量 | 文件 |
+|---|---|---|
+| `TEST_PG_DSN is not set` / `PG_TEST_DSN not set` | 51 | `test_provider_stats_rollup`、`test_database_integration`、`test_app_config_store_postgres`、`test_login_events` 等 9 个 |
+| `password authentication failed for user "postgres"` | 35 | `test_admin_request_perf_breakdown_postgres`、`test_admin_request_offloads_postgres`、`test_agent_grant_usage_window_postgres`、`test_admin_client_disconnect_postgres` |
+
+第二类值得单独说明：这 4 个文件在没有 `TEST_PG_DSN` 时读 `DB_*`，没设置就回退到
+`localhost:5432`。这台机器的 5432 上跑着另一个 PostgreSQL 实例（不属于本次测试），
+这些测试连了过去，只是因为密码不对才被拒绝。默认库名 `hybridinference_test_db`
+本身就能通过 `_test_` 检查，所以如果密码碰巧一致，它们会在那个实例上建 schema、写数据。
+这里只说明存在这条路径，不推断那个实例上有什么数据。
+
+### 2.5 实测：变量设齐以后，串行能过，并行不能
+
+同一个实例、每次都换一个空库，把 CI 设置的变量全部设上（`TEST_DB_*`、`DB_*`、
+`TEST_PG_DSN`、`PG_TEST_DSN`，以及 `USER_AUTH_ENABLED`、`API_KEY_SECRET`、
+`ERASURE_FENCE_SECRET`），**不执行** CI 的表结构准备步骤：
+
+| 运行方式 | 结果 |
+|---|---|
+| 串行（与 CI 的 `test (db)` 相同） | 341 passed、3 skipped，与 CI 完全一致 |
+| `-n 8 --dist=loadfile` | 204 passed、17 failed、74 errors、49 skipped |
+
+并行时的失败只有两类：
+
+| 现象 | 数量 | 原因 |
+|---|---|---|
+| `UndefinedColumnError`：`signup_reason`（76）、`max_concurrent_requests`（8）、`pending_email`（1） | 85 个 failed / error，集中在 `tests/servers/` | `tests/servers/conftest.py` 自己 `CREATE DATABASE` 出 `_gwN`，但 `_init_pg_backend` 只做 `DatabaseLogger.initialize()`（§2.3），operational 的列没有补上 |
+| skip：`database "hybridinference_test_db_gwN" does not exist` | 46（`test_erasure_fence_races` 34、`test_identity_auth_codes` 6、`test_first_run_setup_postgres` 6） | 这些 fixture 默认 worker 库已存在，自己不创建 |
+
+所以 CI 能通过，靠的是两件只在 CI 里成立的事：`db` 分片串行运行，以及内嵌 Python
+提前准备好了表结构和 worker 库。上次本地排查时把这些失败归因为"测试之间互相弄乱表结构"，
+实测并非如此：自建精简表的测试都在独立 schema 里，删列的
+`test_reset_password_cli_postgres` 在 teardown 中会重新 `initialize()`。
+
+## 3. 目标与非目标
+
+**目标**
+
+1. 测试连哪个库只有**一个入口**。新写一个数据库测试，不需要知道任何环境变量名。
+2. 在要求有数据库的环境里（CI），连不上数据库时**失败**，而不是跳过。这个结论由
+   fixture 本身决定，不依赖日志措辞。
+3. 不再回退去连一个没人指定过的 `localhost:5432`。
+4. 本地用一条命令，在一个空库上准备好表结构并跑完整套数据库测试，结果与 CI 一致。
+5. 有一个结构性的守卫，防止新代码绕开入口。
+
+**非目标**
+
+- 合并 `storage/database.py` 和 `storage/postgres_operational.py` 的两份建表语句。
+  这是生产代码的问题，另立设计。
+- 改变数据库测试的分片方式或并行度（见 §8 Q2）。
+- 修改各测试自身的断言或业务逻辑，迁移只替换"如何拿到连接"。
+
+## 4. 设计
+
+### 4.1 唯一入口：`tests/fixtures/postgres.py`
+
+文件名不能以 `test_` 开头，否则会被 pytest 当作测试模块收集。
+
+```python
+@dataclass(frozen=True)
+class TestDatabase:
+    host: str
+    port: int
+    user: str
+    password: str
+    base_name: str   # TEST_DB_NAME 原值，永不修改
+    name: str        # 本 worker 实际使用的库：base_name 或 base_name_gwN
+
+    def dsn(self) -> str: ...
+    def connect_kwargs(self) -> dict[str, object]: ...   # 给 asyncpg.connect / create_pool
+    def app_env(self) -> dict[str, str]: ...              # DB_HOST/DB_PORT/DB_NAME/... 给被测应用
+
+
+def test_database(*, worker: str | None = None) -> TestDatabase: ...
+def database_required() -> bool: ...                     # TEST_DB_REQUIRED
+def database_unavailable(reason: str) -> NoReturn: ...   # skip 或 fail 的唯一出口
+
+async def connect(**overrides) -> asyncpg.Connection: ...
+async def create_pool(**overrides) -> asyncpg.Pool: ...
+async def prepare_schema(pool: asyncpg.Pool) -> None: ...
+async def prepare_worker_databases(count: int) -> None: ...
+```
+
+要点：
+
+- **输入只认 `TEST_DB_HOST/PORT/USER/PASSWORD/NAME`。** 被测应用读的 `DB_*`
+  由 `app_env()` 生成，并由 fixture 通过 `monkeypatch.setenv` 设置。方向只有一个：
+  `TEST_DB_*` → `DB_*`，不再反过来把 `DB_*` 当作测试库的来源。
+- **worker 后缀只在这里拼。** `base_name` 来自 `TEST_DB_NAME`，任何地方都不写回；
+  `name` 由 `PYTEST_XDIST_WORKER` 推导。
+- **安全检查只在这里做，而且做两次：** 解析配置时检查 `name` 包含 `_test_`；
+  `connect` / `create_pool` 成功后再用 `SELECT current_database()` 检查一次
+  （复用现有的 `assert_test_db_name` / `assert_test_db_from_pool`，挪进本模块）。
+- **连接失败统一走 `database_unavailable(reason)`。**
+- 需要独立 schema 或独立库的测试（例如 `test_users_schema_lock_postgres`、
+  `test_admin_request_*` 的 `CREATE SCHEMA … SET search_path`）照旧自己管理
+  schema，只把"连到哪个库"交给入口。`create_pool(**overrides)` 允许传
+  `server_settings` 等 asyncpg 参数，但不允许覆盖 host、port 和库名。
+
+### 4.2 环境变量契约
+
+| 变量 | 含义 | 未设置时 |
+|---|---|---|
+| `TEST_DB_HOST`、`TEST_DB_PORT` | 测试 PostgreSQL 地址 | 非 required：回退到 `localhost:5432`（保持本地习惯）；required：会话启动即失败 |
+| `TEST_DB_USER`、`TEST_DB_PASSWORD` | 凭据 | `postgres` / `postgres` |
+| `TEST_DB_NAME` | 基础库名，必须含 `_test_` | `hybridinference_test_db` |
+| `TEST_DB_REQUIRED` | `1` 表示这个环境必须有数据库 | 视为 `0` |
+| `TEST_PG_DSN`、`PG_TEST_DSN` | **废弃**，不再读取 | 若检测到已设置而 `TEST_DB_HOST` 未设置，会话启动时报错，提示改用 `TEST_DB_*` |
+
+对废弃变量报错而不是静默忽略：一个本地只设了 `TEST_PG_DSN` 的开发者，升级后不应该
+不知不觉地改连 `localhost:5432`。
+
+非 required 时仍保留 `localhost:5432` 这个回退，是为了不打断本地"起一个默认端口的
+PostgreSQL 就能跑"的习惯。真正危险的回退（`DB_*` → 5432）随 `DB_*` 输入一起移除。
+是否连非 required 的回退也一并去掉，见 §8 Q3。
+
+### 4.3 失败策略：`TEST_DB_REQUIRED`
+
+- `database_unavailable(reason)`：required 时 `pytest.fail(reason)`，否则
+  `pytest.skip(reason)`。全仓库只剩这一处数据库相关的 skip。
+- `tests/conftest.py` 增加 `pytest_sessionstart` 预检：required 时检查
+  `TEST_DB_HOST` / `TEST_DB_PORT` 已设置，并试连一次 `base_name`；失败就用
+  `pytest.exit(…, returncode=…)` 终止整个会话，让问题在一行里说清楚，而不是变成
+  几百个相同的失败。
+- CI 的所有测试 job（`test (1)`…`test (4)`、`test (db)`）都设置
+  `TEST_DB_REQUIRED=1`。它们本来就都启动了 postgres service。
+- `make test-db` 设置 `TEST_DB_REQUIRED=1`：既然显式要求跑数据库测试，就不应该静默跳过。
+  `make test` 不设置，也不受影响，因为它本来就排除 `dbtest`。
+
+有了这一层，`ops/ci/check_pytest_skips.sh` 和 `test_ci_skip_guard.py` 可以退为兜底，
+在最后一个阶段删除（§6）。
+
+### 4.4 表结构准备只有一份
+
+- `prepare_schema(pool)`：依次执行 `DatabaseLogger.initialize()`、
+  `PostgresOperationalStore.initialize()`、`ResponseStore.initialize()`，与 CI
+  现有步骤完全一致。
+- `prepare_worker_databases(count)`：在 `base_name` 上执行 `prepare_schema`，
+  再用它作模板创建或重建 `_gw0 … _gw{count-1}`。
+- 模块提供命令行入口：`python -m tests.fixtures.postgres prepare --workers N`。
+  - `ci.yml` 中那段内嵌 Python 换成这条命令。
+  - `make test-db` 在 pytest 之前先执行它。
+- `tests/servers/conftest_auth.py::_init_pg_backend` 改为调用 `prepare_schema`，
+  不再只做 `DatabaseLogger.initialize()`。这一步的代价是 auth fixture 每次多执行
+  一轮 `initialize()`；它们都是 `IF NOT EXISTS` 加目录检查，在已准备好的库上不执行 DDL。
+
+### 4.5 结构性守卫
+
+沿用 `tests/unit/config/test_no_raw_env_reads.py` 的 AST 扫描写法，新增
+`tests/unit/test_database_entrypoint.py`，扫描 `tests/` 和 `distributions/*/tests/`：
+
+- 在 `tests/fixtures/postgres.py` 以外读取 `TEST_DB_*`、`TEST_PG_DSN`、`PG_TEST_DSN`，失败。
+- 在 `tests/fixtures/postgres.py` 以外直接调用 `asyncpg.connect` / `asyncpg.create_pool`，失败。
+- 允许名单 `ALLOWED_MODULES` 显式列出暂时例外的文件及原因（迁移期间用于 #1463
+  重叠的 4 个文件，§6），名单清空即迁移完成。
+
+这个守卫取代 grep 日志：它不关心 skip 的措辞，只保证没有第二条连接路径。
+
+### 4.6 测试归类（可选，见 §8 Q1）
+
+用到 `require_db`、`auth_app` 等真实数据库 fixture、却没有 `dbtest` 标记的测试
+（目前确认的有 `tests/servers/test_admin.py`、`tests/servers/test_concurrency_endpoint.py`），
+可以在 `tests/conftest.py` 的 `pytest_collection_modifyitems` 中按 fixture 名自动加上
+`dbtest`。这样 `make test` 在没有数据库的机器上会排除它们，CI 会把它们放进 `db` 分片。
+
+## 5. 迁移示例
+
+迁移前（`tests/integration/test_provider_stats_rollup.py` 一类）：
+
+```python
+@pytest.fixture(scope="session")
+def pg_dsn() -> str:
+    dsn = os.getenv("TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
+    return dsn
+```
+
+迁移后：
+
+```python
+from tests.fixtures.postgres import test_database
+
+@pytest.fixture(scope="session")
+def pg_dsn() -> str:
+    return test_database().dsn()
+```
+
+迁移前（`TEST_DB_*` 一类，约 15 行重复代码）：解析 worker 后缀、检查 `_test_`、
+`asyncpg.create_pool(...)`、`except Exception: pytest.skip(...)`。
+
+迁移后：
+
+```python
+from tests.fixtures import postgres
+
+pool = await postgres.create_pool(min_size=1, max_size=5)
+```
+
+## 6. 分期
+
+| 阶段 | 内容 | 依赖 |
+|---|---|---|
+| P1 | 新增 `tests/fixtures/postgres.py` 与单元测试；`TEST_DB_REQUIRED` 与会话预检；迁移附录 A 中除 #1463 重叠文件以外的全部文件；守卫测试带 4 个文件的允许名单；`ci.yml` 设置 `TEST_DB_REQUIRED=1` 并删除 `TEST_PG_DSN` / `PG_TEST_DSN`；保留 grep 兜底 | 无 |
+| P2 | `prepare_schema` / `prepare_worker_databases` 与命令行入口；替换 `ci.yml` 内嵌 Python；`make test-db` 先准备再测试；修 `_init_pg_backend`；在空库上本地跑全套，逐个处理剩余失败 | P1 |
+| P3 | 迁移 #1463 重叠的 4 个文件，清空允许名单；删除 `check_pytest_skips.sh` 与 `test_ci_skip_guard.py` | #1463 合并 |
+
+P1、P2 都只碰测试和 CI。`ci.yml` 在 P1 中只改环境变量行，尽量不和在途 PR 冲突。
+
+## 7. 验证
+
+- **required 模式真的会失败：** CI 环境变量 + `TEST_DB_PORT` 指向一个没有监听的端口，
+  会话预检终止并报出地址；去掉预检后，每个数据库测试都应是 failed，没有 skipped。
+- **非 required 模式行为不变：** 没有数据库时 `make test` 结果与迁移前一致，
+  数据库测试仍然 skip。
+- **CI 覆盖不减少：** P1 前后对比 `test (db)` 和四个普通分片的
+  passed/skipped 数（`dev` @ `c870fed8` 的 `test (db)` 是 341 passed、3 skipped，
+  3 个都是外部 API key）。
+- **本地与 CI 一致（P2）：** 在全新的 PostgreSQL 上执行 `make test-db`，
+  零个数据库相关的 skip，passed 数与 CI 的 `test (db)` 相同；再以 `-n 8` 执行一次，
+  §2.5 中的 85 个 `UndefinedColumnError` 和 46 个 "does not exist" skip 都应消失。
+- **守卫有效：** 在任意测试文件里新增 `os.getenv("TEST_DB_PORT")`，守卫测试失败。
+- **没有误连：** 保留 §2.4 的复现方式（5432 上有一个不相关的实例），迁移后
+  这类 `password authentication failed` 的 skip 数应为零。
+
+## 8. 待决问题
+
+- **Q1 测试归类：** 是否按 fixture 自动给使用真实数据库的测试加 `dbtest`（§4.6）？
+  好处是本地 `make test` 不再依赖数据库，分类也更诚实；代价是这些测试从并行的普通分片
+  移进串行的 `db` 分片，CI 时间会增加（`test_admin.py` 等的规模待统计）。
+- **Q2 `db` 分片并行化：** P2 之后每个 worker 都有准备好的库，`db` 分片可以改为
+  `-n auto`（目前串行约 108 秒；§2.5 中本地 8 进程并行约 33 秒，但那是在失败和跳过
+  很多的情况下测的，不能直接当作收益）。是否在本设计内做，还是另开？
+- **Q3 非 required 的 `localhost:5432` 回退：** 保留（本地习惯）还是一并去掉
+  （与 CI 完全一致，本地必须显式设置 `TEST_DB_HOST/PORT`）？
+- **Q4 废弃变量的处理：** 报错（本稿方案）还是只警告一个版本周期？
+- **Q5 #1517：** 建议 #1517 改用新入口，而不是新增 `CACHE_TELEMETRY_TEST_DB_*`。
+  如果 #1517 先合并，就在 P1 中一起迁移。
+
+## 附录 A：读取测试库配置的文件
+
+"TDB" 表示 `TEST_DB_HOST/PORT`，"DSN" 表示 `TEST_PG_DSN`，"PGT" 表示 `PG_TEST_DSN`，
+"DB_" 表示 `DB_HOST/PORT`；数字是出现次数。"后缀"表示是否处理 xdist worker 后缀。
+`tests/unit/config/` 等处读 `DB_*` 是在测试应用自身的配置解析，不是连接测试库，不在此列。
+
+| 文件 | TDB | DSN | PGT | DB_ | 后缀 | 与 #1463 重叠 |
+|---|---|---|---|---|---|---|
+| `fixtures/auth_helpers.py` | 2 | | | 2 | | |
+| `integration/storage/test_agent_grant_usage_window_postgres.py` | | 2 | | 2 | ✓ | |
+| `integration/storage/test_browser_session_races.py` | 2 | | | | ✗ | ✓ |
+| `integration/storage/test_erasure_fence_races.py` | 2 | | | | ✓ | ✓ |
+| `integration/storage/test_first_run_setup_postgres.py` | 2 | | | | ✓ | |
+| `integration/storage/test_identity_auth_codes.py` | 2 | | | | ✓ | |
+| `integration/storage/test_phone_auth_codes.py` | 2 | | | | ✗ | ✓ |
+| `integration/storage/test_postgres_hard_delete_audit_rows.py` | 2 | | | | ✓ | |
+| `integration/storage/test_postgres_key_owner_audit.py` | 2 | | | | ✓ | |
+| `integration/storage/test_postgres_provider_keys.py` | 2 | | | | ✓ | |
+| `integration/storage/test_postgres_role_quota.py` | 4 | | | | ✓ | |
+| `integration/storage/test_reset_password_cli_postgres.py` | 2 | | | 4 | ✓ | |
+| `integration/storage/test_revoke_user_sessions.py` | 2 | | | | ✗ | ✓ |
+| `integration/storage/test_users_at_daily_quota_postgres.py` | 4 | | | | ✓ | |
+| `integration/storage/test_users_schema_lock_postgres.py` | 2 | | | | ✓ | |
+| `integration/test_admin_client_disconnect_postgres.py` | | 2 | | 2 | ✓ | |
+| `integration/test_admin_request_offloads_postgres.py` | | 2 | | 2 | ✓ | |
+| `integration/test_admin_request_perf_breakdown_postgres.py` | | 3 | | 2 | ✓ | |
+| `integration/test_app_config_store_postgres.py` | | 2 | | | | |
+| `integration/test_database_integration.py` | | 2 | | | | |
+| `integration/test_geo_demand_rollup_postgres.py` | | 2 | | | | |
+| `integration/test_growth_series_postgres.py` | | 2 | | | | |
+| `integration/test_pricing_snapshot_postgres.py` | | 2 | | | | |
+| `integration/test_provider_stats_rollup.py` | | 2 | | | | |
+| `servers/conftest.py` | 6 | | | 4 | ✓ | |
+| `servers/conftest_auth.py` | 2 | | | | | |
+| `servers/test_admin_provider_stats.py` | | 3 | | | | |
+| `servers/test_admin_token_usage.py` | | 3 | | | | |
+| `unit/storage/test_login_events.py` | | | 4 | | | |
+
+另有 `unit/ops/test_ci_skip_guard.py` 与 `unit/test_auth_test_helpers.py`，它们测试的是
+守卫和 helper 本身，随 P1 / P3 一起调整。
