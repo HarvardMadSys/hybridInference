@@ -95,14 +95,14 @@ async def test_embeddings_publishes_the_callers_key_hash():
     assert ctx["auth_key_hash"] == "hash-a"
 
 
-async def test_embeddings_falls_back_to_an_ip_key_when_unauthenticated():
-    """Auth-disabled deployments still get a per-caller key rather than ``_anon``."""
+async def test_embeddings_leave_unresolved_anonymous_callers_non_sticky():
+    """Unresolved provenance never collapses callers onto a shared affinity key."""
     adapter = _CapturingEmbeddingAdapter()
 
     await _embed_as(adapter, {"user_id": "anonymous", "authenticated": False})
 
     ctx = adapter.contexts[0]
-    assert ctx["affinity_key"].startswith("ip:")
+    assert ctx["affinity_key"] is None
     assert ctx["auth_key_hash"] == "_anon"
 
 
@@ -192,7 +192,7 @@ async def test_v1_messages_keys_a_sandbox_on_its_grant(
     assert [c["affinity_key"] for c in anthropic_captures] == ["grant:grn_a", "grant:grn_b"]
 
 
-async def test_v1_messages_falls_back_to_an_ip_key_when_unauthenticated(
+async def test_v1_messages_leave_unresolved_anonymous_callers_non_sticky(
     anthropic_test_app, anthropic_test_client, anthropic_captures
 ):
     await _message_as(
@@ -202,7 +202,7 @@ async def test_v1_messages_falls_back_to_an_ip_key_when_unauthenticated(
     )
 
     ctx = anthropic_captures[0]
-    assert ctx["affinity_key"].startswith("ip:")
+    assert ctx["affinity_key"] is None
     assert ctx["auth_key_hash"] == "_anon"
 
 

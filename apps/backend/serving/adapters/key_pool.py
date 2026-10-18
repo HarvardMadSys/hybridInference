@@ -227,7 +227,7 @@ class Lease:
     """
 
     key_index: int
-    affinity_key: str
+    affinity_key: str | None
     role: str | None = None
 
 
@@ -437,7 +437,7 @@ class KeyPool:
 
     def acquire(
         self,
-        affinity_key: str,
+        affinity_key: str | None,
         *,
         role: str | None = None,
         exclude: Collection[int] = (),
@@ -468,7 +468,11 @@ class KeyPool:
         with self._lock:
             self._maybe_sweep_locked(now)
 
-            existing = self._affinity.get(affinity_key)
+            # ``None`` is an explicit non-sticky caller. Do not use it as a
+            # dictionary key: unresolved anonymous requests have no identity
+            # we can safely share, while internal probes still use their
+            # explicit ``_anon`` sentinel through the normal path.
+            existing = self._affinity.get(affinity_key) if affinity_key is not None else None
             if existing is not None:
                 bound = self._keys[existing.key_index]
                 # Affinity is honored only when it is still valid AND the bound key
@@ -527,11 +531,12 @@ class KeyPool:
                     prefix + "every key the caller may use is muted or reserved for a higher tier"
                 )
 
-            self._affinity[affinity_key] = _Affinity(
-                key_index=idx,
-                expires_at=now + self.AFFINITY_TTL_SECONDS,
-                role=role,
-            )
+            if affinity_key is not None:
+                self._affinity[affinity_key] = _Affinity(
+                    key_index=idx,
+                    expires_at=now + self.AFFINITY_TTL_SECONDS,
+                    role=role,
+                )
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key, role)
 
