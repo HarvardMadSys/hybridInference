@@ -848,6 +848,20 @@ class DatabaseLogger:
                 ],
             )
 
+            # provider_hourly_coverage — one row per hour the provider rollup
+            # has aggregated, quiet hours included, written with that hour's
+            # provider_hourly_stats rows. provider_hourly_stats has no row for
+            # an hour without traffic, so only this tells a quiet hour from a
+            # missed run; serving.admin.provider_stats_rollup rolls up the hours
+            # that lack one. The first rollup marks hours that already have
+            # rows, so for those completed_at is when coverage began.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS provider_hourly_coverage (
+                    hour_bucket  TIMESTAMPTZ PRIMARY KEY,
+                    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+
             # Privacy-safe country/hour aggregates and their explicit
             # completed-hour coverage markers for the admin geo dashboard.
             from serving.admin.geo_demand_rollup import ensure_geo_rollup_schema

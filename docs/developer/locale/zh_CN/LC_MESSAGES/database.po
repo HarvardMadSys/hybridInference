@@ -444,7 +444,7 @@ msgstr "请求历史"
 #: ../developer/database.md
 msgid ""
 "`api_logs`, `api_stats_hourly`, `provider_hourly_stats`, "
-"`request_volume_hourly`"
+"`provider_hourly_coverage`, `request_volume_hourly`"
 msgstr ""
 
 #: ../developer/database.md

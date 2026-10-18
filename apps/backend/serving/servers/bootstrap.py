@@ -922,7 +922,7 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_geo_rollup_job,
                         )
                         from serving.admin.provider_stats_rollup import (
-                            backfill_if_empty,
+                            backfill_missing as backfill_provider_stats,
                             backfill_token_columns,
                             register_rollup_job,
                         )
@@ -949,15 +949,17 @@ async def initialize() -> AppServices:
                                 "Slack alerter not registered: APScheduler did not start"
                             )
 
-                        # Seed provider_hourly_stats with the last 30 days when it
-                        # is empty, and fill the token totals that rows from
-                        # before those columns lack. Both are cheap no-ops on a
-                        # complete table. Run in the background so a slow 30-day
+                        # Roll up the hours of the last 30 days that
+                        # provider_hourly_stats has not covered -- every hour on a
+                        # new table, otherwise those that came due while no
+                        # hourly job ran -- and fill the token totals that rows
+                        # from before those columns lack. Both are cheap no-ops on
+                        # a complete table. Run in the background so a slow 30-day
                         # aggregation on a large api_logs table cannot block
                         # server startup or trip readiness checks.
                         async def _run_backfill(pool=db_logger.pool):
                             try:
-                                await backfill_if_empty(pool, days=30)
+                                await backfill_provider_stats(pool, days=30)
                             except Exception as bf_exc:
                                 logger.warning(
                                     f"provider-stats backfill failed (non-fatal): {bf_exc}"
