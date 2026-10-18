@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   SignupAllowedDomain,
   addSignupAllowedDomain,
@@ -42,6 +43,7 @@ function relTime(iso: string | null): string {
 }
 
 export function SettingsTab() {
+  const router = useRouter();
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -123,12 +125,22 @@ export function SettingsTab() {
     }, 3000);
   };
 
+  /**
+   * Re-render the server components after a runtime setting changed. The site
+   * configuration they read follows some of these settings: sign-up and email
+   * verification decide whether the email (SMTP) settings are required, and
+   * user authentication whether the sign-in secrets are — so whether the
+   * "required settings are missing" banner shows.
+   */
+  const refreshSiteConfig = () => router.refresh();
+
   const onToggleFlag = async (flag: RuntimeSettingItem) => {
     setTogglingKey(flag.key);
     try {
       const updatedFlag = await updateRuntimeSetting(flag.key, !flag.value);
       flashToast(`${updatedFlag.key} ${updatedFlag.value ? 'enabled' : 'disabled'}`);
       setFeatureFlags((prev) => prev.map((f) => (f.key === updatedFlag.key ? updatedFlag : f)));
+      refreshSiteConfig();
     } catch (e) {
       flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
     } finally {
@@ -153,6 +165,7 @@ export function SettingsTab() {
       flashToast(`${updated.key} set to ${updated.value}`);
       setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
       setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
+      refreshSiteConfig();
     } catch (e) {
       flashToast(`Failed to update ${setting.key}: ${getErrorMessage(e)}`);
     } finally {

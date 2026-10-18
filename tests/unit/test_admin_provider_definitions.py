@@ -827,3 +827,34 @@ async def test_list_provider_definitions_ignores_alias_named_definition_row(monk
 
     assert response.providers == []
     assert registered_rows == []
+
+
+def test_configured_provider_specs_resolve_a_registered_default(tmp_path, monkeypatch):
+    """The base URL shown is the one the model registry now resolves the route to."""
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: chutes-test
+    route:
+      - kind: chutes
+        base_url: ${CHUTES_BASE_URL}
+  - id: minimax-test
+    route:
+      - kind: minimax
+        base_url: ${MINIMAX_BASE_URL:-https://inline.minimax.example/v1}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    monkeypatch.delenv("CHUTES_BASE_URL", raising=False)
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    specs = _configured_provider_specs()
+
+    assert specs["chutes"].default_base_url == "https://llm.chutes.ai/v1"
+    # An inline default still wins over the registered one.
+    assert specs["minimax"].default_base_url == "https://inline.minimax.example/v1"
+
+    monkeypatch.setenv("CHUTES_BASE_URL", "https://chutes.internal/v1")
+    assert _configured_provider_specs()["chutes"].default_base_url == "https://chutes.internal/v1"

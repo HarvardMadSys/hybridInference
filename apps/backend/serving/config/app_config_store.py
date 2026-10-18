@@ -8,9 +8,11 @@ configuration is read before either of those stores exists.
 
 A row whose ``source`` is :data:`RESET_SOURCE` stores no value. It records that
 an administrator reset the setting, which follows the environment, then its
-default, from then on: :meth:`AppConfigStore.fetch_all` leaves it out, and its
-key blocks the boot-time import, which would otherwise store the environment
-value again and stop the setting following later changes to the environment.
+default, from then on: :meth:`AppConfigStore.fetch_all` leaves it out unless
+asked for it, and its key blocks the boot-time import, which would otherwise
+store the environment value again and stop the setting following later changes
+to the environment. It keeps the setting's ``secret`` flag, which only ever
+goes from false to true (:meth:`AppConfigStore.mark_secret`).
 """
 
 from __future__ import annotations
@@ -47,10 +49,20 @@ CREATE TABLE IF NOT EXISTS app_config (
 #: The ``source`` of a row that marks a reset instead of storing a value.
 RESET_SOURCE = "reset"
 
-SELECT_ALL_SQL = (
-    "SELECT key, value, secret, source, updated_at, updated_by FROM app_config "
-    f"WHERE source <> '{RESET_SOURCE}'"
+SELECT_ALL_WITH_RESET_SQL = (
+    "SELECT key, value, secret, source, updated_at, updated_by FROM app_config"
 )
+
+SELECT_ALL_SQL = f"{SELECT_ALL_WITH_RESET_SQL} WHERE source <> '{RESET_SOURCE}'"
+
+# One-way: a secret is never made public again. A reset row is marked too, so
+# the setting stays secret while it follows the environment. The value and the
+# updated_* columns describe the value, which does not change.
+MARK_SECRET_SQL = """
+UPDATE app_config SET secret = TRUE
+WHERE key = ANY($1::text[]) AND NOT secret
+RETURNING key
+"""
 
 # Rows that do not exist yet, and only those: several workers booting at once
 # all try the same import, and an administrator's value must never be
@@ -72,7 +84,7 @@ INSERT INTO app_config (key, value, secret, source, updated_by)
 SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[])
 ON CONFLICT (key) DO UPDATE SET
     value = EXCLUDED.value,
-    secret = EXCLUDED.secret,
+    secret = app_config.secret OR EXCLUDED.secret,
     source = EXCLUDED.source,
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
@@ -80,12 +92,13 @@ WHERE app_config.source = '{RESET_SOURCE}'
 RETURNING key
 """
 
+# Neither a write nor a reset clears the secret flag: it is one-way.
 UPSERT_SQL = """
 INSERT INTO app_config (key, value, secret, source, updated_at, updated_by)
 VALUES ($1, $2, $3, $4, NOW(), $5)
 ON CONFLICT (key) DO UPDATE SET
     value = EXCLUDED.value,
-    secret = EXCLUDED.secret,
+    secret = app_config.secret OR EXCLUDED.secret,
     source = EXCLUDED.source,
     updated_at = EXCLUDED.updated_at,
     updated_by = EXCLUDED.updated_by
@@ -96,7 +109,7 @@ INSERT INTO app_config (key, value, secret, source, updated_at, updated_by)
 VALUES ($1, '', $2, '{RESET_SOURCE}', NOW(), $3)
 ON CONFLICT (key) DO UPDATE SET
     value = '',
-    secret = EXCLUDED.secret,
+    secret = app_config.secret OR EXCLUDED.secret,
     source = '{RESET_SOURCE}',
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
@@ -153,10 +166,18 @@ class AppConfigStore:
             await conn.execute(CONFIG_WRITE_LOCK_SQL)
             yield AppConfigStore(conn)
 
-    async def fetch_all(self) -> dict[str, ConfigRow]:
-        """Return every stored setting, keyed by name; a reset row stores none."""
+    async def fetch_all(self, *, include_reset: bool = False) -> dict[str, ConfigRow]:
+        """Return every stored setting, keyed by name.
+
+        Args:
+            include_reset: Also return the reset rows (``source`` is
+                :data:`RESET_SOURCE`), which store no value but keep the
+                setting's secret flag. Left out by default.
+        """
         async with self._connection() as conn:
-            records = await conn.fetch(SELECT_ALL_SQL)
+            records = await conn.fetch(
+                SELECT_ALL_WITH_RESET_SQL if include_reset else SELECT_ALL_SQL
+            )
         return {
             record["key"]: ConfigRow(
                 key=record["key"],
@@ -201,6 +222,17 @@ class AppConfigStore:
                 UPSERT_SQL,
                 [(row.key, row.value, row.secret, row.source, row.updated_by) for row in rows],
             )
+
+    async def mark_secret(self, keys: Sequence[str]) -> list[str]:
+        """Mark the stored rows of *keys* secret, reset rows included; return those changed.
+
+        Never the other way: there is no call that clears the flag.
+        """
+        if not keys:
+            return []
+        async with self._connection() as conn:
+            records = await conn.fetch(MARK_SECRET_SQL, list(keys))
+        return [record["key"] for record in records]
 
     async def reset(self, key: str, *, secret: bool, updated_by: str) -> None:
         """Replace *key*'s stored value with a reset row, so it follows the environment."""

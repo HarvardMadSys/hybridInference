@@ -6,12 +6,12 @@ import hmac
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from datetime import datetime
 
 from serving.storage.log_schema import (
-    apply_column_migrations,
+    SchemaLockUnavailable,
     bounded_ddl,
-    column_metadata,
     constraint_admitted_values,
     constraint_definition,
     execute_ddl,
@@ -30,26 +30,19 @@ _PURPOSE_CHECK = "CHECK (purpose IN ({}))".format(
 
 
 async def initialize_phone_auth(conn: Any) -> None:
-    """Install phone identity and durable OTP storage idempotently."""
-    await apply_column_migrations(
-        conn,
-        "users",
-        [
-            ("phone", "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT"),
-            (
-                "phone_verified",
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE",
-            ),
-        ],
-    )
-    for column in ("email", "password_hash"):
-        meta = await column_metadata(conn, "users", column)
-        if meta and meta["not_null"]:
-            async with bounded_ddl(conn):
-                await execute_ddl(conn, f"ALTER TABLE users ALTER COLUMN {column} DROP NOT NULL")
-    await conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL"
-    )
+    """Install durable OTP storage idempotently.
+
+    New tables, plus a rebuild of the code table's purpose CHECK when the
+    purposes have changed. The phone columns of ``users`` (and of
+    ``login_events``) are part of the deferrable account migration in
+    :mod:`serving.storage.account_schema`.
+
+    Raises:
+        SchemaLockUnavailable: The CHECK rebuild could not take its lock (a
+            pg_dump holds the table, say). Every table has still been
+            created; the caller defers the rebuild like any other
+            migration that can wait.
+    """
     await conn.execute(f"""
         CREATE TABLE IF NOT EXISTS phone_auth_codes (
             phone TEXT NOT NULL,
@@ -70,18 +63,25 @@ async def initialize_phone_auth(conn: Any) -> None:
     definition = await constraint_definition(
         conn, "phone_auth_codes", "phone_auth_codes_purpose_check"
     )
+    # The rebuild needs ACCESS EXCLUSIVE on a table pg_dump also holds, so a
+    # lock timeout is remembered and raised once the other tables exist:
+    # sign-in and account deletion use them on the first boot of an upgrade.
+    deferred: SchemaLockUnavailable | None = None
     if constraint_admitted_values(definition) != set(PHONE_CODE_PURPOSES):
-        async with bounded_ddl(conn), conn.transaction():
-            await execute_ddl(
-                conn,
-                "ALTER TABLE phone_auth_codes "
-                "DROP CONSTRAINT IF EXISTS phone_auth_codes_purpose_check",
-            )
-            await execute_ddl(
-                conn,
-                "ALTER TABLE phone_auth_codes "
-                f"ADD CONSTRAINT phone_auth_codes_purpose_check {_PURPOSE_CHECK}",
-            )
+        try:
+            async with bounded_ddl(conn), conn.transaction():
+                await execute_ddl(
+                    conn,
+                    "ALTER TABLE phone_auth_codes "
+                    "DROP CONSTRAINT IF EXISTS phone_auth_codes_purpose_check",
+                )
+                await execute_ddl(
+                    conn,
+                    "ALTER TABLE phone_auth_codes "
+                    f"ADD CONSTRAINT phone_auth_codes_purpose_check {_PURPOSE_CHECK}",
+                )
+        except SchemaLockUnavailable as exc:
+            deferred = exc
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS phone_auth_attempts (
             id BIGSERIAL PRIMARY KEY,
@@ -97,6 +97,8 @@ async def initialize_phone_auth(conn: Any) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_phone_attempts_ip ON phone_auth_attempts(ip, kind, created_at)"
     )
+    if deferred is not None:
+        raise deferred
 
 
 async def _lock(conn: Any, phone: str, ip: str, kind: str) -> None:
@@ -106,12 +108,29 @@ async def _lock(conn: Any, phone: str, ip: str, kind: str) -> None:
 
 
 class PostgresPhoneAuthMixin:
-    """Persist phone credentials, quotas, and one-time verification challenges."""
+    """Persist phone credentials, quotas, and one-time verification challenges.
+
+    The methods that use the phone columns of ``users`` or ``login_events``
+    raise :class:`~serving.exceptions.AccountSchemaPending` until the account
+    migration has added them; the code and quota methods use only tables of
+    their own, which exist from the first boot.
+    """
 
     _pool: Any
+    # Provided by PostgresOperationalStore, which owns the account schema.
+    _require_account_schema: Callable[[str], Awaitable[None]]
+
+    async def require_phone_accounts(self) -> None:
+        """Raise ``AccountSchemaPending`` until the database can hold phone accounts.
+
+        Phone routes call this before reserving, sending or consuming a code,
+        so a request refused while the upgrade is pending costs nothing.
+        """
+        await self._require_account_schema("phone_accounts")
 
     async def get_user_by_phone(self, phone: str) -> dict | None:
         """Fetch an account by its canonical phone number."""
+        await self.require_phone_accounts()
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT id FROM users WHERE phone = $1", phone)
         return await self.get_user_by_id(row["id"]) if row else None
@@ -120,6 +139,7 @@ class PostgresPhoneAuthMixin:
         self, *, user_id: str, phone: str, user_name: str, status: str, signup_reason: str | None
     ) -> bool:
         """Create a verified phone-only identity, refusing duplicate identifiers."""
+        await self.require_phone_accounts()
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO users (id, email, password_hash, phone, phone_verified, "
@@ -137,6 +157,7 @@ class PostgresPhoneAuthMixin:
         """Bind a verified phone atomically without replacing or merging identities."""
         import asyncpg
 
+        await self.require_phone_accounts()
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -344,6 +365,7 @@ class PostgresPhoneAuthMixin:
         user_agent: str | None,
     ) -> bool:
         """Issue a session, timestamp, and success event under an active-owner lock."""
+        await self.require_phone_accounts()
         async with self._pool.acquire() as conn, conn.transaction():
             owner = await conn.fetchrow(
                 "SELECT status, email, phone, phone_verified FROM users WHERE id = $1 FOR UPDATE",
@@ -391,6 +413,7 @@ class PostgresPhoneAuthMixin:
         user_agent: str | None,
     ) -> None:
         """Record phone login outcomes without fabricating an email."""
+        await self.require_phone_accounts()
         async with self._pool.acquire() as conn, conn.transaction():
             if user_id:
                 owner = await conn.fetchrow(

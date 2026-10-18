@@ -4,11 +4,14 @@ import type { ConfigEntry } from '@/lib/api/config';
 
 import {
   buildPatch,
+  canMarkSecret,
   countDirty,
   draftError,
   errorForKey,
   groupEntries,
+  hasStoredValue,
   isDirty,
+  isLocked,
   looksSecret,
   matchesQuery,
   settleDraft,
@@ -132,6 +135,102 @@ describe('the PATCH body', () => {
     expect(isDirty(unset, { kind: 'replace', value: 'new' })).toBe(true);
     expect(draftError(locked, { kind: 'replace', value: 'new' })).toBeNull();
   });
+
+  it('accepts no edit to a setting the backend locked, set or not', () => {
+    // The erasure fence already runs on API_KEY_SECRET: its own key is empty
+    // and can no longer be set.
+    const fence = entry({
+      key: 'ERASURE_FENCE_SECRET',
+      secret: true,
+      immutable: true,
+      is_set: false,
+      locked: true,
+    });
+
+    expect(isLocked(fence)).toBe(true);
+    expect(isDirty(fence, { kind: 'replace', value: 'new' })).toBe(false);
+    expect(buildPatch([fence], { ERASURE_FENCE_SECRET: { kind: 'replace', value: 'x' } })).toEqual({
+      values: {},
+      errors: {},
+    });
+  });
+
+  it("takes the backend's word on locking, and the old rule from an older backend", () => {
+    const base = { secret: true, immutable: true };
+
+    expect(isLocked(entry({ ...base, is_set: false, locked: false }))).toBe(false);
+    expect(isLocked(entry({ ...base, is_set: true, locked: true }))).toBe(true);
+    // No `locked` at all: immutable and set.
+    expect(isLocked(entry({ ...base, is_set: true }))).toBe(true);
+    expect(isLocked(entry({ ...base, is_set: false }))).toBe(false);
+    expect(isLocked(entry({ immutable: false, is_set: true }))).toBe(false);
+  });
+});
+
+const STORED_AT = '2026-10-01T12:00:00Z';
+
+describe('marking a variable secret', () => {
+  const stored = {
+    secret: false,
+    source: 'database' as const,
+    is_set: true,
+    value: 'v',
+    updated_at: STORED_AT,
+  };
+
+  it.each(['discovered', 'numbered', 'custom'] as const)(
+    'applies to a stored %s variable',
+    (origin) => {
+      expect(canMarkSecret(entry({ ...stored, origin }))).toBe(true);
+    },
+  );
+
+  it('applies to a reset row too, which keeps the flag', () => {
+    // No value stored: the environment's applies, and the row is a reset.
+    expect(
+      canMarkSecret(entry({ ...stored, origin: 'discovered', source: 'environment', value: 'e' })),
+    ).toBe(true);
+  });
+
+  it('does not apply to a built-in setting, whose secret flag is fixed', () => {
+    expect(canMarkSecret(entry({ ...stored, origin: 'static' }))).toBe(false);
+  });
+
+  it('is not offered by a backend that does not report where entries come from', () => {
+    expect(canMarkSecret(entry({ ...stored, custom: true }))).toBe(false);
+  });
+
+  it('does not apply to a secret, to a variable with no row, or to a locked setting', () => {
+    const variable = { ...stored, origin: 'custom' as const };
+
+    expect(canMarkSecret(entry({ ...variable, secret: true, value: null }))).toBe(false);
+    expect(canMarkSecret(entry({ ...variable, source: 'environment', updated_at: null }))).toBe(
+      false,
+    );
+    expect(canMarkSecret(entry({ ...variable, locked: true }))).toBe(false);
+  });
+});
+
+describe('a stored value', () => {
+  it('is one in force or one the backend refused, which Reset removes', () => {
+    expect(hasStoredValue(entry({ source: 'database', updated_at: STORED_AT }))).toBe(true);
+    // Refused: the entry reports what applies instead, but the row is there.
+    expect(
+      hasStoredValue(
+        entry({ source: 'environment', invalid: 'must be an integer', updated_at: STORED_AT }),
+      ),
+    ).toBe(true);
+    expect(
+      hasStoredValue(
+        entry({ source: 'default', invalid: 'must be one of a, b', updated_at: STORED_AT }),
+      ),
+    ).toBe(true);
+  });
+
+  it('is not a reset row, nor nothing at all', () => {
+    expect(hasStoredValue(entry({ source: 'environment', updated_at: STORED_AT }))).toBe(false);
+    expect(hasStoredValue(entry({ source: 'default', updated_at: null }))).toBe(false);
+  });
 });
 
 describe('grouping and search', () => {
@@ -185,5 +284,28 @@ describe('error details', () => {
     expect(looksSecret('MY_PROVIDER_API_KEY')).toBe(true);
     expect(looksSecret('SLACK_WEBHOOK_URL')).toBe(true);
     expect(looksSecret('MY_PROVIDER_BASE_URL')).toBe(false);
+    expect(looksSecret('MY_PROVIDER_TIMEOUT')).toBe(false);
+  });
+
+  it.each([
+    'MY_PROVIDER_API_KEY',
+    'UPSTREAM_TOKEN',
+    'SIGNING_SECRET',
+    'DB_PASSWORD',
+    'TEAMS_WEBHOOK',
+    'PRIVATE_PEM',
+    'FTP_PASS',
+    'SMB_PWD',
+    'GCP_CREDENTIAL',
+    'SERVICE_CREDENTIALS',
+    'BASIC_AUTH',
+    'SENTRY_DSN',
+    'UPSTREAM_BEARER',
+    'CLIENT_CERT',
+    'VERTEX_SA_JSON',
+  ])("treats %s as secret, as the backend's word list does", (name) => {
+    expect(looksSecret(name)).toBe(true);
+    // The form upper-cases a name as it is typed; the rule does not depend on it.
+    expect(looksSecret(name.toLowerCase())).toBe(true);
   });
 });

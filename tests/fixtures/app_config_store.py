@@ -18,7 +18,8 @@ class FakeAppConfigStore:
     """Holds ``app_config`` rows in a dict, with the store's conflict semantics.
 
     Reset rows are kept in :attr:`rows` like the table keeps them, and left out
-    of :meth:`fetch_all` like the store leaves them out.
+    of :meth:`fetch_all` like the store leaves them out. Like the table, no
+    write clears a row's secret flag.
     """
 
     def __init__(self, rows: Iterable[ConfigRow] = (), *, api_keys_exist: bool = False) -> None:
@@ -28,6 +29,7 @@ class FakeAppConfigStore:
         self.writes: list[list[ConfigRow]] = []
         self.deleted: list[str] = []
         self.resets: list[str] = []
+        self.marked: list[str] = []
         self._lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -47,8 +49,18 @@ class FakeAppConfigStore:
     async def ensure_schema(self) -> None:
         self.schema_calls += 1
 
-    async def fetch_all(self) -> dict[str, ConfigRow]:
-        return {key: row for key, row in self.rows.items() if row.source != RESET_SOURCE}
+    async def fetch_all(self, *, include_reset: bool = False) -> dict[str, ConfigRow]:
+        return {
+            key: row
+            for key, row in self.rows.items()
+            if include_reset or row.source != RESET_SOURCE
+        }
+
+    def _kept_secret(self, row: ConfigRow) -> ConfigRow:
+        existing = self.rows.get(row.key)
+        if existing is not None and existing.secret and not row.secret:
+            return replace(row, secret=True)
+        return row
 
     async def insert_missing(
         self, rows: Sequence[ConfigRow], *, replace_reset: bool = False
@@ -57,19 +69,32 @@ class FakeAppConfigStore:
         for row in rows:
             existing = self.rows.get(row.key)
             if existing is None or (replace_reset and existing.source == RESET_SOURCE):
-                self.rows[row.key] = self._stamped(row)
+                self.rows[row.key] = self._stamped(self._kept_secret(row))
                 added.append(row.key)
         return added
 
     async def write(self, rows: Sequence[ConfigRow]) -> None:
         self.writes.append(list(rows))
         for row in rows:
-            self.rows[row.key] = self._stamped(row)
+            self.rows[row.key] = self._stamped(self._kept_secret(row))
+
+    async def mark_secret(self, keys: Sequence[str]) -> list[str]:
+        marked = []
+        for key in keys:
+            existing = self.rows.get(key)
+            if existing is not None and not existing.secret:
+                # The value and its updated_* columns are left alone.
+                self.rows[key] = replace(existing, secret=True)
+                marked.append(key)
+        self.marked.extend(marked)
+        return marked
 
     async def reset(self, key: str, *, secret: bool, updated_by: str) -> None:
         self.resets.append(key)
         self.rows[key] = self._stamped(
-            ConfigRow(key, "", secret=secret, source=RESET_SOURCE, updated_by=updated_by)
+            self._kept_secret(
+                ConfigRow(key, "", secret=secret, source=RESET_SOURCE, updated_by=updated_by)
+            )
         )
 
     async def delete(self, key: str) -> bool:

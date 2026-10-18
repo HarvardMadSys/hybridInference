@@ -1,12 +1,13 @@
 """Phone route policy, identity compatibility, and external-send failure boundaries."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response
 from pydantic import ValidationError
 
+from serving.exceptions import AccountSchemaPending
 from serving.schemas_auth import (
     BindEmailRequest,
     PhoneCodeRequest,
@@ -15,6 +16,7 @@ from serving.schemas_auth import (
 )
 from serving.servers.deps import get_current_user
 from serving.servers.routers import auth_routes, phone_auth_routes as routes, reauth, user_routes
+from serving.setup_state import init_setup_state
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
 from tests.fixtures import browser_sessions
@@ -93,6 +95,7 @@ def enabled(monkeypatch):
 class Store:
     def __init__(self, row=None):
         self.row = row
+        self.require_phone_accounts = AsyncMock()
         self.get_user_by_phone = AsyncMock(return_value=row)
         self.get_user_by_id = AsyncMock(return_value=row)
         self.reserve_phone_code = AsyncMock(return_value=0)
@@ -190,6 +193,144 @@ async def test_closed_signup_blocks_code_and_submit(enabled, monkeypatch):
     assert exc.value.status_code == 403
     store.reserve_phone_code.assert_not_called()
     store.consume_phone_code.assert_not_called()
+
+
+@pytest.fixture
+async def setup_pending():
+    """First-run setup is pending: no account exists and the setup code is stored."""
+    setup_store = MagicMock()
+    setup_store.get_or_create_setup_code = AsyncMock(return_value="ABCDEFGHJKLM")
+    await init_setup_state(setup_store)
+
+
+NOT_SET_UP = (503, "This deployment has not been set up yet.")
+
+
+@pytest.mark.asyncio
+async def test_signup_code_waits_for_first_run_setup(enabled, setup_pending, monkeypatch):
+    # Any account completes setup, so a stranger's phone account would lock the
+    # operator out of /auth/setup/admin. Refused before the captcha, the quota
+    # reservation and the SMS, so the refusal costs nothing.
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "run_in_threadpool", sender)
+    store = Store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.send_phone_code(
+            request(), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+        )
+    assert (exc.value.status_code, exc.value.detail) == NOT_SET_UP
+    routes.verify_turnstile_token.assert_not_awaited()
+    store.get_user_by_phone.assert_not_called()
+    store.reserve_phone_code.assert_not_called()
+    sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_phone_signup_waits_for_first_run_setup(enabled, setup_pending):
+    store = Store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.phone_signup(
+            request(),
+            PhoneSignupRequest(phone=PHONE, code="123456", user_name="Stranger", accepted_tos=True),
+            BackgroundTasks(),
+            store,
+            None,
+        )
+    assert (exc.value.status_code, exc.value.detail) == NOT_SET_UP
+    routes.check_and_record_signup.assert_not_awaited()
+    store.consume_phone_code.assert_not_called()
+    store.create_phone_user.assert_not_called()
+
+
+# While an upgrade's users migration waits for its lock (the nightly pg_dump),
+# the phone columns do not exist yet: every phone route answers 503 after its
+# own gates and before any code is reserved, sent or consumed.
+UPGRADE_PENDING = (503, AccountSchemaPending.MESSAGE)
+
+
+def upgrade_pending_store(row=None):
+    store = Store(row)
+    store.require_phone_accounts = AsyncMock(side_effect=AccountSchemaPending())
+    return store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["signup", "login"])
+async def test_codes_wait_for_the_database_upgrade(enabled, monkeypatch, purpose):
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "run_in_threadpool", sender)
+    store = upgrade_pending_store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.send_phone_code(
+            request(), PhoneCodeRequest(phone=PHONE, purpose=purpose), store
+        )
+    assert (exc.value.status_code, exc.value.detail) == UPGRADE_PENDING
+    routes.verify_turnstile_token.assert_not_awaited()
+    store.get_user_by_phone.assert_not_called()
+    store.reserve_phone_code.assert_not_called()
+    sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_phone_signup_waits_for_the_database_upgrade(enabled):
+    store = upgrade_pending_store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.phone_signup(
+            request(),
+            PhoneSignupRequest(phone=PHONE, code="123456", user_name="Tester", accepted_tos=True),
+            BackgroundTasks(),
+            store,
+            None,
+        )
+    assert (exc.value.status_code, exc.value.detail) == UPGRADE_PENDING
+    routes.check_and_record_signup.assert_not_awaited()
+    store.consume_phone_code.assert_not_called()
+    store.create_phone_user.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_phone_login_waits_for_the_database_upgrade(enabled):
+    store = upgrade_pending_store(user())
+    response = Response()
+    with pytest.raises(HTTPException) as exc:
+        await routes.phone_login(
+            request(), response, PhoneVerifyRequest(phone=PHONE, code="123456"), store
+        )
+    assert (exc.value.status_code, exc.value.detail) == UPGRADE_PENDING
+    store.get_user_by_phone.assert_not_called()
+    store.consume_phone_code.assert_not_called()
+    store.create_phone_session.assert_not_called()
+    assert "set-cookie" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_binding_waits_for_the_database_upgrade(enabled):
+    store = upgrade_pending_store(user(email="original@example.com", email_verified=True))
+    with pytest.raises(HTTPException) as exc:
+        await routes.bind_phone(
+            request(),
+            PhoneVerifyRequest(phone=PHONE, code="123456"),
+            {"user_id": "original-user"},
+            store,
+            None,
+        )
+    assert (exc.value.status_code, exc.value.detail) == UPGRADE_PENDING
+    store.consume_phone_code.assert_not_called()
+    store.bind_user_phone.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signup_codes_report_pending_setup_before_the_upgrade(
+    enabled, setup_pending, monkeypatch
+):
+    """A deployment that is not set up says so first, as for every registration route."""
+    store = upgrade_pending_store()
+    with pytest.raises(HTTPException) as exc:
+        await routes.send_phone_code(
+            request(), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+        )
+    assert (exc.value.status_code, exc.value.detail) == NOT_SET_UP
+    store.require_phone_accounts.assert_not_called()
 
 
 @pytest.mark.asyncio

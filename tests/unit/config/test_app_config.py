@@ -482,8 +482,8 @@ async def test_a_stale_refresh_never_replaces_a_newer_apply(config_env) -> None:
     class _SlowStore(FakeAppConfigStore):
         intercepted = False
 
-        async def fetch_all(self):
-            snapshot = await super().fetch_all()
+        async def fetch_all(self, **options):
+            snapshot = await super().fetch_all(**options)
             if not self.intercepted:
                 self.intercepted = True
                 # An administrator's write lands while this read is in flight.
@@ -1337,3 +1337,282 @@ async def test_sms_delivery_settings_use_db_precedence_and_redact_credentials(
     monkeypatch.setattr(sms, "settings", get_settings())
     monkeypatch.setattr(tencent_sms, "settings", get_settings())
     assert is_sms_enabled()
+
+
+# --- the erasure fence secret, once API_KEY_SECRET stands in for it ----------
+
+
+@pytest.mark.asyncio
+async def test_the_fence_secret_is_not_imported_once_api_key_secret_stands_in(
+    config_env, monkeypatch, caplog
+) -> None:
+    """Stored, it would pin another fingerprint for good; left out, removing it undoes it."""
+    store = FakeAppConfigStore()
+    await _boot(store)  # generates API_KEY_SECRET, which the fence falls back to
+    assert "ERASURE_FENCE_SECRET" not in store.rows
+
+    # The operator sets a dedicated secret afterwards.
+    monkeypatch.setenv("ERASURE_FENCE_SECRET", "dedicated")
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        await _restart(store)
+
+    assert "ERASURE_FENCE_SECRET" not in store.rows
+    assert (
+        "Not importing ERASURE_FENCE_SECRET from the environment: ERASURE_FENCE_SECRET cannot "
+        "be set: the gateway already uses API_KEY_SECRET in its place" in caplog.text
+    )
+    assert "Remove the variable" in caplog.text
+    entry = {entry["key"]: entry for entry in app_config.describe()["entries"]}[
+        "ERASURE_FENCE_SECRET"
+    ]
+    assert entry["locked"] is True
+
+    # Removed again, nothing of it is left behind.
+    monkeypatch.delenv("ERASURE_FENCE_SECRET")
+    await _restart(store)
+    assert get_settings().erasure_fence_secret == ""
+    assert "ERASURE_FENCE_SECRET" not in store.rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "environment",
+    [
+        # An upgrade: the environment always held both, and the fence uses its own.
+        {"API_KEY_SECRET": "from-env-api", "ERASURE_FENCE_SECRET": "from-env-fence"},
+        # A first start with a dedicated secret: API_KEY_SECRET is generated after.
+        {"ERASURE_FENCE_SECRET": "from-env-fence"},
+    ],
+    ids=["upgrade", "first-start"],
+)
+async def test_a_fence_secret_the_database_does_not_settle_yet_is_imported(
+    config_env, monkeypatch, environment
+) -> None:
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    store = FakeAppConfigStore()
+
+    await _boot(store)
+
+    assert store.rows["ERASURE_FENCE_SECRET"].value == "from-env-fence"
+    assert store.rows["ERASURE_FENCE_SECRET"].source == "env_import"
+    assert store.rows["API_KEY_SECRET"].value
+    # The variable can go: the stored value keeps the fence where it was.
+    monkeypatch.delenv("ERASURE_FENCE_SECRET")
+    await _restart(store)
+    assert get_settings().erasure_fence_secret == "from-env-fence"
+
+
+def test_the_fence_secret_is_not_locked_while_nothing_stands_in(config_env, monkeypatch) -> None:
+    monkeypatch.setenv("USER_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
+    app_config.use_environment(database_enabled=False)
+
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+
+    assert entries["ERASURE_FENCE_SECRET"]["locked"] is False
+    assert entries["API_KEY_SECRET"]["locked"] is False
+    monkeypatch.setenv("API_KEY_SECRET", "now-set")
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+    assert entries["ERASURE_FENCE_SECRET"]["locked"] is True
+    assert entries["API_KEY_SECRET"]["locked"] is True
+
+
+def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, caplog) -> None:
+    """The fence pins API_KEY_SECRET on the first start; setting one later fails startup."""
+    from serving.config.settings import Settings
+    from serving.storage import log_schema
+
+    monkeypatch.setattr(
+        "serving.config.settings.get_settings",
+        lambda: Settings(api_key_secret="fallback-secret"),
+    )
+    with caplog.at_level("WARNING"):
+        assert log_schema.resolve_fence_secret(None) == "fallback-secret"
+
+    assert "set erasure_fence_secret" not in caplog.text.lower()
+    assert "keep API_KEY_SECRET unchanged and ERASURE_FENCE_SECRET empty" in caplog.text
+
+
+# --- a stored row wins over the environment, rules between settings included --
+
+
+def _entry(key: str) -> dict:
+    return {entry["key"]: entry for entry in app_config.describe()["entries"]}[key]
+
+
+@pytest.mark.asyncio
+async def test_an_environment_value_never_beats_a_stored_row_through_a_rule(
+    config_env, monkeypatch, caplog
+) -> None:
+    """Compose's TRUST_PROXY_HEADERS=0 default was imported; the operator later edits .env."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "0")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "0")
+    store = FakeAppConfigStore()
+    await _boot(store)
+    assert store.rows["TRUST_PROXY_HEADERS"].value == "0"
+
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        await _restart(store)
+    app_config.require_valid_environment()
+
+    # The stored value is in force, and so is everything that agrees with it.
+    assert _in_force_trust() == (False, False, False)
+    assert [str(network) for network in get_settings().trusted_proxies_parsed] == ["10.0.0.0/8"]
+    # Stored, the dependent value would break the rule for good.
+    assert "TRUST_X_REAL_IP" not in store.rows
+    assert (
+        "Not importing TRUST_X_REAL_IP from the environment: it breaks a rule with a value "
+        "stored in the database (TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS)" in caplog.text
+    )
+    # The console says what is in force.
+    proxy = _entry("TRUST_PROXY_HEADERS")
+    assert (proxy["value"], proxy["source"], proxy["invalid"]) == (False, "database", None)
+    assert proxy["environment_ignored"] is True
+    real_ip = _entry("TRUST_X_REAL_IP")
+    assert (real_ip["value"], real_ip["source"], real_ip["invalid"]) == (False, "default", None)
+    assert real_ip["environment_ignored"] is False
+
+    # Storing both turns them on together, as the console offers.
+    await app_config.update(
+        {"TRUST_PROXY_HEADERS": True, "TRUST_X_REAL_IP": True}, updated_by="admin"
+    )
+    assert _in_force_trust() == (True, False, True)
+
+
+@pytest.mark.asyncio
+async def test_an_environment_value_is_set_aside_rather_than_a_stored_row_refused(
+    config_env, monkeypatch
+) -> None:
+    """Both sides stored before the fix: the stored ones decide, not the environment."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_X_REAL_IP", "1")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("TRUST_PROXY_HEADERS", "0"), row("TRUST_X_REAL_IP", "1")])
+
+    await _boot(store)
+    app_config.require_valid_environment()
+
+    assert _in_force_trust() == (False, False, False)
+    proxy = _entry("TRUST_PROXY_HEADERS")
+    assert (proxy["value"], proxy["source"], proxy["environment_ignored"]) == (
+        False,
+        "database",
+        True,
+    )
+    # Two stored rows conflict: the later one is refused, and reported in force.
+    real_ip = _entry("TRUST_X_REAL_IP")
+    assert real_ip["invalid"] == "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"
+    assert (real_ip["value"], real_ip["source"]) == (False, "default")
+    assert real_ip["environment_ignored"] is False
+    assert real_ip["updated_by"] == "admin@example.com"  # the refused row is still there
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,environment,in_force,ignored",
+    [
+        # The stored dependent needs a prerequisite only the environment could
+        # give, and it says no: the row cannot apply on its own. The
+        # environment's value is what applies, and is imported.
+        (
+            [row("TRUST_X_REAL_IP", "1")],
+            {"TRUST_PROXY_HEADERS": "0"},
+            (False, False, False),
+            False,
+        ),
+        # The stored prerequisite wins over the environment's.
+        (
+            [row("TRUST_PROXY_HEADERS", "1"), row("TRUST_X_REAL_IP", "1")],
+            {"TRUST_PROXY_HEADERS": "0"},
+            (True, False, True),
+            True,
+        ),
+        # And a stored dependent applies on a prerequisite from the environment.
+        (
+            [row("TRUST_X_REAL_IP", "1")],
+            {"TRUST_PROXY_HEADERS": "1"},
+            (True, False, True),
+            False,
+        ),
+    ],
+    ids=["dependent-alone", "prerequisite-stored", "prerequisite-from-environment"],
+)
+async def test_a_stored_dependent_against_the_environments_prerequisite(
+    config_env, monkeypatch, stored, environment, in_force, ignored
+) -> None:
+    """The reverse direction: the stored row is the side that needs the other."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(stored)
+
+    await _boot(store)
+    app_config.require_valid_environment()
+
+    assert _in_force_trust() == in_force
+    real_ip = _entry("TRUST_X_REAL_IP")
+    if in_force[2]:
+        assert (real_ip["value"], real_ip["source"], real_ip["invalid"]) == (
+            True,
+            "database",
+            None,
+        )
+    else:
+        assert real_ip["invalid"] == "TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"
+        assert (real_ip["value"], real_ip["source"]) == (False, "default")
+    proxy = _entry("TRUST_PROXY_HEADERS")
+    assert (proxy["value"], proxy["source"]) == (in_force[0], "database")
+    assert proxy["environment_ignored"] is ignored
+
+
+@pytest.mark.asyncio
+async def test_a_refused_row_reports_the_value_in_force(config_env, monkeypatch) -> None:
+    monkeypatch.setenv("SMTP_PORT", "465")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row("SMTP_PORT", "not-a-port"), row("JWT_ALGORITHM", "HS265")])
+
+    await _boot(store)
+
+    port = _entry("SMTP_PORT")
+    assert (port["value"], port["source"], port["environment_ignored"]) == (
+        465,
+        "environment",
+        False,
+    )
+    assert "integer" in port["invalid"]
+    algorithm = _entry("JWT_ALGORITHM")
+    assert (algorithm["value"], algorithm["source"]) == ("HS256", "default")
+    assert algorithm["invalid"] == "must be one of HS256, HS384, HS512"
+
+
+# --- phone authentication health ----------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_sms_settings_are_missing_only_while_phone_sign_in_is_on(config_env, enabled) -> None:
+    store = FakeAppConfigStore(
+        [row("SMS_PROVIDER", "tencent"), row("SMS_AUTH_ENABLED", "true" if enabled else "false")]
+    )
+
+    await _boot(store)
+
+    missing = set(app_config.get_config_health().missing)
+    needed = {
+        "TENCENT_CLOUD_SECRET_ID",
+        "TENCENT_CLOUD_SECRET_KEY",
+        "SMS_SDK_APP_ID",
+        "SMS_SIGN_NAME",
+        "SMS_TEMPLATE_ID",
+    }
+    if enabled:
+        assert needed <= missing
+    else:
+        assert not needed & missing
+    # SMS_REGION has a default, so it is set either way.
+    assert "SMS_REGION" not in missing
+    assert "TENCENT_CLOUD_TOKEN" not in missing

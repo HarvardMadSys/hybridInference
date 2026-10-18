@@ -100,7 +100,9 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "pending_restart",
         "environment_ignored",
         "immutable",
+        "locked",
         "setup",
+        "origin",
         "custom",
         "invalid",
         "used_by",
@@ -241,6 +243,106 @@ async def test_delete_refusals(config_client, key, status) -> None:
     response = await client.delete(f"/admin/config/{key}", headers=AUTH)
 
     assert response.status_code == status
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_names_each_entrys_origin(config_client) -> None:
+    client, store, _audit = config_client
+    store.rows["BOX_REGION"] = row("BOX_REGION", "east")
+    store.rows["MINIMAX_API_KEY2"] = row("MINIMAX_API_KEY2", "k2", secret=True)
+    await app_config.refresh()
+
+    entries = _entries((await client.get("/admin/config", headers=AUTH)).json())
+
+    assert entries["SITE_NAME"]["origin"] == "static"
+    assert entries["CHAT_UPSTREAM_KEY"]["origin"] == "discovered"
+    assert entries["MINIMAX_API_KEY2"]["origin"] == "numbered"
+    assert entries["BOX_REGION"]["origin"] == "custom"
+    assert all(entry["custom"] is (entry["origin"] == "custom") for entry in entries.values())
+
+
+@pytest.mark.asyncio
+async def test_get_marks_an_immutable_setting_locked_once_it_is_settled(config_client) -> None:
+    """The fence secret has no value of its own, but API_KEY_SECRET stands in for it."""
+    client, _store, _audit = config_client
+
+    entries = _entries((await client.get("/admin/config", headers=AUTH)).json())
+
+    fence = entries["ERASURE_FENCE_SECRET"]
+    assert fence["immutable"] is True and fence["is_set"] is False
+    assert fence["locked"] is True
+    assert entries["API_KEY_SECRET"]["locked"] is True
+    assert entries["JWT_SECRET_KEY"]["locked"] is False
+    assert entries["SITE_NAME"]["locked"] is False
+    # Locked is exactly what a save of it answers with 409.
+    response = await client.patch(
+        "/admin/config", json={"values": {"ERASURE_FENCE_SECRET": "dedicated"}}, headers=AUTH
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_patch_marks_a_stored_variable_secret_without_a_value(config_client) -> None:
+    client, store, audit = config_client
+    store.rows["BOX_REGION"] = row("BOX_REGION", "east")
+    await app_config.refresh()
+    writes = len(store.writes)
+
+    response = await client.patch(
+        "/admin/config", json={"values": {}, "secrets": {"BOX_REGION": True}}, headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    entry = _entries(response.json())["BOX_REGION"]
+    assert entry["secret"] is True and entry["value"] is None
+    assert store.rows["BOX_REGION"].secret
+    assert store.rows["BOX_REGION"].value == "east"
+    assert len(store.writes) == writes  # the value was not rewritten
+    assert [call.args[4] for call in audit.await_args_list] == [
+        {"key": "BOX_REGION", "marked_secret": True}
+    ]
+    assert '"east"' not in response.text
+
+    # The values field may be left out.
+    response = await client.patch(
+        "/admin/config", json={"secrets": {"BOX_REGION": True}}, headers=AUTH
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secrets,status,detail",
+    [
+        (
+            {"BOX_REGION": True},
+            400,
+            "BOX_REGION has no stored value to protect yet: set a value and mark it secret in "
+            "the same save.",
+        ),
+        (
+            {"SITE_NAME": True},
+            400,
+            "SITE_NAME: a built-in setting keeps the registry's secret flag.",
+        ),
+        ({"DB_PASSWORD": True}, 403, None),
+    ],
+)
+async def test_patch_refuses_a_secret_flag_it_cannot_honor(
+    config_client, secrets, status, detail
+) -> None:
+    client, store, audit = config_client
+    before = dict(store.rows)
+
+    response = await client.patch(
+        "/admin/config", json={"values": {}, "secrets": secrets}, headers=AUTH
+    )
+
+    assert response.status_code == status, response.text
+    if detail is not None:
+        assert response.json()["detail"] == detail
+    assert store.rows == before
     audit.assert_not_awaited()
 
 

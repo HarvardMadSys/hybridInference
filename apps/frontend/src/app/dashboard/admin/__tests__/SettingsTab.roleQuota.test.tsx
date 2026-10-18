@@ -8,7 +8,7 @@ import { SettingsTab } from '../SettingsTab';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
 }));
 
 vi.mock('@/lib/api/admin', async () => {

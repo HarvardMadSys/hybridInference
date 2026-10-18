@@ -67,7 +67,18 @@ RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
 When the `DB_*` settings in `.env` reach the gateway's database, the indexer
 reads the stored settings first, so a value stored on the Configuration tab
 wins over one set on the command line. When they do not, it warns and uses the
-environment alone.
+environment alone; with `DB_ENABLED=false` it does not try.
+
+To find out whether the committed index is still current without rebuilding
+it, run the check:
+
+```bash
+PYTHONPATH=apps/backend uv run python -m serving.rag.ingest --check
+```
+
+It exits `0` when the index matches the corpus, `1` when it has drifted and
+`2` when it could not tell. It reads the same settings a rebuild does, stored
+ones included, but it never embeds anything and never calls the gateway.
 
 `RAG_CORPUS_DIR` is only needed when your corpus is not the active overlay's
 `content/docs/docs/source`; without an overlay, ingest fails with a message

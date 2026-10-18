@@ -12,6 +12,8 @@ from httpx import ASGITransport, AsyncClient
 from serving.servers.deps import get_operational_store
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers.auth_routes import router as auth_router
+from serving.utils import login_rate_limit
+from serving.utils.device_cookie import device_cookie_name
 from tests.fixtures import browser_sessions
 
 
@@ -38,7 +40,7 @@ def app(fake_op_store, monkeypatch) -> FastAPI:
     app.dependency_overrides[get_operational_store] = lambda: fake_op_store
 
     # Patch rate-limit so it doesn't reject in tests by default.
-    async def _allow(email, ip):
+    async def _allow(email, ip, *, device=None):
         return True, None
 
     monkeypatch.setattr(
@@ -49,9 +51,9 @@ def app(fake_op_store, monkeypatch) -> FastAPI:
     return app
 
 
-async def _post_login(app, email="x@y.com", password="pw"):
+async def _post_login(app, email="x@y.com", password="pw", client_ip="127.0.0.1"):
     async with AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        transport=ASGITransport(app=app, raise_app_exceptions=False, client=(client_ip, 123)),
         base_url="http://test",
     ) as client:
         return await client.post(
@@ -288,7 +290,7 @@ async def test_login_suspended_returns_admin_message(app, fake_op_store, monkeyp
 
 @pytest.mark.asyncio
 async def test_login_records_rate_limited(app, fake_op_store, monkeypatch):
-    async def _deny(email, ip):
+    async def _deny(email, ip, *, device=None):
         return False, "ip"
 
     monkeypatch.setattr(
@@ -301,6 +303,78 @@ async def test_login_records_rate_limited(app, fake_op_store, monkeypatch):
     kw = fake_op_store.record_login_event.await_args.kwargs
     assert kw["failure_reason"] == "rate_limited"
     assert kw["user_id"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "retry_after"),
+    [("ip", "3600"), ("email", "900"), ("account", "900"), ("device", "900")],
+)
+async def test_login_rate_limited_retry_after_is_the_tripped_window(
+    app, fake_op_store, monkeypatch, reason, retry_after
+):
+    async def _deny(email, ip, *, device=None):
+        return False, reason
+
+    monkeypatch.setattr(
+        "serving.servers.routers.auth_routes.check_and_record_login",
+        _deny,
+    )
+    resp = await _post_login(app, email="x@y.com")
+    assert resp.status_code == 429
+    assert resp.headers["Retry-After"] == retry_after
+    assert fake_op_store.record_login_event.await_args.kwargs["failure_reason"] == "rate_limited"
+    fake_op_store.get_user_by_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_guessing_from_one_address_leaves_the_owner_able_to_sign_in(
+    app, fake_op_store, monkeypatch
+):
+    """With the real limiter, an account's attempts run out only at the guessing address."""
+    monkeypatch.setattr(
+        "serving.servers.routers.auth_routes.check_and_record_login",
+        login_rate_limit.check_and_record_login,
+    )
+    monkeypatch.setattr("serving.config.settings.settings.login_rate_limit_per_15min", 5)
+    fake_op_store.get_user_by_email.return_value = {
+        "id": "u1",
+        "email": "a@b.com",
+        "user_name": "A",
+        "password_hash": "$2b$12$NOTUSED",
+        "role": "free",
+        "status": "active",
+        "email_verified": True,
+        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "last_login_at": None,
+    }
+    monkeypatch.setattr(
+        "serving.utils.password.verify_password",
+        lambda plain, _hash: plain == "right",
+    )
+    monkeypatch.setattr(
+        "serving.config.settings.settings.signup_require_email_verification",
+        False,
+        raising=False,
+    )
+
+    guesses = [
+        await _post_login(app, email="a@b.com", password="guess", client_ip="1.2.3.4")
+        for _ in range(6)
+    ]
+    assert [resp.status_code for resp in guesses] == [401] * 5 + [429]
+    assert guesses[-1].headers["Retry-After"] == "900"
+    # Failures leave the browser unrecognized: only a sign-in earns a device cookie.
+    device = f"{device_cookie_name()}="
+    assert not any(
+        header.startswith(device)
+        for resp in guesses
+        for header in resp.headers.get_list("set-cookie")
+    )
+
+    resp = await _post_login(app, email="a@b.com", password="right", client_ip="5.6.7.8")
+    assert resp.status_code == 200
+    assert any(header.startswith(device) for header in resp.headers.get_list("set-cookie"))
 
 
 @pytest.mark.asyncio

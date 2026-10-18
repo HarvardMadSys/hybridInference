@@ -162,18 +162,45 @@ class ConfigEntry:
         return self.required
 
 
+#: Spellings ``Settings`` reads as true and as false.
+TRUE_WORDS = frozenset({"1", "on", "t", "true", "y", "yes"})
+FALSE_WORDS = frozenset({"0", "off", "f", "false", "n", "no"})
+
+
+def parse_bool(raw: str) -> bool:
+    """Parse a boolean the way ``Settings`` does.
+
+    Raises:
+        ValueError: *raw* is not a boolean spelling.
+    """
+    word = raw.strip().lower()
+    if word in TRUE_WORDS:
+        return True
+    if word in FALSE_WORDS:
+        return False
+    raise ValueError(raw)
+
+
 def _auth_secret_required(context: RequirementContext) -> bool:
     # Mirrors Settings.validate_auth_secrets: only a database-free gateway with
     # user authentication off runs without these.
     return context.database_enabled or context.user_auth_enabled
 
 
-def _tencent_credentials_required(context: RequirementContext) -> bool:
-    # The selected transport needs credentials even before signup is enabled.
+def _sms_required(context: RequirementContext) -> bool:
+    # Mirrors serving.utils.sms.is_sms_enabled: phone sign-in sends messages
+    # only once it is switched on with Tencent as the provider, and then
+    # tencent_sms.is_configured() needs every SMS value and both credentials.
     return (
-        context.value("SMS_PROVIDER") == "tencent"
-        or context.value("EMAIL_PROVIDER") == "tencent_ses"
+        context.value("SMS_AUTH_ENABLED").strip().lower() in TRUE_WORDS
+        and context.value("SMS_PROVIDER") == "tencent"
     )
+
+
+def _tencent_credentials_required(context: RequirementContext) -> bool:
+    # The Tencent SES transport needs them even before signup is enabled: it
+    # carries password resets and notices too.
+    return _sms_required(context) or context.value("EMAIL_PROVIDER") == "tencent_ses"
 
 
 def _smtp_required(context: RequirementContext) -> bool:
@@ -372,7 +399,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "login_rate_limit_per_15min",
         "security",
-        "Sign-in attempts allowed per email address in 15 minutes.",
+        "Sign-in attempts allowed per email address or username from one client address in "
+        "15 minutes (IPv6 is bucketed to /64).",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "login_account_rate_limit_per_15min",
+        "security",
+        "Sign-in attempts allowed per email address or username from all client addresses "
+        "together in 15 minutes, bounding password guessing spread across many addresses. "
+        "Only attempts that are let through count, so each address adds at most its "
+        "per-address allowance.",
         "int",
         minimum=1,
     ),
@@ -487,14 +525,23 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Comma-separated allowed international prefixes, such as +86. Empty permits any prefix supported by the provider.",
         "str",
     ),
-    _setting("sms_region", "phone", "Tencent SMS resource region.", "str"),
-    _setting("sms_sdk_app_id", "phone", "Tencent SMS application ID.", "str"),
-    _setting("sms_sign_name", "phone", "Approved Tencent SMS signature text.", "str"),
+    _setting("sms_region", "phone", "Tencent SMS resource region.", "str", required=_sms_required),
+    _setting(
+        "sms_sdk_app_id", "phone", "Tencent SMS application ID.", "str", required=_sms_required
+    ),
+    _setting(
+        "sms_sign_name",
+        "phone",
+        "Approved Tencent SMS signature text.",
+        "str",
+        required=_sms_required,
+    ),
     _setting(
         "sms_template_id",
         "phone",
         "Approved Tencent SMS template with code and lifetime-in-minutes parameters.",
         "str",
+        required=_sms_required,
     ),
     _setting(
         "sms_otp_expire_seconds",
@@ -1283,8 +1330,25 @@ MAX_NUMBERED_KEY = 20
 _REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
 #: A whole-value ``${VAR}``, the only form the model registry expands.
 _WHOLE_REFERENCE_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
-#: Words that make a discovered variable a secret.
-_SECRET_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "WEBHOOK", "PRIVATE")
+#: Words that mark a name as a credential's (:func:`is_secret_name`), matched
+#: anywhere in the upper-cased name. The console's add-variable form mirrors
+#: this list; keep the two in step.
+SECRET_NAME_WORDS: tuple[str, ...] = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASS",
+    "PWD",
+    "WEBHOOK",
+    "PRIVATE",
+    "AUTH",
+    "CREDENTIAL",
+    "BEARER",
+    "CERT",
+    "DSN",
+    "SA_JSON",
+)
 
 
 def _provider_key_vars() -> dict[str, tuple[str, str]]:
@@ -1358,22 +1422,33 @@ def numbered_key_entry(key: str) -> ConfigEntry | None:
     return None
 
 
-def custom_entry(key: str, *, secret: bool) -> ConfigEntry:
-    """Return the entry for an administrator-added variable."""
+def custom_entry(key: str, *, secret: bool = False) -> ConfigEntry:
+    """Return the entry for an administrator-added variable.
+
+    It is secret when *secret* says so or when its name looks like a
+    credential's (:func:`is_secret_name`); a flag can add secrecy, never take
+    the name's away.
+    """
     return ConfigEntry(
         key,
         "providers",
         "Added by an administrator for a reference in the model registry.",
-        secret=secret,
+        secret=secret or is_secret_name(key),
         restart_required=True,
         origin="custom",
     )
 
 
-def is_secret_name(key: str) -> bool:
-    """Return whether a discovered variable's name marks it as a secret."""
-    upper = key.upper()
-    return any(word in upper for word in _SECRET_WORDS)
+def is_secret_name(name: str) -> bool:
+    """Return whether *name* looks like a credential's: a variable's, or a field's.
+
+    True when the upper-cased name contains any of :data:`SECRET_NAME_WORDS`.
+    It decides the secrecy of discovered and custom variables, and which
+    configuration-file fields carry credentials (``api_key``, ``token``,
+    ``Authorization``).
+    """
+    upper = name.upper()
+    return any(word in upper for word in SECRET_NAME_WORDS)
 
 
 @dataclass
@@ -1388,6 +1463,10 @@ class DiscoveredReference:
     #: ``api_keys`` lists the variable belongs to; such a list fails only when
     #: every member is empty, so its members are required together.
     key_groups: list[tuple[str, ...]] | None = None
+    #: Referenced from a field that carries a credential (``api_key``,
+    #: ``api_keys``, any field whose name looks like a credential's), so it is
+    #: secret whatever its own name.
+    credential: bool = False
 
 
 def _references(value: Any) -> set[str]:
@@ -1401,6 +1480,27 @@ def _references(value: Any) -> set[str]:
     elif isinstance(value, list):
         for item in value:
             names.update(_references(item))
+    return names
+
+
+def _credential_references(value: Any) -> set[str]:
+    """Return every variable referenced under a field that carries a credential.
+
+    Such a field is named like a credential (:func:`is_secret_name`): ``api_key``
+    and ``api_keys`` in the model registry, ``token``, ``password``, an
+    ``Authorization`` header. Whatever a variable is called, the value it lends
+    that field is a secret.
+    """
+    names: set[str] = set()
+    if isinstance(value, dict):
+        for field_name, item in value.items():
+            if is_secret_name(str(field_name)):
+                names.update(_references(item))
+            else:
+                names.update(_credential_references(item))
+    elif isinstance(value, list):
+        for item in value:
+            names.update(_credential_references(item))
     return names
 
 
@@ -1507,12 +1607,21 @@ def discover_references(
     """Find every ``${VAR}`` reference in the three configuration files.
 
     Files are parsed rather than searched, so a ``${VAR}`` in a comment counts
-    for nothing. A missing or unreadable file contributes no references.
+    for nothing. A missing or unreadable file contributes no references. A
+    reference from a field that carries a credential is marked as one
+    (:attr:`DiscoveredReference.credential`).
     """
     found: dict[str, DiscoveredReference] = {}
-    _discover_models(_load_yaml(models_path), found)
-    _discover_routing(_load_yaml(routing_path), found)
-    _discover_alerts(_load_yaml(alerts_path), found)
+    models, routing, alerts = (
+        _load_yaml(path) for path in (models_path, routing_path, alerts_path)
+    )
+    _discover_models(models, found)
+    _discover_routing(routing, found)
+    _discover_alerts(alerts, found)
+    for data in (models, routing, alerts):
+        for key in _credential_references(data):
+            if key in found:
+                found[key].credential = True
     return found
 
 
@@ -1548,13 +1657,20 @@ def build_entries(
     discovered: Mapping[str, DiscoveredReference],
     stored: Mapping[str, bool],
     environ: Mapping[str, str],
+    reset: Mapping[str, bool] | None = None,
 ) -> dict[str, ConfigEntry]:
     """Assemble every entry, in the order the console lists them.
+
+    A row's secret flag is one-way: an entry whose row (a value or a reset
+    marker) is marked secret is secret, whatever the registry, the reference
+    or the name would make it.
 
     Args:
         discovered: References found by :func:`discover_references`.
         stored: Keys that have a database row, mapped to the row's secret flag.
         environ: The process environment, for numbered provider keys.
+        reset: Keys an administrator reset, mapped to the reset row's secret
+            flag. They keep it, but a reset row lists no entry of its own.
 
     Returns:
         Entries keyed by name: static, then discovered, numbered and custom.
@@ -1570,6 +1686,7 @@ def build_entries(
         if existing is not None:
             entries[key] = replace(
                 existing,
+                secret=existing.secret or reference.credential,
                 required=_merge_requirements(existing.required, requirement),
                 restart_required=True,
                 used_by=used_by,
@@ -1585,7 +1702,7 @@ def build_entries(
             "Referenced by the model registry."
             if reference.category == "providers"
             else "Referenced by the alert rules.",
-            secret=is_secret_name(key) or bool(stored.get(key)),
+            secret=reference.credential or is_secret_name(key),
             required=requirement,
             restart_required=True,
             origin="discovered",
@@ -1603,5 +1720,11 @@ def build_entries(
     for key in sorted(stored):
         if key in entries or is_environment_only(key) or is_runtime_setting_name(key):
             continue
-        entries[key] = custom_entry(key, secret=stored[key])
+        entries[key] = custom_entry(key)
+
+    for flags in (stored, reset or {}):
+        for key, secret in flags.items():
+            entry = entries.get(key)
+            if secret and entry is not None and not entry.secret:
+                entries[key] = replace(entry, secret=True)
     return entries

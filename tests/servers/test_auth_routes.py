@@ -437,14 +437,16 @@ class TestLogin:
 
 
 class TestLoginAbuseProtection:
-    """Per-email and per-IP rate limits on /auth/login."""
+    """Per-account and per-IP rate limits on /auth/login."""
 
     @pytest.mark.asyncio
     async def test_login_rate_limited_per_email(self, auth_app_client: AsyncClient, test_user):
-        """Per-email bucket trips after `login_rate_limit_per_15min` attempts.
+        """The per-account-per-address bucket trips after `login_rate_limit_per_15min`.
 
-        Default is 5: after 5 wrong-password attempts within 15 minutes,
-        a 6th attempt against the same email returns 429 with Retry-After.
+        Default is 5: after 5 wrong-password attempts within 15 minutes, a
+        6th attempt against the same email from the same address (every
+        request here comes from the test client's) returns 429 with
+        Retry-After.
         """
         for _ in range(5):
             response = await auth_app_client.post(
@@ -464,7 +466,7 @@ class TestLoginAbuseProtection:
     async def test_login_rate_limited_per_ip(self, auth_app_client: AsyncClient):
         """Per-IP bucket trips at `login_rate_limit_per_hour_per_ip`.
 
-        Vary the email each attempt so the per-email bucket cannot trip;
+        Vary the email each attempt so neither per-account bucket can trip;
         the per-IP limit (default 20) must be the gating factor.
         """
         for i in range(20):

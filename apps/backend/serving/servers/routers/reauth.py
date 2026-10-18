@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request
 from serving.schemas_auth import PhoneVerifyRequest
 from serving.servers.routers.phone_auth_routes import verify_phone_code
 from serving.utils import password as password_utils
+from serving.utils.device_cookie import recognized_device
 from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.request_ip import get_client_ip
 from serving.utils.sms import is_sms_enabled
@@ -48,7 +49,13 @@ async def confirm_account_owner(
     """
     if user_row.get("password_hash"):
         identifier = account_identifier(user_row) or user_row["id"]
-        allowed, reason = await check_and_record_login(identifier, get_client_ip(request))
+        # The same limits as sign-in, including the device cookie's own budget:
+        # someone else's guesses at this name must not block its owner here.
+        allowed, reason = await check_and_record_login(
+            identifier,
+            get_client_ip(request),
+            device=recognized_device(request, identifier),
+        )
         if not allowed:
             raise HTTPException(
                 status_code=429,

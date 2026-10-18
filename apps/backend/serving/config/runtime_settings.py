@@ -12,8 +12,9 @@ Values are resolved in this order:
 4. Registry default
 
 On boot, :func:`import_environment_values` copies a setting's environment
-variable (the upper-cased key) into ``site_settings`` when it has no row yet,
-so the variable can then be deleted from ``.env``.
+variable (the upper-cased key, or any capitalization for a setting ``Settings``
+also reads) into ``site_settings`` when it has no row yet, so the variable can
+then be deleted from ``.env``.
 """
 
 from __future__ import annotations
@@ -408,14 +409,38 @@ _PARSERS: dict[str, TypeAdapter[Any]] = {
 }
 
 
+def _environment_raw(key: str) -> str:
+    """Return the environment value a setting is read from, or ``""``.
+
+    The upper-cased name, as for every runtime setting. A setting ``Settings``
+    also defines is read by ``Settings`` with any capitalization — a lower-case
+    ``signup_enabled=false`` line has always turned signup off — so for those
+    another spelling counts too, the exact upper-case name winning, as
+    ``app_config`` reads ``Settings``-backed variables.
+    """
+    from serving.config.settings import Settings
+
+    name = key.upper()
+    raw = os.environ.get(name)
+    if raw is not None:
+        return raw
+    if key in Settings.model_fields:
+        for candidate, value in os.environ.items():
+            if candidate.upper() == name:
+                return value
+    return ""
+
+
 def _environment_value(key: str, entry: dict[str, Any]) -> str | None:
     """Return a setting's environment value in the form ``site_settings`` stores.
 
     Parsed the way ``Settings`` parses the same variable, then written the way
     the admin API writes it (``str(value)``), so ``USER_AUTH_ENABLED=on`` is
-    stored as ``True`` rather than a word the cache would read as false.
+    stored as ``True`` rather than a word the cache would read as false. The
+    variable is found as ``Settings`` finds it (:func:`_environment_raw`), so
+    what is imported is what was in force.
     """
-    raw = os.environ.get(key.upper(), "")
+    raw = _environment_raw(key)
     if not raw.strip():
         return None
     parser = _PARSERS.get(entry["type"])
@@ -438,9 +463,10 @@ def _environment_value(key: str, entry: dict[str, Any]) -> str | None:
 async def import_environment_values(pool: Any) -> list[str]:
     """Copy runtime-setting environment variables into ``site_settings``.
 
-    A setting is imported when its upper-cased name has a non-empty value in the
-    environment and ``site_settings`` has no row for it. Rows are marked
-    ``updated_by='env-import'``.
+    A setting is imported when its environment variable has a non-empty value
+    and ``site_settings`` has no row for it. The variable is the upper-cased
+    name; for a setting ``Settings`` also reads, any capitalization, as
+    ``Settings`` matches it. Rows are marked ``updated_by='env-import'``.
 
     Returns:
         The keys this call imported.

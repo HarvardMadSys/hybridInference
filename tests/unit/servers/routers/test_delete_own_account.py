@@ -70,6 +70,8 @@ class Store:
         self.row = row
         self.get_user_by_id = AsyncMock(return_value=row)
         self.get_user_by_phone = AsyncMock(return_value=row)
+        # The account columns are in place (no upgrade pending).
+        self.require_phone_accounts = AsyncMock()
         self.consume_phone_code = AsyncMock(return_value="ok")
         self.reserve_phone_code = AsyncMock(return_value=0)
         self.activate_phone_code = AsyncMock(return_value=True)

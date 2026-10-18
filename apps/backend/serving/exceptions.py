@@ -43,6 +43,26 @@ class HardDeleteStateChanged(Exception):
     pass
 
 
+class AccountSchemaPending(Exception):
+    """The database upgrade has not yet added the account columns a write needs.
+
+    An upgrade adds login names, phone numbers and accounts without an email
+    address to the ``users`` table. That migration waits for the table's lock,
+    which a long ``pg_dump`` can hold for hours, and lands from the background
+    once it is free; the gateway serves meanwhile on the table as it is. The
+    operational store raises this for a write that needs the new columns (the
+    first-run administrator, phone registration, sign-in and binding), and the
+    routes answer 503 with the message. Email sign-in, token refresh and API
+    keys do not need them.
+    """
+
+    MESSAGE = "The database upgrade is still in progress; try again shortly."
+
+    def __init__(self, message: str = MESSAGE) -> None:
+        """Carry the user-facing *message*; the default says the upgrade is under way."""
+        super().__init__(message)
+
+
 class UserFacingError(HybridInferenceError):
     """Marker base for exceptions whose message is safe to surface verbatim.
 

@@ -200,7 +200,8 @@ Nothing has to change before the upgrade. At its first start the new backend
 copies every setting that has a value in its environment into the database —
 from `.env`, from an overlay's `deploy/*.env`, and from the values the Compose
 file passes through — and logs
-`Imported N setting(s) from the environment into the database`. The switches
+`Imported N setting(s) from the environment into the database`, with the
+exceptions below. The switches
 on the **Settings** tab are copied into their own store the same way. The
 existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
 sessions and API keys keep working, and a database that already has accounts
@@ -214,6 +215,20 @@ nothing — the **Configuration** tab marks it **Environment ignored** — so ma
 changes on the tab and delete the lines from `.env` when convenient. Keep a
 copy until a rollback is no longer possible: a release from before the
 settings moved into the database reads them only from the environment.
+
+Besides a value that is not valid on its own, two kinds of value are not
+copied, and the log names each with a warning:
+
+- A value that breaks a rule with a setting already stored, such as
+  `TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The
+  stored value wins and the environment's counts as unset. Check proxy trust
+  after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a
+  default of `0`, so a database that stored that `0` keeps the gateway off
+  forwarded headers whatever `.env` says. Change it on the Configuration tab;
+  see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
+- `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its
+  place. Leave the variable out: while it is set, the backend refuses to
+  start; see [Database](database.md#secrets-for-deleting-accounts).
 
 The `environment:` passthroughs in `deploy/docker/docker-compose.yml` work the
 same way: they carry an overlay's values into the container, where they are
@@ -409,7 +424,8 @@ your alerts file instead.
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.
-Until then the backend refuses sign-ups, so nobody else can claim the account:
+Until then the backend refuses every sign-up, by email or by phone, so nobody
+else can claim the account:
 
 1. Read the setup code from the backend's log. The code is kept in the
    database and stays the same, across restarts and worker processes, until
@@ -429,14 +445,25 @@ create this account, so keep both as private as the host. Wrong codes are
 rate limited per client address, ten in 15 minutes; the right code is never
 refused.
 
-**Choose a username that is hard to guess.** Sign-in allows five attempts per
-username in 15 minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), and counts each attempt
-before it checks the password, so anyone who knows a username can keep that
-account locked out — and `admin` is the first name anyone tries. A lockout
-lasts as long as the attempts keep coming and ends 15 minutes after they stop,
-or when the backend restarts, because the counts are held in memory. Nothing
-below needs a sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API,
-and the command-line tools work on the database directly.
+**Choose a username that is hard to guess.** Sign-in counts each attempt
+before it checks the password: five per username from one address in 15
+minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all addresses
+together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only the attempts the
+other limits let through), and twenty per address in an hour
+(`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in to the
+account before, including the one you used for setup, holds a device cookie
+(`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
+valid for 180 days) and gets five attempts per 15 minutes of its own, so other
+people's guesses never lock it out. Changing `JWT_SECRET_KEY` invalidates
+every device cookie until that browser's next sign-in.
+
+Other browsers share the limits with their address, and behind the bundled
+Compose file's console proxy every browser has the same address unless
+[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
+`admin` is the first username anyone tries. The counts are held in memory, so
+a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
+when set, still reaches the admin API, and the command-line tools work on the
+database directly.
 
 **Without the browser.** `ops/admin/create_admin.py` writes the account
 directly: it creates it with `role='admin'`, `status='active'`,
@@ -468,7 +495,10 @@ It reads only the `DB_*` settings, asks twice for the new password — or, with
 every browser must sign in again. It takes an email address as well, for any
 other account. From a source checkout, run
 `uv run python -m serving.auth.reset_password <username>` in the repository
-root.
+root. It also works on a database the backend's upgrade has not migrated yet —
+while an upgrade's users migration is still waiting for the table's lock, say —
+and changes no schema. Such a database has no login names yet, so name the
+account by its email address there.
 
 **A setting that breaks the console.** Settings live in the database, so a
 value that stops sign-in from working cannot be fixed by editing `.env`, nor

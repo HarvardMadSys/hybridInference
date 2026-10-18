@@ -15,6 +15,11 @@ It reads only the database connection settings (``DB_HOST``, ``DB_PORT``,
 ``DB_NAME``, ``DB_USER``, ``DB_PASSWORD``), prompts twice for the new password
 or, with ``--generate``, creates and prints a strong one, stores its Argon2
 hash, and revokes the account's sessions so every browser must sign in again.
+
+It also works on a database the backend's upgrade has not migrated yet, as
+while another session holds the users table and the upgraded backend serves
+on the old one until its migration can land: it reads only the columns that
+exist and changes no schema.
 """
 
 from __future__ import annotations
@@ -35,9 +40,91 @@ if TYPE_CHECKING:
 _GENERATED_PASSWORD_LENGTH = 20
 _GENERATED_PASSWORD_ALPHABET = string.ascii_letters + string.digits
 
+# The account columns the reset reads, in select order. Only ``id`` and
+# ``email`` are in every release's users table: ``login_name`` came with
+# first-run setup, so a database the upgrade has not migrated lacks it.
+_ACCOUNT_COLUMNS = ("id", "email", "login_name", "status")
+
 
 class ResetPasswordError(Exception):
     """The reset did not happen; the message tells the operator why and what to do."""
+
+
+class AccountStore:
+    """What the reset needs from the database, on any release's users table.
+
+    An operational store selects the users columns its own catalog read found
+    when it initialized; this command never initializes one, and an
+    uninitialized store selects every column the current release defines, so
+    on a database the upgrade has not migrated yet its lookups fail with
+    ``column "login_name" does not exist``. These read the catalog first and
+    select only the columns the reset uses that are there.
+
+    Nothing here changes the schema. Adding the missing column needs the users
+    table's ACCESS EXCLUSIVE lock, which is the lock the stalled upgrade cannot
+    get, and a request queued for it holds up every query on users, sign-in
+    included; the backend's startup migrates under a lock timeout for that
+    reason. The two writes are the operational store's own, and touch only a
+    column and a table every release has.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        """Wrap *pool*, a connection pool on the deployment's database."""
+        from serving.storage.postgres_operational import PostgresOperationalStore
+
+        self._pool = pool
+        self._store = PostgresOperationalStore(pool)
+        self._columns: tuple[str, ...] | None = None
+
+    async def _account_columns(self) -> tuple[str, ...]:
+        """Return the columns of ``_ACCOUNT_COLUMNS`` the users table has."""
+        if self._columns is None:
+            from serving.storage.log_schema import existing_columns
+
+            async with self._pool.acquire() as conn:
+                present = await existing_columns(conn, "users")
+            if not present:
+                raise ResetPasswordError(
+                    "The database has no users table yet; start the backend once to "
+                    "create it. Nothing was changed."
+                )
+            self._columns = tuple(column for column in _ACCOUNT_COLUMNS if column in present)
+        return self._columns
+
+    async def _fetch_account(self, where: str, value: str) -> dict[str, Any] | None:
+        columns = ", ".join(await self._account_columns())
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(f"SELECT {columns} FROM users WHERE {where}", value)
+        return dict(row) if row is not None else None
+
+    async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        """Return the account with this email address, compared lowercased."""
+        return await self._fetch_account("email = $1", email.lower())
+
+    async def get_user_by_login_name(self, login_name: str) -> dict[str, Any] | None:
+        """Return the account with this login name, compared case-insensitively.
+
+        Raises:
+            ResetPasswordError: If the users table has no login names yet.
+        """
+        if "login_name" not in await self._account_columns():
+            raise ResetPasswordError(
+                f"No account has the login name {login_name!r}: the database's users "
+                "table has no login names yet, because the backend's upgrade has not "
+                "migrated it. Name the account by its email address. Nothing was changed."
+            )
+        # Matches the expression and predicate of idx_users_login_name.
+        return await self._fetch_account(
+            "lower(login_name) = $1 AND login_name IS NOT NULL", login_name.strip().lower()
+        )
+
+    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
+        """Update columns of the account, as the operational store does."""
+        await self._store.update_user_fields(user_id, **fields)
+
+    async def delete_user_sessions(self, user_id: str) -> None:
+        """Revoke every session of the account, as the operational store does."""
+        await self._store.delete_user_sessions(user_id)
 
 
 def generate_password() -> str:
@@ -120,7 +207,8 @@ def describe_reset(account: dict[str, Any], generated_password: str | None) -> l
     if generated_password is not None:
         lines.append(f"New password: {generated_password}")
     lines.append("Every session of the account was revoked; it must sign in again.")
-    status = account.get("status")
+    # Absent when the users table has no status column: nothing to report.
+    status = account.get("status", "active")
     if status != "active":
         lines.append(f"Note: the account is {status}, so it still cannot sign in.")
     return lines
@@ -136,7 +224,6 @@ async def _reset_with_database(identifier: str, new_password: str) -> dict[str, 
     from pydantic import ValidationError
 
     from serving.config.settings import DatabaseSettings
-    from serving.storage.postgres_operational import PostgresOperationalStore
 
     try:
         settings = DatabaseSettings()
@@ -162,7 +249,7 @@ async def _reset_with_database(identifier: str, new_password: str) -> dict[str, 
             f"Could not connect to the database {where}: {exc}. Nothing was changed."
         ) from exc
     try:
-        return await reset_password(PostgresOperationalStore(pool), identifier, new_password)
+        return await reset_password(AccountStore(pool), identifier, new_password)
     except asyncpg.PostgresError as exc:
         raise ResetPasswordError(
             f"The database {where} reported an error: {exc}. The reset may be "

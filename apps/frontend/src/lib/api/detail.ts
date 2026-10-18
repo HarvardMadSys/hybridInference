@@ -18,13 +18,40 @@ interface ValidationItem {
 export interface ApiErrorDetail {
   /** A sentence to show; empty when the body had none. */
   message: string;
-  /** Validation messages by request field, from a 422 `detail` list. */
+  /**
+   * Validation messages by request field. From FastAPI's 422 `detail` list,
+   * each has its reason; the gateway's own 422 names the fields only, so their
+   * reason is `''` and the page supplies one.
+   */
   fields: Record<string, string>;
 }
 
 function cleanValidationMessage(message: string): string {
   // Pydantic prefixes a validator's own message with its error type.
   return message.replace(/^(Value error|Assertion failed),\s*/i, '');
+}
+
+/** Where a value was in the request: the first part of a validation `loc`. */
+const REQUEST_LOCATIONS = new Set(['body', 'query', 'path', 'header', 'cookie']);
+
+/**
+ * The fields named by the gateway's 422, which replaces FastAPI's body so a
+ * submitted password is never echoed back: `"Invalid request: body.password,
+ * body.login_name"` — each a `loc` joined with dots, and no reasons. `null`
+ * for any other message.
+ */
+function gatewayValidationFields(message: string): string[] | null {
+  const match = /^Invalid request: (.+)$/.exec(message.trim());
+  if (!match) return null;
+  const fields: string[] = [];
+  for (const path of match[1].split(', ')) {
+    const [location, ...rest] = path.split('.');
+    if (!REQUEST_LOCATIONS.has(location)) return null;
+    // The innermost name, as for a `detail` list: list indices are not fields.
+    const field = rest.reverse().find((part) => part !== '' && !/^\d+$/.test(part));
+    if (field !== undefined && !fields.includes(field)) fields.push(field);
+  }
+  return fields;
 }
 
 /** Read the `detail` of an error body: a string, or a list of field errors. */
@@ -53,7 +80,10 @@ export function describeErrorBody(body: unknown): ApiErrorDetail {
   const error = record.error;
   if (error && typeof error === 'object') {
     const message = (error as Record<string, unknown>).message;
-    if (typeof message === 'string') return { message, fields };
+    if (typeof message === 'string') {
+      for (const field of gatewayValidationFields(message) ?? []) fields[field] = '';
+      return { message, fields };
+    }
   }
   return { message: '', fields };
 }

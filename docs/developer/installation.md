@@ -82,13 +82,15 @@ and:
 
 1. Enter the setup code. It stays the same until setup is done, and the
    backend logs it again every time it starts, whatever `LOG_LEVEL` is set to.
-   Until setup is done the backend also refuses sign-ups, so nobody else can
-   claim the first account.
+   Until setup is done the backend also refuses sign-ups, by email or by
+   phone, so nobody else can claim the first account.
 2. Create the administrator: a username and a password. The account has no
    email address; it signs in with the username. Pick a username that is hard
-   to guess, not `admin`: sign-in allows five attempts per username in 15
-   minutes, counted before the password is checked, so anyone who knows the
-   username can lock the account out.
+   to guess, not `admin`: sign-in counts attempts per username before it
+   checks the password, so anyone who knows the username can lock the account
+   out of every browser that has not signed in to it before. The browser you
+   set up with keeps a device cookie that gives it attempts of its own; see
+   [The first admin account](deployment.md#the-first-admin-account).
 3. Fill in the settings the page lists. Out of the box the gateway serves the
    three example models in `config/examples/models.openrouter.yaml`, which all
    use [OpenRouter](https://openrouter.ai) (one tries a local Ollama server
@@ -212,19 +214,23 @@ The settings you are most likely to want:
 | `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES` | trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the Cloudflare settings below also need the flag |
 | `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for clients that connect directly from a private network; does not authorize forwarding headers |
-| `TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS` | trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs `TRUST_PROXY_HEADERS=1` |
+| `TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS` | trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs `TRUST_PROXY_HEADERS` on |
 
 [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) says which
-of the proxy settings above to set for your setup.
+of the proxy settings above to set for your setup. Put them in `.env` before
+the first start, or set them on the Configuration tab afterwards: the first
+start stores them, and from then on a `.env` edit changes nothing. Under
+Compose that includes `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS`
+when `.env` does not set them, stored as the Compose file's default `0`.
 
 ### Provider credentials
 
 A model registry names its own credentials. Its `api_key`, `api_keys`,
 `base_url` and `provider_model_id` fields can each be written as `${VAR}`,
 which is resolved when the registry loads: the setting of that name stored in
-the database, else the environment variable. So the provider keys a
-deployment needs are the variables its registry names, and you can call them
-whatever you like.
+the database, else the environment variable, else the default the gateway
+registers for it. So the provider keys a deployment needs are the variables
+its registry names, and you can call them whatever you like.
 
 ```yaml
 route:
@@ -244,6 +250,12 @@ name the tab does not list yet — for a registry you are about to switch to —
 can be added with **Add variable**. The registry reads these values at
 startup, so restart the backend after changing one. A gateway without a
 database reads them from `.env` instead.
+
+A provider key whose description on the Configuration tab mentions numbered
+extras, such as `OPENROUTER_API_KEY` or `MINIMAX_API_KEY`, can have extras
+numbered `1` to `20` (`MINIMAX_API_KEY2`, say). Every one that has a value
+joins that provider's key pool, whichever numbers are used, and a key entered
+twice counts once.
 
 Keys can also be added from the admin console (**Providers → Keys**) with no
 restart; they join the same pool as the keys the registry names. See

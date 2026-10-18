@@ -11,18 +11,36 @@ import yaml
 from pydantic import AliasChoices, BaseModel, Field
 
 from serving.config.app_config import config_value
+from serving.config.app_config_registry import static_entry
 
 log = logging.getLogger(__name__)
 
 _ENV_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
 
 
+def _registered_default(name: str) -> str | None:
+    """Return the registered default of a static setting, the value the console reports unset."""
+    entry = static_entry(name)
+    return entry.default if entry is not None and entry.default else None
+
+
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ${VAR} and ${VAR:-default} in strings (via ``config_value``)."""
+    """Recursively expand ${VAR} and ${VAR:-default} in strings.
+
+    A variable resolves through ``config_value`` (the stored setting, then the
+    environment), then the inline ``:-default``, then the registered default of
+    a static setting that has one, and else to ``""``.
+    """
     if isinstance(value, str):
 
         def repl(m: re.Match[str]) -> str:
-            return config_value(m.group(1), m.group(2) or "") or ""
+            name, inline_default = m.group(1), m.group(2)
+            resolved = config_value(name)
+            if resolved is None:
+                resolved = (
+                    inline_default if inline_default is not None else _registered_default(name)
+                )
+            return resolved or ""
 
         return _ENV_RE.sub(repl, value)
     if isinstance(value, dict):

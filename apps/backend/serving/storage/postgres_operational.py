@@ -9,11 +9,25 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
-from serving.exceptions import DuplicateAPIKeyError, HardDeleteStateChanged, SelfDeleteRefused
+from serving.exceptions import (
+    AccountSchemaPending,
+    DuplicateAPIKeyError,
+    HardDeleteStateChanged,
+    SelfDeleteRefused,
+)
+from serving.storage import account_schema
+from serving.storage.account_schema import (
+    COMPLETE as COMPLETE_ACCOUNT_SCHEMA,
+    AccountSchema,
+    migrate_login_events_account_schema,
+    migrate_users_account_schema,
+    read_account_schema,
+)
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
@@ -25,12 +39,13 @@ from serving.storage.log_schema import (
     constraint_definition,
     drop_columns_if_present,
     execute_ddl,
+    existing_columns,
 )
 from serving.storage.phone_auth import PostgresPhoneAuthMixin, initialize_phone_auth
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -38,11 +53,27 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name).
+# Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
+# in select order. The account columns among them that the users table does not
+# have yet are selected as the value every row would hold (see AccountSchema).
 _USER_COLUMNS = (
-    "id, email, login_name, phone, phone_verified, user_name, role, status, email_verified, "
-    "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-    "signup_reason, admin_note, suspension_message"
+    "id",
+    "email",
+    "login_name",
+    "phone",
+    "phone_verified",
+    "user_name",
+    "role",
+    "status",
+    "email_verified",
+    "created_at",
+    "last_login_at",
+    "password_hash",
+    "preferences",
+    "max_concurrent_requests",
+    "signup_reason",
+    "admin_note",
+    "suspension_message",
 )
 
 # The preferences column as a JSON object, whatever an older row holds there
@@ -53,6 +84,18 @@ _PREFERENCES_OBJECT = (
 
 # What a stored `chosen_at` must look like before it is cast to timestamptz.
 _ISO_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+
+# The identity columns the API-key and browser-session lookups take from the
+# joined users row.
+_JOINED_USER_IDENTITY = ("email", "login_name", "phone", "phone_verified")
+
+# While the account migration is pending, how often a request that needs a
+# column it has not added may re-read the catalog to see whether it has landed
+# since (from this process's background retry or from another process).
+_ACCOUNT_SCHEMA_RECHECK_SECONDS = 5.0
+
+# What a write can need of the account migration (properties of AccountSchema).
+_AccountCapability = Literal["login_names", "phone_accounts"]
 
 # Serializes first-run setup claims across every process sharing the database.
 _FIRST_RUN_SETUP_LOCK_SQL = (
@@ -67,7 +110,9 @@ class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
     required before the store can be exposed: resume_user and both hard-delete
     phases select it on every request. A lock timeout therefore must fail
     startup rather than defer the migration while serving against an unsafe
-    schema.
+    schema. Only a database older than the marker (#1421) can hit this; the
+    account columns added since are deferrable instead (see
+    :mod:`serving.storage.account_schema`).
     """
 
 
@@ -144,6 +189,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         self._pool = pool
         self.fence_secret = fence_secret
+        # Which account columns the users table has, read from the catalog
+        # by initialize(); until then, the schema this release creates.
+        self._set_account_schema(COMPLETE_ACCOUNT_SCHEMA)
+        self._account_schema_read_at: float | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -151,10 +200,64 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Create operational tables/indexes and run idempotent migrations.
 
         The users migration includes the durable hard-delete claim marker
-        used to coordinate with the separate LogStore.
+        used to coordinate with the separate LogStore; a lock timeout on it
+        raises :class:`RequiredOperationalSchemaUnavailable`. The account
+        columns (login names, phone numbers, accounts without an email) may
+        wait: a lock timeout on them raises plain ``SchemaLockUnavailable``
+        once everything else is in place, for bootstrap to retry this method
+        in the background. Either way the store then reads which account
+        columns exist, and queries only those until the next attempt.
         """
         async with self._pool.acquire() as conn:
-            await self._create_tables(conn)
+            try:
+                await self._create_tables(conn)
+            except SchemaLockUnavailable:
+                await self._read_account_schema(conn)
+                raise
+            await self._read_account_schema(conn)
+
+    # -- account schema --------------------------------------------------------
+
+    @property
+    def account_schema(self) -> AccountSchema:
+        """Which account columns the users table has, as of the last catalog read."""
+        return self._account_schema
+
+    def _set_account_schema(self, schema: AccountSchema) -> None:
+        """Query by *schema* from now on."""
+        self._account_schema = schema
+        self._user_select = schema.select(_USER_COLUMNS)
+
+    async def _read_account_schema(self, conn: asyncpg.Connection) -> AccountSchema:
+        """Re-read the account schema from the catalog and query by it from now on."""
+        schema = await read_account_schema(conn)
+        self._set_account_schema(schema)
+        self._account_schema_read_at = time.monotonic()
+        account_schema.publish(schema)
+        return schema
+
+    async def _account_schema_where(self, ready: Callable[[AccountSchema], bool]) -> AccountSchema:
+        """Return the account schema, re-read first when it does not satisfy *ready*.
+
+        The re-read is what notices a migration that landed since the last one,
+        from this process's background retry or from another process. It runs
+        at most every ``_ACCOUNT_SCHEMA_RECHECK_SECONDS``, so a stream of
+        requests refused meanwhile does not become a stream of catalog reads.
+        """
+        schema = self._account_schema
+        read_at = self._account_schema_read_at
+        if ready(schema) or (
+            read_at is not None and time.monotonic() - read_at < _ACCOUNT_SCHEMA_RECHECK_SECONDS
+        ):
+            return schema
+        async with self._pool.acquire() as conn:
+            return await self._read_account_schema(conn)
+
+    async def _require_account_schema(self, capability: _AccountCapability) -> None:
+        """Raise :class:`AccountSchemaPending` unless the users table can hold *capability*."""
+        schema = await self._account_schema_where(lambda s: getattr(s, capability))
+        if not getattr(schema, capability):
+            raise AccountSchemaPending()
 
     async def _create_tables(self, conn: asyncpg.Connection) -> None:
         """DDL for the 6 operational tables."""
@@ -170,6 +273,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 email TEXT UNIQUE,
                 login_name TEXT,
                 password_hash TEXT,
+                phone TEXT,
+                phone_verified BOOLEAN NOT NULL DEFAULT FALSE,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                 role TEXT NOT NULL DEFAULT 'free'
@@ -191,23 +296,31 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 suspension_message TEXT
             )
         """)
+        # Tables requests use that came after the users table. Creating a new
+        # table waits on no lock another session holds, so they come before
+        # any migration below that can be deferred: sign-in (browser sessions)
+        # and account deletion (phone codes) need them on the first boot of an
+        # upgrade too.
+        await ensure_browser_session_tables(conn)
+        # A lock timeout below (the account columns, or the phone codes'
+        # purpose CHECK) is remembered, the rest of the schema is still
+        # built, and the timeout is raised at the end for bootstrap to retry
+        # from the background.
+        deferred: SchemaLockUnavailable | None = None
         try:
             await initialize_phone_auth(conn)
         except SchemaLockUnavailable as exc:
-            raise RequiredOperationalSchemaUnavailable(
-                "Phone identity columns are required before the operational store can serve."
-            ) from exc
+            deferred = exc
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)"
         )
-        # The hard-delete columns are part of the hard-delete state machine, and
-        # every single-user lookup (_USER_COLUMNS: sign-in, token refresh, the
-        # auth dependency) selects login_name. Install them before any other
-        # deferrable operational migration. If the upgrade cannot acquire the
-        # lock, refuse to expose the store rather than letting bootstrap defer a
-        # migration while those queries would fail with UndefinedColumnError.
+        # The hard-delete columns are part of the hard-delete state machine.
+        # Install them before any other operational migration. If the upgrade
+        # cannot acquire the lock, refuse to expose the store rather than
+        # letting bootstrap defer a migration while hard-delete/resume queries
+        # would fail with UndefinedColumnError.
         try:
             await apply_column_migrations(
                 conn,
@@ -222,28 +335,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                         "hard_delete_claim_token",
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hard_delete_claim_token TEXT",
                     ),
-                    # Sign-in name of an account created without an email address.
-                    ("login_name", "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT"),
                 ],
             )
-            # Databases created before email-less accounts have email NOT NULL,
-            # and first-run setup inserts its administrator without one. DROP NOT
-            # NULL takes ACCESS EXCLUSIVE, so it is gated on the catalog like the
-            # role column below. UNIQUE still admits any number of NULLs.
-            email_meta = await column_metadata(conn, "users", "email")
-            if email_meta is not None and email_meta["not_null"]:
-                async with bounded_ddl(conn):
-                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
         except SchemaLockUnavailable as exc:
             raise RequiredOperationalSchemaUnavailable(
-                "the users columns every account lookup reads (hard-delete claim, login "
-                "name, nullable email) are required before the operational store can "
-                "serve; refusing deferred startup while their migration is locked"
+                "hard-delete claim columns are required before the operational store "
+                "can serve; refusing deferred startup while its migration is locked"
             ) from exc
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name "
-            "ON users (lower(login_name)) WHERE login_name IS NOT NULL"
-        )
+
+        # The account columns (login names, phone numbers, accounts without an
+        # email) can wait for their lock: the store queries only the ones that
+        # exist (serving.storage.account_schema). The first boot after an
+        # upgrade often meets the nightly pg_dump, so a lock timeout here is
+        # remembered, the rest of the schema is still built, and the timeout
+        # is raised at the end for bootstrap to retry from the background.
+        try:
+            await migrate_users_account_schema(conn)
+        except SchemaLockUnavailable as exc:
+            deferred = deferred or exc
 
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
@@ -258,48 +367,56 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # startup path issues no strong-lock DDL at all. ALTER TABLE takes its
         # ACCESS EXCLUSIVE lock BEFORE evaluating IF NOT EXISTS, and users is
         # on auth's read path — a bare no-op ALTER queued behind the nightly
-        # pg_dump took production down on 2026-08-21.
-        await apply_column_migrations(
-            conn,
-            "users",
-            [
-                ("approval_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT"),
-                (
-                    "reviewed_at",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
-                ),
-                ("reviewed_by", "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT"),
-                (
-                    "signup_reason",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT",
-                ),
-                (
-                    "preferences",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                    "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
-                ),
-                (
-                    "max_concurrent_requests",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                    "max_concurrent_requests INT DEFAULT NULL",
-                ),
-                # Free-text admin-only annotation about a user (any status).
-                ("admin_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT"),
-                # Admin-authored message shown to the user on the login page when
-                # their account is suspended (user-facing, unlike admin_note).
-                (
-                    "suspension_message",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
-                ),
-                # The user's portrait, a small image data URL. A column of its
-                # own rather than a preference: preferences ride along on every
-                # API-key authentication, and a portrait has no business there.
-                (
-                    "avatar_data_url",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
-                ),
-            ],
-        )
+        # pg_dump took production down on 2026-08-21. A lock timeout here is
+        # deferred like the account columns: the rest of the schema is still
+        # built, and the reads that need a column it adds tolerate its absence.
+        try:
+            await apply_column_migrations(
+                conn,
+                "users",
+                [
+                    (
+                        "approval_note",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT",
+                    ),
+                    (
+                        "reviewed_at",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
+                    ),
+                    ("reviewed_by", "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT"),
+                    (
+                        "signup_reason",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT",
+                    ),
+                    (
+                        "preferences",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
+                    ),
+                    (
+                        "max_concurrent_requests",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "max_concurrent_requests INT DEFAULT NULL",
+                    ),
+                    # Free-text admin-only annotation about a user (any status).
+                    ("admin_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT"),
+                    # Admin-authored message shown to the user on the login page when
+                    # their account is suspended (user-facing, unlike admin_note).
+                    (
+                        "suspension_message",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
+                    ),
+                    # The user's portrait, a small image data URL. A column of its
+                    # own rather than a preference: preferences ride along on every
+                    # API-key authentication, and a portrait has no business there.
+                    (
+                        "avatar_data_url",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
+                    ),
+                ],
+            )
+        except SchemaLockUnavailable as exc:
+            deferred = deferred or exc
 
         # Status constraint rebuild — only when the CHECK does not admit
         # exactly the current status set (see constraint_admitted_values for
@@ -539,8 +656,6 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
 
-        await ensure_browser_session_tables(conn)
-
         # --- login_events ---
         await conn.execute(
             """
@@ -558,15 +673,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             """
         )
-        await apply_column_migrations(
-            conn,
-            "login_events",
-            [("phone", "ALTER TABLE login_events ADD COLUMN IF NOT EXISTS phone TEXT")],
-        )
-        login_email_meta = await column_metadata(conn, "login_events", "email")
-        if login_email_meta and login_email_meta["not_null"]:
-            async with bounded_ddl(conn):
-                await execute_ddl(conn, "ALTER TABLE login_events ALTER COLUMN email DROP NOT NULL")
+        # Phone sign-in's part of the account migration. After a lock timeout
+        # on users the holder is most likely pg_dump, which holds this table
+        # too: leave it to the same retry rather than queue a second
+        # ACCESS EXCLUSIVE request behind it.
+        if deferred is None:
+            try:
+                await migrate_login_events_account_schema(conn)
+            except SchemaLockUnavailable as exc:
+                deferred = exc
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_user "
             "ON login_events (user_id, created_at DESC) WHERE user_id IS NOT NULL"
@@ -594,16 +709,22 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 pending_email TEXT
             )
         """)
-        await apply_column_migrations(
-            conn,
-            "email_verification_tokens",
-            [
-                (
-                    "pending_email",
-                    "ALTER TABLE email_verification_tokens ADD COLUMN IF NOT EXISTS pending_email TEXT",
-                ),
-            ],
-        )
+        # Deferred on a lock timeout like the users columns; a verification
+        # token for an email binding cannot be issued until it lands.
+        try:
+            await apply_column_migrations(
+                conn,
+                "email_verification_tokens",
+                [
+                    (
+                        "pending_email",
+                        "ALTER TABLE email_verification_tokens "
+                        "ADD COLUMN IF NOT EXISTS pending_email TEXT",
+                    ),
+                ],
+            )
+        except SchemaLockUnavailable as exc:
+            deferred = deferred or exc
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_email_verification_user "
             "ON email_verification_tokens(user_id)"
@@ -1007,6 +1128,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         """)
 
+        if deferred is not None:
+            raise SchemaLockUnavailable(
+                "the account migrations (login names, phone numbers, accounts without an "
+                "email, phone code purposes) are not all applied yet; until they are, "
+                "first-run setup and phone sign-in answer 503 and the rest works on the "
+                f"current tables: {deferred}"
+            ) from deferred
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -1025,7 +1154,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Fetch a single user row by primary key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_USER_COLUMNS} FROM users WHERE id = $1",
+                f"SELECT {self._user_select} FROM users WHERE id = $1",
                 user_id,
             )
         return _coerce_user_row(row)
@@ -1034,17 +1163,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Fetch a single user row by lowercased email."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_USER_COLUMNS} FROM users WHERE email = $1",
+                f"SELECT {self._user_select} FROM users WHERE email = $1",
                 email.lower(),
             )
         return _coerce_user_row(row)
 
     async def get_user_by_login_name(self, login_name: str) -> Row | None:
-        """Fetch a single user row by login name, compared case-insensitively."""
+        """Fetch a single user row by login name, compared case-insensitively.
+
+        None, without a query, while the users table has no ``login_name``
+        column: until the upgrade adds it no account can have a login name.
+        """
+        schema = await self._account_schema_where(lambda s: s.has("login_name"))
+        if not schema.has("login_name"):
+            return None
         async with self._pool.acquire() as conn:
             # Matches the expression and predicate of idx_users_login_name.
             row = await conn.fetchrow(
-                f"SELECT {_USER_COLUMNS} FROM users "
+                f"SELECT {self._user_select} FROM users "
                 "WHERE lower(login_name) = $1 AND login_name IS NOT NULL",
                 login_name.strip().lower(),
             )
@@ -1062,7 +1198,33 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         signup_reason: str | None = None,
         login_name: str | None = None,
     ) -> None:
-        """Insert a new user row."""
+        """Insert a new user row.
+
+        A signup (an email and no login name) names only columns every
+        release's users table has, so it works while the account migration
+        is still pending. An account with a login name or without an email
+        needs that migration.
+
+        Raises:
+            AccountSchemaPending: The account needs columns the upgrade has
+                not added yet.
+        """
+        if login_name is None and email is not None:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO users (id, email, password_hash, user_name, "
+                    "email_verified, status, signup_reason) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    user_id,
+                    email.lower(),
+                    password_hash,
+                    user_name,
+                    email_verified,
+                    status,
+                    signup_reason,
+                )
+            return
+        await self._require_account_schema("login_names")
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
@@ -1147,7 +1309,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         READ COMMITTED (asyncpg's default) every statement after the lock takes
         a fresh snapshot, so a claim that waited on the lock sees the winner's
         committed user and marker and backs out.
+
+        Raises:
+            AccountSchemaPending: The users table cannot hold an account with
+                a login name and no email yet; nothing was written.
         """
+        await self._require_account_schema("login_names")
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(_FIRST_RUN_SETUP_LOCK_SQL)
             if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
@@ -1240,11 +1407,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active'",
                 user_id,
             )
-            await conn.execute(
-                "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
-                "phone = (SELECT phone FROM users WHERE id = $1)",
-                user_id,
-            )
+            await self._forget_phone_challenges(conn, user_id, erase_attempts=False)
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
             await self._forget_browser_session_account(conn, user_id)
             await conn.execute("DELETE FROM email_verification_tokens WHERE user_id = $1", user_id)
@@ -1275,6 +1438,32 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "UPDATE browser_sessions SET active_user_id = NULL WHERE active_user_id = $1",
             user_id,
         )
+
+    @staticmethod
+    async def _forget_phone_challenges(
+        conn: asyncpg.Connection, user_id: str, *, erase_attempts: bool
+    ) -> None:
+        """Delete a deleted account's phone codes and, on erasure, its number's attempts.
+
+        Whether the users table has a phone number to match is read from the
+        catalog here rather than from the store's account schema, which can be
+        older: an erasure must not skip a number stored since the migration.
+        """
+        if "phone" not in await existing_columns(conn, "users"):
+            # No column, so no number: only codes bound to the account remain.
+            await conn.execute("DELETE FROM phone_auth_codes WHERE user_id = $1", user_id)
+            return
+        await conn.execute(
+            "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
+            "phone = (SELECT phone FROM users WHERE id = $1)",
+            user_id,
+        )
+        if erase_attempts:
+            await conn.execute(
+                "DELETE FROM phone_auth_attempts WHERE "
+                "phone = (SELECT phone FROM users WHERE id = $1)",
+                user_id,
+            )
 
     async def begin_hard_delete_user(self, user_id: str) -> str:
         """Claim a soft-deleted user before purging rows in another store."""
@@ -1404,16 +1593,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
             )
             await self._forget_browser_session_account(conn, user_id)
-            await conn.execute(
-                "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
-                "phone = (SELECT phone FROM users WHERE id = $1)",
-                user_id,
-            )
-            await conn.execute(
-                "DELETE FROM phone_auth_attempts WHERE "
-                "phone = (SELECT phone FROM users WHERE id = $1)",
-                user_id,
-            )
+            await self._forget_phone_challenges(conn, user_id, erase_attempts=True)
             login_events_status = await conn.execute(
                 "DELETE FROM login_events WHERE user_id = $1", user_id
             )
@@ -1554,6 +1734,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         today_str = datetime.now(timezone.utc).date().isoformat()
         prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        schema = self._account_schema
 
         where_clauses: list[str] = []
         filter_params: list[Any] = []
@@ -1562,15 +1743,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             where_clauses.append(f"u.status = ${len(filter_params) + 1}")
             filter_params.append(status)
         if search:
-            # Search matches email, login name and display name as substrings,
-            # plus a user.id prefix and an active key_prefix prefix.
+            # Search matches email, login name, phone and display name as
+            # substrings, plus a user.id prefix and an active key_prefix
+            # prefix. A login name or phone column the upgrade has not added
+            # yet holds nothing to match.
             substr_idx = len(filter_params) + 1  # %search%
             id_idx = len(filter_params) + 2  # search% (id prefix)
             kp_idx = len(filter_params) + 3  # search% (key prefix)
+            identifiers = "".join(
+                f"OR u.{column} ILIKE ${substr_idx} "
+                for column in ("login_name", "phone")
+                if schema.has(column)
+            )
             where_clauses.append(
                 f"(u.email ILIKE ${substr_idx} "
-                f"OR u.login_name ILIKE ${substr_idx} "
-                f"OR u.phone ILIKE ${substr_idx} "
+                f"{identifiers}"
                 f"OR u.user_name ILIKE ${substr_idx} "
                 f"OR u.id::text LIKE ${id_idx} "
                 f"OR EXISTS (SELECT 1 FROM api_keys k2 "
@@ -1744,9 +1931,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
             # Main query — always uses CTE form (filtered_users) so we can
             # share the WHERE clause and join optional cost CTEs uniformly.
+            identity = schema.select(
+                ("id", "email", "login_name", "phone", "phone_verified", "user_name"), "u"
+            )
             cte_parts = [
                 f"filtered_users AS ("
-                f"  SELECT u.id, u.email, u.login_name, u.phone, u.phone_verified, u.user_name, u.role, u.status, "
+                f"  SELECT {identity}, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                 f"  u.signup_reason, u.admin_note, "
                 f"  u.created_at, u.last_login_at, "
@@ -1991,10 +2181,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         Returns full projection in a single round-trip.
         """
+        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "u.email, u.login_name, u.phone, u.phone_verified, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
+                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -2007,9 +2198,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup (no quota check, no last_used write)."""
+        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.user_id, u.email, u.login_name, u.phone, u.phone_verified, u.role, u.email_verified, u.preferences, "
+                f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
                 "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -2433,11 +2625,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def list_browser_session_accounts(self, browser_session_id: str) -> list[Row]:
         """Return the accounts signed in to a browser, oldest first."""
+        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT a.user_id, a.auth_session_id, a.added_at, "
                 "s.sid, s.expires_at AS session_expires_at, s.revoked AS session_revoked, "
-                "u.email, u.login_name, u.phone, u.phone_verified, u.user_name, u.role, "
+                f"{identity}, u.user_name, u.role, "
                 "u.status, u.email_verified, u.password_hash IS NOT NULL AS has_password, "
                 "u.created_at, u.last_login_at "
                 "FROM browser_session_accounts a "
@@ -3006,16 +3199,37 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return stored if isinstance(stored, dict) else None
 
     async def get_user_avatar(self, user_id: str) -> str | None:
-        """Return the user's portrait data URL, or None."""
+        """Return the user's portrait data URL, or None.
+
+        None as well while an upgrade's column migration has not added the
+        column yet (it waits for the users table's lock, see
+        :mod:`serving.storage.account_schema`): no portrait is stored then.
+        """
+        import asyncpg
+
         async with self._pool.acquire() as conn:
-            return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
+            try:
+                return await conn.fetchval(
+                    "SELECT avatar_data_url FROM users WHERE id = $1", user_id
+                )
+            except asyncpg.UndefinedColumnError:
+                return None
 
     async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
-        """Replace the user's portrait; None removes it."""
+        """Replace the user's portrait; None removes it.
+
+        Raises:
+            AccountSchemaPending: The upgrade has not added the column yet.
+        """
+        import asyncpg
+
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
-            )
+            try:
+                await conn.execute(
+                    "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
+                )
+            except asyncpg.UndefinedColumnError as exc:
+                raise AccountSchemaPending() from exc
 
     # -- signup domain allowlist --------------------------------------------
 
@@ -3923,11 +4137,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         today_str = datetime.now(timezone.utc).date().isoformat()
         prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        identity = ("id", "email", "login_name", "phone", "user_name", "role")
+        schema = self._account_schema
 
         async with self._pool.acquire() as conn:
             # 1. Pending count + top
             pending_rows = await conn.fetch(
-                "SELECT id, email, login_name, phone, user_name, role, created_at "
+                f"SELECT {schema.select(identity)}, created_at "
                 "FROM users WHERE status = 'pending_approval' "
                 "ORDER BY created_at DESC LIMIT $1",
                 top_n,
@@ -3939,7 +4155,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             # 2. Today / 7d-avg per user (active users only).
             #    ``user_daily_cost.day`` is TEXT (YYYY-MM-DD) in this schema.
             usage_rows = await conn.fetch(
-                """
+                f"""
                 WITH today_costs AS (
                     SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
                     FROM user_daily_cost
@@ -3954,7 +4170,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     WHERE day BETWEEN $2 AND $3
                     GROUP BY user_id
                 )
-                SELECT u.id, u.email, u.login_name, u.phone, u.user_name, u.role,
+                SELECT {schema.select(identity, "u")},
                        COALESCE(t.today_cost, 0) AS today_cost,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,

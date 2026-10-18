@@ -29,7 +29,12 @@ async def update_config(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ConfigResponse:
-    """Validate a batch of values together, store it in one transaction, and apply it."""
+    """Validate a batch of values together, store it in one transaction, and apply it.
+
+    ``secrets`` marks keys secret, one-way. A key it names that ``values`` does
+    not keeps its stored value and gains only the flag (400 when it has no
+    stored row yet). The audit log records a secret's change, never its value.
+    """
     try:
         changes = await app_config.update(payload.values, payload.secrets, updated_by=admin_id)
     except app_config.ConfigUpdateError as exc:
