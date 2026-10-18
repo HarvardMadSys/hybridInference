@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 15:43+0800\n"
+"POT-Creation-Date: 2026-10-18 03:18-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -391,17 +391,35 @@ msgstr ""
 
 #: ../developer/contributing.md:205
 msgid ""
-"The `dbtest` tier needs a reachable PostgreSQL. Tests read "
-"`TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` "
-"(defaulting to `localhost:5432` and `postgres`/`postgres`), and some read"
-" a full `TEST_PG_DSN`. Starting just the database container is enough:"
+"The `dbtest` tier needs a reachable PostgreSQL. Every test finds it "
+"through `tests/fixtures/postgres.py`, which reads `TEST_DB_HOST`, "
+"`TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` "
+"(defaulting to `localhost:5432`, `postgres`/`postgres` and "
+"`hybridinference_test_db`). Starting just the database container is "
+"enough:"
 msgstr ""
-"`dbtest` 这一层需要能连上的 PostgreSQL。测试会读取 "
-"`TEST_DB_HOST`、`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD`（默认是 "
-"`localhost:5432` 和 `postgres`/`postgres`），有些还会读取完整的 "
-"`TEST_PG_DSN`。只启动数据库容器就够了："
+"`dbtest` 这一层需要能连上的 PostgreSQL。所有测试都通过 "
+"`tests/fixtures/postgres.py` 找到它，这个模块读取 `TEST_DB_HOST`、"
+"`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD` 和 `TEST_DB_NAME`"
+"（默认是 `localhost:5432`、`postgres`/`postgres` 和 "
+"`hybridinference_test_db`）。只启动数据库容器就够了："
 
-#: ../developer/contributing.md:214
+#: ../developer/contributing.md:215
+msgid ""
+"`make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, "
+"so a database test that cannot connect fails instead of skipping, and "
+"`TEST_DB_HOST` and `TEST_DB_PORT` must be set explicitly. CI sets the "
+"same variable. Before a parallel run with `-n N`, run `uv run python -m "
+"tests.fixtures.postgres prepare --workers N` once to give each worker a "
+"migrated copy."
+msgstr ""
+"`make test-db` 会先准备表结构，并设置 `TEST_DB_REQUIRED=1`：连不上数据库的"
+"测试会失败而不是跳过，而且必须显式设置 `TEST_DB_HOST` 和 `TEST_DB_PORT`。"
+"CI 也设置了这个变量。用 `-n N` 并行运行之前，先执行一次 `uv run python -m "
+"tests.fixtures.postgres prepare --workers N`，为每个 worker 准备一份已迁移的"
+"数据库。"
+
+#: ../developer/contributing.md:221
 msgid ""
 "`make test` parallelises with `pytest-xdist` at file granularity. Run "
 "serially when you are debugging a specific failure, but check a suspected"
@@ -411,15 +429,15 @@ msgstr ""
 "`make test` 用 `pytest-xdist` 以文件为粒度并行。调查某个具体失败时可以串行跑，但怀疑是环境变量泄漏引起的失败，还要在 "
 "`-n auto` 下再查一遍——跨文件的环境泄漏只有在并行运行时才会暴露。"
 
-#: ../developer/contributing.md:219
+#: ../developer/contributing.md:226
 msgid "Frontend"
 msgstr "前端"
 
-#: ../developer/contributing.md:221
+#: ../developer/contributing.md:228
 msgid "The console's gates are separate from the Python ones:"
 msgstr "控制台的门禁与 Python 那套是分开的："
 
-#: ../developer/contributing.md:233
+#: ../developer/contributing.md:240
 msgid ""
 "CI additionally runs `npm run format:check` (prettier) and `npm audit "
 "--omit=dev --audit-level=high` in `apps/frontend`."
@@ -427,11 +445,11 @@ msgstr ""
 "CI 还会在 `apps/frontend` 里额外运行 `npm run format:check`（prettier）和 `npm audit"
 " --omit=dev --audit-level=high`。"
 
-#: ../developer/contributing.md:236
+#: ../developer/contributing.md:243
 msgid "Documentation"
 msgstr "文档"
 
-#: ../developer/contributing.md:238
+#: ../developer/contributing.md:245
 msgid ""
 "These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, "
 "with `docs/developer/index.rst` as the root toctree. Build them, and run "
@@ -440,7 +458,7 @@ msgstr ""
 "这些页面用 MyST Markdown 编写，由 Sphinx 从 `docs/developer/` 编译，根 toctree 是 "
 "`docs/developer/index.rst`。在仓库根目录下构建文档，并运行 CI 会跑的检查："
 
-#: ../developer/contributing.md:246
+#: ../developer/contributing.md:253
 msgid ""
 "That builds the English and Chinese sites with warnings treated as "
 "errors, checks the local links in every Markdown file, and checks that no"
@@ -455,68 +473,68 @@ msgstr ""
 "toctree，它都会失败，所以推送之前先跑一遍。Sphinx、`myst-parser` 和 `sphinx-rtd-theme` 都来自 "
 "`dev` 依赖组，所以执行过 `make setup-dev` 就能构建。`make docs` 只构建站点。"
 
-#: ../developer/contributing.md:253
+#: ../developer/contributing.md:260
 msgid ""
 "Add a new page to `docs/developer/index.rst` as well as writing it; an "
 "orphan file is a warning, and warnings are errors in CI."
 msgstr "新写一个页面，还要把它加进 `docs/developer/index.rst`；没加进去的孤立文件会产生警告，而 CI 会把警告当作错误。"
 
-#: ../developer/contributing.md:256
+#: ../developer/contributing.md:263
 msgid "Writing a page"
 msgstr "撰写页面"
 
-#: ../developer/contributing.md:258
+#: ../developer/contributing.md:265
 msgid ""
 "These pages ship with the source, and most readers arrive from a search "
 "or the sidebar with one task in mind. Write for that reader:"
 msgstr "这些页面随源码一起发布，大多数读者是从搜索结果或侧边栏进来的，心里只想着一件要办的事。写的时候要想着这样的读者："
 
-#: ../developer/contributing.md:261
+#: ../developer/contributing.md:268
 msgid ""
 "**Say who the page is for and what they can do after reading it**, in the"
 " first paragraph."
 msgstr "**说明页面写给谁、读完之后能做什么**，放在第一段。"
 
-#: ../developer/contributing.md:263
+#: ../developer/contributing.md:270
 msgid ""
 "**Lead with the action or the answer.** Put exceptions and edge cases "
 "after it, in a note if they run long, and do not open a section with what"
 " the software lacks."
 msgstr "**先给出操作步骤或答案**。例外和边界情况放在后面，篇幅长的话放进 note；小节开头也不要先讲软件缺少什么。"
 
-#: ../developer/contributing.md:266
+#: ../developer/contributing.md:273
 msgid ""
 "**Name a file only when the reader will open or edit it.** Do not cite "
 "functions or line numbers to prove a statement; tests and review do that."
 msgstr "**只有读者会打开或编辑某个文件时，才写出它的文件名**。不要为了证明某个说法去引用函数或行号；那是测试和评审的事。"
 
-#: ../developer/contributing.md:268
+#: ../developer/contributing.md:275
 msgid ""
 "**Describe the software as it is now.** What changed, how it used to work"
 " and how you checked belong in the pull request, the release notes or "
 "`docs/reviews/`."
 msgstr "**描述软件现在的样子**。改了什么、以前是怎么工作的、你是怎么验证的，这些该写进 PR、发布说明或 `docs/reviews/`。"
 
-#: ../developer/contributing.md:271
+#: ../developer/contributing.md:278
 msgid ""
 "**Leave out the details of any one installation** — its hosts, model ids,"
 " accounts and measurements. They belong in that distribution's own "
 "documentation."
 msgstr "**不要写某个具体部署的细节**——它的主机、模型 id、账号和测量数据。这些属于那个发行版自己的文档。"
 
-#: ../developer/contributing.md:274
+#: ../developer/contributing.md:281
 msgid ""
 "**Use the words in the [Glossary](glossary.md)**, and add a term there "
 "before relying on a new one."
 msgstr "**用[术语表](glossary.md)里的词**；要用一个新术语，先把它加进术语表。"
 
-#: ../developer/contributing.md:276
+#: ../developer/contributing.md:283
 msgid ""
 "**Keep a paragraph to one idea.** When it piles up conditions, make it a "
 "list or a table."
 msgstr "**一个段落只讲一件事**。条件一多，就改成列表或表格。"
 
-#: ../developer/contributing.md:278
+#: ../developer/contributing.md:285
 msgid ""
 "**When a setting does not do what its name suggests, say so in one "
 "sentence**, add it to [Settings that currently have no "
@@ -526,11 +544,11 @@ msgstr ""
 "**如果某个设置的实际作用和它的名字对不上，用一句话说明**，把它加进[目前不生效的设置](configuration.md#settings-"
 "that-currently-have-no-effect)，并提一个 issue，而不是长篇解释内部实现。"
 
-#: ../developer/contributing.md:283
+#: ../developer/contributing.md:290
 msgid "Translations"
 msgstr "翻译"
 
-#: ../developer/contributing.md:285
+#: ../developer/contributing.md:292
 msgid ""
 "The site is published in English and Chinese, and an English edit changes"
 " the paragraph a translation is attached to. Update the Chinese in the "
@@ -539,17 +557,17 @@ msgstr ""
 "站点同时发布英文版和中文版。译文是挂在英文段落上的，改动英文段落，挂在上面的译文就对不上了。请在同一个 PR "
 "里更新中文，具体做法见[翻译文档](translations.md)。"
 
-#: ../developer/contributing.md:289
+#: ../developer/contributing.md:296
 msgid "Proposing a change"
 msgstr "提出改动"
 
-#: ../developer/contributing.md:291
+#: ../developer/contributing.md:298
 msgid ""
 "**Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on "
 "pull requests against `main` and `dev`."
 msgstr "**从 `dev` 开分支，而不是 `main`**。PR 提向 `dev`；针对 `main` 和 `dev` 的 PR 都会跑 CI。"
 
-#: ../developer/contributing.md:293
+#: ../developer/contributing.md:300
 msgid ""
 "**Name branches `<user>/<scope>/<feature-name>`**, e.g. `jane/routing"
 "/weighted-fallback`."
@@ -557,7 +575,7 @@ msgstr ""
 "**分支命名为 `<user>/<scope>/<feature-name>`**，例如 `jane/routing/weighted-"
 "fallback`。"
 
-#: ../developer/contributing.md:295
+#: ../developer/contributing.md:302
 msgid ""
 "**Write commit and pull-request titles as conventional commits** — "
 "`type(scope): summary`, e.g. `fix(routing): keep the fallback route on "
@@ -569,13 +587,13 @@ msgstr ""
 " `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
 "commit，所以你写的 PR 标题就是最终的 commit 标题，格式参照 `git log --oneline` 即可。"
 
-#: ../developer/contributing.md:300
+#: ../developer/contributing.md:307
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
 "change, and add tests for new behaviour."
 msgstr "一个 PR 只做一个功能或一处修复，文档在同一个 PR 里一起更新，并为新行为补上测试。"
 
-#: ../developer/contributing.md:302
+#: ../developer/contributing.md:309
 msgid ""
 "Call out changes to API behavior, configuration, defaults or database "
 "schema in the PR, with migration steps and rollback limits. See [Releases"
@@ -585,15 +603,15 @@ msgstr ""
 "的变化，并提供迁移步骤和回滚限制。参见[发布与升级](releases.md#compatibility-and-breaking-"
 "changes)。"
 
-#: ../developer/contributing.md:305
+#: ../developer/contributing.md:312
 msgid "Do not commit to `main` or `dev` directly."
 msgstr "不要直接向 `main` 或 `dev` 提交。"
 
-#: ../developer/contributing.md:307
+#: ../developer/contributing.md:314
 msgid "What CI will run"
 msgstr "CI 会跑什么"
 
-#: ../developer/contributing.md:309
+#: ../developer/contributing.md:316
 msgid ""
 "The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
 "pull request touched and then runs only the relevant jobs:"
@@ -693,7 +711,7 @@ msgstr ""
 msgid "aggregates the results of the jobs above into one check"
 msgstr "把上面各个 job 的结果汇总成一个检查项"
 
-#: ../developer/contributing.md:324
+#: ../developer/contributing.md:331
 msgid ""
 "Because CI includes `dbtest`, a change to storage or auth can be green "
 "locally and red in CI. Run `make test-db` against a local Postgres when "
@@ -703,7 +721,7 @@ msgstr ""
 "`apps/backend/serving/storage/` 或认证相关接口时，要对着本地 Postgres 跑一遍 `make test-"
 "db`。"
 
-#: ../developer/contributing.md:328
+#: ../developer/contributing.md:335
 msgid ""
 "If a pull request shows no CI run at all, check whether it has a merge "
 "conflict first — a conflicted pull request does not trigger the "

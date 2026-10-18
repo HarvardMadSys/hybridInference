@@ -7,8 +7,6 @@ yet. It must work on that database as it is, and on the current schema.
 
 from __future__ import annotations
 
-import os
-
 import asyncpg
 import pytest
 import pytest_asyncio
@@ -16,31 +14,18 @@ import pytest_asyncio
 from serving.auth import reset_password as cli
 from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.utils import password as password_utils
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
-_ALLOWED_TEST_DB_PATTERN = "_test_"
 NEW_PASSWORD = "Rec0veredPassword"
 OLD_USER = "u-reset-cli-old"
 ADMIN_USER = "u-reset-cli-admin"
 
 
 def _test_database() -> dict[str, str]:
-    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-    name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
-    if _ALLOWED_TEST_DB_PATTERN not in name:
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run."
-        )
-    return {
-        "DB_HOST": os.getenv("TEST_DB_HOST", "localhost"),
-        "DB_PORT": os.getenv("TEST_DB_PORT", "5432"),
-        "DB_NAME": name,
-        "DB_USER": os.getenv("TEST_DB_USER", "postgres"),
-        "DB_PASSWORD": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
+    """The ``DB_*`` variables the command reads, pointed at this worker's test database."""
+    return postgres.target().app_env()
 
 
 async def _forget(conn: asyncpg.Connection) -> None:
@@ -54,19 +39,7 @@ async def _forget(conn: asyncpg.Connection) -> None:
 async def database(monkeypatch, tmp_path):
     """A pool on the current schema; the command reaches the same database through ``DB_*``."""
     settings = _test_database()
-    try:
-        pool = await asyncpg.create_pool(
-            host=settings["DB_HOST"],
-            port=int(settings["DB_PORT"]),
-            database=settings["DB_NAME"],
-            user=settings["DB_USER"],
-            password=settings["DB_PASSWORD"],
-            min_size=1,
-            max_size=4,
-        )
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
-        return  # unreachable
+    pool = await postgres.create_pool(min_size=1, max_size=4)
     for name, value in settings.items():
         monkeypatch.setenv(name, value)
     monkeypatch.chdir(tmp_path)  # the command must not find a .env

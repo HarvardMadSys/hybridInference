@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -11,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from serving.storage.database import DatabaseLogger
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     import asyncpg
@@ -20,10 +20,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
 
 
 async def _truncate(pool: asyncpg.Pool) -> None:
@@ -463,7 +460,6 @@ async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
 @pytest.mark.asyncio
 async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: str):
     """A second concurrent hourly_job acquires no lock and returns no work."""
-    import asyncpg
 
     from serving.admin.provider_stats_rollup import ADVISORY_LOCK_KEY, hourly_job
 
@@ -471,7 +467,7 @@ async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: s
     pool = db_logger.pool
 
     # Hold the advisory lock on a separate session.
-    holder = await asyncpg.connect(pg_dsn)
+    holder = await postgres.connect()
     try:
         got = await holder.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_KEY)
         assert got is True

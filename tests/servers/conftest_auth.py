@@ -1,6 +1,5 @@
 """Auth-specific fixtures for testing authentication system."""
 
-import os
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -17,9 +16,9 @@ from httpx import AsyncClient
 
 from serving.servers.deps import AppServices
 from serving.storage.database import DatabaseLogger
+from tests.fixtures import postgres
 from tests.fixtures.auth_helpers import (
     assert_test_db_from_pool,
-    assert_test_db_name,
     build_auth_test_env_defaults,
     cleanup_auth_tables,
     login_and_get_auth_headers,
@@ -46,9 +45,6 @@ def auth_env(monkeypatch):
             "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
         }
     )
-    # auth_test_env assigns DB_NAME to this xdist worker's database while
-    # retaining TEST_DB_NAME as the unsuffixed base used by direct DB fixtures.
-    test_env["DB_NAME"] = os.environ.get("DB_NAME", test_env["DB_NAME"])
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
 
@@ -70,29 +66,18 @@ async def _init_pg_backend():
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    # The server fixture's DB_NAME is the concrete xdist-worker database.
-    # TEST_DB_NAME intentionally remains the unsuffixed base for direct
-    # integration fixtures that append the worker id themselves.
-    test_db_name = os.getenv("DB_NAME", os.getenv("TEST_DB_NAME", "hybridinference_test_db"))
-    assert_test_db_name(test_db_name, context="auth_backend init")
-
-    db_config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": test_db_name,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-
-    logger = DatabaseLogger(db_config=db_config)
+    logger = DatabaseLogger(db_config=postgres.target().connect_kwargs())
 
     try:
         await logger.initialize()
     except Exception as e:
-        pytest.skip(f"PostgreSQL not available: {e}")
+        postgres.database_unavailable(f"PostgreSQL not available: {e}")
 
     if logger.pool:
         await assert_test_db_from_pool(logger.pool, context="auth_backend pool")
+        # DatabaseLogger alone leaves the operational columns (users.signup_reason
+        # and friends) missing on a database nothing else has migrated yet.
+        await postgres.prepare_schema(logger.pool)
 
     settings = get_settings()
     pg_op = PostgresOperationalStore(logger.pool)

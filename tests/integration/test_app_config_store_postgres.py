@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
 from serving.config.app_config_store import AppConfigStore, ConfigRow
 from serving.config.runtime_settings import import_environment_values
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -46,7 +45,7 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
 
     # Hold the first write after validation. The second request can now either
     # wait for it or (without serialization) validate the same stale snapshot.
-    blocker = await asyncpg.connect(pg_dsn)
+    blocker = await postgres.connect()
     transaction = blocker.transaction()
     await transaction.start()
     tasks = []
@@ -124,15 +123,13 @@ async def test_failed_config_transaction_rolls_back_and_releases_the_lock(pool) 
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    """This worker's test database (tests/fixtures/postgres.py), reachable or skipped."""
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture
 async def pool(pg_dsn: str):
-    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+    pool = await postgres.create_pool(min_size=1, max_size=2)
     async with pool.acquire() as connection:
         await connection.execute("DROP TABLE IF EXISTS app_config")
         await connection.execute(
@@ -193,7 +190,7 @@ async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> N
     assert await store.delete("BOX_TOKEN") is True
     assert await store.delete("BOX_TOKEN") is False
 
-    connection = await asyncpg.connect(pg_dsn)
+    connection = await postgres.connect()
     try:
         single = AppConfigStore(connection)
         assert set(await single.fetch_all()) == {"SITE_NAME", "SMTP_PASSWORD"}
@@ -360,9 +357,9 @@ async def isolated_connection(pg_dsn: str):
     import secrets
 
     schema = f"app_config_it_{secrets.token_hex(4)}"
-    admin = await asyncpg.connect(pg_dsn)
+    admin = await postgres.connect()
     await admin.execute(f'CREATE SCHEMA "{schema}"')
-    connection = await asyncpg.connect(pg_dsn, server_settings={"search_path": schema})
+    connection = await postgres.connect(server_settings={"search_path": schema})
     try:
         yield connection
     finally:

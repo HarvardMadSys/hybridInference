@@ -3,29 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 
-import asyncpg
 import pytest
 
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
 @pytest.mark.asyncio
 async def test_atomic_tariff_insert_and_update_reject_stale_writers():
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set")
     schema = f"pricing_sync_{uuid.uuid4().hex}"
-    admin = await asyncpg.connect(dsn)
+    admin = await postgres.connect()
     pool = None
     try:
         await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await asyncpg.create_pool(
-            dsn, min_size=2, max_size=3, server_settings={"search_path": schema}
+        pool = await postgres.create_pool(
+            min_size=2, max_size=3, server_settings={"search_path": schema}
         )
         async with pool.acquire() as connection:
             await connection.execute(

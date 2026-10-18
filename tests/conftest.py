@@ -93,6 +93,38 @@ def subprocess_env(**overrides: str) -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": os.pathsep.join(entries), **overrides}
 
 
+# --- The test database is checked once, before anything runs -----------------
+#
+# A misconfigured database used to surface as hundreds of identical skips (or,
+# under TEST_DB_REQUIRED, failures) spread over the whole run. One line at the
+# start says it better. Only the controlling process checks: xdist workers start
+# their own sessions, and one answer is enough.
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if hasattr(session.config, "workerinput"):
+        return
+    from tests.fixtures import postgres
+
+    problem = postgres.configuration_problem()
+    if problem:
+        pytest.exit(f"Test database: {problem}", returncode=pytest.ExitCode.USAGE_ERROR)
+    if not postgres.database_required():
+        return
+
+    import asyncio
+
+    async def _reachable() -> str | None:
+        try:
+            conn = await postgres.connect(timeout=5, database=postgres.target().base_name)
+        except (pytest.skip.Exception, pytest.fail.Exception) as exc:
+            return str(exc)
+        await conn.close()
+        return None
+
+    failure = asyncio.run(_reachable())
+    if failure:
+        pytest.exit(f"Test database: {failure}", returncode=pytest.ExitCode.USAGE_ERROR)
+
+
 @pytest.fixture(autouse=True)
 def _reset_settings_cache():
     """Invalidate the cached ``Settings`` instance before/after each test.

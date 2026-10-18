@@ -1,7 +1,7 @@
 # 测试数据库契约设计：一个入口、一种失败方式
 
 - 日期：2026-10-18
-- 状态：草案，待 review
+- 状态：已实现（与本设计同一个 PR）。§8 列出实现时采用的默认决定，review 时可推翻
 - 范围：`tests/` 下所有连接 PostgreSQL 的 fixture、`.github/workflows/ci.yml` 的测试 job、
   `Makefile` 的 `test-db` 目标。**不改任何生产代码。**
 - 相关记录：#1466（CI 中真正执行数据库测试）、#1472（operational store 缺列）、
@@ -152,11 +152,12 @@ review 中已指出），`signup_reason` 等 operational 列只由后者的 `ini
 
 ### 4.1 唯一入口：`tests/fixtures/postgres.py`
 
-文件名不能以 `test_` 开头，否则会被 pytest 当作测试模块收集。
+文件名不能以 `test_` 开头，否则会被 pytest 当作测试模块收集；同理，入口里的函数和类名
+也不以 `test` 开头（`target()` / `DatabaseTarget`），否则被测试文件 import 后会被当成测试。
 
 ```python
 @dataclass(frozen=True)
-class TestDatabase:
+class DatabaseTarget:
     host: str
     port: int
     user: str
@@ -164,19 +165,24 @@ class TestDatabase:
     base_name: str   # TEST_DB_NAME 原值，永不修改
     name: str        # 本 worker 实际使用的库：base_name 或 base_name_gwN
 
-    def dsn(self) -> str: ...
-    def connect_kwargs(self) -> dict[str, object]: ...   # 给 asyncpg.connect / create_pool
-    def app_env(self) -> dict[str, str]: ...              # DB_HOST/DB_PORT/DB_NAME/... 给被测应用
+    def connect_kwargs(self, database=None) -> dict[str, Any]: ...  # 给 asyncpg / DatabaseLogger
+    def dsn(self, database=None) -> str: ...
+    def app_env(self) -> dict[str, str]: ...    # DB_HOST/DB_PORT/DB_NAME/... 给被测应用
 
 
-def test_database(*, worker: str | None = None) -> TestDatabase: ...
+def target(*, worker=None) -> DatabaseTarget: ...
+def configuration_problem() -> str | None: ...           # 不连接，只检查环境
 def database_required() -> bool: ...                     # TEST_DB_REQUIRED
 def database_unavailable(reason: str) -> NoReturn: ...   # skip 或 fail 的唯一出口
 
-async def connect(**overrides) -> asyncpg.Connection: ...
-async def create_pool(**overrides) -> asyncpg.Pool: ...
-async def prepare_schema(pool: asyncpg.Pool) -> None: ...
-async def prepare_worker_databases(count: int) -> None: ...
+async def connect(*, database=None, timeout=5, **kwargs) -> asyncpg.Connection: ...
+async def create_pool(*, database=None, **kwargs) -> asyncpg.Pool: ...
+async def connect_maintenance() -> asyncpg.Connection: ...   # postgres 库，用于建库
+async def worker_connect_kwargs() -> dict[str, Any]: ...      # 交给自己建池的网关代码
+def worker_dsn() -> str: ...                                  # 同步 fixture 用，先探测可达
+async def ensure_database(name, *, template=None) -> bool: ...
+async def prepare_schema(pool) -> None: ...
+async def prepare_databases(workers: int = 0) -> list[str]: ...
 ```
 
 要点：
@@ -190,6 +196,12 @@ async def prepare_worker_databases(count: int) -> None: ...
   `connect` / `create_pool` 成功后再用 `SELECT current_database()` 检查一次
   （复用现有的 `assert_test_db_name` / `assert_test_db_from_pool`，挪进本模块）。
 - **连接失败统一走 `database_unavailable(reason)`。**
+- **worker 库由入口按需创建。** `connect()` / `create_pool()` / `worker_dsn()` /
+  `worker_connect_kwargs()` 第一次连接本 worker 的库时，若它不存在就创建（每个进程只检查一次）。
+  §2.5 中 46 个 "does not exist" 的 skip 来自"谁负责建库"的不一致，这样就不再依赖顺序。
+- 把 DSN 或连接参数交给网关代码（`DatabaseLogger({"dsn": …})`）的 fixture，用
+  `worker_dsn()` / `worker_connect_kwargs()`：前者会先连一次、检查库名，连不上就在这里
+  skip 或 fail，而不是让网关代码抛出一个看起来像 bug 的异常。
 - 需要独立 schema 或独立库的测试（例如 `test_users_schema_lock_postgres`、
   `test_admin_request_*` 的 `CREATE SCHEMA … SET search_path`）照旧自己管理
   schema，只把"连到哪个库"交给入口。`create_pool(**overrides)` 允许传
@@ -216,25 +228,29 @@ PostgreSQL 就能跑"的习惯。真正危险的回退（`DB_*` → 5432）随 `
 
 - `database_unavailable(reason)`：required 时 `pytest.fail(reason)`，否则
   `pytest.skip(reason)`。全仓库只剩这一处数据库相关的 skip。
-- `tests/conftest.py` 增加 `pytest_sessionstart` 预检：required 时检查
-  `TEST_DB_HOST` / `TEST_DB_PORT` 已设置，并试连一次 `base_name`；失败就用
-  `pytest.exit(…, returncode=…)` 终止整个会话，让问题在一行里说清楚，而不是变成
-  几百个相同的失败。
+- `tests/conftest.py` 增加 `pytest_sessionstart` 预检（只在主进程执行，xdist worker
+  跳过）：任何模式下先跑 `configuration_problem()`（废弃变量、端口、库名）；required 时
+  再检查 `TEST_DB_HOST` / `TEST_DB_PORT` 已设置并试连一次 `base_name`。失败就用
+  `pytest.exit(…, returncode=ExitCode.USAGE_ERROR)` 终止整个会话，让问题在一行里说清楚，
+  而不是变成几百个相同的失败。
 - CI 的所有测试 job（`test (1)`…`test (4)`、`test (db)`）都设置
   `TEST_DB_REQUIRED=1`。它们本来就都启动了 postgres service。
 - `make test-db` 设置 `TEST_DB_REQUIRED=1`：既然显式要求跑数据库测试，就不应该静默跳过。
   `make test` 不设置，也不受影响，因为它本来就排除 `dbtest`。
 
-有了这一层，`ops/ci/check_pytest_skips.sh` 和 `test_ci_skip_guard.py` 可以退为兜底，
-在最后一个阶段删除（§6）。
+有了这一层，`ops/ci/check_pytest_skips.sh`、`tests/unit/ops/test_ci_skip_guard.py` 和
+CI 中所有 grep 日志的步骤一并删除：它们判断的是 skip 的措辞，而这里 skip 根本不会发生。
+`test (1)` 中单独串行运行 `test_erasure_fence_races.py` 的步骤也删除——`test (db)` 已经
+串行运行包括它在内的全部 `dbtest`，那一步只是重复执行，外加一套已不需要的计数检查。
 
 ### 4.4 表结构准备只有一份
 
 - `prepare_schema(pool)`：依次执行 `DatabaseLogger.initialize()`、
   `PostgresOperationalStore.initialize()`、`ResponseStore.initialize()`，与 CI
   现有步骤完全一致。
-- `prepare_worker_databases(count)`：在 `base_name` 上执行 `prepare_schema`，
-  再用它作模板创建或重建 `_gw0 … _gw{count-1}`。
+- `prepare_databases(workers)`：在 `base_name` 上执行 `prepare_schema`，再用它作模板
+  创建尚不存在的 `_gw0 … _gw{workers-1}`；已存在的 worker 库（例如上次本地运行留下的）
+  就地再执行一次 `prepare_schema`，补齐新列。
 - 模块提供命令行入口：`python -m tests.fixtures.postgres prepare --workers N`。
   - `ci.yml` 中那段内嵌 Python 换成这条命令。
   - `make test-db` 在 pytest 之前先执行它。
@@ -248,9 +264,10 @@ PostgreSQL 就能跑"的习惯。真正危险的回退（`DB_*` → 5432）随 `
 `tests/unit/test_database_entrypoint.py`，扫描 `tests/` 和 `distributions/*/tests/`：
 
 - 在 `tests/fixtures/postgres.py` 以外读取 `TEST_DB_*`、`TEST_PG_DSN`、`PG_TEST_DSN`，失败。
-- 在 `tests/fixtures/postgres.py` 以外直接调用 `asyncpg.connect` / `asyncpg.create_pool`，失败。
-- 允许名单 `ALLOWED_MODULES` 显式列出暂时例外的文件及原因（迁移期间用于 #1463
-  重叠的 4 个文件，§6），名单清空即迁移完成。
+- 在 `tests/fixtures/postgres.py` 以外直接调用 `asyncpg.connect` / `asyncpg.create_pool`
+  （或 `from asyncpg import connect / create_pool`），失败。
+- 允许名单 `ALLOWED` 只有入口本身。用同一套扫描去扫 `dev` @ `c870fed8` 的 `tests/`，
+  会在 29 个文件里报出 152 处，正好是附录 A 的范围。
 
 这个守卫取代 grep 日志：它不关心 skip 的措辞，只保证没有第二条连接路径。
 
@@ -295,45 +312,78 @@ from tests.fixtures import postgres
 pool = await postgres.create_pool(min_size=1, max_size=5)
 ```
 
-## 6. 分期
+## 6. 实施
 
-| 阶段 | 内容 | 依赖 |
-|---|---|---|
-| P1 | 新增 `tests/fixtures/postgres.py` 与单元测试；`TEST_DB_REQUIRED` 与会话预检；迁移附录 A 中除 #1463 重叠文件以外的全部文件；守卫测试带 4 个文件的允许名单；`ci.yml` 设置 `TEST_DB_REQUIRED=1` 并删除 `TEST_PG_DSN` / `PG_TEST_DSN`；保留 grep 兜底 | 无 |
-| P2 | `prepare_schema` / `prepare_worker_databases` 与命令行入口；替换 `ci.yml` 内嵌 Python；`make test-db` 先准备再测试；修 `_init_pg_backend`；在空库上本地跑全套，逐个处理剩余失败 | P1 |
-| P3 | 迁移 #1463 重叠的 4 个文件，清空允许名单；删除 `check_pytest_skips.sh` 与 `test_ci_skip_guard.py` | #1463 合并 |
+原计划分三期（P1 入口与迁移、P2 表结构准备、P3 等 #1463 合并后迁移重叠文件并删除 grep
+兜底）。最终按一个 PR 一次完成：
 
-P1、P2 都只碰测试和 CI。`ci.yml` 在 P1 中只改环境变量行，尽量不和在途 PR 冲突。
+- 新增 `tests/fixtures/postgres.py`、`tests/unit/test_postgres_fixture.py`（入口本身）、
+  `tests/unit/test_database_entrypoint.py`（§4.5 守卫）。
+- 迁移附录 A 的全部文件，**包括** #1463 也修改的 4 个。这 4 个文件里只改了连接 fixture
+  的那几行，测试函数本身没有动，以减小 #1463 合并 `dev` 时的冲突面。
+- `tests/fixtures/auth_helpers.py` 的 `assert_test_db_name` 等改为从入口重新导出，原有
+  import 不受影响；`build_auth_test_env_defaults()` 的 `DB_NAME` 改为本 worker 的库。
+- `tests/servers/conftest_auth.py::_init_pg_backend` 在 `DatabaseLogger.initialize()`
+  之后调用 `prepare_schema()`。
+- `ci.yml`：准备步骤改为 `python -m tests.fixtures.postgres prepare`；所有测试步骤设置
+  `TEST_DB_REQUIRED=1`；删除 `TEST_PG_DSN` / `PG_TEST_DSN`、grep 兜底和重复的
+  erasure-fence 步骤（§4.3）。普通分片仍导出 `DB_*`，因为被测网关本身读它们。
+- `make test-db` 先 `prepare` 再测试，二者都设置 `TEST_DB_REQUIRED=1`。
+- `docs/developer/contributing.md` 及其中文翻译同步更新。
+
+仍未处理：`test_growth_series_postgres.py` 在找不到 `api_logs` 时会自己建一张精简版的表。
+在准备过的库上它什么也不做，但在完全未准备的库上，如果它比其他测试先运行，后面依赖完整
+`api_logs` 的测试会受影响。CI 和 `make test-db` 都会先准备，所以只影响直接对空库运行
+`pytest` 的情况，留作后续。
 
 ## 7. 验证
 
-- **required 模式真的会失败：** CI 环境变量 + `TEST_DB_PORT` 指向一个没有监听的端口，
-  会话预检终止并报出地址；去掉预检后，每个数据库测试都应是 failed，没有 skipped。
-- **非 required 模式行为不变：** 没有数据库时 `make test` 结果与迁移前一致，
-  数据库测试仍然 skip。
-- **CI 覆盖不减少：** P1 前后对比 `test (db)` 和四个普通分片的
-  passed/skipped 数（`dev` @ `c870fed8` 的 `test (db)` 是 341 passed、3 skipped，
-  3 个都是外部 API key）。
-- **本地与 CI 一致（P2）：** 在全新的 PostgreSQL 上执行 `make test-db`，
-  零个数据库相关的 skip，passed 数与 CI 的 `test (db)` 相同；再以 `-n 8` 执行一次，
-  §2.5 中的 85 个 `UndefinedColumnError` 和 46 个 "does not exist" skip 都应消失。
-- **守卫有效：** 在任意测试文件里新增 `os.getenv("TEST_DB_PORT")`，守卫测试失败。
-- **没有误连：** 保留 §2.4 的复现方式（5432 上有一个不相关的实例），迁移后
-  这类 `password authentication failed` 的 skip 数应为零。
+以下都在本机、全新的 PostgreSQL 16 容器上执行（`fsync=off`），代码为本 PR 的最终版本；
+"CI 环境"指与 `ci.yml` 中对应步骤相同的变量。
 
-## 8. 待决问题
+| 场景 | 迁移前（`dev`） | 迁移后 |
+|---|---|---|
+| 只设置 `TEST_DB_*`，串行运行 `-m "dbtest and not external"`（§2.4） | 252 passed，92 skipped（89 个与数据库有关） | **341 passed，3 skipped**（3 个都是外部 API key） |
+| CI `test (db)` 环境，串行 | 341 passed，3 skipped | 341 passed，3 skipped |
+| 同上，`-n 8`，库已 `prepare` | —— | 341 passed，3 skipped |
+| 同上，`-n 8`，**空库、不 prepare**（§2.5） | 17 failed，74 errors，49 skipped | **341 passed，3 skipped** |
+| 空 server 上执行 `make test-db` | —— | 341 passed，3 skipped（`prepare` 自动建好基础库） |
+| CI 普通分片环境，`-m "not external and not dbtest" -n 8` | —— | 7781 passed，7 skipped（均与数据库无关） |
+| 不设置任何 `TEST_DB_*`，`make test` | 7740 passed，15 skipped | 7773 passed，15 skipped；skip 原因与迁移前逐条相同，多出的是新增单元测试 |
+| `TEST_DB_REQUIRED=1`，端口无人监听 | —— | 会话立即退出（exit 4），一行说明地址与原因 |
+| `TEST_DB_REQUIRED=1`，未设置 `TEST_DB_HOST` | —— | 会话立即退出，说明拒绝回退到 `localhost:5432` |
+| 只设置 `TEST_PG_DSN` | —— | 会话立即退出，提示改用 `TEST_DB_*` |
+| 未设置 `TEST_DB_REQUIRED`，端口无人监听，`-m dbtest -n 8` | —— | 5 passed，339 skipped，没有 error |
+| 守卫扫描 `tests/` | 29 个文件 152 处 | 0 |
 
-- **Q1 测试归类：** 是否按 fixture 自动给使用真实数据库的测试加 `dbtest`（§4.6）？
-  好处是本地 `make test` 不再依赖数据库，分类也更诚实；代价是这些测试从并行的普通分片
-  移进串行的 `db` 分片，CI 时间会增加（`test_admin.py` 等的规模待统计）。
-- **Q2 `db` 分片并行化：** P2 之后每个 worker 都有准备好的库，`db` 分片可以改为
-  `-n auto`（目前串行约 108 秒；§2.5 中本地 8 进程并行约 33 秒，但那是在失败和跳过
-  很多的情况下测的，不能直接当作收益）。是否在本设计内做，还是另开？
-- **Q3 非 required 的 `localhost:5432` 回退：** 保留（本地习惯）还是一并去掉
-  （与 CI 完全一致，本地必须显式设置 `TEST_DB_HOST/PORT`）？
-- **Q4 废弃变量的处理：** 报错（本稿方案）还是只警告一个版本周期？
-- **Q5 #1517：** 建议 #1517 改用新入口，而不是新增 `CACHE_TELEMETRY_TEST_DB_*`。
-  如果 #1517 先合并，就在 P1 中一起迁移。
+验证过程中发现并修复了三个问题：
+
+1. `tests/servers/conftest.py` 的会话级 autouse fixture 在创建 worker 库失败时会被
+   `pytest.skip` 打断（它是 `BaseException`，`suppress(Exception)` 拦不住），导致没有数据库时
+   **全部** server 测试被跳过（`make test` 一度变成 6141 passed、1645 skipped）。已修复，
+   并加了回归测试。
+2. `test_postgres_hard_delete_audit_rows.py` 与 `test_erasure_fence_races.py` 用不同的
+   erasure-fence 密钥写同一个库，谁先运行谁的指纹生效，另一个在 `-n` 下报
+   `ErasureFenceUnavailable`。迁移前的并行实测里同样出现（这 2 个 error 包含在 §2.5 的
+   74 个里）。统一为同一个测试密钥。
+3. `test_verify_api_key_against_real_database` 只从 CI 的 job 环境取 `USER_AUTH_ENABLED` /
+   `API_KEY_SECRET`。迁移前它在本地因为没有 `TEST_PG_DSN` 而被跳过，所以没人发现；现在它
+   在缺少这两个变量时自行补上测试值，CI 设置的值保持不变。
+
+## 8. 实现时采用的决定（review 时可推翻）
+
+- **Q1 测试归类：不做。** 使用真实数据库却没有 `dbtest` 标记的测试（`test_admin.py`、
+  `test_concurrency_endpoint.py`）仍在普通分片中运行。普通分片现在也设置了
+  `TEST_DB_REQUIRED=1`，它们连不上时会失败，§2.2 的漏洞因此已经堵上；是否把它们移进
+  `db` 分片是分类问题，另议。
+- **Q2 `db` 分片并行化：不做。** 本 PR 之后已经可行（§7 中 8 进程并行通过），但改变
+  CI 拓扑应单独评估耗时与 runner 预算。
+- **Q3 非 required 的 `localhost:5432` 回退：保留。** 只在没有设置 `TEST_DB_REQUIRED` 时
+  生效；CI 与 `make test-db` 都不会走到这条路径。
+- **Q4 废弃变量：报错。** 只设置 `TEST_PG_DSN` / `PG_TEST_DSN` 而不设置 `TEST_DB_HOST` 时，
+  会话启动即退出并说明原因；两者都设置时忽略前者。
+- **Q5 #1517：** 尚未合并。它新增的 `CACHE_TELEMETRY_TEST_DB_*` 会被 §4.5 的守卫拦下
+  （`asyncpg.connect` 与 `TEST_PG_DSN` 读取），合并前需要改用入口。
 
 ## 附录 A：读取测试库配置的文件
 

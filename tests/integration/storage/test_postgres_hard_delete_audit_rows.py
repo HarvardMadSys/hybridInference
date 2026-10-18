@@ -11,17 +11,16 @@ admin request view.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_log import PostgresLogStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
-_ALLOWED_TEST_DB_PATTERN = "_test_"
 _OWNER = "u-purge-owner"
 _BYSTANDER = "u-purge-bystander"
 
@@ -29,32 +28,12 @@ _BYSTANDER = "u-purge-bystander"
 @pytest_asyncio.fixture
 async def log_store():
     """Provide a PostgresLogStore against the test database, rows wiped."""
-    import asyncpg
+    pool = await postgres.create_pool(min_size=1, max_size=5)
 
-    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-    test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
-    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run."
-        )
-
-    db_config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": test_db_name,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-
-    try:
-        pool = await asyncpg.create_pool(**db_config, min_size=1, max_size=5)
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
-        return  # unreachable
-
-    store = PostgresLogStore(pool, fence_secret="test-fence-secret")
+    # The fence pins the first secret's fingerprint in the database, and the
+    # erasure-fence suite (and CI's ERASURE_FENCE_SECRET) shares this database
+    # under xdist: a different secret here fails whichever file runs second.
+    store = PostgresLogStore(pool, fence_secret="test-fence-secret-not-for-production")
     await store.initialize()
 
     async def _wipe() -> None:

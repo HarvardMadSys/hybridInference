@@ -21,6 +21,7 @@ from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
 from serving.storage.base import LogStore, OperationalStore
 from serving.storage.database import DatabaseLogger
+from tests.fixtures import postgres
 from tests.fixtures.auth_helpers import (
     assert_test_db_from_pool,
     assert_test_db_name,
@@ -42,88 +43,22 @@ def event_loop() -> Generator:
 
 
 async def _skip_if_test_db_unavailable(context: str = "") -> None:
-    """Skip DB-backed auth tests before full app startup starts retrying."""
-    import asyncpg
-
-    db_config = {
-        "host": os.environ.get("DB_HOST", "localhost"),
-        "port": int(os.environ.get("DB_PORT", "5432")),
-        "database": os.environ.get("DB_NAME", "hybridinference_test_db"),
-        "user": os.environ.get("DB_USER", "postgres"),
-        "password": os.environ.get("DB_PASSWORD", "postgres"),
-    }
-
-    try:
-        conn = await asyncpg.connect(**db_config, timeout=1)
-    except Exception as exc:
-        pytest.skip(
-            f"PostgreSQL test database not available{f' [{context}]' if context else ''}: {exc}"
-        )
-
-    try:
-        db_name = await conn.fetchval("SELECT current_database()")
-        assert_test_db_name(db_name, context)
-    finally:
-        await conn.close()
-
-
-def _xdist_worker_id() -> str:
-    """Return the current xdist worker id, or 'master' when running serially.
-
-    Read from the env var (set by xdist before any fixture runs) rather than
-    the `worker_id` fixture so this can be called from session-scoped autouse
-    fixtures without scope/ordering issues.
-    """
-    return os.environ.get("PYTEST_XDIST_WORKER", "master")
-
-
-def _worker_db_name(base: str, worker_id: str) -> str:
-    """Suffix the base test DB name with the xdist worker id.
-
-    When running serially (worker_id == 'master') the base name is returned
-    unchanged so existing setups keep working.
-    """
-    if worker_id == "master":
-        return base
-    return f"{base}_{worker_id}"
+    """Skip (or, under TEST_DB_REQUIRED, fail) before app startup starts retrying."""
+    conn = await postgres.connect(timeout=1)
+    await conn.close()
 
 
 def _ensure_worker_database(db_name: str) -> None:
-    """Create the worker-specific PostgreSQL database if it doesn't exist.
+    """Create this xdist worker's database if it does not exist yet.
 
-    Connects to the `postgres` maintenance DB to issue CREATE DATABASE.
-    Idempotent: checks pg_database first, since CREATE DATABASE has no
-    `IF NOT EXISTS` clause.
+    A database it cannot create is left for the per-test connection check,
+    which skips or fails with the reason. This runs in a session-scoped autouse
+    fixture, so it must not skip itself: that would skip every server test,
+    including the many that never touch a database. ``pytest.skip`` raises a
+    ``BaseException``, hence the explicit outcome types.
     """
-    import asyncpg
-
-    host = os.environ.get("TEST_DB_HOST", "localhost")
-    port = int(os.environ.get("TEST_DB_PORT", "5432"))
-    user = os.environ.get("TEST_DB_USER", "postgres")
-    password = os.environ.get("TEST_DB_PASSWORD", "postgres")
-
-    async def _create() -> None:
-        conn = await asyncpg.connect(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database="postgres",
-            timeout=5,
-        )
-        try:
-            exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
-            if not exists:
-                # Database identifier cannot be parameterized; safe because
-                # db_name is derived from controlled env vars + xdist worker id.
-                await conn.execute(f'CREATE DATABASE "{db_name}"')
-        finally:
-            await conn.close()
-
-    # If postgres isn't reachable here, the existing skip logic in
-    # _skip_if_test_db_unavailable will handle it on a per-test basis.
-    with contextlib.suppress(Exception):
-        asyncio.run(_create())
+    with contextlib.suppress(Exception, pytest.skip.Exception, pytest.fail.Exception):
+        asyncio.run(postgres.ensure_database(db_name))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -134,36 +69,16 @@ def auth_test_env():
     override any .env / inherited env regardless of load order.
     Original values are restored when the session ends.
     """
-    # Respect TEST_DB_* env vars from the process (e.g. command-line overrides),
-    # falling back to Docker-friendly defaults.
-    _db_host = os.environ.get("TEST_DB_HOST", "localhost")
-    _db_port = os.environ.get("TEST_DB_PORT", "5432")
-    _base_db_name = os.environ.get("TEST_DB_NAME", "hybridinference_test_db")
-    _worker_id = _xdist_worker_id()
-    _db_name = _worker_db_name(_base_db_name, _worker_id)
-    if _worker_id != "master":
-        # Only need to provision a per-worker DB under xdist. The base DB
-        # is provisioned by the postgres service container in CI / by the
-        # developer locally.
-        _ensure_worker_database(_db_name)
-    _db_user = os.environ.get("TEST_DB_USER", "postgres")
-    _db_pass = os.environ.get("TEST_DB_PASSWORD", "postgres")
+    db = postgres.target()
+    if db.name != db.base_name:
+        # Only xdist needs a per-worker database. The base one is provisioned
+        # by the postgres service in CI, or by `make test-db` locally.
+        _ensure_worker_database(db.name)
     shared_defaults = build_auth_test_env_defaults(
         {
-            "DB_HOST": _db_host,
-            "DB_PORT": _db_port,
-            "DB_NAME": _db_name,
-            "DB_USER": _db_user,
-            "DB_PASSWORD": _db_pass,
-            "TEST_DB_HOST": _db_host,
-            "TEST_DB_PORT": _db_port,
-            # Keep TEST_DB_NAME as the unsuffixed base. Direct integration
-            # fixtures append their xdist worker id themselves; mutating this
-            # value to _db_name makes those fixtures look for *_gw0_gw0 after
-            # a server test has initialized the session environment.
-            "TEST_DB_NAME": _base_db_name,
-            "TEST_DB_USER": _db_user,
-            "TEST_DB_PASSWORD": _db_pass,
+            # TEST_DB_* stay as given; DB_* point the gateway at this worker's
+            # database (tests/fixtures/postgres.py).
+            **db.app_env(),
             "COOKIE_SECURE": "0",
             "API_KEY_SECRET": "test-api-key-secret",
             "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
@@ -519,7 +434,9 @@ async def require_db(auth_app):
     services = getattr(auth_app.state, "services", None)
     op_store = getattr(services, "operational_store", None) if services else None
     if op_store is None:
-        pytest.skip("Database not available (start PostgreSQL or check DB config)")
+        postgres.database_unavailable(
+            "The gateway started without an operational store (is the test database up?)"
+        )
     return op_store
 
 

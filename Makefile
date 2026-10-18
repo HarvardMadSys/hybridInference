@@ -51,9 +51,10 @@ test-verbose: ## Run tests with verbose output (exclude external and db-dependen
 test-cov:  ## Run tests with coverage (exclude external and db-dependent)
 	$(UV_RUN) pytest -m "not external and not dbtest" --cov=. --cov-report=term-missing --cov-report=html
 
-test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
+test-db:  ## Run tests that require PostgreSQL (set TEST_DB_HOST and TEST_DB_PORT)
 	@echo "$(YELLOW)Running database-dependent tests...$(RESET)"
-	$(UV_RUN) pytest -vv -m "dbtest"
+	TEST_DB_REQUIRED=1 $(UV_RUN) python -m tests.fixtures.postgres prepare
+	TEST_DB_REQUIRED=1 $(UV_RUN) pytest -vv -m "dbtest"
 	@echo "$(GREEN)OK Database tests passed$(RESET)"
 
 test-all:  ## Run all tests except external (includes db-dependent)

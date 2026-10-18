@@ -8,17 +8,16 @@ under concurrency, and only a real database can show that.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
-_ALLOWED_TEST_DB_PATTERN = "_test_"
 
 REDIRECT = "https://agents.staging.freeinference.org/auth/callback"
 
@@ -26,30 +25,7 @@ REDIRECT = "https://agents.staging.freeinference.org/auth/callback"
 @pytest_asyncio.fixture
 async def postgres_op_store():
     """Provide a clean PostgresOperationalStore for authorization code tests."""
-    import asyncpg
-
-    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-    test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
-    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run."
-        )
-
-    db_config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": test_db_name,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-
-    try:
-        pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
-        return  # unreachable
+    pool = await postgres.create_pool(min_size=2, max_size=10)
 
     store = PostgresOperationalStore(pool)
     await store.initialize()

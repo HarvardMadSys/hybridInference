@@ -8,16 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
-_ALLOWED_TEST_DB_PATTERN = "_test_"
 _MARKER = "setup_completed_at"
 _CODE = "setup_code"
 
@@ -46,30 +45,13 @@ async def setup_store():
     """
     from serving.storage.database import DatabaseLogger
 
-    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-    test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
-    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run."
-        )
-
-    db_config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": test_db_name,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-    db_logger = DatabaseLogger(db_config)
+    db_logger = DatabaseLogger(await postgres.worker_connect_kwargs())
     try:
         # Its pool (up to 10 connections) lets every claim below hold its own.
         await db_logger.initialize()
     except Exception as exc:
         await db_logger.cleanup()
-        pytest.skip(f"PostgreSQL not available: {exc}")
-        return  # unreachable
+        postgres.database_unavailable(f"PostgreSQL not available: {exc}")
 
     pool = db_logger.pool
     store = PostgresOperationalStore(pool)
