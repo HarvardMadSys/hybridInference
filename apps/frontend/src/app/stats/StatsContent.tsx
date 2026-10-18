@@ -4,19 +4,10 @@ import dynamic from 'next/dynamic';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { getPublicStats, type PublicStats, type PublicStatsResult } from '@/lib/api/publicStats';
-import {
-  CONTINENTS,
-  KIND_COLORS,
-  KIND_LABELS,
-  KIND_ORDER,
-  countryName,
-  fmtCompact,
-  fmtDate,
-  fmtPercent,
-  fmtWhole,
-  languageName,
-} from './format';
+import { fill } from '@/lib/utils/interpolate';
+import { CONTINENTS, KIND_COLORS, KIND_ORDER } from './format';
 import { ModelTrafficSection } from './ModelTraffic';
+import { useStatsFormat } from './useStatsFormat';
 
 const chartLoading = () => <div className="h-[200px] animate-pulse rounded-lg bg-gray-50" />;
 const DailyTokensChart = dynamic(() => import('./StatsCharts').then((m) => m.DailyTokensChart), {
@@ -120,15 +111,28 @@ function SectionHeading({
   );
 }
 
+/** A method note: its bold lead, then the explanation. */
+function Method({ lead, children }: { lead: string; children: ReactNode }) {
+  return (
+    <p>
+      <span className="font-semibold text-gray-900">{lead}</span> {children}
+    </p>
+  );
+}
+
 function StatsBody({ stats }: { stats: PublicStats }) {
+  const f = useStatsFormat();
+  const { t } = f;
   const [metric, setMetric] = useState<'tokens' | 'requests'>('tokens');
   const { totals, registrations, models, countries, languages, agents, thresholds } = stats;
   const lastPartial = stats.last_week_partial;
-  const withheld = `fewer than ${thresholds.min_public_accounts}`;
-  const continents = Object.entries(CONTINENTS)
-    .map(([code, name]) => ({
+  const withheld = fill(t('stats.withheld', 'fewer than {count}'), {
+    count: String(thresholds.min_public_accounts),
+  });
+  const continents = Object.keys(CONTINENTS)
+    .map((code) => ({
       code,
-      name,
+      name: f.continent(code),
       rows: countries.all.filter((c) => c.continent === code),
     }))
     .filter((c) => c.rows.length > 0);
@@ -141,65 +145,107 @@ function StatsBody({ stats }: { stats: PublicStats }) {
         className={`grid gap-4 sm:grid-cols-2 ${registrations ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}
       >
         <Tile
-          label="Tokens served"
-          value={fmtCompact(totals.tokens)}
-          note={`${fmtCompact(totals.requests)} requests from ${fmtWhole(totals.accounts)} accounts`}
+          label={t('stats.tile.tokens', 'Tokens served')}
+          value={f.compact(totals.tokens)}
+          note={fill(t('stats.tile.tokens_note', '{requests} requests from {accounts} accounts'), {
+            requests: f.compact(totals.requests),
+            accounts: f.whole(totals.accounts),
+          })}
         />
         {registrations && (
           <>
             <Tile
-              label="Approved users"
-              value={fmtWhole(registrations.approved)}
-              note="Accounts with access to the API"
+              label={t('stats.tile.approved', 'Approved users')}
+              value={f.whole(registrations.approved)}
+              note={t('stats.tile.approved_note', 'Accounts with access to the API')}
             />
             <Tile
-              label="Waiting list"
-              value={fmtWhole(registrations.waiting)}
+              label={t('stats.tile.waiting', 'Waiting list')}
+              value={f.whole(registrations.waiting)}
               note={
                 registrations.waiting > 0
-                  ? 'Sign-ups waiting for review'
-                  : 'No sign-ups are waiting for review'
+                  ? t('stats.tile.waiting_note', 'Sign-ups waiting for review')
+                  : t('stats.tile.waiting_none', 'No sign-ups are waiting for review')
               }
             />
           </>
         )}
         <Tile
-          label="Countries & territories"
-          value={fmtWhole(countries.total)}
-          note={`${countries.total_min_requests} with ${thresholds.min_country_requests}+ requests, on ${countries.continents} continents`}
+          label={t('stats.tile.countries', 'Countries & territories')}
+          value={f.whole(countries.total)}
+          note={fill(
+            t(
+              'stats.tile.countries_note',
+              '{count} with {min}+ requests, on {continents} continents',
+            ),
+            {
+              count: String(countries.total_min_requests),
+              min: String(thresholds.min_country_requests),
+              continents: String(countries.continents),
+            },
+          )}
         />
         <Tile
-          label="Languages"
-          value={languages ? fmtWhole(languages.total) : '—'}
+          label={t('stats.tile.languages', 'Languages')}
+          value={languages ? f.whole(languages.total) : '—'}
           note={
             languages
-              ? `${fmtWhole(languages.accounts_non_english)} of ${fmtWhole(languages.accounts_classified)} classified accounts also write in a language other than English`
-              : 'Not measured on this deployment'
+              ? fill(
+                  t(
+                    'stats.tile.languages_note',
+                    '{count} of {classified} classified accounts also write in a language other than English',
+                  ),
+                  {
+                    count: f.whole(languages.accounts_non_english),
+                    classified: f.whole(languages.accounts_classified),
+                  },
+                )
+              : t('stats.tile.languages_none', 'Not measured on this deployment')
           }
         />
         <Tile
-          label="Agent clients"
-          value={fmtWhole(agents.clients_total)}
-          note={`${agents.clients_multi_account} used by more than one account; ${agents.products_total} known agent products`}
+          label={t('stats.tile.agents', 'Agent clients')}
+          value={f.whole(agents.clients_total)}
+          note={fill(
+            t(
+              'stats.tile.agents_note',
+              '{multi} used by more than one account; {products} known agent products',
+            ),
+            {
+              multi: String(agents.clients_multi_account),
+              products: String(agents.products_total),
+            },
+          )}
         />
       </div>
 
       <section className="space-y-4" aria-labelledby="stats-tokens">
-        <SectionHeading id="stats-tokens" title="Tokens served">
-          {fmtCompact(totals.tokens)} tokens over {stats.window.days} days:{' '}
-          {fmtCompact(totals.input_tokens)} input and {fmtCompact(totals.output_tokens)} output.
-          Agents resend their whole conversation on every turn, so input dominates, and at least{' '}
-          {fmtPercent(totals.cached_input_share)} of it was served from the prompt cache.
+        <SectionHeading id="stats-tokens" title={t('stats.tile.tokens', 'Tokens served')}>
+          {fill(
+            t(
+              'stats.tokens.intro',
+              '{tokens} tokens over {days} days: {input} input and {output} output. Agents resend their whole conversation on every turn, so input dominates, and at least {cached} of it was served from the prompt cache.',
+            ),
+            {
+              tokens: f.compact(totals.tokens),
+              days: String(stats.window.days),
+              input: f.compact(totals.input_tokens),
+              output: f.compact(totals.output_tokens),
+              cached: f.percent(totals.cached_input_share),
+            },
+          )}
         </SectionHeading>
         <Card>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-900">
-              {metric === 'tokens' ? 'Tokens per day' : 'Requests per day'}
+              {metric === 'tokens'
+                ? t('stats.tokens_per_day', 'Tokens per day')
+                : t('stats.requests_per_day', 'Requests per day')}
             </h3>
             <div
               className="inline-flex rounded-lg border border-gray-200 p-0.5"
               role="group"
-              aria-label="Measure"
+              aria-label={t('stats.measure', 'Measure')}
             >
               {(['tokens', 'requests'] as const).map((m) => (
                 <button
@@ -211,14 +257,14 @@ function StatsBody({ stats }: { stats: PublicStats }) {
                     metric === m ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  {m === 'tokens' ? 'Tokens' : 'Requests'}
+                  {m === 'tokens' ? t('stats.tokens', 'Tokens') : t('stats.requests', 'Requests')}
                 </button>
               ))}
             </div>
           </div>
           <DailyTokensChart daily={stats.daily} metric={metric} />
           <p className="mt-2 text-xs text-gray-500">
-            The first and last days are partial and drawn lighter.
+            {t('stats.partial_note', 'The first and last days are partial and drawn lighter.')}
           </p>
         </Card>
       </section>
@@ -226,19 +272,31 @@ function StatsBody({ stats }: { stats: PublicStats }) {
       {models && <ModelTrafficSection models={models} dates={stats.daily.map((d) => d.date)} />}
 
       <section className="space-y-4" aria-labelledby="stats-countries">
-        <SectionHeading id="stats-countries" title="Countries and territories">
-          Requests came from {countries.total} countries and territories on {countries.continents}{' '}
-          continents.
+        <SectionHeading
+          id="stats-countries"
+          title={t('stats.countries.title', 'Countries and territories')}
+        >
+          {fill(
+            t(
+              'stats.countries.intro',
+              'Requests came from {count} countries and territories on {continents} continents.',
+            ),
+            { count: String(countries.total), continents: String(countries.continents) },
+          )}
         </SectionHeading>
         <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card>
-            <h3 className="text-sm font-semibold text-gray-900">Active per week</h3>
+            <h3 className="text-sm font-semibold text-gray-900">
+              {t('stats.active_per_week', 'Active per week')}
+            </h3>
             <div className="mb-2 mt-1">
               <Legend
                 items={[
-                  { label: 'Any traffic', color: KIND_COLORS.coding },
+                  { label: t('stats.countries.any', 'Any traffic'), color: KIND_COLORS.coding },
                   {
-                    label: `${thresholds.min_country_requests}+ requests that week`,
+                    label: fill(t('stats.countries.min_week', '{min}+ requests that week'), {
+                      min: String(thresholds.min_country_requests),
+                    }),
                     color: SECOND_SERIES,
                   },
                 ]}
@@ -251,13 +309,15 @@ function StatsBody({ stats }: { stats: PublicStats }) {
               series={[
                 {
                   key: 'any',
-                  name: 'Any traffic',
+                  name: t('stats.countries.any', 'Any traffic'),
                   color: KIND_COLORS.coding,
                   values: countries.weekly.map((w) => w.any),
                 },
                 {
                   key: 'min',
-                  name: `${thresholds.min_country_requests}+ requests`,
+                  name: fill(t('stats.countries.min', '{min}+ requests'), {
+                    min: String(thresholds.min_country_requests),
+                  }),
                   color: SECOND_SERIES,
                   values: countries.weekly.map((w) => w.min_requests),
                 },
@@ -266,21 +326,23 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           </Card>
           <Card>
             <h3 className="mb-3 text-sm font-semibold text-gray-900">
-              Share of requests, top {countries.top.length}
+              {fill(t('stats.countries.top', 'Share of requests, top {count}'), {
+                count: String(countries.top.length),
+              })}
             </h3>
             <BarList
               rows={countries.top.map((c) => ({
                 key: c.code,
-                label: countryName(c.code, c.alpha2),
+                label: f.country(c.code, c.alpha2),
                 value: c.share,
-                display: fmtPercent(c.share),
+                display: f.percent(c.share),
               }))}
             />
           </Card>
         </div>
         <Card>
           <h3 className="mb-3 text-sm font-semibold text-gray-900">
-            Every country and territory seen
+            {t('stats.countries.all', 'Every country and territory seen')}
           </h3>
           <dl className="space-y-3">
             {continents.map((c) => (
@@ -292,7 +354,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
                   {c.rows.map((row) => (
                     <span
                       key={row.code}
-                      title={countryName(row.code, row.alpha2)}
+                      title={f.country(row.code, row.alpha2)}
                       className="rounded px-1.5 py-0.5 font-mono text-[11px]"
                       style={{
                         backgroundColor: `rgba(42,120,214,${(0.08 + 0.17 * row.level).toFixed(2)})`,
@@ -307,24 +369,34 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             ))}
           </dl>
           <p className="mt-3 text-xs text-gray-500">
-            Darker means more requests. Hover a code for its name.
+            {t('stats.countries.legend', 'Darker means more requests. Hover a code for its name.')}
           </p>
         </Card>
       </section>
 
       {languages && (
         <section className="space-y-4" aria-labelledby="stats-languages">
-          <SectionHeading id="stats-languages" title="Languages people write in">
-            We detected {languages.total} languages in the messages people send. English comes
-            first, but {fmtWhole(languages.accounts_non_english)} of the{' '}
-            {fmtWhole(languages.accounts_classified)} accounts we could classify also wrote in
-            another language. The count comes from a sample of{' '}
-            {fmtWhole(languages.messages_sampled)} messages, so it is a lower bound.
+          <SectionHeading
+            id="stats-languages"
+            title={t('stats.languages.title', 'Languages people write in')}
+          >
+            {fill(
+              t(
+                'stats.languages.intro',
+                'We detected {count} languages in the messages people send. English comes first, but {non_english} of the {classified} accounts we could classify also wrote in another language. The count comes from a sample of {sampled} messages, so it is a lower bound.',
+              ),
+              {
+                count: String(languages.total),
+                non_english: f.whole(languages.accounts_non_english),
+                classified: f.whole(languages.accounts_classified),
+                sampled: f.whole(languages.messages_sampled),
+              },
+            )}
           </SectionHeading>
           <div className="grid items-start gap-4 lg:grid-cols-2">
             <Card>
               <h3 className="mb-2 text-sm font-semibold text-gray-900">
-                Languages detected per week
+                {t('stats.languages.weekly', 'Languages detected per week')}
               </h3>
               <WeeklyLinesChart
                 weeks={stats.weeks}
@@ -333,7 +405,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
                 series={[
                   {
                     key: 'languages',
-                    name: 'Languages',
+                    name: t('stats.tile.languages', 'Languages'),
                     color: KIND_COLORS.coding,
                     values: languages.weekly,
                   },
@@ -342,11 +414,11 @@ function StatsBody({ stats }: { stats: PublicStats }) {
             </Card>
             <Card>
               <h3 className="mb-3 text-sm font-semibold text-gray-900">
-                Accounts writing in each language
+                {t('stats.languages.accounts', 'Accounts writing in each language')}
               </h3>
               <BarList
                 rows={languages.items.map((item) => {
-                  const { name, native } = languageName(item.code);
+                  const { name, native } = f.language(item.code);
                   return {
                     key: item.code,
                     label: (
@@ -359,7 +431,7 @@ function StatsBody({ stats }: { stats: PublicStats }) {
                     display:
                       item.accounts === null
                         ? `<${thresholds.min_public_accounts}`
-                        : fmtWhole(item.accounts),
+                        : f.whole(item.accounts),
                   };
                 })}
               />
@@ -369,19 +441,25 @@ function StatsBody({ stats }: { stats: PublicStats }) {
       )}
 
       <section className="space-y-4" aria-labelledby="stats-agents">
-        <SectionHeading id="stats-agents" title="Agents calling the API">
-          Requests named {fmtWhole(agents.clients_total)} distinct clients in their User-Agent
-          header, counting each name once across versions and platforms. Matching those names and
-          system prompts against known tools gives {agents.products_total} agent products.
+        <SectionHeading id="stats-agents" title={t('stats.agents.title', 'Agents calling the API')}>
+          {fill(
+            t(
+              'stats.agents.intro',
+              'Requests named {clients} distinct clients in their User-Agent header, counting each name once across versions and platforms. Matching those names and system prompts against known tools gives {products} agent products.',
+            ),
+            { clients: f.whole(agents.clients_total), products: String(agents.products_total) },
+          )}
         </SectionHeading>
         <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card>
-            <h3 className="text-sm font-semibold text-gray-900">Active per week</h3>
+            <h3 className="text-sm font-semibold text-gray-900">
+              {t('stats.active_per_week', 'Active per week')}
+            </h3>
             <div className="mb-2 mt-1">
               <Legend
                 items={[
-                  { label: 'All agents', color: KIND_COLORS.coding },
-                  { label: 'Known agent products', color: SECOND_SERIES },
+                  { label: t('stats.agents.all', 'All agents'), color: KIND_COLORS.coding },
+                  { label: t('stats.agents.known', 'Known agent products'), color: SECOND_SERIES },
                 ]}
               />
             </div>
@@ -392,13 +470,13 @@ function StatsBody({ stats }: { stats: PublicStats }) {
               series={[
                 {
                   key: 'clients',
-                  name: 'All agents',
+                  name: t('stats.agents.all', 'All agents'),
                   color: KIND_COLORS.coding,
                   values: agents.weekly.map((w) => w.clients),
                 },
                 {
                   key: 'products',
-                  name: 'Agent products',
+                  name: t('stats.agents.products', 'Agent products'),
                   color: SECOND_SERIES,
                   values: agents.weekly.map((w) => w.products),
                 },
@@ -407,14 +485,14 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           </Card>
           <Card>
             <h3 className="text-sm font-semibold text-gray-900">
-              Share of tokens by kind of client
+              {t('stats.agents.share', 'Share of tokens by kind of client')}
             </h3>
             <div className="mb-2 mt-1">
               <Legend
                 items={KIND_ORDER.map((kind) => {
                   const share = agents.kinds.find((k) => k.kind === kind)?.token_share ?? 0;
                   return {
-                    label: `${KIND_LABELS[kind]} ${fmtPercent(share)}`,
+                    label: `${f.kind(kind)} ${f.percent(share)}`,
                     color: KIND_COLORS[kind],
                     box: true,
                   };
@@ -430,15 +508,21 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           </Card>
         </div>
         <Card>
-          <h3 className="mb-3 text-sm font-semibold text-gray-900">Agent products</h3>
+          <h3 className="mb-3 text-sm font-semibold text-gray-900">
+            {t('stats.agents.products', 'Agent products')}
+          </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                  <th className="py-2 pr-4 font-medium">Agent</th>
-                  <th className="py-2 pr-4 font-medium">Kind</th>
-                  <th className="py-2 pr-4 text-right font-medium">Tokens</th>
-                  <th className="py-2 text-right font-medium">Accounts</th>
+                  <th className="py-2 pr-4 font-medium">{t('stats.agents.col_agent', 'Agent')}</th>
+                  <th className="py-2 pr-4 font-medium">{t('stats.agents.col_kind', 'Kind')}</th>
+                  <th className="py-2 pr-4 text-right font-medium">
+                    {t('stats.tokens', 'Tokens')}
+                  </th>
+                  <th className="py-2 text-right font-medium">
+                    {t('stats.agents.col_accounts', 'Accounts')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -452,16 +536,18 @@ function StatsBody({ stats }: { stats: PublicStats }) {
                           className="h-2.5 w-2.5 rounded-sm"
                           style={{ backgroundColor: KIND_COLORS[p.kind] }}
                         />
-                        {p.kind === 'coding' ? 'Coding' : 'General-purpose'}
+                        {p.kind === 'coding'
+                          ? t('stats.agents.kind_coding', 'Coding')
+                          : t('stats.agents.kind_general', 'General-purpose')}
                       </span>
                     </td>
                     <td className="py-2 pr-4 text-right tabular-nums text-gray-700">
-                      {fmtCompact(p.tokens)}
+                      {f.compact(p.tokens)}
                     </td>
                     <td className="py-2 text-right tabular-nums text-gray-700">
                       {p.accounts === null
                         ? `<${thresholds.min_public_accounts}`
-                        : fmtWhole(p.accounts)}
+                        : f.whole(p.accounts)}
                     </td>
                   </tr>
                 ))}
@@ -470,8 +556,12 @@ function StatsBody({ stats }: { stats: PublicStats }) {
           </div>
           {chatApps.length > 0 && (
             <p className="mt-3 text-sm text-gray-600">
-              Also seen: {chatApps.length} chat {chatApps.length === 1 ? 'app' : 'apps'} (
-              {chatApps.map((p) => p.name).join(', ')}).
+              {fill(
+                chatApps.length === 1
+                  ? t('stats.agents.also_seen_one', 'Also seen: {count} chat app ({names}).')
+                  : t('stats.agents.also_seen_other', 'Also seen: {count} chat apps ({names}).'),
+                { count: String(chatApps.length), names: chatApps.map((p) => p.name).join(', ') },
+              )}
             </p>
           )}
         </Card>
@@ -479,50 +569,61 @@ function StatsBody({ stats }: { stats: PublicStats }) {
 
       <section className="space-y-4" aria-labelledby="stats-method">
         <h2 id="stats-method" className="font-serif text-2xl font-semibold text-gray-900">
-          How these numbers are counted
+          {t('stats.method.title', 'How these numbers are counted')}
         </h2>
         <div className="grid gap-6 text-sm text-gray-600 md:grid-cols-2">
           {registrations && (
-            <p>
-              <span className="font-semibold text-gray-900">Accounts.</span> Approved users are
-              accounts that have been let in; the waiting list is sign-ups still waiting for review.
-              Both are counted when the snapshot is made.
-            </p>
+            <Method lead={t('stats.method.accounts', 'Accounts.')}>
+              {t(
+                'stats.method.accounts_body',
+                'Approved users are accounts that have been let in; the waiting list is sign-ups still waiting for review. Both are counted when the snapshot is made.',
+              )}
+            </Method>
           )}
-          <p>
-            <span className="font-semibold text-gray-900">Tokens.</span> Successful requests only,
-            excluding our own health checks. Input counts the whole prompt, including cached
-            prefixes. Weeks start on Monday (UTC).
-          </p>
+          <Method lead={t('stats.method.tokens', 'Tokens.')}>
+            {t(
+              'stats.method.tokens_body',
+              'Successful requests only, excluding our own health checks. Input counts the whole prompt, including cached prefixes. Weeks start on Monday (UTC).',
+            )}
+          </Method>
           {models && (
-            <p>
-              <span className="font-semibold text-gray-900">Models.</span> Each request counts under
-              the model it named, so an alias counts as its model and an auto model as itself, not
-              the model chosen to serve it. Models not offered to the public, and models since
-              retired, are counted together as &ldquo;Other models&rdquo;.
-            </p>
+            <Method lead={t('stats.method.models', 'Models.')}>
+              {fill(
+                t(
+                  'stats.method.models_body',
+                  'Each request counts under the model it named, so an alias counts as its model and an auto model as itself, not the model chosen to serve it. Models not offered to the public, and models since retired, are counted together as “{other}”.',
+                ),
+                { other: t('stats.models.other', 'Other models') },
+              )}
+            </Method>
           )}
-          <p>
-            <span className="font-semibold text-gray-900">Countries.</span> Each request&apos;s IP
-            address is geolocated when it is logged; only the country is kept. Addresses that cannot
-            be placed are left out.
-          </p>
+          <Method lead={t('stats.method.countries', 'Countries.')}>
+            {t(
+              'stats.method.countries_body',
+              "Each request's IP address is geolocated when it is logged; only the country is kept. Addresses that cannot be placed are left out.",
+            )}
+          </Method>
           {languages && (
-            <p>
-              <span className="font-semibold text-gray-900">Languages.</span> Each week we sample up
-              to 8 distinct messages per account, strip code and markup, and identify the language
-              of each sentence with fastText&apos;s lid.176 model. A language counts for an account
-              when at least two sampled messages are mainly in it. Romanized writing, such as Hindi
-              in Latin script, cannot be detected.
-            </p>
+            <Method lead={t('stats.method.languages', 'Languages.')}>
+              {t(
+                'stats.method.languages_body',
+                "Each week we sample up to 8 distinct messages per account, strip code and markup, and identify the language of each sentence with fastText's lid.176 model. A language counts for an account when at least two sampled messages are mainly in it. Romanized writing, such as Hindi in Latin script, cannot be detected.",
+              )}
+            </Method>
           )}
-          <p>
-            <span className="font-semibold text-gray-900">Agents.</span> A client is the product
-            name at the start of the User-Agent header, ignoring version and platform; generic HTTP
-            libraries, SDKs and browsers are not counted. A client or product needs{' '}
-            {thresholds.min_client_requests} successful requests to count. Account counts below{' '}
-            {thresholds.min_public_accounts} are shown as &ldquo;{withheld}&rdquo;.
-          </p>
+          <Method lead={t('stats.method.agents', 'Agents.')}>
+            {fill(
+              t(
+                'stats.method.agents_body',
+                'A client is the product name at the start of the User-Agent header, ignoring version and platform; generic HTTP libraries, SDKs and browsers are not counted. A client or product needs {min_requests} successful requests to count. Account counts below {min_accounts} are shown as “{withheld}”.',
+              ),
+              {
+                min_requests: String(thresholds.min_client_requests),
+                min_accounts: String(thresholds.min_public_accounts),
+                withheld,
+              },
+            )}
+          </Method>
         </div>
       </section>
     </div>
@@ -531,6 +632,8 @@ function StatsBody({ stats }: { stats: PublicStats }) {
 
 export function StatsContent(): JSX.Element {
   const branding = useBranding();
+  const f = useStatsFormat();
+  const { t } = f;
   const [result, setResult] = useState<PublicStatsResult | null>(null);
 
   useEffect(() => {
@@ -549,27 +652,37 @@ export function StatsContent(): JSX.Element {
     <div className="space-y-8">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight text-gray-950">
-          {branding.appName} usage stats
+          {fill(t('stats.title', '{app_name} usage stats'), { app_name: branding.appName })}
         </h1>
         <p className="max-w-3xl text-gray-600">
-          Who has access, how much we serve, where requests come from, which languages people write
-          in, and which agents send them. Aggregates only, refreshed daily.
+          {t(
+            'stats.subtitle',
+            'Who has access, how much we serve, where requests come from, which languages people write in, and which agents send them. Aggregates only, refreshed daily.',
+          )}
         </p>
         {stats && (
           <p className="text-sm text-gray-500">
-            {fmtDate(stats.window.start)} – {fmtDate(stats.window.end)} · {stats.window.days} days ·
-            updated {fmtDate(stats.generated_at)}
+            {fill(t('stats.window', '{start} – {end} · {days} days · updated {updated}'), {
+              start: f.date(stats.window.start),
+              end: f.date(stats.window.end),
+              days: String(stats.window.days),
+              updated: f.date(stats.generated_at),
+            })}
           </p>
         )}
       </header>
 
-      {result === null && <p className="text-sm text-gray-500">Loading usage stats…</p>}
+      {result === null && (
+        <p className="text-sm text-gray-500">{t('stats.loading', 'Loading usage stats…')}</p>
+      )}
       {result?.status === 'unavailable' && (
-        <p className="text-sm text-gray-600">Usage stats are not published for this site yet.</p>
+        <p className="text-sm text-gray-600">
+          {t('stats.unavailable', 'Usage stats are not published for this site yet.')}
+        </p>
       )}
       {result?.status === 'error' && (
         <p className="text-sm text-gray-600">
-          Usage stats could not be loaded. Try again in a few minutes.
+          {t('stats.error', 'Usage stats could not be loaded. Try again in a few minutes.')}
         </p>
       )}
       {stats && <StatsBody stats={stats} />}

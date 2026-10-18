@@ -1,0 +1,2754 @@
+{
+  "account.delete.admin": {
+    "source": "An administrator account cannot delete itself. Ask another administrator to delete it.",
+    "text": "管理员账户不能删除自己。请让另一位管理员来删除。"
+  },
+  "account.delete.confirm_lead": {
+    "source": "To confirm, type",
+    "text": "请在下面输入"
+  },
+  "account.delete.confirm_tail": {
+    "source": "below:",
+    "text": "以确认："
+  },
+  "account.delete.deleting": {
+    "source": "Deleting…",
+    "text": "删除中…"
+  },
+  "account.delete.done_toast": {
+    "source": "Your account has been deleted.",
+    "text": "你的账户已删除。"
+  },
+  "account.delete.heading": {
+    "source": "Delete this account",
+    "text": "删除这个账户"
+  },
+  "account.delete.history_admin": {
+    "source": "Its request history is kept. To have that erased as well, or if you change your mind, contact the administrator.",
+    "text": "请求记录会保留。如果也想清除这些记录，或者改了主意，请联系管理员。"
+  },
+  "account.delete.history_email": {
+    "source": "Its request history is kept. To have that erased as well, or if you change your mind, contact {email}.",
+    "text": "请求记录会保留。如果也想清除这些记录，或者改了主意，请联系 {email}。"
+  },
+  "account.delete.open": {
+    "source": "Delete account",
+    "text": "删除账户"
+  },
+  "account.delete.password": {
+    "source": "Your password",
+    "text": "你的密码"
+  },
+  "account.delete.summary": {
+    "source": "Revokes its API keys and signs it out everywhere. You cannot undo this yourself.",
+    "text": "会吊销它所有的 API key，并在所有设备上退出登录。删除后你没法自己恢复。"
+  },
+  "account.delete.unavailable_admin": {
+    "source": "This account cannot confirm its deletion here. To delete it, contact the administrator.",
+    "text": "这个账户无法在这里确认删除。如需删除，请联系管理员。"
+  },
+  "account.delete.unavailable_email": {
+    "source": "This account cannot confirm its deletion here. To delete it, contact {email}.",
+    "text": "这个账户无法在这里确认删除。如需删除，请联系 {email}。"
+  },
+  "account.delete.will": {
+    "source": "Deleting this account will:",
+    "text": "删除这个账户后："
+  },
+  "account.delete.will_revoke": {
+    "source": "revoke all of its API keys at once;",
+    "text": "它的所有 API key 会立即被吊销；"
+  },
+  "account.delete.will_sign_out": {
+    "source": "sign it out on every device, the Agent included.",
+    "text": "它会在所有设备上退出登录，包括 Agent。"
+  },
+  "auth.accounts.add_title": {
+    "source": "Add another account",
+    "text": "添加其他账户"
+  },
+  "auth.accounts.back": {
+    "source": "Back to your accounts",
+    "text": "返回账户列表"
+  },
+  "auth.accounts.cancel_add": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "auth.accounts.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "auth.accounts.signed_out": {
+    "source": "Signed out",
+    "text": "已退出登录"
+  },
+  "auth.accounts.subtitle": {
+    "source": "Accounts signed in on this browser",
+    "text": "在这个浏览器上登录过的账户"
+  },
+  "auth.accounts.switched_toast": {
+    "source": "Continuing as {name}",
+    "text": "现在以 {name} 的身份继续"
+  },
+  "auth.accounts.title": {
+    "source": "Choose an account",
+    "text": "选择账户"
+  },
+  "auth.accounts.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.authorize.account_legend": {
+    "source": "Account",
+    "text": "账户"
+  },
+  "auth.authorize.cancel": {
+    "source": "Cancel and return to dashboard",
+    "text": "取消并返回控制台"
+  },
+  "auth.authorize.choose_account": {
+    "source": "Choose the account to sign in to",
+    "text": "选择要登录的账户"
+  },
+  "auth.authorize.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.authorize.continue_title": {
+    "source": "Continue to",
+    "text": "继续前往"
+  },
+  "auth.authorize.failed_title": {
+    "source": "Sign-in failed",
+    "text": "登录失败"
+  },
+  "auth.authorize.incomplete": {
+    "source": "This sign-in link is incomplete. Please start again from the application.",
+    "text": "这个登录链接不完整，请回到应用里重新发起。"
+  },
+  "auth.authorize.invalid_redirect": {
+    "source": "This sign-in link has an invalid return address. Please start again from the application.",
+    "text": "这个登录链接的返回地址不对，请回到应用里重新发起。"
+  },
+  "auth.authorize.no_agent_access": {
+    "source": "No access to this application",
+    "text": "你没有这个应用的访问权限"
+  },
+  "auth.authorize.sign_in_again": {
+    "source": "Sign in again",
+    "text": "重新登录"
+  },
+  "auth.authorize.signin_as": {
+    "source": "as",
+    "text": "，将使用账户"
+  },
+  "auth.authorize.signin_lead": {
+    "source": "Sign in to",
+    "text": "登录"
+  },
+  "auth.authorize.unknown_client": {
+    "source": "This sign-in link is for an application this deployment does not know.",
+    "text": "这个登录链接指向的应用，本站并不认识。"
+  },
+  "auth.authorize.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.consent.age_body": {
+    "source": "{app_name} is available only to adults age 18 or older.",
+    "text": "{app_name} 仅向年满 18 周岁的成年人开放。"
+  },
+  "auth.consent.age_confirm": {
+    "source": "I confirm that I am at least 18 years old.",
+    "text": "我确认自己已年满 18 周岁。"
+  },
+  "auth.consent.age_title": {
+    "source": "Age requirement",
+    "text": "年龄要求"
+  },
+  "auth.consent.all_required": [
+    {
+      "source": "All confirmations are required to continue.",
+      "text": "每一项都勾选后才能继续。"
+    },
+    {
+      "source": "All four confirmations are required to continue.",
+      "text": "四项都勾选后才能继续。"
+    }
+  ],
+  "auth.consent.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.consent.intro": [
+    {
+      "source": "Please read the terms and confirm each item below.",
+      "text": "请阅读条款，并逐项确认以下内容。"
+    },
+    {
+      "source": "{app_name} is an experimental research service. Please read and confirm each item below.",
+      "text": "{app_name} 是一项实验性研究服务。请阅读并逐项确认以下内容。"
+    }
+  ],
+  "auth.consent.kicker": {
+    "source": "BEFORE YOU START",
+    "text": "开始之前"
+  },
+  "auth.consent.progress": {
+    "source": "{done} of {total} confirmed",
+    "text": "已确认 {done}/{total} 项"
+  },
+  "auth.consent.research_body": {
+    "source": "{app_name} is operated to study how people and software agents use large language models. If you participate, we may collect and analyze:",
+    "text": "运营 {app_name} 是为了研究人和软件 Agent 如何使用大语言模型。如果你参与，我们可能会收集并分析："
+  },
+  "auth.consent.research_consent": {
+    "source": "I consent to participate in this research and to the collection and analysis of my {app_name} usage data.",
+    "text": "我同意参与这项研究，并同意研究团队收集和分析我在 {app_name} 上的使用数据。"
+  },
+  "auth.consent.research_contact": {
+    "source": "If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team at {contact_email}.",
+    "text": "如果你对这项研究有任何疑问、顾虑或投诉，或者认为参与研究给你造成了伤害，请通过 {contact_email} 联系研究团队。"
+  },
+  "auth.consent.research_contact_fallback": {
+    "source": "If you have questions, concerns, or complaints about the research, or feel that taking part has harmed you, please reach out to the research team through the operator of this deployment.",
+    "text": "如果你对这项研究有任何疑问、顾虑或投诉，或者认为参与研究给你造成了伤害，请通过本部署的运营方联系研究团队。"
+  },
+  "auth.consent.research_item_1": {
+    "source": "prompts sent through {app_name};",
+    "text": "通过 {app_name} 发送的提示词；"
+  },
+  "auth.consent.research_item_2": {
+    "source": "model responses;",
+    "text": "模型的回复；"
+  },
+  "auth.consent.research_item_3": {
+    "source": "tool calls and tool outputs;",
+    "text": "工具调用及其输出；"
+  },
+  "auth.consent.research_item_4": {
+    "source": "model and provider information;",
+    "text": "模型和提供方信息；"
+  },
+  "auth.consent.research_item_5": {
+    "source": "timestamps and request/session information;",
+    "text": "时间戳以及请求和会话信息；"
+  },
+  "auth.consent.research_item_6": {
+    "source": "token counts, latency, routing, and other usage metadata.",
+    "text": "token 数量、延迟、路由和其他使用元数据。"
+  },
+  "auth.consent.research_title": {
+    "source": "Research participation",
+    "text": "参与研究"
+  },
+  "auth.consent.research_use": {
+    "source": "These data may be used by the research team to characterize LLM workloads, evaluate serving systems, and publish research results.",
+    "text": "研究团队可能会利用这些数据刻画 LLM 工作负载、评估推理服务系统，并发表研究成果。"
+  },
+  "auth.consent.research_voluntary": {
+    "source": "Participation is voluntary. If you do not agree, you cannot use the research service.",
+    "text": "参与完全自愿。如果你不同意，将无法使用这项研究服务。"
+  },
+  "auth.consent.research_warning": {
+    "source": "Do not submit passwords, credentials, confidential information, regulated data, or sensitive personal information.",
+    "text": "请不要提交密码、凭据、保密信息、受监管的数据或敏感个人信息。"
+  },
+  "auth.consent.sharing_body_1": {
+    "source": "Some data from this study may be included in research publications or released as a research dataset. Released data may include sanitized prompts and responses, tool calls and outputs, timing information, model and framework information, and usage and performance metadata.",
+    "text": "这项研究的部分数据可能会出现在研究论文中，或作为研究数据集公开发布。发布的数据可能包括清洗后的提示词和回复、工具调用及输出、时间信息、模型和框架信息，以及使用和性能元数据。"
+  },
+  "auth.consent.sharing_body_2": {
+    "source": "Before public release, we process the data to remove or redact direct identifiers and detected personally identifiable information. Automated sanitization cannot guarantee removal of every sensitive or identifying detail.",
+    "text": "在公开发布之前，我们会对数据进行处理，删除或遮盖直接标识信息以及检测到的个人身份信息。但自动清洗无法保证清除每一处敏感或可识别的细节。"
+  },
+  "auth.consent.sharing_body_3": {
+    "source": "Once de-identified data have been publicly released, it may no longer be possible to withdraw or delete those copies.",
+    "text": "去标识化的数据一旦公开发布，可能就无法再撤回或删除这些副本。"
+  },
+  "auth.consent.sharing_consent": {
+    "source": "I understand and consent to the sharing and possible public release of de-identified research data derived from my {app_name} usage.",
+    "text": "我理解并同意：由我在 {app_name} 上的使用所产生的去标识化研究数据，可以被共享并可能公开发布。"
+  },
+  "auth.consent.sharing_future_use": {
+    "source": "Your sanitized information may be used in future research studies or shared with other researchers for future studies without asking for your informed consent again.",
+    "text": "你经过清洗的信息，可能会用于今后的研究，或共享给其他研究人员用于今后的研究，届时不会再次征求你的知情同意。"
+  },
+  "auth.consent.sharing_title": {
+    "source": "Research data sharing",
+    "text": "研究数据共享"
+  },
+  "auth.consent.terms_agree": {
+    "source": "I agree to the Terms of Service.",
+    "text": "我同意服务条款。"
+  },
+  "auth.consent.terms_body": [
+    {
+      "source": "Please read the terms in full. The confirmations below unlock once you reach the end.",
+      "text": "请把条款完整读一遍。滚动到最后，下面的确认项才能勾选。"
+    },
+    {
+      "source": "Please read the terms in full. The checkbox unlocks once you reach the end.",
+      "text": "请把条款完整读一遍。滚动到最后，复选框才能勾选。"
+    }
+  ],
+  "auth.consent.terms_link": {
+    "source": "Open the full Terms of Service in a new tab",
+    "text": "在新标签页中打开完整的服务条款"
+  },
+  "auth.consent.terms_scroll_hint": [
+    {
+      "source": "Scroll to the end of the terms to enable the confirmations.",
+      "text": "滚动到条款最后，就可以勾选确认项了。"
+    },
+    {
+      "source": "Scroll to the end of the terms to enable this checkbox.",
+      "text": "滚动到条款最后，就可以勾选这一项了。"
+    }
+  ],
+  "auth.consent.terms_title": {
+    "source": "Terms of Service",
+    "text": "服务条款"
+  },
+  "auth.consent.title": {
+    "source": "Before you create an account",
+    "text": "创建账户之前"
+  },
+  "auth.email_bind.bind_hint": {
+    "source": "We will send a verification link to this address.",
+    "text": "我们会往这个地址发送一封验证邮件。"
+  },
+  "auth.email_bind.change": {
+    "source": "Change Email",
+    "text": "更换邮箱"
+  },
+  "auth.email_bind.change_hint": {
+    "source": "Enter a new email address to send a verification link. Your current email stays active until verified.",
+    "text": "输入新的邮箱地址，我们会发一封验证邮件过去。验证完成之前，当前邮箱照常使用。"
+  },
+  "auth.email_bind.current_password": {
+    "source": "Current password",
+    "text": "当前密码"
+  },
+  "auth.email_bind.current_password_hint": {
+    "source": "Confirms that this change is yours.",
+    "text": "用来确认这次修改是你本人操作的。"
+  },
+  "auth.email_bind.password_required": {
+    "source": "Enter your current password to confirm this change.",
+    "text": "请输入当前密码，确认是你本人在操作。"
+  },
+  "auth.email_bind.same_email": {
+    "source": "Please enter a different email address to change your email.",
+    "text": "新邮箱和当前邮箱一样，请换一个地址。"
+  },
+  "auth.email_bind.send": {
+    "source": "Send verification email",
+    "text": "发送验证邮件"
+  },
+  "auth.email_bind.sent": {
+    "source": "Verification email sent to {email}. Click the link in your inbox to finish verifying.",
+    "text": "验证邮件已发送到 {email}，点开邮件里的链接就能完成验证。"
+  },
+  "auth.email_bind.updated": {
+    "source": "Email address updated successfully.",
+    "text": "邮箱地址已更新。"
+  },
+  "auth.forgot.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.forgot.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.forgot.kicker": {
+    "source": "RESET YOUR PASSWORD",
+    "text": "重置密码"
+  },
+  "auth.forgot.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.forgot.remember": {
+    "source": "Remember your password?",
+    "text": "想起密码了？"
+  },
+  "auth.forgot.submit": {
+    "source": "Send Reset Link",
+    "text": "发送重置链接"
+  },
+  "auth.forgot.submitting": {
+    "source": "Sending…",
+    "text": "发送中…"
+  },
+  "auth.forgot.subtitle": {
+    "source": "Enter your email address and we'll send you a link to reset your password",
+    "text": "输入你的邮箱，我们会给你发一个重置密码的链接"
+  },
+  "auth.forgot.success_body": {
+    "source": "If an account exists with this email, we've sent a password reset link. Please check your inbox.",
+    "text": "如果这个邮箱注册过账户，重置密码的链接已经发过去了，请查收。"
+  },
+  "auth.forgot.success_kicker": {
+    "source": "CHECK YOUR INBOX",
+    "text": "邮件已发出"
+  },
+  "auth.forgot.success_title": {
+    "source": "Check Your Email",
+    "text": "请查看你的邮箱"
+  },
+  "auth.forgot.title": {
+    "source": "Forgot Password",
+    "text": "忘记密码"
+  },
+  "auth.legal.see": {
+    "source": "See",
+    "text": "详见"
+  },
+  "auth.login.email_label": {
+    "source": "Email or username",
+    "text": "邮箱或用户名"
+  },
+  "auth.login.forgot_password": {
+    "source": "Forgot password?",
+    "text": "忘记密码？"
+  },
+  "auth.login.kicker": {
+    "source": "GOOD TO SEE YOU AGAIN",
+    "text": "很高兴再见到你"
+  },
+  "auth.login.method_label": {
+    "source": "Login method",
+    "text": "登录方式"
+  },
+  "auth.login.no_account": {
+    "source": "Don't have an account?",
+    "text": "还没有账户？"
+  },
+  "auth.login.password_label": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "auth.login.password_method": {
+    "source": "Password login",
+    "text": "密码登录"
+  },
+  "auth.login.resend_button": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.login.resend_prompt": {
+    "source": "Didn't get the verification email?",
+    "text": "没有收到验证邮件？"
+  },
+  "auth.login.resent_notice": {
+    "source": "A new verification email is on its way to {email}. Please check your inbox (and spam folder).",
+    "text": "新的验证邮件正在发往 {email}，请留意收件箱（也看看垃圾邮件文件夹）。"
+  },
+  "auth.login.resent_toast": {
+    "source": "Verification email sent. Please check your inbox.",
+    "text": "验证邮件已发送，请查收。"
+  },
+  "auth.login.signup_link": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.login.sms_method": {
+    "source": "SMS code login",
+    "text": "短信验证码登录"
+  },
+  "auth.login.submit": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.login.submitting": {
+    "source": "Logging in…",
+    "text": "登录中…"
+  },
+  "auth.login.subtitle": {
+    "source": "Welcome back, please log in",
+    "text": "欢迎回来，请登录"
+  },
+  "auth.login.success_toast": {
+    "source": "Login successful!",
+    "text": "登录成功！"
+  },
+  "auth.login.title": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.phone.bind_hint": {
+    "source": "Bind a mobile number to log in to this account with a verification code.",
+    "text": "绑定手机号后，就能用验证码登录这个账户。"
+  },
+  "auth.phone.bind_submit": {
+    "source": "Bind mobile number",
+    "text": "绑定手机号"
+  },
+  "auth.phone.bind_success": {
+    "source": "Phone number bound successfully.",
+    "text": "手机号绑定成功。"
+  },
+  "auth.phone.bound_number": {
+    "source": "Verified mobile number: {phone}",
+    "text": "已验证的手机号：{phone}"
+  },
+  "auth.phone.code_label": {
+    "source": "Verification code",
+    "text": "验证码"
+  },
+  "auth.phone.code_placeholder": {
+    "source": "6-digit code",
+    "text": "6 位验证码"
+  },
+  "auth.phone.code_sent": {
+    "source": "If this phone number is eligible, a verification code has been sent.",
+    "text": "如果这个手机号可以使用，验证码已经发出。"
+  },
+  "auth.phone.country_code_label": {
+    "source": "Country code",
+    "text": "国家或地区代码"
+  },
+  "auth.phone.country_code_options_label": {
+    "source": "Country code options",
+    "text": "国家或地区代码选项"
+  },
+  "auth.phone.country_empty": {
+    "source": "No matching countries.",
+    "text": "没有匹配的国家或地区。"
+  },
+  "auth.phone.country_search": {
+    "source": "Search country or code",
+    "text": "搜索国家、地区或代码"
+  },
+  "auth.phone.email_method": {
+    "source": "Email and password",
+    "text": "邮箱和密码"
+  },
+  "auth.phone.international": {
+    "source": "International",
+    "text": "国际"
+  },
+  "auth.phone.login_subtitle": {
+    "source": "Welcome back, please log in",
+    "text": "欢迎回来，请登录"
+  },
+  "auth.phone.method_label": {
+    "source": "Account method",
+    "text": "注册方式"
+  },
+  "auth.phone.national_hint": {
+    "source": "Select a country code, then enter your phone number.",
+    "text": "先选择国家或地区代码，再输入手机号。"
+  },
+  "auth.phone.phone_hint": {
+    "source": "Include the country code, such as +12025550123.",
+    "text": "请带上国家代码，例如 +12025550123。"
+  },
+  "auth.phone.phone_label": {
+    "source": "Mobile number",
+    "text": "手机号"
+  },
+  "auth.phone.phone_method": {
+    "source": "Phone verification code",
+    "text": "手机验证码"
+  },
+  "auth.phone.retry_in": {
+    "source": "Send again in {seconds}s",
+    "text": "{seconds} 秒后可重新发送"
+  },
+  "auth.phone.send_code": {
+    "source": "Send verification code",
+    "text": "发送验证码"
+  },
+  "auth.phone.sending": {
+    "source": "Sending…",
+    "text": "发送中…"
+  },
+  "auth.phone.settings_title": {
+    "source": "Mobile Number",
+    "text": "手机号"
+  },
+  "auth.phone.signup_pending": {
+    "source": "Account created successfully. Your registration is pending admin approval.",
+    "text": "账户已创建，正在等待管理员审核。"
+  },
+  "auth.phone.signup_success": {
+    "source": "Account created successfully. You can now log in.",
+    "text": "账户已创建，现在就可以登录了。"
+  },
+  "auth.phone.submitting": {
+    "source": "Verifying…",
+    "text": "验证中…"
+  },
+  "auth.reset.confirm_password_label": {
+    "source": "Confirm New Password",
+    "text": "确认新密码"
+  },
+  "auth.reset.go_to_login": {
+    "source": "Go to Login",
+    "text": "前往登录"
+  },
+  "auth.reset.invalid_token": {
+    "source": "Invalid or missing reset token",
+    "text": "重置链接无效或已失效"
+  },
+  "auth.reset.kicker": {
+    "source": "CHOOSE A NEW PASSWORD",
+    "text": "设置新密码"
+  },
+  "auth.reset.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.reset.new_password_hint": {
+    "source": "At least 8 characters with uppercase, lowercase, and numbers",
+    "text": "至少 8 个字符，包含大写字母、小写字母和数字"
+  },
+  "auth.reset.new_password_label": {
+    "source": "New Password",
+    "text": "新密码"
+  },
+  "auth.reset.remember": {
+    "source": "Remember your password?",
+    "text": "想起密码了？"
+  },
+  "auth.reset.submit": {
+    "source": "Reset Password",
+    "text": "重置密码"
+  },
+  "auth.reset.submitting": {
+    "source": "Resetting…",
+    "text": "重置中…"
+  },
+  "auth.reset.subtitle": {
+    "source": "Enter your new password below",
+    "text": "请在下方输入新密码"
+  },
+  "auth.reset.success_body": {
+    "source": "Your password has been reset successfully. You can now log in with your new password.",
+    "text": "密码已经重置好了，用新密码登录吧。"
+  },
+  "auth.reset.success_kicker": {
+    "source": "ALL SET",
+    "text": "搞定了"
+  },
+  "auth.reset.success_title": {
+    "source": "Password Reset Successful!",
+    "text": "密码重置成功！"
+  },
+  "auth.reset.title": {
+    "source": "Reset Password",
+    "text": "重置密码"
+  },
+  "auth.signup.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.signup.captcha_required": {
+    "source": "Please complete the captcha.",
+    "text": "请完成人机验证。"
+  },
+  "auth.signup.confirm_password_label": {
+    "source": "Confirm Password",
+    "text": "确认密码"
+  },
+  "auth.signup.details_body": {
+    "source": "Both questions are optional, but answers help admins approve accounts faster.",
+    "text": "两个问题都可以不填，但填了能帮管理员更快通过审核。"
+  },
+  "auth.signup.details_title": {
+    "source": "Tell us about your project",
+    "text": "介绍一下你的项目"
+  },
+  "auth.signup.discovery_hint": {
+    "source": "Optional, but helpful for improving outreach.",
+    "text": "选填，能帮我们把推广做得更好。"
+  },
+  "auth.signup.discovery_label": {
+    "source": "How did you find us?",
+    "text": "你是从哪里知道我们的？"
+  },
+  "auth.signup.discovery_placeholder": {
+    "source": "Friend/classmate, search engine, social media, course link, etc.",
+    "text": "朋友/同学、搜索引擎、社交媒体、课程链接等"
+  },
+  "auth.signup.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.signup.fast_track": {
+    "source": "Open to {org} students — sign up with your @{domain} email for instant access. Everyone else: please describe your use case below — we review and approve manually.",
+    "text": "{org} 的学生用 @{domain} 邮箱注册，可以直接开通。其他人请在下面写写你的用途，我们会人工审核。"
+  },
+  "auth.signup.have_account": {
+    "source": "Already have an account?",
+    "text": "已有账户？"
+  },
+  "auth.signup.kicker": {
+    "source": "START BUILDING",
+    "text": "开始动手"
+  },
+  "auth.signup.kicker_result": {
+    "source": "ALMOST THERE",
+    "text": "就差一步"
+  },
+  "auth.signup.kicker_unavailable": {
+    "source": "REGISTRATION CLOSED",
+    "text": "暂停注册"
+  },
+  "auth.signup.login_link": {
+    "source": "Log In",
+    "text": "登录"
+  },
+  "auth.signup.password_hint": {
+    "source": "At least 8 characters with uppercase, lowercase, and numbers.",
+    "text": "至少 8 个字符，包含大写字母、小写字母和数字。"
+  },
+  "auth.signup.password_label": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "auth.signup.password_rule_length": {
+    "source": "8+ characters",
+    "text": "至少 8 个字符"
+  },
+  "auth.signup.password_rule_lower": {
+    "source": "Lowercase",
+    "text": "小写字母"
+  },
+  "auth.signup.password_rule_number": {
+    "source": "Number",
+    "text": "数字"
+  },
+  "auth.signup.password_rule_upper": {
+    "source": "Uppercase",
+    "text": "大写字母"
+  },
+  "auth.signup.pending_title": {
+    "source": "Registration Submitted",
+    "text": "注册申请已提交"
+  },
+  "auth.signup.result_subtitle": {
+    "source": "Here is what happens with your account next.",
+    "text": "接下来你的账户会这样处理。"
+  },
+  "auth.signup.review_agreements": {
+    "source": "Review agreements",
+    "text": "查看协议"
+  },
+  "auth.signup.show_password": {
+    "source": "Show password",
+    "text": "显示密码"
+  },
+  "auth.signup.signin_link": {
+    "source": "Sign in",
+    "text": "登录"
+  },
+  "auth.signup.step_account": {
+    "source": "Account details",
+    "text": "账户信息"
+  },
+  "auth.signup.step_consent": {
+    "source": "Agreements",
+    "text": "协议"
+  },
+  "auth.signup.steps_label": {
+    "source": "Sign-up progress",
+    "text": "注册进度"
+  },
+  "auth.signup.submit": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.signup.submitting": {
+    "source": "Creating your account…",
+    "text": "正在创建账户…"
+  },
+  "auth.signup.subtitle": {
+    "source": "Create an account to manage API keys and usage",
+    "text": "创建账户，管理你的 API key 和用量"
+  },
+  "auth.signup.success_title": {
+    "source": "Registration Successful!",
+    "text": "注册成功！"
+  },
+  "auth.signup.title": {
+    "source": "Sign Up",
+    "text": "注册"
+  },
+  "auth.signup.unavailable_body": {
+    "source": "This distribution does not currently accept public registrations.",
+    "text": "这个站点目前不开放公开注册。"
+  },
+  "auth.signup.unavailable_title": {
+    "source": "Public signup is unavailable",
+    "text": "暂不开放公开注册"
+  },
+  "auth.signup.use_case_hint": {
+    "source": "Helps admins review signups faster.",
+    "text": "填了能帮管理员更快审核。"
+  },
+  "auth.signup.use_case_label": {
+    "source": "Use case",
+    "text": "用途"
+  },
+  "auth.signup.use_case_placeholder": {
+    "source": "Tell us briefly what you plan to use the service for (research project, course, app prototype, etc.).",
+    "text": "简单说说你打算用这个服务做什么（研究项目、课程、应用原型等）。"
+  },
+  "auth.signup.username_hint": {
+    "source": "This name is shown in your account and admin review.",
+    "text": "这个名字会显示在你的账户和管理员审核页面上。"
+  },
+  "auth.signup.username_label": {
+    "source": "Username",
+    "text": "用户名"
+  },
+  "auth.validation.combined_max": {
+    "source": "Combined use case and discovery response is too long (max 2000 characters)",
+    "text": "用途和来源加起来太长了（最多 2000 个字符）"
+  },
+  "auth.validation.discovery_max": {
+    "source": "Response cannot exceed 500 characters",
+    "text": "回答不能超过 500 个字符"
+  },
+  "auth.validation.email_invalid": {
+    "source": "Please enter a valid email address",
+    "text": "请输入有效的邮箱地址"
+  },
+  "auth.validation.email_too_long": {
+    "source": "Email address is too long",
+    "text": "邮箱地址过长"
+  },
+  "auth.validation.identifier_required": {
+    "source": "Please enter your email or username",
+    "text": "请输入邮箱或用户名"
+  },
+  "auth.validation.login_name_invalid": {
+    "source": "Please enter a valid email address or username",
+    "text": "请输入有效的邮箱地址或用户名"
+  },
+  "auth.validation.password_lower": {
+    "source": "Password must contain at least one lowercase letter",
+    "text": "密码至少要有一个小写字母"
+  },
+  "auth.validation.password_min": {
+    "source": "Password must be at least 8 characters",
+    "text": "密码至少 8 个字符"
+  },
+  "auth.validation.password_number": {
+    "source": "Password must contain at least one number",
+    "text": "密码至少要有一个数字"
+  },
+  "auth.validation.password_required": {
+    "source": "Please enter your password",
+    "text": "请输入密码"
+  },
+  "auth.validation.password_upper": {
+    "source": "Password must contain at least one uppercase letter",
+    "text": "密码至少要有一个大写字母"
+  },
+  "auth.validation.passwords_differ": {
+    "source": "Passwords do not match",
+    "text": "两次输入的密码不一致"
+  },
+  "auth.validation.phone_code_invalid": {
+    "source": "Enter the six-digit verification code.",
+    "text": "请输入 6 位验证码。"
+  },
+  "auth.validation.phone_invalid": {
+    "source": "Enter a phone number with its country code.",
+    "text": "请输入带国家代码的手机号。"
+  },
+  "auth.validation.use_case_max": {
+    "source": "Use case cannot exceed 2000 characters",
+    "text": "用途不能超过 2000 个字符"
+  },
+  "auth.validation.username_max": {
+    "source": "Username cannot exceed 50 characters",
+    "text": "用户名不能超过 50 个字符"
+  },
+  "auth.validation.username_min": {
+    "source": "Username must be at least 2 characters",
+    "text": "用户名至少为 2 个字符"
+  },
+  "auth.verify.already_body": {
+    "source": "Your email is already verified. You can log in to continue.",
+    "text": "你的邮箱已经验证过了，直接登录就行。"
+  },
+  "auth.verify.already_message": {
+    "source": "Your email has already been verified. You can login now.",
+    "text": "你的邮箱已经验证过了，现在可以登录。"
+  },
+  "auth.verify.already_title": {
+    "source": "Already Verified",
+    "text": "已验证"
+  },
+  "auth.verify.back_to_login": {
+    "source": "Back to Login",
+    "text": "返回登录"
+  },
+  "auth.verify.email_label": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "auth.verify.error_body": {
+    "source": "We were unable to verify your email.",
+    "text": "没能验证你的邮箱。"
+  },
+  "auth.verify.error_title": {
+    "source": "Verification Failed",
+    "text": "验证失败"
+  },
+  "auth.verify.go_to_login": {
+    "source": "Go to Login",
+    "text": "前往登录"
+  },
+  "auth.verify.kicker": {
+    "source": "EMAIL VERIFICATION",
+    "text": "邮箱验证"
+  },
+  "auth.verify.loading_body": {
+    "source": "Please wait while we verify your email address.",
+    "text": "正在验证你的邮箱地址，请稍候。"
+  },
+  "auth.verify.loading_title": {
+    "source": "Verifying Email",
+    "text": "正在验证邮箱"
+  },
+  "auth.verify.missing_token": {
+    "source": "Missing verification token",
+    "text": "验证链接不完整"
+  },
+  "auth.verify.resend_button": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.verify.resend_prompt": {
+    "source": "Need a new link? Enter your email and we'll send a fresh verification email.",
+    "text": "需要新的链接？输入邮箱，我们再给你发一封验证邮件。"
+  },
+  "auth.verify.resent_notice": {
+    "source": "A new verification email is on its way to {email}. Please check your inbox (and spam folder), then follow the link to finish verifying.",
+    "text": "新的验证邮件已发送至 {email}。请查收（也请检查垃圾邮件文件夹），然后点击邮件中的链接完成验证。"
+  },
+  "auth.verify.resent_toast": {
+    "source": "Verification email sent. Please check your inbox.",
+    "text": "验证邮件已发送，请查收。"
+  },
+  "auth.verify.signup_again": {
+    "source": "Sign Up Again",
+    "text": "重新注册"
+  },
+  "auth.verify.success_body": {
+    "source": "Your account is now active. You can log in to continue.",
+    "text": "账户已经激活，可以登录了。"
+  },
+  "auth.verify.success_fallback": {
+    "source": "Email verified successfully!",
+    "text": "邮箱验证成功！"
+  },
+  "auth.verify.success_title": {
+    "source": "Email Verified",
+    "text": "邮箱已验证"
+  },
+  "auth.verify.try_another": {
+    "source": "Entered the wrong email? Try another one",
+    "text": "邮箱填错了？换一个试试"
+  },
+  "chat.empty_hint": {
+    "source": "Try one of these to get started:",
+    "text": "不知道问什么？可以试试这些："
+  },
+  "chat.error_generic": {
+    "source": "Something went wrong. Please try again.",
+    "text": "出了点问题，请重试。"
+  },
+  "chat.example_1": {
+    "source": "How do I get an API key?",
+    "text": "怎么获取 API key？"
+  },
+  "chat.example_2": {
+    "source": "Which models can I use for coding?",
+    "text": "哪些模型适合写代码？"
+  },
+  "chat.example_3": {
+    "source": "How do I set up Cursor with {app_name}?",
+    "text": "怎么在 Cursor 里配置 {app_name}？"
+  },
+  "chat.example_4": {
+    "source": "What request headers does the API accept?",
+    "text": "API 支持哪些请求头？"
+  },
+  "chat.input_placeholder": {
+    "source": "Ask a question about {app_name}…",
+    "text": "问问关于 {app_name} 的问题…"
+  },
+  "chat.official_docs": {
+    "source": "official documentation",
+    "text": "官方文档"
+  },
+  "chat.send": {
+    "source": "Send",
+    "text": "发送"
+  },
+  "chat.sources_label": {
+    "source": "Sources",
+    "text": "来源"
+  },
+  "chat.stop": {
+    "source": "Stop",
+    "text": "停止"
+  },
+  "chat.subtitle_grounded": {
+    "source": "Answers are grounded in the",
+    "text": "回答依据"
+  },
+  "chat.subtitle_lead": {
+    "source": "Ask anything about {app_name}.",
+    "text": "关于 {app_name}，有什么都可以问。"
+  },
+  "chat.thinking": {
+    "source": "Thinking…",
+    "text": "思考中…"
+  },
+  "chat.title": {
+    "source": "Docs Assistant",
+    "text": "文档助手"
+  },
+  "chat.unavailable": {
+    "source": "The documentation assistant is not enabled for this distribution.",
+    "text": "这个站点没有开启文档助手。"
+  },
+  "chrome.account_changed.reload": {
+    "source": "Reload",
+    "text": "刷新页面"
+  },
+  "chrome.account_changed.signed_out_body": {
+    "source": "This account is no longer signed in on this browser. Reload this page to choose an account.",
+    "text": "这个账户已经在此浏览器上退出登录。刷新页面后重新选择账户。"
+  },
+  "chrome.account_changed.signed_out_title": {
+    "source": "You signed out in another tab",
+    "text": "你在另一个标签页退出了登录"
+  },
+  "chrome.account_changed.switched_body": {
+    "source": "This browser is now using a different account. Reload this page to continue with that account.",
+    "text": "这个浏览器现在用的是另一个账户。刷新页面，就能以那个账户继续。"
+  },
+  "chrome.account_changed.switched_title": {
+    "source": "You switched accounts in another tab",
+    "text": "你在另一个标签页切换了账户"
+  },
+  "chrome.account_menu.add_account": {
+    "source": "Add another account",
+    "text": "添加其他账户"
+  },
+  "chrome.account_menu.label": {
+    "source": "Account",
+    "text": "账户"
+  },
+  "chrome.account_menu.limit_reached": {
+    "source": "This browser holds {max} accounts, the most it can. Sign one out to add another.",
+    "text": "这个浏览器已经登录了 {max} 个账户，到上限了。退出一个才能再添加。"
+  },
+  "chrome.account_menu.log_out": {
+    "source": "Log out",
+    "text": "退出登录"
+  },
+  "chrome.account_menu.log_out_all": {
+    "source": "Log out of all accounts",
+    "text": "退出所有账户"
+  },
+  "chrome.account_menu.signed_out": {
+    "source": "Signed out · sign in again",
+    "text": "已退出 · 请重新登录"
+  },
+  "chrome.account_menu.switched": {
+    "source": "Switched to {name}",
+    "text": "已切换到 {name}"
+  },
+  "chrome.configuration.user_notice": {
+    "source": "This service is missing required configuration, so some features may not work. Please contact your administrator.",
+    "text": "这个服务缺少必要的配置，部分功能可能用不了。请联系管理员。"
+  },
+  "chrome.error.body": {
+    "source": "Something went wrong while showing this page. Please try again. If the problem continues, contact the site administrator.",
+    "text": "显示页面时出了点问题，请再试一次。如果一直这样，请联系站点管理员。"
+  },
+  "chrome.error.retry": {
+    "source": "Try again",
+    "text": "再试一次"
+  },
+  "chrome.error.title": {
+    "source": "This page could not be displayed",
+    "text": "这个页面没能显示出来"
+  },
+  "chrome.footer.docs": {
+    "source": "Docs",
+    "text": "文档"
+  },
+  "chrome.footer.no_warranty": {
+    "source": "Service is provided without guarantee.",
+    "text": "本服务按现状提供，不作任何保证。"
+  },
+  "chrome.footer.privacy": {
+    "source": "Privacy",
+    "text": "隐私"
+  },
+  "chrome.footer.stats": {
+    "source": "Stats",
+    "text": "统计"
+  },
+  "chrome.footer.status": {
+    "source": "Status",
+    "text": "服务状态"
+  },
+  "chrome.footer.team": {
+    "source": "Team",
+    "text": "团队"
+  },
+  "chrome.footer.terms": {
+    "source": "Terms",
+    "text": "条款"
+  },
+  "chrome.footer.terms_lead": {
+    "source": "See our",
+    "text": "详见"
+  },
+  "chrome.footer.terms_link": {
+    "source": "Terms of Service",
+    "text": "服务条款"
+  },
+  "chrome.footer.terms_tail": {
+    "source": ".",
+    "text": "。"
+  },
+  "chrome.header.dashboard": {
+    "source": "Dashboard",
+    "text": "控制台"
+  },
+  "chrome.header.docs_assistant": {
+    "source": "Docs Assistant",
+    "text": "文档助手"
+  },
+  "chrome.header.logo_alt": {
+    "source": "{app_name} logo",
+    "text": "{app_name} 标志"
+  },
+  "chrome.header.stats": {
+    "source": "Stats",
+    "text": "统计"
+  },
+  "chrome.header.status": {
+    "source": "Status",
+    "text": "服务状态"
+  },
+  "chrome.language.label": {
+    "source": "Interface language",
+    "text": "界面语言"
+  },
+  "chrome.language.switch_title": {
+    "source": "Change the interface language",
+    "text": "切换界面语言"
+  },
+  "chrome.role.admin": {
+    "source": "admin",
+    "text": "管理员"
+  },
+  "chrome.role.free": {
+    "source": "free",
+    "text": "免费版"
+  },
+  "chrome.role.internal": {
+    "source": "internal",
+    "text": "内部"
+  },
+  "chrome.role.pro": {
+    "source": "pro",
+    "text": "专业版"
+  },
+  "chrome.toast.dismiss": {
+    "source": "Dismiss notification",
+    "text": "关闭通知"
+  },
+  "chrome.updates.dismiss": {
+    "source": "Dismiss announcement",
+    "text": "关闭公告"
+  },
+  "chrome.updates.learn_more": {
+    "source": "Learn more",
+    "text": "了解更多"
+  },
+  "common.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "common.loading": {
+    "source": "Loading...",
+    "text": "加载中…"
+  },
+  "common.opens_new_tab": {
+    "source": " (opens in a new tab)",
+    "text": "（在新标签页打开）"
+  },
+  "dashboard.account.email": {
+    "source": "Email:",
+    "text": "邮箱："
+  },
+  "dashboard.account.login_name": {
+    "source": "Login name:",
+    "text": "登录名："
+  },
+  "dashboard.account.mobile": {
+    "source": "Mobile number:",
+    "text": "手机号："
+  },
+  "dashboard.account.not_set": {
+    "source": "Not set",
+    "text": "未设置"
+  },
+  "dashboard.account.plan": {
+    "source": "Plan:",
+    "text": "套餐："
+  },
+  "dashboard.account.title": {
+    "source": "Account Information",
+    "text": "账户信息"
+  },
+  "dashboard.account.user_id": {
+    "source": "User ID:",
+    "text": "用户 ID："
+  },
+  "dashboard.account.username": {
+    "source": "Username:",
+    "text": "用户名："
+  },
+  "dashboard.docs_link": {
+    "source": "Docs",
+    "text": "文档"
+  },
+  "dashboard.internal.admin": {
+    "source": "Admin Console",
+    "text": "管理后台"
+  },
+  "dashboard.internal.playground": {
+    "source": "API Playground",
+    "text": "API 调试台"
+  },
+  "dashboard.internal.title": {
+    "source": "Internal Tools",
+    "text": "内部工具"
+  },
+  "dashboard.keys.col_actions": {
+    "source": "Actions",
+    "text": "操作"
+  },
+  "dashboard.keys.col_created": {
+    "source": "Created",
+    "text": "创建时间"
+  },
+  "dashboard.keys.col_key": {
+    "source": "API Key",
+    "text": "API key"
+  },
+  "dashboard.keys.col_last_used": {
+    "source": "Last Used",
+    "text": "最近使用"
+  },
+  "dashboard.keys.col_status": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "dashboard.keys.confirm_create": {
+    "source": "Create a new API Key?",
+    "text": "确定要创建新的 API key 吗？"
+  },
+  "dashboard.keys.confirm_delete": {
+    "source": "Delete this API Key? It will stop working immediately.",
+    "text": "确定要删除这个 API key 吗？删除后它会立即停止工作。"
+  },
+  "dashboard.keys.confirm_regenerate": {
+    "source": "Regenerate API Key? The old key will be immediately invalidated.",
+    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。"
+  },
+  "dashboard.keys.confirm_remove": {
+    "source": "Remove this revoked API Key from the dashboard?",
+    "text": "要把这个已吊销的 API key 从列表中移除吗？"
+  },
+  "dashboard.keys.copied_toast": {
+    "source": "API key copied to clipboard",
+    "text": "API key 已复制到剪贴板"
+  },
+  "dashboard.keys.copy": {
+    "source": "Copy key",
+    "text": "复制 key"
+  },
+  "dashboard.keys.create": {
+    "source": "Create API Key",
+    "text": "创建 API key"
+  },
+  "dashboard.keys.created_inline": {
+    "source": "Created: ",
+    "text": "创建时间："
+  },
+  "dashboard.keys.created_toast": {
+    "source": "API Key created successfully! Please save it now.",
+    "text": "API key 已创建，请立即保存。"
+  },
+  "dashboard.keys.delete": {
+    "source": "Delete",
+    "text": "删除"
+  },
+  "dashboard.keys.deleted_toast": {
+    "source": "API Key deleted successfully.",
+    "text": "API key 已删除。"
+  },
+  "dashboard.keys.empty": {
+    "source": "No API keys yet. Create one to start using the API.",
+    "text": "还没有 API key。创建一个就可以开始调用 API 了。"
+  },
+  "dashboard.keys.full_key_once": {
+    "source": "Full key is only shown immediately after creation or regeneration.",
+    "text": "完整的 key 只在创建或重新生成后显示一次。"
+  },
+  "dashboard.keys.hide": {
+    "source": "Hide key",
+    "text": "隐藏 key"
+  },
+  "dashboard.keys.last_used_inline": {
+    "source": "Last used: ",
+    "text": "最近使用："
+  },
+  "dashboard.keys.load_failed": {
+    "source": "Failed to load API keys. Please try again later.",
+    "text": "API key 加载失败，请稍后再试。"
+  },
+  "dashboard.keys.never": {
+    "source": "Never",
+    "text": "从未使用"
+  },
+  "dashboard.keys.no_actions": {
+    "source": "No actions",
+    "text": "无可用操作"
+  },
+  "dashboard.keys.regenerate": {
+    "source": "Regenerate",
+    "text": "重新生成"
+  },
+  "dashboard.keys.regenerated_toast": {
+    "source": "API Key regenerated successfully! Please save it now.",
+    "text": "API key 已重新生成，请立即保存。"
+  },
+  "dashboard.keys.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "dashboard.keys.removed_toast": {
+    "source": "API Key removed.",
+    "text": "API key 已移除。"
+  },
+  "dashboard.keys.save_now": {
+    "source": "Save this key now. It will only be shown once.",
+    "text": "请现在就保存这个 key，它只会显示这一次。"
+  },
+  "dashboard.keys.show": {
+    "source": "Show key",
+    "text": "显示 key"
+  },
+  "dashboard.keys.status_active": {
+    "source": "active",
+    "text": "使用中"
+  },
+  "dashboard.keys.status_revoked": {
+    "source": "revoked",
+    "text": "已吊销"
+  },
+  "dashboard.keys.subtitle": {
+    "source": "Manage keys used to authenticate requests to the {app_name} API.",
+    "text": "管理用于调用 {app_name} API 的密钥。"
+  },
+  "dashboard.keys.title": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "dashboard.models.col_limits": {
+    "source": "Ctx / out",
+    "text": "上下文 / 输出"
+  },
+  "dashboard.models.col_model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "dashboard.models.col_price": {
+    "source": "USD / 1M tokens",
+    "text": "美元 / 百万 token"
+  },
+  "dashboard.models.copied_toast": {
+    "source": "Model ID copied to clipboard",
+    "text": "模型 ID 已复制到剪贴板"
+  },
+  "dashboard.models.copy": {
+    "source": "Copy model ID",
+    "text": "复制模型 ID"
+  },
+  "dashboard.models.count_one": {
+    "source": "{count} model",
+    "text": "共 {count} 个模型"
+  },
+  "dashboard.models.count_other": {
+    "source": "{count} models",
+    "text": "共 {count} 个模型"
+  },
+  "dashboard.models.empty": {
+    "source": "No models are currently available for your account.",
+    "text": "你的账户目前没有可用的模型。"
+  },
+  "dashboard.models.load_failed": {
+    "source": "Failed to load models. Please try again later.",
+    "text": "模型列表加载失败，请稍后再试。"
+  },
+  "dashboard.models.price_cache_hit": {
+    "source": "Cache hit",
+    "text": "缓存命中"
+  },
+  "dashboard.models.price_cache_write": {
+    "source": "Cache write",
+    "text": "缓存写入"
+  },
+  "dashboard.models.price_input": {
+    "source": "Input",
+    "text": "输入"
+  },
+  "dashboard.models.price_output": {
+    "source": "Output",
+    "text": "输出"
+  },
+  "dashboard.models.subtitle": {
+    "source": "Model IDs and token limits for API requests.",
+    "text": "调用 API 时要用到的模型 ID 和 token 上限。"
+  },
+  "dashboard.models.title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.requests.badge_embedding": {
+    "source": "embedding",
+    "text": "embedding"
+  },
+  "dashboard.requests.badge_stream": {
+    "source": "stream",
+    "text": "流式"
+  },
+  "dashboard.requests.cached_tokens": {
+    "source": "Cached Tokens",
+    "text": "缓存 token"
+  },
+  "dashboard.requests.cached_tokens_one": {
+    "source": "{count} cached token",
+    "text": "缓存 token：{count}"
+  },
+  "dashboard.requests.cached_tokens_other": {
+    "source": "{count} cached tokens",
+    "text": "缓存 token：{count}"
+  },
+  "dashboard.requests.cost": {
+    "source": "Cost",
+    "text": "费用"
+  },
+  "dashboard.requests.days_ago": {
+    "source": "{n}d ago",
+    "text": "{n} 天前"
+  },
+  "dashboard.requests.details": {
+    "source": "Request Details",
+    "text": "请求详情"
+  },
+  "dashboard.requests.disabled": {
+    "source": "Disabled",
+    "text": "关闭"
+  },
+  "dashboard.requests.empty": {
+    "source": "No requests yet",
+    "text": "还没有请求记录"
+  },
+  "dashboard.requests.empty_hint": {
+    "source": "Requests will appear here once you start using the API.",
+    "text": "开始调用 API 之后，请求会显示在这里。"
+  },
+  "dashboard.requests.enabled": {
+    "source": "Enabled",
+    "text": "开启"
+  },
+  "dashboard.requests.error": {
+    "source": "Request Error",
+    "text": "请求出错"
+  },
+  "dashboard.requests.go": {
+    "source": "Go",
+    "text": "前往"
+  },
+  "dashboard.requests.hours_ago": {
+    "source": "{n}h ago",
+    "text": "{n} 小时前"
+  },
+  "dashboard.requests.jump_input": {
+    "source": "Page number to jump to",
+    "text": "要跳转的页码"
+  },
+  "dashboard.requests.jump_label": {
+    "source": "Jump to page",
+    "text": "跳转到页码"
+  },
+  "dashboard.requests.just_now": {
+    "source": "just now",
+    "text": "刚刚"
+  },
+  "dashboard.requests.latency": {
+    "source": "Latency",
+    "text": "总耗时"
+  },
+  "dashboard.requests.load_failed": {
+    "source": "Failed to load recent requests. Please try again later.",
+    "text": "最近请求加载失败，请稍后再试。"
+  },
+  "dashboard.requests.minutes_ago": {
+    "source": "{n}m ago",
+    "text": "{n} 分钟前"
+  },
+  "dashboard.requests.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "dashboard.requests.next": {
+    "source": "Next →",
+    "text": "下一页 →"
+  },
+  "dashboard.requests.page_of": {
+    "source": "Page {page} of {total}",
+    "text": "第 {page} / {total} 页"
+  },
+  "dashboard.requests.previous": {
+    "source": "← Previous",
+    "text": "← 上一页"
+  },
+  "dashboard.requests.prompt_output": {
+    "source": "Prompt / Output",
+    "text": "输入 / 输出"
+  },
+  "dashboard.requests.reasoning_tokens": {
+    "source": "{count} reasoning tokens",
+    "text": "推理 token：{count}"
+  },
+  "dashboard.requests.status": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "dashboard.requests.streaming": {
+    "source": "Streaming",
+    "text": "流式输出"
+  },
+  "dashboard.requests.table_label": {
+    "source": "Recent requests table",
+    "text": "最近请求列表"
+  },
+  "dashboard.requests.throughput": {
+    "source": "Throughput",
+    "text": "吞吐量"
+  },
+  "dashboard.requests.time": {
+    "source": "Time",
+    "text": "时间"
+  },
+  "dashboard.requests.title": {
+    "source": "Recent Requests",
+    "text": "最近请求"
+  },
+  "dashboard.requests.tokens": {
+    "source": "Tokens",
+    "text": "Token"
+  },
+  "dashboard.requests.total_one": {
+    "source": "{count} total request",
+    "text": "共 {count} 条请求"
+  },
+  "dashboard.requests.total_other": {
+    "source": "{count} total requests",
+    "text": "共 {count} 条请求"
+  },
+  "dashboard.requests.total_tokens": {
+    "source": "Total Tokens",
+    "text": "总 token"
+  },
+  "dashboard.settings_link": {
+    "source": "Settings",
+    "text": "设置"
+  },
+  "dashboard.title": {
+    "source": "Dashboard",
+    "text": "控制台"
+  },
+  "dashboard.usage.cost": {
+    "source": "Estimated cost",
+    "text": "估算费用"
+  },
+  "dashboard.usage.cost_help": {
+    "source": "Internal cost attributed from logged usage. Today and This Month start at 00:00 UTC, when the daily quota resets. Not a bill — for transparency only.",
+    "text": "根据请求日志估算出的内部成本。“今天”和“本月”都从 UTC 时间 00:00 开始算，也就是每日额度重置的时刻。这不是账单，只是让你心里有数。"
+  },
+  "dashboard.usage.footnote": {
+    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
+    "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
+  },
+  "dashboard.usage.input_tokens": {
+    "source": "Input Tokens",
+    "text": "输入 token"
+  },
+  "dashboard.usage.input_tokens_help": {
+    "source": "Tokens in your prompts and tool inputs sent to the model.",
+    "text": "你发给模型的提示词和工具输入所占的 token 数。"
+  },
+  "dashboard.usage.load_failed": {
+    "source": "Failed to load usage statistics. Please try again later.",
+    "text": "用量统计加载失败，请稍后再试。"
+  },
+  "dashboard.usage.max_concurrency": {
+    "source": "Max concurrent requests: {limit}",
+    "text": "最大并发请求数：{limit}"
+  },
+  "dashboard.usage.more_quota_lead": {
+    "source": "Need more quota? Email",
+    "text": "额度不够用？发邮件到"
+  },
+  "dashboard.usage.more_quota_tail": {
+    "source": "and explain your use case.",
+    "text": "，说说你的使用场景。"
+  },
+  "dashboard.usage.no_key": {
+    "source": "API key not found",
+    "text": "没有找到 API key"
+  },
+  "dashboard.usage.output_tokens": {
+    "source": "Output Tokens",
+    "text": "输出 token"
+  },
+  "dashboard.usage.output_tokens_help": {
+    "source": "Tokens generated by the model in responses.",
+    "text": "模型在回复中生成的 token 数。"
+  },
+  "dashboard.usage.period_all": {
+    "source": "All Time",
+    "text": "全部"
+  },
+  "dashboard.usage.period_month": {
+    "source": "This Month",
+    "text": "本月"
+  },
+  "dashboard.usage.period_today": {
+    "source": "Today",
+    "text": "今天"
+  },
+  "dashboard.usage.quota_of": {
+    "source": "of {limit}",
+    "text": "/ 共 {limit}"
+  },
+  "dashboard.usage.quota_remaining": {
+    "source": "Daily quota remaining",
+    "text": "今日剩余额度"
+  },
+  "dashboard.usage.requests": {
+    "source": "Requests",
+    "text": "请求数"
+  },
+  "dashboard.usage.requests_help": {
+    "source": "Number of API requests (including errors). Retries count as separate requests.",
+    "text": "API 请求的次数，出错的也算在内。每次重试都单独计一次。"
+  },
+  "dashboard.usage.resets_at": {
+    "source": "Resets at {time}.",
+    "text": "将在 {time} 重置。"
+  },
+  "dashboard.usage.resets_next": {
+    "source": "Resets at the next daily reset.",
+    "text": "将在下一次每日重置时恢复。"
+  },
+  "dashboard.usage.title": {
+    "source": "Usage Statistics",
+    "text": "用量统计"
+  },
+  "dashboard.usage.unlimited": {
+    "source": "Unlimited",
+    "text": "不限"
+  },
+  "dashboard.welcome": {
+    "source": "Welcome back, {name}",
+    "text": "欢迎回来，{name}"
+  },
+  "landing.features.dropin_body": {
+    "source": "Point your existing OpenAI client at our base_url. No code changes required.",
+    "text": "把现有 OpenAI 客户端的 base_url 指向我们就行，代码一行不用改。"
+  },
+  "landing.features.dropin_title": {
+    "source": "Drop-in OpenAI replacement",
+    "text": "直接替换 OpenAI"
+  },
+  "landing.features.eyebrow": {
+    "source": "Features",
+    "text": "特性"
+  },
+  "landing.features.free_body": {
+    "source": "No credit card required. Generous quota for research and prototyping.",
+    "text": "无需信用卡，额度充足，做研究、搭原型都够用。"
+  },
+  "landing.features.free_title": {
+    "source": "Free to use",
+    "text": "免费使用"
+  },
+  "landing.features.models_body": {
+    "source": "Reach every model your deployment routes to behind a single unified API.",
+    "text": "部署里接入的所有模型，都能通过同一套 API 调用。"
+  },
+  "landing.features.models_title": {
+    "source": "Frontier models",
+    "text": "前沿模型"
+  },
+  "landing.features.subtitle": {
+    "source": "Everything you need to build and ship LLM-powered applications.",
+    "text": "构建和上线 LLM 应用所需的一切，这里都有。"
+  },
+  "landing.features.why": {
+    "source": "Why",
+    "text": "为什么选择"
+  },
+  "landing.hero.signin": {
+    "source": "Sign in",
+    "text": "登录"
+  },
+  "landing.hero.signup": {
+    "source": "Sign up free",
+    "text": "免费注册"
+  },
+  "landing.hero.subtitle": {
+    "source": "An OpenAI-compatible API powered by frontier open models — free for the research community.",
+    "text": "兼容 OpenAI 的 API，背后是最前沿的开源模型，对科研社区免费开放。"
+  },
+  "landing.hero.tagline": {
+    "source": "for open-source, research and education",
+    "text": "为开源、科研和教育而生"
+  },
+  "landing.hero.trust_compatible": {
+    "source": "OpenAI & Anthropic compatible",
+    "text": "兼容 OpenAI 和 Anthropic"
+  },
+  "landing.hero.trust_models": {
+    "source": "Frontier open models",
+    "text": "前沿开源模型"
+  },
+  "landing.hero.trust_no_card": {
+    "source": "No credit card required",
+    "text": "无需信用卡"
+  },
+  "landing.home.add_route_lead": {
+    "source": "Add a route in the",
+    "text": "去"
+  },
+  "landing.home.add_route_tail": {
+    "source": "to serve one.",
+    "text": "添加一条路由，就能提供对话模型了。"
+  },
+  "landing.home.api_base": {
+    "source": "API base",
+    "text": "API 地址"
+  },
+  "landing.home.attention": {
+    "source": "Your gateway needs attention.",
+    "text": "你的网关需要处理一下。"
+  },
+  "landing.home.copied": {
+    "source": "Copied",
+    "text": "已复制"
+  },
+  "landing.home.copy_curl": {
+    "source": "Copy curl",
+    "text": "复制 curl 命令"
+  },
+  "landing.home.health": {
+    "source": "Gateway health",
+    "text": "网关状态"
+  },
+  "landing.home.intro": {
+    "source": "Check the gateway, try a request, or open the console to configure routes and keys.",
+    "text": "检查网关状态，发个请求试试，或者打开控制台配置路由和密钥。"
+  },
+  "landing.home.intro_example": {
+    "source": "Inspect the example deployment, try a request, or open the console to configure your own routes.",
+    "text": "看看这个示例部署，发个请求试试，或者打开控制台配置你自己的路由。"
+  },
+  "landing.home.loading": {
+    "source": "Loading…",
+    "text": "加载中…"
+  },
+  "landing.home.local_attention": {
+    "source": "Your local gateway needs attention.",
+    "text": "你的本地网关需要处理一下。"
+  },
+  "landing.home.local_example": {
+    "source": "Local example",
+    "text": "本地示例"
+  },
+  "landing.home.local_running": {
+    "source": "Your local gateway is running.",
+    "text": "你的本地网关正在运行。"
+  },
+  "landing.home.no_chat_admin": {
+    "source": "No chat models yet.",
+    "text": "还没有对话模型。"
+  },
+  "landing.home.no_chat_user": {
+    "source": "No chat models are available to your account.",
+    "text": "你的账户目前没有可用的对话模型。"
+  },
+  "landing.home.no_chat_user_hint": {
+    "source": "Ask the operator of this deployment to add a route or grant access.",
+    "text": "请联系这个部署的运维人员添加路由或开通权限。"
+  },
+  "landing.home.no_public_chat": {
+    "source": "No public chat models.",
+    "text": "没有公开的对话模型。"
+  },
+  "landing.home.no_public_chat_hint": {
+    "source": "Sign in to see the models available to your account.",
+    "text": "登录后可以看到你的账户能用的模型。"
+  },
+  "landing.home.none_configured": {
+    "source": "None configured",
+    "text": "还没有配置"
+  },
+  "landing.home.not_published": {
+    "source": "Not published",
+    "text": "未公开"
+  },
+  "landing.home.playground": {
+    "source": "Playground",
+    "text": "调试台"
+  },
+  "landing.home.public_models": {
+    "source": "Public models",
+    "text": "公开模型"
+  },
+  "landing.home.running": {
+    "source": "Your gateway is running.",
+    "text": "你的网关正在运行。"
+  },
+  "landing.home.same_origin": {
+    "source": "Same origin",
+    "text": "与本站同源"
+  },
+  "landing.home.show_all": {
+    "source": "Show all {count}",
+    "text": "显示全部 {count} 个"
+  },
+  "landing.home.show_fewer": {
+    "source": "Show fewer",
+    "text": "收起"
+  },
+  "landing.home.signup": {
+    "source": "Sign up",
+    "text": "注册"
+  },
+  "landing.home.status_checking": {
+    "source": "Checking…",
+    "text": "检查中…"
+  },
+  "landing.home.status_degraded": {
+    "source": "Degraded",
+    "text": "部分降级"
+  },
+  "landing.home.status_healthy": {
+    "source": "Healthy",
+    "text": "正常"
+  },
+  "landing.home.status_unhealthy": {
+    "source": "Unhealthy",
+    "text": "异常"
+  },
+  "landing.home.status_unreachable": {
+    "source": "Unreachable",
+    "text": "无法连接"
+  },
+  "landing.home.tools_label": {
+    "source": "Gateway tools",
+    "text": "网关工具"
+  },
+  "landing.home.try_api": {
+    "source": "Try the API",
+    "text": "试一试 API"
+  },
+  "landing.home.unavailable": {
+    "source": "Unavailable",
+    "text": "暂时获取不到"
+  },
+  "landing.home.uses": {
+    "source": "Uses",
+    "text": "使用模型"
+  },
+  "landing.home.your_models": {
+    "source": "Your models",
+    "text": "你的模型"
+  },
+  "landing.quickstart.copied": {
+    "source": "Copied!",
+    "text": "已复制！"
+  },
+  "landing.quickstart.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "landing.quickstart.eyebrow": {
+    "source": "Quickstart",
+    "text": "快速开始"
+  },
+  "landing.quickstart.subtitle": {
+    "source": "Use the same OpenAI client libraries you already know.",
+    "text": "用你熟悉的 OpenAI 客户端库就行。"
+  },
+  "landing.quickstart.title_lead": {
+    "source": "One",
+    "text": "只需一条"
+  },
+  "landing.quickstart.title_tail": {
+    "source": "away",
+    "text": "命令"
+  },
+  "landing.sponsors.label": {
+    "source": "sponsors",
+    "text": "赞助方"
+  },
+  "landing.sponsors.title": {
+    "source": "Sponsors",
+    "text": "赞助方"
+  },
+  "landing.steps.call_body": {
+    "source": "Use any OpenAI-compatible client. Just change the base URL.",
+    "text": "任何兼容 OpenAI 的客户端都能用，改一下 base URL 就好。"
+  },
+  "landing.steps.call_title": {
+    "source": "Call the API",
+    "text": "调用 API"
+  },
+  "landing.steps.eyebrow": {
+    "source": "Getting started",
+    "text": "快速上手"
+  },
+  "landing.steps.key_body": {
+    "source": "Generate a key from your dashboard in one click.",
+    "text": "在控制台点一下就能生成。"
+  },
+  "landing.steps.key_title": {
+    "source": "Create an API key",
+    "text": "创建 API key"
+  },
+  "landing.steps.signup_body": {
+    "source": "Create a free account with your email — no credit card needed.",
+    "text": "用邮箱注册一个免费账户，不需要信用卡。"
+  },
+  "landing.steps.signup_title": {
+    "source": "Sign up",
+    "text": "注册"
+  },
+  "landing.steps.title": {
+    "source": "Get started in three steps",
+    "text": "三步就能用起来"
+  },
+  "landing.updates.label": {
+    "source": "updates",
+    "text": "最新动态"
+  },
+  "landing.updates.title": {
+    "source": "Latest Updates",
+    "text": "最新动态"
+  },
+  "landing.use_cases.assistants_body": {
+    "source": "Build conversational assistants and agents that plan, reason, and act on your behalf.",
+    "text": "打造能替你规划、推理并采取行动的对话助理和 Agent。"
+  },
+  "landing.use_cases.assistants_title": {
+    "source": "Personal assistants",
+    "text": "个人助理"
+  },
+  "landing.use_cases.coding_body": {
+    "source": "Power autonomous and assisted coding workflows with frontier models via OpenAI- or Anthropic-compatible endpoints.",
+    "text": "通过兼容 OpenAI 或 Anthropic 的接口接入前沿模型，驱动自主编程和辅助编程工作流。"
+  },
+  "landing.use_cases.coding_title": {
+    "source": "Coding agents",
+    "text": "编程 Agent"
+  },
+  "landing.use_cases.eyebrow": {
+    "source": "Use cases",
+    "text": "使用场景"
+  },
+  "landing.use_cases.label": {
+    "source": "use cases",
+    "text": "使用场景"
+  },
+  "landing.use_cases.subtitle": {
+    "source": "Drop us in wherever you need an OpenAI- or Anthropic-compatible endpoint.",
+    "text": "只要需要兼容 OpenAI 或 Anthropic 的接口，就可以用我们。"
+  },
+  "landing.use_cases.title": {
+    "source": "Supported use cases",
+    "text": "支持的使用场景"
+  },
+  "meta.team.description": {
+    "source": "The people building {app_name}.",
+    "text": "{app_name} 背后的团队。"
+  },
+  "meta.team.title": {
+    "source": "Team",
+    "text": "团队"
+  },
+  "settings.back": {
+    "source": "← Back",
+    "text": "← 返回"
+  },
+  "settings.danger.description": {
+    "source": "Irreversible actions that permanently affect your account.",
+    "text": "这里的操作会永久影响你的账户，无法撤销。"
+  },
+  "settings.danger.title": {
+    "source": "Danger Zone",
+    "text": "危险操作"
+  },
+  "settings.email.description_bound": {
+    "source": "Your verified email address for signing in and receiving account notifications.",
+    "text": "已验证的邮箱，用于登录和接收账户通知。"
+  },
+  "settings.email.description_unbound": {
+    "source": "Bind an email address to receive notifications and sign in with email.",
+    "text": "绑定邮箱后，可以收到账户通知，也能用邮箱登录。"
+  },
+  "settings.email.title": {
+    "source": "Email Address",
+    "text": "邮箱地址"
+  },
+  "settings.language.description": {
+    "source": "The language of this console. Your choice is saved to your account and follows you to other browsers.",
+    "text": "控制台的显示语言。你的选择会保存在账户里，换个浏览器登录也一样。"
+  },
+  "settings.language.title": {
+    "source": "Language",
+    "text": "语言"
+  },
+  "settings.password.change_description": {
+    "source": "Update your password to keep your account secure.",
+    "text": "定期更新密码，保护账户安全。"
+  },
+  "settings.password.change_title": {
+    "source": "Change Password",
+    "text": "修改密码"
+  },
+  "settings.password.code_required": {
+    "source": "Enter the verification code sent to your phone.",
+    "text": "请输入发到你手机上的验证码。"
+  },
+  "settings.password.confirm": {
+    "source": "Confirm New Password",
+    "text": "确认新密码"
+  },
+  "settings.password.current": {
+    "source": "Current Password",
+    "text": "当前密码"
+  },
+  "settings.password.current_required": {
+    "source": "Current password is required",
+    "text": "请输入当前密码"
+  },
+  "settings.password.new": {
+    "source": "New Password",
+    "text": "新密码"
+  },
+  "settings.password.set_description_email": {
+    "source": "Set a password so you can also sign in with your email address.",
+    "text": "设置密码后，你也可以用邮箱加密码登录。"
+  },
+  "settings.password.set_description_no_email": {
+    "source": "Set a password. To sign in with it, also add an email address above.",
+    "text": "设置一个密码。如果想用它登录，还需要在上面绑定邮箱。"
+  },
+  "settings.password.set_title": {
+    "source": "Set Password",
+    "text": "设置密码"
+  },
+  "settings.password.set_toast": {
+    "source": "Password set successfully!",
+    "text": "密码设置成功！"
+  },
+  "settings.password.update_submit": {
+    "source": "Update Password",
+    "text": "更新密码"
+  },
+  "settings.password.updated_toast": {
+    "source": "Password updated successfully!",
+    "text": "密码已更新！"
+  },
+  "settings.phone.verified": {
+    "source": "Verified",
+    "text": "已验证"
+  },
+  "settings.portrait.decode_failed": {
+    "source": "Failed to decode image.",
+    "text": "无法解析这张图片。"
+  },
+  "settings.portrait.hint": {
+    "source": "PNG, JPEG, or WebP up to 8 MB. Defaults to your initials.",
+    "text": "支持 PNG、JPEG 或 WebP，最大 8 MB。不上传则显示你名字的首字母。"
+  },
+  "settings.portrait.label": {
+    "source": "Portrait",
+    "text": "头像"
+  },
+  "settings.portrait.no_canvas": {
+    "source": "Canvas is unavailable in this browser.",
+    "text": "当前浏览器不支持 Canvas。"
+  },
+  "settings.portrait.not_image": {
+    "source": "Please choose a PNG, JPEG, or WebP image.",
+    "text": "请选择 PNG、JPEG 或 WebP 格式的图片。"
+  },
+  "settings.portrait.read_failed": {
+    "source": "Failed to read image file.",
+    "text": "读取图片文件失败。"
+  },
+  "settings.portrait.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "settings.portrait.too_large": {
+    "source": "Image file must be smaller than 8 MB.",
+    "text": "图片不能超过 8 MB。"
+  },
+  "settings.portrait.updated": {
+    "source": "Portrait updated successfully.",
+    "text": "头像已更新。"
+  },
+  "settings.portrait.updated_toast": {
+    "source": "Portrait updated!",
+    "text": "头像已更新！"
+  },
+  "settings.portrait.upload": {
+    "source": "Upload Photo",
+    "text": "上传照片"
+  },
+  "settings.subtitle": {
+    "source": "Manage your profile, sign-in methods, and account security",
+    "text": "管理你的个人资料、登录方式和账户安全"
+  },
+  "settings.title": {
+    "source": "Account Settings",
+    "text": "账户设置"
+  },
+  "settings.username.description": {
+    "source": "This name is shown on your dashboard and admin request views.",
+    "text": "这个名字会显示在你的控制台，以及管理员查看请求的页面上。"
+  },
+  "settings.username.hint": {
+    "source": "Use 2-50 characters.",
+    "text": "2 到 50 个字符。"
+  },
+  "settings.username.label": {
+    "source": "Username",
+    "text": "用户名"
+  },
+  "settings.username.submit": {
+    "source": "Update Username",
+    "text": "更新用户名"
+  },
+  "settings.username.title": {
+    "source": "Change Username",
+    "text": "修改用户名"
+  },
+  "settings.username.updated": {
+    "source": "Username updated successfully.",
+    "text": "用户名已更新。"
+  },
+  "settings.username.updated_toast": {
+    "source": "Username updated successfully!",
+    "text": "用户名已更新！"
+  },
+  "stats.active_per_week": {
+    "source": "Active per week",
+    "text": "每周活跃数"
+  },
+  "stats.agents.all": {
+    "source": "All agents",
+    "text": "全部 Agent"
+  },
+  "stats.agents.also_seen_one": {
+    "source": "Also seen: {count} chat app ({names}).",
+    "text": "另外还出现了 {count} 个聊天应用（{names}）。"
+  },
+  "stats.agents.also_seen_other": {
+    "source": "Also seen: {count} chat apps ({names}).",
+    "text": "另外还出现了 {count} 个聊天应用（{names}）。"
+  },
+  "stats.agents.col_accounts": {
+    "source": "Accounts",
+    "text": "账户数"
+  },
+  "stats.agents.col_agent": {
+    "source": "Agent",
+    "text": "Agent"
+  },
+  "stats.agents.col_kind": {
+    "source": "Kind",
+    "text": "类型"
+  },
+  "stats.agents.intro": {
+    "source": "Requests named {clients} distinct clients in their User-Agent header, counting each name once across versions and platforms. Matching those names and system prompts against known tools gives {products} agent products.",
+    "text": "请求的 User-Agent 头里出现了 {clients} 个不同的客户端，同一个名字的不同版本和平台只算一次。把这些名字和系统提示词与已知工具对照，可以识别出 {products} 个 Agent 产品。"
+  },
+  "stats.agents.kind_coding": {
+    "source": "Coding",
+    "text": "编程"
+  },
+  "stats.agents.kind_general": {
+    "source": "General-purpose",
+    "text": "通用"
+  },
+  "stats.agents.known": {
+    "source": "Known agent products",
+    "text": "已识别的 Agent 产品"
+  },
+  "stats.agents.products": {
+    "source": "Agent products",
+    "text": "Agent 产品"
+  },
+  "stats.agents.share": {
+    "source": "Share of tokens by kind of client",
+    "text": "各类客户端的 token 占比"
+  },
+  "stats.agents.title": {
+    "source": "Agents calling the API",
+    "text": "调用 API 的 Agent"
+  },
+  "stats.continent.af": {
+    "source": "Africa",
+    "text": "非洲"
+  },
+  "stats.continent.an": {
+    "source": "Antarctica",
+    "text": "南极洲"
+  },
+  "stats.continent.as": {
+    "source": "Asia",
+    "text": "亚洲"
+  },
+  "stats.continent.eu": {
+    "source": "Europe",
+    "text": "欧洲"
+  },
+  "stats.continent.na": {
+    "source": "North America",
+    "text": "北美洲"
+  },
+  "stats.continent.oc": {
+    "source": "Oceania",
+    "text": "大洋洲"
+  },
+  "stats.continent.sa": {
+    "source": "South America",
+    "text": "南美洲"
+  },
+  "stats.countries.all": {
+    "source": "Every country and territory seen",
+    "text": "出现过的所有国家和地区"
+  },
+  "stats.countries.any": {
+    "source": "Any traffic",
+    "text": "有请求"
+  },
+  "stats.countries.intro": {
+    "source": "Requests came from {count} countries and territories on {continents} continents.",
+    "text": "请求来自 {continents} 个大洲的 {count} 个国家和地区。"
+  },
+  "stats.countries.legend": {
+    "source": "Darker means more requests. Hover a code for its name.",
+    "text": "颜色越深，请求越多。把鼠标移到代码上可以看到名称。"
+  },
+  "stats.countries.min": {
+    "source": "{min}+ requests",
+    "text": "请求 {min} 次以上"
+  },
+  "stats.countries.min_week": {
+    "source": "{min}+ requests that week",
+    "text": "当周请求 {min} 次以上"
+  },
+  "stats.countries.title": {
+    "source": "Countries and territories",
+    "text": "国家和地区"
+  },
+  "stats.countries.top": {
+    "source": "Share of requests, top {count}",
+    "text": "请求占比，前 {count} 名"
+  },
+  "stats.error": {
+    "source": "Usage stats could not be loaded. Try again in a few minutes.",
+    "text": "使用统计加载失败，过几分钟再试试。"
+  },
+  "stats.kind.chat": {
+    "source": "Chat apps",
+    "text": "聊天应用"
+  },
+  "stats.kind.coding": {
+    "source": "Coding agents",
+    "text": "编程 Agent"
+  },
+  "stats.kind.custom": {
+    "source": "Custom agents & scripts",
+    "text": "自定义 Agent 和脚本"
+  },
+  "stats.kind.direct": {
+    "source": "Direct API & SDKs",
+    "text": "直接调用 API 和 SDK"
+  },
+  "stats.kind.general": {
+    "source": "General-purpose agents",
+    "text": "通用 Agent"
+  },
+  "stats.languages.accounts": {
+    "source": "Accounts writing in each language",
+    "text": "使用各语言的账户数"
+  },
+  "stats.languages.intro": {
+    "source": "We detected {count} languages in the messages people send. English comes first, but {non_english} of the {classified} accounts we could classify also wrote in another language. The count comes from a sample of {sampled} messages, so it is a lower bound.",
+    "text": "我们在用户发送的消息里识别出 {count} 种语言。英语排第一，但在 {classified} 个能识别语言的账户中，有 {non_english} 个也用过其他语言。这个数字来自 {sampled} 条消息的抽样，所以只是下限。"
+  },
+  "stats.languages.title": {
+    "source": "Languages people write in",
+    "text": "大家用什么语言写作"
+  },
+  "stats.languages.weekly": {
+    "source": "Languages detected per week",
+    "text": "每周识别出的语言数"
+  },
+  "stats.loading": {
+    "source": "Loading usage stats…",
+    "text": "正在加载使用统计…"
+  },
+  "stats.measure": {
+    "source": "Measure",
+    "text": "统计口径"
+  },
+  "stats.meta_description": {
+    "source": "Tokens served, countries, languages and agents on {app_name}, refreshed daily.",
+    "text": "{app_name} 处理的 token、请求来源国家、写作语言和调用 Agent，每天更新。"
+  },
+  "stats.meta_title": {
+    "source": "Usage stats | {app_name}",
+    "text": "使用统计 | {app_name}"
+  },
+  "stats.method.accounts": {
+    "source": "Accounts.",
+    "text": "账户。"
+  },
+  "stats.method.accounts_body": {
+    "source": "Approved users are accounts that have been let in; the waiting list is sign-ups still waiting for review. Both are counted when the snapshot is made.",
+    "text": "“已通过的用户”是已经放行的账户；“等待审核”是还在排队审核的注册申请。两者都按生成快照那一刻的数字计算。"
+  },
+  "stats.method.agents": {
+    "source": "Agents.",
+    "text": "Agent。"
+  },
+  "stats.method.agents_body": {
+    "source": "A client is the product name at the start of the User-Agent header, ignoring version and platform; generic HTTP libraries, SDKs and browsers are not counted. A client or product needs {min_requests} successful requests to count. Account counts below {min_accounts} are shown as “{withheld}”.",
+    "text": "客户端指 User-Agent 头开头的产品名，忽略版本和平台；通用的 HTTP 库、SDK 和浏览器不计入。一个客户端或产品至少要有 {min_requests} 次成功请求才会被统计。账户数少于 {min_accounts} 时显示为“{withheld}”。"
+  },
+  "stats.method.countries": {
+    "source": "Countries.",
+    "text": "国家和地区。"
+  },
+  "stats.method.countries_body": {
+    "source": "Each request's IP address is geolocated when it is logged; only the country is kept. Addresses that cannot be placed are left out.",
+    "text": "每个请求在记录日志时会根据 IP 地址定位，只保留国家或地区。无法定位的地址不计入。"
+  },
+  "stats.method.languages": {
+    "source": "Languages.",
+    "text": "语言。"
+  },
+  "stats.method.languages_body": {
+    "source": "Each week we sample up to 8 distinct messages per account, strip code and markup, and identify the language of each sentence with fastText's lid.176 model. A language counts for an account when at least two sampled messages are mainly in it. Romanized writing, such as Hindi in Latin script, cannot be detected.",
+    "text": "每周从每个账户最多抽取 8 条不同的消息，去掉代码和标记后，用 fastText 的 lid.176 模型逐句识别语言。一个账户至少有两条抽样消息主要使用某种语言，才算这个账户用了这种语言。用拉丁字母书写的语言（比如用拉丁字母写的印地语）无法识别。"
+  },
+  "stats.method.models": {
+    "source": "Models.",
+    "text": "模型。"
+  },
+  "stats.method.models_body": {
+    "source": "Each request counts under the model it named, so an alias counts as its model and an auto model as itself, not the model chosen to serve it. Models not offered to the public, and models since retired, are counted together as “{other}”.",
+    "text": "每个请求都记在它指定的模型名下：别名记在对应的模型上，自动模型记在它自己名下，而不是实际处理请求的那个模型。没有对外开放的模型和已经下线的模型，统一算作“{other}”。"
+  },
+  "stats.method.title": {
+    "source": "How these numbers are counted",
+    "text": "这些数字是怎么统计的"
+  },
+  "stats.method.tokens": {
+    "source": "Tokens.",
+    "text": "Token。"
+  },
+  "stats.method.tokens_body": {
+    "source": "Successful requests only, excluding our own health checks. Input counts the whole prompt, including cached prefixes. Weeks start on Monday (UTC).",
+    "text": "只统计成功的请求，不包括我们自己的健康检查。输入 token 按完整的提示词计算，缓存命中的前缀也算在内。每周从周一开始（UTC）。"
+  },
+  "stats.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "stats.models.bars_requests": {
+    "source": "{model}, requests per day. Busiest day {date}: {value} requests.",
+    "text": "{model}，每日请求数。最忙的一天是 {date}：{value} 次请求。"
+  },
+  "stats.models.bars_tokens": {
+    "source": "{model}, tokens per day. Busiest day {date}: {value} tokens.",
+    "text": "{model}，每日 token 数。最忙的一天是 {date}：{value} 个 token。"
+  },
+  "stats.models.footnote": {
+    "source": "Each row is scaled to that model's busiest day. The first and last days are partial and drawn lighter. Hover or focus a row's bars for a day's value.",
+    "text": "每一行都按该模型最忙的那天缩放。第一天和最后一天的数据不完整，颜色画得浅一些。把鼠标移到或聚焦到某一行的柱子上，可以看到当天的数值。"
+  },
+  "stats.models.intro": {
+    "source": "Requests and tokens per day for each of the {count} models we offer.",
+    "text": "我们提供的 {count} 个模型每天的请求数和 token 数。"
+  },
+  "stats.models.intro_and_top": {
+    "source": "{intro} {top}",
+    "text": "{intro}{top}"
+  },
+  "stats.models.intro_with_other": {
+    "source": "Requests and tokens per day for each of the {count} models we offer, with every other model counted together.",
+    "text": "我们提供的 {count} 个模型每天的请求数和 token 数，其余模型合并统计。"
+  },
+  "stats.models.other": {
+    "source": "Other models",
+    "text": "其他模型"
+  },
+  "stats.models.per_day": {
+    "source": "Per day",
+    "text": "每日"
+  },
+  "stats.models.requests_per_day": {
+    "source": "Requests per day, by model",
+    "text": "各模型每日请求数"
+  },
+  "stats.models.share": {
+    "source": "Share",
+    "text": "占比"
+  },
+  "stats.models.title": {
+    "source": "Traffic by model",
+    "text": "各模型的流量"
+  },
+  "stats.models.tokens_per_day": {
+    "source": "Tokens per day, by model",
+    "text": "各模型每日 token 数"
+  },
+  "stats.models.top": {
+    "source": "{model} served {share} of all tokens.",
+    "text": "其中 {model} 处理了全部 token 的 {share}。"
+  },
+  "stats.models.value_request_one": {
+    "source": "{value} request",
+    "text": "{value} 次请求"
+  },
+  "stats.models.value_request_other": {
+    "source": "{value} requests",
+    "text": "{value} 次请求"
+  },
+  "stats.models.value_token_one": {
+    "source": "{value} token",
+    "text": "{value} 个 token"
+  },
+  "stats.models.value_token_other": {
+    "source": "{value} tokens",
+    "text": "{value} 个 token"
+  },
+  "stats.partial_day": {
+    "source": "{date} · partial day",
+    "text": "{date} · 不完整的一天"
+  },
+  "stats.partial_note": {
+    "source": "The first and last days are partial and drawn lighter.",
+    "text": "第一天和最后一天的数据不完整，颜色画得浅一些。"
+  },
+  "stats.requests": {
+    "source": "Requests",
+    "text": "请求"
+  },
+  "stats.requests_per_day": {
+    "source": "Requests per day",
+    "text": "每日请求数"
+  },
+  "stats.subtitle": {
+    "source": "Who has access, how much we serve, where requests come from, which languages people write in, and which agents send them. Aggregates only, refreshed daily.",
+    "text": "谁在用、我们提供了多少服务、请求来自哪里、大家用什么语言写作、又是哪些 Agent 在发请求。只展示汇总数据，每天更新。"
+  },
+  "stats.tile.agents": {
+    "source": "Agent clients",
+    "text": "Agent 客户端"
+  },
+  "stats.tile.agents_note": {
+    "source": "{multi} used by more than one account; {products} known agent products",
+    "text": "{multi} 个被多个账户使用；已识别 {products} 个 Agent 产品"
+  },
+  "stats.tile.approved": {
+    "source": "Approved users",
+    "text": "已通过的用户"
+  },
+  "stats.tile.approved_note": {
+    "source": "Accounts with access to the API",
+    "text": "有权使用 API 的账户"
+  },
+  "stats.tile.countries": {
+    "source": "Countries & territories",
+    "text": "国家和地区"
+  },
+  "stats.tile.countries_note": {
+    "source": "{count} with {min}+ requests, on {continents} continents",
+    "text": "其中 {count} 个请求数达到 {min} 次以上，分布在 {continents} 个大洲"
+  },
+  "stats.tile.languages": {
+    "source": "Languages",
+    "text": "语言"
+  },
+  "stats.tile.languages_none": {
+    "source": "Not measured on this deployment",
+    "text": "这个部署没有统计这一项"
+  },
+  "stats.tile.languages_note": {
+    "source": "{count} of {classified} classified accounts also write in a language other than English",
+    "text": "在 {classified} 个能识别语言的账户中，有 {count} 个还会用英语以外的语言"
+  },
+  "stats.tile.tokens": {
+    "source": "Tokens served",
+    "text": "已处理的 token"
+  },
+  "stats.tile.tokens_note": {
+    "source": "{requests} requests from {accounts} accounts",
+    "text": "来自 {accounts} 个账户的 {requests} 次请求"
+  },
+  "stats.tile.waiting": {
+    "source": "Waiting list",
+    "text": "等待审核"
+  },
+  "stats.tile.waiting_none": {
+    "source": "No sign-ups are waiting for review",
+    "text": "目前没有待审核的注册申请"
+  },
+  "stats.tile.waiting_note": {
+    "source": "Sign-ups waiting for review",
+    "text": "等待审核的注册申请"
+  },
+  "stats.title": {
+    "source": "{app_name} usage stats",
+    "text": "{app_name} 使用统计"
+  },
+  "stats.tokens": {
+    "source": "Tokens",
+    "text": "Token"
+  },
+  "stats.tokens.intro": {
+    "source": "{tokens} tokens over {days} days: {input} input and {output} output. Agents resend their whole conversation on every turn, so input dominates, and at least {cached} of it was served from the prompt cache.",
+    "text": "{days} 天里共处理 {tokens} 个 token：输入 {input}，输出 {output}。Agent 每一轮都会把整段对话重新发一遍，所以输入占了大头，其中至少 {cached} 来自提示词缓存。"
+  },
+  "stats.tokens_per_day": {
+    "source": "Tokens per day",
+    "text": "每日 token 数"
+  },
+  "stats.tooltip_tokens": {
+    "source": "{total} ({input} in, {output} out)",
+    "text": "{total}（输入 {input}，输出 {output}）"
+  },
+  "stats.unavailable": {
+    "source": "Usage stats are not published for this site yet.",
+    "text": "这个站点还没有公开使用统计。"
+  },
+  "stats.week_of": {
+    "source": "Week of {date}",
+    "text": "{date} 这一周"
+  },
+  "stats.week_of_partial": {
+    "source": "Week of {date} · partial",
+    "text": "{date} 这一周 · 不完整"
+  },
+  "stats.window": {
+    "source": "{start} – {end} · {days} days · updated {updated}",
+    "text": "{start} – {end} · 共 {days} 天 · 更新于 {updated}"
+  },
+  "stats.withheld": {
+    "source": "fewer than {count}",
+    "text": "少于 {count}"
+  },
+  "team.avatar_label": {
+    "source": "Placeholder avatar for {name}",
+    "text": "{name} 的占位头像"
+  },
+  "team.eyebrow": {
+    "source": "Our team",
+    "text": "我们的团队"
+  },
+  "team.photo_alt": {
+    "source": "Photo of {name}",
+    "text": "{name} 的照片"
+  },
+  "team.subtitle": {
+    "source": "A small research team building free, open LLM inference",
+    "text": "一个小小的研究团队，在做免费、开放的 LLM 推理服务"
+  },
+  "team.subtitle_org_lead": {
+    "source": "at",
+    "text": "，来自"
+  },
+  "team.title_prefix": {
+    "source": "The people behind",
+    "text": "幕后团队 ·"
+  },
+  "terms.header.intro": {
+    "source": "Last updated: June 20, 2026. These terms are a practical operating policy for using {app_name} and are not legal advice.",
+    "text": "最近更新：2026 年 6 月 20 日。本条款是使用 {app_name} 的实际运营规则，不构成法律意见。"
+  },
+  "terms.header.title": {
+    "source": "Terms of Service",
+    "text": "服务条款"
+  },
+  "terms.s1.body_1": {
+    "source": "{app_name} is an experimental research service that provides access to hosted and routed large language model inference for experimentation and related development work.",
+    "text": "{app_name} 是一项实验性研究服务，为实验和相关开发工作提供托管和路由的大语言模型推理能力。"
+  },
+  "terms.s1.body_2": {
+    "source": "The service may route requests across local inference servers and remote model providers. Available models, providers, limits, features, latency, throughput, output quality, and routing behavior may change without notice, and there is no performance guarantee.",
+    "text": "本服务可能会把请求路由到本地推理服务器或远程模型提供方。可用的模型、提供方、限额、功能、延迟、吞吐量、输出质量和路由方式都可能随时调整，恕不另行通知，也不对性能作任何保证。"
+  },
+  "terms.s1.title": {
+    "source": "1. Service Overview",
+    "text": "1. 服务概述"
+  },
+  "terms.s10.body_1": {
+    "source": "For questions about {app_name} or these terms, contact us at {contact_email}.",
+    "text": "如对 {app_name} 或本条款有任何疑问，请通过 {contact_email} 联系我们。"
+  },
+  "terms.s10.body_2": {
+    "source": "For questions about {app_name} or these terms, contact the operator of this deployment.",
+    "text": "如对 {app_name} 或本条款有任何疑问，请联系本部署的运营方。"
+  },
+  "terms.s10.title": {
+    "source": "10. Contact",
+    "text": "10. 联系我们"
+  },
+  "terms.s2.body_1": {
+    "source": "You must be at least 18 years old to create an account or use {app_name}. By creating an account or using the service, you confirm that you are at least 18 years old and have the legal capacity to agree to these Terms.",
+    "text": "你必须年满 18 周岁才能创建账户或使用 {app_name}。创建账户或使用本服务，即表示你确认自己已年满 18 周岁，并具备同意本条款的法律行为能力。"
+  },
+  "terms.s2.body_2": {
+    "source": "You are responsible for maintaining the confidentiality of your account credentials and API keys. You are responsible for activity submitted through your account or keys.",
+    "text": "你有责任妥善保管账户凭据和 API key，并对通过你的账户或 key 提交的所有活动负责。"
+  },
+  "terms.s2.body_3": {
+    "source": "Do not share API keys publicly, embed them in client-side code, or use another person's account without permission.",
+    "text": "不要公开分享 API key，不要把它写进客户端代码，也不要未经许可使用他人的账户。"
+  },
+  "terms.s2.title": {
+    "source": "2. Eligibility and Accounts",
+    "text": "2. 资格与账户"
+  },
+  "terms.s3.body_1": {
+    "source": "You may not use the service to violate laws, infringe rights, compromise security, abuse infrastructure, or intentionally disrupt availability for other users.",
+    "text": "你不得利用本服务违反法律、侵犯他人权利、破坏安全、滥用基础设施，或故意影响其他用户的正常使用。"
+  },
+  "terms.s3.body_2": {
+    "source": "You may not attempt to bypass rate limits, quotas, authentication, authorization, routing controls, or provider restrictions.",
+    "text": "你不得试图绕过速率限制、额度、身份验证、权限控制、路由控制或提供方的限制。"
+  },
+  "terms.s3.title": {
+    "source": "3. Acceptable Use",
+    "text": "3. 合理使用"
+  },
+  "terms.s4.body_1": {
+    "source": "Quotas, rate limits, model access, and usage limits may change based on usage, demand, infrastructure capacity, abuse prevention, operational needs, and individual or aggregate activity.",
+    "text": "额度、速率限制、模型访问权限和用量上限，可能会根据使用情况、需求、基础设施容量、防滥用要求、运营需要以及个人或整体的使用情况进行调整。"
+  },
+  "terms.s4.body_2": {
+    "source": "High-volume, automated, abusive, or operationally risky usage may be limited, delayed, deprioritized, or blocked without advance notice.",
+    "text": "高频、自动化、滥用性或存在运营风险的使用，可能会在不事先通知的情况下被限制、延迟、降低优先级或阻止。"
+  },
+  "terms.s4.title": {
+    "source": "4. Quotas and Limits",
+    "text": "4. 额度与限制"
+  },
+  "terms.s5.body_1": {
+    "source": "All prompts and responses may be logged for research purposes, stored, hashed, redacted, or otherwise processed depending on operator configuration and service needs. Logs and derived data may be used to operate, secure, debug, improve, and analyze the service.",
+    "text": "出于研究目的，所有提示词和回复都可能被记录、存储、哈希、脱敏或以其他方式处理，具体取决于运营方的配置和服务需要。日志及其衍生数据可能用于运营、保护、调试、改进和分析本服务。"
+  },
+  "terms.s5.body_2": {
+    "source": "We sanitize all text before analysis where feasible to reduce sensitive or identifying content in analysis workflows. Sanitization is not a guarantee that all sensitive information will be removed from logs, derived data, or third-party provider systems.",
+    "text": "在条件允许时，我们会在分析之前对所有文本进行清洗，以减少分析流程中的敏感或可识别信息。但清洗并不能保证日志、衍生数据或第三方提供方系统中的所有敏感信息都被清除。"
+  },
+  "terms.s5.body_3": {
+    "source": "Logged requests are analyzed to study how the service is used, and anonymized data derived from them — such as sanitized prompts and responses, usage statistics, and routing metrics — may be published or open-sourced to support reproducible research. Any such release is intended to contain only de-identified data, but, as noted above, sanitization cannot guarantee that all sensitive information is removed.",
+    "text": "我们会分析已记录的请求，以研究本服务的使用方式。由此产生的匿名数据（例如清洗后的提示词和回复、使用统计和路由指标）可能会公开发布或开源，以支持可复现的研究。任何此类发布都只打算包含去标识化的数据，但正如上文所说，清洗无法保证所有敏感信息都被清除。"
+  },
+  "terms.s5.body_4": {
+    "source": "Do not submit sensitive personal information, confidential information, regulated data, secrets, credentials, or data you are not authorized to process through the service.",
+    "text": "不要通过本服务提交敏感个人信息、保密信息、受监管的数据、机密、凭据，或任何你无权处理的数据。"
+  },
+  "terms.s5.title": {
+    "source": "5. Logging and Data Use",
+    "text": "5. 日志与数据使用"
+  },
+  "terms.s6.body_1": {
+    "source": "Some requests may be forwarded to third-party model providers. Those providers may process submitted prompts, responses, metadata, and related usage information under their own terms and policies.",
+    "text": "部分请求可能会被转发给第三方模型提供方。这些提供方可能会按照其自身的条款和政策，处理你提交的提示词、回复、元数据及相关使用信息。"
+  },
+  "terms.s6.body_2": {
+    "source": "You are responsible for ensuring that your use of the service and any routed providers is appropriate for your data and intended use case.",
+    "text": "你有责任确保自己对本服务及其路由到的提供方的使用，适合你的数据和预期用途。"
+  },
+  "terms.s6.title": {
+    "source": "6. Third-Party Providers",
+    "text": "6. 第三方提供方"
+  },
+  "terms.s7.body_1": {
+    "source": "The service is provided without guarantee and on an as-is and as-available basis. Outputs may be inaccurate, incomplete, unsafe, unavailable, delayed, or unsuitable for your needs.",
+    "text": "本服务按“现状”和“现有可用”的基础提供，不作任何保证。输出内容可能不准确、不完整、不安全、不可用、有延迟，或不适合你的需求。"
+  },
+  "terms.s7.body_2": {
+    "source": "You must review model outputs before relying on them. Do not rely on the service for legal, medical, financial, safety-critical, or other high-risk decisions. This page is not legal advice.",
+    "text": "在依赖模型输出之前，你必须自行审核。不要依靠本服务做出法律、医疗、金融、安全攸关或其他高风险的决定。本页面不构成法律意见。"
+  },
+  "terms.s7.title": {
+    "source": "7. No Warranty",
+    "text": "7. 免责声明"
+  },
+  "terms.s8.body_1": {
+    "source": "Access may be limited, suspended, or terminated for misuse, security concerns, operational needs, policy violations, or discontinuation of the service.",
+    "text": "如出现滥用、安全隐患、运营需要、违反政策或服务停止运营等情况，访问权限可能被限制、暂停或终止。"
+  },
+  "terms.s8.body_2": {
+    "source": "We may remove or restrict models, providers, accounts, API keys, or features at any time.",
+    "text": "我们可以随时移除或限制模型、提供方、账户、API key 或功能。"
+  },
+  "terms.s8.title": {
+    "source": "8. Suspension and Termination",
+    "text": "8. 暂停与终止"
+  },
+  "terms.s9.body_1": {
+    "source": "These terms may be updated from time to time. Continued use of the service after updates means you accept the revised terms.",
+    "text": "本条款可能会不时更新。更新后继续使用本服务，即表示你接受修订后的条款。"
+  },
+  "terms.s9.title": {
+    "source": "9. Changes to These Terms",
+    "text": "9. 条款变更"
+  }
+}

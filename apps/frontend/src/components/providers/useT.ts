@@ -2,35 +2,60 @@
 
 import { useMemo } from 'react';
 
-import { useIsConsoleCopy } from '@/site-ui/appearance';
+import { documentLocale, useLocaleState } from '@/components/providers/LocaleProvider';
+import { localeForTag, SOURCE_LOCALE } from '@/lib/i18n/locales';
+import { catalogTranslator, type Translate } from '@/lib/i18n/translate';
+import { useIsConsoleCopy, useModuleRendersRouteContext } from '@/site-ui/appearance';
 import { SITE_UI_CLIENT } from '@/site-ui/module';
-import { translate, translator, type Translate } from '@/lib/i18n/translate';
+
+/** Whether two BCP-47 tags name the same supported language, or are the same tag. */
+function sameLanguage(a: string, b: string): boolean {
+  if (a === b) return true;
+  const la = localeForTag(a);
+  return la !== null && la === localeForTag(b);
+}
 
 /**
  * Resolve one interface string, in a component.
  *
- * Two sources, and the order matters: the compiled-in UI module's own
- * dictionary first, then the English literal the call site passes. A key the
- * module did not translate resolves to that literal, which is what keeps a
- * partially translated deployment usable.
+ * Three sources, in order: the compiled-in UI module's own wording, the
+ * console's catalog for the page's language, then the English literal the call
+ * site passes. A key nobody translated resolves to that literal, which is what
+ * keeps a partially translated language usable.
  *
- * The module's dictionary is the *only* runtime source. Page copy used to be
- * resolved from a slot document the gateway served through `/site-config`,
- * which meant a deployment's sentences were part of the backend contract and a
- * wording change did not change the front-end build's inputs — so the version
- * lock could not tell that a running image was stale. Copy now ships with the
- * image that renders it (see `docs/developer/distribution-customization.md`).
+ * Each source applies only to a page in its own language (`documentLocale`):
+ *
+ * - The module's `authMessages` are written in the module's language — its
+ *   descriptor `locale`, or English when it has none — and only reach the
+ *   public routes. Console routes (marked by `SiteUiBoundary` when
+ *   `usePublicRoute()` is `null`) never take them, even when they mount a
+ *   shared component such as `PhoneAuthForm`, and a reader who chose another
+ *   language than the module's does not get the module's sentences mixed in.
+ * - The catalog is the reader's language. A route the module renders in its
+ *   own fixed language does not take it.
+ *
+ * Copy ships with the image that renders it — the module's in the module, the
+ * console's in `src/lib/i18n/messages/` — never through `/site-config`, so the
+ * version lock can tell a running image is stale (see
+ * `docs/developer/distribution-customization.md`).
  *
  * `SITE_UI_CLIENT.authMessages` holds only the keys the contract declares —
  * `module.tsx` drops the rest — so a module can supply wording only for those.
- * Console routes (marked by `SiteUiBoundary` when `usePublicRoute()` is `null`)
- * always keep the shared English copy (`CONSOLE_LANGUAGE = 'en'`), even when
- * they mount a shared component such as `PhoneAuthForm`.
  */
 export function useT(): Translate {
   const isConsoleRoute = useIsConsoleCopy();
-  const messages = isConsoleRoute ? undefined : SITE_UI_CLIENT.authMessages;
-  return useMemo(() => (messages ? translator(messages) : translate), [messages]);
+  const moduleRenders = useModuleRendersRouteContext();
+  const { locale, catalog, moduleLocale } = useLocaleState();
+  const pageLocale = documentLocale(moduleRenders, moduleLocale, locale);
+
+  const moduleCopyLocale = SITE_UI_CLIENT.descriptor.locale || SOURCE_LOCALE;
+  const overrides =
+    !isConsoleRoute && sameLanguage(pageLocale, moduleCopyLocale)
+      ? SITE_UI_CLIENT.authMessages
+      : undefined;
+  const pageCatalog = pageLocale === locale ? catalog : undefined;
+
+  return useMemo(() => catalogTranslator(pageCatalog, overrides), [pageCatalog, overrides]);
 }
 
 export type { Translate };

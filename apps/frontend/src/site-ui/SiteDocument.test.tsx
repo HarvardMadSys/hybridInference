@@ -53,9 +53,9 @@ function exportNothing() {
 }
 
 /** The document the root layout renders, reduced to its two children. */
-function document_(moduleLocale: string) {
+function document_(moduleLocale: string, consoleLocale: 'en' | 'zh-CN' = 'en') {
   return (
-    <SiteDocument moduleLocale={moduleLocale} className="h-full">
+    <SiteDocument moduleLocale={moduleLocale} consoleLocale={consoleLocale} className="h-full">
       {/* The App Router's root layout renders `<head>` itself; `next/head` is
           the Pages Router's. */}
       {/* eslint-disable-next-line @next/next/no-head-element */}
@@ -66,9 +66,13 @@ function document_(moduleLocale: string) {
 }
 
 /** The language the server writes into the first response for a path. */
-function serverLanguage(path: string, moduleLocale = 'fr'): string | undefined {
+function serverLanguage(
+  path: string,
+  moduleLocale = 'fr',
+  consoleLocale: 'en' | 'zh-CN' = 'en',
+): string | undefined {
   pathname.value = path;
-  return /^<html lang="([^"]*)"/.exec(renderToString(document_(moduleLocale)))?.[1];
+  return /^<html lang="([^"]*)"/.exec(renderToString(document_(moduleLocale, consoleLocale)))?.[1];
 }
 
 beforeEach(exportNothing);
@@ -117,6 +121,23 @@ describe('the document language, as the server renders it', () => {
     for (const path of ['/', '/login', '/terms', '/dashboard']) {
       expect(serverLanguage(path), path).toBe('en');
     }
+  });
+});
+
+describe("the document language, for a reader who chose the console's language", () => {
+  it("is the reader's on every console route, and on a module route with no fixed language", () => {
+    exportEverything();
+    for (const path of CONSOLE_PAGES) {
+      expect(serverLanguage(path, 'fr', 'zh-CN'), path).toBe('zh-CN');
+    }
+    for (const path of ['/', ...ACCOUNT_PAGES, '/terms']) {
+      expect(serverLanguage(path, '', 'zh-CN'), path).toBe('zh-CN');
+    }
+  });
+
+  it("stays the module's on a route the module writes in its fixed language", () => {
+    exportEverything();
+    expect(serverLanguage('/login', 'fr', 'zh-CN')).toBe('fr');
   });
 });
 

@@ -33,6 +33,7 @@ import {
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
 import { getMe } from '@/lib/api/user';
+import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 import { AccountToastContext, type AccountToastScope } from '@/lib/hooks/useAccountToast';
 import { useSiteConfig } from './SiteConfigProvider';
 import { clearToasts } from './ToastProvider';
@@ -58,6 +59,8 @@ export interface AuthUser {
   avatar_url?: string | null;
   role: string;
   is_admin: boolean;
+  /** The interface language this account last chose; `null` when it never chose. */
+  locale?: AccountLocaleChoice | null;
 }
 
 export interface AuthState {
@@ -196,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           avatar_url: me.avatar_url ?? null,
           role: me.role || 'free',
           is_admin: me.is_admin,
+          locale: me.locale ?? null,
         },
       });
     } catch {

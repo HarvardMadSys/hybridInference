@@ -23,6 +23,12 @@ import { META_MESSAGE_KEYS } from './contract';
  * public routes, and nothing else.
  */
 
+// `/team` renders on the server in the request's language; there is no request
+// here, so it renders in English, the source.
+vi.mock('@/lib/i18n/request.server', () => ({
+  requestTranslator: async () => (_slot: string, fallback: string) => fallback,
+}));
+
 vi.mock('@/config/site-config.server', () => ({
   loadRuntimeSiteConfig: async () => ({
     ...buildTimeSiteConfig,

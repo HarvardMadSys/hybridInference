@@ -4,17 +4,15 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPublicSiteUpdates, type PublicSiteUpdate } from '@/lib/api/updates';
-
-function fmtDate(s: string): string {
-  return new Date(s).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
+import { useT } from '@/components/providers/useT';
+import { useFormatter } from '@/lib/i18n/useFormatter';
 
 export function Updates(): JSX.Element | null {
   const [updates, setUpdates] = useState<PublicSiteUpdate[]>([]);
+  const t = useT();
+  const fmt = useFormatter();
+  const fmtDate = (s: string): string =>
+    fmt.date(s, { month: 'short', day: 'numeric', year: 'numeric' });
 
   useEffect(() => {
     let active = true;
@@ -29,10 +27,13 @@ export function Updates(): JSX.Element | null {
   if (updates.length === 0) return null;
 
   return (
-    <section className="px-4 py-6 sm:px-6 lg:px-8" aria-label="updates">
+    <section
+      className="px-4 py-6 sm:px-6 lg:px-8"
+      aria-label={t('landing.updates.label', 'updates')}
+    >
       <div className="mx-auto w-full max-w-4xl rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-gray-500">
-          Latest Updates
+          {t('landing.updates.title', 'Latest Updates')}
         </p>
         <ul className="mt-6 space-y-6">
           {updates.map((u) => (
@@ -53,7 +54,7 @@ export function Updates(): JSX.Element | null {
                   rel="noopener noreferrer"
                   className="mt-1 inline-block text-sm font-medium text-crimson underline"
                 >
-                  {u.link_label || 'Learn more'}
+                  {u.link_label || t('chrome.updates.learn_more', 'Learn more')}
                 </a>
               )}
             </li>

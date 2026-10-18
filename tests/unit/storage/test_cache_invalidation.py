@@ -26,7 +26,9 @@ def inner() -> MagicMock:
     store.get_auth_context_lightweight = AsyncMock()
     store.get_user_by_id = AsyncMock()
     store.get_user_preferences = AsyncMock(return_value={})
-    store.update_user_preferences = AsyncMock()
+    store.set_user_preference = AsyncMock(return_value=True)
+    store.delete_user_preference = AsyncMock(return_value=True)
+    store.set_user_preference_if_newer = AsyncMock(return_value={})
     store.revoke_key = AsyncMock()
     store.regenerate_key = AsyncMock(return_value="old-pfx")
     store.update_key = AsyncMock()
@@ -244,7 +246,7 @@ class TestUserStatusChangeInvalidation:
 class TestUserPreferencesInvalidation:
     """Disabled-model preference writes must invalidate auth cache."""
 
-    async def test_update_user_preferences_clears_auth_caches(self, cached, inner):
+    async def test_set_user_preference_clears_auth_caches(self, cached, inner):
         key_hash = "key-for-disabled-model-update"
         inner.get_auth_context_by_key_hash.return_value = {
             "user_id": "u4",
@@ -262,7 +264,7 @@ class TestUserPreferencesInvalidation:
         assert inner.get_auth_context_by_key_hash.await_count == 1
         assert inner.get_auth_context_lightweight.await_count == 1
 
-        await cached.update_user_preferences("u4", {"disabled_models": ["gpt-4o-mini"]})
+        await cached.set_user_preference("u4", "disabled_models", ["gpt-4o-mini"])
 
         inner.get_auth_context_by_key_hash.return_value = None
         inner.get_auth_context_lightweight.return_value = None

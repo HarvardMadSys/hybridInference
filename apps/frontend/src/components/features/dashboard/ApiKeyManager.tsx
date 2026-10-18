@@ -6,6 +6,9 @@ import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } fro
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useT } from '@/components/providers/useT';
+import { useFormatter } from '@/lib/i18n/useFormatter';
+import { fill } from '@/lib/utils/interpolate';
 
 function EyeIcon(): JSX.Element {
   return (
@@ -62,11 +65,6 @@ function CopyIcon(): JSX.Element {
   );
 }
 
-function formatDate(value?: string | null): string {
-  if (!value) return 'Never';
-  return new Date(value).toLocaleString();
-}
-
 function statusClassName(status: string): string {
   if (status === 'active') {
     return 'bg-green-50 text-green-700 ring-green-200';
@@ -80,6 +78,16 @@ function statusClassName(status: string): string {
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
   const branding = useBranding();
+  const t = useT();
+  const fmt = useFormatter();
+  const formatDate = (value?: string | null): string =>
+    value ? fmt.dateTime(value) : t('dashboard.keys.never', 'Never');
+  const statusLabel = (status: string): string =>
+    status === 'active'
+      ? t('dashboard.keys.status_active', 'active')
+      : status === 'revoked'
+        ? t('dashboard.keys.status_revoked', 'revoked')
+        : status;
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [deletingKeyPrefix, setDeletingKeyPrefix] = useState<string | null>(null);
@@ -94,26 +102,41 @@ export function ApiKeyManager(): JSX.Element {
     createMutation.isPending || deleteMutation.isPending || regenerateMutation.isPending;
 
   async function handleCreateKey(): Promise<void> {
-    if (!window.confirm('Create a new API Key?')) return;
+    if (!window.confirm(t('dashboard.keys.confirm_create', 'Create a new API Key?'))) return;
 
     try {
       const response = await createMutation.mutateAsync();
       setNewApiKey(response.api_key);
       setShowKey(true);
-      toast.success('API Key created successfully! Please save it now.');
+      toast.success(
+        t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
+      );
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
   }
 
   async function handleRegenerateKey(): Promise<void> {
-    if (!window.confirm('Regenerate API Key? The old key will be immediately invalidated.')) return;
+    if (
+      !window.confirm(
+        t(
+          'dashboard.keys.confirm_regenerate',
+          'Regenerate API Key? The old key will be immediately invalidated.',
+        ),
+      )
+    )
+      return;
 
     try {
       const response = await regenerateMutation.mutateAsync();
       setNewApiKey(response.api_key);
       setShowKey(true);
-      toast.success('API Key regenerated successfully! Please save it now.');
+      toast.success(
+        t(
+          'dashboard.keys.regenerated_toast',
+          'API Key regenerated successfully! Please save it now.',
+        ),
+      );
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
@@ -122,8 +145,11 @@ export function ApiKeyManager(): JSX.Element {
   async function handleDeleteKey(keyPrefix: string, status: string): Promise<void> {
     const message =
       status === 'active'
-        ? 'Delete this API Key? It will stop working immediately.'
-        : 'Remove this revoked API Key from the dashboard?';
+        ? t(
+            'dashboard.keys.confirm_delete',
+            'Delete this API Key? It will stop working immediately.',
+          )
+        : t('dashboard.keys.confirm_remove', 'Remove this revoked API Key from the dashboard?');
     if (!window.confirm(message)) return;
 
     try {
@@ -131,7 +157,11 @@ export function ApiKeyManager(): JSX.Element {
       await deleteMutation.mutateAsync(keyPrefix);
       setNewApiKey(null);
       setShowKey(false);
-      toast.success(status === 'active' ? 'API Key deleted successfully.' : 'API Key removed.');
+      toast.success(
+        status === 'active'
+          ? t('dashboard.keys.deleted_toast', 'API Key deleted successfully.')
+          : t('dashboard.keys.removed_toast', 'API Key removed.'),
+      );
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -150,7 +180,7 @@ export function ApiKeyManager(): JSX.Element {
 
   function handleCopyKey(value: string): void {
     void navigator.clipboard.writeText(value);
-    toast.success('API key copied to clipboard');
+    toast.success(t('dashboard.keys.copied_toast', 'API key copied to clipboard'));
   }
 
   const apiKeys = apiKeysResponse?.keys ?? [];
@@ -162,10 +192,16 @@ export function ApiKeyManager(): JSX.Element {
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900">
-            API Keys
+            {t('dashboard.keys.title', 'API Keys')}
           </h2>
           <p className="mt-1 text-sm text-gray-500">
-            Manage keys used to authenticate requests to the {branding.appName} API.
+            {fill(
+              t(
+                'dashboard.keys.subtitle',
+                'Manage keys used to authenticate requests to the {app_name} API.',
+              ),
+              { app_name: branding.appName },
+            )}
           </p>
         </div>
         {!isLoadingKeys && !hasActiveKey && (
@@ -174,7 +210,7 @@ export function ApiKeyManager(): JSX.Element {
             disabled={isLoading}
             isLoading={createMutation.isPending}
           >
-            Create API Key
+            {t('dashboard.keys.create', 'Create API Key')}
           </Button>
         )}
       </div>
@@ -182,7 +218,7 @@ export function ApiKeyManager(): JSX.Element {
       {showKey && newApiKey && (
         <div className="mb-6 rounded-lg bg-yellow-50 p-4 ring-1 ring-inset ring-yellow-200">
           <p className="text-sm font-medium text-yellow-800 mb-2">
-            Save this key now. It will only be shown once.
+            {t('dashboard.keys.save_now', 'Save this key now. It will only be shown once.')}
           </p>
           <div className="flex items-center gap-2">
             <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
@@ -191,8 +227,8 @@ export function ApiKeyManager(): JSX.Element {
             <button
               type="button"
               onClick={() => handleCopyKey(newApiKey)}
-              title="Copy key"
-              aria-label="Copy key"
+              title={t('dashboard.keys.copy', 'Copy key')}
+              aria-label={t('dashboard.keys.copy', 'Copy key')}
               className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
             >
               <CopyIcon />
@@ -203,26 +239,28 @@ export function ApiKeyManager(): JSX.Element {
 
       {apiKeysError && (
         <div className="mb-4 rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
-          Failed to load API keys. Please try again later.
+          {t('dashboard.keys.load_failed', 'Failed to load API keys. Please try again later.')}
         </div>
       )}
 
-      {isLoadingKeys && <div className="mb-4 text-sm text-gray-500">Loading...</div>}
+      {isLoadingKeys && (
+        <div className="mb-4 text-sm text-gray-500">{t('common.loading', 'Loading...')}</div>
+      )}
 
       {!isLoadingKeys && !apiKeysError && apiKeys.length === 0 && (
         <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
-          No API keys yet. Create one to start using the API.
+          {t('dashboard.keys.empty', 'No API keys yet. Create one to start using the API.')}
         </div>
       )}
 
       {apiKeys.length > 0 && (
         <div className="overflow-hidden rounded-lg ring-1 ring-gray-200">
           <div className="hidden grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid">
-            <span>API Key</span>
-            <span>Status</span>
-            <span>Created</span>
-            <span>Last Used</span>
-            <span className="text-right">Actions</span>
+            <span>{t('dashboard.keys.col_key', 'API Key')}</span>
+            <span>{t('dashboard.keys.col_status', 'Status')}</span>
+            <span>{t('dashboard.keys.col_created', 'Created')}</span>
+            <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
+            <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
           </div>
           <div className="divide-y divide-gray-200 bg-white">
             {apiKeys.map((apiKey) => {
@@ -244,8 +282,16 @@ export function ApiKeyManager(): JSX.Element {
                           <button
                             type="button"
                             onClick={() => toggleReveal(apiKey.key_prefix)}
-                            title={revealed ? 'Hide key' : 'Show key'}
-                            aria-label={revealed ? 'Hide key' : 'Show key'}
+                            title={
+                              revealed
+                                ? t('dashboard.keys.hide', 'Hide key')
+                                : t('dashboard.keys.show', 'Show key')
+                            }
+                            aria-label={
+                              revealed
+                                ? t('dashboard.keys.hide', 'Hide key')
+                                : t('dashboard.keys.show', 'Show key')
+                            }
                             className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                           >
                             {revealed ? <EyeOffIcon /> : <EyeIcon />}
@@ -253,8 +299,8 @@ export function ApiKeyManager(): JSX.Element {
                           <button
                             type="button"
                             onClick={() => handleCopyKey(apiKey.api_key!)}
-                            title="Copy key"
-                            aria-label="Copy key"
+                            title={t('dashboard.keys.copy', 'Copy key')}
+                            aria-label={t('dashboard.keys.copy', 'Copy key')}
                             className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                           >
                             <CopyIcon />
@@ -264,7 +310,10 @@ export function ApiKeyManager(): JSX.Element {
                     </div>
                     {!apiKey.api_key && apiKey.status === 'active' && (
                       <p className="mt-1 text-xs text-gray-500">
-                        Full key is only shown immediately after creation or regeneration.
+                        {t(
+                          'dashboard.keys.full_key_once',
+                          'Full key is only shown immediately after creation or regeneration.',
+                        )}
                       </p>
                     )}
                   </div>
@@ -273,14 +322,18 @@ export function ApiKeyManager(): JSX.Element {
                       apiKey.status,
                     )}`}
                   >
-                    {apiKey.status}
+                    {statusLabel(apiKey.status)}
                   </span>
                   <div className="text-sm text-gray-600">
-                    <span className="md:hidden font-medium text-gray-500">Created: </span>
+                    <span className="md:hidden font-medium text-gray-500">
+                      {t('dashboard.keys.created_inline', 'Created: ')}
+                    </span>
                     {formatDate(apiKey.created_at)}
                   </div>
                   <div className="text-sm text-gray-600">
-                    <span className="md:hidden font-medium text-gray-500">Last used: </span>
+                    <span className="md:hidden font-medium text-gray-500">
+                      {t('dashboard.keys.last_used_inline', 'Last used: ')}
+                    </span>
                     {formatDate(apiKey.last_used_at)}
                   </div>
                   <div className="flex gap-2 md:justify-end">
@@ -292,7 +345,7 @@ export function ApiKeyManager(): JSX.Element {
                         size="sm"
                         variant="danger"
                       >
-                        Delete
+                        {t('dashboard.keys.delete', 'Delete')}
                       </Button>
                     ) : apiKey.status === 'revoked' ? (
                       <Button
@@ -302,10 +355,12 @@ export function ApiKeyManager(): JSX.Element {
                         size="sm"
                         variant="subtle"
                       >
-                        Remove
+                        {t('dashboard.keys.remove', 'Remove')}
                       </Button>
                     ) : (
-                      <span className="text-sm text-gray-400">No actions</span>
+                      <span className="text-sm text-gray-400">
+                        {t('dashboard.keys.no_actions', 'No actions')}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -323,7 +378,7 @@ export function ApiKeyManager(): JSX.Element {
             isLoading={regenerateMutation.isPending}
             variant="danger"
           >
-            Regenerate
+            {t('dashboard.keys.regenerate', 'Regenerate')}
           </Button>
         </div>
       )}

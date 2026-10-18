@@ -11,6 +11,9 @@ import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { userDisplayName } from '@/lib/utils/userLabel';
+import { useT } from '@/components/providers/useT';
+import { fill } from '@/lib/utils/interpolate';
+import { roleLabel } from '@/lib/utils/roleLabel';
 
 /**
  * The Agents link, naming the account this console tab is using.
@@ -29,6 +32,8 @@ export function DashboardView() {
   const { state } = useAuth();
   const { branding, features, agentsUrl } = useSiteConfig();
   const displayName = userDisplayName(state.user);
+  const t = useT();
+  const notSet = t('dashboard.account.not_set', 'Not set');
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-8">
@@ -40,8 +45,12 @@ export function DashboardView() {
           <div className="flex items-center gap-3.5">
             <UserAvatar user={state.user} size="lg" />
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-              <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
+              <h1 className="text-3xl font-bold text-gray-900">
+                {t('dashboard.title', 'Dashboard')}
+              </h1>
+              <p className="mt-1 text-sm text-gray-600">
+                {fill(t('dashboard.welcome', 'Welcome back, {name}'), { name: displayName })}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -63,7 +72,7 @@ export function DashboardView() {
                   d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
                 />
               </svg>
-              Settings
+              {t('dashboard.settings_link', 'Settings')}
             </Link>
             {branding.docsUrl && (
               <a
@@ -86,7 +95,7 @@ export function DashboardView() {
                     d="M15 3h6m0 0v6m0-6L10 14"
                   />
                 </svg>
-                Docs
+                {t('dashboard.docs_link', 'Docs')}
               </a>
             )}
           </div>
@@ -95,36 +104,40 @@ export function DashboardView() {
 
       <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
         <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-2">
-          Account Information
+          {t('dashboard.account.title', 'Account Information')}
         </h2>
         <div className="space-y-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-gray-600">Username:</span>
-            <span className="font-medium">{state.user?.user_name || 'Not set'}</span>
+            <span className="text-gray-600">{t('dashboard.account.username', 'Username:')}</span>
+            <span className="font-medium">{state.user?.user_name || notSet}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Email:</span>
-            <span className="font-medium">{state.user?.email || 'Not set'}</span>
+            <span className="text-gray-600">{t('dashboard.account.email', 'Email:')}</span>
+            <span className="font-medium">{state.user?.email || notSet}</span>
           </div>
           {state.user?.login_name && (
             <div className="flex justify-between">
-              <span className="text-gray-600">Login name:</span>
+              <span className="text-gray-600">
+                {t('dashboard.account.login_name', 'Login name:')}
+              </span>
               <span className="font-medium">{state.user.login_name}</span>
             </div>
           )}
           {state.user?.phone && (
             <div className="flex justify-between">
-              <span className="text-gray-600">Mobile number:</span>
+              <span className="text-gray-600">
+                {t('dashboard.account.mobile', 'Mobile number:')}
+              </span>
               <span className="font-medium">{state.user.phone}</span>
             </div>
           )}
           <div className="flex justify-between">
-            <span className="text-gray-600">User ID:</span>
+            <span className="text-gray-600">{t('dashboard.account.user_id', 'User ID:')}</span>
             <span className="font-mono text-xs">{state.user?.id}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Plan:</span>
-            <span className="font-medium capitalize">{state.user?.role}</span>
+            <span className="text-gray-600">{t('dashboard.account.plan', 'Plan:')}</span>
+            <span className="font-medium capitalize">{roleLabel(state.user?.role, t)}</span>
           </div>
         </div>
       </div>
@@ -140,7 +153,7 @@ export function DashboardView() {
       {hasRole(state.user?.role, 'internal') && (
         <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-            Internal Tools
+            {t('dashboard.internal.title', 'Internal Tools')}
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {features.agents && (
@@ -172,7 +185,7 @@ export function DashboardView() {
                   d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
                 />
               </svg>
-              API Playground
+              {t('dashboard.internal.playground', 'API Playground')}
             </Link>
             {state.user?.role === 'admin' && (
               <>
@@ -193,7 +206,7 @@ export function DashboardView() {
                       d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
                     />
                   </svg>
-                  Admin Console
+                  {t('dashboard.internal.admin', 'Admin Console')}
                 </Link>
                 <a
                   href="/pgadmin/"

@@ -22,6 +22,9 @@ vi.mock('@/lib/api/user', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/user')>()),
   updatePassword: api.updatePassword,
 }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+}));
 vi.mock('@/components/features/auth/ProtectedRoute', () => ({
   ProtectedRoute: ({ children }: { children: React.ReactNode }) => children,
 }));

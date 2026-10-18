@@ -3,6 +3,9 @@
 import toast from 'react-hot-toast';
 import { useModels } from '@/lib/hooks';
 import type { ModelCatalogItem } from '@/lib/api/user';
+import { useT } from '@/components/providers/useT';
+import { useFormatter } from '@/lib/i18n/useFormatter';
+import { fill } from '@/lib/utils/interpolate';
 
 function formatTokenLimit(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -11,11 +14,12 @@ function formatTokenLimit(value: number): string {
 }
 
 function ModelPricing({ pricing }: Pick<ModelCatalogItem, 'pricing'>): JSX.Element {
+  const t = useT();
   const rates = [
-    ['Input', pricing.prompt],
-    ['Output', pricing.completion],
-    ['Cache hit', pricing.input_cache_reads],
-    ['Cache write', pricing.input_cache_writes],
+    [t('dashboard.models.price_input', 'Input'), pricing.prompt],
+    [t('dashboard.models.price_output', 'Output'), pricing.completion],
+    [t('dashboard.models.price_cache_hit', 'Cache hit'), pricing.input_cache_reads],
+    [t('dashboard.models.price_cache_write', 'Cache write'), pricing.input_cache_writes],
   ] as const;
   const hasPrice = (value: string | undefined): value is string =>
     value !== undefined && value.trim() !== '';
@@ -39,11 +43,6 @@ function ModelPricing({ pricing }: Pick<ModelCatalogItem, 'pricing'>): JSX.Eleme
   );
 }
 
-function copyModelId(modelId: string): void {
-  void navigator.clipboard.writeText(modelId);
-  toast.success('Model ID copied to clipboard');
-}
-
 export function isDashboardModelVisible(_model: ModelCatalogItem): boolean {
   return true;
 }
@@ -51,26 +50,40 @@ export function isDashboardModelVisible(_model: ModelCatalogItem): boolean {
 export function ModelsSection(): JSX.Element {
   const { data, isLoading, error } = useModels();
   const models = (data?.data ?? []).filter(isDashboardModelVisible);
+  const t = useT();
+  const fmt = useFormatter();
+
+  const copyModelId = (modelId: string): void => {
+    void navigator.clipboard.writeText(modelId);
+    toast.success(t('dashboard.models.copied_toast', 'Model ID copied to clipboard'));
+  };
 
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-5">
       <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold tracking-tight text-gray-900 sm:text-base">
-            Models
+            {t('dashboard.models.title', 'Models')}
           </h2>
-          <p className="text-xs text-gray-500">Model IDs and token limits for API requests.</p>
+          <p className="text-xs text-gray-500">
+            {t('dashboard.models.subtitle', 'Model IDs and token limits for API requests.')}
+          </p>
         </div>
         {models.length > 0 && (
           <span className="text-xs text-gray-500">
-            {models.length.toLocaleString()} model{models.length !== 1 ? 's' : ''}
+            {fill(
+              models.length === 1
+                ? t('dashboard.models.count_one', '{count} model')
+                : t('dashboard.models.count_other', '{count} models'),
+              { count: fmt.number(models.length) },
+            )}
           </span>
         )}
       </div>
 
       {error && (
         <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-inset ring-red-200">
-          Failed to load models. Please try again later.
+          {t('dashboard.models.load_failed', 'Failed to load models. Please try again later.')}
         </div>
       )}
 
@@ -82,7 +95,7 @@ export function ModelsSection(): JSX.Element {
 
       {!isLoading && !error && models.length === 0 && (
         <div className="rounded-lg bg-gray-50 px-3 py-3 text-xs text-gray-600 ring-1 ring-inset ring-gray-200">
-          No models are currently available for your account.
+          {t('dashboard.models.empty', 'No models are currently available for your account.')}
         </div>
       )}
 
@@ -91,9 +104,13 @@ export function ModelsSection(): JSX.Element {
           <table className="w-full min-w-[22rem] border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-gray-200 text-[11px] font-medium uppercase tracking-wide text-gray-500">
-                <th className="py-1.5 pr-2">Model</th>
-                <th className="py-1.5 pr-2 whitespace-nowrap">Ctx / out</th>
-                <th className="py-1.5 text-right whitespace-nowrap">USD / 1M tokens</th>
+                <th className="py-1.5 pr-2">{t('dashboard.models.col_model', 'Model')}</th>
+                <th className="py-1.5 pr-2 whitespace-nowrap">
+                  {t('dashboard.models.col_limits', 'Ctx / out')}
+                </th>
+                <th className="py-1.5 text-right whitespace-nowrap">
+                  {t('dashboard.models.col_price', 'USD / 1M tokens')}
+                </th>
               </tr>
             </thead>
             <tbody className="text-gray-800">
@@ -104,7 +121,7 @@ export function ModelsSection(): JSX.Element {
                       type="button"
                       onClick={() => copyModelId(model.id)}
                       className="block max-w-full truncate text-left font-mono text-[11px] text-blue-700 hover:text-blue-900"
-                      title="Copy model ID"
+                      title={t('dashboard.models.copy', 'Copy model ID')}
                     >
                       {model.id}
                     </button>

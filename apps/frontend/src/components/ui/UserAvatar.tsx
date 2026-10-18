@@ -3,6 +3,7 @@
 import React from 'react';
 import clsx from 'clsx';
 import { userDisplayName, type UserIdentity } from '@/lib/utils/userLabel';
+import { translate, type Translate } from '@/lib/i18n/translate';
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
@@ -71,25 +72,37 @@ export function UserAvatar({
 /**
  * Center-crop and resize an uploaded image file to a compact square Data URL.
  */
-export async function cropImageToDataUrl(file: File, targetSize = 128): Promise<string> {
+/**
+ * Crop and scale a chosen image to a square portrait.
+ *
+ * `t` words the errors a reader sees when the file will not do; the default is
+ * the English the console is written in.
+ */
+export async function cropImageToDataUrl(
+  file: File,
+  targetSize = 128,
+  t: Translate = translate,
+): Promise<string> {
   if (!file.type.startsWith('image/')) {
-    throw new Error('Please choose a PNG, JPEG, or WebP image.');
+    throw new Error(t('settings.portrait.not_image', 'Please choose a PNG, JPEG, or WebP image.'));
   }
   if (file.size > 8 * 1024 * 1024) {
-    throw new Error('Image file must be smaller than 8 MB.');
+    throw new Error(t('settings.portrait.too_large', 'Image file must be smaller than 8 MB.'));
   }
 
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.onerror = () =>
+      reject(new Error(t('settings.portrait.read_failed', 'Failed to read image file.')));
     reader.readAsDataURL(file);
   });
 
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const element = new Image();
     element.onload = () => resolve(element);
-    element.onerror = () => reject(new Error('Failed to decode image.'));
+    element.onerror = () =>
+      reject(new Error(t('settings.portrait.decode_failed', 'Failed to decode image.')));
     element.src = dataUrl;
   });
 
@@ -98,7 +111,7 @@ export async function cropImageToDataUrl(file: File, targetSize = 128): Promise<
   canvas.height = targetSize;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    throw new Error('Canvas is unavailable in this browser.');
+    throw new Error(t('settings.portrait.no_canvas', 'Canvas is unavailable in this browser.'));
   }
 
   const minSide = Math.min(img.width, img.height);

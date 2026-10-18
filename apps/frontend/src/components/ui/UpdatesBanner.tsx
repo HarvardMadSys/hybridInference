@@ -5,9 +5,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPublicSiteUpdates, type PublicSiteUpdate } from '@/lib/api/updates';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useT } from '@/components/providers/useT';
 
 export function UpdatesBanner(): JSX.Element | null {
   const { storageKeyPrefix } = useBranding();
+  const t = useT();
   const dismissKey = `${storageKeyPrefix}:dismissed-banner`;
   const [banner, setBanner] = useState<PublicSiteUpdate | null>(null);
   const [dismissed, setDismissed] = useState(true);
@@ -57,14 +59,14 @@ export function UpdatesBanner(): JSX.Element | null {
             rel="noopener noreferrer"
             className="font-medium text-crimson underline"
           >
-            {banner.link_label || 'Learn more'}
+            {banner.link_label || t('chrome.updates.learn_more', 'Learn more')}
           </a>
         )}
       </div>
       <button
         type="button"
         onClick={dismiss}
-        aria-label="Dismiss announcement"
+        aria-label={t('chrome.updates.dismiss', 'Dismiss announcement')}
         className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-crimson/60 transition-colors hover:bg-crimson/10 hover:text-crimson"
       >
         <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>

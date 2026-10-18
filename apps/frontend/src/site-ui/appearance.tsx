@@ -105,3 +105,17 @@ export const ConsoleCopyProvider = ConsoleCopyContext.Provider;
 export function useIsConsoleCopy(): boolean {
   return useContext(ConsoleCopyContext);
 }
+
+/**
+ * Whether the compiled-in module renders the current route — the answer
+ * `SiteUiBoundary` computed for it, handed down so that `useT` can tell which
+ * language the page is in without looking up the route a second time.
+ * Outside a boundary (a unit test, an error page) it is `false`: the console's.
+ */
+const ModuleRendersRouteContext = createContext<boolean>(false);
+
+export const ModuleRendersRouteProvider = ModuleRendersRouteContext.Provider;
+
+export function useModuleRendersRouteContext(): boolean {
+  return useContext(ModuleRendersRouteContext);
+}

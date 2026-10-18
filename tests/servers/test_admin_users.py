@@ -38,7 +38,7 @@ def mock_stores():
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
-    op_store.update_user_preferences = AsyncMock()
+    op_store.set_user_preference = AsyncMock(return_value=True)
     op_store.revoke_key = AsyncMock()
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
 
@@ -776,9 +776,10 @@ async def test_patch_user_updates_disabled_models(admin_client):
     )
 
     assert response.status_code == 200
-    op_store.update_user_preferences.assert_awaited_once_with(
-        "u1",
-        {"theme": "dark", "disabled_models": ["a-model", "z-model"]},
+    # Only the one key is written: the user's other preferences ("theme") are
+    # not read back and rewritten, so a concurrent change to them survives.
+    op_store.set_user_preference.assert_awaited_once_with(
+        "u1", "disabled_models", ["a-model", "z-model"]
     )
     assert response.json()["updated_fields"] == ["disabled_models"]
     audit_payload = mock_log.await_args.args[4]
@@ -804,10 +805,7 @@ async def test_patch_user_prunes_stale_disabled_models(admin_client):
     )
 
     assert response.status_code == 200
-    op_store.update_user_preferences.assert_awaited_once_with(
-        "u1",
-        {"disabled_models": ["a-model"]},
-    )
+    op_store.set_user_preference.assert_awaited_once_with("u1", "disabled_models", ["a-model"])
 
 
 @pytest.mark.asyncio
@@ -824,10 +822,7 @@ async def test_patch_user_drops_unknown_disabled_models(admin_client):
     )
 
     assert response.status_code == 200
-    op_store.update_user_preferences.assert_awaited_once_with(
-        "u1",
-        {"disabled_models": ["a-model"]},
-    )
+    op_store.set_user_preference.assert_awaited_once_with("u1", "disabled_models", ["a-model"])
 
 
 # ========================================================================

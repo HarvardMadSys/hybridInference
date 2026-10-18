@@ -11,6 +11,7 @@ import { SiteDocument } from '@/site-ui/SiteDocument';
 import { locale as publicLocale } from '@site-ui/server';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { rootMetadata } from '@/config/site-metadata';
+import { catalogFor, requestLocale } from '@/lib/i18n/request.server';
 
 const crimsonText = Crimson_Text({
   subsets: ['latin'],
@@ -26,17 +27,21 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const siteConfig = await loadRuntimeSiteConfig();
+  const [siteConfig, locale] = await Promise.all([loadRuntimeSiteConfig(), requestLocale()]);
   const { branding } = siteConfig;
 
   // The document language follows whoever renders the route: the module's
-  // server `locale` on the routes the module renders, the console's English on
+  // server `locale` on the routes the module renders, the reader's language on
   // every other. Only the client half of the module knows which routes those
   // are, so `SiteDocument` — a client component, rendered here on the server
   // too — decides, and decides again on each client-side navigation.
 
   return (
-    <SiteDocument moduleLocale={publicLocale} className={`h-full ${crimsonText.variable}`}>
+    <SiteDocument
+      moduleLocale={publicLocale}
+      consoleLocale={locale}
+      className={`h-full ${crimsonText.variable}`}
+    >
       <head>
         {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
             the empty string as a text node. A text node inside <head> is invalid
@@ -62,7 +67,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         suppressHydrationWarning
       >
         <ErrorBoundary>
-          <Providers initialSiteConfig={siteConfig}>
+          <Providers
+            initialSiteConfig={siteConfig}
+            locale={locale}
+            catalog={catalogFor(locale)}
+            moduleLocale={publicLocale}
+          >
             {/* The compiled-in Site UI first, so the shared forms inside it can
                 read the active appearance and wording; then the route boundary,
                 which steps aside for the public routes and draws the console

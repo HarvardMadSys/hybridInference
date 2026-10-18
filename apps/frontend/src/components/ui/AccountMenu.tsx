@@ -4,9 +4,12 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/components/providers';
+import { useT } from '@/components/providers/useT';
 import type { AccountSummary } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { fill } from '@/lib/utils/interpolate';
 import { userAccountLabel, userDisplayName } from '@/lib/utils/userLabel';
+import { roleLabel } from '@/lib/utils/roleLabel';
 
 function Initial({ name, avatarUrl }: { name: string; avatarUrl?: string | null }) {
   if (avatarUrl && avatarUrl.startsWith('data:image/')) {
@@ -46,6 +49,7 @@ export function AccountMenu() {
   const { state, accounts, maxAccounts, switchAccount, logout, logoutAll } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const t = useT();
   const menuId = useId();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -99,7 +103,11 @@ export function AccountMenu() {
     }
     void run(async () => {
       await switchAccount(account.id);
-      toast.success(`Switched to ${userDisplayName(account)}`);
+      toast.success(
+        fill(t('chrome.account_menu.switched', 'Switched to {name}'), {
+          name: userDisplayName(account),
+        }),
+      );
     });
   };
 
@@ -139,7 +147,7 @@ export function AccountMenu() {
         <div
           id={menuId}
           role="menu"
-          aria-label="Account"
+          aria-label={t('chrome.account_menu.label', 'Account')}
           className="absolute right-0 z-40 mt-2 w-72 rounded-xl bg-white p-2 shadow-lg ring-1 ring-gray-200"
         >
           <div className="flex items-center gap-3 px-3 py-2">
@@ -149,7 +157,7 @@ export function AccountMenu() {
                 {userDisplayName(user)}
               </p>
               <p className="truncate text-xs text-gray-500">
-                {userAccountLabel(user)} · {user.role}
+                {userAccountLabel(user)} · {roleLabel(user.role, t)}
               </p>
             </div>
           </div>
@@ -169,7 +177,9 @@ export function AccountMenu() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{userDisplayName(account)}</span>
                     <span className="block truncate text-xs text-gray-500">
-                      {account.signed_in ? userAccountLabel(account) : 'Signed out · sign in again'}
+                      {account.signed_in
+                        ? userAccountLabel(account)
+                        : t('chrome.account_menu.signed_out', 'Signed out · sign in again')}
                     </span>
                   </span>
                 </button>
@@ -189,12 +199,17 @@ export function AccountMenu() {
                 }}
                 className={itemClass}
               >
-                Add another account
+                {t('chrome.account_menu.add_account', 'Add another account')}
               </button>
             ) : (
               <p className="px-3 py-2 text-xs text-gray-500">
-                This browser holds {maxAccounts} accounts, the most it can. Sign one out to add
-                another.
+                {fill(
+                  t(
+                    'chrome.account_menu.limit_reached',
+                    'This browser holds {max} accounts, the most it can. Sign one out to add another.',
+                  ),
+                  { max: String(maxAccounts) },
+                )}
               </p>
             )}
             <button
@@ -204,7 +219,7 @@ export function AccountMenu() {
               onClick={signOut}
               className={itemClass}
             >
-              Log out
+              {t('chrome.account_menu.log_out', 'Log out')}
             </button>
             {others.length > 0 && (
               <button
@@ -214,7 +229,7 @@ export function AccountMenu() {
                 onClick={signOutAll}
                 className={itemClass}
               >
-                Log out of all accounts
+                {t('chrome.account_menu.log_out_all', 'Log out of all accounts')}
               </button>
             )}
           </div>

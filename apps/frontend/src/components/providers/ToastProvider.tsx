@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import toast, { ToastBar, Toaster } from 'react-hot-toast';
+import { useT } from './useT';
 
 // Tailwind's `sm` breakpoint: below it the console lays itself out for a phone.
 const WIDE_VIEWPORT = '(min-width: 640px)';
@@ -35,6 +36,8 @@ const isWideOnServer = () => false;
  * where it spans nearly the full width anyway, it is centred.
  */
 export function ToastProvider() {
+  // `t` is each toast below; the catalog check reads `translate(...)` too.
+  const translate = useT();
   const wide = useSyncExternalStore(subscribeToViewport, isWideViewport, isWideOnServer);
 
   return (
@@ -76,7 +79,7 @@ export function ToastProvider() {
               <button
                 type="button"
                 onClick={() => toast.remove(t.id)}
-                aria-label="Dismiss notification"
+                aria-label={translate('chrome.toast.dismiss', 'Dismiss notification')}
                 className="-mr-1 shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
               >
                 <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>

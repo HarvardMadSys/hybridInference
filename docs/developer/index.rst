@@ -150,6 +150,7 @@ explains how to configure and extend an overlay.
 
    contributing
    translations
+   console-translations
 
 .. toctree::
    :maxdepth: 2

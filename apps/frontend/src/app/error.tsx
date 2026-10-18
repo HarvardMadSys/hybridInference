@@ -2,6 +2,8 @@
 
 import { Button } from '@/components/ui/Button';
 import { ConsoleChrome } from '@/site-ui/PublicRouteBoundary';
+import { documentLocale, useLocaleState } from '@/components/providers/LocaleProvider';
+import { useT } from '@/components/providers/useT';
 import { CONSOLE_LANGUAGE } from '@/site-ui/SiteDocument';
 import { useModuleRendersRoute } from '@/site-ui/SiteUiBoundary';
 
@@ -22,8 +24,9 @@ import { useModuleRendersRoute } from '@/site-ui/SiteUiBoundary';
  *
  * A route whose chrome the module owns has none left when the module fails, so
  * the page is drawn in the console's; any other route is already inside it.
- * The message is the console's, so it is marked English: the document may be
- * in the module's language on this route.
+ * The message is the console's: in the reader's language, or in English on a
+ * route the module writes in its own fixed language, where the console has no
+ * translation. `lang` says which, since the document may be in the module's.
  *
  * A server render that throws is not caught here: React renders no error
  * boundary on the server. Next answers that request with a 500 and an empty
@@ -38,17 +41,23 @@ export default function RouteError({
   reset: () => void;
 }) {
   const moduleOwnsChrome = useModuleRendersRoute();
+  const t = useT();
+  const { locale, moduleLocale } = useLocaleState();
+  const lang =
+    documentLocale(moduleOwnsChrome, moduleLocale, locale) === locale ? locale : CONSOLE_LANGUAGE;
   const message = (
-    <section lang={CONSOLE_LANGUAGE} className="mx-auto w-full max-w-md py-12 text-center">
+    <section lang={lang} className="mx-auto w-full max-w-md py-12 text-center">
       <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
-        This page could not be displayed
+        {t('chrome.error.title', 'This page could not be displayed')}
       </h1>
       <p className="mt-3 text-sm leading-6 text-gray-600">
-        Something went wrong while showing this page. Please try again. If the problem continues,
-        contact the site administrator.
+        {t(
+          'chrome.error.body',
+          'Something went wrong while showing this page. Please try again. If the problem continues, contact the site administrator.',
+        )}
       </p>
       <Button className="mt-6" onClick={reset}>
-        Try again
+        {t('chrome.error.retry', 'Try again')}
       </Button>
     </section>
   );

@@ -13,6 +13,12 @@ import TeamPage from './page';
 // data in a repository that is about to be published. What the page has to be
 // shown doing is rendering whatever roster it is handed, and a real person's
 // affiliation proves nothing about that.
+// A server page reads the request's language, and there is no request here:
+// render in English, the source.
+vi.mock('@/lib/i18n/request.server', () => ({
+  requestTranslator: async () => (_slot: string, fallback: string) => fallback,
+}));
+
 vi.mock('@/config/site-config.server', () => ({
   loadRuntimeSiteConfig: async () => ({
     branding: {

@@ -13,10 +13,10 @@
  * *route* still answering 200, so a status-code check saw nothing wrong. A
  * screenshot did.
  *
- * The console has one language, English, and its strings are the literals at
- * each call site, so the plain resolver returns the fallback it is given. A
- * migration that needs a translated server-rendered string can extend this with
- * its own dictionary; nothing does today.
+ * The console's strings are the English literals at each call site; another
+ * language is a catalog of translations keyed by slot (`messages/<locale>.json`).
+ * The plain resolver below returns the fallback it is given, which is the
+ * console in English.
  */
 
 export type Translate = (slot: string, fallback: string) => string;
@@ -36,4 +36,59 @@ export const translate: Translate = (_slot, fallback) => fallback;
 export function translator(messages: Record<string, string> | undefined): Translate {
   if (!messages) return translate;
   return (slot, fallback) => messages[slot] ?? fallback;
+}
+
+/**
+ * One translated string, with the English it translates.
+ *
+ * The English is stored beside the translation so that editing the source
+ * retires the translation instead of leaving it to say something the page no
+ * longer does — the same rule the docs' gettext catalogs follow, where a
+ * changed paragraph's entry turns `fuzzy` and the build stops using it.
+ */
+export interface CatalogEntry {
+  source: string;
+  text: string;
+}
+
+/**
+ * A language's translations, by slot.
+ *
+ * A slot is usually one sentence, but a few say different English in different
+ * places — a module may word the slot once for all of them, which is why they
+ * share it — so a slot can hold one entry per English source.
+ */
+export type Catalog = Readonly<Record<string, CatalogEntry | readonly CatalogEntry[]>>;
+
+/** The translation of `source` in a slot's entries, or `undefined`. */
+function entryText(
+  entries: CatalogEntry | readonly CatalogEntry[] | undefined,
+  source: string,
+): string | undefined {
+  if (!entries) return undefined;
+  const list: readonly CatalogEntry[] = Array.isArray(entries)
+    ? entries
+    : [entries as CatalogEntry];
+  return list.find((entry) => entry.source === source)?.text;
+}
+
+/**
+ * Build a translator over a language's catalog and, ahead of it, a module's
+ * wording for that language.
+ *
+ * A catalog entry is used only while its `source` is exactly the English the
+ * call site passes; once the English changes, the slot falls back to the new
+ * English until someone translates it again. An override is the module's own
+ * sentence and is not checked against anything — the module owns it.
+ */
+export function catalogTranslator(
+  catalog: Catalog | undefined,
+  overrides?: Readonly<Record<string, string>>,
+): Translate {
+  if (!catalog && !overrides) return translate;
+  return (slot, fallback) => {
+    const override = overrides?.[slot];
+    if (override !== undefined) return override;
+    return entryText(catalog?.[slot], fallback) ?? fallback;
+  };
 }

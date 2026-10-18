@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PublicStats } from '@/lib/api/publicStats';
 
 import StatsPage from './page';
+import { LocaleProvider } from '@/components/providers/LocaleProvider';
+import type { Catalog } from '@/lib/i18n/translate';
+import zhCN from '@/lib/i18n/messages/zh-CN.json';
+import { StatsContent } from './StatsContent';
 
 // Charts are loaded with next/dynamic; jsdom cannot lay out recharts anyway.
 vi.mock('next/dynamic', () => ({
@@ -214,5 +218,50 @@ describe('StatsPage', () => {
     expect(
       screen.queryByRole('heading', { name: 'Languages people write in' }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('StatsPage, for a reader who chose Chinese', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('writes every section, number and name in Chinese', async () => {
+    mockFetch({ json: async () => ({ ...stats, models }) });
+    render(
+      <LocaleProvider locale="zh-CN" catalog={zhCN as Catalog} moduleLocale="">
+        <StatsContent />
+      </LocaleProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent(
+      'Example Inference 使用统计',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '各模型的流量' }));
+    for (const heading of [
+      '国家和地区',
+      '大家用什么语言写作',
+      '调用 API 的 Agent',
+      '这些数字是怎么统计的',
+    ]) {
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
+    }
+    // Country names and compact numbers follow the language too.
+    expect(screen.getAllByText('美国').length).toBeGreaterThan(0);
+    expect(screen.getByText('已通过的用户').nextElementSibling).toHaveTextContent('1,466');
+    expect(screen.getByText('其他模型')).toBeInTheDocument();
+
+    // No sentence escaped translation: runs of three or more English words
+    // with no Chinese in them. Product and model names are shorter than that.
+    const english: string[] = [];
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walk.nextNode()) {
+      const text = walk.currentNode.textContent?.trim() ?? '';
+      if (/[A-Za-z]{3,}(\s+[A-Za-z]{2,}){2,}/.test(text) && !/[\u4e00-\u9fff]/.test(text)) {
+        english.push(text);
+      }
+    }
+    expect(english).toEqual([]);
   });
 });

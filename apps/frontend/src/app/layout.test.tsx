@@ -2,7 +2,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig } from '@/config/site-config';
 
-const state = vi.hoisted(() => ({ siteConfig: undefined as unknown, error: null as Error | null }));
+const state = vi.hoisted(() => ({
+  siteConfig: undefined as unknown,
+  error: null as Error | null,
+  locale: 'en' as 'en' | 'zh-CN',
+}));
 
 vi.mock('next/font/google', () => ({
   Crimson_Text: () => ({ variable: 'runtime-font' }),
@@ -21,14 +25,35 @@ vi.mock('@/config/site-config.server', () => ({
   },
 }));
 
+// The request's language comes from its cookie and `Accept-Language`, which
+// only exist inside a request; `src/lib/i18n/choice.test.ts` covers that
+// resolution, and this file what the layout does with its answer.
+vi.mock('@/lib/i18n/request.server', () => ({
+  requestLocale: async () => state.locale,
+  catalogFor: (locale: string) =>
+    locale === 'zh-CN' ? { 'chrome.header.stats': { source: 'Stats', text: '统计' } } : undefined,
+}));
+
 vi.mock('@/components/providers', () => ({
   Providers: ({
     children,
     initialSiteConfig,
+    locale,
+    catalog,
   }: {
     children: React.ReactNode;
     initialSiteConfig: typeof buildTimeSiteConfig;
-  }) => <div data-initial-app-name={initialSiteConfig.branding.appName}>{children}</div>,
+    locale: string;
+    catalog?: object;
+  }) => (
+    <div
+      data-initial-app-name={initialSiteConfig.branding.appName}
+      data-locale={locale}
+      data-catalog-slots={catalog ? Object.keys(catalog).length : 0}
+    >
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@/components/ui/ErrorBoundary', () => ({
@@ -48,14 +73,20 @@ vi.mock('@/site-ui/PublicRouteBoundary', () => ({
 vi.mock('@/site-ui/SiteDocument', () => ({
   SiteDocument: ({
     moduleLocale,
+    consoleLocale,
     className,
     children,
   }: {
     moduleLocale: string;
+    consoleLocale: string;
     className?: string;
     children: React.ReactNode;
   }) => (
-    <html data-module-locale={moduleLocale} className={className}>
+    <html
+      data-module-locale={moduleLocale}
+      data-console-locale={consoleLocale}
+      className={className}
+    >
       {children}
     </html>
   ),
@@ -81,6 +112,7 @@ describe('RootLayout runtime identity', () => {
   beforeEach(() => {
     state.error = null;
     state.siteConfig = runtimeConfig();
+    state.locale = 'en';
   });
 
   it('propagates configuration failures to the global error boundary before rendering the app', async () => {
@@ -101,7 +133,19 @@ describe('RootLayout runtime identity', () => {
     expect(html).toContain('data-initial-app-name="Runtime Console"');
     // The document element gets the server module's locale to decide with; the
     // neutral module declares none.
-    expect(html).toContain('<html data-module-locale="" class="h-full runtime-font">');
+    expect(html).toContain(
+      '<html data-module-locale="" data-console-locale="en" class="h-full runtime-font">',
+    );
+    // English is the source: no catalog crosses to the client.
+    expect(html).toContain('data-locale="en" data-catalog-slots="0"');
+  });
+
+  it("hands the request's language, and only that language's catalog, to the document and the providers", async () => {
+    state.locale = 'zh-CN';
+
+    const html = renderToStaticMarkup(await RootLayout({ children: <p>page</p> }));
+    expect(html).toContain('data-console-locale="zh-CN"');
+    expect(html).toContain('data-locale="zh-CN" data-catalog-slots="1"');
   });
 
   it('renders analytics only when the runtime document enables it', async () => {
