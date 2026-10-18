@@ -642,7 +642,13 @@ export interface AdminRouteWiseDecision {
 
 export interface AdminRecentRequestsResponse {
   requests: AdminRecentRequestItem[];
+  // Every matching row when `total_exact`. Otherwise counting them took longer
+  // than the backend allows, and this is the rows through this page: a lower
+  // bound. Optional, like `has_more`, because an older gateway omits both.
   total: number;
+  total_exact?: boolean;
+  // Whether a row exists past this page, whatever `total` says.
+  has_more?: boolean;
   limit: number;
   offset: number;
 }
@@ -670,6 +676,9 @@ export async function listRecentRequests(
   // indexed api_logs.session_id so pulling one conversation out of the stream
   // is a lookup rather than a scan.
   sessionId?: string,
+  // Count the total again instead of reusing the one the backend counted for
+  // these filters moments ago. Set by an explicit Refresh, not by paging.
+  refresh = false,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -678,6 +687,7 @@ export async function listRecentRequests(
   if (requestType) params.set('request_type', requestType);
   if (days != null) params.set('days', String(days));
   if (sessionId) params.set('session_id', sessionId);
+  if (refresh) params.set('refresh', 'true');
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }

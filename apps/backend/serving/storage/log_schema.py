@@ -10,9 +10,9 @@ that actually runs — so the columns were never created and every insert failed
 with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
-migrations, its indexes, and the aggregated ``api_stats_hourly`` table — lives
-here and is applied by both callers. Add future columns/indexes in this module
-only.
+migrations, its indexes, and the aggregated ``api_stats_hourly`` and
+``request_volume_hourly`` tables — lives here and is applied by both callers. Add
+future columns/indexes in this module only.
 
 Lock safety: ``ALTER TABLE`` / ``CREATE INDEX`` acquire strong locks
 (``ACCESS EXCLUSIVE`` / ``SHARE``) *before* Postgres evaluates their
@@ -371,6 +371,22 @@ _API_LOGS_LEGACY_COLUMN_DROPS = [
     ("response_hash", "ALTER TABLE api_logs DROP COLUMN IF EXISTS response_hash"),
 ]
 
+# Completed-hour counts behind the admin Request volume cards, written and read
+# by ``serving.servers.routers.admin.request_volume``. One row per UTC hour,
+# quiet hours included, so a row's presence means "this hour is counted".
+_REQUEST_VOLUME_HOURLY_DDL = """
+    CREATE TABLE IF NOT EXISTS request_volume_hourly (
+        hour_bucket             TIMESTAMPTZ PRIMARY KEY,
+        request_count           BIGINT      NOT NULL,
+        success_count           BIGINT      NOT NULL,
+        error_count             BIGINT      NOT NULL,
+        client_disconnect_count BIGINT      NOT NULL,
+        latency_count           BIGINT      NOT NULL,
+        latency_sum_ms          BIGINT      NOT NULL,
+        completed_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+"""
+
 
 async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
     """Return the index names defined on ``api_logs`` in the search path."""
@@ -386,7 +402,7 @@ async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
 
 
 async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
-    """Create and migrate ``api_logs`` + ``api_stats_hourly`` on *conn*.
+    """Create and migrate ``api_logs`` and its aggregate tables on *conn*.
 
     Idempotent: safe on a fresh database (the ``CREATE TABLE`` carries the full
     current column set) and on an existing one (missing columns/indexes are
@@ -448,6 +464,10 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
             agent_job_id TEXT
         )
     """)
+
+    # A new, separate table: creating it locks nothing the log writers use, so
+    # it goes before the deferrable sequence below rather than waiting on it.
+    await conn.execute(_REQUEST_VOLUME_HOURLY_DDL)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path

@@ -32,6 +32,7 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
+from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin._common import (
     CLIENT_DISCONNECT_STATUS_CODE,
     CLIENT_DISCONNECT_TERMINAL_STATE,
@@ -40,17 +41,16 @@ from serving.servers.routers.admin._common import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-# One bucket with a mix of every outcome. The endpoint copies these counts
-# through, so the assertions below are on which SQL column each lands in — the
-# predicates that produce them are pinned separately, against the query text.
+# One stretch of time with a mix of every outcome. The endpoint copies these
+# counts through, so the assertions below are on which SQL column each lands in —
+# the predicates that produce them are pinned separately, against the query text.
 _BUCKET = {
     "request_count": 10,
     "success_count": 6,
     "error_count": 1,
     "client_disconnect_count": 3,
     "latency_count": 6,
-    "latency_sum_ms": 1200.0,
-    "avg_latency_ms": 200.0,
+    "latency_sum_ms": 1200,
 }
 
 
@@ -59,8 +59,7 @@ def _make_db_logger_with_capture(
 ) -> tuple[Any, dict[str, list[Any]]]:
     """Mock db_logger whose conn records every fetch/fetchrow call.
 
-    ``fetch_rows`` is returned from every ``fetch`` — the metrics endpoint reads
-    its rows by key, so one canned bucket serves every lookback window.
+    ``fetch_rows`` is returned from every ``fetch``.
     """
     calls: dict[str, list[Any]] = {"fetchrow": [], "fetch": []}
 
@@ -77,6 +76,8 @@ def _make_db_logger_with_capture(
     conn = MagicMock()
     conn.fetchrow = AsyncMock(side_effect=_fetchrow)
     conn.fetch = AsyncMock(side_effect=_fetch)
+    # The list's COUNT sets its own statement timeout first.
+    conn.execute = AsyncMock(return_value="SET")
 
     acquire = MagicMock()
     acquire.__aenter__ = AsyncMock(return_value=conn)
@@ -90,6 +91,14 @@ def _make_db_logger_with_capture(
     logger.log_admin_action = AsyncMock()
 
     return logger, calls
+
+
+@pytest.fixture(autouse=True)
+def _isolate_count_cache():
+    """Keep one test's cached list total out of the next: pool ids are reused."""
+    metrics._RECENT_REQUESTS_COUNT_CACHE.clear()
+    yield
+    metrics._RECENT_REQUESTS_COUNT_CACHE.clear()
 
 
 def _build_app(logger: Any) -> FastAPI:
@@ -113,11 +122,58 @@ async def admin_client_capture() -> AsyncGenerator[tuple[AsyncClient, dict[str, 
 # ---------------------------------------------------------------------------
 
 
+def _make_metrics_db_logger(
+    end_time: datetime, counted_from: datetime
+) -> tuple[Any, list[tuple[str, tuple[Any, ...]]]]:
+    """Mock db_logger for ``/admin/request-metrics``.
+
+    Every stored hour reads back empty, and every live range counts nothing
+    except the one starting at *counted_from*, which counts ``_BUCKET``.
+    """
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+    hour = timedelta(hours=1)
+
+    async def _fetch(query: str, *args: Any) -> list[Any]:
+        calls.append((query, args))
+        if query == request_volume._STORED_SQL:
+            start, end = args
+            hours = []
+            while start < end:
+                hours.append(start)
+                start += hour
+            return [{"hour_bucket": h, **dict.fromkeys(_BUCKET, 0)} for h in hours]
+        if query == request_volume._RANGE_COUNTS_SQL:
+            return [
+                {
+                    "range_start": start,
+                    "range_end": end,
+                    **(_BUCKET if start == counted_from else dict.fromkeys(_BUCKET, 0)),
+                }
+                for start, end in zip(*args, strict=True)
+            ]
+        raise AssertionError(f"unexpected query: {query}")
+
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(return_value=end_time)
+    conn.fetch = AsyncMock(side_effect=_fetch)
+    conn.execute = AsyncMock(return_value="SET")
+
+    acquire = MagicMock()
+    acquire.__aenter__ = AsyncMock(return_value=conn)
+    acquire.__aexit__ = AsyncMock(return_value=None)
+    logger = MagicMock()
+    logger.pool = MagicMock()
+    logger.pool.acquire = MagicMock(return_value=acquire)
+    return logger, calls
+
+
 @pytest.mark.asyncio
 async def test_request_metrics_counts_disconnects_apart_from_errors():
     """499 lands in client_disconnect_count and is excluded from error_count."""
-    bucket_start = datetime.now(timezone.utc) - timedelta(minutes=5)
-    logger, calls = _make_db_logger_with_capture([{"bucket_start": bucket_start, **_BUCKET}])
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    # The hour card's first 5-minute bar, counted live.
+    first_bar = end_time - timedelta(hours=1)
+    logger, calls = _make_metrics_db_logger(end_time, counted_from=first_bar)
     transport = ASGITransport(app=_build_app(logger))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/admin/request-metrics")
@@ -131,18 +187,18 @@ async def test_request_metrics_counts_disconnects_apart_from_errors():
     assert hour["buckets"][0]["client_disconnect_count"] == 3
     assert hour["buckets"][0]["error_count"] == 1
 
-    # Status and terminal state are both bound, not interpolated, and the
-    # disconnect test is their conjunction — never the status on its own.
-    query, args = calls["fetch"][0]
-    assert args[2] == CLIENT_DISCONNECT_STATUS_CODE
-    assert args[3] == CLIENT_DISCONNECT_TERMINAL_STATE
-    assert "WHERE status_code = $3::int" in query
-    assert "metadata->>'terminal_state' = $4" in query
+    # Status and terminal state together are the disconnect test, never the
+    # status on its own, and the error count holds disconnects out with
     # ``IS NOT TRUE``, not ``NOT``: on a row with no status or no metadata the
     # conjunction is NULL, and plain ``NOT NULL`` is NULL — which would drop
     # those rows out of error_count entirely.
-    assert "AND (status_code = $3::int" in query
-    assert "AND metadata->>'terminal_state' = $4) IS NOT TRUE" in query
+    query = next(q for q, _ in calls if q == request_volume._RANGE_COUNTS_SQL)
+    disconnect = (
+        f"(l.status_code = {CLIENT_DISCONNECT_STATUS_CODE} "
+        f"AND l.metadata->>'terminal_state' = '{CLIENT_DISCONNECT_TERMINAL_STATE}')"
+    )
+    assert f"COUNT(*) FILTER (WHERE {disconnect})" in query
+    assert f"AND {disconnect} IS NOT TRUE)" in query
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +294,7 @@ async def test_outcome_composes_with_paging_placeholders(admin_client_capture):
     )
     assert resp.status_code == 200, resp.text
     select_query, select_args = calls["fetch"][0]
-    # days, model_id, then the paging pair — the outcome adds no parameter.
-    assert select_args == (7, "glm", 25, 50)
+    # days, model_id, then the paging pair — the outcome adds no parameter. The
+    # page asks for one row past the limit, to know whether another page exists.
+    assert select_args == (7, "glm", 26, 50)
     assert "LIMIT $3 OFFSET $4" in select_query

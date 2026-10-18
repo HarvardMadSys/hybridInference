@@ -872,7 +872,12 @@ class AdminRecentRequestsResponse(BaseModel):
     """Paginated list of recent requests across all users (admin view)."""
 
     requests: list[AdminRecentRequestItem]
+    # Every matching row when ``total_exact``. Otherwise counting them took too
+    # long, and this is the rows through this page: a lower bound.
     total: int
+    total_exact: bool = True
+    # Whether a row exists past this page, whatever ``total`` says.
+    has_more: bool = False
     limit: int
     offset: int
 
