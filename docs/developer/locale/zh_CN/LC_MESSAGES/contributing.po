@@ -420,6 +420,22 @@ msgstr ""
 "自己创建并迁移它的数据库。`uv run python -m tests.fixtures.postgres prepare "
 "--workers N` 会预先完成同样的工作，在用 `-n N` 运行之前执行会更快。"
 
+#: ../developer/contributing.md:222
+msgid ""
+"With Docker, `make test-db-local` needs no setup at all. It starts one "
+"PostgreSQL container for the whole machine (`hybridinference-test-"
+"postgres` on `127.0.0.1:54329`, data in memory), gives each checkout its "
+"own database named from its path, prepares it, and runs the tier with one"
+" worker per CPU, up to eight. The container and the databases are kept "
+"between runs, so a re-run only re-reads the schema; the whole tier takes "
+"about 15 seconds."
+msgstr ""
+"有 Docker 的话，`make test-db-local` 不需要任何准备。它在整台机器上只启动一个 "
+"PostgreSQL 容器（`hybridinference-test-postgres`，监听 `127.0.0.1:54329`，"
+"数据放在内存里），按路径给每个 checkout 一个自己的数据库，准备好表结构，再按每个 "
+"CPU 一个 worker、最多八个的并行度运行这一层测试。容器和数据库在两次运行之间都会保留，"
+"所以再次运行只需重新读取表结构；整层测试大约 15 秒。"
+
 #: ../developer/contributing.md:221
 msgid ""
 "`make test` parallelises with `pytest-xdist` at file granularity. Run "

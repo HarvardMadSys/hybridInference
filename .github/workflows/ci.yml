@@ -631,7 +631,10 @@ jobs:
           USER_AUTH_ENABLED: "1"
           API_KEY_SECRET: integration-test-secret-for-ci-only
           ERASURE_FENCE_SECRET: test-fence-secret-not-for-production
-        run: uv run pytest -q -rs -m "not external and dbtest"
+        # Parallel like the other shards: every database test now gets a fully
+        # migrated database of its own worker (tests/fixtures/postgres.py), so
+        # file order no longer matters.
+        run: uv run pytest -q -rs -n "${PYTEST_WORKERS}" --dist=loadfile -m "not external and dbtest"
 
       - name: Run tests (PR/manual, sharded, no coverage)
         if: >-

@@ -49,7 +49,13 @@ canonical reference for the gates and the test tiers.
 
 Pre-commit hooks are installed by `make setup-dev`.
 
-**Before opening a PR:** run `make format` and ensure `make test` passes.
+**Before opening a PR:** run `make format` and ensure `make test` passes. If
+the change touches storage, SQL, schema or a database test, `make test-db-local`
+must pass too: it runs the `dbtest` tier, in parallel, against one shared local
+PostgreSQL container (Docker) and a database of this worktree's own. Re-runs
+reuse that database; the full tier takes about 15 seconds. Other agents use the
+same container at the same time: never run `make test-db-local-down`, which
+discards every worktree's databases and breaks their runs.
 
 ## 5. Workflow
 
@@ -195,7 +201,10 @@ its name.
 | Integration (DB / external) | `tests/integration/` | `dbtest` | no |
 | Live external | `tests/external/` | `external` | no |
 
-Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
+Opt in to excluded tiers explicitly. For `dbtest`, use `make test-db-local`
+(`ARGS="tests/integration/test_x.py"` to narrow it; the `dbtest` marker is
+always kept). To run anything else against that database,
+`eval "$(ops/dev/test-db-local.sh env)"` first, in the worktree you run it in.
 
 ### 6.5 Common gotchas
 

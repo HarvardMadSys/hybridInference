@@ -1,4 +1,5 @@
-.PHONY: help format lint test test-verbose test-cov docs docs-gettext docs-translate \
+.PHONY: help format lint test test-verbose test-cov test-db \
+	test-db-local test-db-local-clean test-db-local-down docs docs-gettext docs-translate \
 	docs-lang docs-verify setup-dev clean check all \
        docker-volumes up down restart ps logs build smoke \
        demo demo-smoke demo-down demo-reset _require-demo
@@ -56,6 +57,15 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_HOST and TEST_DB_POR
 	TEST_DB_REQUIRED=1 $(UV_RUN) python -m tests.fixtures.postgres prepare
 	TEST_DB_REQUIRED=1 $(UV_RUN) pytest -vv -m "dbtest"
 	@echo "$(GREEN)OK Database tests passed$(RESET)"
+
+test-db-local:  ## Database tests on a shared local PostgreSQL container (ARGS="tests/..." to narrow)
+	UV_RUN="$(UV_RUN)" ops/dev/test-db-local.sh run $(ARGS)
+
+test-db-local-clean:  ## Drop local test databases whose worktree no longer exists
+	UV_RUN="$(UV_RUN)" ops/dev/test-db-local.sh clean
+
+test-db-local-down:  ## Remove the local test PostgreSQL container and all its databases
+	ops/dev/test-db-local.sh down
 
 test-all:  ## Run all tests except external (includes db-dependent)
 	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"

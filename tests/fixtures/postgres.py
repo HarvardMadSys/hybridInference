@@ -396,26 +396,37 @@ async def prepare_schema(pool: Any) -> None:
     await ResponseStore(pool).initialize()
 
 
-async def prepare_databases(workers: int = 0) -> list[str]:
+#: Prefix of the comment :func:`prepare_databases` puts on a database it
+#: prepares for a checkout; :func:`drop_orphaned_databases` reads it back.
+OWNER_COMMENT_PREFIX = "hybridinference test database for "
+
+
+async def prepare_databases(workers: int = 0, *, owner: str | None = None) -> list[str]:
     """Prepare the base database and ``_gw0 … _gw{workers-1}``. Returns their names.
 
     A worker database that does not exist yet is copied from the prepared base
     (fast); one left over from an earlier run is brought up to date in place.
+    *owner*, a checkout path, is recorded on each database so that
+    :func:`drop_orphaned_databases` can remove them once that checkout is gone.
+    Databases another checkout that still exists has recorded are refused, not
+    taken over: a takeover would let ``clean`` drop them when *owner* goes.
     """
     import asyncpg
 
     db = target(worker="master")
+    names = [db.base_name] + [
+        worker_database_name(db.base_name, f"gw{index}") for index in range(workers)
+    ]
+    if owner is not None:
+        await _refuse_another_owner(names, owner)
     await ensure_database(db.base_name)
-    names = [db.base_name]
     pool = await asyncpg.create_pool(**db.connect_kwargs(db.base_name), min_size=1, max_size=2)
     try:
         await prepare_schema(pool)
     finally:
         # CREATE DATABASE … TEMPLATE needs the template to have no connections.
         await pool.close()
-    for index in range(workers):
-        name = worker_database_name(db.base_name, f"gw{index}")
-        names.append(name)
+    for name in names[1:]:
         if await ensure_database(name, template=db.base_name):
             continue
         pool = await asyncpg.create_pool(**db.connect_kwargs(name), min_size=1, max_size=2)
@@ -423,7 +434,72 @@ async def prepare_databases(workers: int = 0) -> list[str]:
             await prepare_schema(pool)
         finally:
             await pool.close()
+    if owner is not None:
+        await _record_owner(names, owner)
     return names
+
+
+async def _refuse_another_owner(names: list[str], owner: str) -> None:
+    admin = await connect_maintenance()
+    try:
+        rows = await admin.fetch(
+            "SELECT datname, shobj_description(oid, 'pg_database') AS note "
+            "FROM pg_database WHERE datname = ANY($1::text[])",
+            names,
+        )
+    finally:
+        await admin.close()
+    for row in rows:
+        note = row["note"] or ""
+        if not note.startswith(OWNER_COMMENT_PREFIX):
+            continue
+        other = note[len(OWNER_COMMENT_PREFIX) :]
+        if other != owner and Path(other).exists():
+            raise TestDatabaseConfigError(
+                f"{row['datname']} belongs to {other}, which still exists; refusing to "
+                f"prepare it for {owner}. Run from that checkout, or pick another database "
+                "(TEST_DB_LOCAL_NAME for ops/dev/test-db-local.sh)."
+            )
+
+
+async def _record_owner(names: list[str], owner: str) -> None:
+    # COMMENT takes no parameters; the names were checked by ensure_database.
+    literal = (OWNER_COMMENT_PREFIX + owner).replace("'", "''")
+    admin = await connect_maintenance()
+    try:
+        for name in names:
+            await admin.execute(f"COMMENT ON DATABASE \"{name}\" IS '{literal}'")
+    finally:
+        await admin.close()
+
+
+async def drop_orphaned_databases(*, prefix: str = "") -> list[str]:
+    """Drop test databases whose owning checkout no longer exists. Returns their names.
+
+    Only databases :func:`prepare_databases` marked with an owner are
+    considered; one created any other way is never touched. "No longer exists"
+    is judged from this process's view of the filesystem, so run it on the
+    machine (not in a sandbox) whose checkouts own the databases.
+    """
+    admin = await connect_maintenance()
+    try:
+        rows = await admin.fetch(
+            "SELECT datname, shobj_description(oid, 'pg_database') AS note FROM pg_database"
+        )
+        dropped = []
+        for row in rows:
+            note, name = row["note"] or "", row["datname"]
+            if not name.startswith(prefix) or not note.startswith(OWNER_COMMENT_PREFIX):
+                continue
+            if Path(note[len(OWNER_COMMENT_PREFIX) :]).exists():
+                continue
+            if ALLOWED_TEST_DB_PATTERN not in name or not _IDENTIFIER.fullmatch(name):
+                continue
+            await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+            dropped.append(name)
+        return dropped
+    finally:
+        await admin.close()
 
 
 def _use_this_checkout() -> None:
@@ -459,19 +535,32 @@ def _main(argv: list[str] | None = None) -> int:
     prepare.add_argument(
         "--workers", type=int, default=0, help="number of xdist workers (-n) to prepare for"
     )
+    prepare.add_argument(
+        "--owner", help="checkout path to record, so that `clean` can drop these once it is gone"
+    )
+    commands.add_parser("clean", help="drop test databases whose --owner checkout no longer exists")
     args = parser.parse_args(argv)
 
     _use_this_checkout()
-    problem = configuration_problem() or _gateway_source_problem()
+    problem = configuration_problem() or (
+        _gateway_source_problem() if args.command == "prepare" else None
+    )
     if problem:
         print(f"error: {problem}", file=sys.stderr)
         return 2
+    db = target(worker="master")
     try:
-        names = asyncio.run(prepare_databases(args.workers))
+        if args.command == "clean":
+            dropped = asyncio.run(drop_orphaned_databases())
+            print(f"dropped {', '.join(dropped) or 'nothing'} at {db.host}:{db.port}")
+            return 0
+        names = asyncio.run(prepare_databases(args.workers, owner=args.owner))
+    except TestDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (pytest.skip.Exception, pytest.fail.Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    db = target(worker="master")
     print(f"prepared {', '.join(names)} at {db.host}:{db.port}")
     return 0
 

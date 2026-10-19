@@ -397,6 +397,11 @@ review 还指出的另外两处也已修正：连接异常的分类（§4.1，�
   `db` 分片是分类问题，另议。
 - **Q2 `db` 分片并行化：不做。** 本 PR 之后已经可行（§7 中 8 进程并行通过），但改变
   CI 拓扑应单独评估耗时与 runner 预算。
+  - 后续（2026-10-18，`make test-db-local` 的 PR）：已启用，`test (db)` 改为
+    `-n "${PYTEST_WORKERS}" --dist=loadfile`，与普通分片使用同一个 worker 预算。
+    此前最长的单个文件 `test_users_schema_lock_postgres.py` 每个测试都要等满生产环境
+    3 秒的 `lock_timeout`（共约 25 秒），并行时它就是下限；测试里改为 300ms 后约 3.5 秒。
+    本机全层：串行 78 秒，8 进程并行 13.5 秒。
 - **Q3 非 required 的 `localhost:5432` 回退：保留。** 只在没有设置 `TEST_DB_REQUIRED` 时
   生效；CI 与 `make test-db` 都不会走到这条路径。
 - **Q4 废弃变量：报错。** 只设置 `TEST_PG_DSN` / `PG_TEST_DSN` 而不设置 `TEST_DB_HOST` 时，

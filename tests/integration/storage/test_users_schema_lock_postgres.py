@@ -25,7 +25,7 @@ import pytest_asyncio
 
 from serving.exceptions import AccountSchemaPending
 from serving.servers import bootstrap
-from serving.storage import account_schema
+from serving.storage import account_schema, log_schema
 from serving.storage.log_schema import (
     SchemaLockUnavailable,
     ensure_api_logs_schema,
@@ -43,6 +43,19 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
 _ACCOUNT_COLUMNS = {"login_name", "phone", "phone_verified"}
+
+
+@pytest.fixture(autouse=True)
+def _short_lock_wait(monkeypatch):
+    """Time out on the held lock in a fraction of the production bound.
+
+    Every test here holds the lock for as long as it wants the migration to
+    defer, so the timeout always fires and its length decides nothing but how
+    long the file runs: at the production 3s it was ~25s, the longest file in
+    the database suite and so the floor of a parallel run.
+    """
+    monkeypatch.setattr(log_schema, "_DDL_LOCK_TIMEOUT", "300ms")
+
 
 _PRE_UPGRADE_USERS = """
     CREATE TABLE users (
