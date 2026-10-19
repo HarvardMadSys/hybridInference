@@ -1007,6 +1007,20 @@ async def initialize() -> AppServices:
                         _BACKGROUND_TASKS.add(_volume_bf_task)
                         _volume_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+                        # The days of the Analytics growth series (the last 95) the
+                        # rollup lacks, the same way.
+                        async def _run_daily_activity_backfill(pool=db_logger.pool):
+                            try:
+                                await daily_activity_rollup.backfill_missing(pool)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"daily-activity backfill failed (non-fatal): {bf_exc}"
+                                )
+
+                        _activity_bf_task = asyncio.create_task(_run_daily_activity_backfill())
+                        _BACKGROUND_TASKS.add(_activity_bf_task)
+                        _activity_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
                         # Store the completed days the Users table's all-time
                         # request and token totals read and the table lacks: the
                         # whole history on the first start with the table,
@@ -1021,19 +1035,6 @@ async def initialize() -> AppServices:
                         _usage_bf_task = asyncio.create_task(_run_user_usage_backfill())
                         _BACKGROUND_TASKS.add(_usage_bf_task)
                         _usage_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
-
-                        # The growth series' last 95 days, the same way.
-                        async def _run_daily_activity_backfill(pool=db_logger.pool):
-                            try:
-                                await daily_activity_rollup.backfill_missing(pool)
-                            except Exception as bf_exc:
-                                logger.warning(
-                                    f"daily-activity backfill failed (non-fatal): {bf_exc}"
-                                )
-
-                        _activity_bf_task = asyncio.create_task(_run_daily_activity_backfill())
-                        _BACKGROUND_TASKS.add(_activity_bf_task)
-                        _activity_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:
