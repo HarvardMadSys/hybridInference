@@ -512,3 +512,35 @@ def test_scope_view_for_endpoints_is_the_documented_construction_helper() -> Non
     view = scope_view_for_endpoints(table, {_CLOUD_ENDPOINT})
 
     assert [adapter for adapter, _ in view.iter_effective_routes()[0].adapters] == [cloud]
+
+
+# --- policy targets that name a provider ---------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_provider_target_resolves_only_inside_the_cloud_range(monkeypatch) -> None:
+    """A provider target goes through the router's own resolution, then the range check.
+
+    The RouteWise router resolves a provider from its candidates; whatever it
+    returns, the backend must still refuse an endpoint outside the cloud range,
+    so a local endpoint can never be accepted as a cloud target.
+    """
+    from routing.decisions import RoutingTarget
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="ollama")
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="zai")
+    backend = _cloud_backend(
+        _route_table(local, cloud), endpoint_scope=frozenset({_CLOUD_ENDPOINT})
+    )
+    answers = {"zai": _CLOUD_ENDPOINT, "ollama": _LOCAL_ENDPOINT, "nobody": None}
+    monkeypatch.setattr(
+        backend._router,
+        "preferred_endpoint_for_provider",
+        lambda model_id, provider: answers[provider],
+    )
+
+    assert backend.resolve_target(RoutingTarget(provider="zai"), _MODEL_ID) == _CLOUD_ENDPOINT
+    assert backend.resolve_target(RoutingTarget(provider="ollama"), _MODEL_ID) is None
+    assert backend.resolve_target(RoutingTarget(provider="nobody"), _MODEL_ID) is None
+    assert backend.resolve_target(RoutingTarget(endpoint_id=_LOCAL_ENDPOINT), _MODEL_ID) is None
+    assert backend.resolve_target(RoutingTarget(endpoint_id=_CLOUD_ENDPOINT), "other-model") is None
