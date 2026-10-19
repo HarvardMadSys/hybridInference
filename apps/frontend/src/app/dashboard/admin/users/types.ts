@@ -29,8 +29,8 @@ export interface UserRow {
   usage_today_usd: string; // Decimal serialised
   usage_month_usd: string;
   usage_alltime_usd: string;
-  usage_alltime_requests: number;
-  usage_alltime_tokens: number;
+  usage_alltime_requests: number | null;
+  usage_alltime_tokens: number | null;
 }
 
 export interface CostHistoryPoint {

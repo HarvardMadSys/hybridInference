@@ -19,6 +19,7 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         status: state.status ?? undefined,
         search: state.search || undefined,
         sortBy: state.sortBy,
+        includeUsageTotals: false,
         limit,
         offset,
         minCostToday: state.minCostToday ?? undefined,

@@ -35,8 +35,8 @@ export interface AdminUser {
   usage_today_usd: number;
   usage_month_usd: number;
   usage_alltime_usd: number;
-  usage_alltime_requests: number;
-  usage_alltime_tokens: number;
+  usage_alltime_requests: number | null;
+  usage_alltime_tokens: number | null;
 }
 
 export type UserSortBy =
@@ -83,6 +83,7 @@ export interface ListUsersOptions {
   provider?: string;
   activeWithinHours?: number;
   anomaly?: boolean;
+  includeUsageTotals?: boolean;
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -100,6 +101,9 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
     params.set('active_within_hours', String(opts.activeWithinHours));
   }
   if (opts.anomaly !== undefined) params.set('anomaly', String(opts.anomaly));
+  if (opts.includeUsageTotals !== undefined) {
+    params.set('include_usage_totals', String(opts.includeUsageTotals));
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }
@@ -233,6 +237,20 @@ export async function getUserDetail(
     `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
   );
   return jsonOrThrow<UserDetail>(resp);
+}
+
+export interface UserUsageTotals {
+  requests: number;
+  tokens: number;
+}
+
+export async function getBulkUsageTotals(userIds: string[], signal?: AbortSignal) {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/usage-totals?user_ids=${encodeURIComponent(userIds.join(','))}`,
+    { signal },
+  );
+  return jsonOrThrow<{ totals: Record<string, UserUsageTotals> }>(resp);
 }
 
 export interface UserTurnAverages {
