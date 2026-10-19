@@ -5,6 +5,7 @@ import {
   REFRESH_DID_NOT_COMPLETE,
   REFRESH_POLL_MS,
   type RefreshedAdminView,
+  refreshFailedMessage,
   useRefreshedAdminView,
 } from './useRefreshedAdminView';
 
@@ -12,11 +13,15 @@ interface View extends RefreshedAdminView {
   value: string;
 }
 
-const view = (value: string, generated_at: string | null, refreshing = false): View => ({
-  value,
-  generated_at,
-  refreshing,
-});
+const view = (
+  value: string,
+  generated_at: string | null,
+  refreshing = false,
+  refresh_error: string | null = null,
+): View => ({ value, generated_at, refreshing, refresh_error });
+
+/** A typed fetcher mock, so the hook's data is a View. */
+const fetcher = () => vi.fn<(opts: { refresh?: boolean }) => Promise<View>>();
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -34,7 +39,7 @@ async function nextPoll() {
 }
 
 it('shows a kept view at once and asks only once', async () => {
-  const fetchView = vi.fn().mockResolvedValue(view('a', '2026-10-19T12:00:00Z'));
+  const fetchView = fetcher().mockResolvedValue(view('a', '2026-10-19T12:00:00Z'));
   const { result } = renderHook(() => useRefreshedAdminView(fetchView));
 
   await act(() => result.current.load());
@@ -47,8 +52,7 @@ it('shows a kept view at once and asks only once', async () => {
 });
 
 it('keeps the old view while the server refreshes, then shows the new one', async () => {
-  const fetchView = vi
-    .fn()
+  const fetchView = fetcher()
     .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z', true))
     .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z', true))
     .mockResolvedValueOnce(view('new', '2026-10-19T12:05:00Z'));
@@ -70,8 +74,7 @@ it('keeps the old view while the server refreshes, then shows the new one', asyn
 });
 
 it('says so when a refresh ends without a new result', async () => {
-  const fetchView = vi
-    .fn()
+  const fetchView = fetcher()
     .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z', true))
     .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z'));
   const { result } = renderHook(() => useRefreshedAdminView(fetchView));
@@ -85,8 +88,7 @@ it('says so when a refresh ends without a new result', async () => {
 });
 
 it('polls through a first computation that outlasts the request', async () => {
-  const fetchView = vi
-    .fn()
+  const fetchView = fetcher()
     .mockResolvedValueOnce(view('', null, true))
     .mockResolvedValueOnce(view('first', '2026-10-19T12:00:00Z'));
   const { result } = renderHook(() => useRefreshedAdminView(fetchView));
@@ -100,7 +102,7 @@ it('polls through a first computation that outlasts the request', async () => {
 });
 
 it('a first computation finished within a refresh request is not a failure', async () => {
-  const fetchView = vi.fn().mockResolvedValue(view('first', '2026-10-19T12:00:00Z'));
+  const fetchView = fetcher().mockResolvedValue(view('first', '2026-10-19T12:00:00Z'));
   const { result } = renderHook(() => useRefreshedAdminView(fetchView));
 
   await act(() => result.current.load(true));
@@ -110,7 +112,7 @@ it('a first computation finished within a refresh request is not a failure', asy
 });
 
 it('stops polling once unmounted', async () => {
-  const fetchView = vi.fn().mockResolvedValue(view('old', '2026-10-19T12:00:00Z', true));
+  const fetchView = fetcher().mockResolvedValue(view('old', '2026-10-19T12:00:00Z', true));
   const { result, unmount } = renderHook(() => useRefreshedAdminView(fetchView));
 
   await act(() => result.current.load(true));
@@ -122,11 +124,25 @@ it('stops polling once unmounted', async () => {
 });
 
 it('reports a failed request', async () => {
-  const fetchView = vi.fn().mockRejectedValue(new Error('statement timeout'));
+  const fetchView = fetcher().mockRejectedValue(new Error('statement timeout'));
   const { result } = renderHook(() => useRefreshedAdminView(fetchView));
 
   await act(() => result.current.load());
 
   expect(result.current.error).toBe('statement timeout');
+  expect(result.current.busy).toBe(false);
+});
+
+it('reports why the server could not refresh, and keeps the earlier view', async () => {
+  const fetchView = fetcher()
+    .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z', true))
+    .mockResolvedValueOnce(view('old', '2026-10-19T12:00:00Z', false, 'statement timeout'));
+  const { result } = renderHook(() => useRefreshedAdminView(fetchView));
+
+  await act(() => result.current.load());
+  await nextPoll();
+
+  expect(result.current.data?.value).toBe('old');
+  expect(result.current.error).toBe(refreshFailedMessage('statement timeout'));
   expect(result.current.busy).toBe(false);
 });

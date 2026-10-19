@@ -11,8 +11,8 @@ with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
 migrations, its indexes, and the aggregated ``api_stats_hourly``,
-``request_volume_hourly``, ``user_usage_daily``, ``daily_activity`` and
-``admin_view_results`` tables —
+``request_volume_hourly``, ``user_usage_daily``, ``daily_activity``,
+``admin_view_results`` and ``admin_view_state`` tables —
 lives here and is applied by both callers. Add
 future columns/indexes in this module only.
 
@@ -437,15 +437,29 @@ _DAILY_ACTIVITY_DDL = """
 # tab's performance distributions and TTFT scatter -- as served, so a restarted
 # gateway serves it at once instead of recomputing first. Written and read by
 # ``serving.storage.admin_view_results``; ``definition`` fingerprints the
-# computation, so a result an older revision computed is not served.
-_ADMIN_VIEW_RESULTS_DDL = """
+# computation, so a result an older revision computed is not served, and
+# ``admin_view_state``'s one row holds the generation a user's hard delete
+# advances, so a result computed before it is never published after it.
+_ADMIN_VIEW_RESULTS_DDL = (
+    """
     CREATE TABLE IF NOT EXISTS admin_view_results (
         name        TEXT        PRIMARY KEY,
         definition  TEXT        NOT NULL,
         payload     JSONB       NOT NULL,
-        computed_at TIMESTAMPTZ NOT NULL
+        computed_at TIMESTAMPTZ NOT NULL,
+        generation  BIGINT      NOT NULL
     )
-"""
+""",
+    """
+    CREATE TABLE IF NOT EXISTS admin_view_state (
+        id         BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+        generation BIGINT  NOT NULL
+    )
+""",
+    # The row must exist before any write locks it: a write that found none
+    # would have nothing to wait on while a delete created it.
+    "INSERT INTO admin_view_state (id, generation) VALUES (TRUE, 0) ON CONFLICT (id) DO NOTHING",
+)
 
 # Storage parameters api_logs carries, as ``(name, value)``, set when absent (a
 # value an operator set by hand is left alone).
@@ -588,7 +602,8 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     for ddl in _USER_USAGE_DAILY_DDL:
         await conn.execute(ddl)
     await conn.execute(_DAILY_ACTIVITY_DDL)
-    await conn.execute(_ADMIN_VIEW_RESULTS_DDL)
+    for ddl in _ADMIN_VIEW_RESULTS_DDL:
+        await conn.execute(ddl)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path

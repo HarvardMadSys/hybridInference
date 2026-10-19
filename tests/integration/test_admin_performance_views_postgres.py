@@ -265,8 +265,8 @@ async def test_a_value_an_operator_set_is_left_alone(db):
 @pytest.mark.asyncio
 async def test_a_stored_result_is_read_back_only_under_its_definition(db):
     at = datetime.now(timezone.utc)
-    await admin_view_results.write(db, "v", "def-1", {"n": 1}, at)
-    assert await admin_view_results.read(db, "v", "def-1") == {"n": 1}
+    assert await admin_view_results.write(db, "v", "def-1", {"n": 1}, at, 0)
+    assert await admin_view_results.read(db, "v", "def-1") == ({"n": 1}, 0)
     assert await admin_view_results.read(db, "v", "def-2") is None
     assert await admin_view_results.read(db, "other", "def-1") is None
 
@@ -274,12 +274,108 @@ async def test_a_stored_result_is_read_back_only_under_its_definition(db):
 @pytest.mark.asyncio
 async def test_an_older_result_never_replaces_a_newer_one(db):
     at = datetime.now(timezone.utc)
-    await admin_view_results.write(db, "v", "def-1", {"n": 2}, at)
-    await admin_view_results.write(db, "v", "def-1", {"n": 1}, at - timedelta(minutes=1))
-    assert await admin_view_results.read(db, "v", "def-1") == {"n": 2}
+    await admin_view_results.write(db, "v", "def-1", {"n": 2}, at, 0)
+    await admin_view_results.write(db, "v", "def-1", {"n": 1}, at - timedelta(minutes=1), 0)
+    assert await admin_view_results.read(db, "v", "def-1") == ({"n": 2}, 0)
     # A new definition replaces it whatever its time: the old one is not served.
-    await admin_view_results.write(db, "v", "def-2", {"n": 3}, at - timedelta(minutes=1))
-    assert await admin_view_results.read(db, "v", "def-2") == {"n": 3}
+    await admin_view_results.write(db, "v", "def-2", {"n": 3}, at - timedelta(minutes=1), 0)
+    assert await admin_view_results.read(db, "v", "def-2") == ({"n": 3}, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_result_computed_before_a_delete_is_not_stored_after_it(db):
+    log_store = PostgresLogStore(db, fence_secret=_FENCE_SECRET)
+    async with db.acquire() as conn:
+        await _log(conn, ago=timedelta(minutes=1))
+    before = await admin_view_results.generation(db)
+
+    await log_store.hard_delete_user_data("alice")
+
+    assert await admin_view_results.generation(db) == before + 1
+    stored = await admin_view_results.write(
+        db, "v", "def-1", {"n": 1}, datetime.now(timezone.utc), before
+    )
+    assert stored is False
+    assert await admin_view_results.read(db, "v", "def-1") is None
+
+
+@pytest.mark.asyncio
+async def test_a_delete_waits_for_a_write_in_progress_and_then_drops_it(db):
+    """The generation's row lock orders a write and a delete either way round."""
+    log_store = PostgresLogStore(db, fence_secret=_FENCE_SECRET)
+    async with db.acquire() as conn:
+        await _log(conn, ago=timedelta(minutes=1))
+    async with db.acquire() as writer:
+        tx = writer.transaction()
+        await tx.start()
+        # What write() holds while it stores: a share lock on the generation.
+        await writer.fetchval("SELECT generation FROM admin_view_state FOR SHARE")
+        await writer.execute(
+            "INSERT INTO admin_view_results (name, definition, payload, computed_at, generation) "
+            "VALUES ('v', 'def-1', '{}', NOW(), 0)"
+        )
+        deleting = asyncio.create_task(log_store.hard_delete_user_data("alice"))
+        await asyncio.sleep(0.3)
+        assert not deleting.done()
+        await tx.commit()
+    await asyncio.wait_for(deleting, timeout=10)
+    assert await admin_view_results.read(db, "v", "def-1") is None
+
+
+@pytest.mark.asyncio
+async def test_a_scatter_that_read_a_deleted_users_rows_is_never_published(db, monkeypatch):
+    """Codex's reproduction: the scatter has read the rows when the delete commits."""
+    async with db.acquire() as conn:
+        await _log(conn, ago=timedelta(minutes=1), user_id="alice", prompt=4242)
+        await _log(conn, ago=timedelta(minutes=2), user_id="bob", prompt=17)
+    real_load = metrics._load_ttft_scatter
+    read_rows, resume = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def _paused_load(db_logger):
+        nonlocal calls
+        calls += 1
+        result = await real_load(db_logger)
+        if calls == 1:
+            read_rows.set()
+            await resume.wait()
+        return result
+
+    monkeypatch.setattr(metrics, "_load_ttft_scatter", _paused_load)
+    db_logger = MagicMock(pool=db)
+    first = asyncio.create_task(metrics.admin_get_ttft_scatter(db_logger=db_logger))
+    await read_rows.wait()
+
+    await PostgresLogStore(db, fence_secret=_FENCE_SECRET).hard_delete_user_data("alice")
+    resume.set()
+    served = await first
+
+    def _prompts(scatter):
+        return {p.prompt_tokens for m in scatter.models for p in m.points}
+
+    # Computed again after the delete: only bob's request, in memory and stored.
+    assert _prompts(served) == {17}
+    assert calls == 2
+    stored = await admin_view_results.read(
+        db, "ttft_scatter", metrics.TTFT_SCATTER.store.definition
+    )
+    assert stored is not None
+    assert {p["prompt_tokens"] for m in stored[0]["models"] for p in m["points"]} == {17}
+
+
+@pytest.mark.asyncio
+async def test_a_result_held_in_memory_is_not_served_after_a_delete(db):
+    async with db.acquire() as conn:
+        await _log(conn, ago=timedelta(minutes=1), user_id="alice", prompt=4242)
+        await _log(conn, ago=timedelta(minutes=2), user_id="bob", prompt=17)
+    db_logger = MagicMock(pool=db)
+    before = await metrics.admin_get_ttft_scatter(db_logger=db_logger)
+    assert {p.prompt_tokens for m in before.models for p in m.points} == {4242, 17}
+
+    await PostgresLogStore(db, fence_secret=_FENCE_SECRET).hard_delete_user_data("alice")
+
+    after = await metrics.admin_get_ttft_scatter(db_logger=db_logger)
+    assert {p.prompt_tokens for m in after.models for p in m.points} == {17}
 
 
 @pytest.mark.asyncio

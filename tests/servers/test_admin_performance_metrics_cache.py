@@ -30,11 +30,15 @@ class _MemoryStore:
     def __init__(self) -> None:
         self.rows: dict = {}
 
+    async def generation(self, key):
+        return 0
+
     async def read(self, key):
         return self.rows.get(key)
 
-    async def write(self, key, value, computed_at):
-        self.rows[key] = (value, computed_at)
+    async def write(self, key, value, computed_at, generation):
+        self.rows[key] = (value, computed_at, generation)
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -78,8 +82,9 @@ def _count(response: AdminPerformanceMetricsResponse) -> int:
 
 
 def _age(cache, seconds: float) -> None:
-    """Make *cache*'s result *seconds* older than its freshness window."""
-    cache._computed_at -= cache.fresh_seconds + seconds
+    """Make *cache*'s (one) result *seconds* older than its freshness window."""
+    (state,) = cache._states.values()
+    state.computed_at -= cache.fresh_seconds + seconds
 
 
 @pytest.mark.asyncio

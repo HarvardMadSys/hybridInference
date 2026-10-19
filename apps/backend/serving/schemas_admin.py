@@ -648,11 +648,14 @@ class AdminPerformanceMetricsResponse(BaseModel):
     ``generated_at`` is when the server computed it, or ``None`` while the
     first computation is still running (and the list is empty). ``refreshing``
     says a computation is running now; the console polls until it is not.
+    ``refresh_error`` is why the last computation failed, if it did and none
+    has succeeded since: what is shown is then older than intended.
     """
 
     generated_at: datetime | None
     windows: list[AdminPerformanceMetricsWindow]
     refreshing: bool = False
+    refresh_error: str | None = None
 
 
 class AdminTtftScatterPoint(BaseModel):
@@ -682,11 +685,14 @@ class AdminTtftScatterResponse(BaseModel):
     ``generated_at`` is when the server computed it, or ``None`` while the
     first computation is still running (and the list is empty). ``refreshing``
     says a computation is running now; the console polls until it is not.
+    ``refresh_error`` is why the last computation failed, if it did and none
+    has succeeded since: what is shown is then older than intended.
     """
 
     generated_at: datetime | None
     models: list[AdminTtftScatterModel]
     refreshing: bool = False
+    refresh_error: str | None = None
 
 
 class AdminRequestPerfDistribution(BaseModel):

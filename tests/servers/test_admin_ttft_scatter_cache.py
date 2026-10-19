@@ -36,11 +36,15 @@ class _MemoryStore:
     def __init__(self) -> None:
         self.rows: dict = {}
 
+    async def generation(self, key):
+        return 0
+
     async def read(self, key):
         return self.rows.get(key)
 
-    async def write(self, key, value, computed_at):
-        self.rows[key] = (value, computed_at)
+    async def write(self, key, value, computed_at, generation):
+        self.rows[key] = (value, computed_at, generation)
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -109,5 +113,6 @@ async def test_a_failed_refresh_still_serves_the_previous_scatter(monkeypatch):
         after_failure = await client.get("/admin/ttft-scatter")
 
     assert after_failure.status_code == 200
-    # Its generated_at still tells the console how old it is.
-    assert after_failure.json() == first.json()
+    # Its generated_at still tells the console how old it is, and it says why
+    # the refresh failed.
+    assert after_failure.json() == {**first.json(), "refresh_error": "statement timeout"}

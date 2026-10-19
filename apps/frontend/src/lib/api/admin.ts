@@ -517,6 +517,8 @@ export interface AdminPerformanceMetricsResponse {
   windows: AdminPerformanceMetricsWindow[];
   /** The server is computing new ones; ask again to get them. */
   refreshing: boolean;
+  /** Why the last computation failed, if none has succeeded since. */
+  refresh_error?: string | null;
 }
 
 export async function getPerformanceMetrics({
@@ -552,6 +554,8 @@ export interface AdminTtftScatterResponse {
   models: AdminTtftScatterModel[];
   /** The server is computing a new one; ask again to get it. */
   refreshing: boolean;
+  /** Why the last computation failed, if none has succeeded since. */
+  refresh_error?: string | null;
 }
 
 export async function getTtftScatter({

@@ -89,6 +89,10 @@ _PERFORMANCE_CACHE_FRESH_SECONDS = 300.0
 # How long a request finding no result at all waits for the first: below the
 # console proxy's 30 s timeout. After it the console polls.
 _PERFORMANCE_FIRST_WAIT_SECONDS = 20.0
+# How long after a failed computation a stale result is served without trying
+# again (an explicit refresh always tries): the console's polling then ends
+# with the failure reported, and a failing query is not rerun on every poll.
+_PERFORMANCE_RETRY_SECONDS = 120.0
 
 
 def _distribution_from_row(
@@ -577,12 +581,13 @@ async def _get_cached_performance_metrics(
     refresh: bool = False,
 ) -> AdminPerformanceMetricsResponse:
     """Performance metrics from :data:`PERFORMANCE_METRICS`; ``refresh`` starts new ones."""
-    response = await PERFORMANCE_METRICS.get(
+    served = await PERFORMANCE_METRICS.get(
         db_logger.pool, lambda: _load_performance_metrics(db_logger), refresh=refresh
     )
-    if response is None:
-        response = AdminPerformanceMetricsResponse(generated_at=None, windows=[])
-    return response.model_copy(update={"refreshing": PERFORMANCE_METRICS.refreshing})
+    response = served.value or AdminPerformanceMetricsResponse(generated_at=None, windows=[])
+    return response.model_copy(
+        update={"refreshing": served.refreshing, "refresh_error": served.refresh_error}
+    )
 
 
 async def warm_performance_caches(db_logger) -> None:
@@ -633,12 +638,13 @@ async def admin_get_ttft_scatter(
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
-    response = await TTFT_SCATTER.get(
+    served = await TTFT_SCATTER.get(
         db_logger.pool, lambda: _load_ttft_scatter(db_logger), refresh=refresh
     )
-    if response is None:
-        response = AdminTtftScatterResponse(generated_at=None, models=[])
-    return response.model_copy(update={"refreshing": TTFT_SCATTER.refreshing})
+    response = served.value or AdminTtftScatterResponse(generated_at=None, models=[])
+    return response.model_copy(
+        update={"refreshing": served.refreshing, "refresh_error": served.refresh_error}
+    )
 
 
 async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
@@ -732,10 +738,14 @@ class _StoredView(Generic[_ResponseT]):
         self.model = model
         self.definition = definition
 
-    async def read(self, pool: asyncpg.Pool) -> tuple[_ResponseT, datetime] | None:
-        payload = await admin_view_results.read(pool, self.name, self.definition)
-        if payload is None:
+    async def generation(self, pool: asyncpg.Pool) -> int:
+        return await admin_view_results.generation(pool)
+
+    async def read(self, pool: asyncpg.Pool) -> tuple[_ResponseT, datetime, int] | None:
+        stored = await admin_view_results.read(pool, self.name, self.definition)
+        if stored is None:
             return None
+        payload, generation = stored
         try:
             value = self.model.model_validate(payload)
         except ValidationError as exc:
@@ -743,11 +753,15 @@ class _StoredView(Generic[_ResponseT]):
             return None
         if value.generated_at is None:
             return None
-        return value.model_copy(update={"refreshing": False}), value.generated_at
+        return value, value.generated_at, generation
 
-    async def write(self, pool: asyncpg.Pool, value: _ResponseT, computed_at: datetime) -> None:
-        await admin_view_results.write(
-            pool, self.name, self.definition, value.model_dump(mode="json"), computed_at
+    async def write(
+        self, pool: asyncpg.Pool, value: _ResponseT, computed_at: datetime, generation: int
+    ) -> bool:
+        # The served state (refreshing, refresh_error) is the request's, not the result's.
+        payload = value.model_dump(mode="json", exclude={"refreshing", "refresh_error"})
+        return await admin_view_results.write(
+            pool, self.name, self.definition, payload, computed_at, generation
         )
 
 
@@ -755,6 +769,7 @@ PERFORMANCE_METRICS: RefreshingResult[AdminPerformanceMetricsResponse] = Refresh
     "performance_metrics",
     fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
     first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    retry_seconds=_PERFORMANCE_RETRY_SECONDS,
     store=_StoredView(
         "performance_metrics",
         AdminPerformanceMetricsResponse,
@@ -773,6 +788,7 @@ TTFT_SCATTER: RefreshingResult[AdminTtftScatterResponse] = RefreshingResult(
     "ttft_scatter",
     fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
     first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    retry_seconds=_PERFORMANCE_RETRY_SECONDS,
     store=_StoredView(
         "ttft_scatter",
         AdminTtftScatterResponse,
