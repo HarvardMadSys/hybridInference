@@ -49,13 +49,18 @@ workers() {
 }
 
 database_name() {
+  local name
   if [ -n "${TEST_DB_LOCAL_NAME:-}" ]; then
-    echo "${TEST_DB_LOCAL_NAME}"
-    return
+    name="${TEST_DB_LOCAL_NAME}"
+  else
+    name="hi_$(printf '%s' "${ROOT}" | sha1sum | cut -c1-10)_test_db"
   fi
-  local digest
-  digest="$(printf '%s' "${ROOT}" | sha1sum | cut -c1-10)"
-  echo "hi_${digest}_test_db"
+  # The rule tests/fixtures/postgres.py applies, checked here too because
+  # `reset` drops databases by this name without going through Python.
+  if ! [[ "${name}" =~ ^[A-Za-z0-9_]+$ && "${name}" == *_test_* ]]; then
+    die "database name '${name}' must be letters, digits and underscores and contain _test_"
+  fi
+  echo "${name}"
 }
 
 export_env() {
@@ -63,7 +68,7 @@ export_env() {
   export TEST_DB_PORT="${PORT}"
   export TEST_DB_USER=postgres
   export TEST_DB_PASSWORD=postgres
-  TEST_DB_NAME="$(database_name)"
+  TEST_DB_NAME="$(database_name)" || exit 1
   export TEST_DB_NAME
   export TEST_DB_REQUIRED=1
   # Same values as CI's `test (db)` job, for `run` and `env` alike. The erasure
@@ -183,15 +188,18 @@ case "${cmd}" in
     up
     export_env
     lock_database
+    # The name and "<name>_gw<digits>", matched literally (never as a pattern).
+    owned="datname = :'name' OR (starts_with(datname, :'name' || '_gw') \
+      AND substr(datname, length(:'name') + 4) ~ '^[0-9]+$')"
     docker exec -i "${CONTAINER}" psql -U postgres -qAtX -v ON_ERROR_STOP=1 \
-      -v name="${TEST_DB_NAME}" -v pattern="^${TEST_DB_NAME}_gw[0-9]+$" <<'SQL'
-SELECT format('DROP DATABASE %I WITH (FORCE)', datname)
-FROM pg_database WHERE datname = :'name' OR datname ~ :'pattern'
+      -v name="${TEST_DB_NAME}" <<SQL
+SELECT format('DROP DATABASE %I WITH (FORCE)', datname) FROM pg_database WHERE ${owned}
 \gexec
 SQL
-    left="$(docker exec "${CONTAINER}" psql -U postgres -qAtX -c \
-      "SELECT count(*) FROM pg_database WHERE datname = '${TEST_DB_NAME}' \
-       OR datname ~ '^${TEST_DB_NAME}_gw[0-9]+\$'")"
+    left="$(docker exec -i "${CONTAINER}" psql -U postgres -qAtX -v name="${TEST_DB_NAME}" <<SQL
+SELECT count(*) FROM pg_database WHERE ${owned}
+SQL
+)"
     [ "${left}" = "0" ] || die "${left} of ${TEST_DB_NAME}'s databases are still there"
     echo "dropped ${TEST_DB_NAME} and its worker copies"
     ;;
