@@ -1322,3 +1322,22 @@ async def test_a_policy_stored_before_composition_does_not_steer_the_composed_mo
     with pytest.raises(AllCircuitsOpenError, match="max input"):
         await plain.chat_completion(_MODEL_ID, long_prompt)
     assert plain_remote.chat_calls == 0
+
+
+@pytest.mark.unit
+def test_a_fixed_cloud_provider_target_never_resolves_to_a_local_endpoint() -> None:
+    """The shared router knows every endpoint; the cloud backend must bound it."""
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local, remote)
+    cloud = FixedCloudBackend(shared, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID})
+
+    # The shared router resolves the local provider happily...
+    assert shared.preferred_endpoint_for_provider(_MODEL_ID, "local") == _LOCAL_ENDPOINT
+    # ...but the cloud backend refuses it, and resolves only its own.
+    assert cloud.resolve_target(RoutingTarget(provider="local"), _MODEL_ID) is None
+    assert cloud.resolve_target(RoutingTarget(provider="zai"), _MODEL_ID) == _CLOUD_ENDPOINT
+    assert cloud.resolve_target(RoutingTarget(provider="nobody"), _MODEL_ID) is None
+    # A model outside the declared range resolves nothing, whatever the target.
+    assert cloud.resolve_target(RoutingTarget(provider="zai"), "other-model") is None
+    assert cloud.resolve_target(RoutingTarget(endpoint_id=_CLOUD_ENDPOINT), "other-model") is None
