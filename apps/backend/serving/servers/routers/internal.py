@@ -56,6 +56,13 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
     if not user_row:
         raise HTTPException(status_code=401, detail="User not found.")
 
+    # Suspending an account revokes its API key, not its session rows, so a
+    # suspended (or never approved) admin can still hold a live session here.
+    # The browser-session path refuses them through ``session_live``; this
+    # path must too, or such an admin keeps opening pgAdmin.
+    if user_row.get("status") != "active":
+        raise HTTPException(status_code=401, detail="Account is not active.")
+
     return user_row
 
 
