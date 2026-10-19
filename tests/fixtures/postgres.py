@@ -408,21 +408,25 @@ async def prepare_databases(workers: int = 0, *, owner: str | None = None) -> li
     (fast); one left over from an earlier run is brought up to date in place.
     *owner*, a checkout path, is recorded on each database so that
     :func:`drop_orphaned_databases` can remove them once that checkout is gone.
+    Databases another checkout that still exists has recorded are refused, not
+    taken over: a takeover would let ``clean`` drop them when *owner* goes.
     """
     import asyncpg
 
     db = target(worker="master")
+    names = [db.base_name] + [
+        worker_database_name(db.base_name, f"gw{index}") for index in range(workers)
+    ]
+    if owner is not None:
+        await _refuse_another_owner(names, owner)
     await ensure_database(db.base_name)
-    names = [db.base_name]
     pool = await asyncpg.create_pool(**db.connect_kwargs(db.base_name), min_size=1, max_size=2)
     try:
         await prepare_schema(pool)
     finally:
         # CREATE DATABASE … TEMPLATE needs the template to have no connections.
         await pool.close()
-    for index in range(workers):
-        name = worker_database_name(db.base_name, f"gw{index}")
-        names.append(name)
+    for name in names[1:]:
         if await ensure_database(name, template=db.base_name):
             continue
         pool = await asyncpg.create_pool(**db.connect_kwargs(name), min_size=1, max_size=2)
@@ -433,6 +437,29 @@ async def prepare_databases(workers: int = 0, *, owner: str | None = None) -> li
     if owner is not None:
         await _record_owner(names, owner)
     return names
+
+
+async def _refuse_another_owner(names: list[str], owner: str) -> None:
+    admin = await connect_maintenance()
+    try:
+        rows = await admin.fetch(
+            "SELECT datname, shobj_description(oid, 'pg_database') AS note "
+            "FROM pg_database WHERE datname = ANY($1::text[])",
+            names,
+        )
+    finally:
+        await admin.close()
+    for row in rows:
+        note = row["note"] or ""
+        if not note.startswith(OWNER_COMMENT_PREFIX):
+            continue
+        other = note[len(OWNER_COMMENT_PREFIX) :]
+        if other != owner and Path(other).exists():
+            raise TestDatabaseConfigError(
+                f"{row['datname']} belongs to {other}, which still exists; refusing to "
+                f"prepare it for {owner}. Run from that checkout, or pick another database "
+                "(TEST_DB_LOCAL_NAME for ops/dev/test-db-local.sh)."
+            )
 
 
 async def _record_owner(names: list[str], owner: str) -> None:
@@ -528,6 +555,9 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"dropped {', '.join(dropped) or 'nothing'} at {db.host}:{db.port}")
             return 0
         names = asyncio.run(prepare_databases(args.workers, owner=args.owner))
+    except TestDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (pytest.skip.Exception, pytest.fail.Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -18,7 +18,10 @@
 #   TEST_DB_LOCAL_PORT       host port        (54329, bound to 127.0.0.1)
 #   TEST_DB_LOCAL_IMAGE      image            (postgres:15, as CI)
 #   TEST_DB_WORKERS          xdist workers    (min(nproc, 8))
-#   TEST_DB_NAME             database name    (derived from the checkout path)
+#   TEST_DB_LOCAL_NAME       database name    (derived from the checkout path)
+#
+# TEST_DB_NAME is deliberately not an input: after `eval "$(... env)"` in one
+# worktree it is still set in the shell that moves on to the next one.
 
 set -euo pipefail
 
@@ -45,8 +48,8 @@ workers() {
 }
 
 database_name() {
-  if [ -n "${TEST_DB_NAME:-}" ]; then
-    echo "${TEST_DB_NAME}"
+  if [ -n "${TEST_DB_LOCAL_NAME:-}" ]; then
+    echo "${TEST_DB_LOCAL_NAME}"
     return
   fi
   local digest
@@ -142,9 +145,10 @@ case "${cmd}" in
     export USER_AUTH_ENABLED=1
     export API_KEY_SECRET=integration-test-secret-for-ci-only
     export ERASURE_FENCE_SECRET=test-fence-secret-not-for-production
-    if [ $# -eq 0 ]; then
-      set -- -m "dbtest and not external"
-    fi
+    # The tier stays selected whatever is added (ARGS="-vv", "--lf", a path):
+    # without it, extra arguments would also collect the live external tests.
+    # A later -m of the caller's own replaces it.
+    set -- -m "dbtest and not external" "$@"
     # Not exec: this shell keeps the lock's session open until pytest is done.
     status=0
     ${UV_RUN} pytest -n "$(workers)" --dist loadfile -q -rs "$@" || status=$?

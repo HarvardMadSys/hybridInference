@@ -202,8 +202,9 @@ its name.
 | Live external | `tests/external/` | `external` | no |
 
 Opt in to excluded tiers explicitly. For `dbtest`, use `make test-db-local`
-(`ARGS="tests/integration/test_x.py"` to narrow it). To run anything else
-against that database, `eval "$(ops/dev/test-db-local.sh env)"` first.
+(`ARGS="tests/integration/test_x.py"` to narrow it; the `dbtest` marker is
+always kept). To run anything else against that database,
+`eval "$(ops/dev/test-db-local.sh env)"` first, in the worktree you run it in.
 
 ### 6.5 Common gotchas
 
