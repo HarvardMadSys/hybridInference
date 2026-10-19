@@ -27,10 +27,10 @@ a backfill at startup, and the endpoint itself when an hour it needs is missing
 off). Every fill and every invalidation holds one transaction-scoped advisory
 lock, and a fill re-reads which hours are missing once it holds it: concurrent
 fills do not repeat each other's work, and no fill can write back counts it read
-from before a delete it raced (see :func:`invalidate_recent`).
+from before a delete it raced (see :func:`invalidate_hours`).
 
 Deletes are the one way a completed hour changes. "Clear errors" invalidates the
-hours it reached. A user's hard delete does not: like ``provider_hourly_stats``
+hours it deleted rows from, in the delete's own transaction. A user's hard delete does not: like ``provider_hourly_stats``
 and the geo rollup, these are anonymous counts of traffic that did happen.
 """
 
@@ -129,15 +129,6 @@ WHERE hour_bucket >= $1 AND hour_bucket < $2
 
 _STORED_OF_SQL = """
 SELECT hour_bucket FROM request_volume_hourly WHERE hour_bucket = ANY($1::timestamptz[])
-"""
-
-# From the hour holding "now minus N hours", plus the hour before it: the delete
-# this follows took its own "now" a moment earlier, which can fall an hour back.
-_INVALIDATE_SQL = """
-DELETE FROM request_volume_hourly
-WHERE hour_bucket >= to_timestamp(
-    floor(extract(epoch FROM NOW() - make_interval(hours => $1::int)) / 3600) * 3600
-) - interval '1 hour'
 """
 
 _PURGE_SQL = """
@@ -328,16 +319,23 @@ async def load_window_buckets(
     return result
 
 
-async def invalidate_recent(pool: asyncpg.Pool, hours: int) -> None:
-    """Drop the stored hours a delete of the last *hours* hours of rows reached.
+async def invalidate_hours(conn: asyncpg.Connection, hours: list[datetime]) -> None:
+    """Drop the stored *hours*, in the caller's transaction.
 
-    Call it once the delete has committed. Under the advisory lock, a fill either
-    finished before this -- and whatever it read from before the delete is dropped
-    here -- or starts after it and reads the rows as they are now.
+    The delete of ``api_logs`` rows passes it as ``on_deleted``, so the two
+    commit or fail together: were they separate, a failed invalidation would
+    leave an hour stored with the deleted rows in it, and since a stored hour is
+    never counted again, it would keep them for good. Under the advisory lock, a
+    fill either committed before this -- and whatever it read from before the
+    delete is dropped here -- or starts after the delete commits and reads the
+    rows as they are then.
     """
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
-        await conn.execute(_INVALIDATE_SQL, hours)
+    if not hours:
+        return
+    await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
+    await conn.execute(
+        "DELETE FROM request_volume_hourly WHERE hour_bucket = ANY($1::timestamptz[])", hours
+    )
 
 
 async def backfill_missing(pool: asyncpg.Pool, *, days: int = RETENTION_DAYS) -> int:

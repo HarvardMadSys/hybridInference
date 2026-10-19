@@ -30,6 +30,8 @@ from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import asyncpg
 
 logger = get_logger(__name__)
@@ -1160,7 +1162,12 @@ class PostgresLogStore(LogStore):
 
     # -- admin: bulk delete --------------------------------------------------
 
-    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+    async def delete_recent_error_requests(
+        self,
+        *,
+        hours: int = 1,
+        on_deleted: Callable[[Any, list[dt.datetime]], Awaitable[None]] | None = None,
+    ) -> int:
         """Hard-delete error requests from ``api_logs`` in the last *hours*.
 
         The error predicate mirrors the admin Recent Requests ``outcome=errors``
@@ -1172,6 +1179,8 @@ class PostgresLogStore(LogStore):
         dropped in the same transaction (:func:`user_usage_rollup.invalidate_days`):
         if that fails, the delete rolls back with it and the admin can retry,
         rather than the stored days keeping the deleted rows for good.
+        *on_deleted* gets the same guarantee for the hours the rows were in
+        (see :meth:`LogStore.delete_recent_error_requests`).
         """
         import asyncpg as _asyncpg
 
@@ -1190,7 +1199,13 @@ class PostgresLogStore(LogStore):
                        COALESCE(
                            array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date),
                            '{}'
-                       ) AS days
+                       ) AS days,
+                       COALESCE(
+                           array_agg(DISTINCT to_timestamp(
+                               floor(extract(epoch FROM timestamp) / 3600) * 3600
+                           )),
+                           '{}'
+                       ) AS hours
                 FROM deleted
                 """,
                 hours,
@@ -1204,6 +1219,8 @@ class PostgresLogStore(LogStore):
                         await user_usage_rollup.invalidate_days(conn, days)
                 except _asyncpg.UndefinedTableError:
                     pass
+                if on_deleted is not None:
+                    await on_deleted(conn, list(row["hours"]))
         return deleted
 
     # -- admin: hard-delete user-owned rows ---------------------------------
