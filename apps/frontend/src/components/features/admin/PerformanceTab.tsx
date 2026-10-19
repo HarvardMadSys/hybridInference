@@ -9,6 +9,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { ProviderPerformanceTab } from '@/app/dashboard/admin/ProviderPerformanceTab';
+import { ComputedAt } from '@/components/features/admin/ComputedAt';
 
 function formatLatency(ms?: number | null): string {
   if (ms == null) return '—';
@@ -92,6 +93,7 @@ export function PerformanceTab() {
   const toast = useAccountToast();
   const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
   const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
+  const [perfMetricsAt, setPerfMetricsAt] = useState<string | null>(null);
 
   const loadPerformanceMetrics = useCallback(
     async (refresh = false) => {
@@ -99,6 +101,7 @@ export function PerformanceTab() {
       try {
         const d = await getPerformanceMetrics({ refresh });
         setPerfMetrics(d.windows);
+        setPerfMetricsAt(d.generated_at);
       } catch (e) {
         toast.error(getErrorMessage(e));
       } finally {
@@ -124,6 +127,7 @@ export function PerformanceTab() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <ComputedAt at={perfMetricsAt} />
             {perfMetricsLoading && (
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
             )}

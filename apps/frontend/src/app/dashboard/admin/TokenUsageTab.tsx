@@ -10,6 +10,7 @@ import {
   getProviderTokenUsage,
   getPerformanceMetrics,
 } from '@/lib/api/admin';
+import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const RANGES: { key: TokenUsageRange; label: string }[] = [
@@ -268,12 +269,14 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
 function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
   const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
   const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
+  const [perfMetricsAt, setPerfMetricsAt] = useState<string | null>(null);
 
-  const loadPerformanceMetrics = useCallback(async () => {
+  const loadPerformanceMetrics = useCallback(async (refresh: boolean) => {
     setPerfMetricsLoading(true);
     try {
-      const d = await getPerformanceMetrics();
+      const d = await getPerformanceMetrics({ refresh });
       setPerfMetrics(d.windows);
+      setPerfMetricsAt(d.generated_at);
     } catch {
       // ignore
     } finally {
@@ -281,8 +284,10 @@ function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
     }
   }, []);
 
+  // The server keeps these for a few minutes; an explicit refresh of the page
+  // (refreshKey > 0) asks it to recompute.
   useEffect(() => {
-    void loadPerformanceMetrics();
+    void loadPerformanceMetrics((refreshKey ?? 0) > 0);
   }, [loadPerformanceMetrics, refreshKey]);
 
   return (
@@ -294,9 +299,12 @@ function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
             Prompt/response length, time-to-first-token, and inter-token latency distributions.
           </p>
         </div>
-        {perfMetricsLoading && (
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-        )}
+        <div className="flex items-center gap-2">
+          <ComputedAt at={perfMetricsAt} />
+          {perfMetricsLoading && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
+        </div>
       </div>
       {perfMetrics.length > 0 ? (
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">

@@ -29,6 +29,7 @@ import {
   getProviderStats,
   getTtftScatter,
 } from '@/lib/api/admin';
+import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 type RangeKey = '24h' | '7d' | '30d';
@@ -667,15 +668,17 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [ttftScatter, setTtftScatter] = useState<AdminTtftScatterModel[]>([]);
   const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
   const [ttftScatterError, setTtftScatterError] = useState<string | null>(null);
+  const [ttftScatterAt, setTtftScatterAt] = useState<string | null>(null);
   const [modelRows, setModelRows] = useState<Record<string, ProviderStatsRow[]>>({});
   const [observability, setObservability] = useState<ProviderObservabilityResponse | null>(null);
 
-  const loadTtftScatter = useCallback(async () => {
+  const loadTtftScatter = useCallback(async (refresh: boolean) => {
     setTtftScatterLoading(true);
     setTtftScatterError(null);
     try {
-      const resp = await getTtftScatter();
+      const resp = await getTtftScatter({ refresh });
       setTtftScatter(resp.models);
+      setTtftScatterAt(resp.generated_at);
     } catch (exc) {
       setTtftScatterError(getErrorMessage(exc));
     } finally {
@@ -683,8 +686,10 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     }
   }, []);
 
+  // The server keeps the scatter for a few minutes; an explicit refresh of the
+  // page (refreshKey > 0) asks it to recompute.
   useEffect(() => {
-    void loadTtftScatter();
+    void loadTtftScatter(refreshKey > 0);
   }, [loadTtftScatter, refreshKey]);
 
   const providerModels = useMemo(
@@ -898,16 +903,19 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h2 className="text-[15px] font-semibold text-gray-900">
-              TTFT vs input length (last 1000 per model)
+              TTFT vs input length (last 1000 per model and cache class)
             </h2>
             <p className="text-[12px] text-gray-400">
               Per-model scatter of time-to-first-token against prompt length, split by prompt-cache
               hit.
             </p>
           </div>
-          {ttftScatterLoading && (
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-          )}
+          <div className="flex items-center gap-2">
+            <ComputedAt at={ttftScatterAt} />
+            {ttftScatterLoading && (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+            )}
+          </div>
         </div>
         {ttftScatterError ? (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">

@@ -193,8 +193,10 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
         await _insert_api_log(pool, model_id=tag, **r)
 
     try:
+        # The result is kept for a few minutes and may already hold an earlier
+        # computation (the startup warm-up); ask for one over the rows above.
         resp = await auth_client.get(
-            "/admin/performance-metrics",
+            "/admin/performance-metrics?refresh=true",
             headers={"Authorization": "Bearer test-admin-token"},
         )
         assert resp.status_code == 200, resp.text

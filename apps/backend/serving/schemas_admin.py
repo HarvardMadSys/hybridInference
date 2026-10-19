@@ -673,6 +673,7 @@ class AdminTtftScatterModel(BaseModel):
 class AdminTtftScatterResponse(BaseModel):
     """TTFT vs input length scatter data, grouped by (model_id, provider)."""
 
+    generated_at: datetime
     models: list[AdminTtftScatterModel]
 
 

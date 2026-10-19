@@ -49,6 +49,7 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
     resolve_request_outcome_filter,
 )
+from serving.servers.routers.admin._refreshing_cache import RefreshingResult
 from serving.storage import account_schema
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
@@ -75,26 +76,18 @@ _TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768,
 _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 _THROUGHPUT_HISTOGRAM_EDGES: tuple[float, ...] = (0, 5, 10, 25, 50, 100, 250, 500, 1000)
 
-# The dashboard can mount this section multiple times in a short period (for
-# example while switching admin tabs).  Exact percentiles over a month's log
-# history are deliberately expensive, and the underlying data does not need
-# sub-second freshness.  Keep one short, per-process result cache and
-# coalesce concurrent misses so a tab switch cannot multiply that work.
-_PERFORMANCE_METRICS_CACHE_TTL_SECONDS = 30.0
-_PERFORMANCE_METRICS_CACHE: tuple[float, int, AdminPerformanceMetricsResponse] | None = None
-_PERFORMANCE_METRICS_LOCK: asyncio.Lock | None = None
-_PERFORMANCE_METRICS_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-
-
-def _performance_metrics_lock() -> asyncio.Lock:
-    """Return a lock bound to the active event loop for metric-cache misses."""
-    global _PERFORMANCE_METRICS_LOCK, _PERFORMANCE_METRICS_LOCK_LOOP
-
-    loop = asyncio.get_running_loop()
-    if _PERFORMANCE_METRICS_LOCK is None or _PERFORMANCE_METRICS_LOCK_LOOP is not loop:
-        _PERFORMANCE_METRICS_LOCK = asyncio.Lock()
-        _PERFORMANCE_METRICS_LOCK_LOOP = loop
-    return _PERFORMANCE_METRICS_LOCK
+# Exact percentiles over a month of logs, and the newest scatter points of each
+# series over 90 days, take seconds on a production-sized api_logs and need not
+# be fresher than a few minutes; each view shows when its numbers were computed.
+# So both are kept per process, warmed at startup, and refreshed in the
+# background once stale (see ``_refreshing_cache``).
+_PERFORMANCE_CACHE_FRESH_SECONDS = 300.0
+PERFORMANCE_METRICS: RefreshingResult[AdminPerformanceMetricsResponse] = RefreshingResult(
+    "performance_metrics", fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS
+)
+TTFT_SCATTER: RefreshingResult[AdminTtftScatterResponse] = RefreshingResult(
+    "ttft_scatter", fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS
+)
 
 
 def _distribution_from_row(
@@ -583,36 +576,20 @@ async def _get_cached_performance_metrics(
     *,
     refresh: bool = False,
 ) -> AdminPerformanceMetricsResponse:
-    """Load performance metrics, reusing a short-lived result when possible."""
-    global _PERFORMANCE_METRICS_CACHE
+    """Performance metrics from :data:`PERFORMANCE_METRICS`; ``refresh`` waits for new ones."""
+    return await PERFORMANCE_METRICS.get(
+        id(db_logger.pool), lambda: _load_performance_metrics(db_logger), refresh=refresh
+    )
 
-    pool_id = id(db_logger.pool)
-    now = time.monotonic()
-    cached = _PERFORMANCE_METRICS_CACHE
-    if (
-        not refresh
-        and cached is not None
-        and cached[1] == pool_id
-        and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
-    ):
-        return cached[2]
 
-    # Serialize cache misses. The inner check means simultaneous dashboard
-    # mounts all reuse the one query instead of each executing eight scans.
-    async with _performance_metrics_lock():
-        now = time.monotonic()
-        cached = _PERFORMANCE_METRICS_CACHE
-        if (
-            not refresh
-            and cached is not None
-            and cached[1] == pool_id
-            and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
-        ):
-            return cached[2]
+async def warm_performance_caches(db_logger) -> None:
+    """Compute the Providers tab's cached views before the first admin asks.
 
-        metrics = await _load_performance_metrics(db_logger)
-        _PERFORMANCE_METRICS_CACHE = (time.monotonic(), pool_id, metrics)
-        return metrics
+    One after the other, so a starting gateway adds one heavy scan at a time.
+    """
+    key = id(db_logger.pool)
+    await PERFORMANCE_METRICS.warm(key, lambda: _load_performance_metrics(db_logger))
+    await TTFT_SCATTER.warm(key, lambda: _load_ttft_scatter(db_logger))
 
 
 @router.get("/performance-metrics", response_model=AdminPerformanceMetricsResponse)
@@ -621,7 +598,10 @@ async def admin_get_performance_metrics(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminPerformanceMetricsResponse:
-    """Return cached performance distributions; ``refresh`` bypasses the cache."""
+    """Return performance distributions, at most a few minutes old.
+
+    ``generated_at`` says when they were computed; ``refresh`` waits for new ones.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
     return await _get_cached_performance_metrics(db_logger, refresh=refresh)
@@ -629,9 +609,23 @@ async def admin_get_performance_metrics(
 
 @router.get("/ttft-scatter", response_model=AdminTtftScatterResponse)
 async def admin_get_ttft_scatter(
+    refresh: bool = False,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminTtftScatterResponse:
+    """Return TTFT vs input length scatter data, at most a few minutes old.
+
+    ``generated_at`` says when it was computed; ``refresh`` waits for new data.
+    See :func:`_load_ttft_scatter` for what it holds.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+    return await TTFT_SCATTER.get(
+        id(db_logger.pool), lambda: _load_ttft_scatter(db_logger), refresh=refresh
+    )
+
+
+async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
     """Return TTFT vs input length scatter data per (model, provider).
 
     For each (model_id, provider) pair, returns up to the last 1000 successful
@@ -642,9 +636,6 @@ async def admin_get_ttft_scatter(
     so the `ROW_NUMBER()` scan stays bounded as `api_logs` grows. `cache_hit`
     is true iff `cache_read_tokens > 0`.
     """
-    if not db_logger or not db_logger.pool:
-        raise HTTPException(500, "Database not configured")
-
     async with db_logger.pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -695,7 +686,7 @@ async def admin_get_ttft_scatter(
     ]
     models.sort(key=lambda m: len(m.points), reverse=True)
 
-    return AdminTtftScatterResponse(models=models)
+    return AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=models)
 
 
 def _build_recent_requests_filters(
