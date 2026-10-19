@@ -444,14 +444,16 @@ msgstr "请求历史"
 #: ../developer/database.md
 msgid ""
 "`api_logs`, `api_stats_hourly`, `provider_hourly_stats`, "
-"`provider_hourly_coverage`, `request_volume_hourly`"
+"`provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, "
+"`user_usage_daily_coverage`"
 msgstr ""
 
 #: ../developer/database.md
 msgid ""
 "One row per request (model, provider, tokens, latency, TTFT, status, "
-"cost) plus hourly rollups used by the dashboards"
-msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘用的小时级汇总"
+"cost) plus hourly and daily rollups used by the dashboards and the admin "
+"Users table"
+msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘和管理后台用户表用的小时级与天级汇总"
 
 #: ../developer/database.md
 msgid "Settings"
