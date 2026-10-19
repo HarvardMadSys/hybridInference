@@ -333,3 +333,23 @@ msgstr ""
 "对接你自己的数据源时，复制这个扩展，把其中的本地 HTTP "
 "查询和字段映射换成你获得授权的数据源。保持结果契约不变，给网络请求加上超时，显式处理失败，并确保凭据不出现在响应和日志中。至于能以什么方式查询 "
 "provider 的用量，仍以该 provider 自己的条款为准。"
+
+#: ../developer/backend-extensions.md:37
+msgid "Configuration ownership"
+msgstr "配置归属"
+
+#: ../developer/backend-extensions.md:39
+msgid "An extension registers settings before database-backed configuration loads:"
+msgstr "扩展在加载数据库配置之前注册设置项："
+
+#: ../developer/backend-extensions.md:71
+msgid "The owner is a stable deployment-defined identifier. Registration cannot override core settings or another owner's setting. Migration names are owned by the extension; the core stores their IDs and declaration checksums, not a vendor-specific historical key list. A migration assigns only unclassified rows, preserves their values and reset metadata, and can make a secret flag more restrictive. Repeating the same declaration is safe; changing an existing migration declaration or encountering a different owner aborts the transaction. Use a new migration ID when adding another group of historical keys."
+msgstr "归属标识由部署方定义，并应保持稳定。注册不能覆盖核心设置或其他归属方的设置。迁移名称由扩展管理；核心只存储迁移 ID 和声明的校验摘要，不维护供应商历史配置键名清单。迁移只认领尚未分类的行，保留原值和重置元数据，并且只能加强 secret 标记。重复执行相同声明是安全的；修改已有迁移声明或遇到不同的归属方会中止整个事务。新增一组历史配置键时，应使用新的迁移 ID。"
+
+#: ../developer/backend-extensions.md:80
+msgid "Rows whose owner is absent, mismatched or still unclassified are excluded from configuration reads and ordinary writes. Same-name environment variables and YAML references cannot make those stored keys visible again. The recovery CLI has an explicit adoption command for genuine historical custom variables; extensions must use their own migration declarations instead."
+msgstr "归属方未加载、归属不匹配或仍未分类的行，不参与配置读取和普通写入。同名环境变量和 YAML 引用也无法使这些已存储的配置键重新可见。恢复 CLI 为真正的历史自定义变量提供显式认领命令；扩展则必须使用自己的迁移声明。"
+
+#: ../developer/backend-extensions.md:86
+msgid "Core and extension versions must be released together. A missing registration API is a startup error, not a reason to skip registration. During the first ownership migration, stop old workers before starting the new pair: older binaries do not enforce ownership. Keeping old values intact is not evidence that rolling back to an arbitrary old binary is safe."
+msgstr "核心与扩展版本必须配套发布。缺少注册 API 会导致启动失败，不能因此跳过注册。首次执行归属迁移时，应先停止旧 worker，再启动新版本组合：旧二进制程序不会执行归属检查。保留旧值并不意味着可以安全回滚到任意旧版本程序。"
