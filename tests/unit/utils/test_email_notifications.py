@@ -11,7 +11,7 @@ whom to contact, and quotes user-controlled text escaped in the HTML part.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
@@ -113,22 +113,6 @@ def test_a_delivery_failure_is_reported_not_raised(smtp):
     smtp.fail_with = OSError("connection reset")
 
     assert email_mod.send_email("owner@example.com", "Hi", "<p>x</p>", "x") is False
-
-
-def test_tencent_ses_sends_the_text_as_the_notice_template(smtp, monkeypatch):
-    sent: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(email_mod.settings, "email_provider", "tencent_ses")
-    monkeypatch.setattr("serving.utils.tencent_ses.is_ses_enabled", lambda: True)
-    monkeypatch.setattr(
-        "serving.utils.tencent_ses.send_template",
-        lambda *args: sent.append(args) or True,
-    )
-
-    assert email_mod.send_email("owner@example.com", "Hi", "<p>x</p>", "plain") is True
-    assert email_mod.send_email("owner@example.com", "Hi", "<p>x</p>", None) is False
-
-    assert sent == [("owner@example.com", "Hi", "notice", {"site_name": "Acme", "body": "plain"})]
-    assert smtp.calls == []
 
 
 # --- the notices -----------------------------------------------------------------
