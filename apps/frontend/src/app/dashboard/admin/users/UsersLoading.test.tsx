@@ -80,7 +80,7 @@ it('shows the real table while lifetime totals are pending, then fills them in',
   expect(await screen.findByText('Fixture user')).toBeInTheDocument();
   expect(screen.getByRole('table')).toBeInTheDocument();
   expect(listUsers).toHaveBeenCalledWith(expect.objectContaining({ includeUsageTotals: false }));
-  expect(screen.getByTitle('All-time requests not loaded yet')).toHaveTextContent('—');
+  expect(screen.getByTitle('All-time requests not available')).toHaveTextContent('—');
   await waitFor(() =>
     expect(getBulkUsageTotals).toHaveBeenCalledWith(['fixture-user'], expect.any(AbortSignal)),
   );

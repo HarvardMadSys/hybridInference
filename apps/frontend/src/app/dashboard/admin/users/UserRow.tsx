@@ -226,8 +226,8 @@ export function UserRow({
           className={`${NUM} ${numTone(user.usage_alltime_requests ?? 0)} ${edge('requests')}`}
           title={
             user.usage_alltime_requests == null
-              ? 'All-time requests not loaded yet'
-              : `${user.usage_alltime_requests == null ? <Dash /> : user.usage_alltime_requests.toLocaleString()} requests (all-time)`
+              ? 'All-time requests not available'
+              : `${user.usage_alltime_requests.toLocaleString()} requests (all-time)`
           }
         >
           {user.usage_alltime_requests == null ? (
@@ -242,7 +242,7 @@ export function UserRow({
           className={`${NUM} ${numTone(user.usage_alltime_tokens ?? 0)} ${edge('tokens')}`}
           title={
             user.usage_alltime_tokens == null
-              ? 'All-time tokens not loaded yet'
+              ? 'All-time tokens not available'
               : `${user.usage_alltime_tokens.toLocaleString()} tokens (all-time)`
           }
         >
