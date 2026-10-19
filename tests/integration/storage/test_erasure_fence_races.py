@@ -35,7 +35,7 @@ from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest]
 
-_SECRET = "test-fence-secret-not-for-production"
+_SECRET = postgres.FENCE_SECRET
 _OWNER = "u-fence-owner"
 _BYSTANDER = "u-fence-bystander"
 

@@ -51,6 +51,14 @@ DEFAULT_NAME = "hybridinference_test_db"
 MAINTENANCE_DATABASE = "postgres"
 
 REQUIRED_ENV = "TEST_DB_REQUIRED"
+
+#: The one erasure-fence secret every test uses. The fence pins the first
+#: secret's fingerprint into a database and refuses any other afterwards, and a
+#: local test database is reused across runs and files: two suites with two
+#: secrets (the gateway falling back to API_KEY_SECRET was one) failed whichever
+#: ran second. ``tests/conftest.py`` exports it as ``ERASURE_FENCE_SECRET``; a
+#: test that constructs a store passes ``fence_secret=postgres.FENCE_SECRET``.
+FENCE_SECRET = "test-fence-secret-not-for-production"
 #: Read by nothing any more; setting one alone would silently fall back to the
 #: defaults, so :func:`configuration_problem` refuses it instead.
 RETIRED_ENV = ("TEST_PG_DSN", "PG_TEST_DSN")

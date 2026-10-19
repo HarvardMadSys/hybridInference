@@ -71,12 +71,10 @@ export_env() {
   TEST_DB_NAME="$(database_name)" || exit 1
   export TEST_DB_NAME
   export TEST_DB_REQUIRED=1
-  # Same values as CI's `test (db)` job, for `run` and `env` alike. The erasure
-  # fence pins the first secret it sees into the database, and this database
-  # is reused: a run with a different (or no) secret would fail every later one.
+  # Same values as CI's `test (db)` job, for `run` and `env` alike. The
+  # erasure-fence secret is set by tests/conftest.py for every run.
   export USER_AUTH_ENABLED=1
   export API_KEY_SECRET=integration-test-secret-for-ci-only
-  export ERASURE_FENCE_SECRET=test-fence-secret-not-for-production
 }
 
 up() {
@@ -169,7 +167,7 @@ case "${cmd}" in
     lock_database
     prepare >&2
     for name in TEST_DB_HOST TEST_DB_PORT TEST_DB_USER TEST_DB_PASSWORD TEST_DB_NAME \
-      TEST_DB_REQUIRED USER_AUTH_ENABLED API_KEY_SECRET ERASURE_FENCE_SECRET; do
+      TEST_DB_REQUIRED USER_AUTH_ENABLED API_KEY_SECRET; do
       printf 'export %s=%q\n' "${name}" "${!name}"
     done
     ;;

@@ -122,6 +122,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         )
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # Every process (the controller and each xdist worker) runs this before any
+    # test: the gateway the server tests start resolves its fence secret from
+    # the environment, and it must be the secret the storage suites pass
+    # explicitly (tests/fixtures/postgres.py, FENCE_SECRET).
+    from tests.fixtures.postgres import FENCE_SECRET
+
+    os.environ["ERASURE_FENCE_SECRET"] = FENCE_SECRET
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     if hasattr(session.config, "workerinput"):
         return

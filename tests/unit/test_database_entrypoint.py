@@ -182,3 +182,70 @@ os.getenv("DB_HOST")
 pool.acquire()
 """
     assert _scan(source) == []
+
+
+# --- one erasure-fence secret ------------------------------------------------
+
+#: Literal fence secrets other than the suite's, and why each may stay. Keep short.
+FENCE_SECRET_LITERALS: dict[tuple[str, str], str] = {
+    (
+        "tests/integration/storage/test_erasure_fence_races.py",
+        "different-secret",
+    ): "asserts another secret cannot see a fence; it never pins one",
+    (
+        "tests/unit/storage/test_schema_lock_timeout.py",
+        "test-secret",
+    ): "a fake connection; no database is involved",
+}
+
+
+def _fence_secret_literals(tree: ast.AST) -> list[tuple[int, str]]:
+    """``fence_secret="..."`` arguments and ``x.fence_secret = "..."`` assignments."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                value = _literal(keyword.value) if keyword.arg == "fence_secret" else None
+                if value is not None:
+                    found.append((node.lineno, value))
+        elif isinstance(node, ast.Assign):
+            value = _literal(node.value)
+            if value is not None and any(
+                isinstance(target, ast.Attribute) and target.attr == "fence_secret"
+                for target in node.targets
+            ):
+                found.append((node.lineno, value))
+    return found
+
+
+def test_every_test_uses_the_one_fence_secret() -> None:
+    """The fence pins the first secret it sees into a database, and test
+    databases are shared and reused; a second literal fails whichever suite runs
+    second. Use ``postgres.FENCE_SECRET``."""
+    problems = []
+    for root in SCANNED:
+        for path in sorted(root.rglob("*.py")):
+            relative = path.relative_to(REPO).as_posix()
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            for line, value in _fence_secret_literals(tree):
+                if (relative, value) not in FENCE_SECRET_LITERALS:
+                    problems.append(f"{relative}:{line}: fence_secret={value!r}")
+    assert not problems, "Use tests.fixtures.postgres.FENCE_SECRET:\n  " + "\n  ".join(problems)
+
+
+def test_fence_secret_exemptions_are_still_used() -> None:
+    stale = []
+    for (relative, value), _why in FENCE_SECRET_LITERALS.items():
+        tree = ast.parse((REPO / relative).read_text(encoding="utf-8"))
+        if value not in {found for _line, found in _fence_secret_literals(tree)}:
+            stale.append((relative, value))
+    assert not stale, stale
+
+
+def test_the_fence_scan_sees_arguments_and_assignments() -> None:
+    tree = ast.parse(
+        'PostgresLogStore(pool, fence_secret="a")\n'
+        'store.fence_secret = "b"\n'
+        "DatabaseLogger({}, fence_secret=FENCE_SECRET)\n"
+    )
+    assert sorted(_fence_secret_literals(tree)) == [(1, "a"), (2, "b")]
