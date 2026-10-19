@@ -757,8 +757,9 @@ class CachedOperationalStore(OperationalStore):
         """Bind or update a verified email atomically without merging identities."""
         bound = await self._store.bind_user_email(user_id, email)
         if bound:
+            # Nothing is cached by e-mail address; the user and auth entries
+            # carry it.
             await self._cache.delete(self._user_key(user_id))
-            await self._cache.delete(self._email_key(email))
             await self._cache.delete_pattern("auth:*")
             await self._cache.delete_pattern("auth_light:*")
         return bound
