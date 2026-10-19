@@ -1020,6 +1020,18 @@ async def initialize() -> AppServices:
                         _usage_bf_task = asyncio.create_task(_run_user_usage_backfill())
                         _BACKGROUND_TASKS.add(_usage_bf_task)
                         _usage_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # The Providers tab's percentile and TTFT-scatter views
+                        # take seconds over a large api_logs and are then kept
+                        # in memory; compute them now so the first admin to
+                        # open the tab after a restart does not wait.
+                        from serving.servers.routers.admin.metrics import (
+                            warm_performance_caches,
+                        )
+
+                        _perf_warm_task = asyncio.create_task(warm_performance_caches(db_logger))
+                        _BACKGROUND_TASKS.add(_perf_warm_task)
+                        _perf_warm_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:

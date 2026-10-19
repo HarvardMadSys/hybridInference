@@ -544,11 +544,18 @@ export interface AdminTtftScatterModel {
 }
 
 export interface AdminTtftScatterResponse {
+  /** When the server computed this scatter; it is kept for a few minutes. */
+  generated_at: string;
   models: AdminTtftScatterModel[];
 }
 
-export async function getTtftScatter(): Promise<AdminTtftScatterResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/ttft-scatter');
+export async function getTtftScatter({
+  refresh = false,
+}: { refresh?: boolean } = {}): Promise<AdminTtftScatterResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    refresh ? '/admin/ttft-scatter?refresh=true' : '/admin/ttft-scatter',
+  );
   return jsonOrThrow<AdminTtftScatterResponse>(resp);
 }
 
