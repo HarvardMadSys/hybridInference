@@ -68,7 +68,7 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip, get_client_ip_info
 from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
-from serving.utils.token_utils import normalize_usage
+from serving.utils.token_utils import normalize_usage, sanitize_usage
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -187,88 +187,6 @@ async def _should_force_chat_completions_streaming(
         return await runtime_settings.get_bool("force_chat_completions_streaming")
     except KeyError:
         return False
-
-
-async def _buffer_streaming_response_for_non_stream_client(
-    stream_chunks: Any,
-    *,
-    request_id: str,
-    model: str,
-    request_headers: Any,
-) -> dict[str, Any]:
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    tool_calls = ToolCallAccumulator()
-    usage: dict[str, Any] | None = None
-    finish_reason: str | None = None
-    response_id = request_id
-    created = int(time.time())
-
-    async for chunk in stream_chunks:
-        if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
-            continue
-        try:
-            chunk_json = json.loads(chunk[6:])
-        except json.JSONDecodeError:
-            continue
-
-        error = chunk_json.get("error")
-        if isinstance(error, dict):
-            code = error.get("code")
-            status_code = code if isinstance(code, int) else 500
-            logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
-            raise HTTPException(
-                status_code=status_code,
-                detail=scrub_error_for_user(None, request_id, status_code),
-            )
-
-        response_id = chunk_json.get("id") or response_id
-        created = int(chunk_json.get("created") or created)
-        if chunk_json.get("usage"):
-            usage = normalize_usage(chunk_json.get("usage")) or chunk_json.get("usage")
-
-        choices = chunk_json.get("choices") or []
-        if not choices:
-            continue
-        choice = choices[0]
-        finish_reason = choice.get("finish_reason") or finish_reason
-        delta = choice.get("delta") or {}
-        content = delta.get("content")
-        if isinstance(content, str) and content:
-            content_parts.append(content)
-        reasoning = (
-            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
-        )
-        if isinstance(reasoning, str) and reasoning:
-            reasoning_parts.append(reasoning)
-        if delta.get("tool_calls"):
-            tool_calls.add(delta["tool_calls"])
-
-    message: dict[str, Any] = {
-        "role": "assistant",
-        "content": "".join(content_parts),
-    }
-    if reasoning_parts:
-        message["reasoning_content"] = "".join(reasoning_parts)
-    if tool_calls:
-        message["tool_calls"] = tool_calls.to_list()
-
-    response: dict[str, Any] = {
-        "id": response_id,
-        "object": "chat.completion",
-        "created": created,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": finish_reason or "stop",
-            }
-        ],
-    }
-    if usage:
-        response["usage"] = usage
-    return sanitize_response(response, resolve_mode(request_headers)).response_json
 
 
 _FORCE_STREAMING_KEEPALIVE_S = 15
@@ -496,7 +414,9 @@ async def _streaming_response_with_keepalive(
         ],
     }
     if usage:
-        response["usage"] = usage
+        # The client's body only (billing ran in the stream session): give it the
+        # totals the response model requires.
+        response["usage"] = sanitize_usage(usage, complete=True)
     sanitized = sanitize_response(response, resolve_mode(request_headers)).response_json
     yield json.dumps(sanitized).encode()
 
@@ -1114,6 +1034,11 @@ async def chat_completions(
         if isinstance(response, dict):
             sanitize_result = sanitize_response(response, serializer_mode)
             response = sanitize_result.response_json
+            if isinstance(response.get("usage"), dict):
+                # An unreadable count is billed as 0 (token_utils.usage_count).
+                # Not completed here: billing and the log read this usage, and
+                # a total made up for the response model would change billing.
+                response["usage"] = sanitize_usage(response["usage"])
             if response_model is not None:
                 response.pop("provider", None)
                 if "model" in response:
@@ -1258,6 +1183,9 @@ async def chat_completions(
 
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            # The client's copy only: the response model requires all three totals.
+            return {**response, "usage": sanitize_usage(response["usage"], complete=True)}
         return response
 
     except ProviderPinError as exc:

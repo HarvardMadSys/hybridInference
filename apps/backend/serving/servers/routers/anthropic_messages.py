@@ -80,6 +80,7 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.session_identity import consume_session_fields, session_identity
+from serving.utils.token_utils import usage_count
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
@@ -996,10 +997,12 @@ def _schedule_log_store_task(
     if operator_error:
         # Operator-only: stored in metadata, never returned to the user.
         metadata = {**(metadata or {}), "operator_error": operator_error}
-    input_tokens = int(usage.get("input_tokens", 0) or 0)
-    output_tokens = int(usage.get("output_tokens", 0) or 0)
-    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
-    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    input_tokens = usage_count(usage.get("input_tokens"), field="input_tokens")
+    output_tokens = usage_count(usage.get("output_tokens"), field="output_tokens")
+    cache_read = usage_count(usage.get("cache_read_input_tokens"), field="cache_read_input_tokens")
+    cache_write = usage_count(
+        usage.get("cache_creation_input_tokens"), field="cache_creation_input_tokens"
+    )
     prompt_tokens = input_tokens + cache_read + cache_write
     total_tokens = prompt_tokens + output_tokens
     prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
@@ -2423,10 +2426,13 @@ async def anthropic_messages(
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {
-        "input_tokens": int(usage.get("input_tokens", 0)),
-        "output_tokens": int(usage.get("output_tokens", 0)),
-        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0)),
-        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens", 0)),
+        field: usage_count(usage.get(field), field=field)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
     }
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
