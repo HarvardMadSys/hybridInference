@@ -27,6 +27,8 @@ interface ModelPickerProps {
   onChange: (modelId: string) => void;
   disabled?: boolean;
   loading?: boolean;
+  /** Shown instead of "No models available" when the list is empty for a known reason. */
+  emptyLabel?: string;
 }
 
 function modelLabel(name: string): { name: string; detail?: string } {
@@ -41,6 +43,7 @@ export function ModelPicker({
   onChange,
   disabled = false,
   loading = false,
+  emptyLabel = 'No models available',
 }: ModelPickerProps) {
   const generatedId = useId();
   const triggerId = id ?? `model-picker-${generatedId}`;
@@ -61,7 +64,7 @@ export function ModelPicker({
   const placeholder = loading
     ? 'Loading models…'
     : models.length === 0
-      ? 'No models available'
+      ? emptyLabel
       : 'Select a model';
 
   const filtered = useMemo(() => {
