@@ -26,6 +26,10 @@ function enterPhone(phone = '13812345678') {
 
 function selectCountry(name: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Country code' }));
+  // Narrow the list first, as a user would: getByRole computes the accessible
+  // name of every option it considers, and over the full list of ~250 that
+  // took seconds per call on a loaded CI runner -- past vitest's 5s timeout.
+  fireEvent.change(screen.getByLabelText('Search country or code'), { target: { value: name } });
   fireEvent.click(screen.getByRole('option', { name: new RegExp(`^${name}\\s*\\+\\d+$`) }));
 }
 

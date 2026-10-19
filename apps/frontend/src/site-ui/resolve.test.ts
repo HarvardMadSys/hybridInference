@@ -745,7 +745,9 @@ describe("the build's own checks cover the module's production code, and only th
     expect(await ignored('src/site-ui/external/parts/landing.tsx')).toBe(true);
     expect(await ignored('src/site-ui/active/client.ts')).toBe(true);
     expect(await ignored('src/site-ui/module.tsx')).toBe(false);
-  });
+    // Loading ESLint and the Next config takes ~4s alone; the time is not the
+    // finding, so the default 5s is no bound (like the other tool-driven tests).
+  }, 60_000);
 });
 
 describe("a module's stylesheet reaches every page without the module importing it", () => {
