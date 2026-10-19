@@ -364,6 +364,46 @@ async def test_a_scatter_that_read_a_deleted_users_rows_is_never_published(db, m
 
 
 @pytest.mark.asyncio
+async def test_a_request_after_a_delete_never_gets_a_scatter_stored_just_before_it(db, monkeypatch):
+    """Codex's reproduction: the write committed, the delete completed, then a request.
+
+    The computation's write has committed but not returned (its connection is
+    still going back to the pool) when Alice's delete completes. A request made
+    after the delete waits for that computation and must not return its result.
+    """
+    async with db.acquire() as conn:
+        await _log(conn, ago=timedelta(minutes=1), user_id="alice", prompt=4242)
+        await _log(conn, ago=timedelta(minutes=2), user_id="bob", prompt=17)
+    store = metrics.TTFT_SCATTER.store
+    real_write = store.write
+    stored, resume = asyncio.Event(), asyncio.Event()
+
+    async def _write_then_pause(pool, value, computed_at, generation):
+        result = await real_write(pool, value, computed_at, generation)
+        if not stored.is_set():
+            stored.set()
+            await resume.wait()
+        return result
+
+    monkeypatch.setattr(store, "write", _write_then_pause)
+    db_logger = MagicMock(pool=db)
+    before = asyncio.create_task(metrics.admin_get_ttft_scatter(db_logger=db_logger))
+    await stored.wait()
+
+    await PostgresLogStore(db, fence_secret=_FENCE_SECRET).hard_delete_user_data("alice")
+    after = asyncio.create_task(metrics.admin_get_ttft_scatter(db_logger=db_logger))
+    await asyncio.sleep(0.2)
+    resume.set()
+
+    def _prompts(scatter):
+        return {p.prompt_tokens for m in scatter.models for p in m.points}
+
+    assert _prompts(await after) == {17}
+    await before
+    assert _prompts(await metrics.admin_get_ttft_scatter(db_logger=db_logger)) == {17}
+
+
+@pytest.mark.asyncio
 async def test_a_result_held_in_memory_is_not_served_after_a_delete(db):
     async with db.acquire() as conn:
         await _log(conn, ago=timedelta(minutes=1), user_id="alice", prompt=4242)

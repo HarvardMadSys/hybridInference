@@ -56,6 +56,8 @@ class _Store:
         self.fail_read = False
         self.fail_write = False
         self.read_gate: dict[str, asyncio.Event] = {}
+        # Holds write() after it stored, as returning the connection to the pool can.
+        self.after_write: asyncio.Event | None = None
 
     async def generation(self, key):
         return self.current
@@ -74,6 +76,8 @@ class _Store:
         if generation != self.current:
             return False
         self.rows[key] = (value, computed_at, generation)
+        if self.after_write is not None:
+            await self.after_write.wait()
         return True
 
     def delete(self) -> None:
@@ -200,6 +204,18 @@ async def test_a_failed_first_computation_reaches_the_caller_and_is_retried_late
     load.fail = None
     cache._states["db"].failed_at -= cache.retry_seconds
     assert await _value(cache, "db", load) == "result-2"
+
+
+async def test_a_failure_without_a_message_is_still_reported():
+    """asyncpg's timeout is a bare TimeoutError(), whose str() is empty."""
+    cache, load = _cache(), _Loader()
+    await cache.get("db", load)
+    _stale(cache)
+    load.fail = asyncio.TimeoutError()
+    await cache.get("db", load)
+    await _settle()
+    served = await cache.get("db", load)
+    assert (served.refreshing, served.refresh_error) == (False, "TimeoutError")
 
 
 async def test_a_database_timeout_in_the_first_computation_is_a_failure_not_a_wait():
@@ -336,6 +352,33 @@ async def test_a_computation_a_delete_overtook_publishes_nothing_and_computes_ag
     assert await waiting == "result-2"
     assert load.calls == 2
     assert store.rows["db"] == (store.rows["db"][0], store.rows["db"][1], 1)
+    assert store.rows["db"][0] == "result-2"
+
+
+async def test_a_request_after_a_delete_never_gets_a_result_stored_just_before_it():
+    """The computation stored before the delete committed, and reaches memory after.
+
+    A request that began after the delete waits for that computation; it must
+    not return its result, but compute again.
+    """
+    store = _Store()
+    store.after_write = asyncio.Event()
+    cache, load = _cache(store), _Loader()
+    before = asyncio.create_task(_value(cache, "db", load))
+    await _settle()
+    assert store.rows["db"][0] == "result-1"  # stored, not yet in memory
+
+    store.delete()
+    after = asyncio.create_task(_value(cache, "db", load))
+    await _settle()
+    store.after_write.set()
+
+    assert await after == "result-2"
+    assert load.calls == 2
+    # The request that began before the delete may see either; memory and store
+    # end on the result computed after it.
+    await before
+    assert await _value(cache, "db", load) == "result-2"
     assert store.rows["db"][0] == "result-2"
 
 

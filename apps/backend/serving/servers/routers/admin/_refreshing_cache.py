@@ -26,8 +26,11 @@ Results are computed over rows a user's hard delete removes. The store keeps a
 *generation* the delete advances in its own transaction. A computation reads it
 before it starts and publishes only if it is unchanged -- checked atomically
 with the store's write -- so a computation that read rows before a delete never
-publishes them, and computes again. A result held in memory is dropped once the
-generation moves past the one it was computed under.
+stores them, and computes again. A result held in memory is dropped once the
+generation moves past the one it was computed under, and a request never
+returns a result older than the generation it saw when it began: a computation
+that stored its result just before a delete committed can still reach memory
+after it, and a request that waited for it computes again instead.
 
 State is kept per key (the database pool): a request only ever sees its own
 key's result, whatever another key does meanwhile.
@@ -123,17 +126,17 @@ class RefreshingResult(Generic[T]):
     ) -> Served[T]:
         """The result for *key*; see the module docstring for when *load* runs."""
         state = self._state(key)
-        await self._check(key, state)
+        current = await self._check(key, state)
         if state.value is None:
             if not refresh and self._recently_failed(state) and not self._running(state):
                 raise state.error  # type: ignore[misc]
-            await self._wait_for_first(self._start(key, state, load))
+            await self._wait_for_first(key, state, load, current)
         elif refresh or (self._stale(state) and not self._recently_failed(state)):
             self._start(key, state, load)
         return Served(
             value=state.value,
             refreshing=self._running(state),
-            refresh_error=str(state.error) if state.error is not None else None,
+            refresh_error=_describe(state.error) if state.error is not None else None,
         )
 
     async def warm(self, key: Hashable, load: Callable[[], Awaitable[T]]) -> None:
@@ -165,19 +168,22 @@ class RefreshingResult(Generic[T]):
         self._states.move_to_end(key)
         return state
 
-    async def _check(self, key: Hashable, state: _State[T]) -> None:
-        """Drop a result a delete has superseded, then adopt the stored one if none."""
+    async def _check(self, key: Hashable, state: _State[T]) -> int | None:
+        """Drop a result a delete has superseded, then adopt the stored one if none.
+
+        Returns the current generation, or None without a store (or when it
+        could not be read).
+        """
         if self.store is None:
-            return
+            return None
         try:
             current = await self.store.generation(key)
         except Exception as exc:
             logger.warning(f"{self.name}: could not read the generation: {exc!r}")
-            return
-        if state.value is not None and state.generation != current:
-            state.value, state.computed_at, state.restored = None, 0.0, False
+            return None
+        self._drop_if_superseded(state, current)
         if state.restored or state.value is not None:
-            return
+            return current
         state.restored = True
         try:
             stored = await self.store.read(key)
@@ -188,6 +194,15 @@ class RefreshingResult(Generic[T]):
         if stored is not None and state.value is None and stored[2] == current:
             state.value, computed_at, state.generation = stored
             state.computed_at = computed_at.timestamp()
+        return current
+
+    @staticmethod
+    def _drop_if_superseded(state: _State[T], current: int | None) -> bool:
+        """Drop a result computed under a generation before *current*; whether it was."""
+        if current is None or state.value is None or state.generation >= current:
+            return False
+        state.value, state.computed_at, state.restored = None, 0.0, False
+        return True
 
     def _stale(self, state: _State[T]) -> bool:
         return time.time() - state.computed_at >= self.fresh_seconds
@@ -199,13 +214,33 @@ class RefreshingResult(Generic[T]):
     def _running(state: _State[T]) -> bool:
         return state.task is not None and not state.task.done()
 
-    async def _wait_for_first(self, task: asyncio.Task[T]) -> None:
-        # asyncio.wait neither cancels the shared computation when this request
-        # goes away or runs out of time, nor turns the computation's own
-        # TimeoutError -- a database timeout -- into "still running".
-        done, _ = await asyncio.wait({task}, timeout=self.first_wait_seconds)
-        if done:
+    async def _wait_for_first(
+        self,
+        key: Hashable,
+        state: _State[T],
+        load: Callable[[], Awaitable[T]],
+        current: int | None,
+    ) -> None:
+        """Wait, up to ``first_wait_seconds`` in all, for a result as new as *current*.
+
+        The computation waited for may have begun before a delete this request
+        has seen, and reach memory after it: such a result is dropped and one
+        more is computed, within the same time limit.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.first_wait_seconds
+        for _ in range(_MAX_ATTEMPTS):
+            task = self._start(key, state, load)
+            # asyncio.wait neither cancels the shared computation when this
+            # request goes away or runs out of time, nor turns the
+            # computation's own TimeoutError -- a database timeout -- into
+            # "still running".
+            done, _ = await asyncio.wait({task}, timeout=max(0.0, deadline - loop.time()))
+            if not done:
+                return
             task.result()
+            if not self._drop_if_superseded(state, current):
+                return
 
     def _start(
         self, key: Hashable, state: _State[T], load: Callable[[], Awaitable[T]]
@@ -223,8 +258,10 @@ class RefreshingResult(Generic[T]):
                 value = await load()
                 computed_at = datetime.now(timezone.utc)
                 if await self._publish(key, value, computed_at, generation):
-                    state.value, state.generation = value, generation
-                    state.computed_at = computed_at.timestamp()
+                    # Never over a result a later generation already produced.
+                    if state.value is None or generation >= state.generation:
+                        state.value, state.generation = value, generation
+                        state.computed_at = computed_at.timestamp()
                     state.error = None
                     logger.info(
                         f"{self.name}: computed in {int((time.monotonic() - started) * 1000)} ms"
@@ -250,6 +287,11 @@ class RefreshingResult(Generic[T]):
             logger.warning(f"{self.name}: could not store the result: {exc!r}")
         # Not stored, but still the caller's to keep while no delete intervened.
         return await self.store.generation(key) == generation
+
+
+def _describe(error: Exception) -> str:
+    """A failure as the console shows it; never empty, as a bare TimeoutError() is."""
+    return str(error) or type(error).__name__
 
 
 def _retrieve(task: asyncio.Task) -> None:
