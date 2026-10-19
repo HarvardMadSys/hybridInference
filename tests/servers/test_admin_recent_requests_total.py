@@ -25,7 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
-from serving.servers.routers.admin import metrics
+from serving.servers.routers.admin import metrics, request_volume
 
 
 def _row(index: int) -> dict[str, Any]:
@@ -227,11 +227,12 @@ async def test_clearing_errors_forgets_cached_totals_and_stored_hours():
         assert (await client.get("/admin/recent-requests")).status_code == 200
         assert len(db.counts) == 2
 
-    # The volume cards' stored hours under the delete are dropped too, under the
-    # rollup's lock so no fill can write back what it read before the delete.
-    invalidations = [args for query, args in db.executed if "DELETE FROM request_volume" in query]
-    assert invalidations == [(3,)]
-    assert any("pg_advisory_xact_lock" in query for query, _ in db.executed)
+    # The volume cards' stored hours under the delete are dropped by the delete
+    # itself, in its transaction, so the two commit or fail together.
+    log_store.delete_recent_error_requests.assert_awaited_once_with(
+        hours=3, on_deleted=request_volume.invalidate_hours
+    )
+    assert not [query for query, _ in db.executed if "request_volume" in query]
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -40,7 +41,6 @@ from tests.fixtures import postgres
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    import asyncpg
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -347,6 +347,63 @@ async def test_clear_errors_drops_the_stored_hours_it_reached(
     assert resp.json()["deleted_count"] > 0
 
     # What the cards show now is what is left in api_logs.
+    await _compare_with_per_card_queries(client, pool)
+
+
+# The rows "Clear errors" deletes, for knowing which hours it reaches.
+_CLEARED_HOURS_SQL = """
+SELECT DISTINCT to_timestamp(floor(extract(epoch FROM timestamp) / 3600) * 3600) AS hour
+FROM api_logs
+WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+  AND (error IS NOT NULL OR status_code IS NULL OR status_code < 200 OR status_code >= 400)
+"""
+
+
+async def _stored_hours(pool: asyncpg.Pool) -> set[datetime]:
+    async with pool.acquire() as conn:
+        return {
+            r["hour_bucket"]
+            for r in await conn.fetch("SELECT hour_bucket FROM request_volume_hourly")
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_failed_invalidation_rolls_the_clear_back(client: AsyncClient, pool: asyncpg.Pool):
+    """The delete and the invalidation commit together or not at all.
+
+    Were they separate, the delete could commit and the invalidation fail: the
+    hour would stay stored with the deleted rows counted in it, a stored hour is
+    never counted again, and a second clear would delete nothing and so
+    invalidate nothing.
+    """
+    now_minute = await _db_minute(pool)
+    stamps = [now_minute - timedelta(minutes=17 * i + 3) for i in range(18)]
+    await _seed(pool, stamps)
+    assert (await client.get("/admin/request-metrics")).status_code == 200
+    stored = await _stored_hours(pool)
+    async with pool.acquire() as conn:
+        cleared = {r["hour"] for r in await conn.fetch(_CLEARED_HOURS_SQL, 4)}
+    assert stored & cleared, "the clear must reach a stored hour"
+    assert stored - cleared, "and leave one alone"
+
+    store = PostgresLogStore(pool, fence_secret="test-fence-secret")
+
+    async def fail(conn: asyncpg.Connection, hours: list[datetime]) -> None:
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await store.delete_recent_error_requests(hours=4, on_deleted=fail)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM api_logs") == len(stamps)
+    assert await _stored_hours(pool) == stored
+    await _compare_with_per_card_queries(client, pool)
+
+    # Retried, the clear drops exactly the stored hours its rows were in.
+    deleted = await store.delete_recent_error_requests(
+        hours=4, on_deleted=request_volume.invalidate_hours
+    )
+    assert deleted > 0
+    assert await _stored_hours(pool) == stored - cleared
     await _compare_with_per_card_queries(client, pool)
 
 

@@ -1732,7 +1732,6 @@ async def admin_clear_error_requests(
     _admin_id: str = Depends(verify_admin_access),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
-    db_logger=Depends(get_db_logger),
 ) -> AdminClearErrorRequestsResponse:
     """Hard-delete error requests logged within the last *hours* hours.
 
@@ -1742,10 +1741,11 @@ async def admin_clear_error_requests(
     under a different outcome would silently change what this button deletes.
     Defaults to the past hour. The action is recorded in the admin audit log.
 
-    The Request volume cards' stored hours that the delete reached are dropped,
-    to be counted again from what is left, as are the list's cached totals. The
-    Users table's stored days are dropped by the delete itself, in its
-    transaction.
+    The Request volume cards' stored hours and the Users table's stored days
+    that the deleted rows were in are dropped in the delete's own transaction,
+    to be counted again from what is left: if dropping them fails, nothing is
+    deleted and the request fails, for the admin to retry. The list's cached
+    totals are dropped too.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1753,7 +1753,9 @@ async def admin_clear_error_requests(
         raise HTTPException(500, "Database not configured")
 
     hours = max(1, min(hours, 24))
-    deleted_count = await log_store.delete_recent_error_requests(hours=hours)
+    deleted_count = await log_store.delete_recent_error_requests(
+        hours=hours, on_deleted=request_volume.invalidate_hours
+    )
 
     if op_store is not None:
         await log_admin_action(
@@ -1765,13 +1767,6 @@ async def admin_clear_error_requests(
         )
 
     _RECENT_REQUESTS_COUNT_CACHE.clear()
-    if deleted_count and db_logger is not None and db_logger.pool is not None:
-        try:
-            await request_volume.invalidate_recent(db_logger.pool, hours)
-        except Exception:
-            # The rows are gone and the action is audited; failing the request
-            # now would only tell the admin the delete did not happen.
-            logger.exception("request volume: could not invalidate cleared hours")
 
     return AdminClearErrorRequestsResponse(
         deleted_count=deleted_count,

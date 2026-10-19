@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -1856,13 +1856,23 @@ class LogStore(ABC):
     # -- admin: bulk delete --------------------------------------------------
 
     @abstractmethod
-    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+    async def delete_recent_error_requests(
+        self,
+        *,
+        hours: int = 1,
+        on_deleted: Callable[[Any, list[datetime]], Awaitable[None]] | None = None,
+    ) -> int:
         """Hard-delete error requests logged within the last *hours* hours.
 
         An "error" row matches the same predicate the admin Recent Requests
         ``outcome=errors`` filter uses: ``error IS NOT NULL`` OR a status code
         that is missing or outside the 2xx/3xx success range — which includes
         client disconnects (status 499). Returns the number of deleted rows.
+
+        *on_deleted*, when rows were deleted, is awaited inside the delete's
+        transaction with its connection and the UTC hour starts the rows were
+        stamped in, for rollups of those hours to drop them. If it raises, the
+        delete rolls back with it.
         """
 
     # -- admin: hard-delete user-owned rows ---------------------------------
