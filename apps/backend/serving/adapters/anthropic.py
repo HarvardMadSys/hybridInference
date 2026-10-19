@@ -257,6 +257,11 @@ class AnthropicAdapter(BaseAdapter):
             if k in validated:
                 payload[k] = validated[k]
 
+        # top_k is never emitted by validate_params -- read the raw params, as
+        # chat_completion does.
+        if "top_k" in params and "top_k" in self.config.supported_params:
+            payload["top_k"] = params["top_k"]
+
         if "stop" in validated:
             payload["stop_sequences"] = validated["stop"]
 
