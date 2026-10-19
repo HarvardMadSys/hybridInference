@@ -25,6 +25,7 @@ from serving.servers.routers import responses
 from serving.stream import done_sentinel, make_final_usage_chunk
 
 RESPONSES_TEST_API_KEY = "hyi-responses-test"
+OTHER_USER_API_KEY = "hyi-responses-other"
 TEXT_MODEL = "glm-4.7"
 TOOL_MODEL = "tool-model"
 
@@ -203,6 +204,8 @@ async def responses_app(responses_store, mock_db_logger, mock_operational_store,
             token = authorization[len("Bearer ") :]
         elif x_api_key:
             token = x_api_key
+        if token == OTHER_USER_API_KEY:
+            return {"authenticated": True, "user_id": "other-user", "role": "internal"}
         if token != RESPONSES_TEST_API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
         return {"authenticated": True, "user_id": "test-user", "role": "internal"}
@@ -650,3 +653,295 @@ async def test_codex_client_metadata_survives_the_translation(responses_client, 
     assert kwargs["metadata"]["session_id"] == "codex-body-2"
     assert kwargs["metadata"]["session_id_source"] == "client_metadata.session_id"
     assert TextAdapter.last_params["session_id"] == "codex-body-2"
+
+
+# --- one user's stored responses are not another's ---------------------------
+
+
+async def _stored_by_test_user(client) -> str:
+    r = await client.post(
+        "/v1/responses", json={"model": TEXT_MODEL, "input": "my secret"}, headers=_auth()
+    )
+    assert r.status_code == 200
+    return r.json()["id"]
+
+
+def _other() -> dict[str, str]:
+    return {"x-api-key": OTHER_USER_API_KEY}
+
+
+@pytest.mark.asyncio
+async def test_another_user_cannot_read_a_stored_response(responses_client):
+    resp_id = await _stored_by_test_user(responses_client)
+
+    g = await responses_client.get(f"/v1/responses/{resp_id}", headers=_other())
+
+    assert g.status_code == 404
+    assert "my secret" not in g.text
+
+
+@pytest.mark.asyncio
+async def test_another_user_cannot_delete_a_stored_response(responses_client, responses_store):
+    resp_id = await _stored_by_test_user(responses_client)
+
+    d = await responses_client.delete(f"/v1/responses/{resp_id}", headers=_other())
+
+    assert d.status_code == 404
+    assert resp_id in responses_store.data
+
+
+@pytest.mark.asyncio
+async def test_another_user_cannot_continue_a_stored_conversation(responses_client):
+    resp_id = await _stored_by_test_user(responses_client)
+    TextAdapter.last_messages = []
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "what did I say?", "previous_response_id": resp_id},
+        headers=_other(),
+    )
+
+    assert r.status_code == 404
+    assert TextAdapter.last_messages == []  # nothing reached a provider
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_response_is_a_404(responses_client):
+    d = await responses_client.delete("/v1/responses/resp_missing", headers=_auth())
+
+    assert d.status_code == 404
+
+
+# --- without a response store ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_without_a_store_a_response_is_served_but_not_kept(responses_app, responses_client):
+    responses_app.state.services.responses_store = None
+
+    r = await responses_client.post(
+        "/v1/responses", json={"model": TEXT_MODEL, "input": "hi"}, headers=_auth()
+    )
+    assert r.status_code == 200
+    assert r.json()["store"] is False
+    resp_id = r.json()["id"]
+
+    assert (
+        await responses_client.get(f"/v1/responses/{resp_id}", headers=_auth())
+    ).status_code == 404
+    d = await responses_client.delete(f"/v1/responses/{resp_id}", headers=_auth())
+    assert d.status_code == 404
+    chained = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "again", "previous_response_id": resp_id},
+        headers=_auth(),
+    )
+    assert chained.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_store_failure_does_not_fail_the_request(responses_client, responses_store, caplog):
+    async def broken_save(**kwargs):
+        raise RuntimeError("database down")
+
+    responses_store.save = broken_save
+
+    r = await responses_client.post(
+        "/v1/responses", json={"model": TEXT_MODEL, "input": "hi"}, headers=_auth()
+    )
+
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["text"] == "Hello there"
+    assert any("Failed to persist response" in rec.getMessage() for rec in caplog.records)
+
+
+# --- malformed requests -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "detail"),
+    [
+        (b"{not json", "Invalid JSON in request body"),
+        (b'["a", "list"]', "Request body must be a JSON object"),
+        (json.dumps({"model": TEXT_MODEL}).encode(), "Missing required parameter: 'input'"),
+    ],
+    ids=["not-json", "not-an-object", "no-input"],
+)
+async def test_a_malformed_request_is_a_400(responses_client, content, detail):
+    r = await responses_client.post(
+        "/v1/responses",
+        content=content,
+        headers={**_auth(), "content-type": "application/json"},
+    )
+
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == detail
+
+
+@pytest.mark.asyncio
+async def test_a_non_dict_chat_result_is_a_502(responses_client, monkeypatch, responses_store):
+    async def odd_delegate(*args, **kwargs):
+        return "not a completion"
+
+    monkeypatch.setattr(responses, "chat_completions", odd_delegate)
+
+    r = await responses_client.post(
+        "/v1/responses", json={"model": TEXT_MODEL, "input": "hi"}, headers=_auth()
+    )
+
+    assert r.status_code == 502
+    assert responses_store.data == {}
+
+
+# --- a stream the client walks away from ----------------------------------------------
+
+
+def _chunk(content: str | None = None, finish: str | None = None) -> bytes:
+    delta = {"content": content} if content is not None else {}
+    payload = {
+        "id": "c",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": TEXT_MODEL,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+    return f"data: {json.dumps(payload)}\n\n".encode()
+
+
+async def _open_stream(monkeypatch, store, chunks: list[bytes], *, keep: bool = True):
+    """Run the streaming path over a delegate that yields ``chunks`` then hangs."""
+    import asyncio
+
+    async def upstream():
+        for chunk in chunks:
+            yield chunk
+        await asyncio.Event().wait()  # the client leaves before the upstream finishes
+
+    async def delegate(*args, **kwargs):
+        return type("Delegate", (), {"body_iterator": upstream()})()
+
+    monkeypatch.setattr(responses, "chat_completions", delegate)
+    streaming = await responses._stream_response(
+        request=None,
+        http_response=None,
+        authorization=None,
+        user_ctx={},
+        router_exec=None,
+        log_store=None,
+        model_router_registry=None,
+        model_visibility_resolver=None,
+        completions_logger=None,
+        pricing_lookup=None,
+        cost_tracker=None,
+        response_store=store,
+        body={"model": TEXT_MODEL, "input": "hi", "stream": True},
+        model=TEXT_MODEL,
+        response_id="resp_walked_away",
+        created_at=1,
+        previous_response_id=None,
+        store=keep,
+        convo_messages=[{"role": "user", "content": "hi"}],
+        user_id="test-user",
+    )
+    return streaming.body_iterator
+
+
+async def _drain_background() -> None:
+    import asyncio
+
+    await asyncio.gather(*list(responses._background_tasks))
+
+
+async def _read_until(events, marker: str) -> str:
+    seen = ""
+    while marker not in seen:
+        seen += (await events.__anext__()).decode()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_client_leaves_is_kept_as_interrupted(monkeypatch, responses_store):
+    """The partial turn stays chainable, but never as a normal completion."""
+    events = await _open_stream(monkeypatch, responses_store, [_chunk("Hel"), _chunk("lo")])
+
+    await _read_until(events, '"lo"')
+    await events.aclose()
+    await _drain_background()
+
+    row = responses_store.data["resp_walked_away"]
+    assert row["response"]["status"] == "incomplete"
+    assert row["response"]["incomplete_details"] == {"reason": "interrupted"}
+    assert row["user_id"] == "test-user"
+    assert row["messages"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_stream_left_with_store_false_keeps_nothing(monkeypatch, responses_store):
+    events = await _open_stream(monkeypatch, responses_store, [_chunk("Hel")], keep=False)
+
+    await _read_until(events, '"Hel"')
+    await events.aclose()
+    await _drain_background()
+
+    assert responses_store.data == {}
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_upstream_failed_keeps_nothing(monkeypatch, responses_store):
+    """An upstream error mid-stream is a failed turn, whether or not the client stays."""
+    error = b'data: {"error": {"code": "overloaded", "message": "try later"}}\n\n'
+    # The keepalive after the error tells the test the error has been read.
+    events = await _open_stream(monkeypatch, responses_store, [_chunk("Hel"), error, b": ping\n\n"])
+
+    await _read_until(events, "keepalive")
+    await events.aclose()
+    await _drain_background()
+
+    assert responses_store.data == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_stream_ends_with_response_failed_and_keeps_nothing(
+    monkeypatch, responses_store
+):
+    async def upstream():
+        yield _chunk("Hel")
+        yield b'data: {"error": {"code": "overloaded", "message": "try later"}}\n\n'
+
+    async def delegate(*args, **kwargs):
+        return type("Delegate", (), {"body_iterator": upstream()})()
+
+    monkeypatch.setattr(responses, "chat_completions", delegate)
+    streaming = await responses._stream_response(
+        request=None,
+        http_response=None,
+        authorization=None,
+        user_ctx={},
+        router_exec=None,
+        log_store=None,
+        model_router_registry=None,
+        model_visibility_resolver=None,
+        completions_logger=None,
+        pricing_lookup=None,
+        cost_tracker=None,
+        response_store=responses_store,
+        body={"model": TEXT_MODEL, "input": "hi", "stream": True},
+        model=TEXT_MODEL,
+        response_id="resp_failed",
+        created_at=1,
+        previous_response_id=None,
+        store=True,
+        convo_messages=[{"role": "user", "content": "hi"}],
+        user_id="test-user",
+    )
+
+    text = "".join([event.decode() async for event in streaming.body_iterator])
+
+    assert "event: response.failed" in text
+    assert '"code": "overloaded"' in text or '"code":"overloaded"' in text
+    assert "response.completed" not in text
+    assert responses_store.data == {}
