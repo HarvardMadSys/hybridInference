@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,11 +14,35 @@ from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
+from serving.exceptions import scrub_error_for_user
 from serving.pricing import require_route_pricing
 from serving.servers.deps import get_router, require_role
+from serving.servers.routers.completions_stream import _extract_exception_status_code
 from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
+from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal/playground", tags=["Playground"])
+
+# How the stream stays answerable, as on the public surfaces
+# (``completions_stream``, ``anthropic_messages``). The console reaches this
+# route through the Next.js rewrite proxy, which drops an upstream that sends no
+# byte for 30s (its default ``proxyTimeout``) and, once a response has started,
+# never passes an upstream disconnect on to the browser. A quiet prefill, or any
+# failure -- the router raises once a stream has started, including "all
+# providers failed" after the role chunk -- therefore left the page
+# "generating" until the user pressed Stop. So: a comment line every
+# ``_KEEPALIVE_INTERVAL`` keeps the proxy reading, a failure ends the stream
+# with an in-band error frame instead of a dropped connection, and
+# ``_MAX_IDLE_S`` bounds how long a silent upstream is waited on -- the
+# heartbeat would otherwise keep a stalled request "generating" until the
+# hour-long stream cap. 300s is the first-frame ceiling of the Anthropic surface,
+# whose comment explains why a long prefill needs that much.
+_KEEPALIVE_INTERVAL = 15
+_MAX_IDLE_S = 300
+_STREAM_END: Any = object()
 
 # The router's internal `_routing` blob never reaches the client verbatim: it
 # carries the raw upstream base_url, which on this deployment can be a LAN
@@ -256,6 +282,12 @@ def _sanitize_chunk(chunk: str, completion_id: str) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+def _error_frame(message: str, code: int) -> str:
+    """Return the in-band error frame that ends a failed stream."""
+    error = {"message": message, "type": "server_error", "code": code}
+    return f"data: {json.dumps({'error': error})}\n\n"
+
+
 @router.post("/chat")
 async def playground_chat(
     body: PlaygroundChatRequest,
@@ -280,17 +312,69 @@ async def playground_chat(
             "temperature": body.temperature,
             "max_tokens": body.max_tokens,
         }
-        async for chunk in router_exec.stream_chat_completion(
-            body.model,
-            effective_messages,
-            routing_options=RoutingRequestOptions(pin_provider=body.provider),
-            **kwargs,
-        ):
-            # Deliberately unguarded: `suppress` here would fail *open* —
-            # a raise inside the redactor would leave `chunk` at its original
-            # value and hand the raw `_routing` blob, base_url and all, to the
-            # browser. `_sanitize_chunk` is total instead.
-            yield _sanitize_chunk(chunk, completion_id)
+        # A reader task drains the router into a queue, so a heartbeat can go
+        # out while it waits without cancelling the upstream read.
+        chunks: asyncio.Queue = asyncio.Queue()
+
+        async def _read() -> None:
+            try:
+                async for chunk in router_exec.stream_chat_completion(
+                    body.model,
+                    effective_messages,
+                    routing_options=RoutingRequestOptions(pin_provider=body.provider),
+                    **kwargs,
+                ):
+                    await chunks.put(chunk)
+            except Exception as exc:
+                await chunks.put(exc)
+            finally:
+                await chunks.put(_STREAM_END)
+
+        reader = asyncio.create_task(_read())
+        idle_s = 0
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(chunks.get(), timeout=_KEEPALIVE_INTERVAL)
+                except asyncio.TimeoutError:
+                    idle_s += _KEEPALIVE_INTERVAL
+                    if idle_s >= _MAX_IDLE_S:
+                        logger.warning(
+                            f"Playground stream idle for {idle_s}s, giving up: model={body.model}"
+                        )
+                        yield _error_frame(
+                            f"The model sent nothing for {_MAX_IDLE_S}s, so the request "
+                            "was stopped.",
+                            504,
+                        )
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                if item is _STREAM_END:
+                    return
+                if isinstance(item, Exception):
+                    # exc_info: the frame carries only the scrubbed message.
+                    logger.error(
+                        f"Playground stream failed: model={body.model}",
+                        exc_info=item,
+                        extra={"event": "playground_stream_failed", "model": body.model},
+                    )
+                    code = _extract_exception_status_code(item)
+                    request_id = req_ctx.get().get("request_id")
+                    yield _error_frame(scrub_error_for_user(item, request_id, code), code)
+                    return
+                idle_s = 0
+                # Deliberately unguarded: `suppress` here would fail *open* —
+                # a raise inside the redactor would leave `chunk` at its original
+                # value and hand the raw `_routing` blob, base_url and all, to the
+                # browser. `_sanitize_chunk` is total instead.
+                yield _sanitize_chunk(item, completion_id)
+        finally:
+            # Also the client-disconnect path: cancelling the reader closes the
+            # router's generator, which releases its lease and probe claims.
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
 
     return StreamingResponse(
         _generate(),
