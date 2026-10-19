@@ -487,7 +487,7 @@ async def test_a_refresh_sees_a_flag_set_on_a_reset_row(config_env, monkeypatch)
     await app_config.delete(_PLAIN_NAME, updated_by="admin")
     assert _entries()[_PLAIN_NAME]["secret"] is False
 
-    await store.mark_secret([_PLAIN_NAME], owner="custom")
+    await store.mark_secret([_PLAIN_NAME])
     await app_config.refresh()
 
     assert _entries()[_PLAIN_NAME]["secret"] is True

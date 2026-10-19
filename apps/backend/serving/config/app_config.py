@@ -41,13 +41,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from serving.config import app_config_registry as registry
-from serving.config.app_config_store import (
-    RESET_SOURCE,
-    AppConfigStore,
-    ConfigOwnershipError,
-    ConfigRow,
-    connect,
-)
+from serving.config.app_config_store import RESET_SOURCE, AppConfigStore, ConfigRow, connect
 from serving.config.settings import (
     CONNECTION_FIELDS,
     DatabaseSettings,
@@ -145,8 +139,6 @@ class _State:
     effective: dict[str, ConfigRow] = field(default_factory=dict)
     #: Settings whose changes apply without a restart.
     live_keys: frozenset[str] = frozenset()
-    #: Unclassified or unavailable owner rows, including reset markers.
-    blocked_keys: frozenset[str] = frozenset()
     entries: dict[str, ConfigEntry] = field(default_factory=dict)
     discovered: dict[str, DiscoveredReference] = field(default_factory=dict)
     #: Stored values that could not be applied, with the reason.
@@ -179,8 +171,6 @@ def config_value(key: str, default: str | None = None) -> str | None:
     before the database loads. Invalid environment values never reach a delivery
     adapter; startup reports them unless a valid database row takes precedence.
     """
-    if key in _STATE.blocked_keys:
-        return default
     row = _STATE.effective.get(key)
     if row is not None:
         return row.value
@@ -320,8 +310,6 @@ def _resolve(rows: Mapping[str, ConfigRow], key: str, entry: ConfigEntry | None)
     """Resolve *key* against *rows*, then the environment, then the default."""
     row = rows.get(key)
     if row is not None:
-        if not registry.owner_is_active(key, row.owner):
-            return None
         return row.value
     value = _environ_value(key, entry)
     if value is not None:
@@ -347,8 +335,6 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
     value that breaks a rule with a stored value, which wins. (One not valid on
     its own is reported as it is: the gateway does not start on it.)
     """
-    if key in _STATE.blocked_keys:
-        return None, "default"
     row = _STATE.rows.get(key)
     if row is not None and _refusal(key, entry) is None:
         return row.value, "database"
@@ -821,7 +807,6 @@ def _build_entries(
         {key: row.secret for key, row in rows.items()},
         os.environ,
         {key: row.secret for key, row in (resets or {}).items()},
-        owners={key: row.owner for key, row in {**(resets or {}), **rows}.items()},
     )
 
 
@@ -856,11 +841,6 @@ def _apply(
     state.rows = rows
     state.resets = dict(resets or {})
     state.entries = _build_entries(rows, state.resets)
-    state.blocked_keys = frozenset(
-        key
-        for key, row in {**state.resets, **rows}.items()
-        if not registry.owner_is_active(key, row.owner)
-    )
     state.live_keys = frozenset(
         key
         for key, entry in state.entries.items()
@@ -874,13 +854,7 @@ def _apply(
     # bound existed, a hand-edited row) is reported and left out, so the
     # environment or the default applies as if it had never been stored.
     refused = {key: problem for key, row in rows.items() if (problem := _row_problem(key, row))}
-    state.effective = {
-        key: row
-        for key, row in effective.items()
-        if key in state.entries
-        and registry.owner_is_active(key, row.owner)
-        and not _row_problem(key, row)
-    }
+    state.effective = {key: row for key, row in effective.items() if not _row_problem(key, row)}
     try:
         overlay_refused, environment_aside = _overlay_settings(boot=boot, refused=refused)
         state.invalid = {**refused, **overlay_refused}
@@ -918,30 +892,17 @@ async def load(
     """
     _STATE.database_enabled = database_enabled
     _STATE.discovered = _discover()
-    try:
+    await store.ensure_schema()
+    if bootstrap:
         async with store.transaction() as transaction:
-            await _migrate_ownership(transaction)
-            if bootstrap:
-                rows = await transaction.fetch_all()
-                rows = await _import_environment(transaction, rows)
-                await _generate_secrets(transaction, rows)
-                rows, resets = await _record_secrets(transaction)
-            else:
-                rows, resets = await _record_secrets(transaction)
-    except ConfigOwnershipError as exc:
-        raise ConfigBootstrapError(str(exc)) from exc
+            rows = await transaction.fetch_all()
+            rows = await _import_environment(transaction, rows)
+            await _generate_secrets(transaction, rows)
+            rows, resets = await _record_secrets(transaction)
+    else:
+        rows, resets = await _read(store)
     _STATE.loaded = True
     _apply(rows, boot=True, resets=resets)
-
-
-async def _migrate_ownership(transaction: AppConfigStore) -> None:
-    """Prepare schema and claims while the caller holds the configuration write lock."""
-    await transaction.ensure_schema()
-    await transaction.apply_migrations(
-        registry.ownership_migrations(),
-        core_keys=tuple(entry.key for entry in registry.static_entries() if entry.owner == "core"),
-        updated_by="config-load",
-    )
 
 
 async def _import_environment(
@@ -968,8 +929,7 @@ async def _import_environment(
       Stored, it could never be taken back; left in the environment, removing
       the variable does.
     """
-    _, resets = await _read(store)
-    entries = _build_entries(rows, resets)
+    entries = _build_entries(rows)
     unusable = {registry.settings_env_name(name) for name in invalid_environment()}
     # Neither side of a rule the configuration in force breaks: startup refuses
     # it, which side is wrong is the operator's call, and a stored side would
@@ -979,13 +939,7 @@ async def _import_environment(
     imports = []
     for key, entry in entries.items():
         value = _environ_value(key, entry)
-        if (
-            entry.origin == "custom"
-            or key in rows
-            or key in resets
-            or key in unusable
-            or not (value or "").strip()
-        ):
+        if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
         if registry.extension_entry(key) is not None or key in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
             problem = _value_problem(entry, value)
@@ -1014,14 +968,7 @@ async def _import_environment(
             )
             continue
         imports.append(
-            ConfigRow(
-                key,
-                value,
-                secret=entry.secret,
-                source="env_import",
-                updated_by="env-import",
-                owner=entry.owner,
-            )
+            ConfigRow(key, value, secret=entry.secret, source="env_import", updated_by="env-import")
         )
     imported = await store.insert_missing(imports)
     if not imported:
@@ -1047,8 +994,7 @@ async def _generate_secrets(
         ConfigBootstrapError: ``API_KEY_SECRET`` would have to be generated
             although API keys hashed with an earlier secret exist.
     """
-    _, resets = await _read(store)
-    entries = _build_entries(rows, resets)
+    entries = _build_entries(rows)
     generated: list[ConfigRow] = []
     for key, entry in entries.items():
         if not entry.generated or key in rows or (_environ_value(key, entry) or "").strip():
@@ -1067,7 +1013,6 @@ async def _generate_secrets(
                 secrets.token_urlsafe(_GENERATED_SECRET_BYTES),
                 secret=True,
                 source="generated",
-                owner=entry.owner,
             )
         )
     if not generated:
@@ -1096,17 +1041,9 @@ async def _record_secrets(
         for key, stored in {**resets, **rows}.items()
         if not stored.secret and (entry := entries.get(key)) is not None and entry.secret
     )
-    marked = []
-    for owner in sorted({entries[key].owner for key in unmarked}):
-        marked.extend(
-            await store.mark_secret(
-                [key for key in unmarked if entries[key].owner == owner],
-                owner=owner,
-            )
-        )
-    if not marked:
+    if not unmarked or not await store.mark_secret(unmarked):
         return rows, resets
-    logger.info("Marked %s secret in the database", ", ".join(marked))
+    logger.info("Marked %s secret in the database", ", ".join(unmarked))
     return await _read(store)
 
 
@@ -1227,13 +1164,10 @@ async def refresh() -> None:
     store = _STATE.store
     if store is None:
         return
-    generation = _STATE.generation
     if not _STATE.loaded:
-        async with store.transaction() as transaction:
-            await _migrate_ownership(transaction)
-            rows, resets = await _record_secrets(transaction)
-    else:
-        rows, resets = await _read(store)
+        await store.ensure_schema()
+    generation = _STATE.generation
+    rows, resets = await _read(store)
     if generation != _STATE.generation:
         return  # A newer read was applied while this one ran.
     if not _STATE.loaded or rows != _STATE.rows or resets != _STATE.resets:
@@ -1329,9 +1263,6 @@ def reset_state() -> None:
 def _entry_for(
     key: str, rows: Mapping[str, ConfigRow], resets: Mapping[str, ConfigRow] | None = None
 ) -> ConfigEntry | None:
-    stored = rows.get(key) or (resets or {}).get(key)
-    if stored is not None and not registry.owner_is_active(key, stored.owner):
-        return None
     entry = _build_entries(rows, resets).get(key)
     return entry if entry is not None else registry.numbered_key_entry(key)
 
@@ -1353,12 +1284,6 @@ def _writable_entry(
         )
     if registry.is_runtime_setting_name(key):
         raise ConfigUpdateError(400, f"{key}: change it on the Settings tab.")
-    stored = rows.get(key) or resets.get(key)
-    if stored is not None and not registry.owner_is_active(key, stored.owner):
-        raise ConfigUpdateError(
-            409,
-            f"{key}: configuration ownership is unavailable; use the owning extension or explicitly adopt an unclassified row.",
-        )
     entry = _entry_for(key, rows, resets)
     if entry is not None:
         return entry
@@ -1585,10 +1510,7 @@ async def _writable_store() -> AppConfigStore:
             503, "Configuration storage is unavailable: the database is not connected."
         )
     if not _STATE.loaded:
-        try:
-            await refresh()
-        except ConfigOwnershipError as exc:
-            raise ConfigUpdateError(409, str(exc)) from exc
+        await store.ensure_schema()
     return store
 
 
@@ -1643,14 +1565,7 @@ async def update(
             marked = key in marking and not entry.secret and entry.origin != "static"
             secret = entry.secret or marked
             pending.append(
-                ConfigRow(
-                    key,
-                    raw,
-                    secret=secret,
-                    source="admin",
-                    updated_by=updated_by,
-                    owner=entry.owner,
-                )
+                ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
             )
             changes.append(
                 ConfigChange(
@@ -1686,7 +1601,7 @@ async def update(
         if pending:
             await transaction.write(pending)
         if flagged:
-            await transaction.mark_secret(flagged, owner="custom")
+            await transaction.mark_secret(flagged)
     await _reload(store)
     return changes
 
@@ -1734,51 +1649,12 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
             new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
         )
         if entry.origin == "custom":
-            await transaction.delete(key, owner=entry.owner)
+            await transaction.delete(key)
         else:
-            await transaction.reset(key, secret=secret, updated_by=updated_by, owner=entry.owner)
+            await transaction.reset(key, secret=secret, updated_by=updated_by)
     await _reload(store)
     logger.info("Configuration %s reset by %s", key, updated_by)
     return change
-
-
-def ownership() -> list[dict[str, Any]]:
-    """Return stored ownership metadata for recovery, never values or defaults."""
-    return [
-        {"key": key, "owner": row.owner, "secret": row.secret, "source": row.source}
-        for key, row in sorted({**_STATE.resets, **_STATE.rows}.items())
-    ]
-
-
-async def adopt_custom(key: str, *, secret: bool = False, updated_by: str) -> None:
-    """Explicit recovery action for one unclassified historical custom variable."""
-    if (
-        not registry.CUSTOM_KEY_RE.fullmatch(key)
-        or registry.static_entry(key) is not None
-        or registry.is_environment_only(key)
-        or registry.is_runtime_setting_name(key)
-    ):
-        raise ConfigUpdateError(400, f"{key}: this name cannot be adopted as a custom variable.")
-    store = await _writable_store()
-    try:
-        async with store.transaction() as transaction:
-            rows, resets = await _read(transaction)
-            row = rows.get(key) or resets.get(key)
-            if row is None or row.owner is not None:
-                raise ConfigUpdateError(
-                    409, f"{key}: only an unclassified existing row can be adopted."
-                )
-            reference = _STATE.discovered.get(key)
-            await transaction.adopt_custom(
-                key,
-                secret=secret
-                or registry.is_secret_name(key)
-                or bool(reference and reference.credential),
-                updated_by=updated_by,
-            )
-    except ConfigOwnershipError as exc:
-        raise ConfigUpdateError(409, str(exc)) from exc
-    await _reload(store)
 
 
 def describe() -> dict[str, Any]:

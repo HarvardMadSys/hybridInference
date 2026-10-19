@@ -21,8 +21,6 @@ settings or :data:`UNREGISTERED_SETTINGS_FIELDS`.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -156,8 +154,6 @@ class ConfigEntry:
     flag: bool = False
     #: The key whose value applies while this one is empty.
     fallback_key: str | None = None
-    #: Persistent namespace; ownership is independent of discovery and display origin.
-    owner: str = "core"
 
     def is_required(self, context: RequirementContext) -> bool:
         """Evaluate ``required`` against the effective configuration."""
@@ -1282,71 +1278,13 @@ def _provider_key_vars() -> dict[str, tuple[str, str]]:
 _EXTENSION_ENTRIES: dict[str, ConfigEntry] = {}
 
 
-@dataclass(frozen=True)
-class ConfigOwnershipMigration:
-    """An extension's explicit, immutable claim of historical configuration rows."""
-
-    id: str
-    owner: str
-    keys: tuple[str, ...]
-    secret_keys: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "keys", tuple(sorted(set(self.keys))))
-        object.__setattr__(self, "secret_keys", tuple(sorted(set(self.secret_keys))))
-        if not self.id or not self.owner or not self.keys:
-            raise ValueError("A configuration ownership migration needs an id, owner and keys")
-        if any(not CUSTOM_KEY_RE.fullmatch(key) for key in self.keys):
-            raise ValueError("Invalid configuration ownership migration key")
-        if not set(self.secret_keys).issubset(self.keys):
-            raise ValueError("Migration secret keys must be included in its keys")
-
-    @property
-    def checksum(self) -> str:
-        """Hash the immutable, normalized migration declaration."""
-        payload = json.dumps(
-            [self.id, self.owner, self.keys, self.secret_keys], separators=(",", ":")
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-
-_OWNERSHIP_MIGRATIONS: dict[str, ConfigOwnershipMigration] = {}
-
-
-def _require_extension_owner(owner: str) -> None:
-    if not re.fullmatch(r"extension:[a-zA-Z0-9][a-zA-Z0-9_.-]*", owner):
-        raise ValueError("An extension configuration owner must be extension:<stable-id>")
-
-
-def register_config_ownership_migration(migration: ConfigOwnershipMigration) -> None:
-    """Register a historical claim before loading configuration; never guess from YAML."""
-    _require_extension_owner(migration.owner)
-    if migration.id in _OWNERSHIP_MIGRATIONS:
-        raise ValueError(f"Configuration ownership migration already registered: {migration.id}")
-    for prior in _OWNERSHIP_MIGRATIONS.values():
-        if prior.owner != migration.owner and set(prior.keys).intersection(migration.keys):
-            raise ValueError("Configuration migration keys belong to another owner")
-    for key in migration.keys:
-        entry = static_entry(key)
-        if is_environment_only(key) or is_runtime_setting_name(key):
-            raise ValueError(f"Configuration key is reserved: {key}")
-        if entry is not None and entry.owner != migration.owner:
-            raise ValueError(f"Configuration key belongs to another owner: {key}")
-    _OWNERSHIP_MIGRATIONS[migration.id] = migration
-
-
-def ownership_migrations() -> tuple[ConfigOwnershipMigration, ...]:
-    """Return the historical claims declared by loaded extensions."""
-    return tuple(_OWNERSHIP_MIGRATIONS.values())
-
-
 def invalidate_config_registry() -> None:
     """Refresh cached metadata after startup extension/provider registration."""
     static_entries.cache_clear()
     _static_by_key.cache_clear()
 
 
-def register_config_entries(entries: Iterable[ConfigEntry], *, owner: str) -> None:
+def register_config_entries(entries: Iterable[ConfigEntry]) -> None:
     """Register an extension's own settings before application configuration loads.
 
     Extensions use ``field=None`` and read through ``config_value``. Their
@@ -1354,7 +1292,6 @@ def register_config_entries(entries: Iterable[ConfigEntry], *, owner: str) -> No
     refresh as built-ins. Registration is atomic and cannot replace existing
     entries. Extensions must use existing categories.
     """
-    _require_extension_owner(owner)
     additions: dict[str, ConfigEntry] = {}
     existing = {entry.key for entry in static_entries()}
     for entry in entries:
@@ -1362,18 +1299,13 @@ def register_config_entries(entries: Iterable[ConfigEntry], *, owner: str) -> No
             raise ValueError(f"Invalid extension configuration key: {entry.key!r}")
         if entry.key in existing or entry.key in additions:
             raise ValueError(f"Configuration key already registered: {entry.key}")
-        if any(
-            entry.key in migration.keys and migration.owner != owner
-            for migration in _OWNERSHIP_MIGRATIONS.values()
-        ):
-            raise ValueError(f"Configuration key belongs to another owner: {entry.key}")
         if is_environment_only(entry.key) or is_runtime_setting_name(entry.key):
             raise ValueError(f"Configuration key is reserved: {entry.key}")
         if entry.field is not None or entry.origin != "static":
             raise ValueError("Extension settings must have field=None and origin=static")
         if entry.category not in CATEGORY_IDS or not entry.description.strip():
             raise ValueError(f"Invalid extension configuration metadata: {entry.key}")
-        additions[entry.key] = replace(entry, owner=owner)
+        additions[entry.key] = entry
     _EXTENSION_ENTRIES.update(additions)
     invalidate_config_registry()
 
@@ -1458,7 +1390,6 @@ def numbered_key_entry(key: str) -> ConfigEntry | None:
             secret=True,
             restart_required=True,
             origin="numbered",
-            owner="custom",
         )
     return None
 
@@ -1477,7 +1408,6 @@ def custom_entry(key: str, *, secret: bool = False) -> ConfigEntry:
         secret=secret or is_secret_name(key),
         restart_required=True,
         origin="custom",
-        owner="custom",
     )
 
 
@@ -1695,19 +1625,11 @@ def _discovered_requirement(reference: DiscoveredReference) -> Requirement:
     return requirement
 
 
-def owner_is_active(key: str, owner: str | None) -> bool:
-    """Whether a stored row belongs to the currently registered namespace."""
-    entry = static_entry(key)
-    return owner == (entry.owner if entry is not None else "custom")
-
-
 def build_entries(
     discovered: Mapping[str, DiscoveredReference],
     stored: Mapping[str, bool],
     environ: Mapping[str, str],
     reset: Mapping[str, bool] | None = None,
-    *,
-    owners: Mapping[str, str | None] | None = None,
 ) -> dict[str, ConfigEntry]:
     """Assemble every entry, in the order the console lists them.
 
@@ -1725,18 +1647,10 @@ def build_entries(
     Returns:
         Entries keyed by name: static, then discovered, numbered and custom.
     """
-    # A missing owner is an unclassified historical row, never proof that a
-    # variable is public/custom. Discovery and environment cannot revive it.
-    row_owners = owners or {}
-    blocked = {
-        key for key in (*stored, *(reset or {})) if not owner_is_active(key, row_owners.get(key))
-    }
-    entries: dict[str, ConfigEntry] = {
-        entry.key: entry for entry in static_entries() if entry.key not in blocked
-    }
+    entries: dict[str, ConfigEntry] = {entry.key: entry for entry in static_entries()}
 
     for key, reference in discovered.items():
-        if is_environment_only(key) or is_runtime_setting_name(key) or key in blocked:
+        if is_environment_only(key) or is_runtime_setting_name(key):
             continue
         requirement = _discovered_requirement(reference)
         used_by = tuple(sorted(reference.used_by))
@@ -1764,25 +1678,19 @@ def build_entries(
             required=requirement,
             restart_required=True,
             origin="discovered",
-            owner="custom",
             used_by=used_by,
         )
 
     present = {key for key, value in environ.items() if value} | set(stored)
     for key in sorted(present):
-        if key in entries or key in blocked:
+        if key in entries:
             continue
         numbered = numbered_key_entry(key)
         if numbered is not None:
             entries[key] = numbered
 
     for key in sorted(stored):
-        if (
-            key in entries
-            or is_environment_only(key)
-            or is_runtime_setting_name(key)
-            or key in blocked
-        ):
+        if key in entries or is_environment_only(key) or is_runtime_setting_name(key):
             continue
         entries[key] = custom_entry(key)
 

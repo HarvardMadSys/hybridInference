@@ -15,14 +15,7 @@ For distribution manifests, branding, UI modules and backend extensions, see
 
 A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
 
-Deploy a tested, fixed core and extension combination. Extensions register an
-explicit configuration owner and declare their own historical-data migration;
-the core has no list of retired vendor setting names. Keep existing setting
-names and stored values. Extension-owned rows remain stored but are unavailable
-while their owner is absent, including through same-name environment variables
-or YAML references. Distribution-specific credentials, templates and operational
-instructions stay with that distribution. See
-[Configuration ownership](backend-extensions.md#configuration-ownership).
+When upgrading a deployment that previously used a built-in delivery adapter, package and enable its distribution extension before upgrading the core. Keep existing setting names and stored values; the extension registers them again. On a gateway without that extension, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it. Distribution-specific credentials, templates and operational instructions stay with that distribution.
 
 ## What the gateway reads at startup
 
@@ -443,16 +436,6 @@ already holds API keys, since a new secret would invalidate every one of them.
 
 ### The Configuration tab
 
-Stored settings have an explicit owner: the core, a loaded extension, or a
-custom variable. On upgrading a database without ownership metadata, current
-core settings are assigned to the core and extensions migrate only their own
-declared keys. Unknown old rows are preserved but unavailable until explicitly
-adopted; they are not automatically custom variables. Review them before the
-upgrade and use the recovery CLI described below for genuine custom variables.
-This review includes stored numbered provider credentials such as
-`OPENAI_API_KEY2` and variables discovered only through YAML; discovery alone
-does not establish the owner of a historical row.
-
 The tab groups the settings by category, describes each one and shows where
 its value comes from. Besides every setting the gateway reads itself, it lists:
 
@@ -544,15 +527,6 @@ source checkout instead (`uv run python -m serving.config.manage ...`), where
 `.env` reaches Postgres on `127.0.0.1:5432`. The command that resets an
 administrator's password works the same way; see
 [The first admin account](deployment.md#the-first-admin-account).
-
-For an ownership migration, `ownership` lists stored keys and ownership metadata
-without printing values. After verifying that an unclassified historical key
-belongs to this deployment as a custom variable, use `adopt-custom KEY`
-(`--secret` can only increase its secrecy). This records the adoption and
-preserves its value, reset state and original value metadata. A normal `set`,
-reset or secret-only change cannot take ownership of a quarantined row or a
-different extension's row. Do not adopt extension configuration as custom to
-work around a missing extension; install the matching extension instead.
 
 ### Missing settings
 

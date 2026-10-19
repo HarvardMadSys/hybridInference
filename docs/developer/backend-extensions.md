@@ -34,61 +34,6 @@ live code reloads, and restart the backend when changing the mounted extension.
 See [Deployment-local adapters](provider-adapters.md#deployment-local-adapters)
 for a minimal factory example.
 
-## Configuration ownership
-
-An extension registers settings before database-backed configuration loads:
-
-```python
-from serving.config.app_config_registry import (
-    ConfigEntry,
-    ConfigOwnershipMigration,
-    register_config_entries,
-    register_config_ownership_migration,
-)
-
-OWNER = "extension:example_delivery"
-ENTRIES = (
-    ConfigEntry(
-        key="EXAMPLE_DELIVERY_TOKEN",
-        category="email",
-        description="Credential for the deployment's mail service.",
-        secret=True,
-    ),
-)
-
-def register():
-    register_config_entries(ENTRIES, owner=OWNER)
-    register_config_ownership_migration(
-        ConfigOwnershipMigration(
-            id="example-delivery-config-v1",
-            owner=OWNER,
-            keys=("EXAMPLE_DELIVERY_TOKEN",),
-            secret_keys=("EXAMPLE_DELIVERY_TOKEN",),
-        )
-    )
-```
-
-The owner is a stable deployment-defined identifier. Registration cannot
-override core settings or another owner's setting. Migration names are owned
-by the extension; the core stores their IDs and declaration checksums, not a
-vendor-specific historical key list. A migration assigns only unclassified
-rows, preserves their values and reset metadata, and can make a secret flag
-more restrictive. Repeating the same declaration is safe; changing an existing
-migration declaration or encountering a different owner aborts the transaction.
-Use a new migration ID when adding another group of historical keys.
-
-Rows whose owner is absent, mismatched or still unclassified are excluded from
-configuration reads and ordinary writes. Same-name environment variables and
-YAML references cannot make those stored keys visible again. The recovery CLI
-has an explicit adoption command for genuine historical custom variables;
-extensions must use their own migration declarations instead.
-
-Core and extension versions must be released together. A missing registration
-API is a startup error, not a reason to skip registration. During the first
-ownership migration, stop old workers before starting the new pair: older
-binaries do not enforce ownership. Keeping old values intact is not evidence
-that rolling back to an arbitrary old binary is safe.
-
 ## Cloud Agent access
 
 The gateway keeps its fixed role hierarchy and resolves current account state.
