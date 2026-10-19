@@ -1848,7 +1848,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             where_clauses.append(
                 f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
-                f"    AND l.timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')), 0) "
+                f"    AND l.timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
             filter_params.append(min_cost_today)
@@ -1856,7 +1856,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             where_clauses.append(
                 f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
-                f"    AND l.timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')), 0) "
+                f"    AND l.timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
             filter_params.append(min_cost_month)
@@ -1872,8 +1872,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"    AND kq.quota_daily_cost_usd > 0 "
                 f"    AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
                 f"                  WHERE l.user_id = u.id "
-                f"                    AND l.timestamp >= date_trunc('day', "
-                f"                                                  NOW() AT TIME ZONE 'UTC')"
+                f"                    AND l.timestamp >= (date_trunc('day', "
+                f"                        NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
                 f"                 ), 0) >= {threshold} * kq.quota_daily_cost_usd"
                 f")"
             )
@@ -1986,7 +1986,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
-                    "    AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                    "    AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
                     "  GROUP BY user_id"
                     ")"
                 )
@@ -1999,7 +1999,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
-                    "    AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')"
+                    "    AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
                     "  GROUP BY user_id"
                     ")"
                 )
@@ -2055,7 +2055,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
-                    "  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') "
+                    "  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
                     "GROUP BY user_id",
                     user_ids,
                 )
@@ -2068,7 +2068,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
-                    "  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC') "
+                    "  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
                     "GROUP BY user_id",
                     user_ids,
                 )
