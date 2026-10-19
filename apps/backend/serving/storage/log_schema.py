@@ -529,19 +529,16 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(_REQUEST_VOLUME_HOURLY_DDL)
     for ddl in _USER_USAGE_DAILY_DDL:
         await conn.execute(ddl)
-    usage_columns = {
-        table: await existing_columns(conn, table)
-        for table in ("user_usage_daily", "user_usage_daily_coverage")
-    }
-    for table, column, ddl in _USER_USAGE_DAILY_MIGRATIONS:
-        if column not in usage_columns[table]:
-            await conn.execute(ddl)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path
     # never queues an ACCESS EXCLUSIVE / SHARE lock on this hot table.
     existing_columns_now = await existing_columns(conn, "api_logs")
     existing_indexes = await _existing_indexes(conn)
+    usage_columns = {
+        table: await existing_columns(conn, table)
+        for table in ("user_usage_daily", "user_usage_daily_coverage")
+    }
 
     # Everything below takes a strong lock, so it runs under a bounded wait: if
     # a concurrent reader holds the table, fail fast (SchemaLockUnavailable)
@@ -562,6 +559,11 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         for index_name, index_ddl in _API_LOGS_INDEXES:
             if index_name not in existing_indexes:
                 await _execute_ddl(conn, index_ddl)
+
+        # Small tables, but the nightly pg_dump holds them as long as api_logs.
+        for table, column, ddl in _USER_USAGE_DAILY_MIGRATIONS:
+            if column not in usage_columns[table]:
+                await _execute_ddl(conn, ddl)
 
     # Aggregated hourly stats.
     await conn.execute("""
