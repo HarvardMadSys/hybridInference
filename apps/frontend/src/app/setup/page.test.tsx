@@ -180,8 +180,8 @@ function fillAdmin({
   confirm = password,
 }: AdminInput = {}) {
   type('Setup code', code);
-  type('Username', username);
-  if (displayName) type('Display name', displayName);
+  type('Login name', username);
+  if (displayName) type('Nickname', displayName);
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: password } });
   fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: confirm } });
   fireEvent.click(screen.getByRole('button', { name: 'Create administrator' }));
@@ -269,8 +269,12 @@ describe('step 1: create administrator', () => {
     });
 
     expect(await screen.findByText(/A setup code has 12 letters and digits/)).toBeInTheDocument();
-    expect(screen.getByText(/Use 3–32 letters/)).toBeInTheDocument();
-    expect(screen.getByText('A display name has 2–50 characters.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Use 3–32 lowercase letters, digits, dots, underscores or hyphens, starting with a lowercase letter or digit.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('A nickname has 2–50 characters.')).toBeInTheDocument();
     expect(screen.getByText('Password must be at least 8 characters')).toBeInTheDocument();
     expect(screen.getByText('Passwords do not match.')).toBeInTheDocument();
     expect(createSetupAdmin).not.toHaveBeenCalled();
@@ -280,20 +284,41 @@ describe('step 1: create administrator', () => {
     renderPage();
     await screen.findByLabelText('Setup code');
 
-    fillAdmin({ displayName: 'Ops' });
+    expect(screen.getByLabelText('Nickname', { exact: false })).toHaveAttribute(
+      'autocomplete',
+      'nickname',
+    );
+    fillAdmin({ displayName: '王哲' });
 
     await waitFor(() =>
       expect(createSetupAdmin).toHaveBeenCalledWith({
         setup_code: 'ABCD-EFGH-JKLM',
         login_name: 'admin',
         password: 'Secret123',
-        display_name: 'Ops',
+        display_name: '王哲',
       }),
     );
     await waitFor(() => expect(adoptSession).toHaveBeenCalledWith('new-token'));
     expect(await screen.findByRole('region', { name: 'Email (SMTP)' })).toBeInTheDocument();
     expect(screen.getByRole('listitem', { current: 'step' })).toHaveTextContent('Configure');
   });
+
+  it.each(['Admin', 'aDmin'])(
+    'rejects uppercase setup login name %s before submission',
+    async (username) => {
+      renderPage();
+      await screen.findByLabelText('Setup code');
+
+      fillAdmin({ username, displayName: '王哲' });
+
+      expect(
+        await screen.findByText(
+          'Use 3–32 lowercase letters, digits, dots, underscores or hyphens, starting with a lowercase letter or digit.',
+        ),
+      ).toBeInTheDocument();
+      expect(createSetupAdmin).not.toHaveBeenCalled();
+    },
+  );
 
   it('marks a wrong setup code on its field', async () => {
     vi.mocked(createSetupAdmin).mockRejectedValueOnce(
@@ -348,10 +373,10 @@ describe('step 1: create administrator', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true');
-    const username = screen.getByLabelText('Username', { exact: false });
+    const username = screen.getByLabelText('Login name', { exact: false });
     expect(username).toHaveAttribute('aria-invalid', 'true');
     expect(username).toHaveAccessibleDescription(
-      /Use 3–32 letters, digits, dots, underscores or hyphens, starting with a letter or digit\./,
+      /Use 3–32 lowercase letters, digits, dots, underscores or hyphens, starting with a lowercase letter or digit\./,
     );
     expect(screen.getByLabelText('Setup code')).not.toHaveAttribute('aria-invalid');
     // On the fields, not in a banner that quotes request paths.
@@ -380,7 +405,7 @@ describe('step 1: create administrator', () => {
     fillAdmin({ username: 'root' });
 
     expect(await screen.findByText('This username is reserved')).toBeInTheDocument();
-    expect(screen.getByLabelText('Username', { exact: false })).toHaveAttribute(
+    expect(screen.getByLabelText('Login name', { exact: false })).toHaveAttribute(
       'aria-invalid',
       'true',
     );

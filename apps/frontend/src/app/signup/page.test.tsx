@@ -52,7 +52,7 @@ function fillAccountForm(): void {
   fireEvent.change(screen.getByLabelText('Email'), {
     target: { value: 'admin@local.dev' },
   });
-  fireEvent.change(screen.getByLabelText(/^Username/), {
+  fireEvent.change(screen.getByLabelText(/^Nickname/), {
     target: { value: 'Local Admin' },
   });
   fireEvent.change(screen.getByLabelText(/^Password/), {
@@ -252,7 +252,7 @@ describe('SignupPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
       expect(screen.getByLabelText('Email')).toHaveValue('admin@local.dev');
-      expect(screen.getByLabelText(/^Username/)).toHaveValue('Local Admin');
+      expect(screen.getByLabelText(/^Nickname/)).toHaveValue('Local Admin');
       expect(screen.getByLabelText(/^Password/)).toHaveValue('LocalDemo1');
     });
 
@@ -323,7 +323,7 @@ describe('SignupPage', () => {
         target: { value: '+8613812345678' },
       });
       fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
-      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+      fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Phone User' } });
       fireEvent.click(screen.getByRole('button', { name: 'Sign Up' }));
       expect(await screen.findByText('Pending approval.')).toBeInTheDocument();
       expect(screen.getByRole('heading', { name: 'Registration Submitted' })).toBeInTheDocument();
@@ -361,7 +361,7 @@ describe('SignupPage', () => {
       expect(screen.getByRole('button', { name: 'Send again in 60s' })).toBeDisabled();
       for (const [label, value] of [
         ['Verification code', '123456'],
-        ['Username', 'Phone User'],
+        ['Nickname', 'Phone User'],
         ['How did you find us?', 'A colleague'],
         ['Use case', 'Testing an inference gateway'],
       ]) {
@@ -387,7 +387,7 @@ describe('SignupPage', () => {
         'China +86',
       );
       expect(screen.getByLabelText('Verification code')).toHaveValue('123456');
-      expect(screen.getByLabelText('Username')).toHaveValue('Phone User');
+      expect(screen.getByLabelText('Nickname')).toHaveValue('Phone User');
       expect(screen.getByLabelText('How did you find us?')).toHaveValue('A colleague');
       expect(screen.getByLabelText('Use case')).toHaveValue('Testing an inference gateway');
       expect(screen.getByRole('button', { name: 'Send again in 40s' })).toBeDisabled();

@@ -408,8 +408,8 @@
     "text": "详见"
   },
   "auth.login.email_label": {
-    "source": "Email or username",
-    "text": "邮箱或用户名"
+    "source": "Email or login name",
+    "text": "邮箱或登录名"
   },
   "auth.login.forgot_password": {
     "source": "Forgot password?",
@@ -800,12 +800,12 @@
     "text": "简单说说你打算用这个服务做什么（研究项目、课程、应用原型等）。"
   },
   "auth.signup.username_hint": {
-    "source": "This name is shown in your account and admin review.",
-    "text": "这个名字会显示在你的账户和管理员审核页面上。"
+    "source": "Shown in your account and admin review. This is not a login name.",
+    "text": "用于账户展示和管理员审核，支持中文，不能用于登录。"
   },
   "auth.signup.username_label": {
-    "source": "Username",
-    "text": "用户名"
+    "source": "Nickname",
+    "text": "昵称"
   },
   "auth.validation.combined_max": {
     "source": "Combined use case and discovery response is too long (max 2000 characters)",
@@ -824,12 +824,12 @@
     "text": "邮箱地址过长"
   },
   "auth.validation.identifier_required": {
-    "source": "Please enter your email or username",
-    "text": "请输入邮箱或用户名"
+    "source": "Please enter your email or login name",
+    "text": "请输入邮箱或登录名"
   },
   "auth.validation.login_name_invalid": {
-    "source": "Please enter a valid email address or username",
-    "text": "请输入有效的邮箱地址或用户名"
+    "source": "Please enter a valid email address or login name",
+    "text": "请输入有效的邮箱地址或登录名，昵称不能用于登录"
   },
   "auth.validation.password_lower": {
     "source": "Password must contain at least one lowercase letter",
@@ -868,12 +868,12 @@
     "text": "用途不能超过 2000 个字符"
   },
   "auth.validation.username_max": {
-    "source": "Username cannot exceed 50 characters",
-    "text": "用户名不能超过 50 个字符"
+    "source": "Nickname cannot exceed 50 characters",
+    "text": "昵称不能超过 50 个字符"
   },
   "auth.validation.username_min": {
-    "source": "Username must be at least 2 characters",
-    "text": "用户名至少为 2 个字符"
+    "source": "Nickname must be at least 2 characters",
+    "text": "昵称至少 2 个字符"
   },
   "auth.verify.already_body": {
     "source": "Your email is already verified. You can log in to continue.",
@@ -1248,8 +1248,8 @@
     "text": "用户 ID："
   },
   "dashboard.account.username": {
-    "source": "Username:",
-    "text": "用户名："
+    "source": "Nickname:",
+    "text": "昵称："
   },
   "dashboard.docs_link": {
     "source": "Docs",
@@ -2176,32 +2176,32 @@
     "text": "账户设置"
   },
   "settings.username.description": {
-    "source": "This name is shown on your dashboard and admin request views.",
-    "text": "这个名字会显示在你的控制台，以及管理员查看请求的页面上。"
+    "source": "Shown on your dashboard and admin request views. Changing your nickname does not change how you log in.",
+    "text": "昵称显示在控制台和管理员查看请求的页面上。修改昵称不会改变登录方式。"
   },
   "settings.username.hint": {
     "source": "Use 2-50 characters.",
     "text": "2 到 50 个字符。"
   },
   "settings.username.label": {
-    "source": "Username",
-    "text": "用户名"
+    "source": "Nickname",
+    "text": "昵称"
   },
   "settings.username.submit": {
-    "source": "Update Username",
-    "text": "更新用户名"
+    "source": "Update Nickname",
+    "text": "更新昵称"
   },
   "settings.username.title": {
-    "source": "Change Username",
-    "text": "修改用户名"
+    "source": "Change Nickname",
+    "text": "修改昵称"
   },
   "settings.username.updated": {
-    "source": "Username updated successfully.",
-    "text": "用户名已更新。"
+    "source": "Nickname updated successfully.",
+    "text": "昵称已更新。"
   },
   "settings.username.updated_toast": {
-    "source": "Username updated successfully!",
-    "text": "用户名已更新！"
+    "source": "Nickname updated successfully!",
+    "text": "昵称已更新！"
   },
   "stats.active_per_week": {
     "source": "Active per week",

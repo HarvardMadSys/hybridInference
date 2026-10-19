@@ -135,7 +135,7 @@ class TestCreateAdmin:
     async def test_creates_the_admin_and_signs_them_in(self, client, pending, op_store):
         resp = await client.post(
             "/auth/setup/admin",
-            json=_body(setup_code="abcd efgh jklm", login_name=" Admin ", display_name=" Ops "),
+            json=_body(setup_code="abcd efgh jklm", login_name=" admin ", display_name=" Ops "),
         )
 
         assert resp.status_code == 200, resp.text
@@ -258,6 +258,8 @@ class TestCreateAdmin:
             ("login_name", "admin@example.com"),
             ("login_name", "-admin"),
             ("login_name", "the admin"),
+            ("login_name", "Admin"),
+            ("login_name", "aDmin"),
             ("login_name", "a" * 33),
             ("password", "short1A"),
             ("password", "alllowercase1"),

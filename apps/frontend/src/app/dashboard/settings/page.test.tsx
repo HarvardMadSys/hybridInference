@@ -66,7 +66,15 @@ function renderSettings(phoneAuth: boolean) {
 
 describe('account phone binding', () => {
   it('keeps the existing account forms and hides binding when SMS is disabled', () => {
-    renderSettings(false);
+    const { container } = renderSettings(false);
+    expect(screen.getByText('Nickname')).toBeInTheDocument();
+    expect(container.querySelector('input[name="userName"]')).toHaveAttribute(
+      'autocomplete',
+      'nickname',
+    );
+    expect(
+      screen.getByText(/Changing your nickname does not change how you log in/),
+    ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Change Password' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Bind mobile number' })).not.toBeInTheDocument();
   });
@@ -91,7 +99,7 @@ describe('account phone binding', () => {
     expect(screen.getByText('Verified mobile number: +8613812345678')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send verification email' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Set Password' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Change Username' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Change Nickname' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Bind mobile number' })).not.toBeInTheDocument();
   });

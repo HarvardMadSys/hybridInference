@@ -54,8 +54,8 @@ export function createAuthSchemas(t: Translate) {
     userName: z
       .string()
       .trim()
-      .min(2, t('auth.validation.username_min', 'Username must be at least 2 characters'))
-      .max(50, t('auth.validation.username_max', 'Username cannot exceed 50 characters')),
+      .min(2, t('auth.validation.username_min', 'Nickname must be at least 2 characters'))
+      .max(50, t('auth.validation.username_max', 'Nickname cannot exceed 50 characters')),
     useCase: z
       .string()
       .trim()
@@ -124,13 +124,13 @@ export function createAuthSchemas(t: Translate) {
 
   const signupSchema = createSignupSchema();
 
-  // "Email or username". The field keeps the name `email` because that is the
+  // "Email or login name". The field keeps the name `email` because that is the
   // request's field; a value with an `@` is held to the email rules, anything
   // else to the login-name rule.
   const loginIdentifierSchema = z
     .string()
     .trim()
-    .min(1, t('auth.validation.identifier_required', 'Please enter your email or username'))
+    .min(1, t('auth.validation.identifier_required', 'Please enter your email or login name'))
     .superRefine((value, ctx) => {
       if (value.includes('@')) {
         const parsed = emailSchema.safeParse(value);
@@ -142,7 +142,7 @@ export function createAuthSchemas(t: Translate) {
           code: z.ZodIssueCode.custom,
           message: t(
             'auth.validation.login_name_invalid',
-            'Please enter a valid email address or username',
+            'Please enter a valid email address or login name',
           ),
         });
       }
@@ -159,8 +159,8 @@ export function createAuthSchemas(t: Translate) {
     userName: z
       .string()
       .trim()
-      .min(2, t('auth.validation.username_min', 'Username must be at least 2 characters'))
-      .max(50, t('auth.validation.username_max', 'Username cannot exceed 50 characters'))
+      .min(2, t('auth.validation.username_min', 'Nickname must be at least 2 characters'))
+      .max(50, t('auth.validation.username_max', 'Nickname cannot exceed 50 characters'))
       .optional(),
   });
 
