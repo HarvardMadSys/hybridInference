@@ -406,3 +406,99 @@ class TestRequestLogMiddleware:
         # ...and the failed-request rule agrees, reading the same record fields.
         assert _is_failed_request(_window_item(upstream)) is True
         assert _is_failed_request(_window_item(challenge)) is False
+
+
+# --- failures, non-HTTP scopes and the debug header dump -----------------------
+
+
+def _http_scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers or [(b"host", b"gateway.test")],
+        "client": ("203.0.113.9", 4242),
+        "server": ("gateway.test", 80),
+    }
+
+
+async def _receive() -> dict:
+    return {"type": "http.request", "body": b"", "more_body": False}
+
+
+async def _discard(_message: dict) -> None:
+    return None
+
+
+class _StatusError(Exception):
+    status_code = 418
+
+
+class UpstreamTimeoutError(Exception):
+    """Named like the timeout errors the adapters raise."""
+
+
+@pytest.mark.parametrize(
+    ("raised", "status"),
+    [
+        (_StatusError("teapot"), 418),
+        (UpstreamTimeoutError("upstream took too long"), 504),
+        (RuntimeError("boom"), 500),
+    ],
+    ids=["own-status", "timeout", "other"],
+)
+async def test_a_failing_request_is_logged_as_an_error_and_still_raised(caplog, raised, status):
+    async def failing_app(scope, receive, send):
+        raise raised
+
+    middleware = RequestLogMiddleware(failing_app)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME), pytest.raises(type(raised)):
+        await middleware(_http_scope(), _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert record.levelno == logging.ERROR
+    assert (record.status_code, record.error_type) == (status, type(raised).__name__)
+    assert record.error == str(raised)
+
+
+async def test_a_non_http_scope_passes_through_unlogged(caplog):
+    seen: list[str] = []
+
+    async def lifespan_app(scope, receive, send):
+        seen.append(scope["type"])
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(lifespan_app)({"type": "lifespan"}, _receive, _discard)
+
+    assert seen == ["lifespan"]
+    assert not [r for r in caplog.records if r.name == _LOGGER_NAME]
+
+
+async def test_the_debug_header_dump_never_contains_a_credential(caplog):
+    secret = "sk-live-must-not-be-logged-0123456789"
+
+    async def ok_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    headers = [
+        (b"host", b"gateway.test"),
+        (b"authorization", f"Bearer {secret}".encode()),
+        (b"x-api-key", secret.encode()),
+        (b"x-long", b"y" * 600),
+    ]
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(ok_app)(_http_scope(headers), _receive, _discard)
+
+    [dump] = [r for r in caplog.records if r.getMessage() == "http_request_headers"]
+    assert dump.headers["authorization"] == "***"
+    assert dump.headers["x-api-key"] == "***"
+    assert dump.headers["x-long"] == "y" * 256 + "…"
+    assert secret not in repr([r.__dict__ for r in caplog.records])

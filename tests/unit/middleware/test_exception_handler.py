@@ -168,3 +168,52 @@ class TestExceptionHandlers:
 
                 # Timestamp should be valid ISO format
                 datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
+
+
+# --- the token, session and key failures ---------------------------------------
+
+from serving.exceptions import (
+    APIKeyNotFoundError,
+    InvalidTokenError,
+    SessionNotFoundError,
+    SessionRevokedError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    WeakPasswordError,
+)
+
+_RAISED_TEXT = "refresh token tok_live_abc123 for u-42 at db-internal:5432"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc_type", "status", "code", "message"),
+    [
+        (WeakPasswordError, 400, "WEAK_PASSWORD", "Password does not meet security requirements"),
+        (APIKeyNotFoundError, 404, "API_KEY_NOT_FOUND", "No active API key found"),
+        (TokenExpiredError, 401, "TOKEN_EXPIRED", "Token has expired"),
+        (InvalidTokenError, 401, "INVALID_TOKEN", "Invalid token"),
+        (TokenAlreadyUsedError, 400, "TOKEN_ALREADY_USED", "Token has already been used"),
+        (SessionNotFoundError, 401, "SESSION_NOT_FOUND", "Session not found"),
+        (SessionRevokedError, 401, "SESSION_REVOKED", "Session has been revoked"),
+    ],
+)
+async def test_a_token_or_session_failure_answers_with_its_code_never_its_text(
+    exc_type, status, code, message
+):
+    """The raised text may name a token, a user or a host; the client gets the code."""
+    app = FastAPI()
+
+    @app.get("/raise")
+    def raise_it():
+        raise exc_type(_RAISED_TEXT)
+
+    install_exception_handlers(app)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/raise")
+
+    body = response.json()
+    assert response.status_code == status
+    assert (body["error_code"], body["message"]) == (code, message)
+    assert datetime.fromisoformat(body["timestamp"])
+    assert "tok_live_abc123" not in response.text and "db-internal" not in response.text
