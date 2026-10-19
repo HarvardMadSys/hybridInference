@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from serving.config.settings import settings
+from serving.config.site_identity import get_site_identity
 from serving.integrations.tencent_cloud import api, ses
 from serving.utils import email
 
@@ -115,6 +116,22 @@ def test_missing_template_fails_without_fallback(configured, monkeypatch):
     monkeypatch.setattr(email.smtplib, "SMTP", smtp)
     assert not email.is_email_enabled()
     assert not email.send_verification_email("user@example.org", "token", "https://api.example.org")
+    smtp.assert_not_called()
+
+
+def test_a_notice_without_template_data_sends_its_text_body(configured, monkeypatch):
+    sent = []
+    smtp = Mock()
+    monkeypatch.setattr(ses, "send_template", lambda *args: sent.append(args) or True)
+    monkeypatch.setattr(email.smtplib, "SMTP", smtp)
+
+    assert email.send_email("user@example.org", "update", "<p>x</p>", "plain")
+    assert not email.send_email("user@example.org", "update", "<p>x</p>", None)
+
+    site_name = get_site_identity().name
+    assert sent == [
+        ("user@example.org", "update", "notice", {"site_name": site_name, "body": "plain"})
+    ]
     smtp.assert_not_called()
 
 
