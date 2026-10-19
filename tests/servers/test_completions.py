@@ -1392,6 +1392,80 @@ async def test_trusted_probe_suppresses_log_but_still_bills(mock_db_logger):
     assert inc_kwargs["completion_tokens"] == 3
 
 
+class UpstreamTraceAdapter(AdapterWithReasoningContent):
+    """Simulate a proxy attaching its private trace to every response/event."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        response = await super().chat_completion(messages, **params)
+        response["proxyTrace"] = {"spanId": "private-upstream-span"}
+        return response
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        async for chunk in super().stream_chat_completion(messages, **params):
+            data = chunk.removeprefix("data:").strip()
+            if data == "[DONE]":
+                yield chunk
+                continue
+            event = json.loads(data)
+            event["proxyTrace"] = {"spanId": "private-upstream-span"}
+            yield f"data: {json.dumps(event)}\n\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("passthrough", [False, True])
+async def test_public_api_hides_upstream_trace_in_both_serializer_modes(
+    mock_db_logger, streaming, passthrough, monkeypatch
+):
+    """Ordinary clients get one public model contract without proxy trace data."""
+    from serving import openai_chat_serializer as serializer
+
+    monkeypatch.setattr(serializer, "_private_response_fields", frozenset())
+    serializer.register_private_response_fields("proxyTrace")
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(UpstreamTraceAdapter(_mk_cfg("glm-4.6")), 1.0)])
+    app = FastAPI(title="Public upstream metadata regression")
+    app.state.services = AppServices(router=router, db_logger=mock_db_logger)
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "glm-4.6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": streaming,
+            },
+            headers={"X-Reasoning-Passthrough": str(passthrough).lower()},
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "X-Provider" not in response.headers
+    assert "proxyTrace" not in response.text
+    assert "private-upstream-span" not in response.text
+    assert '"_routing"' not in response.text
+    if streaming:
+        frames = [line[6:] for line in response.text.splitlines() if line.startswith("data: ")]
+        assert frames[-1] == "[DONE]"
+        events = [json.loads(frame) for frame in frames[:-1]]
+        assert all(event.get("model", "glm-4.6") == "glm-4.6" for event in events)
+        deltas = [
+            choice.get("delta", {}) for event in events for choice in event.get("choices", [])
+        ]
+        assert "".join(delta.get("content") or "" for delta in deltas) == "Test response"
+        assert any("reasoning_content" in delta for delta in deltas) == passthrough
+        assert any(event.get("usage") for event in events)
+    else:
+        body = response.json()
+        assert body["model"] == "glm-4.6"
+        message = body["choices"][0]["message"]
+        assert message["content"] == "Test response"
+        assert ("reasoning_content" in message) == passthrough
+
+
 @pytest.mark.asyncio
 async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logger):
     """X-Reasoning-Passthrough: false strips reasoning_content from streaming output."""
