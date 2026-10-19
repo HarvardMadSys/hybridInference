@@ -1661,6 +1661,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return [str(row["provider"]) for row in rows]
 
+    @staticmethod
+    async def _fetch_user_usage_totals(
+        conn: asyncpg.Connection, user_ids: list[str]
+    ) -> dict[str, Row]:
+        # Scan lifetime logs once for both metrics. The cost rollup excludes
+        # free requests and cannot supply these counts.
+        rows = await conn.fetch(
+            "SELECT user_id, COUNT(*) AS requests, "
+            "COALESCE(SUM(total_tokens), 0) AS tokens FROM api_logs "
+            "WHERE user_id = ANY($1::text[]) GROUP BY user_id",
+            user_ids,
+        )
+        totals = {uid: {"requests": 0, "tokens": 0} for uid in user_ids}
+        totals.update(
+            {
+                r["user_id"]: {"requests": int(r["requests"]), "tokens": int(r["tokens"])}
+                for r in rows
+            }
+        )
+        return totals
+
+    async def get_bulk_user_usage_totals(self, user_ids: list[str]) -> dict[str, Row]:
+        """Return lifetime totals separately so user management can load first."""
+        if not user_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            return await self._fetch_user_usage_totals(conn, user_ids)
+
     async def list_users(
         self,
         *,
@@ -1684,6 +1712,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         provider: str | None = None,
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
+        include_usage_totals: bool = True,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1697,8 +1726,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         ``api_logs`` — the request count is ``COUNT(*)`` of logged rows rather
         than ``user_daily_cost.requests``, which only tracks billable
         (cost > 0) requests and would miss free/zero-cost calls. Both metrics
-        are always returned for the visible page as ``usage_alltime_requests`` /
-        ``usage_alltime_tokens``, regardless of the active sort.
+        are returned by default. With ``include_usage_totals=False``, metrics
+        not needed for sorting are ``None`` and can be fetched separately.
 
         Filters (all keyword-only):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
@@ -2002,7 +2031,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if needs_tokens_sort:
                 cte_parts.append(
                     "usage_tokens AS ("
-                    "  SELECT user_id, COALESCE(SUM(total_tokens), 0) AS n"
+                    "  SELECT user_id, COALESCE(SUM(total_tokens), 0) AS n, COUNT(*) AS requests"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "  GROUP BY user_id"
@@ -2010,6 +2039,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
                 join_parts.append("LEFT JOIN usage_tokens utok ON utok.user_id = fu.id")
                 select_extras.append("COALESCE(utok.n, 0) AS usage_alltime_tokens")
+                select_extras.append("COALESCE(utok.requests, 0) AS usage_alltime_requests")
 
             extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
             joins = " ".join(join_parts)
@@ -2068,36 +2098,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             else:
                 alltime_map = {}
 
-            # All-time request count — COUNT of api_logs rows (one per logged
-            # request). Uses api_logs rather than user_daily_cost.requests so
-            # zero-cost / free / local-model calls are included; bounded to the
-            # visible page's user_ids, so it stays a cheap indexed lookup.
-            if user_ids and not needs_requests_sort:
-                req_rows = await conn.fetch(
-                    "SELECT user_id, COUNT(*) AS n "
-                    "FROM api_logs "
-                    "WHERE user_id = ANY($1::text[]) "
-                    "GROUP BY user_id",
-                    user_ids,
-                )
-                requests_map = {r["user_id"]: r["n"] for r in req_rows}
-            else:
-                requests_map = {}
-
-            # All-time token total — summed from api_logs (no daily rollup
-            # exists). Bounded to the visible page's user_ids, so this is a
-            # cheap indexed lookup rather than a full table scan.
-            if user_ids and not needs_tokens_sort:
-                token_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(total_tokens), 0) AS n "
-                    "FROM api_logs "
-                    "WHERE user_id = ANY($1::text[]) "
-                    "GROUP BY user_id",
-                    user_ids,
-                )
-                tokens_map = {r["user_id"]: r["n"] for r in token_rows}
-            else:
-                tokens_map = {}
+            # Expensive lifetime statistics must not block the lightweight
+            # list. Sorting by either metric still uses the full filtered set.
+            totals = (
+                await self._fetch_user_usage_totals(conn, user_ids)
+                if include_usage_totals and not needs_tokens_sort
+                else {}
+            )
 
         # Assemble result rows with usage columns.
         result_rows: list[Row] = []
@@ -2106,10 +2113,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
             r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
-            r["usage_alltime_requests"] = r.get("usage_alltime_requests") or requests_map.get(
-                r["id"], 0
-            )
-            r["usage_alltime_tokens"] = r.get("usage_alltime_tokens") or tokens_map.get(r["id"], 0)
+            for field, metric in (
+                ("usage_alltime_requests", "requests"),
+                ("usage_alltime_tokens", "tokens"),
+            ):
+                if field not in r:
+                    r[field] = totals.get(r["id"], {}).get(metric)
             result_rows.append(r)
 
         return total, result_rows, status_counts

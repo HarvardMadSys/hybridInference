@@ -223,18 +223,30 @@ export function UserRow({
       )}
       {visible.has('requests') && (
         <td
-          className={`${NUM} ${numTone(user.usage_alltime_requests)} ${edge('requests')}`}
-          title={`${user.usage_alltime_requests.toLocaleString()} requests (all-time)`}
+          className={`${NUM} ${numTone(user.usage_alltime_requests ?? 0)} ${edge('requests')}`}
+          title={
+            user.usage_alltime_requests == null
+              ? 'All-time requests not available'
+              : `${user.usage_alltime_requests.toLocaleString()} requests (all-time)`
+          }
         >
-          {user.usage_alltime_requests.toLocaleString()}
+          {user.usage_alltime_requests == null ? (
+            <Dash />
+          ) : (
+            user.usage_alltime_requests.toLocaleString()
+          )}
         </td>
       )}
       {visible.has('tokens') && (
         <td
-          className={`${NUM} ${numTone(user.usage_alltime_tokens)} ${edge('tokens')}`}
-          title={`${user.usage_alltime_tokens.toLocaleString()} tokens (all-time)`}
+          className={`${NUM} ${numTone(user.usage_alltime_tokens ?? 0)} ${edge('tokens')}`}
+          title={
+            user.usage_alltime_tokens == null
+              ? 'All-time tokens not available'
+              : `${user.usage_alltime_tokens.toLocaleString()} tokens (all-time)`
+          }
         >
-          {formatCompact(user.usage_alltime_tokens)}
+          {user.usage_alltime_tokens == null ? <Dash /> : formatCompact(user.usage_alltime_tokens)}
         </td>
       )}
       {visible.has('avgTurns') && (

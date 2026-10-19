@@ -430,8 +430,7 @@ class TestListUsersNewFilters:
             [],  # today's costs lookup
             [],  # month's costs lookup
             [{"user_id": "historical", "cost": Decimal("12.34")}],
-            [],  # all-time requests lookup
-            [],  # all-time tokens lookup
+            [],  # combined all-time requests/tokens lookup
         ]
 
         _total, rows, _ = await store.list_users()
@@ -445,8 +444,7 @@ class TestListUsersNewFilters:
 
     async def test_requests_and_tokens_enriched_by_default(self, store, pg_conn):
         # All-time request count and token total are enriched for the visible
-        # page even when neither is the sort key: requests from the
-        # user_daily_cost rollup, tokens summed from api_logs.
+        # page even when neither is the sort key, from one api_logs scan.
         pg_conn.fetchrow.return_value = {"total": 1}
         pg_conn.fetch.side_effect = [
             [{"status": "active", "cnt": 1}],  # status counts
@@ -470,8 +468,7 @@ class TestListUsersNewFilters:
             [],  # today's costs lookup
             [],  # month's costs lookup
             [],  # alltime costs lookup
-            [{"user_id": "u1", "n": 42}],  # all-time requests lookup
-            [{"user_id": "u1", "n": 123456}],  # all-time tokens lookup
+            [{"user_id": "u1", "requests": 42, "tokens": 123456}],
         ]
 
         _total, rows, _ = await store.list_users()
@@ -482,7 +479,7 @@ class TestListUsersNewFilters:
         # Requests count comes from api_logs (COUNT of logged rows), NOT the
         # billable-only user_daily_cost.requests rollup, so free/zero-cost
         # requests are included.
-        assert any("COUNT(*) AS n" in sql and "FROM api_logs" in sql for sql in all_sqls)
+        assert any("COUNT(*) AS requests" in sql and "FROM api_logs" in sql for sql in all_sqls)
         assert any("SUM(total_tokens)" in sql and "FROM api_logs" in sql for sql in all_sqls)
 
     async def test_sort_by_requests_orders_by_request_count(self, store, pg_conn):
@@ -510,3 +507,57 @@ class TestListUsersNewFilters:
         assert "usage_tokens AS" in main_sql
         assert "SUM(total_tokens)" in main_sql
         assert "ORDER BY COALESCE(utok.n, 0) DESC" in main_sql
+
+
+class TestDeferredUsageTotals:
+    async def test_lightweight_list_does_not_wait_for_lifetime_log_scans(self, store, pg_conn):
+        pg_conn.fetchrow.return_value = {"total": 1}
+        pg_conn.fetch.side_effect = [
+            [{"status": "active", "cnt": 1}],
+            [{"id": "u1"}],
+            [],
+            [],
+            [],
+        ]
+        total, rows, _ = await store.list_users(include_usage_totals=False)
+        assert total == 1
+        assert rows[0]["usage_alltime_requests"] is None
+        assert rows[0]["usage_alltime_tokens"] is None
+        sqls = [call.args[0] for call in pg_conn.fetch.call_args_list]
+        assert not any("COUNT(*) AS n" in sql or "SUM(total_tokens)" in sql for sql in sqls)
+
+    async def test_bulk_totals_keeps_zero_cost_requests_and_fills_empty_users(self, store, pg_conn):
+        pg_conn.fetch.return_value = [{"user_id": "u1", "requests": 3, "tokens": 7}]
+        result = await store.get_bulk_user_usage_totals(["u1", "empty"])
+        assert result == {"u1": {"requests": 3, "tokens": 7}, "empty": {"requests": 0, "tokens": 0}}
+        sql = pg_conn.fetch.call_args.args[0]
+        assert "COUNT(*)" in sql and "SUM(total_tokens)" in sql
+        assert "cost_usd" not in sql
+        assert pg_conn.fetch.await_count == 1
+
+    @pytest.mark.parametrize("sort_by", ["requests", "tokens"])
+    async def test_usage_sort_keeps_required_metrics_without_enrichment(
+        self, store, pg_conn, sort_by
+    ):
+        pg_conn.fetchrow.return_value = {"total": 1}
+        pg_conn.fetch.side_effect = [
+            [{"status": "active", "cnt": 1}],
+            [
+                {
+                    "id": "u1",
+                    "usage_alltime_requests": 4,
+                    **({"usage_alltime_tokens": 8} if sort_by == "tokens" else {}),
+                }
+            ],
+            [],
+            [],
+            [],
+        ]
+        _, rows, _ = await store.list_users(sort_by=sort_by, include_usage_totals=False)
+        assert rows[0]["usage_alltime_requests"] == 4
+        assert rows[0]["usage_alltime_tokens"] == (8 if sort_by == "tokens" else None)
+        assert pg_conn.fetch.await_count == 5
+
+    async def test_empty_bulk_does_not_query_logs(self, store, pg_conn):
+        assert await store.get_bulk_user_usage_totals([]) == {}
+        pg_conn.fetch.assert_not_awaited()

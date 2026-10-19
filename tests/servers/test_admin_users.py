@@ -1745,3 +1745,38 @@ async def test_get_users_summary_with_top_users(admin_client):
     assert top["email"] == "alice@x.com"
     anomaly = body["anomalies"]["top"][0]
     assert anomaly["multiplier"] == 12.5
+
+
+@pytest.mark.asyncio
+async def test_lightweight_users_preserves_null_totals(admin_client):
+    client, op_store, _, _ = admin_client
+    row = _user_row()
+    row.update(usage_alltime_requests=None, usage_alltime_tokens=None)
+    op_store.list_users.return_value = (1, [row], _EMPTY_SC)
+    response = await client.get("/admin/users?include_usage_totals=false", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["users"][0]["usage_alltime_requests"] is None
+    assert response.json()["users"][0]["usage_alltime_tokens"] is None
+    assert op_store.list_users.call_args.kwargs["include_usage_totals"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_usage_totals_requires_admin_and_bounds_request(admin_client):
+    client, op_store, _, _ = admin_client
+    op_store.get_bulk_user_usage_totals = AsyncMock(
+        return_value={"u1": {"requests": 3, "tokens": 5}}
+    )
+    response = await client.get("/admin/users/usage-totals?user_ids=u1", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["totals"]["u1"] == {"requests": 3, "tokens": 5}
+    response = await client.get("/admin/users/usage-totals?user_ids=u1")
+    assert response.status_code in (401, 403)
+    response = await client.get(
+        "/admin/users/usage-totals",
+        params={"user_ids": ",".join(str(i) for i in range(201))},
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    response = await client.get("/admin/users/usage-totals", headers=AUTH)
+    assert response.json() == {"totals": {}}
+    op_store.get_bulk_user_usage_totals.assert_awaited_once_with(["u1"])
