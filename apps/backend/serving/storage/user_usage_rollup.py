@@ -84,13 +84,30 @@ WHERE NOT EXISTS (
 """
 
 
+# The gap days as runs of consecutive days, ``[first_day, end_day)``: a day
+# minus its rank is the same for every day of one run. Before the first backfill
+# every day is a gap, and one range per user reads far faster than a range per
+# day.
+_GAP_RUNS_SQL = f"""
+SELECT MIN(day) AS first_day, MAX(day) + 1 AS end_day
+FROM (
+    SELECT day, day - (ROW_NUMBER() OVER (ORDER BY day))::int AS run
+    FROM ({_GAP_DAYS_SQL}) gap_days
+) ranked
+GROUP BY run
+"""
+
+
 def totals_sql(user_match: str) -> str:
     """SQL for ``(user_id, requests, tokens)`` of every user matching *user_match*.
 
     *user_match* completes ``<column> {user_match}`` for the users wanted, e.g.
     ``"= ANY($1::text[])"`` or ``"IN (SELECT id FROM filtered_users)"``. Users
     with no logged rows are absent from the result. Each live part is a range on
-    ``(user_id, timestamp)``, which ``idx_api_logs_user_cost`` serves.
+    ``(user_id, timestamp)``, which ``idx_api_logs_user_cost`` serves. The gap
+    runs are joined ``LATERAL``, one bounded range scan per run: the planner
+    cannot size the gap list (it guessed 500 days where there were none) and,
+    joined plainly, answered with a scan of the whole table.
     """
     return f"""
 SELECT user_id, SUM(requests)::bigint AS requests, SUM(tokens)::bigint AS tokens
@@ -110,19 +127,28 @@ FROM (
     WHERE l.user_id {user_match} AND l.timestamp IS NULL
     GROUP BY l.user_id
     UNION ALL
-    SELECT l.user_id, COUNT(*), COALESCE(SUM(l.total_tokens), 0)
-    FROM ({_GAP_DAYS_SQL}) gap
-    JOIN api_logs l
-      ON l.timestamp >= {_day_start("gap.day")}
-     AND l.timestamp < {_day_start("gap.day + 1")}
-    WHERE l.user_id {user_match}
-    GROUP BY l.user_id
+    SELECT counted.*
+    FROM ({_GAP_RUNS_SQL}) gap
+    CROSS JOIN LATERAL (
+        SELECT l.user_id, COUNT(*), COALESCE(SUM(l.total_tokens), 0)
+        FROM api_logs l
+        WHERE l.user_id {user_match}
+          AND l.timestamp >= {_day_start("gap.first_day")}
+          AND l.timestamp < {_day_start("gap.end_day")}
+        GROUP BY l.user_id
+    ) counted
 ) parts
 GROUP BY user_id
 """
 
 
 _TOTALS_FOR_IDS_SQL = totals_sql("= ANY($1::text[])")
+
+# Run inside the transaction of any statement using :func:`totals_sql` or a
+# fill. The planner's guess at the gap days, or at a day's rows, puts the cost
+# far above what is read, enough to trigger JIT compilation -- seconds spent
+# compiling scans that take milliseconds.
+NO_JIT_SQL = "SET LOCAL jit = off"
 
 _FILL_DAY_SQL = f"""
 INSERT INTO user_usage_daily (user_id, day, request_count, total_tokens)
@@ -153,7 +179,10 @@ async def fetch_totals(conn: asyncpg.Connection, user_ids: list[str]) -> dict[st
     totals = {uid: {"requests": 0, "tokens": 0} for uid in user_ids}
     if not user_ids:
         return totals
-    for row in await conn.fetch(_TOTALS_FOR_IDS_SQL, user_ids):
+    async with conn.transaction():
+        await conn.execute(NO_JIT_SQL)
+        rows = await conn.fetch(_TOTALS_FOR_IDS_SQL, user_ids)
+    for row in rows:
         totals[row["user_id"]] = {"requests": int(row["requests"]), "tokens": int(row["tokens"])}
     return totals
 
@@ -167,10 +196,7 @@ async def fill_days(conn: asyncpg.Connection, days: Iterable[date]) -> int:
     written = 0
     for day in days:
         async with conn.transaction():
-            # The planner's estimate for a day's range is far above what a day
-            # holds, enough to trigger JIT compilation that costs more than the
-            # scan it compiles.
-            await conn.execute("SET LOCAL jit = off")
+            await conn.execute(NO_JIT_SQL)
             await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
             if not await conn.fetchval(_DAY_DUE_SQL, day):
                 continue

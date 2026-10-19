@@ -2006,13 +2006,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             joins = " ".join(join_parts)
             ctes = ", ".join(cte_parts)
 
-            rows = await conn.fetch(
-                f"WITH {ctes} "
-                f"SELECT fu.*{extra_cols} FROM filtered_users fu {joins} "
-                f"ORDER BY {order_clause} "
-                f"LIMIT ${limit_idx} OFFSET ${offset_idx}",
-                *query_params,
-            )
+            async with conn.transaction():
+                if needs_usage_sort:
+                    await conn.execute(user_usage_rollup.NO_JIT_SQL)
+                rows = await conn.fetch(
+                    f"WITH {ctes} "
+                    f"SELECT fu.*{extra_cols} FROM filtered_users fu {joins} "
+                    f"ORDER BY {order_clause} "
+                    f"LIMIT ${limit_idx} OFFSET ${offset_idx}",
+                    *query_params,
+                )
 
             if not rows:
                 return total, [], status_counts

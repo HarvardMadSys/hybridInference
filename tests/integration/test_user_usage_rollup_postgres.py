@@ -170,21 +170,25 @@ async def test_totals_match_the_full_scan_before_and_after_the_backfill(db):
     assert all(user_id is not None for user_id, _ in stored)
 
 
-async def test_a_dropped_day_is_counted_live_until_it_is_filled_again(db):
+async def test_dropped_days_are_counted_live_until_they_are_filled_again(db):
     pool, op_store, _, settled = db
     await _seed(pool, settled)
     await user_usage_rollup.backfill_missing(pool)
 
-    dropped = settled - timedelta(days=3)
+    # Two adjacent days, read as one run, and one apart from them.
+    dropped = [settled - timedelta(days=d) for d in (3, 4, 12)]
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM user_usage_daily_coverage WHERE day = $1", dropped)
+        await conn.execute(
+            "DELETE FROM user_usage_daily_coverage WHERE day = ANY($1::date[])", dropped
+        )
         # A row without coverage is ignored, not added on top of the live count.
         await conn.execute(
-            "UPDATE user_usage_daily SET request_count = 999 WHERE day = $1", dropped
+            "UPDATE user_usage_daily SET request_count = 999 WHERE day = ANY($1::date[])",
+            dropped,
         )
     await _assert_matches_oracle(pool, op_store)
 
-    assert await user_usage_rollup.backfill_missing(pool) == 1
+    assert await user_usage_rollup.backfill_missing(pool) == 3
     await _assert_matches_oracle(pool, op_store)
 
 
