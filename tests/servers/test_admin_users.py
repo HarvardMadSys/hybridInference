@@ -40,6 +40,7 @@ def mock_stores():
     op_store.update_user_fields = AsyncMock()
     op_store.set_user_preference = AsyncMock(return_value=True)
     op_store.revoke_key = AsyncMock()
+    op_store.revoke_user_sessions = AsyncMock(return_value=0)
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
 
     log_store = MagicMock()
@@ -1887,11 +1888,13 @@ async def test_status_moves_only_between_active_and_suspended(
         op_store.update_user_fields.assert_awaited_once_with("u1", status=target)
     else:
         op_store.update_user_fields.assert_not_awaited()
-    # Only a suspension takes the key away.
+    # Only a suspension takes the key, and every signed-in session, away.
     if allowed and target == "suspended":
         op_store.revoke_key.assert_awaited_once_with("u1", hard_delete=False)
+        op_store.revoke_user_sessions.assert_awaited_once_with("u1")
     else:
         op_store.revoke_key.assert_not_awaited()
+        op_store.revoke_user_sessions.assert_not_awaited()
 
 
 @pytest.mark.asyncio

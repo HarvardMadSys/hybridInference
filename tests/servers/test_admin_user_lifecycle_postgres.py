@@ -9,7 +9,9 @@ cached) stops working the moment an admin suspends its owner.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -141,3 +143,32 @@ async def test_a_quota_change_lands_on_the_live_key(gateway, test_user_with_key)
             user["id"],
         )
     assert float(quota) == 7.5
+
+
+async def test_suspending_a_user_signs_out_every_session(gateway, test_user, auth_backend):
+    """Their sessions are revoked, not only their key, and resuming does not restore them."""
+    client, store, pool = gateway
+    for _ in range(2):  # two devices
+        await store.create_session(
+            session_id=f"s-{uuid4()}",
+            user_id=test_user["id"],
+            refresh_token_hash=f"h-{uuid4()}",
+            jti=str(uuid4()),
+            sid=str(uuid4()),
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+
+    async def _live() -> int:
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT count(*) FROM auth_sessions WHERE user_id = $1 AND revoked IS NOT TRUE",
+                test_user["id"],
+            )
+
+    assert await _live() == 2
+    for status in ("suspended", "active"):
+        response = await client.patch(
+            f"/admin/users/{test_user['id']}", headers=ADMIN, json={"status": status}
+        )
+        assert response.status_code == 200, response.text
+        assert await _live() == 0

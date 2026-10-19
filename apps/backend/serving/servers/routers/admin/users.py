@@ -830,6 +830,10 @@ async def update_user(
     # Post-write side-effects that depend on the new status
     if new_status == "suspended":
         await op_store.revoke_key(user_id, hard_delete=False)
+        # And every signed-in session, as a soft delete does: each gate also
+        # checks the account's status, but a suspension should not depend on
+        # every one of them remembering to. Resuming does not restore them.
+        await op_store.revoke_user_sessions(user_id)
 
     # Update key-level fields
     key_fields = {
