@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ValidationError
 
 from serving.schemas_admin import (
     AdminClearErrorRequestsResponse,
@@ -50,7 +53,7 @@ from serving.servers.routers.admin._common import (
     resolve_request_outcome_filter,
 )
 from serving.servers.routers.admin._refreshing_cache import RefreshingResult
-from serving.storage import account_schema
+from serving.storage import account_schema, admin_view_results, perf_metrics_index
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -77,17 +80,15 @@ _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500,
 _THROUGHPUT_HISTOGRAM_EDGES: tuple[float, ...] = (0, 5, 10, 25, 50, 100, 250, 500, 1000)
 
 # Exact percentiles over a month of logs, and the newest scatter points of each
-# series over 90 days, take seconds on a production-sized api_logs and need not
-# be fresher than a few minutes; each view shows when its numbers were computed.
-# So both are kept per process, warmed at startup, and refreshed in the
-# background once stale (see ``_refreshing_cache``).
+# series over 90 days, take seconds to minutes on a production-sized api_logs
+# and need not be fresher than a few minutes; each view shows when its numbers
+# were computed. So both are computed in the background, kept in memory and in
+# the database, and served from there (see ``_refreshing_cache``;
+# ``PERFORMANCE_METRICS`` and ``TTFT_SCATTER`` follow their loaders below).
 _PERFORMANCE_CACHE_FRESH_SECONDS = 300.0
-PERFORMANCE_METRICS: RefreshingResult[AdminPerformanceMetricsResponse] = RefreshingResult(
-    "performance_metrics", fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS
-)
-TTFT_SCATTER: RefreshingResult[AdminTtftScatterResponse] = RefreshingResult(
-    "ttft_scatter", fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS
-)
+# How long a request finding no result at all waits for the first: below the
+# console proxy's 30 s timeout. After it the console polls.
+_PERFORMANCE_FIRST_WAIT_SECONDS = 20.0
 
 
 def _distribution_from_row(
@@ -115,7 +116,7 @@ def _distribution_from_row(
 # Shared CTE prefix used by both the stats query and the histogram query for
 # each window. Defining it once keeps the row filter / throughput derivation in sync
 # so the "histogram sums to count" invariant cannot drift.
-_PERF_METRICS_CTE = """
+_PERF_METRICS_CTE = f"""
 WITH base AS (
     SELECT
         prompt_tokens,
@@ -125,10 +126,9 @@ WITH base AS (
         stream
     FROM api_logs
     WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
-      AND status_code BETWEEN 200 AND 399
-      -- Embeddings have a fundamentally different latency/token profile and no
-      -- completion tokens; exclude them so they don't skew chat-perf percentiles.
-      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
+      -- Successful requests less embeddings, verbatim the covering index's
+      -- predicate so these statements run as index-only scans over it.
+      AND {perf_metrics_index.ROW_FILTER}
 ),
 derived AS (
     SELECT
@@ -220,7 +220,7 @@ _PERF_BREAKDOWN_MAX_GROUPS = 100
 # and an admin can pick a 90-day lookback. Cache per filter tuple for a few
 # seconds and serialize misses, so a burst of filter edits — or a second admin
 # on the same tab — cannot pile overlapping month-scale scans onto the pool.
-# Same reasoning as _PERFORMANCE_METRICS_CACHE; keyed because this view is
+# Same reasoning as PERFORMANCE_METRICS; keyed because this view is
 # parameterized rather than fixed-window. Queued misses for *different* filters
 # still run once the lock frees (the query cannot be cancelled server-side),
 # but at most one runs at a time.
@@ -576,20 +576,31 @@ async def _get_cached_performance_metrics(
     *,
     refresh: bool = False,
 ) -> AdminPerformanceMetricsResponse:
-    """Performance metrics from :data:`PERFORMANCE_METRICS`; ``refresh`` waits for new ones."""
-    return await PERFORMANCE_METRICS.get(
-        id(db_logger.pool), lambda: _load_performance_metrics(db_logger), refresh=refresh
+    """Performance metrics from :data:`PERFORMANCE_METRICS`; ``refresh`` starts new ones."""
+    response = await PERFORMANCE_METRICS.get(
+        db_logger.pool, lambda: _load_performance_metrics(db_logger), refresh=refresh
     )
+    if response is None:
+        response = AdminPerformanceMetricsResponse(generated_at=None, windows=[])
+    return response.model_copy(update={"refreshing": PERFORMANCE_METRICS.refreshing})
 
 
 async def warm_performance_caches(db_logger) -> None:
-    """Compute the Providers tab's cached views before the first admin asks.
+    """Prepare the Providers tab's cached views before the first admin asks.
 
-    One after the other, so a starting gateway adds one heavy scan at a time.
+    First the performance distributions' covering index, built concurrently if
+    missing -- minutes on a large api_logs, during which the stored results are
+    served -- then each view, one after the other, so a starting gateway adds
+    one heavy scan at a time. A failure is logged and left to the next start;
+    the views work without the index, only slower.
     """
-    key = id(db_logger.pool)
-    await PERFORMANCE_METRICS.warm(key, lambda: _load_performance_metrics(db_logger))
-    await TTFT_SCATTER.warm(key, lambda: _load_ttft_scatter(db_logger))
+    pool = db_logger.pool
+    try:
+        await perf_metrics_index.ensure_index(pool)
+    except Exception:
+        logger.exception(f"{perf_metrics_index.INDEX_NAME}: build failed")
+    await PERFORMANCE_METRICS.warm(pool, lambda: _load_performance_metrics(db_logger))
+    await TTFT_SCATTER.warm(pool, lambda: _load_ttft_scatter(db_logger))
 
 
 @router.get("/performance-metrics", response_model=AdminPerformanceMetricsResponse)
@@ -600,7 +611,8 @@ async def admin_get_performance_metrics(
 ) -> AdminPerformanceMetricsResponse:
     """Return performance distributions, at most a few minutes old.
 
-    ``generated_at`` says when they were computed; ``refresh`` waits for new ones.
+    ``generated_at`` says when they were computed; ``refresh`` starts a new
+    computation and returns at once, with ``refreshing`` set while it runs.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -615,14 +627,18 @@ async def admin_get_ttft_scatter(
 ) -> AdminTtftScatterResponse:
     """Return TTFT vs input length scatter data, at most a few minutes old.
 
-    ``generated_at`` says when it was computed; ``refresh`` waits for new data.
-    See :func:`_load_ttft_scatter` for what it holds.
+    ``generated_at`` says when it was computed; ``refresh`` starts a new
+    computation and returns at once, with ``refreshing`` set while it runs. See
+    :func:`_load_ttft_scatter` for what it holds.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
-    return await TTFT_SCATTER.get(
-        id(db_logger.pool), lambda: _load_ttft_scatter(db_logger), refresh=refresh
+    response = await TTFT_SCATTER.get(
+        db_logger.pool, lambda: _load_ttft_scatter(db_logger), refresh=refresh
     )
+    if response is None:
+        response = AdminTtftScatterResponse(generated_at=None, models=[])
+    return response.model_copy(update={"refreshing": TTFT_SCATTER.refreshing})
 
 
 async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
@@ -687,6 +703,82 @@ async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
     models.sort(key=lambda m: len(m.points), reverse=True)
 
     return AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=models)
+
+
+_ResponseT = TypeVar("_ResponseT", AdminPerformanceMetricsResponse, AdminTtftScatterResponse)
+
+
+def _definition(*parts: Any) -> str:
+    """Fingerprint of a view's computation: its loader's source, constants and response shape."""
+    text = []
+    for part in parts:
+        if inspect.isfunction(part):
+            try:
+                text.append(inspect.getsource(part))
+            except OSError:  # no source shipped: fall back to the name
+                text.append(part.__qualname__)
+        elif isinstance(part, type) and issubclass(part, BaseModel):
+            text.append(json.dumps(part.model_json_schema(), sort_keys=True))
+        else:
+            text.append(repr(part))
+    return hashlib.sha256("\n".join(text).encode()).hexdigest()[:16]
+
+
+class _StoredView(Generic[_ResponseT]):
+    """A view's result in ``admin_view_results``; keyed by the database pool."""
+
+    def __init__(self, name: str, model: type[_ResponseT], definition: str) -> None:
+        self.name = name
+        self.model = model
+        self.definition = definition
+
+    async def read(self, pool: asyncpg.Pool) -> tuple[_ResponseT, datetime] | None:
+        payload = await admin_view_results.read(pool, self.name, self.definition)
+        if payload is None:
+            return None
+        try:
+            value = self.model.model_validate(payload)
+        except ValidationError as exc:
+            logger.warning(f"{self.name}: ignoring a stored result that no longer parses: {exc}")
+            return None
+        if value.generated_at is None:
+            return None
+        return value.model_copy(update={"refreshing": False}), value.generated_at
+
+    async def write(self, pool: asyncpg.Pool, value: _ResponseT, computed_at: datetime) -> None:
+        await admin_view_results.write(
+            pool, self.name, self.definition, value.model_dump(mode="json"), computed_at
+        )
+
+
+PERFORMANCE_METRICS: RefreshingResult[AdminPerformanceMetricsResponse] = RefreshingResult(
+    "performance_metrics",
+    fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
+    first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    store=_StoredView(
+        "performance_metrics",
+        AdminPerformanceMetricsResponse,
+        _definition(
+            _load_performance_metrics,
+            _PERF_METRICS_CTE,
+            REQUEST_METRIC_WINDOWS,
+            _TOKEN_HISTOGRAM_EDGES,
+            _LATENCY_HISTOGRAM_EDGES,
+            _THROUGHPUT_HISTOGRAM_EDGES,
+            AdminPerformanceMetricsResponse,
+        ),
+    ),
+)
+TTFT_SCATTER: RefreshingResult[AdminTtftScatterResponse] = RefreshingResult(
+    "ttft_scatter",
+    fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
+    first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    store=_StoredView(
+        "ttft_scatter",
+        AdminTtftScatterResponse,
+        _definition(_load_ttft_scatter, AdminTtftScatterResponse),
+    ),
+)
 
 
 def _build_recent_requests_filters(

@@ -643,10 +643,16 @@ class AdminPerformanceMetricsWindow(BaseModel):
 
 
 class AdminPerformanceMetricsResponse(BaseModel):
-    """Performance metric distributions across admin dashboard lookback windows."""
+    """Performance metric distributions across admin dashboard lookback windows.
 
-    generated_at: datetime
+    ``generated_at`` is when the server computed it, or ``None`` while the
+    first computation is still running (and the list is empty). ``refreshing``
+    says a computation is running now; the console polls until it is not.
+    """
+
+    generated_at: datetime | None
     windows: list[AdminPerformanceMetricsWindow]
+    refreshing: bool = False
 
 
 class AdminTtftScatterPoint(BaseModel):
@@ -671,10 +677,16 @@ class AdminTtftScatterModel(BaseModel):
 
 
 class AdminTtftScatterResponse(BaseModel):
-    """TTFT vs input length scatter data, grouped by (model_id, provider)."""
+    """TTFT vs input length scatter data, grouped by (model_id, provider).
 
-    generated_at: datetime
+    ``generated_at`` is when the server computed it, or ``None`` while the
+    first computation is still running (and the list is empty). ``refreshing``
+    says a computation is running now; the console polls until it is not.
+    """
+
+    generated_at: datetime | None
     models: list[AdminTtftScatterModel]
+    refreshing: bool = False
 
 
 class AdminRequestPerfDistribution(BaseModel):

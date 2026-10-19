@@ -512,8 +512,11 @@ export interface AdminPerformanceMetricsWindow {
 }
 
 export interface AdminPerformanceMetricsResponse {
-  generated_at: string;
+  /** When the server computed these; null while its first computation runs. */
+  generated_at: string | null;
   windows: AdminPerformanceMetricsWindow[];
+  /** The server is computing new ones; ask again to get them. */
+  refreshing: boolean;
 }
 
 export async function getPerformanceMetrics({
@@ -544,9 +547,11 @@ export interface AdminTtftScatterModel {
 }
 
 export interface AdminTtftScatterResponse {
-  /** When the server computed this scatter; it is kept for a few minutes. */
-  generated_at: string;
+  /** When the server computed this scatter; null while its first computation runs. */
+  generated_at: string | null;
   models: AdminTtftScatterModel[];
+  /** The server is computing a new one; ask again to get it. */
+  refreshing: boolean;
 }
 
 export async function getTtftScatter({

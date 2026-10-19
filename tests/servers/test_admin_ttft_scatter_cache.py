@@ -2,12 +2,14 @@
 
 The scatter ranks every successful streaming request of the last 90 days to keep
 the newest points of each series -- seconds on a production-sized ``api_logs``.
-The endpoint now computes it once per process, says when (``generated_at``),
-and recomputes on ``refresh=true``. The query itself is unchanged.
+The endpoint serves the kept result, says when it was computed
+(``generated_at``), and on ``refresh=true`` starts a new computation and answers
+at once with ``refreshing`` set. The query itself is unchanged.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,11 +30,30 @@ from serving.servers.routers.admin import metrics
 pytestmark = pytest.mark.asyncio
 
 
+class _MemoryStore:
+    """Stands in for ``admin_view_results``: these tests have no database."""
+
+    def __init__(self) -> None:
+        self.rows: dict = {}
+
+    async def read(self, key):
+        return self.rows.get(key)
+
+    async def write(self, key, value, computed_at):
+        self.rows[key] = (value, computed_at)
+
+
 @pytest.fixture(autouse=True)
-def _reset_cache():
+def _reset_cache(monkeypatch):
     metrics.TTFT_SCATTER.clear()
+    monkeypatch.setattr(metrics.TTFT_SCATTER, "store", _MemoryStore())
     yield
     metrics.TTFT_SCATTER.clear()
+
+
+async def _settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 def _scatter(ttft_ms: int) -> AdminTtftScatterResponse:
@@ -62,11 +83,16 @@ async def test_scatter_is_computed_once_and_says_when(monkeypatch):
     async with _client() as client:
         first = (await client.get("/admin/ttft-scatter")).json()
         second = (await client.get("/admin/ttft-scatter")).json()
-        refreshed = (await client.get("/admin/ttft-scatter?refresh=true")).json()
+        refreshing = (await client.get("/admin/ttft-scatter?refresh=true")).json()
+        await _settle()
+        refreshed = (await client.get("/admin/ttft-scatter")).json()
 
     assert first == second
+    assert first["refreshing"] is False
     assert first["models"][0]["points"][0]["ttft_ms"] == 111
     assert datetime.fromisoformat(first["generated_at"].replace("Z", "+00:00"))
+    # The refresh answers at once with the kept scatter, flagged.
+    assert refreshing == {**first, "refreshing": True}
     assert refreshed["models"][0]["points"][0]["ttft_ms"] == 222
     assert refreshed["generated_at"] >= first["generated_at"]
     assert loader.await_count == 2
@@ -78,7 +104,9 @@ async def test_a_failed_refresh_still_serves_the_previous_scatter(monkeypatch):
 
     async with _client() as client:
         first = await client.get("/admin/ttft-scatter")
-        after_failure = await client.get("/admin/ttft-scatter?refresh=true")
+        await client.get("/admin/ttft-scatter?refresh=true")
+        await _settle()
+        after_failure = await client.get("/admin/ttft-scatter")
 
     assert after_failure.status_code == 200
     # Its generated_at still tells the console how old it is.

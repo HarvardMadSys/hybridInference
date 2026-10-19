@@ -24,6 +24,7 @@ from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import (
     _API_LOGS_COLUMN_MIGRATIONS,
     _API_LOGS_INDEXES,
+    _API_LOGS_STORAGE_PARAMETERS,
     _USER_USAGE_DAILY_MIGRATIONS,
     ensure_api_logs_schema,
 )
@@ -106,8 +107,8 @@ async def test_helper_skips_migration_ddl_when_schema_current():
     conn, statements = _capturing_conn()
     column_rows = [{"attname": name} for name, _ in _API_LOGS_COLUMN_MIGRATIONS]
     index_rows = [{"indexname": name} for name, _ in _API_LOGS_INDEXES]
-    # Columns, indexes, then the two usage rollup tables' columns (the helper's
-    # order).
+    # Columns, indexes, the two usage rollup tables' columns, then the storage
+    # parameters (the helper's order).
     conn.fetch = AsyncMock(
         side_effect=[
             column_rows,
@@ -118,6 +119,7 @@ async def test_helper_skips_migration_ddl_when_schema_current():
                 for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS
                 if t == "user_usage_daily_coverage"
             ],
+            [{"name": name} for name, _ in _API_LOGS_STORAGE_PARAMETERS],
         ]
     )
 

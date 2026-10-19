@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -194,13 +195,18 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
 
     try:
         # The result is kept for a few minutes and may already hold an earlier
-        # computation (the startup warm-up); ask for one over the rows above.
-        resp = await auth_client.get(
-            "/admin/performance-metrics?refresh=true",
-            headers={"Authorization": "Bearer test-admin-token"},
-        )
-        assert resp.status_code == 200, resp.text
+        # computation (the startup warm-up); ask for one over the rows above,
+        # and, as the console does, poll until it has been computed.
+        headers = {"Authorization": "Bearer test-admin-token"}
+        resp = await auth_client.get("/admin/performance-metrics?refresh=true", headers=headers)
+        for _ in range(300):
+            assert resp.status_code == 200, resp.text
+            if not resp.json()["refreshing"]:
+                break
+            await asyncio.sleep(0.1)
+            resp = await auth_client.get("/admin/performance-metrics", headers=headers)
         body = resp.json()
+        assert body["refreshing"] is False
         assert "generated_at" in body
         assert isinstance(body["windows"], list)
         assert len(body["windows"]) > 0

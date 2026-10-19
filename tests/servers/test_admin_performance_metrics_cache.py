@@ -1,9 +1,11 @@
 """Focused cache and percentile-shape tests for admin performance metrics.
 
 Covers the cached metric endpoints: the fixed-window
-``/admin/performance-metrics`` (and its startup warm-up with ``/admin/ttft-scatter``)
-and the filter-keyed ``/admin/recent-requests/performance`` breakdown. The shared
-refreshing cache itself is covered in ``test_admin_refreshing_cache.py``.
+``/admin/performance-metrics`` (and its startup preparation with
+``/admin/ttft-scatter``) and the filter-keyed ``/admin/recent-requests/performance``
+breakdown. The shared refreshing cache itself is covered in
+``test_admin_refreshing_cache.py``, and the stored results and covering index
+against Postgres in ``tests/integration/test_admin_performance_views_postgres.py``.
 """
 
 from __future__ import annotations
@@ -22,11 +24,26 @@ from serving.schemas_admin import (
 from serving.servers.routers.admin import metrics
 
 
+class _MemoryStore:
+    """Stands in for ``admin_view_results``: these tests have no database."""
+
+    def __init__(self) -> None:
+        self.rows: dict = {}
+
+    async def read(self, key):
+        return self.rows.get(key)
+
+    async def write(self, key, value, computed_at):
+        self.rows[key] = (value, computed_at)
+
+
 @pytest.fixture(autouse=True)
-def _reset_performance_caches():
+def _reset_performance_caches(monkeypatch):
     """Keep the module-level cached results isolated between tests."""
-    metrics.PERFORMANCE_METRICS.clear()
-    metrics.TTFT_SCATTER.clear()
+    for cache in (metrics.PERFORMANCE_METRICS, metrics.TTFT_SCATTER):
+        cache.clear()
+        monkeypatch.setattr(cache, "store", _MemoryStore())
+    monkeypatch.setattr(metrics.perf_metrics_index, "ensure_index", AsyncMock(return_value=True))
     yield
     metrics.PERFORMANCE_METRICS.clear()
     metrics.TTFT_SCATTER.clear()
@@ -38,8 +55,26 @@ def _db_logger() -> MagicMock:
     return logger
 
 
-def _response() -> AdminPerformanceMetricsResponse:
-    return AdminPerformanceMetricsResponse(generated_at=datetime.now(timezone.utc), windows=[])
+def _response(count: int = 0) -> AdminPerformanceMetricsResponse:
+    """A response told apart by *count*, as the cache returns copies."""
+    window = metrics.AdminPerformanceMetricsWindow.model_validate(
+        {
+            "key": "1h",
+            "label": "Last 1 hour",
+            "window_minutes": 60,
+            **{
+                name: {"count": count, "histogram": []}
+                for name in ("prompt_tokens", "completion_tokens", "ttft_ms", "throughput_tps")
+            },
+        }
+    )
+    return AdminPerformanceMetricsResponse(
+        generated_at=datetime.now(timezone.utc), windows=[window]
+    )
+
+
+def _count(response: AdminPerformanceMetricsResponse) -> int:
+    return response.windows[0].prompt_tokens.count
 
 
 def _age(cache, seconds: float) -> None:
@@ -50,45 +85,55 @@ def _age(cache, seconds: float) -> None:
 @pytest.mark.asyncio
 async def test_performance_metrics_cache_reuses_fresh_result(monkeypatch):
     db_logger = _db_logger()
-    response = _response()
-    loader = AsyncMock(return_value=response)
+    loader = AsyncMock(return_value=_response(1))
     monkeypatch.setattr(metrics, "_load_performance_metrics", loader)
 
     first = await metrics._get_cached_performance_metrics(db_logger)
     second = await metrics._get_cached_performance_metrics(db_logger)
 
-    assert first is response
-    assert second is response
+    assert _count(first) == _count(second) == 1
+    assert not first.refreshing
     assert loader.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_performance_metrics_refresh_waits_for_a_new_result(monkeypatch):
+async def test_performance_metrics_refresh_returns_at_once_and_says_it_is_refreshing(
+    monkeypatch,
+):
     db_logger = _db_logger()
-    first_response = _response()
-    second_response = _response()
-    loader = AsyncMock(side_effect=[first_response, second_response])
+    release = asyncio.Event()
+
+    async def _load(_db_logger):
+        if loader.await_count == 1:
+            return _response(1)
+        await release.wait()
+        return _response(2)
+
+    loader = AsyncMock(side_effect=_load)
     monkeypatch.setattr(metrics, "_load_performance_metrics", loader)
 
     await metrics._get_cached_performance_metrics(db_logger)
-    refreshed = await metrics._get_cached_performance_metrics(db_logger, refresh=True)
+    during = await metrics._get_cached_performance_metrics(db_logger, refresh=True)
+    assert (_count(during), during.refreshing) == (1, True)
 
-    assert refreshed is second_response
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    after = await metrics._get_cached_performance_metrics(db_logger)
+    assert (_count(after), after.refreshing) == (2, False)
     assert loader.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_performance_metrics_stale_result_is_served_while_it_refreshes(monkeypatch):
     db_logger = _db_logger()
-    first_response = _response()
-    second_response = _response()
     release = asyncio.Event()
 
     async def _load(_db_logger):
         if loader.await_count == 1:
-            return first_response
+            return _response(1)
         await release.wait()
-        return second_response
+        return _response(2)
 
     loader = AsyncMock(side_effect=_load)
     monkeypatch.setattr(metrics, "_load_performance_metrics", loader)
@@ -97,28 +142,51 @@ async def test_performance_metrics_stale_result_is_served_while_it_refreshes(mon
     _age(metrics.PERFORMANCE_METRICS, 1)
 
     # The stale result comes back at once; the refresh runs behind it.
-    assert await metrics._get_cached_performance_metrics(db_logger) is first_response
-    assert await metrics._get_cached_performance_metrics(db_logger) is first_response
+    assert _count(await metrics._get_cached_performance_metrics(db_logger)) == 1
+    assert _count(await metrics._get_cached_performance_metrics(db_logger)) == 1
     await asyncio.sleep(0)
     assert loader.await_count == 2  # one refresh for both stale reads
     release.set()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert await metrics._get_cached_performance_metrics(db_logger) is second_response
+    assert _count(await metrics._get_cached_performance_metrics(db_logger)) == 2
     assert loader.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_performance_metrics_with_no_result_yet_is_an_empty_refreshing_response(
+    monkeypatch,
+):
+    """A first computation longer than the wait answers empty, not after the proxy gave up."""
+    db_logger = _db_logger()
+    release = asyncio.Event()
+
+    async def _load(_db_logger):
+        await release.wait()
+        return _response(1)
+
+    monkeypatch.setattr(metrics, "_load_performance_metrics", AsyncMock(side_effect=_load))
+    monkeypatch.setattr(metrics.PERFORMANCE_METRICS, "first_wait_seconds", 0.01)
+
+    pending = await metrics._get_cached_performance_metrics(db_logger)
+    assert (pending.generated_at, pending.windows, pending.refreshing) == (None, [], True)
+
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert _count(await metrics._get_cached_performance_metrics(db_logger)) == 1
 
 
 @pytest.mark.asyncio
 async def test_performance_metrics_concurrent_misses_share_one_load(monkeypatch):
     db_logger = _db_logger()
-    response = _response()
     started = asyncio.Event()
     release = asyncio.Event()
 
     async def _load(_db_logger):
         started.set()
         await release.wait()
-        return response
+        return _response(1)
 
     loader = AsyncMock(side_effect=_load)
     monkeypatch.setattr(metrics, "_load_performance_metrics", loader)
@@ -130,41 +198,69 @@ async def test_performance_metrics_concurrent_misses_share_one_load(monkeypatch)
 
     assert loader.await_count == 1
     release.set()
-    assert await first_task is response
-    assert await second_task is response
+    assert _count(await first_task) == _count(await second_task) == 1
     assert loader.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_warm_up_fills_both_views_one_after_the_other(monkeypatch):
+async def test_preparation_builds_the_index_then_fills_both_views_one_after_the_other(
+    monkeypatch,
+):
     db_logger = _db_logger()
     order: list[str] = []
     in_flight = 0
 
-    def _loader(name, response):
-        async def _load(_db_logger):
+    def _step(name, response=None):
+        async def _run(*_args):
             nonlocal in_flight
             in_flight += 1
-            assert in_flight == 1, "warm-up must not run both scans at once"
+            assert in_flight == 1, "preparation must not run two heavy steps at once"
             order.append(name)
             await asyncio.sleep(0)
             in_flight -= 1
             return response
 
-        return AsyncMock(side_effect=_load)
+        return AsyncMock(side_effect=_run)
 
-    perf = _loader("perf", _response())
-    scatter = _loader(
+    perf = _step("perf", _response(1))
+    scatter = _step(
         "scatter", AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=[])
     )
+    monkeypatch.setattr(metrics.perf_metrics_index, "ensure_index", _step("index", True))
     monkeypatch.setattr(metrics, "_load_performance_metrics", perf)
     monkeypatch.setattr(metrics, "_load_ttft_scatter", scatter)
 
     await metrics.warm_performance_caches(db_logger)
 
-    assert order == ["perf", "scatter"]
+    assert order == ["index", "perf", "scatter"]
     # Requests after the warm-up are served from memory.
     await metrics._get_cached_performance_metrics(db_logger)
+    assert perf.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_preparation_goes_on_without_the_index_when_its_build_fails(monkeypatch, caplog):
+    db_logger = _db_logger()
+    monkeypatch.setattr(
+        metrics.perf_metrics_index,
+        "ensure_index",
+        AsyncMock(side_effect=RuntimeError("disk full")),
+    )
+    perf = AsyncMock(return_value=_response(1))
+    monkeypatch.setattr(metrics, "_load_performance_metrics", perf)
+    monkeypatch.setattr(
+        metrics,
+        "_load_ttft_scatter",
+        AsyncMock(
+            return_value=AdminTtftScatterResponse(
+                generated_at=datetime.now(timezone.utc), models=[]
+            )
+        ),
+    )
+
+    await metrics.warm_performance_caches(db_logger)
+
+    assert "build failed" in caplog.text
     assert perf.await_count == 1
 
 

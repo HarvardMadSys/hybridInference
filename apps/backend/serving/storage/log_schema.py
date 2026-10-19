@@ -11,7 +11,8 @@ with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
 migrations, its indexes, and the aggregated ``api_stats_hourly``,
-``request_volume_hourly``, ``user_usage_daily`` and ``daily_activity`` tables —
+``request_volume_hourly``, ``user_usage_daily``, ``daily_activity`` and
+``admin_view_results`` tables —
 lives here and is applied by both callers. Add
 future columns/indexes in this module only.
 
@@ -432,6 +433,33 @@ _DAILY_ACTIVITY_DDL = """
     )
 """
 
+# The last computed result of each slow admin view over api_logs -- the Providers
+# tab's performance distributions and TTFT scatter -- as served, so a restarted
+# gateway serves it at once instead of recomputing first. Written and read by
+# ``serving.storage.admin_view_results``; ``definition`` fingerprints the
+# computation, so a result an older revision computed is not served.
+_ADMIN_VIEW_RESULTS_DDL = """
+    CREATE TABLE IF NOT EXISTS admin_view_results (
+        name        TEXT        PRIMARY KEY,
+        definition  TEXT        NOT NULL,
+        payload     JSONB       NOT NULL,
+        computed_at TIMESTAMPTZ NOT NULL
+    )
+"""
+
+# Storage parameters api_logs carries, as ``(name, value)``, set when absent (a
+# value an operator set by hand is left alone).
+#
+# Insert-triggered autovacuum by default waits for inserts of 20% of the table:
+# on a ten-million-row api_logs, ten days of traffic. Until a page is vacuumed
+# the visibility map does not mark it all-visible, and an index-only scan --
+# the admin performance distributions' (``serving.storage.perf_metrics_index``)
+# -- reads the heap for it after all. 1% keeps that to about half a day. Such a
+# vacuum visits only the pages written since the last, and skips index cleanup
+# when there is nothing dead to remove.
+_API_LOGS_STORAGE_PARAMETERS = (("autovacuum_vacuum_insert_scale_factor", "0.01"),)
+
+
 # Columns the tables gained after they first shipped, as ``(table, column, ddl)``.
 # A constant default makes each ``ADD COLUMN`` a catalog-only change on these
 # small tables. Days stored before keep the default ``definition`` and so no
@@ -473,6 +501,21 @@ async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
         """
     )
     return {r["indexname"] for r in rows}
+
+
+async def _storage_parameters(conn: asyncpg.Connection) -> set[str]:
+    """Return the names of the storage parameters set on ``api_logs``."""
+    rows = await conn.fetch(
+        """
+        SELECT split_part(option, '=', 1) AS name
+        FROM pg_class c, unnest(c.reloptions) AS option
+        WHERE c.relname = 'api_logs' AND c.relkind = 'r'
+          AND c.relnamespace = ANY(
+              SELECT oid FROM pg_namespace WHERE nspname = ANY(current_schemas(false))
+          )
+        """
+    )
+    return {r["name"] for r in rows}
 
 
 async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
@@ -545,6 +588,7 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     for ddl in _USER_USAGE_DAILY_DDL:
         await conn.execute(ddl)
     await conn.execute(_DAILY_ACTIVITY_DDL)
+    await conn.execute(_ADMIN_VIEW_RESULTS_DDL)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path
@@ -555,6 +599,7 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         table: await existing_columns(conn, table)
         for table in ("user_usage_daily", "user_usage_daily_coverage")
     }
+    storage_parameters = await _storage_parameters(conn)
 
     # Everything below takes a strong lock, so it runs under a bounded wait: if
     # a concurrent reader holds the table, fail fast (SchemaLockUnavailable)
@@ -575,6 +620,10 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         for index_name, index_ddl in _API_LOGS_INDEXES:
             if index_name not in existing_indexes:
                 await _execute_ddl(conn, index_ddl)
+
+        for name, value in _API_LOGS_STORAGE_PARAMETERS:
+            if name not in storage_parameters:
+                await _execute_ddl(conn, f"ALTER TABLE api_logs SET ({name} = {value})")
 
         # Small tables, but the nightly pg_dump holds them as long as api_logs.
         for table, column, ddl in _USER_USAGE_DAILY_MIGRATIONS:
