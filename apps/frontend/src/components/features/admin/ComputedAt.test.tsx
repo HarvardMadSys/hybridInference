@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { act, cleanup, render, screen } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 import { ComputedAt, formatComputedAgo } from './ComputedAt';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const NOW = Date.parse('2026-10-19T12:00:00Z');
 
@@ -25,4 +28,16 @@ it('shows the exact UTC time on hover, and nothing before the first result', () 
     'title',
     'Computed at 2026-10-19 11:57:00 UTC',
   );
+});
+
+it('keeps the age current while the page stays open', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-19T12:00:00Z'));
+  render(<ComputedAt at="2026-10-19T12:00:00Z" />);
+  expect(screen.getByText('Computed just now')).toBeInTheDocument();
+
+  act(() => {
+    vi.advanceTimersByTime(6 * 60 * 1000);
+  });
+  expect(screen.getByText('Computed 6m ago')).toBeInTheDocument();
 });

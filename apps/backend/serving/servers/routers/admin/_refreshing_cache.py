@@ -62,8 +62,11 @@ class RefreshingResult(Generic[T]):
         if key != self._key:
             self.clear()
             self._key = key
-        if self._value is None or refresh:
-            return await self._wait_for_refresh(load)
+        # This key's result as the request starts: the only fallback this
+        # caller may get, as another key can take over the cache meanwhile.
+        previous = self._value
+        if previous is None or refresh:
+            return await self._wait_for_refresh(load, previous)
         if time.monotonic() - self._computed_at >= self.fresh_seconds:
             self._start(load)
         return self._value
@@ -75,7 +78,7 @@ class RefreshingResult(Generic[T]):
         except Exception:
             logger.exception(f"{self.name}: warm-up failed")
 
-    async def _wait_for_refresh(self, load: Callable[[], Awaitable[T]]) -> T:
+    async def _wait_for_refresh(self, load: Callable[[], Awaitable[T]], previous: T | None) -> T:
         task = self._start(load)
         try:
             # Shielded: a client that disconnects must not cancel the shared
@@ -84,8 +87,8 @@ class RefreshingResult(Generic[T]):
         except asyncio.CancelledError:
             raise
         except Exception:
-            if self._value is not None:
-                return self._value
+            if previous is not None:
+                return previous
             raise
 
     def _start(self, load: Callable[[], Awaitable[T]]) -> asyncio.Task[T]:

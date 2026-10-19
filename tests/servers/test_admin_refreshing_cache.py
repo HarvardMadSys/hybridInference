@@ -23,7 +23,8 @@ pytestmark = pytest.mark.asyncio
 class _Loader:
     """Returns ``result-1``, ``result-2``, ...; fails or blocks when told to."""
 
-    def __init__(self) -> None:
+    def __init__(self, prefix: str = "result") -> None:
+        self.prefix = prefix
         self.calls = 0
         self.fail = False
         self.gate: asyncio.Event | None = None
@@ -35,7 +36,7 @@ class _Loader:
             await self.gate.wait()
         if self.fail:
             raise RuntimeError(f"load {call} failed")
-        return f"result-{call}"
+        return f"{self.prefix}-{call}"
 
 
 def _stale(cache: RefreshingResult) -> None:
@@ -159,6 +160,28 @@ async def test_a_result_computed_for_a_replaced_key_is_dropped():
     # db-a's late result did not overwrite db-b's.
     assert cache._value == "result-1" and cache._key == "db-b"
     assert other.calls == 1
+
+
+async def test_a_failed_refresh_never_falls_back_to_another_keys_result():
+    """The fallback is the caller's own key's previous result, never the current one.
+
+    db-a refreshes; while that load is still running, db-b is asked for and
+    computes its own result. When db-a's load then fails, the cache holds
+    db-b's result -- which must not be handed to the db-a caller.
+    """
+    cache = RefreshingResult("t", fresh_seconds=60)
+    a, b = _Loader("a"), _Loader("b")
+    assert await cache.get("db-a", a) == "a-1"
+
+    a.gate, a.fail = asyncio.Event(), True
+    refreshing_a = asyncio.create_task(cache.get("db-a", a, refresh=True))
+    await _settle()
+    assert await cache.get("db-b", b) == "b-1"
+    a.gate.set()
+
+    # db-a's caller gets db-a's previous result; the cache keeps db-b's.
+    assert await refreshing_a == "a-1"
+    assert (cache._key, cache._value) == ("db-b", "b-1")
 
 
 async def test_warm_up_fills_the_cache_and_only_logs_a_failure(caplog):
