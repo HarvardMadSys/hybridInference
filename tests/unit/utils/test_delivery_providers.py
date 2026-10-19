@@ -24,21 +24,27 @@ def test_base_deployment_has_only_builtin_provider_choices():
     assert delivery.sms_provider_names() == ("none",)
 
 
-@pytest.mark.parametrize("register", [delivery.register_email_provider, delivery.register_sms_provider])
+@pytest.mark.parametrize(
+    "register", [delivery.register_email_provider, delivery.register_sms_provider]
+)
 @pytest.mark.parametrize("name", ["smtp", "none", "", "Acme", "acme-provider", "acme.provider"])
 def test_provider_registration_rejects_reserved_and_invalid_names(register, name):
     with pytest.raises(ValueError):
         register(name, is_configured=lambda: True, send=Mock(return_value=True))
 
 
-@pytest.mark.parametrize("register", [delivery.register_email_provider, delivery.register_sms_provider])
+@pytest.mark.parametrize(
+    "register", [delivery.register_email_provider, delivery.register_sms_provider]
+)
 def test_provider_registration_cannot_replace_existing_transport(register):
     register("example", is_configured=lambda: True, send=Mock(return_value=True))
     with pytest.raises(ValueError, match="already registered"):
         register("example", is_configured=lambda: True, send=Mock(return_value=True))
 
 
-@pytest.mark.parametrize("register", [delivery.register_email_provider, delivery.register_sms_provider])
+@pytest.mark.parametrize(
+    "register", [delivery.register_email_provider, delivery.register_sms_provider]
+)
 @pytest.mark.parametrize("field", ["is_configured", "send"])
 def test_provider_registration_rejects_async_callbacks(register, field):
     async def asynchronous(*args):
@@ -78,7 +84,10 @@ def test_smtp_deployments_preserve_existing_delivery(monkeypatch):
     message = server.send_message.call_args.args[0]
     assert message["To"] == "user@example.org"
     assert message["Subject"] == "subject"
-    assert [part.get_content_type() for part in message.get_payload()] == ["text/plain", "text/html"]
+    assert [part.get_content_type() for part in message.get_payload()] == [
+        "text/plain",
+        "text/html",
+    ]
 
 
 @pytest.mark.parametrize("provider", ["smtp", "missing_extension"])
@@ -103,7 +112,9 @@ def test_email_extension_failure_never_falls_back_to_smtp(monkeypatch, registere
     send = Mock(return_value=False)
     monkeypatch.setattr(email.smtplib, "SMTP", smtp)
     if registered:
-        delivery.register_email_provider("example_mail", is_configured=lambda: configured, send=send)
+        delivery.register_email_provider(
+            "example_mail", is_configured=lambda: configured, send=send
+        )
 
     assert not email.send_email("user@example.org", "subject", "<p>body</p>", "body")
     assert send.call_count == int(registered and configured)
@@ -136,7 +147,12 @@ def test_missing_address_never_reaches_extension(monkeypatch, recipient):
             {"token": quote("token+/&", safe="")},
         ),
         (email.send_approval_email, ("user@example.org",), "approval", {}),
-        (email.send_rejection_email, ("user@example.org", "reason"), "rejection", {"reason": "reason"}),
+        (
+            email.send_rejection_email,
+            ("user@example.org", "reason"),
+            "rejection",
+            {"reason": "reason"},
+        ),
         (
             email.send_new_registration_admin_email,
             ("admin@example.org", "user@example.org", "User", "user-id"),
@@ -187,7 +203,9 @@ def test_notices_pass_rendered_body_to_extension(monkeypatch, function, args):
 
 def test_email_message_copies_and_freezes_event_metadata():
     data = {"token": "original"}
-    message = delivery.EmailMessage("user@example.org", "subject", "<p>body</p>", template_data=data)
+    message = delivery.EmailMessage(
+        "user@example.org", "subject", "<p>body</p>", template_data=data
+    )
     data["token"] = "changed"
     assert message.template_data["token"] == "original"
     with pytest.raises(TypeError):
