@@ -16,20 +16,9 @@ import { hasRole } from '@/components/providers/AuthProvider';
 import { Markdown } from '@/components/ui/Markdown';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
+import { ModelPicker, type PlaygroundModel } from './ModelPicker';
 
 const API_BASE = config.apiBase;
-
-interface PlaygroundProvider {
-  id: string;
-  name: string;
-}
-
-interface PlaygroundModel {
-  id: string;
-  name: string;
-  provider: string;
-  providers: PlaygroundProvider[];
-}
 
 interface RoutingAttempt {
   provider: string;
@@ -146,6 +135,7 @@ export default function PlaygroundPage() {
   const { state } = useAuth();
   const branding = useBranding();
   const [models, setModels] = useState<PlaygroundModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [sessions, setSessions] = useState<PlaygroundSession[]>([createSession('s-1')]);
   const [activeSessionId, setActiveSessionId] = useState('s-1');
   const [streaming, setStreaming] = useState(false);
@@ -193,7 +183,8 @@ export default function PlaygroundPage() {
           );
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setModelsLoading(false));
   }, [state.user?.role]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollDown = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -618,13 +609,18 @@ export default function PlaygroundPage() {
             <div className="dark-scrollbar flex-1 overflow-y-auto px-4 py-4">
               <div className="space-y-5">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  <label
+                    htmlFor="playground-model"
+                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
+                  >
                     Model
                   </label>
-                  <select
+                  <ModelPicker
+                    key={activeSessionId}
+                    id="playground-model"
+                    models={models}
                     value={modelId}
-                    onChange={(e) => {
-                      const newId = e.target.value;
+                    onChange={(newId) => {
                       patch((s) => ({
                         ...s,
                         selectedModelId: newId,
@@ -632,14 +628,8 @@ export default function PlaygroundPage() {
                       }));
                     }}
                     disabled={streaming}
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
-                  >
-                    {models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
+                    loading={modelsLoading}
+                  />
                 </div>
 
                 {modelProviders.length > 1 && (

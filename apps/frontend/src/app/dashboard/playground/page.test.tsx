@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
@@ -80,9 +80,122 @@ describe('PlaygroundPage', () => {
     fetchWithAuth.mockReset();
     // jsdom has no layout engine, so the chat pane's auto-scroll is a no-op.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
+    Element.prototype.scrollIntoView = vi.fn();
   });
 
   afterEach(cleanup);
+
+  it('preserves a pinned provider when reselecting the current model', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    const picker = await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'glm-4.6:chutes-api' },
+    });
+
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
+
+    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(picker).toHaveFocus();
+  });
+
+  it('resets the provider when changing models while preserving each session draft and settings', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+          {
+            id: 'deepseek-v4',
+            name: 'DeepSeek V4',
+            provider: 'deepseek',
+            providers: [
+              { id: 'deepseek-v4:direct-api', name: 'DeepSeek' },
+              { id: 'deepseek-v4:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const firstSession = screen.getByRole('button', { name: /New session No messages -- glm-4.6/ });
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'glm-4.6:chutes-api' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
+      target: { value: 'First session draft' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('You are a research assistant...'), {
+      target: { value: 'First session instructions' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
+    fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'deepseek-v4:chutes-api' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
+      target: { value: 'Second session draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
+    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
+
+    expect(screen.getByRole('combobox')).toHaveValue('');
+    expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('Second session draft');
+    expect(screen.getAllByRole('button', { name: /New session No messages/ })).toHaveLength(2);
+    fireEvent.click(firstSession);
+    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('First session draft');
+    expect(screen.getByPlaceholderText('You are a research assistant...')).toHaveValue(
+      'First session instructions',
+    );
+  });
+
+  it('disables model selection until the chat stream finishes', async () => {
+    let finishStream: (response: ReturnType<typeof sseResponse>) => void = () => {};
+    const pendingResponse = new Promise<ReturnType<typeof sseResponse>>((resolve) => {
+      finishStream = resolve;
+    });
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) =>
+      path === '/internal/playground/models' ? MODELS : pendingResponse,
+    );
+    render(<PlaygroundPage />);
+    const picker = await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    await sendPrompt();
+
+    expect(picker).toBeDisabled();
+    fireEvent.click(picker);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await act(async () => finishStream(sseResponse(['data: [DONE]\n\n'])));
+    await waitFor(() => expect(picker).not.toBeDisabled());
+  });
 
   it('renders assistant markdown as styled elements, not literal text', async () => {
     mockStream([contentFrame('- one\n- two'), 'data: [DONE]\n\n']);
