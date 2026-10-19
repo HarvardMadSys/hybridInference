@@ -1037,9 +1037,11 @@ async def initialize() -> AppServices:
                         _usage_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
                         # The Providers tab's percentile and TTFT-scatter views
-                        # take seconds over a large api_logs and are then kept
-                        # in memory; compute them now so the first admin to
-                        # open the tab after a restart does not wait.
+                        # take seconds to minutes over a large api_logs and are
+                        # served from their last stored result; build the
+                        # percentiles' covering index if missing, then refresh
+                        # both, so the first admin to open the tab sees fresh
+                        # numbers.
                         from serving.servers.routers.admin.metrics import (
                             warm_performance_caches,
                         )

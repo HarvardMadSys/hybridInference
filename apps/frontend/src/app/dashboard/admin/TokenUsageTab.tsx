@@ -11,6 +11,7 @@ import {
   getPerformanceMetrics,
 } from '@/lib/api/admin';
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
+import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const RANGES: { key: TokenUsageRange; label: string }[] = [
@@ -267,25 +268,16 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
 }
 
 function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
-  const [perfMetricsAt, setPerfMetricsAt] = useState<string | null>(null);
-
-  const loadPerformanceMetrics = useCallback(async (refresh: boolean) => {
-    setPerfMetricsLoading(true);
-    try {
-      const d = await getPerformanceMetrics({ refresh });
-      setPerfMetrics(d.windows);
-      setPerfMetricsAt(d.generated_at);
-    } catch {
-      // ignore
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
+  const {
+    data,
+    busy: perfMetricsLoading,
+    load: loadPerformanceMetrics,
+  } = useRefreshedAdminView(getPerformanceMetrics);
+  const perfMetrics = data?.windows ?? [];
 
   // The server keeps these for a few minutes; an explicit refresh of the page
-  // (refreshKey > 0) asks it to recompute.
+  // (refreshKey > 0) asks it to recompute, and the section shows the new ones
+  // once computed.
   useEffect(() => {
     void loadPerformanceMetrics((refreshKey ?? 0) > 0);
   }, [loadPerformanceMetrics, refreshKey]);
@@ -300,7 +292,7 @@ function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <ComputedAt at={perfMetricsAt} />
+          <ComputedAt at={data?.generated_at} refreshing={data?.refreshing} />
           {perfMetricsLoading && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}

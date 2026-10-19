@@ -311,6 +311,7 @@ async def test_steady_state_startup_takes_no_lock_and_no_guard_leak():
     from serving.storage.log_schema import (
         _API_LOGS_COLUMN_MIGRATIONS,
         _API_LOGS_INDEXES,
+        _API_LOGS_STORAGE_PARAMETERS,
         _USER_USAGE_DAILY_MIGRATIONS,
     )
 
@@ -325,6 +326,7 @@ async def test_steady_state_startup_takes_no_lock_and_no_guard_leak():
                 for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS
                 if t == "user_usage_daily_coverage"
             ],
+            [{"name": name} for name, _ in _API_LOGS_STORAGE_PARAMETERS],
         ]
     )
 

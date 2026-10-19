@@ -41,3 +41,12 @@ it('keeps the age current while the page stays open', () => {
   });
   expect(screen.getByText('Computed 6m ago')).toBeInTheDocument();
 });
+
+it('says when the server is computing new numbers', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-19T12:00:00Z'));
+  const { rerender } = render(<ComputedAt at={null} refreshing />);
+  expect(screen.getByText('Computing…')).toBeInTheDocument();
+  rerender(<ComputedAt at="2026-10-19T11:57:00Z" refreshing />);
+  expect(screen.getByText('Computed 3m ago · refreshing…')).toBeInTheDocument();
+});

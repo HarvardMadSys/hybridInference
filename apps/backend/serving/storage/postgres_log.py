@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
-from serving.storage import daily_activity_rollup, user_usage_rollup
+from serving.storage import admin_view_results, daily_activity_rollup, user_usage_rollup
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import (
     check_erasure_fence,
@@ -1137,7 +1137,9 @@ class PostgresLogStore(LogStore):
         before the purge (see :func:`user_usage_rollup.purge_user`).  The
         growth series' ``daily_activity`` lists the user on the days they were
         active, so those days are dropped too, to be counted again without them
-        (:func:`daily_activity_rollup.invalidate_days`).  ``email_broadcast_recipients`` is created
+        (:func:`daily_activity_rollup.invalidate_days`), and the admin views'
+        stored results, computed over every row, are dropped
+        (:func:`admin_view_results.clear`).  ``email_broadcast_recipients`` is created
         by ``DatabaseLogger.initialize`` (``database.py``) — when the
         broadcast subsystem hasn't been provisioned, that DELETE is skipped
         via a savepoint and the key is omitted from the result.
@@ -1225,6 +1227,15 @@ class PostgresLogStore(LogStore):
                     await daily_activity_rollup.invalidate_days(conn, list(purged["days"]))
             except _asyncpg.UndefinedTableError:
                 pass
+            # The admin views' stored results were computed over their rows
+            # too (the scatter keeps single requests): drop them, to be
+            # computed again on next view.
+            if purged["n"]:
+                try:
+                    async with conn.transaction():
+                        await admin_view_results.clear(conn)
+                except _asyncpg.UndefinedTableError:
+                    pass
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast
