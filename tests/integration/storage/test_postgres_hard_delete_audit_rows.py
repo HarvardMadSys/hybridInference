@@ -30,10 +30,9 @@ async def log_store():
     """Provide a PostgresLogStore against the test database, rows wiped."""
     pool = await postgres.create_pool(min_size=1, max_size=5)
 
-    # The fence pins the first secret's fingerprint in the database, and the
-    # erasure-fence suite (and CI's ERASURE_FENCE_SECRET) shares this database
-    # under xdist: a different secret here fails whichever file runs second.
-    store = PostgresLogStore(pool, fence_secret="test-fence-secret-not-for-production")
+    # The suite-wide secret (tests/fixtures/postgres.py): the fence pins the
+    # first one it sees into a database other files share.
+    store = PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET)
     await store.initialize()
 
     async def _wipe() -> None:

@@ -72,7 +72,7 @@ _ANTHROPIC_ASK = json.dumps([{"name": "read_file"}, {"name": "Ask_Followup_Quest
 _NO_ASK = json.dumps([{"name": "read_file"}, {"type": "function", "function": {"name": "edit"}}])
 _NOT_A_LIST = json.dumps({"name": "question"})
 _BARE_NAMES = json.dumps(["question"])
-_FENCE_SECRET = "test-fence-secret-not-for-production"
+_FENCE_SECRET = postgres.FENCE_SECRET
 
 
 @pytest_asyncio.fixture

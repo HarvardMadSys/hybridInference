@@ -180,7 +180,7 @@ async def client(pool: asyncpg.Pool) -> AsyncGenerator[AsyncClient, None]:
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=RouteExecutor(),
         db_logger=SimpleNamespace(pool=pool),
-        log_store=PostgresLogStore(pool, fence_secret="test-fence-secret"),
+        log_store=PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET),
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
@@ -386,7 +386,7 @@ async def test_a_failed_invalidation_rolls_the_clear_back(client: AsyncClient, p
     assert stored & cleared, "the clear must reach a stored hour"
     assert stored - cleared, "and leave one alone"
 
-    store = PostgresLogStore(pool, fence_secret="test-fence-secret")
+    store = PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET)
 
     async def fail(conn: asyncpg.Connection, hours: list[datetime]) -> None:
         raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
