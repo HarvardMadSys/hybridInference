@@ -231,7 +231,7 @@ make test-db-local                                     # the dbtest tier
 make test-db-local ARGS="tests/integration/test_x.py"  # narrower
 eval "$(ops/dev/test-db-local.sh env)"                 # TEST_DB_* for plain pytest
 make test-db-local-clean                               # drop removed worktrees' databases
-make test-db-local-down                                # remove the container and all of it
+make test-db-local-down                                # remove the container: every checkout's databases
 ```
 
 `make test` parallelises with `pytest-xdist` at file granularity. Run serially

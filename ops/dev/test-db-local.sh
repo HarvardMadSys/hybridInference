@@ -10,7 +10,8 @@
 # disposable. Each checkout gets its own database, named from its path, so
 # agents working in different worktrees (often on different schemas) never
 # share tables. A database is created and migrated once and then reused:
-# a later run only re-reads the catalog.
+# a later run only re-reads the catalog. Two runs on the same database (one
+# worktree, two agents) take turns rather than truncating each other's tables.
 #
 # Settings (environment):
 #   TEST_DB_LOCAL_CONTAINER  container name   (hybridinference-test-postgres)
@@ -65,23 +66,31 @@ export_env() {
 
 up() {
   command -v docker >/dev/null || die "docker is not installed"
-  local state
-  state="$(docker container inspect --format '{{.State.Status}}' "${CONTAINER}" 2>/dev/null || true)"
-  case "${state}" in
-    running) ;;
-    "")
-      docker run --detach --name "${CONTAINER}" \
-        --restart unless-stopped \
-        --publish "127.0.0.1:${PORT}:5432" \
-        --env POSTGRES_PASSWORD=postgres \
-        --tmpfs /var/lib/postgresql/data:rw,size=4g \
-        --label org.hybridinference.role=test-database \
-        "${IMAGE}" \
-        -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
-        -c max_connections=500 -c shared_buffers=512MB >/dev/null
-      ;;
-    *) docker start "${CONTAINER}" >/dev/null ;;
-  esac
+  # Several agents may start at once: whoever loses the `docker run` race
+  # retries until the winner's container shows up (it is not visible at once).
+  local state attempt
+  for attempt in $(seq 1 20); do
+    state="$(docker container inspect --format '{{.State.Status}}' "${CONTAINER}" 2>/dev/null || true)"
+    case "${state}" in
+      running) break ;;
+      "")
+        docker run --detach --name "${CONTAINER}" \
+          --restart unless-stopped \
+          --publish "127.0.0.1:${PORT}:5432" \
+          --env POSTGRES_PASSWORD=postgres \
+          --tmpfs /var/lib/postgresql/data:rw,size=4g \
+          --label org.hybridinference.role=test-database \
+          "${IMAGE}" \
+          -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
+          -c max_connections=500 -c shared_buffers=512MB >/dev/null 2>&1 && break
+        ;;
+      created | restarting) ;;
+      *) docker start "${CONTAINER}" >/dev/null 2>&1 && break ;;
+    esac
+    sleep 0.5
+  done
+  [ -n "$(docker container inspect --format '{{.Id}}' "${CONTAINER}" 2>/dev/null)" ] ||
+    die "could not start ${CONTAINER} (is port ${PORT} free? see: docker run ... ${IMAGE})"
   # Over TCP: during first start-up the image runs a temporary server on the
   # Unix socket only, which pg_isready would report as ready.
   local _
@@ -92,6 +101,27 @@ up() {
     sleep 0.5
   done
   die "${CONTAINER} did not become ready; see: docker logs ${CONTAINER}"
+}
+
+# Hold a PostgreSQL advisory lock on this database until the script exits.
+# The lock belongs to a psql session reading from this shell (fd 7), so it is
+# released whenever the shell goes away, however it goes: no lock file to go
+# stale. FIFOs rather than `coproc`, which macOS's bash 3.2 lacks.
+lock_database() {
+  local dir key got
+  dir="$(mktemp -d)"
+  mkfifo "${dir}/in" "${dir}/out"
+  docker exec -i "${CONTAINER}" psql -U postgres -qAtX <"${dir}/in" >"${dir}/out" &
+  exec 7>"${dir}/in" 8<"${dir}/out"
+  rm -rf "${dir}"
+  key="hashtext('test-db-local:${TEST_DB_NAME}')"
+  echo "SELECT pg_try_advisory_lock(${key});" >&7
+  read -r got <&8 || die "could not reach ${CONTAINER} to lock ${TEST_DB_NAME}"
+  if [ "${got}" != "t" ]; then
+    echo "test-db-local: another run is using ${TEST_DB_NAME}; waiting for it to finish" >&2
+    echo "SELECT 'locked' FROM pg_advisory_lock(${key}) AS taken;" >&7
+    read -r got <&8 || die "lost ${CONTAINER} while waiting for ${TEST_DB_NAME}"
+  fi
 }
 
 prepare() {
@@ -106,6 +136,7 @@ case "${cmd}" in
   run)
     up
     export_env
+    lock_database
     prepare
     # Same environment as CI's `test (db)` job.
     export USER_AUTH_ENABLED=1
@@ -114,11 +145,16 @@ case "${cmd}" in
     if [ $# -eq 0 ]; then
       set -- -m "dbtest and not external"
     fi
-    exec ${UV_RUN} pytest -n "$(workers)" --dist loadfile -q -rs "$@"
+    # Not exec: this shell keeps the lock's session open until pytest is done.
+    status=0
+    ${UV_RUN} pytest -n "$(workers)" --dist loadfile -q -rs "$@" || status=$?
+    exit "${status}"
     ;;
   env)
+    # Locked while preparing only: the caller's own pytest runs after we exit.
     up
     export_env
+    lock_database
     prepare >&2
     printf 'export TEST_DB_HOST=%s TEST_DB_PORT=%s TEST_DB_USER=%s TEST_DB_PASSWORD=%s TEST_DB_NAME=%s TEST_DB_REQUIRED=1\n' \
       "${TEST_DB_HOST}" "${TEST_DB_PORT}" "${TEST_DB_USER}" "${TEST_DB_PASSWORD}" "${TEST_DB_NAME}"
@@ -128,7 +164,8 @@ case "${cmd}" in
     echo "${CONTAINER} ready on 127.0.0.1:${PORT}"
     ;;
   down)
-    # The data is in memory: stopping the container discards every database.
+    # The data is in memory: this discards every checkout's databases, and
+    # fails any run in progress in any of them.
     docker rm --force "${CONTAINER}" >/dev/null 2>&1 || true
     echo "${CONTAINER} removed"
     ;;
