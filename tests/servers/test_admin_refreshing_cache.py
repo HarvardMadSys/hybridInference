@@ -382,6 +382,50 @@ async def test_a_request_after_a_delete_never_gets_a_result_stored_just_before_i
     assert store.rows["db"][0] == "result-2"
 
 
+async def test_a_request_after_a_delete_never_gets_a_refresh_stored_just_before_it():
+    """With a result already kept, the request after the delete reads the store.
+
+    The refresh stored its result, then the delete committed; the new request
+    drops the kept result and, while it reads the store, the refresh finishes.
+    The request must not return either, but compute again.
+    """
+    store = _Store()
+    cache, load = _cache(store), _Loader()
+    assert await _value(cache, "db", load) == "result-1"
+    _stale(cache)
+    store.after_write = asyncio.Event()
+    assert await _value(cache, "db", load) == "result-1"  # starts the refresh
+    await _settle()
+    assert store.rows["db"][0] == "result-2"  # stored, not yet in memory
+
+    store.delete()
+    store.read_gate["db"] = asyncio.Event()
+    after = asyncio.create_task(_value(cache, "db", load))
+    await _settle()  # it has seen the delete and is reading the store
+    store.after_write.set()
+    await _settle()  # the refresh finishes meanwhile
+    store.read_gate["db"].set()
+
+    assert await after == "result-3"
+    assert await _value(cache, "db", load) == "result-3"
+
+
+async def test_a_result_published_after_a_delete_no_request_has_seen_yet_is_dropped():
+    """No request saw the delete when the refresh finished: the next one drops it."""
+    store = _Store()
+    cache, load = _cache(store), _Loader()
+    assert await _value(cache, "db", load) == "result-1"
+    _stale(cache)
+    store.after_write = asyncio.Event()
+    await cache.get("db", load)
+    await _settle()
+    store.delete()
+    store.after_write.set()
+    await _settle()  # result-2, computed before the delete, reached memory
+
+    assert await _value(cache, "db", load) == "result-3"
+
+
 async def test_a_stored_result_from_before_a_delete_is_not_restored():
     store = _Store()
     store.rows["db"] = ("stored", _ago(10), 0)
