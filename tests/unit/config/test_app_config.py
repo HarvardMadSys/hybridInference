@@ -1423,6 +1423,8 @@ def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, ca
     from serving.config.settings import Settings
     from serving.storage import log_schema
 
+    # Settings reads the process environment too, and CI's database job sets one.
+    monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
     monkeypatch.setattr(
         "serving.config.settings.get_settings",
         lambda: Settings(api_key_secret="fallback-secret"),

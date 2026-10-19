@@ -3,6 +3,7 @@
 #
 #   ops/dev/test-db-local.sh run [pytest args...]   prepare, then run the tests
 #   ops/dev/test-db-local.sh env                    print the TEST_DB_* exports
+#   ops/dev/test-db-local.sh reset                  drop this checkout's databases
 #   ops/dev/test-db-local.sh up | down | clean
 #
 # One container per machine, shared by every checkout and worktree; its data
@@ -48,13 +49,18 @@ workers() {
 }
 
 database_name() {
+  local name
   if [ -n "${TEST_DB_LOCAL_NAME:-}" ]; then
-    echo "${TEST_DB_LOCAL_NAME}"
-    return
+    name="${TEST_DB_LOCAL_NAME}"
+  else
+    name="hi_$(printf '%s' "${ROOT}" | sha1sum | cut -c1-10)_test_db"
   fi
-  local digest
-  digest="$(printf '%s' "${ROOT}" | sha1sum | cut -c1-10)"
-  echo "hi_${digest}_test_db"
+  # The rule tests/fixtures/postgres.py applies, checked here too because
+  # `reset` drops databases by this name without going through Python.
+  if ! [[ "${name}" =~ ^[A-Za-z0-9_]+$ && "${name}" == *_test_* ]]; then
+    die "database name '${name}' must be letters, digits and underscores and contain _test_"
+  fi
+  echo "${name}"
 }
 
 export_env() {
@@ -62,9 +68,15 @@ export_env() {
   export TEST_DB_PORT="${PORT}"
   export TEST_DB_USER=postgres
   export TEST_DB_PASSWORD=postgres
-  TEST_DB_NAME="$(database_name)"
+  TEST_DB_NAME="$(database_name)" || exit 1
   export TEST_DB_NAME
   export TEST_DB_REQUIRED=1
+  # Same values as CI's `test (db)` job, for `run` and `env` alike. The erasure
+  # fence pins the first secret it sees into the database, and this database
+  # is reused: a run with a different (or no) secret would fail every later one.
+  export USER_AUTH_ENABLED=1
+  export API_KEY_SECRET=integration-test-secret-for-ci-only
+  export ERASURE_FENCE_SECRET=test-fence-secret-not-for-production
 }
 
 up() {
@@ -141,10 +153,6 @@ case "${cmd}" in
     export_env
     lock_database
     prepare
-    # Same environment as CI's `test (db)` job.
-    export USER_AUTH_ENABLED=1
-    export API_KEY_SECRET=integration-test-secret-for-ci-only
-    export ERASURE_FENCE_SECRET=test-fence-secret-not-for-production
     # The tier stays selected whatever is added (ARGS="-vv", "--lf", a path):
     # without it, extra arguments would also collect the live external tests.
     # A later -m of the caller's own replaces it.
@@ -160,8 +168,10 @@ case "${cmd}" in
     export_env
     lock_database
     prepare >&2
-    printf 'export TEST_DB_HOST=%s TEST_DB_PORT=%s TEST_DB_USER=%s TEST_DB_PASSWORD=%s TEST_DB_NAME=%s TEST_DB_REQUIRED=1\n' \
-      "${TEST_DB_HOST}" "${TEST_DB_PORT}" "${TEST_DB_USER}" "${TEST_DB_PASSWORD}" "${TEST_DB_NAME}"
+    for name in TEST_DB_HOST TEST_DB_PORT TEST_DB_USER TEST_DB_PASSWORD TEST_DB_NAME \
+      TEST_DB_REQUIRED USER_AUTH_ENABLED API_KEY_SECRET ERASURE_FENCE_SECRET; do
+      printf 'export %s=%q\n' "${name}" "${!name}"
+    done
     ;;
   up)
     up
@@ -173,12 +183,32 @@ case "${cmd}" in
     docker rm --force "${CONTAINER}" >/dev/null 2>&1 || true
     echo "${CONTAINER} removed"
     ;;
+  reset)
+    # This checkout's databases only; the next run creates them afresh.
+    up
+    export_env
+    lock_database
+    # The name and "<name>_gw<digits>", matched literally (never as a pattern).
+    owned="datname = :'name' OR (starts_with(datname, :'name' || '_gw') \
+      AND substr(datname, length(:'name') + 4) ~ '^[0-9]+$')"
+    docker exec -i "${CONTAINER}" psql -U postgres -qAtX -v ON_ERROR_STOP=1 \
+      -v name="${TEST_DB_NAME}" <<SQL
+SELECT format('DROP DATABASE %I WITH (FORCE)', datname) FROM pg_database WHERE ${owned}
+\gexec
+SQL
+    left="$(docker exec -i "${CONTAINER}" psql -U postgres -qAtX -v name="${TEST_DB_NAME}" <<SQL
+SELECT count(*) FROM pg_database WHERE ${owned}
+SQL
+)"
+    [ "${left}" = "0" ] || die "${left} of ${TEST_DB_NAME}'s databases are still there"
+    echo "dropped ${TEST_DB_NAME} and its worker copies"
+    ;;
   clean)
     up
     export_env
     ${UV_RUN} python -m tests.fixtures.postgres clean
     ;;
   *)
-    die "unknown command '${cmd}' (run, env, up, down, clean)"
+    die "unknown command '${cmd}' (run, env, reset, up, down, clean)"
     ;;
 esac

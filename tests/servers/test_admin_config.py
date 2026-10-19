@@ -26,6 +26,8 @@ async def config_client(monkeypatch, tmp_path):
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("SMTP_PASSWORD", "env-smtp-password")
     monkeypatch.delenv("SITE_NAME", raising=False)
+    # Tests below assert the fence secret is unset; CI's database job sets one.
+    monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
     models = tmp_path / "models.yaml"
     models.write_text(
         "models:\n"
