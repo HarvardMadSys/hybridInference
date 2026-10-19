@@ -33,6 +33,11 @@ def clean_config(monkeypatch, tmp_path):
 
     for entry in registry.static_entries():
         monkeypatch.delenv(entry.key, raising=False)
+    # Runtime settings are not static entries, and the session-wide
+    # tests/servers environment sets some of them (signup without email
+    # verification) for every later test in the same worker.
+    for key in registry.RUNTIME_SETTING_NAMES:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     (tmp_path / "models.yaml").write_text("models: []\n")
     monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
