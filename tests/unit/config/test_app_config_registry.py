@@ -135,8 +135,7 @@ def test_smtp_credentials_are_required_while_signup_needs_verification() -> None
 
 
 _DISTINCT_VALUES = {
-    "email_provider": "tencent_ses",
-    "tencent_ses_region": "ap-hongkong",
+    "email_provider": "sample_email",
     "cors_allowed_origins": "https://x.example",
     "trusted_proxies": "10.0.0.0/8",
     "trusted_direct_client_networks": "192.168.0.0/16",
@@ -144,7 +143,7 @@ _DISTINCT_VALUES = {
     "provider_route_types": "chutes=quota",
     "cookie_samesite": "strict",
     "cookie_domain": "example.com",
-    "sms_provider": "tencent",
+    "sms_provider": "sample_sms",
     "sms_default_country_code": "86",
     "sms_allowed_prefixes": "+86",
 }
@@ -582,63 +581,62 @@ def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
     assert "FORGOTTEN_URL" not in entries
 
 
-# --- phone authentication ----------------------------------------------------
-
-#: What serving.utils.tencent_sms.is_configured() needs, by Settings field.
-_SMS_NEEDS = (
-    "tencent_cloud_secret_id",
-    "tencent_cloud_secret_key",
-    "sms_sdk_app_id",
-    "sms_sign_name",
-    "sms_template_id",
-    "sms_region",
-)
+# --- extension configuration -------------------------------------------------
 
 
-def test_the_sms_requirements_are_what_the_adapter_needs(monkeypatch) -> None:
-    from serving.utils import tencent_sms
+def test_core_has_no_distribution_delivery_settings(extension_registry) -> None:
+    from serving.config.retired_config import RETIRED_EXTENSION_KEYS
 
-    complete = dict.fromkeys(_SMS_NEEDS, "set")
-    monkeypatch.setattr(tencent_sms, "settings", Settings(**complete))
-    assert tencent_sms.is_configured()
-    context = _context({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "tencent"})
-    required = {
-        entry.field
-        for entry in registry.static_entries()
-        if entry.category in ("phone", "integrations") and entry.is_required(context)
+    entries = {entry.key: entry for entry in registry.static_entries()}
+    assert RETIRED_EXTENSION_KEYS.isdisjoint(entries)
+    assert entries["EMAIL_PROVIDER"].choices == ("smtp",)
+    assert entries["SMS_PROVIDER"].choices == ("none",)
+    assert not any(name.startswith("tencent_") for name in Settings.model_fields)
+
+
+def test_retired_rows_and_references_do_not_reappear_as_custom(extension_registry) -> None:
+    from serving.config.retired_config import RETIRED_EXTENSION_KEYS
+
+    discovered = {
+        key: registry.DiscoveredReference(key, "providers", {"legacy"}, credential=True)
+        for key in RETIRED_EXTENSION_KEYS
     }
-    for name in _SMS_NEEDS:
-        monkeypatch.setattr(tencent_sms, "settings", Settings(**{**complete, name: ""}))
-        assert not tencent_sms.is_configured(), name
-    assert required == set(_SMS_NEEDS)
+    entries = registry.build_entries(
+        discovered,
+        {**dict.fromkeys(RETIRED_EXTENSION_KEYS, False), "MY_CUSTOM_ENDPOINT": False},
+        {},
+    )
+    assert RETIRED_EXTENSION_KEYS.isdisjoint(entries)
+    assert entries["MY_CUSTOM_ENDPOINT"].origin == "custom"
+
+
+def test_extension_can_reclaim_existing_config_names(extension_registry) -> None:
+    entry = registry.ConfigEntry(
+        "SMS_REGION", "phone", "An installed delivery region.", default="x"
+    )
+    registry.register_config_entries([entry])
+    assert registry.static_entry("SMS_REGION") == entry
+    assert not registry.is_unavailable_extension_key("SMS_REGION")
+
+
+def test_extension_registration_is_atomic_and_cannot_override_core(extension_registry) -> None:
+    first = registry.ConfigEntry("SAMPLE_REGION", "phone", "Sample region.")
+    duplicate = registry.ConfigEntry("SMTP_HOST", "email", "Replace built-in host.")
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register_config_entries([first, duplicate])
+    assert registry.static_entry("SAMPLE_REGION") is None
 
 
 @pytest.mark.parametrize(
-    "values,required",
+    "entry",
     [
-        ({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "tencent"}, True),
-        ({"SMS_AUTH_ENABLED": "1", "SMS_PROVIDER": "tencent"}, True),
-        ({"SMS_AUTH_ENABLED": "false", "SMS_PROVIDER": "tencent"}, False),
-        ({"SMS_AUTH_ENABLED": "", "SMS_PROVIDER": "tencent"}, False),
-        ({"SMS_AUTH_ENABLED": "true", "SMS_PROVIDER": "none"}, False),
+        registry.ConfigEntry("DB_HOST", "general", "Reserved."),
+        registry.ConfigEntry("USER_AUTH_ENABLED", "security", "Runtime setting."),
+        registry.ConfigEntry("SAMPLE_REGION", "missing", "Unknown category."),
+        registry.ConfigEntry("SAMPLE_REGION", "phone", "Backed field.", field="smtp_host"),
+        registry.ConfigEntry("SAMPLE_REGION", "phone", "Custom origin.", origin="custom"),
     ],
 )
-def test_sms_values_are_required_only_while_phone_sign_in_sends_through_tencent(
-    values, required
-) -> None:
-    context = _context(values)
-    for name in _SMS_NEEDS:
-        entry = registry.static_entry(registry.settings_env_name(name))
-        assert entry is not None
-        assert entry.is_required(context) is required, name
-    token = registry.static_entry("TENCENT_CLOUD_TOKEN")
-    assert token is not None and not token.is_required(context)
-
-
-def test_tencent_ses_still_needs_the_credentials_with_sms_off() -> None:
-    context = _context({"SMS_AUTH_ENABLED": "false", "EMAIL_PROVIDER": "tencent_ses"})
-    for key in ("TENCENT_CLOUD_SECRET_ID", "TENCENT_CLOUD_SECRET_KEY"):
-        entry = registry.static_entry(key)
-        assert entry is not None and entry.is_required(context)
-    entry = registry.static_entry("SMS_SDK_APP_ID")
-    assert entry is not None and not entry.is_required(context)
+def test_extension_registration_rejects_invalid_metadata(extension_registry, entry) -> None:
+    with pytest.raises(ValueError):
+        registry.register_config_entries([entry])

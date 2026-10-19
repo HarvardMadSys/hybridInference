@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from serving.config.retired_config import RETIRED_EXTENSION_KEYS
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
 # settings_init_name is re-exported: callers map a registry entry's field to
@@ -187,34 +188,10 @@ def _auth_secret_required(context: RequirementContext) -> bool:
     return context.database_enabled or context.user_auth_enabled
 
 
-def _sms_required(context: RequirementContext) -> bool:
-    # Mirrors serving.utils.sms.is_sms_enabled: phone sign-in sends messages
-    # only once it is switched on with Tencent as the provider, and then
-    # tencent_sms.is_configured() needs every SMS value and both credentials.
-    return (
-        context.value("SMS_AUTH_ENABLED").strip().lower() in TRUE_WORDS
-        and context.value("SMS_PROVIDER") == "tencent"
-    )
-
-
-def _tencent_credentials_required(context: RequirementContext) -> bool:
-    # The Tencent SES transport needs them even before signup is enabled: it
-    # carries password resets and notices too.
-    return _sms_required(context) or context.value("EMAIL_PROVIDER") == "tencent_ses"
-
-
 def _smtp_required(context: RequirementContext) -> bool:
     # Without mail, a new account can never verify its address.
     return (
-        context.value("EMAIL_PROVIDER") != "tencent_ses"
-        and context.email_verification_needed
-        and not context.email_enabled
-    )
-
-
-def _ses_required(context: RequirementContext) -> bool:
-    return (
-        context.value("EMAIL_PROVIDER") == "tencent_ses"
+        context.value("EMAIL_PROVIDER") in ("", "smtp")
         and context.email_verification_needed
         and not context.email_enabled
     )
@@ -552,7 +529,8 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "phone",
         "SMS verification provider. None disables delivery.",
         "str",
-        choices=("none", "tencent"),
+        choices=("none",),
+        case_sensitive=True,
     ),
     _setting(
         "sms_default_country_code",
@@ -565,24 +543,6 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "phone",
         "Comma-separated allowed international prefixes, such as +86. Empty permits any prefix supported by the provider.",
         "str",
-    ),
-    _setting("sms_region", "phone", "Tencent SMS resource region.", "str", required=_sms_required),
-    _setting(
-        "sms_sdk_app_id", "phone", "Tencent SMS application ID.", "str", required=_sms_required
-    ),
-    _setting(
-        "sms_sign_name",
-        "phone",
-        "Approved Tencent SMS signature text.",
-        "str",
-        required=_sms_required,
-    ),
-    _setting(
-        "sms_template_id",
-        "phone",
-        "Approved Tencent SMS template with code and lifetime-in-minutes parameters.",
-        "str",
-        required=_sms_required,
     ),
     _setting(
         "sms_otp_expire_seconds",
@@ -647,69 +607,9 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "email",
         "Outgoing email transport; SMTP preserves existing behavior.",
         "str",
-        choices=("smtp", "tencent_ses"),
+        choices=("smtp",),
+        case_sensitive=True,
         setup=True,
-    ),
-    _setting(
-        "tencent_ses_region",
-        "email",
-        "Tencent SES resource region.",
-        "str",
-        choices=("ap-guangzhou", "ap-hongkong"),
-    ),
-    _setting(
-        "tencent_ses_from_email",
-        "email",
-        "Approved Tencent SES sender address.",
-        "str",
-        required=_ses_required,
-    ),
-    _setting(
-        "tencent_ses_from_name", "email", "Display name for outgoing Tencent SES mail.", "str"
-    ),
-    _setting(
-        "tencent_ses_template_verification",
-        "email",
-        "Approved Tencent SES verification template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
-        required=_ses_required,
-    ),
-    _setting(
-        "tencent_ses_template_password_reset",
-        "email",
-        "Approved Tencent SES password reset template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
-        required=_ses_required,
-    ),
-    _setting(
-        "tencent_ses_template_approval",
-        "email",
-        "Approved Tencent SES approval template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
-    ),
-    _setting(
-        "tencent_ses_template_rejection",
-        "email",
-        "Approved Tencent SES rejection template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
-    ),
-    _setting(
-        "tencent_ses_template_admin_signup",
-        "email",
-        "Approved Tencent SES admin signup template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
-    ),
-    _setting(
-        "tencent_ses_template_notice",
-        "email",
-        "Approved Tencent SES notice template ID; leave unset to disable the template.",
-        "int",
-        minimum=1,
     ),
     _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
@@ -1136,29 +1036,6 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
     ),
     # --- integrations ------------------------------------------------------
-    _setting(
-        "tencent_cloud_secret_id",
-        "integrations",
-        "Tencent Cloud CAM credential ID, used only by the selected delivery adapter.",
-        "str",
-        secret=True,
-        required=_tencent_credentials_required,
-    ),
-    _setting(
-        "tencent_cloud_secret_key",
-        "integrations",
-        "Tencent Cloud CAM credential secret. Never sent to the browser.",
-        "str",
-        secret=True,
-        required=_tencent_credentials_required,
-    ),
-    _setting(
-        "tencent_cloud_token",
-        "integrations",
-        "Optional session token for temporary Tencent Cloud credentials.",
-        "str",
-        secret=True,
-    ),
     ConfigEntry(
         "IDENTITY_JWT_PRIVATE_KEY",
         "integrations",
@@ -1399,10 +1276,65 @@ def _provider_key_vars() -> dict[str, tuple[str, str]]:
     return dict(_PROVIDER_ENV_KEY_VARS)
 
 
+_EXTENSION_ENTRIES: dict[str, ConfigEntry] = {}
+
+
+def invalidate_config_registry() -> None:
+    """Refresh cached metadata after startup extension/provider registration."""
+    static_entries.cache_clear()
+    _static_by_key.cache_clear()
+
+
+def register_config_entries(entries: Iterable[ConfigEntry]) -> None:
+    """Register an extension's own settings before application configuration loads.
+
+    Extensions use ``field=None`` and read through ``config_value``. Their
+    settings receive the same validation, persistence, secret masking and live
+    refresh as built-ins. Registration is atomic and cannot replace existing
+    entries. Extensions must use existing categories.
+    """
+    additions: dict[str, ConfigEntry] = {}
+    existing = {entry.key for entry in static_entries()}
+    for entry in entries:
+        if not CUSTOM_KEY_RE.fullmatch(entry.key):
+            raise ValueError(f"Invalid extension configuration key: {entry.key!r}")
+        if entry.key in existing or entry.key in additions:
+            raise ValueError(f"Configuration key already registered: {entry.key}")
+        if is_environment_only(entry.key) or is_runtime_setting_name(entry.key):
+            raise ValueError(f"Configuration key is reserved: {entry.key}")
+        if entry.field is not None or entry.origin != "static":
+            raise ValueError("Extension settings must have field=None and origin=static")
+        if entry.category not in CATEGORY_IDS or not entry.description.strip():
+            raise ValueError(f"Invalid extension configuration metadata: {entry.key}")
+        additions[entry.key] = entry
+    _EXTENSION_ENTRIES.update(additions)
+    invalidate_config_registry()
+
+
+def extension_entry(key: str) -> ConfigEntry | None:
+    """Read an extension declaration without importing providers or configuration."""
+    return _EXTENSION_ENTRIES.get(key)
+
+
+def is_unavailable_extension_key(key: str) -> bool:
+    """Retired built-ins stay private until their owning extension registers them."""
+    return key in RETIRED_EXTENSION_KEYS and key not in _EXTENSION_ENTRIES
+
+
 @lru_cache(maxsize=1)
 def static_entries() -> tuple[ConfigEntry, ...]:
-    """Return the static entries, provider API keys included."""
-    by_key = {entry.key: entry for entry in _STATIC_ENTRIES}
+    """Return built-in and explicitly registered extension configuration."""
+    from serving.utils.delivery import email_provider_names, sms_provider_names
+
+    choices = {
+        "EMAIL_PROVIDER": email_provider_names(),
+        "SMS_PROVIDER": sms_provider_names(),
+    }
+    base_entries = tuple(
+        replace(entry, choices=choices[entry.key]) if entry.key in choices else entry
+        for entry in _STATIC_ENTRIES
+    )
+    by_key = {entry.key: entry for entry in (*base_entries, *_EXTENSION_ENTRIES.values())}
     provider_keys: list[ConfigEntry] = []
     for provider, (base_var, _numbered_prefix) in sorted(_provider_key_vars().items()):
         if base_var in by_key:
@@ -1418,8 +1350,13 @@ def static_entries() -> tuple[ConfigEntry, ...]:
             )
         )
     # Provider keys sit before the routing entries, after the other providers.
-    index = next(i for i, entry in enumerate(_STATIC_ENTRIES) if entry.category == "routing")
-    return (*_STATIC_ENTRIES[:index], *provider_keys, *_STATIC_ENTRIES[index:])
+    index = next(i for i, entry in enumerate(base_entries) if entry.category == "routing")
+    return (
+        *base_entries[:index],
+        *provider_keys,
+        *base_entries[index:],
+        *_EXTENSION_ENTRIES.values(),
+    )
 
 
 def static_entry(key: str) -> ConfigEntry | None:
@@ -1719,7 +1656,11 @@ def build_entries(
     entries: dict[str, ConfigEntry] = {entry.key: entry for entry in static_entries()}
 
     for key, reference in discovered.items():
-        if is_environment_only(key) or is_runtime_setting_name(key):
+        if (
+            is_environment_only(key)
+            or is_runtime_setting_name(key)
+            or is_unavailable_extension_key(key)
+        ):
             continue
         requirement = _discovered_requirement(reference)
         used_by = tuple(sorted(reference.used_by))
@@ -1759,7 +1700,12 @@ def build_entries(
             entries[key] = numbered
 
     for key in sorted(stored):
-        if key in entries or is_environment_only(key) or is_runtime_setting_name(key):
+        if (
+            key in entries
+            or is_environment_only(key)
+            or is_runtime_setting_name(key)
+            or is_unavailable_extension_key(key)
+        ):
             continue
         entries[key] = custom_entry(key)
 
