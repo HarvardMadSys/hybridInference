@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from serving.config.settings import settings
+from serving.config.site_identity import get_site_identity
 from serving.integrations.tencent_cloud import api, ses
 from serving.utils import email
 
@@ -162,4 +163,21 @@ def test_ses_failure_never_falls_back_to_smtp(configured, monkeypatch):
     monkeypatch.setattr(email.smtplib, "SMTP", smtp)
     assert not email.send_verification_email("user@example.org", "token", "https://api.example.org")
     assert call.call_count == 1
+    smtp.assert_not_called()
+
+
+def test_a_notice_is_sent_from_its_plain_text_as_the_notice_template(configured, monkeypatch):
+    sent: list[tuple[object, ...]] = []
+    monkeypatch.setattr(ses, "send_template", lambda *args: sent.append(args) or True)
+    smtp = Mock()
+    monkeypatch.setattr(email.smtplib, "SMTP", smtp)
+
+    assert email.send_email("owner@example.org", "Hi", "<p>x</p>", "plain")
+    # The template takes the plain text, never the HTML: without it, nothing is sent.
+    assert not email.send_email("owner@example.org", "Hi", "<p>x</p>", None)
+
+    site_name = get_site_identity().name
+    assert sent == [
+        ("owner@example.org", "Hi", "notice", {"site_name": site_name, "body": "plain"})
+    ]
     smtp.assert_not_called()
