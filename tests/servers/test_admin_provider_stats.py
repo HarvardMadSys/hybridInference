@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -17,6 +16,7 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.routers import admin as admin_router
+from tests.fixtures import postgres
 
 pytestmark = pytest.mark.dbtest
 
@@ -228,16 +228,13 @@ async def test_router_provider_is_hidden_from_provider_performance():
 
 
 # ---------------------------------------------------------------------
-# Happy-path test against a real Postgres (TEST_PG_DSN required)
+# Happy-path test against a real Postgres (dbtest; see tests/fixtures/postgres.py)
 # ---------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture

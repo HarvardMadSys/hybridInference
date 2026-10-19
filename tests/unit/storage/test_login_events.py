@@ -1,30 +1,24 @@
 """Postgres-fixture tests for the login_events table and store methods.
 
-Skipped when PG_TEST_DSN is unset (matches existing storage tests).
+Needs the PostgreSQL test database (``dbtest``; see tests/fixtures/postgres.py).
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import pytest
 
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
-pytestmark = [
-    pytest.mark.dbtest,
-    pytest.mark.skipif(
-        not os.environ.get("PG_TEST_DSN"),
-        reason="PG_TEST_DSN not set; skipping Postgres-fixture tests",
-    ),
-]
+pytestmark = [pytest.mark.dbtest]
 
 
 @pytest.fixture
 async def store() -> PostgresOperationalStore:
-    pool = await asyncpg.create_pool(os.environ["PG_TEST_DSN"], min_size=1, max_size=2)
+    pool = await postgres.create_pool(min_size=1, max_size=2)
     s = PostgresOperationalStore(pool)
     await s.initialize()
     # Clean slate for this test run. Some tests (e.g., the hard-delete-user

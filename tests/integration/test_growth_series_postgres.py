@@ -7,41 +7,27 @@ transition.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
 from serving.servers.routers.admin.analytics import _GROWTH_SERIES_SQL
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture
 async def conn(pg_dsn: str):
-    connection = await asyncpg.connect(pg_dsn)
-    await connection.execute("""
-        CREATE TABLE IF NOT EXISTS api_logs (
-            id BIGSERIAL PRIMARY KEY,
-            timestamp TIMESTAMPTZ DEFAULT NOW(),
-            request_id TEXT NOT NULL UNIQUE,
-            model_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            prompt_tokens INTEGER,
-            completion_tokens INTEGER,
-            user_id TEXT
-        )
-    """)
+    # The entry point has already created the real api_logs. A minimal one made
+    # here used to break every later file that needed the full table.
+    connection = await postgres.connect()
     await connection.execute("TRUNCATE TABLE api_logs")
     try:
         yield connection

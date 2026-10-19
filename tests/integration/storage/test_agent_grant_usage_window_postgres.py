@@ -9,21 +9,18 @@ row-value comparison for the page cursor. These tests write rows through the
 real ``log_request`` — with the same attribution helper the surfaces call — and
 read them back through the real queries.
 
-Connection: ``TEST_PG_DSN`` when set, otherwise the ``DB_HOST`` / ``DB_PORT`` /
-``DB_NAME`` / ``DB_USER`` / ``DB_PASSWORD`` variables CI exports for its
-``postgres`` service. Skipped when no database is reachable.
+Connection: the PostgreSQL test database from ``tests/fixtures/postgres.py``.
+Skipped when it is not reachable (a failure under ``TEST_DB_REQUIRED``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -32,7 +29,7 @@ from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.utils import calculate_cost
 from serving.utils.token_utils import normalize_usage
-from tests.fixtures.auth_helpers import assert_test_db_name
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -54,42 +51,10 @@ SINCE = NOW - timedelta(minutes=10)
 UNTIL = NOW - timedelta(minutes=1)
 
 
-def _dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if dsn:
-        return dsn
-    host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "5432")
-    name = os.getenv("DB_NAME", "hybridinference_test_db")
-    user = os.getenv("DB_USER", "postgres")
-    password = os.getenv("DB_PASSWORD", "postgres")
-    return f"postgresql://{user}:{password}@{host}:{port}/{name}"
-
-
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    """A reachable test-database DSN, or skip."""
-    dsn = _dsn()
-
-    async def _probe() -> str | None:
-        try:
-            conn = await asyncpg.connect(dsn, timeout=2)
-        except Exception as exc:
-            return str(exc)
-        try:
-            assert_test_db_name(await conn.fetchval("SELECT current_database()"), "grant usage")
-        finally:
-            await conn.close()
-        return None
-
-    loop = asyncio.new_event_loop()
-    try:
-        failure = loop.run_until_complete(_probe())
-    finally:
-        loop.close()
-    if failure is not None:
-        pytest.skip(f"PostgreSQL test database not available: {failure}")
-    return dsn
+    """This worker's test database (tests/fixtures/postgres.py), reachable or skipped."""
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture
@@ -104,15 +69,15 @@ async def log_store(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     digest = hashlib.sha1(request.node.name.encode()).hexdigest()[:10]
     schema = f"grant_usage_{worker}_{digest}"
 
-    admin_conn = await asyncpg.connect(pg_dsn)
+    admin_conn = await postgres.connect()
     try:
         await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin_conn.execute(f'CREATE SCHEMA "{schema}"')
     finally:
         await admin_conn.close()
 
-    pool = await asyncpg.create_pool(
-        pg_dsn, min_size=1, max_size=3, server_settings={"search_path": schema}
+    pool = await postgres.create_pool(
+        min_size=1, max_size=3, server_settings={"search_path": schema}
     )
     assert pool is not None
     async with pool.acquire() as conn:
@@ -121,7 +86,7 @@ async def log_store(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
         yield PostgresLogStore(pool, store_full_prompts=False)
     finally:
         await pool.close()
-        admin_conn = await asyncpg.connect(pg_dsn)
+        admin_conn = await postgres.connect()
         try:
             await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:

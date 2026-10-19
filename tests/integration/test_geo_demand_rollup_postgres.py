@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,6 +13,7 @@ from serving.admin.geo_demand_rollup import run_rollup
 from serving.analytics.geo_demand import aggregate_geo_demand_rollup
 from serving.storage.database import DatabaseLogger
 from serving.utils.geo_resolver import GeoResolver
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -37,10 +37,7 @@ def resolver() -> GeoResolver:
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
 
 
 async def _truncate(pool) -> None:

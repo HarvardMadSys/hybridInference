@@ -202,14 +202,22 @@ uv run pytest tests/unit/routing/test_manager.py           # one file
 uv run pytest -m dbtest tests/integration/                 # one tier
 ```
 
-The `dbtest` tier needs a reachable PostgreSQL. Tests read `TEST_DB_HOST`,
-`TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` (defaulting to `localhost:5432`
-and `postgres`/`postgres`), and some read a full `TEST_PG_DSN`. Starting just
-the database container is enough:
+The `dbtest` tier needs a reachable PostgreSQL. Every test finds it through
+`tests/fixtures/postgres.py`, which reads `TEST_DB_HOST`, `TEST_DB_PORT`,
+`TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` (defaulting to
+`localhost:5432`, `postgres`/`postgres` and `hybridinference_test_db`). Starting
+just the database container is enough:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgres
 ```
+
+`make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, so a
+database test that cannot connect fails instead of skipping, and `TEST_DB_HOST`
+and `TEST_DB_PORT` must be set explicitly. CI sets the same variable. No setup
+step is needed otherwise: each test process creates and migrates its own
+database on first use. `uv run python -m tests.fixtures.postgres prepare
+--workers N` does the same up front, which is faster before a run with `-n N`.
 
 `make test` parallelises with `pytest-xdist` at file granularity. Run serially
 when you are debugging a specific failure, but check a suspected env-leak
