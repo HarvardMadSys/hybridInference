@@ -1831,25 +1831,53 @@ msgstr ""
 
 
 #: ../developer/configuration.md
-msgid "Distribution-owned delivery"
-msgstr "发行版拥有的发送服务"
-
-#: ../developer/configuration.md
-msgid "`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Other delivery providers and their configuration belong to the deployment that installs them. A gateway without a delivery extension neither offers that provider nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider."
-msgstr "`EMAIL_PROVIDER` 默认为 `smtp`，`SMS_PROVIDER` 默认为 `none`。其他发送服务及其配置属于安装它们的部署。没有加载发送扩展的网关，不会提供该服务选项，也不会在 **Admin > Configuration** 中列出它的配置。选择不可用的服务属于配置错误；发送失败时不会静默回退到其他服务。"
-
-#: ../developer/configuration.md
-msgid "A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`."
-msgstr "通过 `BACKEND_EXTENSIONS` 选择的可信模块，会在加载数据库配置前注册邮件或短信发送实现和配置项。共享接口包括 `serving.utils.delivery` 中的 `register_email_provider`、`register_sms_provider`，以及 `serving.config.app_config_registry` 中的 `register_config_entries`。扩展配置保留数据库 → 环境变量 → 注册默认值的优先级、校验、秘密遮蔽和进程间刷新。扩展通过 `config_value()` 读取配置，不向共享 `Settings` 添加厂商字段。"
-
-#: ../developer/configuration.md
-msgid "When upgrading a deployment that previously used a built-in delivery adapter, package and enable its distribution extension before upgrading the core. Keep existing setting names and stored values; the extension registers them again. On a gateway without that extension, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it. Distribution-specific credentials, templates and operational instructions stay with that distribution."
-msgstr "升级曾使用内置发送适配器的部署时，先打包并启用发行版扩展，再升级核心。保留原有配置名称和存储值，由扩展重新注册。未加载该扩展的网关会把残留的旧行列为普通自定义配置：没有代码读取它，秘密标记保留，管理员可以删除。发行版专属的凭据、模板和操作说明留在该发行版中。"
-
-#: ../developer/configuration.md
 msgid "Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work."
 msgstr "手机号注册、登录和绑定默认关闭。安装发行版拥有的短信服务并完成发送配置后，在 **Admin > Configuration** 中启用 `SMS_AUTH_ENABLED`，再通过 `SMS_PROVIDER` 选择已注册的服务。网关通过 `/site-config` 发布 `features.phone_auth`；共享表单仅在该功能可用时显示手机号选项。原有邮箱登录和首次启动管理员登录保持可用。"
 
 #: ../developer/configuration.md
 msgid "Account identifiers use international format, such as `+12025550123`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. The distribution chooses a number policy supported by its delivery provider; account storage and verification-code policy remain shared."
 msgstr "账号标识使用国际格式，例如 `+12025550123`。`SMS_DEFAULT_COUNTRY_CODE` 可为本地号码补充区号；留空时必须输入国际格式。`SMS_ALLOWED_PREFIXES` 可通过逗号分隔的前缀限制目的地。发行版选择发送服务支持的号码策略；账号存储和验证码策略仍由共享核心负责。"
+
+#: ../developer/configuration.md
+msgid "Email and SMS delivery providers"
+msgstr "邮件与短信发送服务"
+
+#: ../developer/configuration.md
+msgid "`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider."
+msgstr "`EMAIL_PROVIDER` 默认为 `smtp`，`SMS_PROVIDER` 默认为 `none`。其他发送服务都是部署显式加载的可选模块。未加载某个服务的网关既不提供该选项，也不会在 **Admin > Configuration** 中列出其配置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
+
+#: ../developer/configuration.md
+msgid "Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`."
+msgstr "每个发行版都可以为自己的推理平台接入所需的发送服务，例如区域性的邮件或短信服务。通过 `BACKEND_EXTENSIONS` 选择的可信模块，会在加载数据库配置前注册邮件或短信发送实现和配置项。共享接口包括 `serving.utils.delivery` 中的 `register_email_provider`、`register_sms_provider`，以及 `serving.config.app_config_registry` 中的 `register_config_entries`。扩展配置保留数据库 → 环境变量 → 注册默认值的优先级、校验、秘密遮蔽和进程间刷新。扩展通过 `config_value()` 读取配置，不向共享 `Settings` 添加厂商字段。"
+
+#: ../developer/configuration.md
+msgid "Tencent Cloud SES and SMS"
+msgstr "腾讯云 SES 与短信"
+
+#: ../developer/configuration.md
+msgid "The gateway ships one such module, `serving.integrations.tencent_cloud`, for Tencent Cloud transactional email and SMS. It is not loaded by default. Add it to `BACKEND_EXTENSIONS` to offer `EMAIL_PROVIDER=tencent_ses` and `SMS_PROVIDER=tencent`. A failed SES request or missing SES template does not fall back to SMTP."
+msgstr "网关自带一个这样的模块 `serving.integrations.tencent_cloud`，用于腾讯云事务邮件和短信，默认不加载。将它加入 `BACKEND_EXTENSIONS` 后，即可选择 `EMAIL_PROVIDER=tencent_ses` 和 `SMS_PROVIDER=tencent`。SES 请求失败或缺少 SES 模板时不会回退到 SMTP。"
+
+#: ../developer/configuration.md
+msgid "Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the selected region. Secret values remain server-side and are redacted in the configuration API. Keep production credentials and sender identities in deployment configuration."
+msgstr "配置 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、可选的 `TENCENT_CLOUD_TOKEN`、`TENCENT_SES_REGION`、`TENCENT_SES_FROM_EMAIL` 和可选的 `TENCENT_SES_FROM_NAME`。发件地址必须在所选地域审核通过。秘密值保留在服务端，配置 API 会隐藏这些值。生产凭据和发件身份应保存在部署配置中。"
+
+#: ../developer/configuration.md
+msgid "Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLATE_PASSWORD_RESET` before enabling SES account mail. Configure `TENCENT_SES_TEMPLATE_APPROVAL`, `TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` and `TENCENT_SES_TEMPLATE_NOTICE` for the notifications the deployment uses. Unset IDs disable those templates. Configuration health reports missing SES account-mail fields when public signup requires email verification, instead of asking for SMTP credentials."
+msgstr "启用 SES 账号邮件前，为 `TENCENT_SES_TEMPLATE_VERIFICATION` 和 `TENCENT_SES_TEMPLATE_PASSWORD_RESET` 设置正整数 ID。根据部署使用的通知配置 `TENCENT_SES_TEMPLATE_APPROVAL`、`TENCENT_SES_TEMPLATE_REJECTION`、`TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` 和 `TENCENT_SES_TEMPLATE_NOTICE`。未设置的 ID 会禁用对应模板。当开放注册要求验证邮箱时，配置健康检查会报告缺失的 SES 账号邮件字段，不再要求 SMTP 凭据。"
+
+#: ../developer/configuration.md
+msgid "Reference HTML lives in `config/examples/tencent-ses/`. Before submitting templates for provider approval, replace the example domain with the deployment console domain and choose the desired language and wording. Verification and reset templates contain a fixed HTTPS origin and path; only the encoded `token` query value varies. Other templates use `site_name` and, where applicable, `reason`, `identifier` or `body`. Keep template links consistent with `FRONTEND_URL`; the gateway cannot inspect approved template contents."
+msgstr "参考 HTML 位于 `config/examples/tencent-ses/`。提交供应商审核前，将示例域名替换为部署控制台域名，并选择所需语言和文案。验证与重置模板包含固定的 HTTPS 来源和路径，只有编码后的 `token` 查询值会变化。其他模板使用 `site_name`，并按需使用 `reason`、`identifier` 或 `body`。模板链接应与 `FRONTEND_URL` 保持一致；网关无法检查已审核模板的内容。"
+
+#: ../developer/configuration.md
+msgid "SES receives approved templates with escaped scalar values, never arbitrary HTML variables. Serialized template data is limited to 800 UTF-8 bytes; oversized notices and HTML-only notices fail rather than being truncated. Successful submission means provider acceptance, not inbox delivery. Calls are not automatically retried because a timeout can follow acceptance. Deployments that require unrestricted HTML mail or long notices can continue to use SMTP."
+msgstr "SES 接收审核模板和经过转义的标量变量，不接收任意 HTML 变量。序列化后的模板数据限制为 800 个 UTF-8 字节；超长通知及仅有 HTML 的通知会失败，不会被截断。提交成功表示供应商已接受请求，不代表邮件已送达收件箱。请求不会自动重试，因为超时可能发生在请求已被接受之后。需要任意 HTML 邮件或较长通知的部署可以继续使用 SMTP。"
+
+#: ../developer/configuration.md
+msgid "The SMS provider requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. It currently sends to mainland China mobile numbers only: set `SMS_DEFAULT_COUNTRY_CODE` to `86` if local input is desired and `SMS_ALLOWED_PREFIXES` to `+86`. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control."
+msgstr "短信服务需要 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY`、`SMS_REGION`、`SMS_SDK_APP_ID`、`SMS_SIGN_NAME` 和 `SMS_TEMPLATE_ID`。临时凭据还需要 `TENCENT_CLOUD_TOKEN`。审核通过的模板依次接收验证码和有效分钟数两个参数。它目前仅向中国大陆手机号发送短信：如需支持本地输入，将 `SMS_DEFAULT_COUNTRY_CODE` 设为 `86`，并将 `SMS_ALLOWED_PREFIXES` 设为 `+86`。真实凭据、已审核签名和模板 ID 应保存在部署配置中，不要提交到源码仓库。"
+
+#: ../developer/configuration.md
+msgid "A deployment that used the Tencent adapter before it became optional adds the module to `BACKEND_EXTENSIONS` when it upgrades; setting names and stored values are unchanged. On a gateway that does not load a provider, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it."
+msgstr "此前使用腾讯适配器的部署在升级时把该模块加入 `BACKEND_EXTENSIONS`，配置名称和存储值都不变。未加载某个服务的网关会把它曾使用的残留旧行列为普通自定义配置：没有代码读取它，秘密标记保留，管理员可以删除。"

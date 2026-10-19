@@ -9,13 +9,27 @@ and [Routing](routing.md) (what the routing engine does with the result).
 For distribution manifests, branding, UI modules and backend extensions, see
 [Distribution customization](distribution-customization.md).
 
-## Distribution-owned delivery
+## Email and SMS delivery providers
 
-`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Other delivery providers and their configuration belong to the deployment that installs them. A gateway without a delivery extension neither offers that provider nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
 
-A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
+Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
 
-When upgrading a deployment that previously used a built-in delivery adapter, package and enable its distribution extension before upgrading the core. Keep existing setting names and stored values; the extension registers them again. On a gateway without that extension, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it. Distribution-specific credentials, templates and operational instructions stay with that distribution.
+### Tencent Cloud SES and SMS
+
+The gateway ships one such module, `serving.integrations.tencent_cloud`, for Tencent Cloud transactional email and SMS. It is not loaded by default. Add it to `BACKEND_EXTENSIONS` to offer `EMAIL_PROVIDER=tencent_ses` and `SMS_PROVIDER=tencent`. A failed SES request or missing SES template does not fall back to SMTP.
+
+Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the selected region. Secret values remain server-side and are redacted in the configuration API. Keep production credentials and sender identities in deployment configuration.
+
+Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLATE_PASSWORD_RESET` before enabling SES account mail. Configure `TENCENT_SES_TEMPLATE_APPROVAL`, `TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` and `TENCENT_SES_TEMPLATE_NOTICE` for the notifications the deployment uses. Unset IDs disable those templates. Configuration health reports missing SES account-mail fields when public signup requires email verification, instead of asking for SMTP credentials.
+
+Reference HTML lives in `config/examples/tencent-ses/`. Before submitting templates for provider approval, replace the example domain with the deployment console domain and choose the desired language and wording. Verification and reset templates contain a fixed HTTPS origin and path; only the encoded `token` query value varies. Other templates use `site_name` and, where applicable, `reason`, `identifier` or `body`. Keep template links consistent with `FRONTEND_URL`; the gateway cannot inspect approved template contents.
+
+SES receives approved templates with escaped scalar values, never arbitrary HTML variables. Serialized template data is limited to 800 UTF-8 bytes; oversized notices and HTML-only notices fail rather than being truncated. Successful submission means provider acceptance, not inbox delivery. Calls are not automatically retried because a timeout can follow acceptance. Deployments that require unrestricted HTML mail or long notices can continue to use SMTP.
+
+The SMS provider requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. It currently sends to mainland China mobile numbers only: set `SMS_DEFAULT_COUNTRY_CODE` to `86` if local input is desired and `SMS_ALLOWED_PREFIXES` to `+86`. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control.
+
+A deployment that used the Tencent adapter before it became optional adds the module to `BACKEND_EXTENSIONS` when it upgrades; setting names and stored values are unchanged. On a gateway that does not load a provider, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it.
 
 ## What the gateway reads at startup
 
