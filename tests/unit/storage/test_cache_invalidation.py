@@ -273,3 +273,83 @@ class TestUserPreferencesInvalidation:
 
         assert inner.get_auth_context_by_key_hash.await_count == 2
         assert inner.get_auth_context_lightweight.await_count == 2
+
+
+class TestAccountChangesInvalidation:
+    """Every account change that reaches the store clears what was cached about it.
+
+    These wrappers had no test of their own: the routes that call them mock the
+    whole store, so a wrapper that raised after the database changed (as
+    ``bind_user_email`` once did) went unnoticed.
+    """
+
+    @staticmethod
+    async def _prime(cached, inner) -> None:
+        inner.get_user_by_id.return_value = {"id": "u1", "status": "active"}
+        inner.get_auth_context_by_key_hash.return_value = {"user_id": "u1"}
+        inner.get_auth_context_lightweight.return_value = {"user_id": "u1"}
+        await cached.get_user_by_id("u1")
+        await cached.get_auth_context_by_key_hash("h1")
+        await cached.get_auth_context_lightweight("h1")
+        inner.get_user_by_id.return_value = {"id": "u1", "status": "changed"}
+        inner.get_auth_context_by_key_hash.return_value = None
+        inner.get_auth_context_lightweight.return_value = None
+
+    @pytest.mark.parametrize(
+        ("method", "returns", "call"),
+        [
+            ("bind_user_email", True, lambda c: c.bind_user_email("u1", "new@example.com")),
+            ("bind_user_phone", True, lambda c: c.bind_user_phone("u1", "+15550100")),
+            ("begin_hard_delete_user", "claim", lambda c: c.begin_hard_delete_user("u1")),
+            (
+                "release_hard_delete_user_claim",
+                None,
+                lambda c: c.release_hard_delete_user_claim("u1", "claim"),
+            ),
+            (
+                "resume_user",
+                None,
+                lambda c: c.resume_user("u1", admin_ip="203.0.113.1", admin_id="a1"),
+            ),
+            (
+                "hard_delete_user",
+                {"users": 1},
+                lambda c: c.hard_delete_user(
+                    "u1", claim_token="claim", admin_ip="203.0.113.1", admin_id="a1"
+                ),
+            ),
+        ],
+    )
+    async def test_change_clears_the_user_and_every_auth_entry(
+        self, cached, inner, method, returns, call
+    ):
+        setattr(inner, method, AsyncMock(return_value=returns))
+        await self._prime(cached, inner)
+
+        assert await call(cached) == returns
+
+        assert (await cached.get_user_by_id("u1"))["status"] == "changed"
+        assert await cached.get_auth_context_by_key_hash("h1") is None
+        assert await cached.get_auth_context_lightweight("h1") is None
+
+    @pytest.mark.parametrize("method", ["bind_user_email", "bind_user_phone"])
+    async def test_a_refused_bind_keeps_the_cache(self, cached, inner, method):
+        """Nothing changed in the store, so nothing is evicted."""
+        setattr(inner, method, AsyncMock(return_value=False))
+        await self._prime(cached, inner)
+
+        assert await getattr(cached, method)("u1", "value") is False
+
+        assert (await cached.get_user_by_id("u1"))["status"] == "active"
+        assert await cached.get_auth_context_by_key_hash("h1") == {"user_id": "u1"}
+
+    @pytest.mark.parametrize(("created", "status"), [(True, "changed"), (False, "active")])
+    async def test_a_phone_session_refreshes_the_user_only_when_created(
+        self, cached, inner, created, status
+    ):
+        inner.create_phone_session = AsyncMock(return_value=created)
+        await self._prime(cached, inner)
+
+        assert await cached.create_phone_session(user_id="u1", session_id="s1") is created
+
+        assert (await cached.get_user_by_id("u1"))["status"] == status
