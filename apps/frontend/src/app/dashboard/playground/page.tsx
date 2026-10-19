@@ -330,11 +330,22 @@ export default function PlaygroundPage() {
     [patch],
   );
 
-  const restoreMessages = useCallback((sessionId: string, messages: Message[], draft: string) => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === sessionId ? { ...s, messages, input: s.input || draft } : s)),
-    );
-  }, []);
+  /**
+   * Put `messages` back, but only while the session still holds exactly what
+   * the undone action left (`expected`): anything said since must not be lost.
+   */
+  const restoreMessages = useCallback(
+    (sessionId: string, messages: Message[], draft: string, expected?: Message[]) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId && (!expected || s.messages === expected)
+            ? { ...s, messages, input: s.input || draft }
+            : s,
+        ),
+      );
+    },
+    [],
+  );
 
   const resetSession = useCallback(() => {
     if (!session) return;
@@ -355,11 +366,12 @@ export default function PlaygroundPage() {
       rafRef.current = null;
     }
     setStreaming(false);
-    patch((s) => ({ ...s, messages: [], input: '' }));
+    const cleared: Message[] = [];
+    patch((s) => ({ ...s, messages: cleared, input: '' }));
     if (snapshot.length > 0 || draft) {
       setUndo({
         label: 'Conversation cleared',
-        restore: () => restoreMessages(sessionId, snapshot, draft),
+        restore: () => restoreMessages(sessionId, snapshot, draft, cleared),
       });
     }
   }, [session, streaming, patch, restoreMessages]);
@@ -438,11 +450,16 @@ export default function PlaygroundPage() {
     });
   };
 
-  /** Stream a reply to `base`, which ends with the user message being answered. */
+  /**
+   * Stream a reply to `base`, which ends with the user message being answered.
+   * A new turn retires any pending Undo; `undo` replaces it when the turn
+   * itself is the undoable action.
+   */
   const startTurn = useCallback(
-    async (base: Message[]) => {
+    async (base: Message[], undo: UndoAction | null = null) => {
       if (streaming || !modelId) return;
 
+      setUndo(undo);
       followRef.current = true;
       patch((s) => ({
         ...s,
@@ -537,15 +554,22 @@ export default function PlaygroundPage() {
               /* skip */
             }
           }
+          if (failure) {
+            // An in-band error ends the turn even if the connection stays open.
+            ctrl.abort();
+            break;
+          }
         }
         if (!failure && !firstTokenTimeRef.current) {
           failure = { status: 'error', error: 'The model returned an empty response.' };
         }
       } catch (err) {
-        failure =
-          (err as Error).name === 'AbortError'
-            ? { status: 'aborted' }
-            : { status: 'error', error: (err as Error).message || 'Request failed' };
+        if ((err as Error).name !== 'AbortError') {
+          failure = { status: 'error', error: (err as Error).message || 'Request failed' };
+        } else if (!failure) {
+          // Stop after an upstream error keeps the error, so the turn stays out of context.
+          failure = { status: 'aborted' };
+        }
       } finally {
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
@@ -560,25 +584,23 @@ export default function PlaygroundPage() {
         const finishReason = finishReasonRef.current;
         const outcome = failure;
         patch((s) => {
-          const c = [...s.messages];
-          const last = c[c.length - 1];
-          if (last && last.role === 'assistant') {
-            const cleaned: Message = {
-              ...last,
-              durationMs: Math.round(end - start),
-              ttftMs: firstToken ? Math.round(firstToken - start) : undefined,
-              completionTokens: tokens,
-              ...(finishReason ? { finishReason } : {}),
-              ...(outcome ?? {}),
-            };
-            if (cleaned.reasoningContent && firstToken) {
-              cleaned.reasoningMs = Math.round((contentStart || end) - firstToken);
-            } else {
-              delete cleaned.reasoningContent;
-            }
-            c[c.length - 1] = cleaned;
+          const last = s.messages[s.messages.length - 1];
+          // Cleared mid-stream: leave the session (and its Undo) untouched.
+          if (last?.role !== 'assistant') return s;
+          const cleaned: Message = {
+            ...last,
+            durationMs: Math.round(end - start),
+            ttftMs: firstToken ? Math.round(firstToken - start) : undefined,
+            completionTokens: tokens,
+            ...(finishReason ? { finishReason } : {}),
+            ...(outcome ?? {}),
+          };
+          if (cleaned.reasoningContent && firstToken) {
+            cleaned.reasoningMs = Math.round((contentStart || end) - firstToken);
+          } else {
+            delete cleaned.reasoningContent;
           }
-          return { ...s, messages: c };
+          return { ...s, messages: [...s.messages.slice(0, -1), cleaned] };
         });
         setStreaming(false);
         abortRef.current = null;
@@ -609,15 +631,17 @@ export default function PlaygroundPage() {
   const regenerate = useCallback(() => {
     const last = msgs[msgs.length - 1];
     if (streaming || last?.role !== 'assistant' || !session) return;
-    if (isUsableReply(last)) {
-      const sessionId = session.id;
-      const snapshot = msgs;
-      setUndo({
-        label: 'Replaced the last reply',
-        restore: () => restoreMessages(sessionId, snapshot, ''),
-      });
-    }
-    void startTurn(msgs.slice(0, -1));
+    const sessionId = session.id;
+    const snapshot = msgs;
+    void startTurn(
+      msgs.slice(0, -1),
+      isUsableReply(last)
+        ? {
+            label: 'Replaced the last reply',
+            restore: () => restoreMessages(sessionId, snapshot, ''),
+          }
+        : null,
+    );
   }, [msgs, streaming, session, restoreMessages, startTurn]);
 
   /** Move the last question back into the editor, dropping its reply. */
@@ -628,18 +652,21 @@ export default function PlaygroundPage() {
     const sessionId = session.id;
     const snapshot = msgs;
     const draft = input;
+    const remaining = msgs.slice(0, index);
     setSessions((prev) =>
       prev.map((s) =>
-        s.id === sessionId
-          ? { ...s, messages: msgs.slice(0, index), input: msgs[index].content }
-          : s,
+        s.id === sessionId ? { ...s, messages: remaining, input: msgs[index].content } : s,
       ),
     );
     setUndo({
       label: 'Moved your last message back to the editor',
       restore: () =>
         setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, messages: snapshot, input: draft } : s)),
+          prev.map((s) =>
+            s.id === sessionId && s.messages === remaining
+              ? { ...s, messages: snapshot, input: draft }
+              : s,
+          ),
         ),
     });
     textareaRef.current?.focus();

@@ -568,4 +568,54 @@ describe('PlaygroundPage', () => {
     expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
     stream.end();
   });
+
+  it('never lets an old Undo overwrite a newer conversation', async () => {
+    mockChats(
+      sseResponse([contentFrame('first answer'), 'data: [DONE]\n\n']),
+      sseResponse([contentFrame('second answer'), 'data: [DONE]\n\n']),
+    );
+    render(<PlaygroundPage />);
+    await sendPrompt('first');
+    await screen.findByText('first answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+
+    await sendPrompt('second');
+    await screen.findByText('second answer');
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.queryByText('first answer')).toBeNull();
+  });
+
+  it('can undo a clear made mid-stream', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    stream.push(contentFrame('partial'));
+    await screen.findByText('partial');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    stream.end();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getByText('partial')).toBeInTheDocument();
+    expect(screen.getByText('Stopped. The partial reply is kept as context.')).toBeInTheDocument();
+  });
+
+  it('ends the turn on an in-band error even if the connection stays open', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response, sseResponse([contentFrame('fine'), 'data: [DONE]\n\n']));
+    render(<PlaygroundPage />);
+    await sendPrompt('first');
+    stream.push(contentFrame('half an answer'));
+    await screen.findByText('half an answer');
+    stream.push(frame({ error: { message: 'upstream reset' } }));
+
+    // No end(): the upstream never closes, yet the turn is over and still an error.
+    expect(await screen.findByText('Error: upstream reset')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull());
+    await sendPrompt('second');
+    await screen.findByText('fine');
+    expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+  });
 });
