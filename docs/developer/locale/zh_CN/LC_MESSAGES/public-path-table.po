@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 17:15+0800\n"
+"POT-Creation-Date: 2026-10-19 06:00-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -280,10 +280,106 @@ msgid ""
 msgstr "逐跳（hop-by-hop）头会去掉，cookie 原样保留；如果重定向指向任一 agent 内部服务，会改写回对应的公开前缀下。"
 
 #: ../developer/public-path-table.md:87
+msgid "Runtime route handlers — the gateway's streaming surfaces"
+msgstr "运行时 route handler——网关的流式接口"
+
+#: ../developer/public-path-table.md:89
+msgid ""
+"Three gateway prefixes are forwarded by route handlers instead of "
+"rewrites, because their responses stream:"
+msgstr "网关有三个前缀不用 rewrite 转发，而是用 route handler，因为它们的响应是流式的："
+
+#: ../developer/public-path-table.md
+msgid "Handler"
+msgstr "Handler"
+
+#: ../developer/public-path-table.md
+msgid "Serves"
+msgstr "提供什么"
+
+#: ../developer/public-path-table.md
+msgid "`/v1/:path*`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "`src/app/v1/[[...path]]/route.ts`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "the OpenAI-compatible API surface"
+msgstr "OpenAI 兼容的 API 接口"
+
+#: ../developer/public-path-table.md
+msgid "`/anthropic/:path*`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "`src/app/anthropic/[[...path]]/route.ts`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "the Anthropic Messages surface"
+msgstr "Anthropic Messages 接口"
+
+#: ../developer/public-path-table.md
+msgid "`/internal/playground/:path*`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "`src/app/internal/playground/[[...path]]/route.ts`"
+msgstr ""
+
+#: ../developer/public-path-table.md
+msgid "the admin-only model playground the console's dashboard calls"
+msgstr "仅限管理员的模型 playground，由控制台仪表盘调用"
+
+#: ../developer/public-path-table.md:98
+#, python-brace-format
+msgid ""
+"Each handler forwards to `${BACKEND_INTERNAL_URL}` plus the same path. "
+"`BACKEND_INTERNAL_URL` is the address fixed at build time, the same one "
+"the rewrites use. The code that does the forwarding is "
+"`src/lib/server/gatewayProxy.ts`. A rewrite cannot do this job, for three"
+" reasons:"
+msgstr "每个 handler 都转发到 `${BACKEND_INTERNAL_URL}` 加上同样的路径。`BACKEND_INTERNAL_URL` 是构建时固定下来的地址，和 rewrite 用的是同一个。负责转发的代码在 `src/lib/server/gatewayProxy.ts`。rewrite 做不了这件事，原因有三个："
+
+#: ../developer/public-path-table.md:104
+msgid ""
+"When the gateway drops a connection after the response has started (a "
+"crash, a restart or a deploy), Next's rewrite proxy never ends the "
+"caller's response. The caller then waits until something in front of the "
+"console gives up."
+msgstr "响应开始之后，如果网关那边的连接断了（崩溃、重启或部署），Next 的 rewrite 代理不会结束发给调用方的响应。调用方会一直等，直到控制台前面的某一层放弃为止。"
+
+#: ../developer/public-path-table.md:108
+msgid ""
+"The rewrite proxy ends a response after 30 seconds with no data. The "
+"handler sets no deadline of its own: the gateway limits every request "
+"itself, and streaming responses send a keepalive every 15 seconds."
+msgstr "rewrite 代理在 30 秒没有数据后就会结束响应。handler 不设自己的期限：网关自己会限制每个请求的时长，流式响应每 15 秒还会发一次保活。"
+
+#: ../developer/public-path-table.md:111
+msgid ""
+"A failure comes back as Next's plain-text 500. The handler answers a "
+"gateway it cannot reach with a JSON 502."
+msgstr "出错时 rewrite 返回的是 Next 自己的纯文本 500。handler 连不上网关时，返回 JSON 格式的 502。"
+
+#: ../developer/public-path-table.md:114
+msgid ""
+"The handler sends the gateway the same request the rewrite did. Every "
+"request header is forwarded except the hop-by-hop ones, `Host` names the "
+"gateway, and `X-Forwarded-Host` carries the caller's host. One header "
+"differs: when the caller sent no `X-Forwarded-For`, `-Proto` or `-Port`, "
+"Next fills them in from the connection. Behind Cloudflare the caller "
+"always sends all three. When the caller hangs up, the gateway's request "
+"is cancelled at once."
+msgstr "handler 发给网关的请求和 rewrite 一样：除了逐跳（hop-by-hop）头，所有请求头都会转发；`Host` 指向网关，`X-Forwarded-Host` 带着调用方的主机名。有一处不同：调用方没有带 `X-Forwarded-For`、`-Proto` 或 `-Port` 时，Next 会根据连接自己补上。在 Cloudflare 后面时，调用方总会带齐这三个头。调用方一断开，发往网关的请求会立即取消。"
+
+#: ../developer/public-path-table.md:121
 msgid "Legacy `beforeFiles` compatibility"
 msgstr "旧版 `beforeFiles` 兼容"
 
-#: ../developer/public-path-table.md:89
+#: ../developer/public-path-table.md:123
 msgid ""
 "`next.config.js` still emits the same three rules as `beforeFiles` "
 "rewrites when both agent URLs are supplied **while building** the image, "
@@ -298,34 +394,17 @@ msgstr ""
 "handler。由于 `beforeFiles` "
 "的优先级高于文件系统路由，用这些值构建出的镜像会保留构建时写死的目标地址，只改容器的环境变量无法让它指向新目标。"
 
-#: ../developer/public-path-table.md:96
+#: ../developer/public-path-table.md:130
 msgid "`afterFiles` — the gateway"
 msgstr "`afterFiles`——网关"
 
-#: ../developer/public-path-table.md:98
+#: ../developer/public-path-table.md:132
 #, python-brace-format
-msgid "Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path."
-msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
-
-#: ../developer/public-path-table.md
-msgid "Serves"
-msgstr "提供什么"
-
-#: ../developer/public-path-table.md
-msgid "`/v1/:path*`"
-msgstr ""
-
-#: ../developer/public-path-table.md
-msgid "the OpenAI-compatible API surface"
-msgstr "OpenAI 兼容的 API 接口"
-
-#: ../developer/public-path-table.md
-msgid "`/anthropic/:path*`"
-msgstr ""
-
-#: ../developer/public-path-table.md
-msgid "the Anthropic Messages surface"
-msgstr "Anthropic Messages 接口"
+msgid ""
+"Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path. "
+"The gateway's streaming surfaces (`/v1`, `/anthropic` and "
+"`/internal/playground`) are route handlers, listed above."
+msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。网关的流式接口（`/v1`、`/anthropic` 和 `/internal/playground`）用的是 route handler，见上文。"
 
 #: ../developer/public-path-table.md
 msgid "`/auth/:path*`"
@@ -358,14 +437,6 @@ msgstr ""
 #: ../developer/public-path-table.md
 msgid "cookie-session admin check (used by the pgAdmin handler)"
 msgstr "通过 cookie 会话校验管理员身份（pgAdmin handler 会调用）"
-
-#: ../developer/public-path-table.md
-msgid "`/internal/playground/:path*`"
-msgstr ""
-
-#: ../developer/public-path-table.md
-msgid "the admin-only model playground the console's dashboard calls"
-msgstr "仅限管理员的模型 playground，由控制台仪表盘调用"
 
 #: ../developer/public-path-table.md
 msgid "`/internal/model-catalog`"
@@ -435,7 +506,7 @@ msgstr ""
 msgid "public deployment identity, consumed by the console's `SiteConfigProvider`"
 msgstr "对外公开的部署身份信息，供控制台的 `SiteConfigProvider` 读取"
 
-#: ../developer/public-path-table.md:118
+#: ../developer/public-path-table.md:151
 msgid ""
 "Note on `/internal`: the entries are named individually rather than "
 "forwarded as a blanket `/internal/:path*`, and that is deliberate. The "
@@ -453,17 +524,17 @@ msgstr ""
 "是唯一放开整个子前缀的例外：那个 router 在 router 层给每条路由都加了 dispatch token "
 "依赖，从结构上就保证了都要鉴权。"
 
-#: ../developer/public-path-table.md:127
+#: ../developer/public-path-table.md:160
 msgid "Why `/pgadmin` is a route handler and not a rewrite"
 msgstr "为什么 `/pgadmin` 是 route handler 而不是 rewrite"
 
-#: ../developer/public-path-table.md:129
+#: ../developer/public-path-table.md:162
 msgid ""
 "This section is for contributors who need to write a route handler of "
 "their own; the pgAdmin proxy is the worked example."
 msgstr "本节写给需要自己写 route handler 的贡献者；pgAdmin 代理就是现成的示例。"
 
-#: ../developer/public-path-table.md:132
+#: ../developer/public-path-table.md:165
 msgid ""
 "pgAdmin must only be reachable by an admin. **A rewrite cannot "
 "authenticate** — it is a static mapping evaluated before any of your code"
@@ -479,7 +550,7 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`。它属于文件系统路由，因此优先于 "
 "`afterFiles` 里的 rewrite。这个 handler 先检查调用方，再自己把请求代理给 pgAdmin。"
 
-#: ../developer/public-path-table.md:140
+#: ../developer/public-path-table.md:173
 msgid ""
 "The handler is a compact worked example of an authenticated reverse proxy"
 " in a Next.js route handler, and every one of its decisions generalizes:"
@@ -487,7 +558,7 @@ msgstr ""
 "这个 handler 是个短小的例子，演示了怎样在 Next.js route handler "
 "里实现带鉴权的反向代理，它的每个设计决定都能推广到别处："
 
-#: ../developer/public-path-table.md:143
+#: ../developer/public-path-table.md:176
 msgid ""
 "**Fail closed.** `verifyAdmin()` calls `GET /internal/verify-admin` on "
 "the gateway with the caller's cookie and a 5-second timeout. Only an "
@@ -502,14 +573,14 @@ msgstr ""
 "才放行。后端挂了、响应慢，或者返回了意料之外的内容，一律拒绝。它假定自己是数据库控制台前面唯一的一道关，因为它没法判断 pgAdmin "
 "自己有没有登录（这取决于 `PGADMIN_CONFIG_SERVER_MODE`，默认是 `False`）。"
 
-#: ../developer/public-path-table.md:149
+#: ../developer/public-path-table.md:182
 msgid ""
 "**Strip the console's own session cookie** before forwarding. pgAdmin has"
 " no use for it, and forwarding a session credential to a proxied app is "
 "how those leak."
 msgstr "转发前**去掉控制台自己的会话 cookie**。pgAdmin 用不到它；把会话凭据转发给被代理的应用，凭据就是这样泄漏的。"
 
-#: ../developer/public-path-table.md:152
+#: ../developer/public-path-table.md:185
 msgid ""
 "**Drop hop-by-hop headers** (RFC 9110 §7.6.1) plus `host` and `content-"
 "length`, which `fetch` derives from the outgoing request. Drop `content-"
@@ -522,7 +593,7 @@ msgstr ""
 "解压过了。用 `getSetCookie()` 重新拆分 `Set-Cookie`——`Headers.forEach` "
 "会把重复的值合并成一个字符串。"
 
-#: ../developer/public-path-table.md:157
+#: ../developer/public-path-table.md:190
 msgid ""
 "**Fold upstream-absolute redirects back to bare paths.** When a request "
 "arrives without a trailing slash a route requires, Werkzeug builds an "
@@ -535,7 +606,7 @@ msgstr ""
 "拼出一个绝对地址的重定向——在这里就是内部容器名，浏览器根本解析不了。`foldUpstreamRedirect()` "
 "会把这类地址改写成路径；它按 hostname 而不是 origin 匹配，所以不管 URL 里带的是什么端口都能处理。"
 
-#: ../developer/public-path-table.md:163
+#: ../developer/public-path-table.md:196
 msgid ""
 "**Redirect with a bare path, not an absolute URL.** Behind a tunnel the "
 "app sees its own bind address as `Host`, so `new URL('/login', "
@@ -548,11 +619,11 @@ msgstr ""
 "`https://0.0.0.0:3001/login`，浏览器根本打不开。`NextResponse.redirect()` 只接受绝对 "
 "URL，所以这个 handler 自己手写 `Location` 头。"
 
-#: ../developer/public-path-table.md:169
+#: ../developer/public-path-table.md:202
 msgid "The trailing-slash interaction"
 msgstr "尾斜杠重定向的冲突"
 
-#: ../developer/public-path-table.md:171
+#: ../developer/public-path-table.md:204
 msgid ""
 "`skipTrailingSlashRedirect: true` is set globally in `next.config.js`, "
 "because proxied applications own their path semantics. Next normally "
@@ -566,7 +637,7 @@ msgstr ""
 "网页应用可能又把它加回来。如果保留 Next "
 "的默认行为，浏览器就可能在这两层之间来回跳转，永远停不下来。被代理的路径必须原封不动地按浏览器请求的样子送到上游。"
 
-#: ../developer/public-path-table.md:177
+#: ../developer/public-path-table.md:210
 msgid ""
 "Skipping the redirect everywhere would change every other URL on the "
 "site, so `apps/frontend/src/middleware.ts` reimplements the redirect for "
@@ -581,11 +652,11 @@ msgstr ""
 " `new URL(request.url)` 而不是 `nextUrl.clone()` 构造的——克隆出来的 `NextURL` "
 "会记住请求带来的尾斜杠，并在序列化时加回去，结果把请求重定向到它原本所在的地址。"
 
-#: ../developer/public-path-table.md:184
+#: ../developer/public-path-table.md:217
 msgid "Adding a public path"
 msgstr "新增一条公开路径"
 
-#: ../developer/public-path-table.md:186
+#: ../developer/public-path-table.md:219
 msgid ""
 "Choose the routing mechanism. Add a static rule to `rewrites()` in "
 "`apps/frontend/next.config.js`; use a `route.ts` handler when its target "
@@ -595,7 +666,7 @@ msgstr ""
 "选择路由机制。在 `apps/frontend/next.config.js` 的 `rewrites()` "
 "中添加静态规则；如果目标必须在构建后仍可配置，或请求需要应用逻辑，就使用 `route.ts` handler。"
 
-#: ../developer/public-path-table.md:189
+#: ../developer/public-path-table.md:222
 msgid ""
 "Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless"
 " every current and future route under that prefix is authorized by "
@@ -604,13 +675,13 @@ msgstr ""
 "路径要写具体。优先用 `/prefix/thing`，而不是 "
 "`/prefix/:path*`，除非这个前缀下现有和将来的每条路由都从结构上保证了鉴权。"
 
-#: ../developer/public-path-table.md:192
+#: ../developer/public-path-table.md:225
 msgid ""
 "If the path needs a check the destination cannot make for itself, it is a"
 " route handler, not a rewrite."
 msgstr "如果这条路径需要一次目标服务自己做不了的检查，那它就该是 route handler，而不是 rewrite。"
 
-#: ../developer/public-path-table.md:194
+#: ../developer/public-path-table.md:227
 msgid ""
 "Rebuild the console for a source or rewrite-table change. After that "
 "image is deployed, a runtime handler's target can be changed by "
@@ -620,7 +691,7 @@ msgstr ""
 "改了源码或 rewrite 表，就要重新构建控制台。新镜像部署之后，运行时 handler 的目标只需重新创建容器就能修改；静态 rewrite "
 "的目标则仍然要重新构建镜像。"
 
-#: ../developer/public-path-table.md:197
+#: ../developer/public-path-table.md:230
 msgid "Add the path to the table above."
 msgstr "把这条路径加进上面的表格。"
 
@@ -727,3 +798,9 @@ msgstr "把这条路径加进上面的表格。"
 
 #~ msgid "`/pgadmin` is the interesting case, and the reason this page exists."
 #~ msgstr "`/pgadmin` 是这里有意思的一个例子，也是本页存在的理由。"
+
+#~ msgid ""
+#~ "Every destination below is "
+#~ "`${BACKEND_INTERNAL_URL}` plus the same path."
+#~ msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
+

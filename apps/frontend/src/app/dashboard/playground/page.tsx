@@ -530,7 +530,17 @@ export default function PlaygroundPage() {
         const dec = new TextDecoder();
         let buf = '';
         while (true) {
-          const { done, value } = await reader.read();
+          let chunk: ReadableStreamReadResult<Uint8Array>;
+          try {
+            chunk = await reader.read();
+          } catch (err) {
+            if ((err as Error).name === 'AbortError') throw err;
+            // The browser's own wording ("network error", "Error in input
+            // stream") says nothing about what happened: the server went away
+            // in the middle of the reply.
+            throw new Error('Lost the connection to the server mid-reply.');
+          }
+          const { done, value } = chunk;
           if (done) break;
           resetIdle();
           buf += dec.decode(value, { stream: true });

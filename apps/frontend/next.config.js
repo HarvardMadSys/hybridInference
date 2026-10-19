@@ -113,22 +113,18 @@ const nextConfig = {
 
     return {
       beforeFiles: agentRewrites,
+      // `/v1`, `/anthropic` and `/internal/playground` reach the gateway too,
+      // but through route handlers (src/app/<prefix>/[[...path]]/route.ts),
+      // not rewrites: their responses stream, and the rewrite proxy neither
+      // reports a gateway that goes away mid-response nor tolerates 30s of
+      // silence. See src/lib/server/gatewayProxy.ts.
       afterFiles: [
-        { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },
-        // Anthropic Messages endpoint (Claude Code et al.). Clients point at
-        // <site>/anthropic, so without this rewrite those requests fall through
-        // to the Next.js 404 page.
-        { source: '/anthropic/:path*', destination: `${BACKEND_INTERNAL_URL}/anthropic/:path*` },
         { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
         { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
         { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
         {
           source: '/internal/verify-admin',
           destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
-        },
-        {
-          source: '/internal/playground/:path*',
-          destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
         },
         // The cloud agent's control plane runs on its own machine and reaches
         // this gateway over its public origin. The Cloudflare tunnel routes that
