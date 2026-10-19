@@ -34,31 +34,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Tool names (lowercased) that let the model ask the end user a clarifying
-# question. Matched case-insensitively against each request's ``tools`` list; a
-# tool name lives at ``function.name`` (OpenAI shape) or ``name`` (Anthropic
-# shape). Deliberately broad — it spans the coding-agent clients we serve
-# (e.g. Claude Code's ``AskUserQuestion``, plus ``question`` /
-# ``ask_followup_question`` / ``vscode_askquestions`` and the ``ask_user_*``
-# variants).
-ASK_QUESTION_TOOL_NAMES: tuple[str, ...] = (
-    "question",
-    "askuserquestion",
-    "ask_user_question",
-    "ask_user_questions",
-    "ask_followup_question",
-    "vscode_askquestions",
-)
-
-# Ask-question adoption is measured over each user's *early-conversation*
-# requests only — those with ``num_turns <= ASK_QUESTION_TURN_CAP``. Agentic
-# clients re-send the same tool manifest on every turn, so a single long
-# conversation would otherwise dominate the per-request count; capping to the
-# opening turns approximates one observation per conversation. The manifest is
-# fixed within a conversation (an ask tool present at turn 1 is present
-# throughout), so the opening turns are representative of the whole trajectory.
-ASK_QUESTION_TURN_CAP = 5
-
 
 def _metadata_dict(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -684,14 +659,14 @@ class PostgresLogStore(LogStore):
     ) -> dict[str, Any]:
         """Return usage detail for admin user-detail view.
 
-        The all-time turn averages (``avg_turns``, ``avg_user_turns``) require
-        full-history scans of the user's ``api_logs`` rows (no time bound), so
-        for heavy users they dominate the cost of this call; ``ask_question_fraction``
-        is measured over just the early-conversation requests (first few turns,
-        see ``ASK_QUESTION_TURN_CAP``). These three are computed only when
-        ``include_activity_stats`` is set; otherwise those keys are ``None`` and
-        the admin UI loads them on demand behind a button. The remaining fields
-        are time-bounded (or an indexed ``MAX``) and are always computed.
+        The all-time turn averages (``avg_turns``, ``avg_user_turns``) and
+        ``ask_question_fraction`` (measured over just the early-conversation
+        requests, see ``user_usage_rollup.ASK_QUESTION_TURN_CAP``) are read
+        through the daily rollup in :mod:`serving.storage.user_usage_rollup`.
+        They are computed only when ``include_activity_stats`` is set; otherwise
+        those keys are ``None`` and the admin UI loads them on demand behind a
+        button. The remaining fields are time-bounded (or an indexed ``MAX``)
+        and are always computed.
         """
         avg_turns: float | None = None
         avg_user_turns: float | None = None
@@ -728,52 +703,15 @@ class PostgresLogStore(LogStore):
                 user_id,
             )
             if include_activity_stats:
-                # AVG ignores the NULL num_turns / num_user_turns of non-chat
-                # requests, so these average over chat-style requests only.
-                turns = await conn.fetchrow(
-                    """
-                    SELECT AVG(num_turns) AS avg_turns,
-                           AVG(num_user_turns) AS avg_user_turns
-                    FROM api_logs
-                    WHERE user_id = $1
-                    """,
-                    user_id,
-                )
-                avg_turns = (
-                    float(turns["avg_turns"]) if turns and turns["avg_turns"] is not None else None
-                )
-                avg_user_turns = (
-                    float(turns["avg_user_turns"])
-                    if turns and turns["avg_user_turns"] is not None
-                    else None
-                )
-                # Share of the user's early-conversation requests (first
-                # ``ASK_QUESTION_TURN_CAP`` turns) whose available ``tools`` offer
-                # an ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
-                ask = await conn.fetchrow(
-                    """
-                    SELECT COUNT(*) AS n_requests,
-                           COUNT(*) FILTER (
-                               WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
-                                   SELECT 1 FROM jsonb_array_elements(tools) AS t
-                                   WHERE lower(
-                                           COALESCE(t->'function'->>'name', t->>'name')
-                                         ) = ANY($2)
-                               )
-                           ) AS n_ask_requests
-                    FROM api_logs
-                    WHERE user_id = $1
-                      AND num_turns <= $3
-                    """,
-                    user_id,
-                    list(ASK_QUESTION_TOOL_NAMES),
-                    ASK_QUESTION_TURN_CAP,
-                )
-                ask_question_fraction = (
-                    int(ask["n_ask_requests"]) / int(ask["n_requests"])
-                    if ask and ask["n_requests"]
-                    else None
-                )
+                # All-time, read through the daily rollup (see user_usage_rollup).
+                metrics = (await user_usage_rollup.fetch_metrics(conn, [user_id])).get(user_id)
+                if metrics:
+                    averages = user_usage_rollup.turn_averages(metrics)
+                    avg_turns = averages["avg_turns"]
+                    avg_user_turns = averages["avg_user_turns"]
+                    ask_question_fraction = user_usage_rollup.ask_question_share(metrics)[
+                        "ask_question_fraction"
+                    ]
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -795,31 +733,14 @@ class PostgresLogStore(LogStore):
         Maps ``user_id`` → ``{"avg_turns": float|None, "avg_user_turns": float|None}``
         for users with chat-style requests; users with no chat logs are omitted
         (the caller fills a default). AVG ignores the NULL turn counts of
-        non-chat requests.
+        non-chat requests. Read through the daily rollup in
+        :mod:`serving.storage.user_usage_rollup`.
         """
         if not user_ids:
             return {}
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT user_id,
-                       AVG(num_turns) AS avg_turns,
-                       AVG(num_user_turns) AS avg_user_turns
-                FROM api_logs
-                WHERE user_id = ANY($1)
-                GROUP BY user_id
-                """,
-                user_ids,
-            )
-        return {
-            r["user_id"]: {
-                "avg_turns": float(r["avg_turns"]) if r["avg_turns"] is not None else None,
-                "avg_user_turns": float(r["avg_user_turns"])
-                if r["avg_user_turns"] is not None
-                else None,
-            }
-            for r in rows
-        }
+            metrics = await user_usage_rollup.fetch_metrics(conn, user_ids)
+        return {uid: user_usage_rollup.turn_averages(m) for uid, m in metrics.items()}
 
     async def get_bulk_user_ask_question_fractions(
         self, user_ids: list[str]
@@ -828,50 +749,25 @@ class PostgresLogStore(LogStore):
 
         Maps ``user_id`` → ``{"ask_question_fraction", "n_requests",
         "n_ask_requests"}`` over the user's early-conversation ``api_logs`` rows
-        (those with ``num_turns <= ASK_QUESTION_TURN_CAP``). A request counts
-        toward ``n_ask_requests`` when its ``tools`` list offers a tool from
-        :data:`ASK_QUESTION_TOOL_NAMES` (matched case-insensitively across the
-        OpenAI and Anthropic tool shapes); ``ask_question_fraction`` is
-        ``n_ask_requests / n_requests``. Capping to opening turns keeps a long
-        agentic conversation (which re-sends the same manifest every turn) from
-        dominating the count. Users with no early-conversation requests are
-        omitted (the caller fills a default). Bounded to the page's ``user_ids``
-        so it stays an indexed lookup.
+        (``num_turns <= user_usage_rollup.ASK_QUESTION_TURN_CAP``). A request
+        counts toward ``n_ask_requests`` when its ``tools`` list offers a tool
+        from :data:`user_usage_rollup.ASK_QUESTION_TOOL_NAMES` (matched
+        case-insensitively across the OpenAI and Anthropic tool shapes);
+        ``ask_question_fraction`` is ``n_ask_requests / n_requests``. Capping to
+        opening turns keeps a long agentic conversation (which re-sends the same
+        manifest every turn) from dominating the count. Users with no
+        early-conversation requests are omitted (the caller fills a default).
+        Read through the daily rollup in :mod:`serving.storage.user_usage_rollup`.
         """
         if not user_ids:
             return {}
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT user_id,
-                       COUNT(*) AS n_requests,
-                       COUNT(*) FILTER (
-                           WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
-                               SELECT 1 FROM jsonb_array_elements(tools) AS t
-                               WHERE lower(
-                                       COALESCE(t->'function'->>'name', t->>'name')
-                                     ) = ANY($2)
-                           )
-                       ) AS n_ask_requests
-                FROM api_logs
-                WHERE user_id = ANY($1)
-                  AND num_turns <= $3
-                GROUP BY user_id
-                """,
-                user_ids,
-                list(ASK_QUESTION_TOOL_NAMES),
-                ASK_QUESTION_TURN_CAP,
-            )
-        result: dict[str, dict[str, float | int | None]] = {}
-        for r in rows:
-            n_requests = int(r["n_requests"])
-            n_ask = int(r["n_ask_requests"])
-            result[r["user_id"]] = {
-                "ask_question_fraction": (n_ask / n_requests) if n_requests else None,
-                "n_requests": n_requests,
-                "n_ask_requests": n_ask,
-            }
-        return result
+            metrics = await user_usage_rollup.fetch_metrics(conn, user_ids)
+        return {
+            uid: user_usage_rollup.ask_question_share(m)
+            for uid, m in metrics.items()
+            if m["early_requests"]
+        }
 
     async def get_user_automation_score(
         self, user_id: str, *, days: int = 30

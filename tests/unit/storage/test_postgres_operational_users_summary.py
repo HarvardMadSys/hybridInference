@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.storage import user_usage_rollup
 from serving.storage.postgres_operational import PostgresOperationalStore
+
+
+def _metrics_row(user_id: str, **values: int) -> dict:
+    """A row of user_usage_rollup.metrics_sql: every metric, zero unless given."""
+    return {"user_id": user_id, **{c: 0 for c, _ in user_usage_rollup.METRICS}, **values}
 
 
 @pytest.fixture
@@ -469,7 +475,7 @@ class TestListUsersNewFilters:
             [],  # today's costs lookup
             [],  # month's costs lookup
             [],  # alltime costs lookup
-            [{"user_id": "u1", "requests": 42, "tokens": 123456}],
+            [_metrics_row("u1", request_count=42, total_tokens=123456)],
         ]
 
         _total, rows, _ = await store.list_users()
@@ -497,7 +503,7 @@ class TestListUsersNewFilters:
         assert "usage_totals AS" in main_sql
         assert "d.user_id IN (SELECT id FROM filtered_users)" in main_sql
         assert "FROM user_usage_daily d" in main_sql
-        assert "ORDER BY COALESCE(ux.requests, 0) DESC" in main_sql
+        assert "ORDER BY COALESCE(ux.request_count, 0) DESC" in main_sql
 
     async def test_sort_by_tokens_orders_by_token_total(self, store, pg_conn):
         # sort_by=tokens joins the same totals CTE and orders by its tokens.
@@ -508,7 +514,7 @@ class TestListUsersNewFilters:
 
         main_sql = pg_conn.fetch.call_args_list[-1].args[0]
         assert "usage_totals AS" in main_sql
-        assert "ORDER BY COALESCE(ux.tokens, 0) DESC" in main_sql
+        assert "ORDER BY COALESCE(ux.total_tokens, 0) DESC" in main_sql
 
 
 class TestDeferredUsageTotals:
@@ -529,7 +535,7 @@ class TestDeferredUsageTotals:
         assert not any("user_usage_daily" in sql for sql in sqls)
 
     async def test_bulk_totals_keeps_zero_cost_requests_and_fills_empty_users(self, store, pg_conn):
-        pg_conn.fetch.return_value = [{"user_id": "u1", "requests": 3, "tokens": 7}]
+        pg_conn.fetch.return_value = [_metrics_row("u1", request_count=3, total_tokens=7)]
         result = await store.get_bulk_user_usage_totals(["u1", "empty"])
         assert result == {"u1": {"requests": 3, "tokens": 7}, "empty": {"requests": 0, "tokens": 0}}
         sql = pg_conn.fetch.call_args.args[0]

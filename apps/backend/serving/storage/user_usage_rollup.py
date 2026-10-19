@@ -1,10 +1,11 @@
-"""Daily per-user rollup behind the admin Users table's all-time usage columns.
+"""Daily per-user rollup behind the admin Users table's all-time columns.
 
-The Users table shows each user's all-time request count and token total, and can
-sort by either. Both used to be summed straight off ``api_logs`` -- every row a
-user ever logged, on every page load. On staging that was about 8.4 million rows
-for 30 users: the list took 8 to 38 seconds and sometimes hit the proxy's
-30-second limit. Yet only the newest day's rows can still change.
+The Users table shows each user's all-time request count, token total, average
+turns, average user turns and ask-question share, and can sort by the first two.
+All used to be computed straight off ``api_logs`` -- every row a user ever
+logged, on every page load. On staging that was about 8.4 million rows for 30
+users: the list took 8 to 38 seconds and sometimes hit the proxy's 30-second
+limit. Yet only the newest day's rows can still change.
 
 So completed UTC days are counted once into ``user_usage_daily`` (one row per
 user with traffic that day) and ``user_usage_daily_coverage`` (one row per
@@ -22,10 +23,18 @@ All three parts are read in one statement, so they come from one snapshot: a
 day a fill or an invalidation moves between the stored and live parts mid-read
 is never counted twice or missed.
 
-The counts match the ones they replace: every logged row with a ``user_id``,
-free and failed requests included, and ``SUM(total_tokens)`` with missing
-token counts as zero. ``user_daily_cost.requests`` is not a substitute: it only
-counts billable requests.
+What a day stores is :data:`METRICS`, one SQL definition shared by the fill and
+the live parts. Each is a count or a sum, so days add up: an average is stored
+as its sum and count, a share as its two counts. They match the queries they
+replace: every logged row with a ``user_id``, free and failed requests
+included, missing token counts as zero, and averages over the rows that
+recorded a turn count. ``user_daily_cost.requests`` is not a substitute: it
+only counts billable requests.
+
+A coverage row records the :data:`DEFINITION` it was counted under. A day
+counted under any other -- before a metric was added, or before the ask-question
+tool list changed -- is not stored as far as reads are concerned: it is counted
+live and filled again.
 
 Days reach the table through :func:`fill_days`, called by the hourly job and a
 backfill at startup. Every fill, invalidation and purge holds one
@@ -43,6 +52,7 @@ transaction that purges the user's ``api_logs`` rows (:func:`purge_user`).
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import timezone
 from typing import TYPE_CHECKING, Any
@@ -67,6 +77,69 @@ ADVISORY_LOCK_KEY = 0x757372757367  # ascii "usrusg" packed
 SETTLED_DAY_SQL = "(date_trunc('day', (NOW() - interval '1 hour') AT TIME ZONE 'UTC'))::date"
 
 
+# Ask-question adoption is measured over each user's *early-conversation*
+# requests only -- those with ``num_turns <= ASK_QUESTION_TURN_CAP``. Agentic
+# clients re-send the same tool manifest on every turn, so a single long
+# conversation would otherwise dominate the per-request count; capping to the
+# opening turns approximates one observation per conversation. The manifest is
+# fixed within a conversation (an ask tool present at turn 1 is present
+# throughout), so the opening turns are representative of the whole trajectory.
+ASK_QUESTION_TURN_CAP = 5
+
+# Tool names (lower-cased) that count as an ask-the-user clarifying tool, matched
+# against both the OpenAI (``function.name``) and Anthropic (``name``) tool
+# shape. Deliberately broad -- it spans the coding-agent clients we serve
+# (e.g. Claude Code's ``AskUserQuestion``, plus ``question`` /
+# ``ask_followup_question`` / ``vscode_askquestions`` and the ``ask_user_*``
+# variants).
+ASK_QUESTION_TOOL_NAMES: tuple[str, ...] = (
+    "question",
+    "askuserquestion",
+    "ask_user_question",
+    "ask_user_questions",
+    "ask_followup_question",
+    "vscode_askquestions",
+)
+
+
+def _text_array(values: tuple[str, ...]) -> str:
+    quoted = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
+    return f"ARRAY[{quoted}]::text[]"
+
+
+# What a day stores per user: ``(column, aggregate over api_logs rows as l)``.
+# The fill and every live part of a read use these same expressions.
+METRICS: tuple[tuple[str, str], ...] = (
+    ("request_count", "COUNT(*)"),
+    ("total_tokens", "COALESCE(SUM(l.total_tokens), 0)"),
+    # AVG(num_turns) as a sum and a count: non-chat rows record no turn count.
+    ("turns_sum", "COALESCE(SUM(l.num_turns), 0)"),
+    ("turns_count", "COUNT(l.num_turns)"),
+    ("user_turns_sum", "COALESCE(SUM(l.num_user_turns), 0)"),
+    ("user_turns_count", "COUNT(l.num_user_turns)"),
+    ("early_requests", f"COUNT(*) FILTER (WHERE l.num_turns <= {ASK_QUESTION_TURN_CAP})"),
+    (
+        "early_ask_requests",
+        f"""COUNT(*) FILTER (
+            WHERE l.num_turns <= {ASK_QUESTION_TURN_CAP}
+              AND jsonb_typeof(l.tools) = 'array'
+              AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(l.tools) AS t
+                  WHERE lower(COALESCE(t->'function'->>'name', t->>'name'))
+                        = ANY({_text_array(ASK_QUESTION_TOOL_NAMES)})
+              )
+        )""",
+    ),
+)
+_COLUMNS = [column for column, _ in METRICS]
+_AGGREGATES = ", ".join(expression for _, expression in METRICS)
+
+# Fingerprint of :data:`METRICS`, recorded with each counted day. Any change to
+# what a day stores changes it, and the days counted before are filled again.
+DEFINITION = hashlib.sha256(repr(METRICS).encode()).hexdigest()[:16]
+_CURRENT = f"'{DEFINITION}'"
+
+
 def _day_start(day_sql: str) -> str:
     """The UTC midnight starting *day_sql* (a ``date`` expression), as timestamptz."""
     return f"(({day_sql})::timestamp AT TIME ZONE 'UTC')"
@@ -82,7 +155,8 @@ FROM generate_series(
     interval '1 day'
 ) AS g(day)
 WHERE NOT EXISTS (
-    SELECT 1 FROM user_usage_daily_coverage c WHERE c.day = g.day::date
+    SELECT 1 FROM user_usage_daily_coverage c
+    WHERE c.day = g.day::date AND c.definition = {_CURRENT}
 )
 """
 
@@ -101,8 +175,8 @@ GROUP BY run
 """
 
 
-def totals_sql(user_match: str) -> str:
-    """SQL for ``(user_id, requests, tokens)`` of every user matching *user_match*.
+def metrics_sql(user_match: str) -> str:
+    """SQL for ``user_id`` and every :data:`METRICS` column, per matching user.
 
     *user_match* completes ``<column> {user_match}`` for the users wanted, e.g.
     ``"= ANY($1::text[])"`` or ``"IN (SELECT id FROM filtered_users)"``. Users
@@ -112,20 +186,22 @@ def totals_sql(user_match: str) -> str:
     cannot size the gap list (it guessed 500 days where there were none) and,
     joined plainly, answered with a scan of the whole table.
     """
+    stored = ", ".join(f"d.{column}" for column in _COLUMNS)
+    summed = ", ".join(f"SUM({column})::bigint AS {column}" for column in _COLUMNS)
     return f"""
-SELECT user_id, SUM(requests)::bigint AS requests, SUM(tokens)::bigint AS tokens
+SELECT user_id, {summed}
 FROM (
-    SELECT d.user_id, d.request_count AS requests, d.total_tokens AS tokens
+    SELECT d.user_id, {stored}
     FROM user_usage_daily d
-    JOIN user_usage_daily_coverage c ON c.day = d.day
+    JOIN user_usage_daily_coverage c ON c.day = d.day AND c.definition = {_CURRENT}
     WHERE d.user_id {user_match} AND d.day < {SETTLED_DAY_SQL}
     UNION ALL
-    SELECT l.user_id, COUNT(*), COALESCE(SUM(l.total_tokens), 0)
+    SELECT l.user_id, {_AGGREGATES}
     FROM api_logs l
     WHERE l.user_id {user_match} AND l.timestamp >= {_day_start(SETTLED_DAY_SQL)}
     GROUP BY l.user_id
     UNION ALL
-    SELECT l.user_id, COUNT(*), COALESCE(SUM(l.total_tokens), 0)
+    SELECT l.user_id, {_AGGREGATES}
     FROM api_logs l
     WHERE l.user_id {user_match} AND l.timestamp IS NULL
     GROUP BY l.user_id
@@ -133,7 +209,7 @@ FROM (
     SELECT counted.*
     FROM ({_GAP_RUNS_SQL}) gap
     CROSS JOIN LATERAL (
-        SELECT l.user_id, COUNT(*), COALESCE(SUM(l.total_tokens), 0)
+        SELECT l.user_id, {_AGGREGATES}
         FROM api_logs l
         WHERE l.user_id {user_match}
           AND l.timestamp >= {_day_start("gap.first_day")}
@@ -145,43 +221,84 @@ GROUP BY user_id
 """
 
 
-_TOTALS_FOR_IDS_SQL = totals_sql("= ANY($1::text[])")
+_METRICS_FOR_IDS_SQL = metrics_sql("= ANY($1::text[])")
 
-# Run inside the transaction of any statement using :func:`totals_sql` or a
+# Run inside the transaction of any statement using :func:`metrics_sql` or a
 # fill. The planner's guess at the gap days, or at a day's rows, puts the cost
 # far above what is read, enough to trigger JIT compilation -- seconds spent
 # compiling scans that take milliseconds.
 NO_JIT_SQL = "SET LOCAL jit = off"
 
 _FILL_DAY_SQL = f"""
-INSERT INTO user_usage_daily (user_id, day, request_count, total_tokens)
-SELECT user_id, $1::date, COUNT(*), COALESCE(SUM(total_tokens), 0)
-FROM api_logs
-WHERE timestamp >= {_day_start("$1::date")}
-  AND timestamp < {_day_start("$1::date + 1")}
-  AND user_id IS NOT NULL
-GROUP BY user_id
+INSERT INTO user_usage_daily (user_id, day, {", ".join(_COLUMNS)})
+SELECT l.user_id, $1::date, {_AGGREGATES}
+FROM api_logs l
+WHERE l.timestamp >= {_day_start("$1::date")}
+  AND l.timestamp < {_day_start("$1::date + 1")}
+  AND l.user_id IS NOT NULL
+GROUP BY l.user_id
+"""
+
+_MARK_FILLED_SQL = f"""
+INSERT INTO user_usage_daily_coverage (day, definition) VALUES ($1, {_CURRENT})
+ON CONFLICT (day) DO UPDATE SET definition = EXCLUDED.definition, completed_at = NOW()
 """
 
 # Whether *day* still needs filling, decided under the lock: not counted by
 # another writer meanwhile, and still before the settled day.
 _DAY_DUE_SQL = f"""
 SELECT $1::date < {SETTLED_DAY_SQL}
-   AND NOT EXISTS (SELECT 1 FROM user_usage_daily_coverage WHERE day = $1::date)
+   AND NOT EXISTS (
+       SELECT 1 FROM user_usage_daily_coverage
+       WHERE day = $1::date AND definition = {_CURRENT}
+   )
 """
+
+
+async def fetch_metrics(conn: asyncpg.Connection, user_ids: list[str]) -> dict[str, dict[str, int]]:
+    """All-time :data:`METRICS` for each of *user_ids* with any logged row."""
+    if not user_ids:
+        return {}
+    async with conn.transaction():
+        await conn.execute(NO_JIT_SQL)
+        rows = await conn.fetch(_METRICS_FOR_IDS_SQL, user_ids)
+    return {row["user_id"]: {column: int(row[column]) for column in _COLUMNS} for row in rows}
 
 
 async def fetch_totals(conn: asyncpg.Connection, user_ids: list[str]) -> dict[str, dict[str, int]]:
     """All-time ``{"requests", "tokens"}`` for each of *user_ids*, zeros included."""
-    totals = {uid: {"requests": 0, "tokens": 0} for uid in user_ids}
-    if not user_ids:
-        return totals
-    async with conn.transaction():
-        await conn.execute(NO_JIT_SQL)
-        rows = await conn.fetch(_TOTALS_FOR_IDS_SQL, user_ids)
-    for row in rows:
-        totals[row["user_id"]] = {"requests": int(row["requests"]), "tokens": int(row["tokens"])}
-    return totals
+    metrics = await fetch_metrics(conn, user_ids)
+    return {
+        uid: {
+            "requests": metrics.get(uid, {}).get("request_count", 0),
+            "tokens": metrics.get(uid, {}).get("total_tokens", 0),
+        }
+        for uid in user_ids
+    }
+
+
+def turn_averages(metrics: dict[str, int]) -> dict[str, float | None]:
+    """``avg_turns`` / ``avg_user_turns`` from one user's :data:`METRICS`."""
+    return {
+        "avg_turns": (
+            metrics["turns_sum"] / metrics["turns_count"] if metrics["turns_count"] else None
+        ),
+        "avg_user_turns": (
+            metrics["user_turns_sum"] / metrics["user_turns_count"]
+            if metrics["user_turns_count"]
+            else None
+        ),
+    }
+
+
+def ask_question_share(metrics: dict[str, int]) -> dict[str, float | int | None]:
+    """The ask-question share from one user's :data:`METRICS`."""
+    n_requests, n_ask = metrics["early_requests"], metrics["early_ask_requests"]
+    return {
+        "ask_question_fraction": (n_ask / n_requests) if n_requests else None,
+        "n_requests": n_requests,
+        "n_ask_requests": n_ask,
+    }
 
 
 async def fill_days(conn: asyncpg.Connection, days: Iterable[date]) -> int:
@@ -197,10 +314,11 @@ async def fill_days(conn: asyncpg.Connection, days: Iterable[date]) -> int:
             await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
             if not await conn.fetchval(_DAY_DUE_SQL, day):
                 continue
-            # Rows without a coverage row are left over from an invalidation.
+            # Rows without a current coverage row are left over from an
+            # invalidation or were counted under an earlier definition.
             await conn.execute("DELETE FROM user_usage_daily WHERE day = $1", day)
             await conn.execute(_FILL_DAY_SQL, day)
-            await conn.execute("INSERT INTO user_usage_daily_coverage (day) VALUES ($1)", day)
+            await conn.execute(_MARK_FILLED_SQL, day)
             written += 1
     return written
 

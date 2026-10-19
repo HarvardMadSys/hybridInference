@@ -1905,8 +1905,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
             "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
             "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
-            "requests": "COALESCE(ux.requests, 0) DESC, fu.created_at DESC, fu.id",
-            "tokens": "COALESCE(ux.tokens, 0) DESC, fu.created_at DESC, fu.id",
+            "requests": "COALESCE(ux.request_count, 0) DESC, fu.created_at DESC, fu.id",
+            "tokens": "COALESCE(ux.total_tokens, 0) DESC, fu.created_at DESC, fu.id",
         }
         order_clause = _sort_clauses[sort_by]
 
@@ -1996,11 +1996,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
 
             if needs_usage_sort:
-                usage_totals = user_usage_rollup.totals_sql("IN (SELECT id FROM filtered_users)")
+                usage_totals = user_usage_rollup.metrics_sql("IN (SELECT id FROM filtered_users)")
                 cte_parts.append(f"usage_totals AS ({usage_totals})")
                 join_parts.append("LEFT JOIN usage_totals ux ON ux.user_id = fu.id")
-                select_extras.append("COALESCE(ux.requests, 0) AS usage_alltime_requests")
-                select_extras.append("COALESCE(ux.tokens, 0) AS usage_alltime_tokens")
+                select_extras.append("COALESCE(ux.request_count, 0) AS usage_alltime_requests")
+                select_extras.append("COALESCE(ux.total_tokens, 0) AS usage_alltime_tokens")
 
             extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
             joins = " ".join(join_parts)
