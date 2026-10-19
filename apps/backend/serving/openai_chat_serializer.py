@@ -7,6 +7,7 @@ opt-in strict OpenAI via X-Reasoning-Passthrough: false header.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -20,6 +21,50 @@ class SerializerMode(str, Enum):
 
     STRICT_OPENAI = "strict_openai"
     REASONING_PASSTHROUGH = "reasoning_passthrough"
+
+
+_private_response_fields: frozenset[str] = frozenset()
+_PUBLIC_RESPONSE_FIELDS = frozenset(
+    {
+        "id",
+        "object",
+        "created",
+        "model",
+        "choices",
+        "usage",
+        "system_fingerprint",
+        "service_tier",
+        "error",
+        "_routing",
+    }
+)
+_STREAM_ENVELOPE_FIELDS = _PUBLIC_RESPONSE_FIELDS - {"error", "_routing"}
+
+
+def register_private_response_fields(*names: str) -> None:
+    """Register deployment-owned top-level metadata before serving requests.
+
+    Trusted startup extensions may hide named upstream trace envelopes. There
+    are no deployment-specific defaults. Never recursively edit message text,
+    tool arguments or other nested payloads, or remove public protocol fields.
+    Registration is additive and idempotent; invalid batches change nothing.
+    """
+    global _private_response_fields
+    for name in names:
+        if not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name, re.ASCII) is None:
+            raise ValueError("Private response fields must be nonempty field identifiers")
+        if name in _PUBLIC_RESPONSE_FIELDS:
+            raise ValueError(f"Cannot hide reserved public response field: {name!r}")
+    _private_response_fields = _private_response_fields.union(names)
+
+
+def _strip_private_metadata(payload: dict) -> bool:
+    found = False
+    for field in _private_response_fields:
+        if field in payload:
+            del payload[field]
+            found = True
+    return found
 
 
 @dataclass
@@ -58,7 +103,7 @@ def resolve_mode(headers: Mapping[str, str]) -> SerializerMode:
 def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
     """Sanitize a parsed chunk for the public API.
 
-    - Always strips _routing (internal metadata, never sent to client).
+    - Always strips _routing and explicitly registered private metadata.
     - Drops chunks that were pure routing-metadata (no choices, no usage)
       so the synthetic ``_routing`` chunk emitted by FixedRouter never
       reaches the client.
@@ -71,12 +116,20 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
     """
     usage_data = chunk_json.get("usage")
     routing_info = chunk_json.pop("_routing", None)
+    had_private_metadata = _strip_private_metadata(chunk_json)
 
     # Suppress synthetic routing-only chunks (no choices, no usage). These are
     # emitted by FixedRouter.stream_chat_completion and RouteWiseRouter so
     # completions.py can recover the upstream provider/pricing for DB logging,
     # but they carry no client-visible payload.
-    if routing_info is not None and not chunk_json.get("choices") and usage_data is None:
+    private_metadata_only = had_private_metadata and not (
+        chunk_json.keys() - _STREAM_ENVELOPE_FIELDS
+    )
+    if (
+        (routing_info is not None or private_metadata_only)
+        and not chunk_json.get("choices")
+        and usage_data is None
+    ):
         return SanitizeResult(
             chunk_json=None,
             should_forward=False,
@@ -135,12 +188,13 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
 def sanitize_response(response_json: dict, mode: SerializerMode) -> SanitizeResponseResult:
     """Sanitize a non-streaming chat completion response for the public API.
 
-    - Always strips `_routing`.
+    - Always strips `_routing` and explicitly registered private metadata.
     - In strict mode: removes message reasoning fields.
     - In passthrough mode: preserves message reasoning fields.
     """
     sanitized = dict(response_json)
     routing_info = sanitized.pop("_routing", None)
+    _strip_private_metadata(sanitized)
 
     if mode == SerializerMode.REASONING_PASSTHROUGH:
         return SanitizeResponseResult(response_json=sanitized, routing_info=routing_info)

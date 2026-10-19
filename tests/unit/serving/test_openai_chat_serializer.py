@@ -7,14 +7,153 @@ Explicit tests for the public /v1/chat/completions API contract:
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
+from serving import openai_chat_serializer as serializer
 from serving.openai_chat_serializer import (
     SerializerMode,
     resolve_mode,
     sanitize_chunk,
     sanitize_response,
 )
+
+
+@pytest.fixture
+def private_fields(monkeypatch):
+    monkeypatch.setattr(serializer, "_private_response_fields", frozenset())
+    serializer.register_private_response_fields("proxyTrace")
+
+
+@pytest.mark.parametrize("mode", list(SerializerMode))
+def test_unregistered_fields_are_unchanged(monkeypatch, mode):
+    monkeypatch.setattr(serializer, "_private_response_fields", frozenset())
+    payload = {"choices": [], "proxyTrace": {"spanId": "public-extension"}}
+    assert sanitize_response(copy.deepcopy(payload), mode).response_json == payload
+    result = sanitize_chunk(copy.deepcopy(payload), mode)
+    assert result.should_forward and result.chunk_json == payload
+
+
+@pytest.mark.parametrize(
+    "invalid", ["", "field.path", 1, "choices", "usage", "model", "error", "_routing"]
+)
+def test_registration_rejects_invalid_batch_atomically(monkeypatch, invalid):
+    monkeypatch.setattr(serializer, "_private_response_fields", frozenset({"alreadyPrivate"}))
+    with pytest.raises(ValueError):
+        serializer.register_private_response_fields("newPrivate", invalid)
+    assert serializer._private_response_fields == frozenset({"alreadyPrivate"})
+
+
+def test_registration_is_additive_and_idempotent(private_fields):
+    serializer.register_private_response_fields("proxyTrace", "otherTrace")
+    assert serializer._private_response_fields == frozenset({"proxyTrace", "otherTrace"})
+
+
+@pytest.mark.parametrize("mode", list(SerializerMode))
+@pytest.mark.parametrize("extra", [{"error": {"message": "unavailable"}}, {"extension": "keep"}])
+def test_private_trace_does_not_discard_other_payload(private_fields, mode, extra):
+    result = sanitize_chunk({"proxyTrace": None, **extra}, mode)
+    assert result.should_forward and result.chunk_json == extra
+
+
+@pytest.mark.parametrize("mode", list(SerializerMode))
+def test_private_trace_only_envelope_is_not_published(private_fields, mode):
+    result = sanitize_chunk(
+        {"proxyTrace": {}, "id": "trace-1", "model": "example-model", "choices": [], "usage": None},
+        mode,
+    )
+    assert not result.should_forward
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", list(SerializerMode))
+def test_upstream_trace_removed_from_normal_response_without_editing_payload(mode, private_fields):
+    """Trace envelopes stay private while model content and usage remain intact."""
+    message = {
+        "role": "assistant",
+        "content": 'The literal key "proxyTrace" is user-visible text.',
+        "reasoning_content": "Reasoning remains controlled by the selected mode.",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"proxyTrace":"literal argument"}'},
+            }
+        ],
+    }
+    response = {
+        "id": "response-1",
+        "model": "example-model",
+        "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "proxyTrace": {"spanId": "private-upstream-span"},
+        "_routing": {"provider": "private-provider"},
+    }
+    original = copy.deepcopy(response)
+    result = sanitize_response(response, mode)
+    expected = copy.deepcopy(original)
+    expected.pop("proxyTrace")
+    expected.pop("_routing")
+    if mode == SerializerMode.STRICT_OPENAI:
+        expected["choices"][0]["message"].pop("reasoning_content")
+    assert result.response_json == expected
+    assert result.routing_info == original["_routing"]
+    assert response == original
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", list(SerializerMode))
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": [{"index": 0, "delta": {"content": "answer"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {"index": 0, "delta": {"reasoning_content": "thinking"}, "finish_reason": None}
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"proxyTrace":"literal"}',
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+    ],
+)
+def test_upstream_trace_does_not_change_stream_payload_or_mode_behavior(
+    mode, payload, private_fields
+):
+    """Reasoning, tool deltas and terminal usage keep their existing semantics."""
+    clean = {"id": "chunk-1", "model": "example-model", **copy.deepcopy(payload)}
+    marked = copy.deepcopy(clean)
+    marked["proxyTrace"] = {"spanId": "private-upstream-span"}
+    assert sanitize_chunk(marked, mode) == sanitize_chunk(clean, mode)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", list(SerializerMode))
+@pytest.mark.parametrize("marker", [{"spanId": "private-upstream-span"}, None])
+def test_trace_only_stream_event_is_not_published(mode, marker, private_fields):
+    """An upstream trace event must not turn into an empty public SSE event."""
+    result = sanitize_chunk({"proxyTrace": marker}, mode)
+    assert result.should_forward is False
+    assert result.chunk_json is None
 
 
 @pytest.mark.unit
