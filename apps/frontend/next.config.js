@@ -87,8 +87,17 @@ const nextConfig = {
   // (STREAM_REQUEST_TIMEOUT_SECONDS); the gateway ends everything else sooner
   // (REQUEST_TIMEOUT_SECONDS, 120s by default) with a proper 504, and streams
   // send a keepalive every 15s, so this is never the limit that fires.
+  //
+  // And how much of a request body Next keeps. With a middleware in the app
+  // (src/middleware.ts matches every path), Next copies each body for it and
+  // keeps only the first 10MB by default -- and the rewrite then forwards that
+  // copy, cut short, under the caller's original Content-Length. The gateway
+  // waits for bytes that never come, so every API call over 10MB (an image or
+  // two in base64) failed after the proxy timeout. 100MB is what Cloudflare
+  // accepts on its standard plans, so the edge stays the only limit.
   experimental: {
     proxyTimeout: 60 * 60 * 1000,
+    middlewareClientMaxBodySize: 100 * 1024 * 1024,
   },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
