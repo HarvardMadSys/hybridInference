@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
+
+import asyncpg
 import pytest
 
 from tests.fixtures import postgres
@@ -171,11 +175,77 @@ def test_assert_test_db_name_rejects_a_non_test_database():
         postgres.assert_test_db_name("hybridinference_prod")
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionRefusedError("refused"),
+        TimeoutError(),
+        asyncio.TimeoutError(),
+        asyncpg.InvalidPasswordError("bad password"),
+        asyncpg.InvalidCatalogNameError("no such database"),
+        asyncpg.CannotConnectNowError("starting up"),
+    ],
+    ids=type,
+)
+def test_connecting_turns_an_unreachable_database_into_the_one_exit(error):
+    with (
+        pytest.raises(pytest.skip.Exception, match="db at h:1 is unavailable"),
+        postgres.connecting("db at h:1"),
+    ):
+        raise error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.UndefinedColumnError("column does not exist"),
+        asyncpg.PostgresSyntaxError("syntax error"),
+        TypeError("bad argument"),
+        ValueError("bad value"),
+    ],
+    ids=type,
+)
+def test_connecting_lets_a_code_error_through(error):
+    """An SQL or argument error is a bug, not a missing database: never a skip."""
+    with pytest.raises(type(error)), postgres.connecting("db at h:1"):
+        raise error
+
+
 def test_cli_refuses_a_bad_environment(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setenv("TEST_DB_NAME", "hybridinference_prod")
 
     assert postgres._main(["prepare"]) == 2
     assert "_test_" in capsys.readouterr().err
+
+
+def test_cli_pythonpath_is_pytests():
+    tomllib = pytest.importorskip("tomllib")
+    pyproject = tomllib.loads((postgres._REPO_ROOT / "pyproject.toml").read_text())
+
+    assert tuple(pyproject["tool"]["pytest"]["ini_options"]["pythonpath"]) == postgres.PYTHONPATH
+
+
+def test_cli_puts_this_checkout_first(monkeypatch):
+    elsewhere = "/elsewhere/apps/backend"
+    backend = str(postgres._REPO_ROOT / "apps/backend")
+    monkeypatch.setattr(sys, "path", [elsewhere, "/site-packages", backend])
+
+    postgres._use_this_checkout()
+
+    assert sys.path[:2] == [backend, str(postgres._REPO_ROOT)]
+    assert sys.path.count(backend) == 1
+
+
+def test_cli_refuses_another_checkouts_gateway(monkeypatch):
+    import serving
+
+    assert postgres._gateway_source_problem() is None
+    monkeypatch.setattr(serving, "__file__", "/elsewhere/apps/backend/serving/__init__.py")
+
+    problem = postgres._gateway_source_problem()
+
+    assert problem is not None and "/elsewhere" in problem
 
 
 @pytest.mark.parametrize("required", [False, True])

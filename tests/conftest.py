@@ -113,8 +113,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     import asyncio
 
     async def _reachable() -> str | None:
+        # The server, not the test database: the entry point creates and
+        # prepares that one on first use.
         try:
-            conn = await postgres.connect(timeout=5, database=postgres.target().base_name)
+            conn = await postgres.connect_maintenance(timeout=5)
         except (pytest.skip.Exception, pytest.fail.Exception) as exc:
             return str(exc)
         await conn.close()

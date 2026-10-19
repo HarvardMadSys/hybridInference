@@ -195,10 +195,16 @@ async def prepare_databases(workers: int = 0) -> list[str]: ...
 - **安全检查只在这里做，而且做两次：** 解析配置时检查 `name` 包含 `_test_`；
   `connect` / `create_pool` 成功后再用 `SELECT current_database()` 检查一次
   （复用现有的 `assert_test_db_name` / `assert_test_db_from_pool`，挪进本模块）。
-- **连接失败统一走 `database_unavailable(reason)`。**
-- **worker 库由入口按需创建。** `connect()` / `create_pool()` / `worker_dsn()` /
-  `worker_connect_kwargs()` 第一次连接本 worker 的库时，若它不存在就创建（每个进程只检查一次）。
-  §2.5 中 46 个 "does not exist" 的 skip 来自"谁负责建库"的不一致，这样就不再依赖顺序。
+- **只有"连不上"才走 `database_unavailable(reason)`。** `connecting(what)` 只把
+  `unavailable_errors()` 列出的异常（连接被拒、超时、认证失败、库不存在、server 正在启动或
+  连接数已满）转成 skip / fail。SQL 错误、参数错误、`init=` 回调里的错误是代码 bug，原样抛出，
+  非 required 模式下也不会被记成 skip。
+- **worker 库由入口按需创建并准备表结构。** `connect()` / `create_pool()` / `worker_dsn()` /
+  `worker_connect_kwargs()` 第一次连接本 worker 的库（串行时即基础库）时，若它不存在就创建，
+  并执行一次 `prepare_schema`（每个进程每个库一次；在准备过的库上只读目录）。
+  §2.5 中 46 个 "does not exist" 的 skip 来自"谁负责建库"的不一致；某个文件自己建了一张
+  精简版 `api_logs`、导致后面的文件缺列，来自"谁负责建表"的不一致。两者都收归入口后，
+  任何一个数据库测试单独运行或先运行，看到的都是完整的表结构，不再依赖顺序。
 - 把 DSN 或连接参数交给网关代码（`DatabaseLogger({"dsn": …})`）的 fixture，用
   `worker_dsn()` / `worker_connect_kwargs()`：前者会先连一次、检查库名，连不上就在这里
   skip 或 fail，而不是让网关代码抛出一个看起来像 bug 的异常。
@@ -230,7 +236,8 @@ PostgreSQL 就能跑"的习惯。真正危险的回退（`DB_*` → 5432）随 `
   `pytest.skip(reason)`。全仓库只剩这一处数据库相关的 skip。
 - `tests/conftest.py` 增加 `pytest_sessionstart` 预检（只在主进程执行，xdist worker
   跳过）：任何模式下先跑 `configuration_problem()`（废弃变量、端口、库名）；required 时
-  再检查 `TEST_DB_HOST` / `TEST_DB_PORT` 已设置并试连一次 `base_name`。失败就用
+  再检查 `TEST_DB_HOST` / `TEST_DB_PORT` 已设置并试连一次 server 的 `postgres` 维护库
+  （测试库本身由入口在首次使用时创建）。失败就用
   `pytest.exit(…, returncode=ExitCode.USAGE_ERROR)` 终止整个会话，让问题在一行里说清楚，
   而不是变成几百个相同的失败。
 - CI 的所有测试 job（`test (1)`…`test (4)`、`test (db)`）都设置
@@ -254,9 +261,13 @@ CI 中所有 grep 日志的步骤一并删除：它们判断的是 skip 的措�
 - 模块提供命令行入口：`python -m tests.fixtures.postgres prepare --workers N`。
   - `ci.yml` 中那段内嵌 Python 换成这条命令。
   - `make test-db` 在 pytest 之前先执行它。
-- `tests/servers/conftest_auth.py::_init_pg_backend` 改为调用 `prepare_schema`，
-  不再只做 `DatabaseLogger.initialize()`。这一步的代价是 auth fixture 每次多执行
-  一轮 `initialize()`；它们都是 `IF NOT EXISTS` 加目录检查，在已准备好的库上不执行 DDL。
+  - 它不经过 pytest，所以自己把 pytest 的 `pythonpath`（`apps/backend`、`.`）放到
+    `sys.path` 最前面，并在 `serving` 不是来自本 checkout 时拒绝执行。否则在 worktree 里
+    复用另一个 checkout 的虚拟环境时，会用那个 checkout 的建表代码准备数据库。
+  - 有了按需准备（§4.1），它对正确性不再是必需的；保留它是因为用模板复制 worker 库比逐个
+    迁移快，并且让 CI 在测试开始前就暴露建表错误。
+- `tests/servers/conftest_auth.py::_init_pg_backend` 通过 `worker_connect_kwargs()`
+  拿到已准备好的库，不再只依赖 `DatabaseLogger.initialize()`。
 
 ### 4.5 结构性守卫
 
@@ -294,11 +305,11 @@ def pg_dsn() -> str:
 迁移后：
 
 ```python
-from tests.fixtures.postgres import test_database
+from tests.fixtures import postgres
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    return test_database().dsn()
+    return postgres.worker_dsn()
 ```
 
 迁移前（`TEST_DB_*` 一类，约 15 行重复代码）：解析 worker 后缀、检查 `_test_`、
@@ -323,18 +334,21 @@ pool = await postgres.create_pool(min_size=1, max_size=5)
   的那几行，测试函数本身没有动，以减小 #1463 合并 `dev` 时的冲突面。
 - `tests/fixtures/auth_helpers.py` 的 `assert_test_db_name` 等改为从入口重新导出，原有
   import 不受影响；`build_auth_test_env_defaults()` 的 `DB_NAME` 改为本 worker 的库。
-- `tests/servers/conftest_auth.py::_init_pg_backend` 在 `DatabaseLogger.initialize()`
-  之后调用 `prepare_schema()`。
+- `tests/servers/conftest_auth.py::_init_pg_backend` 改用 `worker_connect_kwargs()`，
+  库在 `DatabaseLogger.initialize()` 之前已由入口准备好。
 - `ci.yml`：准备步骤改为 `python -m tests.fixtures.postgres prepare`；所有测试步骤设置
   `TEST_DB_REQUIRED=1`；删除 `TEST_PG_DSN` / `PG_TEST_DSN`、grep 兜底和重复的
   erasure-fence 步骤（§4.3）。普通分片仍导出 `DB_*`，因为被测网关本身读它们。
 - `make test-db` 先 `prepare` 再测试，二者都设置 `TEST_DB_REQUIRED=1`。
 - `docs/developer/contributing.md` 及其中文翻译同步更新。
 
-仍未处理：`test_growth_series_postgres.py` 在找不到 `api_logs` 时会自己建一张精简版的表。
-在准备过的库上它什么也不做，但在完全未准备的库上，如果它比其他测试先运行，后面依赖完整
-`api_logs` 的测试会受影响。CI 和 `make test-db` 都会先准备，所以只影响直接对空库运行
-`pytest` 的情况，留作后续。
+初版曾留下一个问题：`test_growth_series_postgres.py` 在找不到 `api_logs` 时自己建一张精简版
+的表，在空库上先运行它，后面的 `test_provider_stats_rollup.py` 会报
+`column "session_id" does not exist`。review 后改为由入口按需准备表结构（§4.1），这张精简表
+也随之删除。
+
+review 还指出的另外两处也已修正：连接异常的分类（§4.1，原先 `except Exception` 会把
+`init=` 回调中的 SQL 错误记成 skip）；命令行入口的导入路径（§4.4）。
 
 ## 7. 验证
 
@@ -355,6 +369,11 @@ pool = await postgres.create_pool(min_size=1, max_size=5)
 | 只设置 `TEST_PG_DSN` | —— | 会话立即退出，提示改用 `TEST_DB_*` |
 | 未设置 `TEST_DB_REQUIRED`，端口无人监听，`-m dbtest -n 8` | —— | 5 passed，339 skipped，没有 error |
 | 守卫扫描 `tests/` | 29 个文件 152 处 | 0 |
+| review 后：空 server，CI `test (db)` 环境，`-n 8`，不 prepare | —— | 343 passed，3 skipped（多出的 2 个是新增的入口数据库测试） |
+| review 后：CLI `prepare --workers 8` 后串行 | —— | 343 passed，3 skipped |
+| review 后：空库上依次运行 growth、provider rollup、`test_user_routes.py` | 4 passed，10 errors（`session_id` 缺列） | 58 passed |
+| review 后：在 worktree 中用主 checkout 的虚拟环境执行 `prepare` | 建表代码来自主 checkout | 建表代码来自本 worktree |
+| review 后：healthy server 上 `create_pool(init=…)` 执行错误 SQL | 记为 skip（非 required） | 抛出 `UndefinedColumnError` |
 
 验证过程中发现并修复了三个问题：
 

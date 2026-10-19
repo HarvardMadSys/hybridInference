@@ -48,10 +48,11 @@ async def setup_store():
     db_logger = DatabaseLogger(await postgres.worker_connect_kwargs())
     try:
         # Its pool (up to 10 connections) lets every claim below hold its own.
-        await db_logger.initialize()
-    except Exception as exc:
+        with postgres.connecting(postgres.target().describe()):
+            await db_logger.initialize()
+    except BaseException:
         await db_logger.cleanup()
-        postgres.database_unavailable(f"PostgreSQL not available: {exc}")
+        raise
 
     pool = db_logger.pool
     store = PostgresOperationalStore(pool)

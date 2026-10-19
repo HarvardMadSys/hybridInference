@@ -214,9 +214,10 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgre
 
 `make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, so a
 database test that cannot connect fails instead of skipping, and `TEST_DB_HOST`
-and `TEST_DB_PORT` must be set explicitly. CI sets the same variable. Before a
-parallel run with `-n N`, run `uv run python -m tests.fixtures.postgres prepare
---workers N` once to give each worker a migrated copy.
+and `TEST_DB_PORT` must be set explicitly. CI sets the same variable. No setup
+step is needed otherwise: each test process creates and migrates its own
+database on first use. `uv run python -m tests.fixtures.postgres prepare
+--workers N` does the same up front, which is faster before a run with `-n N`.
 
 `make test` parallelises with `pytest-xdist` at file granularity. Run serially
 when you are debugging a specific failure, but check a suspected env-leak

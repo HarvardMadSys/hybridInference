@@ -66,18 +66,16 @@ async def _init_pg_backend():
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    logger = DatabaseLogger(db_config=postgres.target().connect_kwargs())
+    # The entry point brings the database to the full schema first:
+    # DatabaseLogger alone leaves the operational columns (users.signup_reason
+    # and friends) missing on a database nothing else has migrated yet.
+    logger = DatabaseLogger(db_config=await postgres.worker_connect_kwargs())
 
-    try:
+    with postgres.connecting(postgres.target().describe()):
         await logger.initialize()
-    except Exception as e:
-        postgres.database_unavailable(f"PostgreSQL not available: {e}")
 
     if logger.pool:
         await assert_test_db_from_pool(logger.pool, context="auth_backend pool")
-        # DatabaseLogger alone leaves the operational columns (users.signup_reason
-        # and friends) missing on a database nothing else has migrated yet.
-        await postgres.prepare_schema(logger.pool)
 
     settings = get_settings()
     pg_op = PostgresOperationalStore(logger.pool)

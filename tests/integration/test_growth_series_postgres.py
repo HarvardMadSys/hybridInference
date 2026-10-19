@@ -25,19 +25,9 @@ def pg_dsn() -> str:
 
 @pytest_asyncio.fixture
 async def conn(pg_dsn: str):
+    # The entry point has already created the real api_logs. A minimal one made
+    # here used to break every later file that needed the full table.
     connection = await postgres.connect()
-    await connection.execute("""
-        CREATE TABLE IF NOT EXISTS api_logs (
-            id BIGSERIAL PRIMARY KEY,
-            timestamp TIMESTAMPTZ DEFAULT NOW(),
-            request_id TEXT NOT NULL UNIQUE,
-            model_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            prompt_tokens INTEGER,
-            completion_tokens INTEGER,
-            user_id TEXT
-        )
-    """)
     await connection.execute("TRUNCATE TABLE api_logs")
     try:
         yield connection

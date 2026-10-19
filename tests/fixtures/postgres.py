@@ -26,16 +26,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote
 
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import asyncpg
 
 ALLOWED_TEST_DB_PATTERN = "_test_"
@@ -53,6 +57,11 @@ RETIRED_ENV = ("TEST_PG_DSN", "PG_TEST_DSN")
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_]+")
 _TRUE = {"1", "true", "yes", "on"}
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+#: pytest's ``pythonpath`` in ``pyproject.toml``. The command line is not run by
+#: pytest, so it puts these first itself (:func:`_use_this_checkout`).
+PYTHONPATH = ("apps/backend", ".")
 
 
 class TestDatabaseConfigError(RuntimeError):
@@ -103,7 +112,9 @@ class DatabaseTarget:
         }
 
     def describe(self, database: str | None = None) -> str:
-        return f"{database or self.name} at {self.host}:{self.port}"
+        if database == MAINTENANCE_DATABASE:
+            return f"server at {self.host}:{self.port}"
+        return f"test database {database or self.name} at {self.host}:{self.port}"
 
 
 def database_required() -> bool:
@@ -196,32 +207,79 @@ def database_unavailable(reason: str) -> NoReturn:
     pytest.skip(reason)
 
 
-_ensured_worker_databases: set[str] = set()
+def unavailable_errors() -> tuple[type[BaseException], ...]:
+    """The exceptions that mean "no usable database here", and nothing else.
 
-
-async def _ensure_worker_database(db: DatabaseTarget, database: str | None) -> None:
-    """Create this xdist worker's own database on first use.
-
-    Only the worker's own database, and only once per process. Fixtures used to
-    disagree about who creates it: some did, the rest skipped with "database …
-    does not exist" whenever they happened to run first.
+    Unreachable or timed-out server, a refused login, a database that does not
+    exist, a server still starting or out of connections. An SQL, argument or
+    ``init=`` callback error is a bug in the test or the code under test and
+    must surface as one, so it is deliberately not in this list.
     """
-    if database is not None or db.name == db.base_name or db.name in _ensured_worker_databases:
+    import asyncpg
+
+    return (
+        OSError,  # refused, unresolvable host, and TimeoutError from Python 3.11
+        asyncio.TimeoutError,
+        asyncpg.PostgresConnectionError,
+        asyncpg.InvalidAuthorizationSpecificationError,
+        asyncpg.InvalidCatalogNameError,
+        asyncpg.CannotConnectNowError,
+        asyncpg.TooManyConnectionsError,
+    )
+
+
+@contextlib.contextmanager
+def connecting(what: str) -> Iterator[None]:
+    """Turn a connection failure inside the block into :func:`database_unavailable`.
+
+    Wrap only the call that connects (``asyncpg.connect``, ``create_pool``,
+    ``DatabaseLogger.initialize``); every other exception propagates unchanged.
+    """
+    try:
+        yield
+    except unavailable_errors() as exc:
+        database_unavailable(f"PostgreSQL {what} is unavailable: {exc}")
+
+
+_ready_databases: set[str] = set()
+
+
+async def _ensure_ready(db: DatabaseTarget, database: str | None) -> None:
+    """Create this worker's database and bring it to the full schema, once per process.
+
+    Fixtures used to disagree about who creates the worker database (the rest
+    skipped with "database … does not exist" whenever they ran first) and about
+    who migrates it (a file that created a minimal ``api_logs`` for itself broke
+    every later file that needed the real one). Doing both on first use here
+    makes a database test independent of what ran before it, on an empty
+    database just as on one CI prepared, where this only reads the catalog.
+    A *database* the caller names is the caller's to manage.
+    """
+    import asyncpg
+
+    if database is not None or db.name in _ready_databases:
         return
     await ensure_database(db.name)
-    _ensured_worker_databases.add(db.name)
+    with connecting(db.describe()):
+        pool = await asyncpg.create_pool(**db.connect_kwargs(), min_size=1, max_size=2)
+    try:
+        await assert_test_db_from_pool(pool, "prepare")
+        await prepare_schema(pool)
+    finally:
+        await pool.close()
+    _ready_databases.add(db.name)
 
 
 async def worker_connect_kwargs() -> dict[str, Any]:
     """:meth:`DatabaseTarget.connect_kwargs` for code that opens its own pool.
 
     For handing to gateway code such as ``DatabaseLogger``: the worker's
-    database is created first, as :func:`connect` and :func:`create_pool` do.
-    The caller still owns turning a connection failure into
-    :func:`database_unavailable`.
+    database is created and prepared first, as :func:`connect` and
+    :func:`create_pool` do. Wrap the gateway's own connect in
+    :func:`connecting`.
     """
     db = target()
-    await _ensure_worker_database(db, None)
+    await _ensure_ready(db, None)
     return db.connect_kwargs()
 
 
@@ -233,8 +291,8 @@ def worker_dsn() -> str:
 
     For fixtures that hand a DSN to gateway code (``DatabaseLogger({"dsn": …})``)
     and so cannot route its connection errors through :func:`database_unavailable`
-    themselves: the worker's database is created, connected to once and checked
-    to be a test database, or the test is skipped (failed under
+    themselves: the worker's database is created and prepared, connected to once
+    and checked to be a test database, or the test is skipped (failed under
     ``TEST_DB_REQUIRED``) here. Must be called outside a running event loop, as a
     plain, non-async fixture is.
     """
@@ -261,13 +319,9 @@ async def connect(
     import asyncpg
 
     db = target()
-    await _ensure_worker_database(db, database)
-    try:
+    await _ensure_ready(db, database)
+    with connecting(db.describe(database)):
         conn = await asyncpg.connect(**db.connect_kwargs(database), timeout=timeout, **kwargs)
-    except Exception as exc:
-        database_unavailable(
-            f"PostgreSQL test database {db.describe(database)} is unavailable: {exc}"
-        )
     if database != MAINTENANCE_DATABASE:
         try:
             await assert_test_db_from_connection(conn, "connect")
@@ -294,13 +348,9 @@ async def create_pool(*, database: str | None = None, **kwargs: Any) -> asyncpg.
         if fixed in kwargs:
             raise TypeError(f"create_pool() does not take {fixed!r}: it comes from TEST_DB_*")
     db = target()
-    await _ensure_worker_database(db, database)
-    try:
+    await _ensure_ready(db, database)
+    with connecting(db.describe(database)):
         pool = await asyncpg.create_pool(**db.connect_kwargs(database), **kwargs)
-    except Exception as exc:
-        database_unavailable(
-            f"PostgreSQL test database {db.describe(database)} is unavailable: {exc}"
-        )
     try:
         await assert_test_db_from_pool(pool, "create_pool")
     except BaseException:
@@ -376,6 +426,30 @@ async def prepare_databases(workers: int = 0) -> list[str]:
     return names
 
 
+def _use_this_checkout() -> None:
+    """Import the gateway from the checkout this file is in, as pytest would.
+
+    Without it, a virtualenv shared with another checkout (a worktree using the
+    main checkout's ``.venv``) resolves ``serving`` to *that* checkout and
+    prepares its schema, not the one the tests about to run expect.
+    """
+    for entry in reversed(PYTHONPATH):
+        path = str(_REPO_ROOT / entry)
+        if path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
+
+
+def _gateway_source_problem() -> str | None:
+    """Why the imported gateway is not this checkout's, or ``None``."""
+    import serving
+
+    location = Path(serving.__file__).resolve()
+    if location.is_relative_to(_REPO_ROOT):
+        return None
+    return f"serving was imported from {location}, not from {_REPO_ROOT}."
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tests.fixtures.postgres")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -387,7 +461,8 @@ def _main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    problem = configuration_problem()
+    _use_this_checkout()
+    problem = configuration_problem() or _gateway_source_problem()
     if problem:
         print(f"error: {problem}", file=sys.stderr)
         return 2
