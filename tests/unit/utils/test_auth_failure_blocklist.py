@@ -543,3 +543,109 @@ async def test_block_events_keep_their_bucket_through_log_formatting(small_limit
     assert blocked["threshold"] == 3
     assert blocked["window_sec"] == 100
     assert blocked["block_seconds"] == 1000
+
+
+# --- memory under a spray, and the unresolved breaker's escape hatch -----------------
+
+
+@pytest.mark.asyncio
+async def test_a_spray_from_many_addresses_does_not_grow_memory_forever(
+    small_limits, clock, monkeypatch
+):
+    """Every recorded address is a dict entry; the periodic sweep must drop stale ones."""
+    monkeypatch.setattr(afb, "_SWEEP_EVERY", 10)
+    for _ in range(3):  # one address goes on to be blocked
+        await record_auth_failure("198.51.100.200")
+    for i in range(6):
+        await record_auth_failure(f"203.0.113.{i}")
+    assert len(afb._failures) == 6  # a blocked address keeps no history
+    assert "198.51.100.200" in afb._blocked_until
+
+    clock["t"] += 101  # the counting window has passed for all of them
+    await record_auth_failure("192.0.2.1")  # the 10th call runs the sweep
+
+    assert set(afb._failures) == {"192.0.2.1"}
+    assert "198.51.100.200" in afb._blocked_until  # a live block is kept
+
+    clock["t"] += 1000  # and is dropped once it lapses
+    for i in range(10):
+        await record_auth_failure(f"192.0.2.{10 + i}")
+    assert "198.51.100.200" not in afb._blocked_until
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_keeps_recent_failures_counting(small_limits, clock, monkeypatch):
+    monkeypatch.setattr(afb, "_SWEEP_EVERY", 3)
+    ip = "203.0.113.90"
+    await record_auth_failure(ip)
+    clock["t"] += 50
+    await record_auth_failure(ip)
+
+    clock["t"] += 60  # the first failure is now outside the window, the second is not
+    await record_auth_failure("192.0.2.50")  # sweep
+
+    assert list(afb._failures[ip]) == [clock["t"] - 60]
+
+
+def _unresolved():
+    from serving.utils.request_ip import ClientIpInfo
+
+    return ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="10.0.0.2",
+        source="unknown",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_unresolved_breaker_can_be_cleared_by_its_listed_name(clock, monkeypatch):
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 2)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 60)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 30)
+    await record_auth_failure(_unresolved())
+    assert await record_auth_failure(_unresolved()) is True
+    [block] = await list_active_blocks()
+    assert block.ip_bucket == "unresolved-global"
+
+    assert await clear_block(block.ip_bucket) is True
+
+    assert await is_ip_blocked(_unresolved()) == (False, 0)
+    assert len(afb._unresolved_failures) == 0
+    # One fresh failure is not enough to trip it again: the history went too.
+    assert await record_auth_failure(_unresolved()) is False
+    assert await clear_block("unresolved-global") is False  # nothing to lift
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_unresolved_breaker_is_not_reported_as_lifted(clock, monkeypatch):
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 1)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_duration_sec", 30)
+    assert await record_auth_failure(_unresolved()) is True
+
+    clock["t"] += 31
+
+    assert await clear_block("unresolved-global") is False
+
+
+def test_an_address_that_does_not_parse_is_never_exempt(monkeypatch):
+    monkeypatch.setattr(settings, "auth_failure_block_exempt_ips", "0.0.0.0/0, ::/0")
+
+    assert afb._is_exempt("203.0.113.5") is True
+    assert afb._is_exempt("not-an-address") is False
+    assert afb._is_exempt("") is False
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_unresolved_breaker_mid_count_resets_the_count(clock, monkeypatch):
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_threshold", 2)
+    monkeypatch.setattr(settings, "unresolved_auth_failure_block_window_sec", 60)
+    await record_auth_failure(_unresolved())
+
+    assert await clear_block("unresolved-global") is False  # counting, not blocked
+
+    assert await record_auth_failure(_unresolved()) is False  # starts again from zero
