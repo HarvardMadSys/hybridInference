@@ -824,16 +824,17 @@ async def update_user(
         user_table_updates["suspension_message"] = msg
         payload_dict["suspension_message"] = msg
         updated.append("suspension_message")
-    if user_table_updates:
-        await op_store.update_user_fields(user_id, **user_table_updates)
-
-    # Post-write side-effects that depend on the new status
     if new_status == "suspended":
-        await op_store.revoke_key(user_id, hard_delete=False)
-        # And every signed-in session, as a soft delete does: each gate also
-        # checks the account's status, but a suspension should not depend on
-        # every one of them remembering to. Resuming does not restore them.
-        await op_store.revoke_user_sessions(user_id)
+        # The status, the key and every signed-in session go together, as a
+        # soft delete does: each gate also checks the account's status, but a
+        # suspension should not depend on every one of them remembering to.
+        # One transaction, because a suspension that committed its status alone
+        # could not be retried (suspended -> suspended is refused) and its
+        # sessions would come back on resume. Resuming does not restore them.
+        fields = {k: v for k, v in user_table_updates.items() if k != "status"}
+        await op_store.suspend_user(user_id, **fields)
+    elif user_table_updates:
+        await op_store.update_user_fields(user_id, **user_table_updates)
 
     # Update key-level fields
     key_fields = {

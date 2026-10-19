@@ -274,6 +274,18 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+        """Suspend *user_id*: status, *fields*, keys and sessions in one transaction.
+
+        Sets ``status='suspended'`` together with any other users-table
+        *fields* (``suspension_message``, ``admin_note``, ...), soft-revokes the
+        account's keys and revokes every signed-in session. All or nothing: a
+        suspension that committed its status but not the revocations could not
+        be retried (suspended -> suspended is not a transition) and would leave
+        the old sessions to come back on resume.
+        """
+
+    @abstractmethod
     async def update_user_last_login(self, user_id: str) -> None:
         """Set ``last_login_at`` to the current timestamp."""
 

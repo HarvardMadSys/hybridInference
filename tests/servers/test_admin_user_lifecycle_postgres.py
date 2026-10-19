@@ -172,3 +172,73 @@ async def test_suspending_a_user_signs_out_every_session(gateway, test_user, aut
         )
         assert response.status_code == 200, response.text
         assert await _live() == 0
+
+
+async def test_a_suspension_that_fails_part_way_commits_nothing(gateway, test_user_with_key):
+    """Status, key and sessions are one transaction (review of #1579).
+
+    When the session revocation failed after the status had been committed on
+    its own, the account was left suspended, a retried suspension was refused
+    (suspended -> suspended is no transition), and resuming brought the old
+    sessions back. A trigger makes that revocation fail for this user only.
+    """
+    client, store, pool = gateway
+    user = test_user_with_key
+    await store.create_session(
+        session_id=f"s-{uuid4()}",
+        user_id=user["id"],
+        refresh_token_hash=f"h-{uuid4()}",
+        jti=str(uuid4()),
+        sid=str(uuid4()),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    tag = uuid4().hex[:12]
+    function, trigger = f"fail_session_revoke_{tag}", f"fail_session_revoke_{tag}"
+
+    async def _state() -> tuple[str, set[str], int]:
+        async with pool.acquire() as conn:
+            status = await conn.fetchval("SELECT status FROM users WHERE id = $1", user["id"])
+            keys = await conn.fetch("SELECT status FROM api_keys WHERE user_id = $1", user["id"])
+            live = await conn.fetchval(
+                "SELECT count(*) FROM auth_sessions WHERE user_id = $1 AND revoked IS NOT TRUE",
+                user["id"],
+            )
+        return status, {row["status"] for row in keys}, live
+
+    async with pool.acquire() as conn:
+        # Identifiers and the id cannot be bound in DDL; all three are generated here.
+        await conn.execute(
+            f"CREATE FUNCTION {function}() RETURNS trigger AS $$ BEGIN "
+            f"IF NEW.user_id = '{user['id']}' THEN RAISE EXCEPTION 'injected failure'; END IF; "
+            f"RETURN NEW; END $$ LANGUAGE plpgsql"
+        )
+        await conn.execute(
+            f"CREATE TRIGGER {trigger} BEFORE UPDATE ON auth_sessions "
+            f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+        )
+    try:
+        try:
+            failed = await client.patch(
+                f"/admin/users/{user['id']}", headers=ADMIN, json={"status": "suspended"}
+            )
+            assert failed.status_code >= 500
+        except Exception as exc:  # the transport may re-raise the app's exception
+            assert "injected failure" in str(exc)
+
+        assert await _state() == ("active", {"active"}, 1)  # nothing half-applied
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f"DROP TRIGGER IF EXISTS {trigger} ON auth_sessions")
+            await conn.execute(f"DROP FUNCTION IF EXISTS {function}()")
+
+    retried = await client.patch(
+        f"/admin/users/{user['id']}", headers=ADMIN, json={"status": "suspended"}
+    )
+    assert retried.status_code == 200, retried.text  # not a 409
+    assert await _state() == ("suspended", {"revoked"}, 0)
+
+    resumed = await client.patch(
+        f"/admin/users/{user['id']}", headers=ADMIN, json={"status": "active"}
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert await _state() == ("active", {"revoked"}, 0)  # the old session stays revoked

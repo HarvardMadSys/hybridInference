@@ -41,6 +41,7 @@ def mock_stores():
     op_store.set_user_preference = AsyncMock(return_value=True)
     op_store.revoke_key = AsyncMock()
     op_store.revoke_user_sessions = AsyncMock(return_value=0)
+    op_store.suspend_user = AsyncMock()
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
 
     log_store = MagicMock()
@@ -1884,17 +1885,37 @@ async def test_status_moves_only_between_active_and_suspended(
     resp = await client.patch("/admin/users/u1", headers=AUTH, json={"status": target})
 
     assert resp.status_code == (200 if allowed else 409), resp.text
-    if allowed:
+    # Only a suspension takes the key, and every signed-in session, away -- with
+    # the status, in the store's one transaction rather than three writes.
+    if allowed and target == "suspended":
+        op_store.suspend_user.assert_awaited_once_with("u1")
+        op_store.update_user_fields.assert_not_awaited()
+    elif allowed:
         op_store.update_user_fields.assert_awaited_once_with("u1", status=target)
+        op_store.suspend_user.assert_not_awaited()
     else:
         op_store.update_user_fields.assert_not_awaited()
-    # Only a suspension takes the key, and every signed-in session, away.
-    if allowed and target == "suspended":
-        op_store.revoke_key.assert_awaited_once_with("u1", hard_delete=False)
-        op_store.revoke_user_sessions.assert_awaited_once_with("u1")
-    else:
-        op_store.revoke_key.assert_not_awaited()
-        op_store.revoke_user_sessions.assert_not_awaited()
+        op_store.suspend_user.assert_not_awaited()
+    op_store.revoke_key.assert_not_awaited()
+    op_store.revoke_user_sessions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_suspension_carries_its_other_fields_into_the_same_write(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="active")
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"status": "suspended", "suspension_message": "  abuse  ", "admin_note": "ticket 9"},
+    )
+
+    assert response.status_code == 200
+    op_store.suspend_user.assert_awaited_once_with(
+        "u1", suspension_message="abuse", admin_note="ticket 9"
+    )
+    op_store.update_user_fields.assert_not_awaited()
 
 
 @pytest.mark.asyncio
