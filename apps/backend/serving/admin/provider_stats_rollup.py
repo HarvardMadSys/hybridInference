@@ -1,6 +1,16 @@
 """Hourly rollup of api_logs into provider_hourly_stats.
 
-Spec: docs/agents/specs/2026-05-02-per-provider-hourly-performance-design.md
+Spec: docs/agents/specs/archive/2026-05-02-per-provider-hourly-performance-design.md
+
+Each hour the hourly job or the startup backfill rolls up also gets a row in
+``provider_hourly_coverage``, written in the same transaction as the hour's
+stats. Quiet hours get one too:
+``provider_hourly_stats`` has no row for an hour without traffic, so the marker
+is the only way to tell such an hour from one whose run never happened -- a
+restart spanning the job's minute, a crash, or a run that found another replica
+holding the lock. The hourly job and the startup backfill roll up every due
+hour of the retention window that has no marker, so a missed hour is filled by
+the next run or start instead of reading as zero traffic for good.
 """
 
 from __future__ import annotations
@@ -19,11 +29,21 @@ logger = get_logger(__name__)
 # A constant 64-bit integer so all replicas serialize on the same lock.
 ADVISORY_LOCK_KEY = 0x70726F76737473  # ascii "provsts" packed
 
+# Days of hourly rows and coverage markers kept. The purge's cutoff is also
+# the oldest hour a repair fills, so a purged hour never reads as missing.
+RETENTION_DAYS = 30
+
+# The job fires at this minute past every hour, to give the previous hour's
+# writes time to flush. An hour is due for its rollup from then on.
+ROLLUP_MINUTE = 5
+
 # Hours per UPSERT chunk in backfill_token_columns. 6h gives ~120 chunks
 # over a 30-day window — fewer round-trips than per-hour, still bounded
 # enough that any single statement stays well under a minute on the
 # already-indexed (provider, timestamp) range scan.
 BACKFILL_CHUNK_HOURS = 6
+
+_HOUR = timedelta(hours=1)
 
 ROLLUP_SQL = """
 INSERT INTO provider_hourly_stats AS p (
@@ -130,6 +150,61 @@ ON CONFLICT (provider, model_id, hour_bucket) DO UPDATE SET
     total_cost_usd          = EXCLUDED.total_cost_usd
 """
 
+# The hours in [$1, $2) that no rollup has marked as covered, newest first. On
+# a complete table this returns no rows.
+MISSING_HOURS_SQL = """
+SELECT h.hour_bucket
+FROM generate_series($1::timestamptz, $2::timestamptz - interval '1 hour', interval '1 hour')
+    AS h(hour_bucket)
+WHERE NOT EXISTS (
+    SELECT 1 FROM provider_hourly_coverage c WHERE c.hour_bucket = h.hour_bucket
+)
+ORDER BY h.hour_bucket DESC
+"""
+
+MARK_COVERED_SQL = """
+INSERT INTO provider_hourly_coverage (hour_bucket, completed_at) VALUES ($1, NOW())
+ON CONFLICT (hour_bucket) DO UPDATE SET completed_at = EXCLUDED.completed_at
+"""
+
+# Coverage starts on a table that may already hold rolled-up hours. An hour
+# with rows was rolled up, so it is marked rather than rolled up again: a
+# second pass would add nothing, and after api_logs rows are deleted it would
+# rewrite counts of traffic that did happen.
+SEED_COVERAGE_SQL = """
+INSERT INTO provider_hourly_coverage (hour_bucket)
+SELECT DISTINCT hour_bucket FROM provider_hourly_stats
+ON CONFLICT (hour_bucket) DO NOTHING
+"""
+
+PURGE_SQL = """
+DELETE FROM provider_hourly_stats
+WHERE hour_bucket < $1
+"""
+
+PURGE_COVERAGE_SQL = """
+DELETE FROM provider_hourly_coverage
+WHERE hour_bucket < $1
+"""
+
+
+def _row_count(result: str) -> int:
+    """Parse the row count from an asyncpg command tag such as ``INSERT 0 N``."""
+    try:
+        return int(result.rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+def _due_end(now: datetime) -> datetime:
+    """End of the newest hour due for its rollup at *now*.
+
+    That is the start of the current hour from minute ``ROLLUP_MINUTE`` on, and
+    the start of the previous hour before it.
+    """
+    due = now - timedelta(minutes=ROLLUP_MINUTE)
+    return due.replace(minute=0, second=0, microsecond=0)
+
 
 async def run_rollup(
     pool: asyncpg.Pool,
@@ -142,7 +217,7 @@ async def run_rollup(
     Returns the number of rows affected (inserted+updated). Idempotent:
     re-running with the same window updates existing rows. Caller is
     responsible for taking the advisory lock when concurrent runs are
-    possible.
+    possible. Marks no hour covered; the hourly job and the backfill do.
     """
     if start.tzinfo is None or end.tzinfo is None:
         raise ValueError("start and end must be tz-aware")
@@ -151,28 +226,63 @@ async def run_rollup(
 
     async with pool.acquire() as conn:
         result = await conn.execute(ROLLUP_SQL, start, end)
-    # asyncpg returns "INSERT 0 N" for INSERT statements (the 0 is oid).
-    # Parse the trailing integer.
-    try:
-        return int(result.rsplit(" ", 1)[-1])
-    except ValueError:
-        return 0
+    return _row_count(result)
 
 
-PURGE_SQL = """
-DELETE FROM provider_hourly_stats
-WHERE hour_bucket < NOW() - $1::interval
-"""
+async def _roll_up_hour(conn: asyncpg.Connection, hour: datetime) -> int:
+    """Roll up the hour starting at *hour* and mark it covered.
+
+    One transaction, so the hour is marked only once its rows are written.
+    Returns the number of stats rows written.
+    """
+    async with conn.transaction():
+        result = await conn.execute(ROLLUP_SQL, hour, hour + _HOUR)
+        await conn.execute(MARK_COVERED_SQL, hour)
+    return _row_count(result)
 
 
-async def purge_old(pool: asyncpg.Pool, *, retention_days: int = 30) -> int:
-    """Delete rows older than retention_days. Returns count deleted."""
+async def _repair_missing(
+    conn: asyncpg.Connection,
+    *,
+    start: datetime,
+    end: datetime,
+) -> tuple[int, int]:
+    """Roll up the hours in ``[start, end)`` that have no coverage marker.
+
+    One hour per statement, so a repair is never heavier than the job's usual
+    run, and newest first: an older hour that keeps failing cannot hold up the
+    previous hour's rollup. Run it under the advisory lock. Returns ``(hours
+    rolled up, stats rows written)``.
+    """
+    if not await conn.fetchval("SELECT EXISTS (SELECT 1 FROM provider_hourly_coverage)"):
+        await conn.execute(SEED_COVERAGE_SQL)
+    missing = [row["hour_bucket"] for row in await conn.fetch(MISSING_HOURS_SQL, start, end)]
+    rows_written = 0
+    for hour in missing:
+        rows_written += await _roll_up_hour(conn, hour)
+    return len(missing), rows_written
+
+
+async def _purge(conn: asyncpg.Connection, *, cutoff: datetime) -> int:
+    """Delete the stats rows and coverage markers of the hours before *cutoff*.
+
+    Returns the number of stats rows deleted.
+    """
+    async with conn.transaction():
+        result = await conn.execute(PURGE_SQL, cutoff)
+        await conn.execute(PURGE_COVERAGE_SQL, cutoff)
+    return _row_count(result)
+
+
+async def purge_old(pool: asyncpg.Pool, *, retention_days: int = RETENTION_DAYS) -> int:
+    """Delete rows and coverage markers older than retention_days.
+
+    The cutoff is the hour the hourly job's window starts at, so no hour is
+    purged that a repair would then find missing. Returns stats rows deleted.
+    """
+    cutoff = _due_end(datetime.now(timezone.utc)) - timedelta(days=retention_days)
     async with pool.acquire() as conn:
-        result = await conn.execute(PURGE_SQL, timedelta(days=retention_days))
-    try:
-        return int(result.rsplit(" ", 1)[-1])
-    except ValueError:
-        return 0
+        return await _purge(conn, cutoff=cutoff)
 
 
 async def _try_lock_run(
@@ -200,27 +310,29 @@ async def _try_lock_run(
 async def hourly_job(
     pool: asyncpg.Pool,
     *,
-    retention_days: int = 30,
+    retention_days: int = RETENTION_DAYS,
 ) -> None:
-    """Roll up the previous completed hour, then purge old rows.
+    """Purge old rows, then roll up every due hour that is still missing.
+
+    At the scheduled minute that is the previous hour, plus any hour of the
+    retention window whose run was missed, including an hour a run of this job
+    skipped because another replica held the lock.
 
     Used as the APScheduler entrypoint registered by ``register_rollup_job``.
     """
     started_at = time.monotonic()
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    start, end = now - timedelta(hours=1), now
+    end = _due_end(datetime.now(timezone.utc))
+    start = end - timedelta(days=retention_days)
 
+    hours_rolled = 0
     rows_written = 0
     outcome = "error"
 
     async def _do(conn) -> None:
-        nonlocal rows_written
-        result = await conn.execute(ROLLUP_SQL, start, end)
-        try:
-            rows_written = int(result.rsplit(" ", 1)[-1])
-        except ValueError:
-            rows_written = 0
-        await conn.execute(PURGE_SQL, timedelta(days=retention_days))
+        nonlocal hours_rolled, rows_written
+        # Purge first: a repair that fails part-way must not keep old rows.
+        await _purge(conn, cutoff=start)
+        hours_rolled, rows_written = await _repair_missing(conn, start=start, end=end)
 
     try:
         ran = await _try_lock_run(pool, _do)
@@ -231,9 +343,10 @@ async def hourly_job(
     finally:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
-            "rollup_provider_stats: window=[%s, %s) rows=%d duration_ms=%d outcome=%s",
+            "rollup_provider_stats: window=[%s, %s) hours=%d rows=%d duration_ms=%d outcome=%s",
             start.isoformat(),
             end.isoformat(),
+            hours_rolled,
             rows_written,
             duration_ms,
             outcome,
@@ -241,53 +354,48 @@ async def hourly_job(
         # Metrics emission is added in Task 10.
 
 
-async def backfill_if_empty(
+async def backfill_missing(
     pool: asyncpg.Pool,
     *,
-    days: int = 30,
+    days: int = RETENTION_DAYS,
 ) -> int:
-    """Seed provider_hourly_stats with the last ``days`` days of api_logs.
+    """Roll up every due hour of the last ``days`` days that has no coverage marker.
 
-    No-op when rows already exist. Returns the number of rows written
-    (0 when skipped). Multi-replica safe: takes the same advisory lock
-    used by ``hourly_job`` and re-checks emptiness inside the lock so
-    only one replica performs the (potentially expensive) 30-day
-    aggregation on first deploy.
+    Every hour of the window on a new table, otherwise the hours that came due
+    while no hourly job ran. On a complete table this is one indexed query and
+    takes no lock. Otherwise it takes the advisory lock used by ``hourly_job`` and
+    re-reads what is missing under it, so replicas starting together do the
+    work once; a replica that finds the lock held skips, and the next hourly
+    run fills whatever is still missing. ``days`` should not exceed the job's
+    retention, or every start rolls up hours the job has just purged.
+
+    Returns the number of hours rolled up (0 when skipped).
     """
+    end = _due_end(datetime.now(timezone.utc))
+    start = end - timedelta(days=days)
     async with pool.acquire() as conn:
-        any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
-    if any_row is not None:
-        logger.info("backfill_if_empty: table populated, skipping")
+        missing = await conn.fetch(MISSING_HOURS_SQL, start, end)
+    if not missing:
+        logger.info("backfill_provider_stats: no missing hours, skipping")
         return 0
 
-    rows_written = 0
+    hours_rolled = 0
 
     async def _do(conn) -> None:
-        nonlocal rows_written
-        # Re-check emptiness under the lock — another replica may have just
-        # finished its backfill while we were waiting.
-        any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
-        if any_row is not None:
-            logger.info("backfill_if_empty: populated by another replica, skipping")
-            return
-        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=days)
-        result = await conn.execute(ROLLUP_SQL, start, end)
-        try:
-            rows_written = int(result.rsplit(" ", 1)[-1])
-        except ValueError:
-            rows_written = 0
+        nonlocal hours_rolled
+        hours_rolled, rows_written = await _repair_missing(conn, start=start, end=end)
         logger.info(
-            "backfill_if_empty: window=[%s, %s) rows=%d",
+            "backfill_provider_stats: window=[%s, %s) hours=%d rows=%d",
             start.isoformat(),
             end.isoformat(),
+            hours_rolled,
             rows_written,
         )
 
     ran = await _try_lock_run(pool, _do)
     if not ran:
-        logger.info("backfill_if_empty: lock held by another replica, skipping")
-    return rows_written
+        logger.info("backfill_provider_stats: lock held by another replica, skipping")
+    return hours_rolled
 
 
 async def backfill_token_columns(
@@ -295,46 +403,57 @@ async def backfill_token_columns(
     *,
     days: int = 30,
 ) -> int:
-    """Re-run the rollup hour-by-hour to fill NULL token-total columns.
+    """Re-run the rollup over the chunks that hold NULL token-total columns.
 
-    Used once after the migration that adds total_prompt_tokens /
-    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd
-    to provider_hourly_stats. No-op when no NULL rows are detected.
+    Fills rows written before the migration that added total_prompt_tokens /
+    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd to
+    provider_hourly_stats. Startup calls it on every boot, so it looks only
+    at the last ``days`` days -- the window it re-rolls -- and skips chunks
+    without a NULL row. A row it cannot fill, older than the window or with
+    no api_logs rows left behind it, therefore never costs a whole-window
+    re-roll on each start. No-op when the window has no NULL rows.
 
     Returns the number of chunks processed (0 when skipped). Idempotent:
     the same UPSERT runs as the hourly job, so calling repeatedly is safe.
     """
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
     async with pool.acquire() as conn:
         any_null = await conn.fetchval(
-            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL "
+            "AND hour_bucket >= $1 AND hour_bucket < $2 LIMIT 1",
+            start,
+            end,
         )
     if any_null is None:
-        logger.info("backfill_token_columns: no NULL rows, skipping")
+        logger.info("backfill_token_columns: no NULL rows in window, skipping")
         return 0
 
     processed = 0
 
     async def _do(conn) -> None:
         nonlocal processed
-        any_null = await conn.fetchval(
-            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        null_hours = await conn.fetch(
+            "SELECT DISTINCT hour_bucket FROM provider_hourly_stats "
+            "WHERE total_prompt_tokens IS NULL AND hour_bucket >= $1 AND hour_bucket < $2",
+            start,
+            end,
         )
-        if any_null is None:
+        if not null_hours:
             logger.info("backfill_token_columns: filled by another replica, skipping")
             return
 
         # Chunk the window so we issue ~120 UPSERTs over 30 days instead
         # of 720, while still bounding each statement to a small enough
-        # window that it cannot lock the table for long.
-        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=days)
+        # window that it cannot lock the table for long. Only the chunks
+        # holding a NULL row are re-rolled.
         chunk = timedelta(hours=BACKFILL_CHUNK_HOURS)
-        h = start
-        while h < end:
-            next_h = min(h + chunk, end)
-            await conn.execute(ROLLUP_SQL, h, next_h)
+        chunk_starts = sorted(
+            {start + (row["hour_bucket"] - start) // chunk * chunk for row in null_hours}
+        )
+        for chunk_start in chunk_starts:
+            await conn.execute(ROLLUP_SQL, chunk_start, min(chunk_start + chunk, end))
             processed += 1
-            h = next_h
         logger.info(
             "backfill_token_columns: window=[%s, %s) chunks=%d chunk_hours=%d",
             start.isoformat(),
@@ -352,14 +471,14 @@ async def backfill_token_columns(
 def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:
     """Register the hourly rollup job on the existing AsyncIOScheduler.
 
-    Fires at minute 5 every hour to give the previous hour's writes
-    time to flush.
+    Fires at minute ``ROLLUP_MINUTE`` every hour to give the previous hour's
+    writes time to flush.
     """
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=5, timezone=timezone.utc),
+        trigger=CronTrigger(minute=ROLLUP_MINUTE, timezone=timezone.utc),
         args=[pool],
         id="rollup_provider_stats",
         replace_existing=True,
@@ -367,4 +486,4 @@ def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:
         coalesce=True,
         max_instances=1,
     )
-    logger.info("rollup_provider_stats: registered on scheduler (cron minute=5)")
+    logger.info("rollup_provider_stats: registered on scheduler (cron minute=%d)", ROLLUP_MINUTE)

@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
@@ -40,9 +41,8 @@ from serving.servers.deps import (
     get_operational_store,
     verify_admin_access,
 )
+from serving.servers.routers.admin import request_volume
 from serving.servers.routers.admin._common import (
-    CLIENT_DISCONNECT_STATUS_CODE,
-    CLIENT_DISCONNECT_TERMINAL_STATE,
     REQUEST_OUTCOME_FILTERS,
     _build_histogram,
     _escape_ilike_substring_term,
@@ -51,9 +51,11 @@ from serving.servers.routers.admin._common import (
 )
 from serving.storage import account_schema
 from serving.storage.utils import coerce_json_object
+from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
+logger = get_logger(__name__)
 
 
 REQUEST_METRIC_WINDOWS: tuple[tuple[str, str, int, int], ...] = (
@@ -270,6 +272,23 @@ _OFFLOAD_SUMMARY_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestOffload
 # keeps the busiest.
 _OFFLOAD_SUMMARY_MAX_GROUPS = 100
 
+# The Recent Requests total is a COUNT(*) over the whole lookback. Under a filter
+# that has to read each row (an outcome, a request type) that is every row of a
+# week or more, and on a large table it took longer than the console waits for a
+# response -- while the page it was holding up takes milliseconds. So the count
+# gets this long, side by side with the page; past it, Postgres cancels it and the
+# list goes out with a lower bound and ``has_more`` instead of a total.
+_RECENT_REQUESTS_COUNT_BUDGET_MS = 3000
+# Totals per filter tuple, so paging through one filtered list counts it once.
+# A count that ran past the budget is cached as None: it would again on the next
+# page. Longer-lived than the summaries above because paging is slower than
+# editing a filter, and a total a minute old is still the right order of size.
+# Same entry cap as the caches above.
+_RECENT_REQUESTS_COUNT_TTL_SECONDS = 60.0
+# (pool id, COUNT statement, its bind params)
+_RecentRequestsCountKey = tuple[int, str, tuple[Any, ...]]
+_RECENT_REQUESTS_COUNT_CACHE: dict[_RecentRequestsCountKey, tuple[float, tuple[int | None]]] = {}
+
 
 def _perf_breakdown_lock() -> asyncio.Lock:
     """Return a lock bound to the active event loop for breakdown cache misses."""
@@ -282,13 +301,17 @@ def _perf_breakdown_lock() -> asyncio.Lock:
     return _PERF_BREAKDOWN_LOCK
 
 
-def _perf_cache_get(cache: dict[Any, tuple[float, Any]], key: Any) -> Any | None:
+def _perf_cache_get(
+    cache: dict[Any, tuple[float, Any]],
+    key: Any,
+    ttl_seconds: float = _PERF_BREAKDOWN_CACHE_TTL_SECONDS,
+) -> Any | None:
     """Return a still-fresh cached value for *key*, dropping it once stale."""
     entry = cache.get(key)
     if entry is None:
         return None
     cached_at, response = entry
-    if time.monotonic() - cached_at >= _PERF_BREAKDOWN_CACHE_TTL_SECONDS:
+    if time.monotonic() - cached_at >= ttl_seconds:
         cache.pop(key, None)
         return None
     return response
@@ -334,131 +357,54 @@ async def admin_get_request_metrics(
     path records, never the status on its own — an upstream that answers 499 is
     a real failure and has to stay in ``error_*``. See
     ``_common.client_disconnect_sql`` for the full reasoning.
+
+    Completed hours come from the hourly rollup; only the newest hours and the
+    part of each window before its first whole hour are counted from
+    ``api_logs`` per load. See :mod:`.request_volume`.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
-    windows: list[AdminRequestMetricsWindow] = []
-    async with db_logger.pool.acquire() as conn:
-        for key, label, window_minutes, bucket_minutes in REQUEST_METRIC_WINDOWS:
-            rows = await conn.fetch(
-                """
-                WITH config AS (
-                    SELECT ($2::int * 60) AS bucket_seconds
-                ),
-                bounds AS (
-                    SELECT
-                        date_trunc('minute', NOW()) AS end_time,
-                        date_trunc('minute', NOW())
-                            - ($1::int * interval '1 minute') AS start_time,
-                        to_timestamp(
-                            floor(
-                                extract(
-                                    epoch FROM date_trunc('minute', NOW())
-                                        - ($1::int * interval '1 minute')
-                                ) / config.bucket_seconds
-                            ) * config.bucket_seconds
-                        ) AS aligned_start
-                    FROM config
-                ),
-                series AS (
-                    SELECT generate_series(
-                        (SELECT aligned_start FROM bounds),
-                        (SELECT end_time FROM bounds),
-                        $2::int * interval '1 minute'
-                    ) AS bucket_start
-                ),
-                bucketed_logs AS (
-                    SELECT
-                        to_timestamp(
-                            floor(extract(epoch from timestamp) / ($2::int * 60))
-                            * ($2::int * 60)
-                        ) AS bucket_start,
-                        COUNT(*) AS request_count,
-                        COUNT(*) FILTER (
-                            WHERE status_code >= 200 AND status_code < 400
-                        ) AS success_count,
-                        COUNT(*) FILTER (
-                            WHERE (error IS NOT NULL
-                                OR status_code IS NULL
-                                OR status_code < 200
-                                OR status_code >= 400)
-                              AND (status_code = $3::int
-                                   AND metadata->>'terminal_state' = $4) IS NOT TRUE
-                        ) AS error_count,
-                        COUNT(*) FILTER (
-                            WHERE status_code = $3::int
-                              AND metadata->>'terminal_state' = $4
-                        ) AS client_disconnect_count,
-                        COUNT(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
-                            AS latency_count,
-                        SUM(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
-                            AS latency_sum_ms,
-                        AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
-                            AS avg_latency_ms
-                    FROM api_logs, bounds
-                    WHERE timestamp >= bounds.start_time
-                      AND timestamp <= bounds.end_time
-                    GROUP BY 1
-                )
-                SELECT
-                    series.bucket_start,
-                    COALESCE(bucketed_logs.request_count, 0) AS request_count,
-                    COALESCE(bucketed_logs.success_count, 0) AS success_count,
-                    COALESCE(bucketed_logs.error_count, 0) AS error_count,
-                    COALESCE(bucketed_logs.client_disconnect_count, 0)
-                        AS client_disconnect_count,
-                    COALESCE(bucketed_logs.latency_count, 0) AS latency_count,
-                    COALESCE(bucketed_logs.latency_sum_ms, 0) AS latency_sum_ms,
-                    bucketed_logs.avg_latency_ms
-                FROM series
-                LEFT JOIN bucketed_logs
-                  ON bucketed_logs.bucket_start = series.bucket_start
-                ORDER BY series.bucket_start ASC
-                """,
-                window_minutes,
-                bucket_minutes,
-                CLIENT_DISCONNECT_STATUS_CODE,
-                CLIENT_DISCONNECT_TERMINAL_STATE,
-            )
+    per_window = await request_volume.load_window_buckets(
+        db_logger.pool,
+        [
+            (window_minutes, bucket_minutes)
+            for *_, window_minutes, bucket_minutes in REQUEST_METRIC_WINDOWS
+        ],
+    )
 
-            buckets = [
+    windows: list[AdminRequestMetricsWindow] = []
+    for (key, label, window_minutes, bucket_minutes), bars in zip(
+        REQUEST_METRIC_WINDOWS, per_window, strict=True
+    ):
+        total = request_volume.VolumeCounts()
+        buckets: list[AdminRequestMetricsBucket] = []
+        for start_time, counts in bars:
+            total.add(counts)
+            buckets.append(
                 AdminRequestMetricsBucket(
-                    start_time=row["bucket_start"],
-                    request_count=int(row["request_count"] or 0),
-                    success_count=int(row["success_count"] or 0),
-                    error_count=int(row["error_count"] or 0),
-                    client_disconnect_count=int(row["client_disconnect_count"] or 0),
-                    avg_latency_ms=(
-                        round(float(row["avg_latency_ms"]), 1)
-                        if row["avg_latency_ms"] is not None
-                        else None
-                    ),
-                )
-                for row in rows
-            ]
-            total_requests = sum(bucket.request_count for bucket in buckets)
-            success_requests = sum(bucket.success_count for bucket in buckets)
-            error_requests = sum(bucket.error_count for bucket in buckets)
-            client_disconnect_requests = sum(bucket.client_disconnect_count for bucket in buckets)
-            latency_count = sum(int(row["latency_count"] or 0) for row in rows)
-            latency_sum_ms = sum(float(row["latency_sum_ms"] or 0) for row in rows)
-            windows.append(
-                AdminRequestMetricsWindow(
-                    key=key,
-                    label=label,
-                    window_minutes=window_minutes,
-                    bucket_minutes=bucket_minutes,
-                    total_requests=total_requests,
-                    success_requests=success_requests,
-                    error_requests=error_requests,
-                    client_disconnect_requests=client_disconnect_requests,
-                    avg_latency_ms=(
-                        round(latency_sum_ms / latency_count, 1) if latency_count else None
-                    ),
-                    buckets=buckets,
+                    start_time=start_time,
+                    request_count=counts.request_count,
+                    success_count=counts.success_count,
+                    error_count=counts.error_count,
+                    client_disconnect_count=counts.client_disconnect_count,
+                    avg_latency_ms=counts.avg_latency_ms,
                 )
             )
+        windows.append(
+            AdminRequestMetricsWindow(
+                key=key,
+                label=label,
+                window_minutes=window_minutes,
+                bucket_minutes=bucket_minutes,
+                total_requests=total.request_count,
+                success_requests=total.success_count,
+                error_requests=total.error_count,
+                client_disconnect_requests=total.client_disconnect_count,
+                avg_latency_ms=total.avg_latency_ms,
+                buckets=buckets,
+            )
+        )
 
     return AdminRequestMetricsResponse(
         generated_at=datetime.now(timezone.utc),
@@ -843,6 +789,24 @@ def _build_recent_requests_filters(
     return clauses, params, needs_user_join
 
 
+async def _count_recent_requests(pool: Any, count_sql: str, params: list[Any]) -> int | None:
+    """Count the rows *count_sql* matches, or None once the budget runs out.
+
+    In a transaction only so ``SET LOCAL`` limits the timeout to this statement
+    and the connection returns to the pool without it.
+    """
+    async with pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                await conn.execute(
+                    f"SET LOCAL statement_timeout = {_RECENT_REQUESTS_COUNT_BUDGET_MS}"
+                )
+                row = await conn.fetchrow(count_sql, *params)
+        except asyncpg.QueryCanceledError:
+            return None
+    return int(row["total"] or 0) if row else 0
+
+
 @router.get("/recent-requests", response_model=AdminRecentRequestsResponse)
 async def admin_list_recent_requests(
     request: Request,
@@ -856,10 +820,16 @@ async def admin_list_recent_requests(
     errors_only: bool = False,
     outcome: str | None = None,
     request_type: str | None = None,
+    refresh: bool = False,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminRecentRequestsResponse:
     """List recent API requests across all users.
+
+    ``total`` is exact when ``total_exact`` is true. Counting every match runs
+    beside the page under a time budget (see ``_RECENT_REQUESTS_COUNT_BUDGET_MS``);
+    past it, ``total`` is the rows through this page, a lower bound, and
+    ``has_more`` says whether another page exists.
 
     Query Parameters:
     - limit: Max results (default: 50, max: 200)
@@ -878,6 +848,8 @@ async def admin_list_recent_requests(
       value is a 422 rather than a silently unfiltered page
     - request_type: ``"embedding"`` to show only embedding requests, ``"chat"``
       to exclude them; any other value (or omission) applies no type filter
+    - refresh: Count again rather than reuse a total counted moments ago for
+      the same filters (the tab's Refresh)
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -900,24 +872,27 @@ async def admin_list_recent_requests(
     )
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
-    async with db_logger.pool.acquire() as conn:
-        # Get total count. Only join users when a filter needs it —
-        # u.user_name/u.email are only referenced by the user predicate, and
-        # api_logs is high-volume so the join is worth avoiding otherwise.
-        count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
-        count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_logs l {count_join_sql}{where_sql}",
-            *params,
+    # Only join users when a filter needs it — u.user_name/u.email are only
+    # referenced by the user predicate, and api_logs is high-volume so the join
+    # is worth avoiding otherwise.
+    count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
+    count_sql = f"SELECT COUNT(*) as total FROM api_logs l {count_join_sql}{where_sql}"
+    count_key: _RecentRequestsCountKey = (id(db_logger.pool), count_sql, tuple(params))
+    cached = (
+        None
+        if refresh
+        else _perf_cache_get(
+            _RECENT_REQUESTS_COUNT_CACHE, count_key, _RECENT_REQUESTS_COUNT_TTL_SECONDS
         )
-        total = int(count_row["total"] or 0) if count_row else 0
+    )
 
-        # Get paginated results. prompt/response are deliberately excluded —
-        # they are fetched on-demand via /admin/recent-requests/{id}/content
-        # when the admin expands a row.
-        limit_idx = len(params) + 1
-        offset_idx = len(params) + 2
-        rows = await conn.fetch(
-            f"""
+    # Get paginated results. prompt/response are deliberately excluded — they
+    # are fetched on-demand via /admin/recent-requests/{id}/content when the
+    # admin expands a row. One row past the page says whether another page
+    # exists, which the total cannot when it is only a lower bound.
+    limit_idx = len(params) + 1
+    offset_idx = len(params) + 2
+    page_sql = f"""
             SELECT
                 l.request_id, l.user_id, u.user_name, u.email AS user_email,
                 l.model_id, l.provider, l.timestamp,
@@ -956,11 +931,25 @@ async def admin_list_recent_requests(
             {where_sql}
             ORDER BY l.timestamp DESC
             LIMIT ${limit_idx} OFFSET ${offset_idx}
-            """,
-            *params,
-            limit,
-            offset,
+            """
+
+    async def _fetch_page() -> list[Any]:
+        async with db_logger.pool.acquire() as conn:
+            return await conn.fetch(page_sql, *params, limit + 1, offset)
+
+    total: int | None
+    if cached is not None:
+        rows = await _fetch_page()
+        (total,) = cached
+    else:
+        # Side by side, on two connections: the page is never held up by a
+        # count beyond the count's own budget.
+        rows, total = await asyncio.gather(
+            _fetch_page(), _count_recent_requests(db_logger.pool, count_sql, params)
         )
+        _perf_cache_put(_RECENT_REQUESTS_COUNT_CACHE, count_key, (total,))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
 
     requests = [
         AdminRecentRequestItem(
@@ -1011,7 +1000,14 @@ async def admin_list_recent_requests(
         for row in rows
     ]
 
-    return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+    return AdminRecentRequestsResponse(
+        requests=requests,
+        total=total if total is not None else offset + len(requests),
+        total_exact=total is not None,
+        has_more=has_more,
+        limit=limit,
+        offset=offset,
+    )
 
 
 async def _load_request_perf_breakdown(
@@ -1736,6 +1732,7 @@ async def admin_clear_error_requests(
     _admin_id: str = Depends(verify_admin_access),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
 ) -> AdminClearErrorRequestsResponse:
     """Hard-delete error requests logged within the last *hours* hours.
 
@@ -1744,6 +1741,9 @@ async def admin_clear_error_requests(
     includes client disconnects — narrowing it to the ``errors`` an admin sees
     under a different outcome would silently change what this button deletes.
     Defaults to the past hour. The action is recorded in the admin audit log.
+
+    The Request volume cards' stored hours that the delete reached are dropped,
+    to be counted again from what is left, as are the list's cached totals.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1761,6 +1761,15 @@ async def admin_clear_error_requests(
             None,
             {"hours": hours, "deleted_count": deleted_count},
         )
+
+    _RECENT_REQUESTS_COUNT_CACHE.clear()
+    if deleted_count and db_logger is not None and db_logger.pool is not None:
+        try:
+            await request_volume.invalidate_recent(db_logger.pool, hours)
+        except Exception:
+            # The rows are gone and the action is audited; failing the request
+            # now would only tell the admin the delete did not happen.
+            logger.exception("request volume: could not invalidate cleared hours")
 
     return AdminClearErrorRequestsResponse(
         deleted_count=deleted_count,

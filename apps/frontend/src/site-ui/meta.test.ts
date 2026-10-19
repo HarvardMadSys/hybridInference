@@ -41,6 +41,10 @@ type GenerateMetadata = () => Promise<Metadata>;
 /**
  * Compile in a server entry exporting this wording, and read every page's
  * metadata. One import at a time, after the reset: see `module.test.tsx`.
+ *
+ * Each call resets the module registry and imports eight pages afresh, which
+ * on a loaded CI runner takes longer than the default 5s; the suite below that
+ * calls it gets the same 60s allowance as this file's type-check tests.
  */
 async function metadataWith(metaMessages: unknown) {
   vi.resetModules();
@@ -66,7 +70,7 @@ afterEach(() => {
   vi.doUnmock('@site-ui/server');
 });
 
-describe('public page titles', () => {
+describe('public page titles', { timeout: 60_000 }, () => {
   it('use the module’s wording on the routes it may word', async () => {
     const metadata = await metadataWith({
       'meta.home.title': '{app_name}, en français',

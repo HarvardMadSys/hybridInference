@@ -922,15 +922,20 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_geo_rollup_job,
                         )
                         from serving.admin.provider_stats_rollup import (
-                            backfill_if_empty,
+                            backfill_missing as backfill_provider_stats,
                             backfill_token_columns,
                             register_rollup_job,
+                        )
+                        from serving.servers.routers.admin.request_volume import (
+                            backfill_missing as backfill_request_volume,
+                            register_rollup_job as register_request_volume_job,
                         )
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
                             register_rollup_job(sched, db_logger.pool)
                             register_geo_rollup_job(sched, db_logger.pool)
+                            register_request_volume_job(sched, db_logger.pool)
 
                             # Failed-request Slack alerter (no-op if
                             # SLACK_WEBHOOK_URL is unset).
@@ -944,29 +949,34 @@ async def initialize() -> AppServices:
                                 "Slack alerter not registered: APScheduler did not start"
                             )
 
-                            # Run backfill in the background so a slow 30-day
-                            # aggregation on a large api_logs table cannot
-                            # block server startup or trip readiness checks.
-                            async def _run_backfill(pool=db_logger.pool):
-                                try:
-                                    await backfill_if_empty(pool, days=30)
-                                except Exception as bf_exc:
-                                    logger.warning(
-                                        f"provider-stats backfill failed (non-fatal): {bf_exc}"
-                                    )
-                                try:
-                                    await backfill_token_columns(pool, days=30)
-                                except Exception as bf_exc:
-                                    logger.warning(
-                                        f"provider-stats token backfill failed (non-fatal): {bf_exc}"
-                                    )
+                        # Roll up the hours of the last 30 days that
+                        # provider_hourly_stats has not covered -- every hour on a
+                        # new table, otherwise those that came due while no
+                        # hourly job ran -- and fill the token totals that rows
+                        # from before those columns lack. Both are cheap no-ops on
+                        # a complete table. Run in the background so a slow 30-day
+                        # aggregation on a large api_logs table cannot block
+                        # server startup or trip readiness checks.
+                        async def _run_backfill(pool=db_logger.pool):
+                            try:
+                                await backfill_provider_stats(pool, days=30)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                )
+                            try:
+                                await backfill_token_columns(pool, days=30)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"provider-stats token backfill failed (non-fatal): {bf_exc}"
+                                )
 
-                            _bf_task = asyncio.create_task(_run_backfill())
-                            _BACKGROUND_TASKS.add(_bf_task)
-                            _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        _bf_task = asyncio.create_task(_run_backfill())
+                        _BACKGROUND_TASKS.add(_bf_task)
+                        _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
-                        # Geo coverage is new and must backfill independently of
-                        # the existing provider-rollup bootstrap branch.
+                        # Geo coverage backfills in its own task, independently
+                        # of the provider-stats backfill above.
                         async def _run_geo_backfill(pool=db_logger.pool):
                             try:
                                 await backfill_geo_demand(pool, days=90)
@@ -976,6 +986,23 @@ async def initialize() -> AppServices:
                         _geo_bf_task = asyncio.create_task(_run_geo_backfill())
                         _BACKGROUND_TASKS.add(_geo_bf_task)
                         _geo_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # Store the completed hours the admin Request volume
+                        # cards read and the table lacks: a month of them on the
+                        # first start with the table, otherwise those that ended
+                        # while the server was down. Counting them here keeps
+                        # that work out of an admin's page load.
+                        async def _run_request_volume_backfill(pool=db_logger.pool):
+                            try:
+                                await backfill_request_volume(pool)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"request-volume backfill failed (non-fatal): {bf_exc}"
+                                )
+
+                        _volume_bf_task = asyncio.create_task(_run_request_volume_backfill())
+                        _BACKGROUND_TASKS.add(_volume_bf_task)
+                        _volume_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:

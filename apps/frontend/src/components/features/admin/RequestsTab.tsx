@@ -470,6 +470,10 @@ export function RequestsTab() {
   // Requests state
   const [reqEntries, setReqEntries] = useState<AdminRecentRequestItem[]>([]);
   const [reqTotal, setReqTotal] = useState(0);
+  // False when the backend gave up counting every match in time: `reqTotal` is
+  // then only the rows through this page, and there is no page count to show.
+  const [reqTotalExact, setReqTotalExact] = useState(true);
+  const [reqHasMore, setReqHasMore] = useState(false);
   const [reqLoading, setReqLoading] = useState(false);
   const [reqOffset, setReqOffset] = useState(0);
   const [reqUserFilter, setReqUserFilter] = useState('');
@@ -529,9 +533,10 @@ export function RequestsTab() {
 
   // Callers pass the filters to fetch with: the debounce effect passes the
   // debounced values, while manual actions (Refresh, Clear errors) pass the
-  // raw visible filters so they always reflect what the admin sees.
+  // raw visible filters so they always reflect what the admin sees. Refresh
+  // also asks for a fresh total rather than the one the backend cached.
   const loadRequests = useCallback(
-    async (userFilter: string, modelFilter: string) => {
+    async (userFilter: string, modelFilter: string, refresh = false) => {
       const seq = ++reqSeqRef.current;
       setReqLoading(true);
       try {
@@ -544,10 +549,14 @@ export function RequestsTab() {
           reqType === 'all' ? undefined : reqType,
           reqDays,
           reqSessionFilter || undefined,
+          refresh,
         );
         if (seq !== reqSeqRef.current) return;
         setReqEntries(d.requests);
         setReqTotal(d.total);
+        setReqTotalExact(d.total_exact ?? true);
+        // An older gateway sends no has_more; its total is always exact.
+        setReqHasMore(d.has_more ?? reqOffset + d.requests.length < d.total);
       } catch (e) {
         if (seq === reqSeqRef.current) toast.error(getErrorMessage(e));
       } finally {
@@ -685,7 +694,7 @@ export function RequestsTab() {
               type="button"
               onClick={() => {
                 loadRequestMetrics();
-                loadRequests(reqUserFilter, reqModelFilter);
+                loadRequests(reqUserFilter, reqModelFilter, true);
                 // Flush the debounce first so the performance panel refetches
                 // with whatever the filter inputs currently show, like the list.
                 flushFilterSearch();
@@ -800,8 +809,16 @@ export function RequestsTab() {
             <option value={90}>90d</option>
           </select>
         </label>
-        <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
-          {reqTotal.toLocaleString()} entries
+        <span
+          className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600"
+          title={
+            reqTotalExact
+              ? undefined
+              : 'Counting every match took too long, so this counts only the rows loaded so far.'
+          }
+        >
+          {reqTotal.toLocaleString()}
+          {reqTotalExact ? '' : '+'} entries
         </span>
         <button
           type="button"
@@ -1379,14 +1396,16 @@ export function RequestsTab() {
           </RequestTableScrollArea>
         )}
 
-        {/* Pagination */}
-        {reqTotal > REQ_PAGE_SIZE && (
+        {/* Pagination. Driven by has_more rather than the total, which is
+            only a lower bound when the backend could not count in time. */}
+        {(reqOffset > 0 || reqHasMore) && (
           <div className="flex flex-col gap-3 border-t border-gray-100 bg-gray-50/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <span className="text-[12px] text-gray-400 tabular-nums text-center sm:text-left">
-              {reqOffset + 1}&ndash;{Math.min(reqOffset + REQ_PAGE_SIZE, reqTotal)} of {reqTotal}
+              {reqOffset + 1}&ndash;{reqOffset + reqEntries.length}
+              {reqTotalExact && <> of {reqTotal}</>}
               <span className="ml-2 text-gray-300">
-                (page {Math.floor(reqOffset / REQ_PAGE_SIZE) + 1} of{' '}
-                {Math.ceil(reqTotal / REQ_PAGE_SIZE)})
+                (page {Math.floor(reqOffset / REQ_PAGE_SIZE) + 1}
+                {reqTotalExact && <> of {Math.ceil(reqTotal / REQ_PAGE_SIZE)}</>})
               </span>
             </span>
             <div className="flex flex-wrap items-center justify-center gap-3 sm:justify-end">
@@ -1400,49 +1419,52 @@ export function RequestsTab() {
                 </button>
                 <button
                   onClick={() => setReqOffset(reqOffset + REQ_PAGE_SIZE)}
-                  disabled={reqOffset + REQ_PAGE_SIZE >= reqTotal}
+                  disabled={!reqHasMore}
                   className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
                 >
                   Next
                 </button>
               </div>
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor={reqJumpInputId}
-                  className="text-[12px] text-gray-400 whitespace-nowrap"
-                >
-                  Jump to page
-                </label>
-                <input
-                  id={reqJumpInputId}
-                  type="number"
-                  min={1}
-                  max={Math.ceil(reqTotal / REQ_PAGE_SIZE)}
-                  inputMode="numeric"
-                  value={reqJumpPage}
-                  onChange={(e) => setReqJumpPage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+              {/* Jumping needs a page count, which only an exact total gives. */}
+              {reqTotalExact && (
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor={reqJumpInputId}
+                    className="text-[12px] text-gray-400 whitespace-nowrap"
+                  >
+                    Jump to page
+                  </label>
+                  <input
+                    id={reqJumpInputId}
+                    type="number"
+                    min={1}
+                    max={Math.ceil(reqTotal / REQ_PAGE_SIZE)}
+                    inputMode="numeric"
+                    value={reqJumpPage}
+                    onChange={(e) => setReqJumpPage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyOffsetJump(reqJumpPage, reqTotal, REQ_PAGE_SIZE, setReqOffset, () =>
+                          setReqJumpPage(''),
+                        );
+                      }
+                    }}
+                    className="w-14 rounded-md border border-gray-200 px-2 py-1 text-center text-[12px] text-gray-900 tabular-nums focus:border-gray-400 focus:outline-none"
+                    aria-label="Page number to jump to"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
                       applyOffsetJump(reqJumpPage, reqTotal, REQ_PAGE_SIZE, setReqOffset, () =>
                         setReqJumpPage(''),
-                      );
+                      )
                     }
-                  }}
-                  className="w-14 rounded-md border border-gray-200 px-2 py-1 text-center text-[12px] text-gray-900 tabular-nums focus:border-gray-400 focus:outline-none"
-                  aria-label="Page number to jump to"
-                />
-                <button
-                  type="button"
-                  onClick={() =>
-                    applyOffsetJump(reqJumpPage, reqTotal, REQ_PAGE_SIZE, setReqOffset, () =>
-                      setReqJumpPage(''),
-                    )
-                  }
-                  className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 ring-1 ring-inset ring-gray-200 hover:bg-gray-50"
-                >
-                  Go
-                </button>
-              </div>
+                    className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 ring-1 ring-inset ring-gray-200 hover:bg-gray-50"
+                  >
+                    Go
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

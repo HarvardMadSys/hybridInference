@@ -160,6 +160,23 @@ async def test_database_logger_creates_geo_rollup_and_coverage_tables():
 
 
 @pytest.mark.asyncio
+async def test_database_logger_creates_provider_rollup_coverage_table():
+    """Bootstrap creates the per-hour markers the provider rollup repairs gaps from."""
+    pool, statements = _capturing_pool()
+    db = DatabaseLogger({"dsn": "postgres://ignored"})
+    db.pool = pool
+
+    await db._create_tables()
+
+    create = next(
+        " ".join(statement.split())
+        for statement in statements
+        if "CREATE TABLE IF NOT EXISTS provider_hourly_coverage" in statement
+    )
+    assert "hour_bucket TIMESTAMPTZ PRIMARY KEY" in create
+
+
+@pytest.mark.asyncio
 async def test_postgres_log_store_initialize_orders_served_index_after_column():
     """``PostgresLogStore.initialize`` must not index a not-yet-added column."""
     pool, statements = _capturing_pool()
