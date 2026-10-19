@@ -72,7 +72,9 @@ class GeminiAdapter(BaseAdapter):
                     return str(content)
             return str(content)
 
-        system_instruction: str | None = None
+        # Every system message, in order: one turn's instructions must not
+        # silently replace an earlier one's (the Claude conversion joins them too).
+        system_parts: list[str] = []
         contents: list[dict[str, Any]] = []
         # Map an assistant tool_call id -> function name so a later role:"tool"
         # message can name its functionResponse to match the prior functionCall.
@@ -85,7 +87,7 @@ class GeminiAdapter(BaseAdapter):
             if role == "system":
                 text = _extract_text(raw_content)
                 if text:
-                    system_instruction = text
+                    system_parts.append(text)
                 continue
 
             if role == "user":
@@ -155,6 +157,7 @@ class GeminiAdapter(BaseAdapter):
                 continue
 
         request_body: dict[str, Any] = {"contents": contents}
+        system_instruction = "\n\n".join(system_parts)
         if system_instruction:
             request_body["systemInstruction"] = {
                 "role": "system",
@@ -288,6 +291,10 @@ class GeminiAdapter(BaseAdapter):
         if isinstance(tool_choice, str):
             if tool_choice.lower() == "none":
                 cfg = {"functionCallingConfig": {"mode": "NONE"}}
+            elif tool_choice.lower() in ("required", "any"):
+                # OpenAI "required": the model must call some tool. Gemini's
+                # default (AUTO) would let it answer in text instead.
+                cfg = {"functionCallingConfig": {"mode": "ANY"}}
             # "auto" and other strings map to default behavior; skip
         elif isinstance(tool_choice, dict):
             # Expect {"type":"function","function":{"name":"..."}}
