@@ -930,7 +930,7 @@ async def initialize() -> AppServices:
                             backfill_missing as backfill_request_volume,
                             register_rollup_job as register_request_volume_job,
                         )
-                        from serving.storage import user_usage_rollup
+                        from serving.storage import daily_activity_rollup, user_usage_rollup
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
@@ -938,6 +938,7 @@ async def initialize() -> AppServices:
                             register_geo_rollup_job(sched, db_logger.pool)
                             register_request_volume_job(sched, db_logger.pool)
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
+                            daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
 
                             # Failed-request Slack alerter (no-op if
                             # SLACK_WEBHOOK_URL is unset).
@@ -1005,6 +1006,20 @@ async def initialize() -> AppServices:
                         _volume_bf_task = asyncio.create_task(_run_request_volume_backfill())
                         _BACKGROUND_TASKS.add(_volume_bf_task)
                         _volume_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # The days of the Analytics growth series (the last 95) the
+                        # rollup lacks, the same way.
+                        async def _run_daily_activity_backfill(pool=db_logger.pool):
+                            try:
+                                await daily_activity_rollup.backfill_missing(pool)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"daily-activity backfill failed (non-fatal): {bf_exc}"
+                                )
+
+                        _activity_bf_task = asyncio.create_task(_run_daily_activity_backfill())
+                        _BACKGROUND_TASKS.add(_activity_bf_task)
+                        _activity_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
                         # Store the completed days the Users table's all-time
                         # request and token totals read and the table lacks: the

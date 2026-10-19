@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.analytics.growth import summarize
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
 
@@ -223,31 +224,25 @@ class TestAdminGrowthRoute:
     async def test_todays_partial_day_is_returned_but_not_fitted(self, growth_app, mock_db_logger):
         """The still-filling day is charted, yet kept out of every trend number.
 
-        Four complete days climb by a clean +10 DAU/day. Today has only one user
-        so far; folding it into the fit would collapse the slope to ~0.2 and
-        report a healthy week as flat.
+        The 29 complete days climb by a clean +10 DAU/day. Today has only one
+        user so far; folding it into the fit would bend the slope down and
+        report a healthy month as slowing.
         """
-        today = self._today_utc()
+        today = self._today_utc().date()
+        # Rows as daily_activity_rollup reads them: one per day with its
+        # signed-in users; DAU is their count.
         rows = [
             {
-                "day": today - timedelta(days=4 - i),
-                "active_users": users,
-                "new_users": users,
-                "tokens": users * 1000,
-                "requests": users * 3,
+                "day": today - timedelta(days=29 - i),
+                "user_ids": [f"user-{i}-{k}" for k in range(10 * (i + 1))],
+                "tokens": 10 * (i + 1) * 1000,
+                "requests": 10 * (i + 1) * 3,
             }
-            for i, users in enumerate([10, 20, 30, 40])
+            for i in range(29)
         ]
-        rows.append(
-            {
-                "day": today,
-                "active_users": 1,
-                "new_users": 0,
-                "tokens": 1000,
-                "requests": 3,
-            }
-        )
+        rows.append({"day": today, "user_ids": ["user-0-0"], "tokens": 1000, "requests": 3})
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.execute = AsyncMock()
         mock_conn.fetch = AsyncMock(return_value=rows)
 
         self._as_admin(growth_app)
@@ -259,35 +254,28 @@ class TestAdminGrowthRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert body["days"] == 30
-        # Every bucket the query returned is charted, today included.
-        assert len(body["points"]) == 5
-        assert [p["partial"] for p in body["points"]] == [False, False, False, False, True]
+        assert len(body["points"]) == 30
+        assert [p["partial"] for p in body["points"]] == [False] * 29 + [True]
+        assert [p["active_users"] for p in body["points"]] == [10 * (i + 1) for i in range(29)] + [
+            1
+        ]
+        # Every user is new on their one day, except today's, seen on day one.
+        assert body["points"][0]["new_users"] == 10
+        assert body["points"][-1]["new_users"] == 0
 
         assert body["users_trend"]["slope_per_day"] == pytest.approx(10.0)
         assert body["tokens_trend"]["slope_per_day"] == pytest.approx(10000.0)
-        # Halves of the four complete days: (10, 20) then (30, 40).
-        assert body["users_trend"]["compare_days"] == 2
-        assert body["users_trend"]["previous_avg"] == pytest.approx(15.0)
-        assert body["users_trend"]["recent_avg"] == pytest.approx(35.0)
-        assert body["users_trend"]["change_pct"] == pytest.approx(20.0 / 15.0)
+        complete = summarize([10.0 * (i + 1) for i in range(29)])
+        assert body["users_trend"]["previous_avg"] == pytest.approx(complete.previous_avg)
+        assert body["users_trend"]["recent_avg"] == pytest.approx(complete.recent_avg)
+        assert body["users_trend"]["compare_days"] == complete.compare_days
 
     @pytest.mark.asyncio
     async def test_range_with_no_traffic_returns_zeroed_trends(self, growth_app, mock_db_logger):
         """A gap-filled range of empty days must not divide by zero."""
-        today = self._today_utc()
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
-        mock_conn.fetch = AsyncMock(
-            return_value=[
-                {
-                    "day": today - timedelta(days=2 - i),
-                    "active_users": 0,
-                    "new_users": 0,
-                    "tokens": 0,
-                    "requests": 0,
-                }
-                for i in range(3)
-            ]
-        )
+        mock_conn.execute = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[])
 
         self._as_admin(growth_app)
         transport = ASGITransport(app=growth_app)
