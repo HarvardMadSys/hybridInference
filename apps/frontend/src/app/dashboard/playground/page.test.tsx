@@ -334,7 +334,7 @@ describe('PlaygroundPage', () => {
 
     // A router exception after the routing frame is exactly when knowing the
     // endpoint matters most, so the error must not wipe the badge.
-    await screen.findByText(/Error: network error/);
+    await screen.findByText('Error: Lost the connection to the server mid-reply.');
     expect(screen.getByTitle(/endpoint: glm-4\.6:zai-api/)).toBeInTheDocument();
   });
 
@@ -617,6 +617,33 @@ describe('PlaygroundPage', () => {
     await sendPrompt('second');
     await screen.findByText('fine');
     expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+  });
+
+  it('says the connection was lost when the stream breaks mid-reply', async () => {
+    const encoder = new TextEncoder();
+    let reads = 0;
+    const broken = {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            reads += 1;
+            if (reads === 1) return { done: false, value: encoder.encode(contentFrame('half')) };
+            // What Firefox rejects with when the response is cut off.
+            throw new TypeError('Error in input stream');
+          },
+        }),
+      },
+    };
+    mockChats(broken);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+
+    expect(
+      await screen.findByText('Error: Lost the connection to the server mid-reply.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('half')).toBeInTheDocument();
+    expect(screen.queryByText(/Error in input stream/)).toBeNull();
   });
 
   describe('a connection that goes quiet', () => {
