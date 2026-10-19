@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
+from serving.storage import user_usage_rollup
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import (
     check_erasure_fence,
@@ -1187,10 +1188,13 @@ class PostgresLogStore(LogStore):
     # -- admin: hard-delete user-owned rows ---------------------------------
 
     async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:
-        """Wipe ``api_logs`` and ``email_broadcast_recipients`` for *user_id*.
+        """Wipe ``api_logs``, ``user_usage_daily`` and ``email_broadcast_recipients`` for *user_id*.
 
-        Both DELETEs run in a single transaction.  Returns row counts parsed
-        from asyncpg command tags.  ``email_broadcast_recipients`` is created
+        All DELETEs run in a single transaction.  Returns row counts parsed
+        from asyncpg command tags.  ``user_usage_daily`` is the daily rollup of
+        the user's ``api_logs`` rows, so it names the user too; it is purged
+        under the rollup's lock so that no fill can write back what it read
+        before the purge (see :func:`user_usage_rollup.purge_user`).  ``email_broadcast_recipients`` is created
         by ``DatabaseLogger.initialize`` (``database.py``) — when the
         broadcast subsystem hasn't been provisioned, that DELETE is skipped
         via a savepoint and the key is omitted from the result.
@@ -1247,6 +1251,14 @@ class PostgresLogStore(LogStore):
                 "DELETE FROM api_logs WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1",
                 user_id,
             )
+            usage_count: int | None
+            try:
+                # Savepoint, like the recipients below: without the table there
+                # is nothing to erase.
+                async with conn.transaction():
+                    usage_count = await user_usage_rollup.purge_user(conn, user_id)
+            except _asyncpg.UndefinedTableError:
+                usage_count = None
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast
@@ -1267,6 +1279,8 @@ class PostgresLogStore(LogStore):
                 recipients_count = None
 
         counts = {"api_logs": _row_count(logs_status)}
+        if usage_count is not None:
+            counts["user_usage_daily"] = usage_count
         if recipients_count is not None:
             counts["email_broadcast_recipients"] = recipients_count
         return counts

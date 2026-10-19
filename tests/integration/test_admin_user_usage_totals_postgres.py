@@ -7,6 +7,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
+from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -23,8 +24,10 @@ async def store():
     )
     try:
         async with pool.acquire() as db:
-            for table in ("users", "api_keys", "api_logs", "user_daily_cost"):
+            for table in ("users", "api_keys", "user_daily_cost"):
                 await db.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
+            # api_logs with the daily usage rollup the totals read.
+            await ensure_api_logs_schema(db)
             await db.execute("""
                 INSERT INTO users (id, email, password_hash, status, created_at)
                 VALUES ('empty', 'empty@example.test', 'fixture', 'active', '2026-01-03'),
