@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import httpx
 
-from serving.config.settings import settings
+from serving.integrations.tencent_cloud.config import settings
 
 
 class TencentCloudError(RuntimeError):
@@ -95,19 +95,14 @@ def call_tencent_cloud(
     )
     try:
         response = httpx.post(
-            f"https://{service}.tencentcloudapi.com/",
-            content=body,
-            headers=headers,
-            timeout=10,
+            f"https://{service}.tencentcloudapi.com/", content=body, headers=headers, timeout=10
         )
         response.raise_for_status()
         result = response.json().get("Response")
         if not isinstance(result, dict):
             raise TencentCloudError("InvalidResponse")
         if error := result.get("Error"):
-            code = (
-                error.get("Code", "ProviderError") if isinstance(error, dict) else "ProviderError"
-            )
+            code = error.get("Code", "ProviderError") if isinstance(error, dict) else None
             safe_code = (
                 code
                 if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.]{1,128}", code)

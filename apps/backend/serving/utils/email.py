@@ -10,6 +10,7 @@ from markdown_it import MarkdownIt
 
 from serving.config.settings import settings
 from serving.config.site_identity import get_site_identity
+from serving.utils.delivery import EmailMessage, get_email_provider
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,11 +38,10 @@ def is_email_enabled() -> bool:
     Returns:
         True if the selected provider is configured, False otherwise.
     """
-    if settings.email_provider == "tencent_ses":
-        from serving.utils.tencent_ses import is_ses_enabled
-
-        return is_ses_enabled()
-    return bool(settings.smtp_user and settings.smtp_password)
+    if settings.email_provider == "smtp":
+        return bool(settings.smtp_user and settings.smtp_password)
+    provider = get_email_provider(settings.email_provider)
+    return provider is not None and provider.is_configured()
 
 
 def send_email(
@@ -61,8 +61,8 @@ def send_email(
         subject: Email subject.
         html_body: HTML email body.
         text_body: Plain text email body (optional, defaults to stripped HTML).
-        template: Approved SES template kind; ignored by SMTP.
-        template_data: Scalar SES variables; omitted notices use the text body.
+        template: Account event kind for template transports; ignored by SMTP.
+        template_data: Optional scalar account event variables for transports.
 
     Returns:
         True if email sent successfully, False otherwise.
@@ -75,15 +75,20 @@ def send_email(
         logger.warning("Email sending disabled: delivery provider not configured")
         return False
 
-    if settings.email_provider == "tencent_ses":
-        from serving.utils.tencent_ses import send_template
-
-        if template_data is None:
-            if text_body is None:
-                logger.warning("Tencent SES notices require a plain text body")
-                return False
-            template_data = {"site_name": get_site_identity().name, "body": text_body}
-        return send_template(to_email, subject, template, template_data)
+    if settings.email_provider != "smtp":
+        provider = get_email_provider(settings.email_provider)
+        if provider is None:
+            return False
+        return provider.send(
+            EmailMessage(
+                to_email=to_email,
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                template=template,
+                template_data=template_data,
+            )
+        )
 
     config = get_smtp_config()
 

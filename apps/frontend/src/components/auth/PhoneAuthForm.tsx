@@ -39,8 +39,15 @@ export function PhoneAuthForm(props: Props) {
   const isNeutral = skin === NEUTRAL_AUTH_APPEARANCE;
   const isNeutralBind = purpose === 'bind' && isNeutral;
   const hasCountryPicker = isNeutral && (purpose === 'signup' || purpose === 'bind');
-  const { branding, distribution } = useSiteConfig();
-  const [countryIso, setCountryIso] = useState(() => (distribution.id === 'tencent' ? 'CN' : 'US'));
+  const { branding, phoneAuthPolicy } = useSiteConfig();
+  const [countryIso, setCountryIso] = useState(() => {
+    const callingCode = phoneAuthPolicy?.defaultCountryCode;
+    if (!callingCode) return 'US';
+    return (
+      PHONE_COUNTRY_CODES.find((country) => country.code === `+${callingCode}`)?.iso ??
+      'international'
+    );
+  });
   const [countrySearch, setCountrySearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);

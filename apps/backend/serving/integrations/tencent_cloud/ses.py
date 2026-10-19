@@ -1,17 +1,27 @@
 """Approved Tencent SES templates for transactional account emails."""
 
+from __future__ import annotations
+
 import html
 import json
 import re
+from typing import TYPE_CHECKING
 
-from serving.config.settings import settings
+from serving.config.site_identity import get_site_identity
+from serving.integrations.tencent_cloud.api import TencentCloudError, call_tencent_cloud
+from serving.integrations.tencent_cloud.config import settings
 from serving.utils.logging import get_logger
-from serving.utils.tencent_cloud import TencentCloudError, call_tencent_cloud
+
+if TYPE_CHECKING:
+    from serving.utils.delivery import EmailMessage
 
 logger = get_logger(__name__)
 
+#: Tencent SES documents this bound on the serialized template variables.
+TEMPLATE_DATA_LIMIT_BYTES = 800
 
-def is_ses_enabled() -> bool:
+
+def is_configured() -> bool:
     """Require credentials, an approved sender and the two account templates."""
     return bool(
         settings.tencent_cloud_secret_id
@@ -33,17 +43,16 @@ def send_template(to_email: str, subject: str, kind: str, data: dict[str, str]) 
         "notice": settings.tencent_ses_template_notice,
     }
     template_id = template_ids.get(kind)
-    if not is_ses_enabled() or not template_id:
+    if not is_configured() or not template_id:
         logger.warning("Tencent SES template is unavailable: %s", kind)
         return False
-    # Templates are HTML. Escape user-supplied text before interpolation, and
-    # keep the serialized variables within the provider's documented bound.
+    # Templates are HTML: escape user-supplied text before interpolation.
     template_data = json.dumps(
         {key: html.escape(value, quote=True) for key, value in data.items()},
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    if len(template_data.encode("utf-8")) > 800:
+    if len(template_data.encode("utf-8")) > TEMPLATE_DATA_LIMIT_BYTES:
         logger.warning("Tencent SES template parameters exceed the size limit")
         return False
     sender_name = settings.tencent_ses_from_name
@@ -72,3 +81,14 @@ def send_template(to_email: str, subject: str, kind: str, data: dict[str, str]) 
     except TencentCloudError as error:
         logger.warning("Tencent SES request failed: %s", error)
         return False
+
+
+def send(message: EmailMessage) -> bool:
+    """Adapt generic account events to reviewed Tencent SES templates."""
+    data = message.template_data
+    if data is None:
+        if message.text_body is None:
+            logger.warning("Tencent SES notices require a plain text body")
+            return False
+        data = {"site_name": get_site_identity().name, "body": message.text_body}
+    return send_template(message.to_email, message.subject, message.template, dict(data))

@@ -77,6 +77,22 @@ const runtimeDocument = {
 };
 
 describe('resolveRuntimeSiteConfig', () => {
+  it('reads a phone-input policy without requiring it from older backends', () => {
+    expect(resolveRuntimeSiteConfig(runtimeDocument).phoneAuthPolicy).toBeUndefined();
+    expect(
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        phone_auth_policy: { default_country_code: '86' },
+      }).phoneAuthPolicy,
+    ).toEqual({ defaultCountryCode: '86' });
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        phone_auth_policy: { default_country_code: '+86' },
+      }),
+    ).toThrow();
+  });
+
   it('only enables phone authentication when the server advertises it', () => {
     expect(resolveRuntimeSiteConfig(runtimeDocument).features.phoneAuth).toBe(false);
     expect(

@@ -253,13 +253,19 @@ async def test_phone_auth_flag_is_sent_only_while_enabled(
         get_distribution_config.cache_clear()
 
     monkeypatch.setattr(site_config, "is_sms_enabled", lambda: False)
-    features = (await client.get("/site-config")).json()["features"]
+    body = (await client.get("/site-config")).json()
+    features = body["features"]
     # Only the keys every console accepts.
     assert set(features) == {"routers", "public_signup", "rag"}
+    assert "phone_auth_policy" not in body
 
     monkeypatch.setattr(site_config, "is_sms_enabled", lambda: True)
-    features = (await client.get("/site-config")).json()["features"]
+    monkeypatch.setenv("SMS_DEFAULT_COUNTRY_CODE", "86")
+    get_settings.cache_clear()
+    body = (await client.get("/site-config")).json()
+    features = body["features"]
     assert features["phone_auth"] is True
+    assert body["phone_auth_policy"] == {"default_country_code": "86"}
 
 
 @pytest.mark.asyncio
