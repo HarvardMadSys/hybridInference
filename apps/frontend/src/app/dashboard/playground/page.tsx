@@ -32,6 +32,12 @@ const API_BASE = config.apiBase;
 /** How close to the bottom (px) still counts as following the stream. */
 const FOLLOW_THRESHOLD = 48;
 const UNDO_MS = 8000;
+/**
+ * The backend sends at least a keepalive every 15 s, so this much silence means
+ * the connection is gone -- even when a proxy in between keeps it open, as the
+ * console's own rewrite proxy does after the backend drops.
+ */
+const STREAM_IDLE_MS = 45_000;
 const NO_MESSAGES: Message[] = [];
 
 interface PlaygroundSession {
@@ -485,6 +491,20 @@ export default function PlaygroundPage() {
 
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const resetIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          if (!failure) {
+            failure = {
+              status: 'error',
+              error: `Lost the connection: nothing from the server for ${STREAM_IDLE_MS / 1000} s.`,
+            };
+          }
+          ctrl.abort();
+        }, STREAM_IDLE_MS);
+      };
+      resetIdle();
 
       try {
         const resp = await fetchWithAuth(API_BASE, '/internal/playground/chat', {
@@ -512,6 +532,7 @@ export default function PlaygroundPage() {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          resetIdle();
           buf += dec.decode(value, { stream: true });
           const lines = buf.split('\n');
           buf = lines.pop() || '';
@@ -571,6 +592,7 @@ export default function PlaygroundPage() {
           failure = { status: 'aborted' };
         }
       } finally {
+        clearTimeout(idleTimer);
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
           rafRef.current = null;

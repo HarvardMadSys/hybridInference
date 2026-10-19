@@ -618,4 +618,67 @@ describe('PlaygroundPage', () => {
     await screen.findByText('fine');
     expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
   });
+
+  describe('a connection that goes quiet', () => {
+    beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+    afterEach(() => vi.useRealTimers());
+
+    it('gives up after 45 s of silence and keeps it out of context', async () => {
+      // Sends one frame, then nothing, until the request is aborted -- as the
+      // console's proxy does once the backend has dropped.
+      const encoder = new TextEncoder();
+      let sent = false;
+      fetchWithAuth.mockImplementation(
+        async (_base: string, path: string, init?: { signal?: AbortSignal }) => {
+          if (path === '/internal/playground/models') return MODELS;
+          if (sent) return sseResponse([contentFrame('fine'), 'data: [DONE]\n\n']);
+          sent = true;
+          let first = true;
+          const read = () =>
+            first
+              ? ((first = false),
+                Promise.resolve({ done: false, value: encoder.encode(contentFrame('half')) }))
+              : new Promise((_resolve, reject) =>
+                  init?.signal?.addEventListener('abort', () =>
+                    reject(new DOMException('aborted', 'AbortError')),
+                  ),
+                );
+          return { ok: true, body: { getReader: () => ({ read }) } };
+        },
+      );
+      render(<PlaygroundPage />);
+      await sendPrompt('first');
+      await screen.findByText('half');
+
+      await act(() => vi.advanceTimersByTimeAsync(44_000));
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+
+      expect(
+        await screen.findByText(/^Error: Lost the connection: nothing from the server for 45 s\./),
+      ).toBeInTheDocument();
+      expect(screen.getByText('half')).toBeInTheDocument();
+      expect(screen.queryByText(/^Stopped/)).toBeNull();
+      await sendPrompt('second');
+      await screen.findByText('fine');
+      expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+    });
+
+    it('keeps waiting while keepalives arrive', async () => {
+      const stream = controlledStream();
+      mockChats(stream.response);
+      render(<PlaygroundPage />);
+      await sendPrompt();
+      for (let i = 0; i < 8; i += 1) {
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        stream.push(': keepalive\n\n');
+      }
+      stream.push(contentFrame('worth the wait'));
+      stream.push('data: [DONE]\n\n');
+      stream.end();
+
+      expect(await screen.findByText('worth the wait')).toBeInTheDocument();
+      expect(screen.queryByText(/^Error:/)).toBeNull();
+    });
+  });
 });
