@@ -36,6 +36,12 @@ counted under any other -- before a metric was added, or before the ask-question
 tool list changed -- is not stored as far as reads are concerned: it is counted
 live and filled again.
 
+Until the startup migration has added every column the stored reads name, reads
+count straight from ``api_logs`` instead (:func:`stored_ready`). The migration
+waits only briefly for its lock: behind a long holder such as the nightly
+``pg_dump`` it is deferred and retried in the background, while requests are
+already being served.
+
 Days reach the table through :func:`fill_days`, called by the hourly job and a
 backfill at startup. Every fill, invalidation and purge holds one
 transaction-scoped advisory lock, and a fill re-reads whether its day is still
@@ -175,23 +181,55 @@ GROUP BY run
 """
 
 
-def metrics_sql(user_match: str) -> str:
+# Every rollup column a stored read or fill names, all present once the startup
+# migration has run (see :func:`stored_ready`).
+_READY_SQL = """
+SELECT count(*) FROM pg_attribute
+WHERE attnum > 0 AND NOT attisdropped
+  AND ((attrelid = to_regclass('user_usage_daily') AND attname = ANY($1::text[]))
+    OR (attrelid = to_regclass('user_usage_daily_coverage') AND attname = 'definition'))
+"""
+READY_COLUMN_COUNT = len(METRICS) + 1
+
+
+async def stored_ready(conn: asyncpg.Connection) -> bool:
+    """Whether the tables have every column the stored reads and fills name.
+
+    False only between an upgrade's start and its deferred column migration
+    landing; reads then count from ``api_logs`` and fills wait. One catalog
+    lookup: columns are only ever added, so a True answer cannot go stale
+    before the statement it gates runs.
+    """
+    return await conn.fetchval(_READY_SQL, _COLUMNS) == READY_COLUMN_COUNT
+
+
+def metrics_sql(user_match: str, *, stored: bool = True) -> str:
     """SQL for ``user_id`` and every :data:`METRICS` column, per matching user.
 
     *user_match* completes ``<column> {user_match}`` for the users wanted, e.g.
     ``"= ANY($1::text[])"`` or ``"IN (SELECT id FROM filtered_users)"``. Users
-    with no logged rows are absent from the result. Each live part is a range on
+    with no logged rows are absent from the result. With ``stored=False`` --
+    for when :func:`stored_ready` is not -- every row is counted from
+    ``api_logs``, as before the rollup. Otherwise each live part is a range on
     ``(user_id, timestamp)``, which ``idx_api_logs_user_cost`` serves. The gap
     runs are joined ``LATERAL``, one bounded range scan per run: the planner
     cannot size the gap list (it guessed 500 days where there were none) and,
     joined plainly, answered with a scan of the whole table.
     """
-    stored = ", ".join(f"d.{column}" for column in _COLUMNS)
+    if not stored:
+        named = ", ".join(f"{expression} AS {column}" for column, expression in METRICS)
+        return f"""
+SELECT l.user_id, {named}
+FROM api_logs l
+WHERE l.user_id {user_match}
+GROUP BY l.user_id
+"""
+    stored_columns = ", ".join(f"d.{column}" for column in _COLUMNS)
     summed = ", ".join(f"SUM({column})::bigint AS {column}" for column in _COLUMNS)
     return f"""
 SELECT user_id, {summed}
 FROM (
-    SELECT d.user_id, {stored}
+    SELECT d.user_id, {stored_columns}
     FROM user_usage_daily d
     JOIN user_usage_daily_coverage c ON c.day = d.day AND c.definition = {_CURRENT}
     WHERE d.user_id {user_match} AND d.day < {SETTLED_DAY_SQL}
@@ -222,6 +260,7 @@ GROUP BY user_id
 
 
 _METRICS_FOR_IDS_SQL = metrics_sql("= ANY($1::text[])")
+_LOGGED_METRICS_FOR_IDS_SQL = metrics_sql("= ANY($1::text[])", stored=False)
 
 # Run inside the transaction of any statement using :func:`metrics_sql` or a
 # fill. The planner's guess at the gap days, or at a day's rows, puts the cost
@@ -259,9 +298,12 @@ async def fetch_metrics(conn: asyncpg.Connection, user_ids: list[str]) -> dict[s
     """All-time :data:`METRICS` for each of *user_ids* with any logged row."""
     if not user_ids:
         return {}
-    async with conn.transaction():
-        await conn.execute(NO_JIT_SQL)
-        rows = await conn.fetch(_METRICS_FOR_IDS_SQL, user_ids)
+    if not await stored_ready(conn):
+        rows = await conn.fetch(_LOGGED_METRICS_FOR_IDS_SQL, user_ids)
+    else:
+        async with conn.transaction():
+            await conn.execute(NO_JIT_SQL)
+            rows = await conn.fetch(_METRICS_FOR_IDS_SQL, user_ids)
     return {row["user_id"]: {column: int(row[column]) for column in _COLUMNS} for row in rows}
 
 
@@ -331,6 +373,9 @@ async def backfill_missing(pool: asyncpg.Pool) -> int:
     many days it wrote.
     """
     async with pool.acquire() as conn:
+        if not await stored_ready(conn):
+            logger.info("rollup_user_usage: columns not migrated yet, nothing filled")
+            return 0
         days = [row["day"] for row in await conn.fetch(_GAP_DAYS_SQL + " ORDER BY day DESC")]
         if not days:
             return 0

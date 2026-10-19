@@ -1995,8 +1995,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
 
+            stored_usage = needs_usage_sort and await user_usage_rollup.stored_ready(conn)
             if needs_usage_sort:
-                usage_totals = user_usage_rollup.metrics_sql("IN (SELECT id FROM filtered_users)")
+                usage_totals = user_usage_rollup.metrics_sql(
+                    "IN (SELECT id FROM filtered_users)", stored=stored_usage
+                )
                 cte_parts.append(f"usage_totals AS ({usage_totals})")
                 join_parts.append("LEFT JOIN usage_totals ux ON ux.user_id = fu.id")
                 select_extras.append("COALESCE(ux.request_count, 0) AS usage_alltime_requests")
@@ -2007,7 +2010,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             ctes = ", ".join(cte_parts)
 
             async with conn.transaction():
-                if needs_usage_sort:
+                if stored_usage:
                     await conn.execute(user_usage_rollup.NO_JIT_SQL)
                 rows = await conn.fetch(
                     f"WITH {ctes} "
