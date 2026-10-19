@@ -53,6 +53,29 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Distinct ``api_logs.provider`` values with a row in the last $1 days; see
+# ``PostgresOperationalStore.list_user_activity_providers``.
+ACTIVITY_PROVIDERS_SQL = """
+WITH RECURSIVE seen(provider) AS (
+    (SELECT provider FROM api_logs WHERE provider > ''
+     ORDER BY provider LIMIT 1)
+    UNION ALL
+    SELECT (SELECT l.provider FROM api_logs l WHERE l.provider > seen.provider
+            ORDER BY l.provider LIMIT 1)
+    FROM seen
+    WHERE seen.provider IS NOT NULL
+)
+SELECT provider FROM seen
+WHERE provider IS NOT NULL
+  AND EXISTS (
+      SELECT 1 FROM api_logs l
+      WHERE l.provider = seen.provider
+        AND l.timestamp >= NOW() - make_interval(days => $1)
+  )
+ORDER BY provider
+"""
+
+
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
 # in select order. The account columns among them that the users table does not
 # have yet are selected as the value every row would hold (see AccountSchema).
@@ -1650,15 +1673,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Distinct ``api_logs.provider`` values seen in the last *days* days.
 
         Same table and window as the ``provider`` filter in ``list_users``.
+
+        A skip scan of ``idx_api_logs_provider`` ``(provider, timestamp DESC)``:
+        the recursive part walks the index from one distinct provider to the
+        next, and each is kept if its newest row falls in the window -- one
+        index probe each. A ``SELECT DISTINCT`` over the window read every row
+        of the last *days* days instead, ~15 s on staging for a dozen providers.
         """
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT DISTINCT provider FROM api_logs "
-                "WHERE provider IS NOT NULL AND provider <> '' "
-                "AND timestamp >= NOW() - make_interval(days => $1) "
-                "ORDER BY provider",
-                days,
-            )
+            rows = await conn.fetch(ACTIVITY_PROVIDERS_SQL, days)
         return [str(row["provider"]) for row in rows]
 
     async def get_bulk_user_usage_totals(self, user_ids: list[str]) -> dict[str, Row]:
