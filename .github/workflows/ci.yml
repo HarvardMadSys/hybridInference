@@ -225,7 +225,26 @@ jobs:
         run: npm run type-check
 
       - name: Run frontend tests
-        run: npm run test
+        env:
+          CI_RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            # A hosted runner is a single-job VM: one worker per CPU is right.
+            npm run test
+          else
+            # Self-hosted runners share a host four ways (see "Select pytest
+            # worker budget"). Vitest's default of one worker per visible CPU
+            # oversubscribed it, and tests that take a second alone passed the
+            # 5s test timeout on dev pushes: four Frontend Quality failures in
+            # sixteen dev runs, never on PRs, which run hosted. Same budget as
+            # pytest's.
+            case "${CI_RUNNER_ARCH}" in
+              ARM64) workers=5 ;;
+              *) workers=2 ;;
+            esac
+            npm run test -- --maxWorkers="${workers}"
+          fi
 
       # Keep the audit fail-closed, but run it last so an upstream advisory
       # does not suppress formatting, lint, type-check, and test results.
