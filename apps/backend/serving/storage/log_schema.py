@@ -390,24 +390,61 @@ _REQUEST_VOLUME_HOURLY_DDL = """
 # Completed-day request and token totals per user behind the admin Users table,
 # written and read by ``serving.storage.user_usage_rollup``. A user with no
 # traffic on a day has no row, so the coverage table holds one row per counted
-# UTC day, quiet days included: its presence means "this day is counted".
+# UTC day, quiet days included: its presence, with the current ``definition``,
+# means "this day is counted".
 _USER_USAGE_DAILY_DDL = (
     """
     CREATE TABLE IF NOT EXISTS user_usage_daily (
-        user_id       TEXT   NOT NULL,
-        day           DATE   NOT NULL,
-        request_count BIGINT NOT NULL,
-        total_tokens  BIGINT NOT NULL,
+        user_id            TEXT   NOT NULL,
+        day                DATE   NOT NULL,
+        request_count      BIGINT NOT NULL,
+        total_tokens       BIGINT NOT NULL,
+        turns_sum          BIGINT NOT NULL DEFAULT 0,
+        turns_count        BIGINT NOT NULL DEFAULT 0,
+        user_turns_sum     BIGINT NOT NULL DEFAULT 0,
+        user_turns_count   BIGINT NOT NULL DEFAULT 0,
+        early_requests     BIGINT NOT NULL DEFAULT 0,
+        early_ask_requests BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (user_id, day)
     )
 """,
     """
     CREATE TABLE IF NOT EXISTS user_usage_daily_coverage (
         day          DATE        PRIMARY KEY,
-        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        definition   TEXT        NOT NULL DEFAULT ''
     )
 """,
 )
+
+# Columns the tables gained after they first shipped, as ``(table, column, ddl)``.
+# A constant default makes each ``ADD COLUMN`` a catalog-only change on these
+# small tables. Days stored before keep the default ``definition`` and so no
+# longer count as stored: they are counted live and filled again with every
+# column (see ``serving.storage.user_usage_rollup.DEFINITION``).
+_USER_USAGE_DAILY_MIGRATIONS = [
+    *(
+        (
+            "user_usage_daily",
+            column,
+            f"ALTER TABLE user_usage_daily ADD COLUMN IF NOT EXISTS {column} BIGINT NOT NULL DEFAULT 0",
+        )
+        for column in (
+            "turns_sum",
+            "turns_count",
+            "user_turns_sum",
+            "user_turns_count",
+            "early_requests",
+            "early_ask_requests",
+        )
+    ),
+    (
+        "user_usage_daily_coverage",
+        "definition",
+        "ALTER TABLE user_usage_daily_coverage "
+        "ADD COLUMN IF NOT EXISTS definition TEXT NOT NULL DEFAULT ''",
+    ),
+]
 
 
 async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
@@ -498,6 +535,10 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     # never queues an ACCESS EXCLUSIVE / SHARE lock on this hot table.
     existing_columns_now = await existing_columns(conn, "api_logs")
     existing_indexes = await _existing_indexes(conn)
+    usage_columns = {
+        table: await existing_columns(conn, table)
+        for table in ("user_usage_daily", "user_usage_daily_coverage")
+    }
 
     # Everything below takes a strong lock, so it runs under a bounded wait: if
     # a concurrent reader holds the table, fail fast (SchemaLockUnavailable)
@@ -518,6 +559,11 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         for index_name, index_ddl in _API_LOGS_INDEXES:
             if index_name not in existing_indexes:
                 await _execute_ddl(conn, index_ddl)
+
+        # Small tables, but the nightly pg_dump holds them as long as api_logs.
+        for table, column, ddl in _USER_USAGE_DAILY_MIGRATIONS:
+            if column not in usage_columns[table]:
+                await _execute_ddl(conn, ddl)
 
     # Aggregated hourly stats.
     await conn.execute("""

@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.storage import user_usage_rollup
 from serving.storage.postgres_operational import PostgresOperationalStore
+
+
+def _metrics_row(user_id: str, **values: int) -> dict:
+    """A row of user_usage_rollup.metrics_sql: every metric, zero unless given."""
+    return {"user_id": user_id, **{c: 0 for c, _ in user_usage_rollup.METRICS}, **values}
 
 
 @pytest.fixture
@@ -446,6 +452,7 @@ class TestListUsersNewFilters:
         # All-time request count and token total are enriched for the visible
         # page even when neither is the sort key, in one statement over the
         # daily rollup and the api_logs rows it has not stored.
+        pg_conn.fetchval.return_value = user_usage_rollup.READY_COLUMN_COUNT
         pg_conn.fetchrow.return_value = {"total": 1}
         pg_conn.fetch.side_effect = [
             [{"status": "active", "cnt": 1}],  # status counts
@@ -469,7 +476,7 @@ class TestListUsersNewFilters:
             [],  # today's costs lookup
             [],  # month's costs lookup
             [],  # alltime costs lookup
-            [{"user_id": "u1", "requests": 42, "tokens": 123456}],
+            [_metrics_row("u1", request_count=42, total_tokens=123456)],
         ]
 
         _total, rows, _ = await store.list_users()
@@ -488,6 +495,7 @@ class TestListUsersNewFilters:
     async def test_sort_by_requests_orders_by_request_count(self, store, pg_conn):
         # sort_by=requests joins the rollup-backed totals CTE over the whole
         # filtered set and orders by it; the per-page enrichment is skipped.
+        pg_conn.fetchval.return_value = user_usage_rollup.READY_COLUMN_COUNT
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
@@ -497,10 +505,11 @@ class TestListUsersNewFilters:
         assert "usage_totals AS" in main_sql
         assert "d.user_id IN (SELECT id FROM filtered_users)" in main_sql
         assert "FROM user_usage_daily d" in main_sql
-        assert "ORDER BY COALESCE(ux.requests, 0) DESC" in main_sql
+        assert "ORDER BY COALESCE(ux.request_count, 0) DESC" in main_sql
 
     async def test_sort_by_tokens_orders_by_token_total(self, store, pg_conn):
         # sort_by=tokens joins the same totals CTE and orders by its tokens.
+        pg_conn.fetchval.return_value = user_usage_rollup.READY_COLUMN_COUNT
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
@@ -508,7 +517,7 @@ class TestListUsersNewFilters:
 
         main_sql = pg_conn.fetch.call_args_list[-1].args[0]
         assert "usage_totals AS" in main_sql
-        assert "ORDER BY COALESCE(ux.tokens, 0) DESC" in main_sql
+        assert "ORDER BY COALESCE(ux.total_tokens, 0) DESC" in main_sql
 
 
 class TestDeferredUsageTotals:
@@ -529,7 +538,8 @@ class TestDeferredUsageTotals:
         assert not any("user_usage_daily" in sql for sql in sqls)
 
     async def test_bulk_totals_keeps_zero_cost_requests_and_fills_empty_users(self, store, pg_conn):
-        pg_conn.fetch.return_value = [{"user_id": "u1", "requests": 3, "tokens": 7}]
+        pg_conn.fetchval.return_value = user_usage_rollup.READY_COLUMN_COUNT
+        pg_conn.fetch.return_value = [_metrics_row("u1", request_count=3, total_tokens=7)]
         result = await store.get_bulk_user_usage_totals(["u1", "empty"])
         assert result == {"u1": {"requests": 3, "tokens": 7}, "empty": {"requests": 0, "tokens": 0}}
         sql = pg_conn.fetch.call_args.args[0]
@@ -558,6 +568,29 @@ class TestDeferredUsageTotals:
             assert rows[0]["usage_alltime_requests"] == 4
             assert rows[0]["usage_alltime_tokens"] == 8
             assert pg_conn.fetch.await_count == 5
+
+    async def test_bulk_totals_count_from_logs_until_the_rollup_columns_exist(self, store, pg_conn):
+        # An upgrade whose column migration was deferred (pg_dump held the
+        # tables) still answers, from api_logs as before the rollup.
+        pg_conn.fetchval.return_value = user_usage_rollup.READY_COLUMN_COUNT - 1
+        pg_conn.fetch.return_value = [_metrics_row("u1", request_count=3, total_tokens=7)]
+        result = await store.get_bulk_user_usage_totals(["u1"])
+        assert result == {"u1": {"requests": 3, "tokens": 7}}
+        sql = pg_conn.fetch.call_args.args[0]
+        assert "user_usage_daily" not in sql
+        assert "FROM api_logs l" in sql and "AS request_count" in sql
+
+    async def test_usage_sort_counts_from_logs_until_the_rollup_columns_exist(self, store, pg_conn):
+        pg_conn.fetchval.return_value = 0
+        pg_conn.fetchrow.return_value = {"total": 0}
+        pg_conn.fetch.side_effect = [[], []]
+
+        await store.list_users(sort_by="tokens")
+
+        main_sql = pg_conn.fetch.call_args_list[-1].args[0]
+        assert "usage_totals AS" in main_sql
+        assert "user_usage_daily" not in main_sql
+        assert "ORDER BY COALESCE(ux.total_tokens, 0) DESC" in main_sql
 
     async def test_empty_bulk_does_not_query_logs(self, store, pg_conn):
         assert await store.get_bulk_user_usage_totals([]) == {}
