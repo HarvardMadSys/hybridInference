@@ -54,10 +54,12 @@ Or the full suite:
 make test-verbose
 ```
 
-For database-dependent tests:
+For database-dependent tests (a shared local PostgreSQL in Docker; see
+`ops/dev/test-db-local.sh`):
 
 ```bash
-uv run pytest -vv -m dbtest
+make test-db-local                                        # the whole dbtest tier
+make test-db-local ARGS="-vv tests/path/to/test_file.py"  # one file
 ```
 
 ### Runtime / API error on staging

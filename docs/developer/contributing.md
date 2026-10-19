@@ -219,6 +219,21 @@ step is needed otherwise: each test process creates and migrates its own
 database on first use. `uv run python -m tests.fixtures.postgres prepare
 --workers N` does the same up front, which is faster before a run with `-n N`.
 
+With Docker, `make test-db-local` needs no setup at all. It starts one
+PostgreSQL container for the whole machine (`hybridinference-test-postgres` on
+`127.0.0.1:54329`, data in memory), gives each checkout its own database named
+from its path, prepares it, and runs the tier with one worker per CPU, up to
+eight. The container and the databases are kept between runs, so a re-run only
+re-reads the schema; the whole tier takes about 15 seconds.
+
+```bash
+make test-db-local                                     # the dbtest tier
+make test-db-local ARGS="tests/integration/test_x.py"  # narrower
+eval "$(ops/dev/test-db-local.sh env)"                 # TEST_DB_* for plain pytest
+make test-db-local-clean                               # drop removed worktrees' databases
+make test-db-local-down                                # remove the container and all of it
+```
+
 `make test` parallelises with `pytest-xdist` at file granularity. Run serially
 when you are debugging a specific failure, but check a suspected env-leak
 failure under `-n auto` too — cross-file environment leakage only shows up

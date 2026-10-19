@@ -60,3 +60,37 @@ async def test_an_init_callback_error_is_an_error_not_a_skip():
 
     with pytest.raises(asyncpg.UndefinedColumnError):
         await postgres.create_pool(min_size=1, max_size=1, init=_broken_init)
+
+
+def test_clean_drops_only_the_databases_of_a_removed_checkout(fresh_database, tmp_path):
+    """`make test-db-local-clean`: a gone checkout's copies go, nothing else does."""
+    gone, live = tmp_path / "removed-worktree", tmp_path / "live-worktree"
+    gone.mkdir()
+    live.mkdir()
+
+    async def _scenario() -> tuple[list[str], set[str]]:
+        await postgres.prepare_databases(1, owner=str(gone))
+        await postgres.ensure_database(f"{fresh_database}_live")
+        await postgres._record_owner([f"{fresh_database}_live"], str(live))
+        await postgres.ensure_database(f"{fresh_database}_unmarked")
+        gone.rmdir()
+
+        # Scoped to this test's databases: other checkouts' are not ours to judge.
+        dropped = await postgres.drop_orphaned_databases(prefix=fresh_database)
+
+        admin = await postgres.connect_maintenance()
+        try:
+            rows = await admin.fetch(
+                "SELECT datname FROM pg_database WHERE starts_with(datname, $1)", fresh_database
+            )
+            remaining = {row["datname"] for row in rows}
+            for name in remaining:
+                await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+        finally:
+            await admin.close()
+        return dropped, remaining
+
+    dropped, remaining = asyncio.run(_scenario())
+
+    assert set(dropped) == {fresh_database, f"{fresh_database}_gw0"}
+    assert remaining == {f"{fresh_database}_live", f"{fresh_database}_unmarked"}
