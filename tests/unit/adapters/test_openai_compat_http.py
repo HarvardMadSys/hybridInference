@@ -271,19 +271,29 @@ async def test_structured_output_is_not_sent_to_a_model_without_it(upstream):
 # --- what comes back ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("idle_detector", ["on", "off"])
+@pytest.mark.parametrize(
+    ("timer", "idle_env", "socket_env", "fired_after"),
+    [
+        # Only the per-frame detector is armed; the socket would wait forever.
+        ("per-frame", "0.3", None, 0.3),
+        # The detector is off; the socket's own read timeout must be converted.
+        ("socket", "0", "0.2", 0.2),
+    ],
+    ids=["per-frame-detector", "socket-read-timeout"],
+)
 async def test_a_stream_that_stalls_after_its_first_frame_is_an_error(
-    upstream, monkeypatch, idle_detector
+    upstream, monkeypatch, timer, idle_env, socket_env, fired_after
 ):
-    """A read timeout mid-stream must not end as a normal [DONE] on a truncated answer.
+    """A stall mid-stream must not end as a normal [DONE] on a truncated answer.
 
-    With the per-frame idle detector on it reports the stall; with it off, the
-    socket's own read timeout still has to be turned into the same error.
+    Each case arms exactly one timer, and ``idle_seconds`` says which one fired.
     """
-    monkeypatch.setenv("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", "0.2")
-    if idle_detector == "off":
-        monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", "0")
-    upstream.gap_after_first = 1.0
+    monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", idle_env)
+    if socket_env is None:
+        monkeypatch.delenv("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", socket_env)
+    upstream.gap_after_first = 1.5
     upstream.frames = [
         _chunk({"content": "partial"}),
         _chunk({"content": " rest"}, "stop"),
@@ -291,10 +301,11 @@ async def test_a_stream_that_stalls_after_its_first_frame_is_an_error(
     ]
     seen: list[str] = []
 
-    with pytest.raises(UpstreamStreamIdleError):
+    with pytest.raises(UpstreamStreamIdleError) as caught:
         async for chunk in _adapter(upstream).stream_chat_completion(USER):
             seen.append(chunk)
 
+    assert caught.value.idle_seconds == pytest.approx(fired_after)
     assert any("partial" in c for c in seen)
     assert not any("[DONE]" in c for c in seen)
 
