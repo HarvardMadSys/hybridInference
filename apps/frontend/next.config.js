@@ -78,6 +78,18 @@ const nextConfig = {
   // off here and reimplemented in middleware.ts for everything except the
   // proxied path, which has to reach pgAdmin exactly as the browser asked.
   skipTrailingSlashRedirect: true,
+  // How long a rewrite waits for the next byte from the gateway. Next's default
+  // is 30s, and when it runs out before the response has started the browser
+  // gets a bare HTTP 500: every non-streaming API call that takes longer to
+  // answer -- a long completion on /v1/responses or /anthropic, a usage
+  // insights report -- failed here although the gateway was still working on
+  // it. An hour matches the gateway's own cap on streams
+  // (STREAM_REQUEST_TIMEOUT_SECONDS); the gateway ends everything else sooner
+  // (REQUEST_TIMEOUT_SECONDS, 120s by default) with a proper 504, and streams
+  // send a keepalive every 15s, so this is never the limit that fires.
+  experimental: {
+    proxyTimeout: 60 * 60 * 1000,
+  },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
     // is `afterFiles`, which Next checks *after* filesystem routes. This app's
