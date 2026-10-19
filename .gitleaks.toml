@@ -108,6 +108,24 @@ condition = "AND"
 paths = ['''^\.env\.example$''']
 regexes = ['''^DB_ENABLED=true$''']
 
+[[allowlists]]
+description = "Provider key probe tests check that this dummy key never reaches a result."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/unit/test_provider_key_probe\.py$''']
+regexes = [
+  '''^sk-live-0123456789abcdefSECRET$''',
+]
+
+[[allowlists]]
+description = "Provider definition tests check that this dummy key never reaches the audit log."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/unit/test_admin_provider_definitions\.py$''']
+regexes = [
+  '''^sk-acme-secret-1234567890$''',
+]
+
 # These formats are issued by this project and are not in the default rules.
 # They also apply to Git-history scans; a clean checkout does not clear history.
 [[rules]]
