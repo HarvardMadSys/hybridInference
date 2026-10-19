@@ -1977,3 +1977,288 @@ async def test_hard_delete_reports_the_first_failure_when_the_release_also_fails
         await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
 
     op_store.release_hard_delete_user_claim.assert_awaited_once_with("u1", "claim-token")
+
+
+# ========================================================================
+# Automation scores and turn averages
+# ========================================================================
+
+
+def _score_record(uid: str = "u1", *, days: int = 30, score: float = 0.9) -> dict[str, Any]:
+    return {
+        "user_id": uid,
+        "days": days,
+        "score": score,
+        "confidence": 0.8,
+        "band": "likely_automated",
+        "insufficient_data": False,
+        "n_req": 120,
+        "agent_share": 0.1,
+        "signals": {
+            "hour_spread": {"sub": 0.95, "weight": 0.4, "available": True},
+            "ua": {"sub": None, "weight": 0.2, "available": False},
+        },
+        "detail": {"hours_active": 24},
+    }
+
+
+@pytest.mark.asyncio
+async def test_bulk_automation_scores_are_returned_per_user(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_automation_scores = AsyncMock(
+        return_value={"u1": _score_record("u1", days=7), "u2": _score_record("u2", days=7)}
+    )
+
+    resp = await client.get(
+        "/admin/users/automation-scores?user_ids= u1 ,u2,,&days=7", headers=AUTH
+    )
+
+    assert resp.status_code == 200
+    log_store.get_bulk_user_automation_scores.assert_awaited_once_with(["u1", "u2"], days=7)
+    body = resp.json()
+    assert body["days"] == 7
+    assert set(body["scores"]) == {"u1", "u2"}
+    assert body["scores"]["u1"]["signals"]["hour_spread"] == {
+        "sub": 0.95,
+        "weight": 0.4,
+        "available": True,
+    }
+    assert body["scores"]["u1"]["signals"]["ua"]["sub"] is None
+    assert body["scores"]["u1"]["detail"] == {"hours_active": 24}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "store_method"),
+    [
+        ("/admin/users/automation-scores", "get_bulk_user_automation_scores"),
+        ("/admin/users/turn-averages", "get_bulk_user_turn_averages"),
+    ],
+)
+async def test_bulk_user_analytics_bound_the_id_list(admin_client, path, store_method):
+    """An empty list costs no query; more than 200 ids is refused before one."""
+    client, _op_store, log_store, _log = admin_client
+    setattr(log_store, store_method, AsyncMock(return_value={}))
+
+    empty = await client.get(f"{path}?user_ids=,%20,", headers=AUTH)
+    too_many = await client.get(
+        f"{path}?user_ids={','.join(f'u{i}' for i in range(201))}", headers=AUTH
+    )
+    at_limit = await client.get(
+        f"{path}?user_ids={','.join(f'u{i}' for i in range(200))}", headers=AUTH
+    )
+
+    assert empty.status_code == 200
+    assert too_many.status_code == 422
+    assert too_many.json()["detail"] == "Maximum 200 user_ids per request"
+    assert at_limit.status_code == 200
+    assert getattr(log_store, store_method).await_count == 1  # only the 200-id call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days", [0, 91])
+@pytest.mark.parametrize(
+    "path",
+    ["/admin/users/automation-scores?user_ids=u1", "/admin/users/u1/automation-score?x=1"],
+)
+async def test_automation_score_window_is_one_to_ninety_days(admin_client, path, days):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_automation_scores = AsyncMock(return_value={})
+    log_store.get_user_automation_score = AsyncMock(return_value=None)
+
+    resp = await client.get(f"{path}&days={days}", headers=AUTH)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "days must be between 1 and 90"
+    log_store.get_bulk_user_automation_scores.assert_not_awaited()
+    log_store.get_user_automation_score.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_user_with_no_traffic_gets_a_neutral_score_not_a_404(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_user_automation_score = AsyncMock(return_value=None)
+
+    resp = await client.get("/admin/users/u9/automation-score?days=14", headers=AUTH)
+
+    assert resp.status_code == 200
+    log_store.get_user_automation_score.assert_awaited_once_with("u9", days=14)
+    assert resp.json() == {
+        "user_id": "u9",
+        "days": 14,
+        "score": 0.5,
+        "confidence": 0.0,
+        "band": "mixed_or_uncertain",
+        "insufficient_data": True,
+        "n_req": 0,
+        "agent_share": 0.0,
+        "signals": {},
+        "detail": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_user_automation_score_is_returned_with_its_signals(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_user_automation_score = AsyncMock(return_value=_score_record("u1"))
+
+    resp = await client.get("/admin/users/u1/automation-score", headers=AUTH)
+
+    assert resp.status_code == 200
+    log_store.get_user_automation_score.assert_awaited_once_with("u1", days=30)
+    assert resp.json()["score"] == pytest.approx(0.9)
+    assert resp.json()["signals"]["ua"]["available"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_turn_averages_are_returned_per_user(admin_client):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_turn_averages = AsyncMock(
+        return_value={"u1": {"avg_turns": 6.5, "avg_user_turns": 3.0}, "u2": {}}
+    )
+
+    resp = await client.get("/admin/users/turn-averages?user_ids=u1,u2", headers=AUTH)
+
+    assert resp.status_code == 200
+    log_store.get_bulk_user_turn_averages.assert_awaited_once_with(["u1", "u2"])
+    assert resp.json()["averages"] == {
+        "u1": {"avg_turns": 6.5, "avg_user_turns": 3.0},
+        "u2": {"avg_turns": None, "avg_user_turns": None},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/users/automation-scores?user_ids=u1",
+        "/admin/users/u1/automation-score",
+        "/admin/users/turn-averages?user_ids=u1",
+    ],
+)
+async def test_user_analytics_are_admin_only(admin_client, path):
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_automation_scores = AsyncMock(return_value={})
+    log_store.get_user_automation_score = AsyncMock(return_value=None)
+    log_store.get_bulk_user_turn_averages = AsyncMock(return_value={})
+
+    anonymous = await client.get(path)
+    wrong = await client.get(path, headers={"Authorization": "Bearer not-the-admin"})
+
+    assert anonymous.status_code == 401
+    assert wrong.status_code in (401, 403)
+    log_store.get_bulk_user_automation_scores.assert_not_awaited()
+    log_store.get_user_automation_score.assert_not_awaited()
+    log_store.get_bulk_user_turn_averages.assert_not_awaited()
+
+
+# ========================================================================
+# User detail usage, approval email, audit details, resume race
+# ========================================================================
+
+
+@pytest.mark.asyncio
+async def test_user_detail_shows_usage_only_while_the_user_holds_a_key(admin_client):
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={
+            "usage_today_usd": 1.25,
+            "usage_today_requests": 4,
+            "usage_month_usd": 9.5,
+            "usage_month_requests": 40,
+            "models_used": ["a-model"],
+            "last_request_at": "2025-06-15T00:00:00+00:00",
+            "avg_turns": 5.0,
+        }
+    )
+
+    op_store.get_active_key_by_account.return_value = {
+        "key_prefix": "hyi-abc",
+        "quota_daily_cost_usd": Decimal("2"),
+        "quota_monthly_cost_usd": None,
+    }
+    with_key = (await client.get("/admin/users/u1/detail", headers=AUTH)).json()
+
+    op_store.get_active_key_by_account.return_value = None
+    without_key = (await client.get("/admin/users/u1/detail", headers=AUTH)).json()
+
+    assert with_key["has_key"] is True
+    assert with_key["key_prefix"] == "hyi-abc"
+    assert (with_key["quota_daily_usd"], with_key["quota_monthly_usd"]) == (2.0, None)
+    assert with_key["usage_today_usd"] == pytest.approx(1.25)
+    assert with_key["usage_month_requests"] == 40
+    assert with_key["models_used"] == ["a-model"]
+    assert with_key["last_request_at"] is not None
+
+    assert without_key["has_key"] is False
+    assert without_key["usage_month_usd"] == 0
+    assert without_key["usage_today_requests"] == 0
+    assert without_key["models_used"] == []
+    assert without_key["last_request_at"] is None
+    # Turn averages come from api_logs by user_id, so they stay visible.
+    assert without_key["avg_turns"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_user_detail_for_an_unknown_user_is_a_404(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = None
+
+    resp = await client.get("/admin/users/ghost/detail", headers=AUTH)
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "email", "sent"),
+    [
+        (True, "alice@example.com", ["alice@example.com"]),
+        (False, "alice@example.com", []),
+        (True, None, []),  # a phone-only account has nowhere to send it
+    ],
+    ids=["sent", "email-off", "no-address"],
+)
+async def test_approval_emails_the_user_when_it_can(
+    admin_client, monkeypatch, enabled, email, sent
+):
+    client, op_store, _log_store, _log = admin_client
+    row = _user_row(status="pending_approval", email=email)
+    row["phone"] = "+15550100" if email is None else None
+    op_store.get_user_by_id.return_value = row
+    delivered: list[str] = []
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: enabled)
+    monkeypatch.setattr("serving.utils.email.send_approval_email", delivered.append)
+
+    resp = await client.post("/admin/users/u1/approve", json={}, headers=AUTH)
+
+    assert resp.status_code == 200
+    assert delivered == sent
+
+
+@pytest.mark.asyncio
+async def test_audit_details_that_are_not_json_are_kept_raw(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    row = _audit_row()
+    row["details"] = "legacy free text"
+    op_store.list_audit_log.return_value = (1, [row])
+
+    resp = await client.get("/admin/audit-log", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["entries"][0]["details"] == {"raw": "legacy free text"}
+
+
+@pytest.mark.asyncio
+async def test_resume_loses_to_a_hard_delete_in_progress(admin_client):
+    from serving.exceptions import HardDeleteStateChanged
+
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    op_store.resume_user.side_effect = HardDeleteStateChanged("claimed")
+
+    resp = await client.post("/admin/users/u1/resume", json={}, headers=AUTH)
+
+    assert resp.status_code == 409
+    assert "hard-delete in progress" in resp.json()["detail"]
