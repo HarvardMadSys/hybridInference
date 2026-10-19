@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
-from serving.storage import user_usage_rollup
+from serving.storage import daily_activity_rollup, user_usage_rollup
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import (
     check_erasure_fence,
@@ -1071,8 +1071,8 @@ class PostgresLogStore(LogStore):
         that filter surfaces — client disconnects (status 499) included, since
         that outcome class carries them. Returns the deleted row count.
 
-        The days of ``user_usage_daily`` the deleted rows were counted in are
-        dropped in the same transaction (:func:`user_usage_rollup.invalidate_days`):
+        The days of ``user_usage_daily`` and ``daily_activity`` the deleted rows
+        were counted in are dropped in the same transaction (``invalidate_days``):
         if that fails, the delete rolls back with it and the admin can retry,
         rather than the stored days keeping the deleted rows for good.
         *on_deleted* gets the same guarantee for the hours the rows were in
@@ -1115,6 +1115,11 @@ class PostgresLogStore(LogStore):
                         await user_usage_rollup.invalidate_days(conn, days)
                 except _asyncpg.UndefinedTableError:
                     pass
+                try:
+                    async with conn.transaction():
+                        await daily_activity_rollup.invalidate_days(conn, days)
+                except _asyncpg.UndefinedTableError:
+                    pass
                 if on_deleted is not None:
                     await on_deleted(conn, list(row["hours"]))
         return deleted
@@ -1128,7 +1133,10 @@ class PostgresLogStore(LogStore):
         from asyncpg command tags.  ``user_usage_daily`` is the daily rollup of
         the user's ``api_logs`` rows, so it names the user too; it is purged
         under the rollup's lock so that no fill can write back what it read
-        before the purge (see :func:`user_usage_rollup.purge_user`).  ``email_broadcast_recipients`` is created
+        before the purge (see :func:`user_usage_rollup.purge_user`).  The
+        growth series' ``daily_activity`` lists the user on the days they were
+        active, so those days are dropped too, to be counted again without them
+        (:func:`daily_activity_rollup.invalidate_days`).  ``email_broadcast_recipients`` is created
         by ``DatabaseLogger.initialize`` (``database.py``) — when the
         broadcast subsystem hasn't been provisioned, that DELETE is skipped
         via a savepoint and the key is omitted from the result.
@@ -1181,10 +1189,31 @@ class PostgresLogStore(LogStore):
             # abort the transaction and preserve the fail-closed invariant.
             await validate_or_init_fingerprint(conn, secret=self.fence_secret)
 
-            logs_status = await conn.execute(
-                "DELETE FROM api_logs WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1",
+            purged = await conn.fetchrow(
+                """
+                WITH deleted AS (
+                    DELETE FROM api_logs
+                    WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1
+                    RETURNING timestamp
+                )
+                SELECT COUNT(*) AS n,
+                       COALESCE(
+                           array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date)
+                               FILTER (WHERE timestamp IS NOT NULL),
+                           '{}'
+                       ) AS days
+                FROM deleted
+                """,
                 user_id,
             )
+            # The growth series' stored days list the user and count their
+            # requests: drop the days their rows were on, to be counted again
+            # without them (savepoint: without the table there is nothing to drop).
+            try:
+                async with conn.transaction():
+                    await daily_activity_rollup.invalidate_days(conn, list(purged["days"]))
+            except _asyncpg.UndefinedTableError:
+                pass
             usage_count: int | None
             try:
                 # Savepoint, like the recipients below: without the table there
@@ -1212,7 +1241,7 @@ class PostgresLogStore(LogStore):
                 )
                 recipients_count = None
 
-        counts = {"api_logs": _row_count(logs_status)}
+        counts = {"api_logs": int(purged["n"])}
         if usage_count is not None:
             counts["user_usage_daily"] = usage_count
         if recipients_count is not None:

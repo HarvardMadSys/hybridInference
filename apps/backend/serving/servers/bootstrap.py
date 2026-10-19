@@ -930,7 +930,7 @@ async def initialize() -> AppServices:
                             backfill_missing as backfill_request_volume,
                             register_rollup_job as register_request_volume_job,
                         )
-                        from serving.storage import user_usage_rollup
+                        from serving.storage import daily_activity_rollup, user_usage_rollup
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
@@ -938,6 +938,7 @@ async def initialize() -> AppServices:
                             register_geo_rollup_job(sched, db_logger.pool)
                             register_request_volume_job(sched, db_logger.pool)
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
+                            daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
 
                             # Failed-request Slack alerter (no-op if
                             # SLACK_WEBHOOK_URL is unset).
@@ -1020,6 +1021,19 @@ async def initialize() -> AppServices:
                         _usage_bf_task = asyncio.create_task(_run_user_usage_backfill())
                         _BACKGROUND_TASKS.add(_usage_bf_task)
                         _usage_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # The growth series' last 95 days, the same way.
+                        async def _run_daily_activity_backfill(pool=db_logger.pool):
+                            try:
+                                await daily_activity_rollup.backfill_missing(pool)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"daily-activity backfill failed (non-fatal): {bf_exc}"
+                                )
+
+                        _activity_bf_task = asyncio.create_task(_run_daily_activity_backfill())
+                        _BACKGROUND_TASKS.add(_activity_bf_task)
+                        _activity_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:

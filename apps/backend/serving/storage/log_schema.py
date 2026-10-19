@@ -11,7 +11,8 @@ with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
 migrations, its indexes, and the aggregated ``api_stats_hourly``,
-``request_volume_hourly`` and ``user_usage_daily`` tables — lives here and is applied by both callers. Add
+``request_volume_hourly``, ``user_usage_daily`` and ``daily_activity`` tables —
+lives here and is applied by both callers. Add
 future columns/indexes in this module only.
 
 Lock safety: ``ALTER TABLE`` / ``CREATE INDEX`` acquire strong locks
@@ -417,6 +418,20 @@ _USER_USAGE_DAILY_DDL = (
 """,
 )
 
+# One row per stored UTC day behind the admin Analytics growth series, written
+# and read by ``serving.storage.daily_activity_rollup``: the day's requests,
+# prompt + completion tokens, and the sorted ids of its signed-in users.
+_DAILY_ACTIVITY_DDL = """
+    CREATE TABLE IF NOT EXISTS daily_activity (
+        day          DATE        PRIMARY KEY,
+        requests     BIGINT      NOT NULL,
+        tokens       BIGINT      NOT NULL,
+        user_ids     TEXT[]      NOT NULL,
+        definition   TEXT        NOT NULL,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+"""
+
 # Columns the tables gained after they first shipped, as ``(table, column, ddl)``.
 # A constant default makes each ``ADD COLUMN`` a catalog-only change on these
 # small tables. Days stored before keep the default ``definition`` and so no
@@ -529,6 +544,7 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(_REQUEST_VOLUME_HOURLY_DDL)
     for ddl in _USER_USAGE_DAILY_DDL:
         await conn.execute(ddl)
+    await conn.execute(_DAILY_ACTIVITY_DDL)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path

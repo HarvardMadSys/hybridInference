@@ -2,7 +2,8 @@
 
 Covers what a mocked connection cannot: that the day buckets are whole UTC days
 whatever timezone the database session happens to be in, including across a DST
-transition.
+transition. The days here are older than the rollup keeps, so they are counted
+live; ``test_daily_activity_rollup_postgres`` covers stored days.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from serving.servers.routers.admin.analytics import _GROWTH_SERIES_SQL
+from serving.storage.daily_activity_rollup import load_days
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
@@ -28,7 +29,7 @@ async def conn(pg_dsn: str):
     # The entry point has already created the real api_logs. A minimal one made
     # here used to break every later file that needed the full table.
     connection = await postgres.connect()
-    await connection.execute("TRUNCATE TABLE api_logs")
+    await connection.execute("TRUNCATE TABLE api_logs, daily_activity")
     try:
         yield connection
     finally:
@@ -46,9 +47,7 @@ async def _insert(connection, ts: datetime, request_id: str, user_id: str | None
 
 
 async def _fetch(connection, start_day: datetime, end_day: datetime):
-    return await connection.fetch(
-        _GROWTH_SERIES_SQL, start_day, end_day, end_day + timedelta(days=1)
-    )
+    return await load_days(connection, start_day.date(), end_day.date())
 
 
 @pytest.mark.asyncio
@@ -74,10 +73,9 @@ async def test_buckets_stay_on_utc_midnight_across_dst(conn, session_tz: str) ->
     rows = await _fetch(conn, start_day, end_day)
 
     assert len(rows) == days
-    assert all(r["day"].astimezone(timezone.utc).hour == 0 for r in rows), (
-        f"buckets drifted off UTC midnight under {session_tz}: "
-        f"{[r['day'].astimezone(timezone.utc).isoformat() for r in rows]}"
-    )
+    assert [r["day"] for r in rows] == [
+        (start_day + timedelta(days=i)).date() for i in range(days)
+    ], f"buckets drifted off UTC days under {session_tz}"
     # Every day carries its one request; a drifted bucket would report zero.
     assert [r["active_users"] for r in rows] == [1] * days
     assert [r["requests"] for r in rows] == [1] * days
@@ -103,7 +101,7 @@ async def test_day_attribution_and_gap_fill(conn) -> None:
     await _insert(conn, datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc), "before", "carol")
 
     rows = await _fetch(conn, start_day, end_day)
-    by_day = {r["day"].astimezone(timezone.utc).date(): r for r in rows}
+    by_day = {r["day"]: r for r in rows}
 
     assert len(rows) == 5
 
