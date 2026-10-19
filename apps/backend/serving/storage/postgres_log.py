@@ -142,10 +142,13 @@ class PostgresLogStore(LogStore):
         ``hour_iso`` is an ISO-8601 timestamp truncated to the hour (e.g.
         ``2026-05-03T12:00:00+00:00``). Used by ``ProviderHourlySpendJob``.
         """
+        # A range rather than truncating the column to the hour: truncation
+        # happens in the session's time zone (a half-hour zone never matches a
+        # UTC hour), and a range can use the timestamp index.
         sql = """
             SELECT provider, COALESCE(SUM(cost_usd), 0) AS total
             FROM api_logs
-            WHERE date_trunc('hour', timestamp) = $1
+            WHERE timestamp >= $1 AND timestamp < $1 + interval '1 hour'
             GROUP BY provider
         """
         hour_dt = dt.datetime.fromisoformat(hour_iso)
@@ -536,7 +539,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost_spent
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -555,7 +558,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost_spent
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -572,7 +575,7 @@ class PostgresLogStore(LogStore):
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -596,7 +599,7 @@ class PostgresLogStore(LogStore):
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -649,7 +652,7 @@ class PostgresLogStore(LogStore):
                 SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
                 FROM api_logs
                 WHERE user_id = ANY($1::text[])
-                  AND timestamp >= date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 GROUP BY user_id
                 """,
                 user_ids,
@@ -679,7 +682,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -688,7 +691,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -807,7 +810,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -816,7 +819,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )

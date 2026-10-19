@@ -57,7 +57,7 @@ INSERT INTO provider_hourly_stats AS p (
     total_reasoning_tokens, total_cost_usd
 )
 SELECT
-    date_trunc('hour', timestamp)                                          AS hour_bucket,
+    date_trunc('hour', timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'    AS hour_bucket,
     provider,
     model_id,
     COUNT(*)                                                                AS request_count,
