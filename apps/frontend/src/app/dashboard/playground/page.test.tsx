@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
@@ -22,7 +22,14 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
 
 vi.mock('@/lib/api/client', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
-  jsonOrThrow: (resp: { json: () => unknown }) => resp.json(),
+  // Like the real one: a non-2xx body becomes an Error carrying its message.
+  jsonOrThrow: async (resp: { ok?: boolean; json: () => Promise<unknown> }) => {
+    if (resp.ok === false) {
+      const body = (await resp.json()) as { error?: { message?: string } };
+      throw new Error(body.error?.message ?? 'Request failed');
+    }
+    return resp.json();
+  },
 }));
 
 import PlaygroundPage from './page';
@@ -68,11 +75,66 @@ function mockStream(frames: string[]): void {
   );
 }
 
-async function sendPrompt(): Promise<void> {
+async function sendPrompt(text = 'hi'): Promise<void> {
   const send = await screen.findByRole('button', { name: 'Send' });
-  fireEvent.change(screen.getByPlaceholderText(/Type a message/), { target: { value: 'hi' } });
+  fireEvent.change(screen.getByPlaceholderText(/Type a message/), { target: { value: text } });
   await waitFor(() => expect(send).not.toBeDisabled());
   fireEvent.click(send);
+}
+
+function frame(body: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(body)}\n\n`;
+}
+
+function errorResponse(message: string) {
+  return { ok: false, status: 502, json: async () => ({ error: { message } }) };
+}
+
+/** Chat responses served in order; the models request always succeeds. */
+function mockChats(...responses: unknown[]): void {
+  fetchWithAuth.mockImplementation(async (_base: string, path: string) =>
+    path === '/internal/playground/models' ? MODELS : responses.shift(),
+  );
+}
+
+/** The `messages` each chat request carried, in order. */
+function sentHistories(): unknown[] {
+  return fetchWithAuth.mock.calls
+    .filter(([, path]) => path === '/internal/playground/chat')
+    .map(([, , init]) => JSON.parse((init as { body: string }).body).messages);
+}
+
+/** A stream the test feeds frame by frame. */
+function controlledStream() {
+  const encoder = new TextEncoder();
+  const queue: string[] = [];
+  let ended = false;
+  let wake: (() => void) | null = null;
+  const read = () =>
+    new Promise<{ done: boolean; value?: Uint8Array }>((resolve) => {
+      const next = () => {
+        if (queue.length) resolve({ done: false, value: encoder.encode(queue.shift()) });
+        else if (ended) resolve({ done: true, value: undefined });
+        else wake = next;
+      };
+      next();
+    });
+  const poke = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+  return {
+    response: { ok: true, body: { getReader: () => ({ read }) } },
+    push: (f: string) => {
+      queue.push(f);
+      poke();
+    },
+    end: () => {
+      ended = true;
+      poke();
+    },
+  };
 }
 
 describe('PlaygroundPage', () => {
@@ -80,9 +142,122 @@ describe('PlaygroundPage', () => {
     fetchWithAuth.mockReset();
     // jsdom has no layout engine, so the chat pane's auto-scroll is a no-op.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
+    Element.prototype.scrollIntoView = vi.fn();
   });
 
   afterEach(cleanup);
+
+  it('preserves a pinned provider when reselecting the current model', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    const picker = await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'glm-4.6:chutes-api' },
+    });
+
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
+
+    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(picker).toHaveFocus();
+  });
+
+  it('resets the provider when changing models while preserving each session draft and settings', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+          {
+            id: 'deepseek-v4',
+            name: 'DeepSeek V4',
+            provider: 'deepseek',
+            providers: [
+              { id: 'deepseek-v4:direct-api', name: 'DeepSeek' },
+              { id: 'deepseek-v4:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const firstSession = screen.getByRole('button', { name: /New session No messages -- glm-4.6/ });
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'glm-4.6:chutes-api' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
+      target: { value: 'First session draft' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('You are a research assistant...'), {
+      target: { value: 'First session instructions' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
+    fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'deepseek-v4:chutes-api' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
+      target: { value: 'Second session draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
+    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
+
+    expect(screen.getByRole('combobox')).toHaveValue('');
+    expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('Second session draft');
+    expect(screen.getAllByRole('button', { name: /New session No messages/ })).toHaveLength(2);
+    fireEvent.click(firstSession);
+    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('First session draft');
+    expect(screen.getByPlaceholderText('You are a research assistant...')).toHaveValue(
+      'First session instructions',
+    );
+  });
+
+  it('disables model selection until the chat stream finishes', async () => {
+    let finishStream: (response: ReturnType<typeof sseResponse>) => void = () => {};
+    const pendingResponse = new Promise<ReturnType<typeof sseResponse>>((resolve) => {
+      finishStream = resolve;
+    });
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) =>
+      path === '/internal/playground/models' ? MODELS : pendingResponse,
+    );
+    render(<PlaygroundPage />);
+    const picker = await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    await sendPrompt();
+
+    expect(picker).toBeDisabled();
+    fireEvent.click(picker);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await act(async () => finishStream(sseResponse(['data: [DONE]\n\n'])));
+    await waitFor(() => expect(picker).not.toBeDisabled());
+  });
 
   it('renders assistant markdown as styled elements, not literal text', async () => {
     mockStream([contentFrame('- one\n- two'), 'data: [DONE]\n\n']);
@@ -161,5 +336,349 @@ describe('PlaygroundPage', () => {
     // endpoint matters most, so the error must not wipe the badge.
     await screen.findByText(/Error: network error/);
     expect(screen.getByTitle(/endpoint: glm-4\.6:zai-api/)).toBeInTheDocument();
+  });
+
+  it('leaves a failed turn out of the next request', async () => {
+    mockChats(
+      errorResponse('upstream down'),
+      sseResponse([contentFrame('ok'), 'data: [DONE]\n\n']),
+    );
+    render(<PlaygroundPage />);
+    await sendPrompt('first');
+    expect(await screen.findByText('Error: upstream down')).toBeInTheDocument();
+
+    await sendPrompt('second');
+    await screen.findByText('ok');
+    expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+  });
+
+  it('keeps the partial reply when the stream dies mid-answer', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    stream.push(contentFrame('partial answer'));
+    await screen.findByText('partial answer');
+    stream.push('data: {"error": {"message": "connection reset"}}\n\n');
+    stream.end();
+
+    expect(await screen.findByText('Error: connection reset')).toBeInTheDocument();
+    expect(screen.getByText('partial answer')).toBeInTheDocument();
+  });
+
+  it('flags an empty response as a failure', async () => {
+    mockStream(['data: [DONE]\n\n']);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    expect(
+      await screen.findByText('Error: The model returned an empty response.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('retries a failed turn with the same question', async () => {
+    mockChats(
+      errorResponse('upstream down'),
+      sseResponse([contentFrame('second try'), 'data: [DONE]\n\n']),
+    );
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+
+    await screen.findByText('second try');
+    expect(screen.queryByText(/upstream down/)).toBeNull();
+    expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('surfaces a model-list failure with a retry', async () => {
+    fetchWithAuth.mockRejectedValueOnce(new Error('Service unavailable')).mockResolvedValue(MODELS);
+    render(<PlaygroundPage />);
+
+    expect(
+      await screen.findByText(/Couldn't load models: Service unavailable/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Model: Models unavailable' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('button', { name: 'Model: GLM 4.6' })).toBeEnabled();
+    expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+  });
+
+  it('says when the reply was cut off by Max Tokens', async () => {
+    mockStream([
+      contentFrame('partial'),
+      frame({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] }),
+      'data: [DONE]\n\n',
+    ]);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    expect(await screen.findByText(/Cut off at the Max Tokens limit/)).toBeInTheDocument();
+  });
+
+  it('marks a stopped reply and offers a retry', async () => {
+    fetchWithAuth.mockImplementation(
+      async (_base: string, path: string, init?: { signal?: AbortSignal }) =>
+        path === '/internal/playground/models'
+          ? MODELS
+          : new Promise((_resolve, reject) =>
+              init?.signal?.addEventListener('abort', () =>
+                reject(new DOMException('Aborted', 'AbortError')),
+              ),
+            ),
+    );
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+
+    expect(await screen.findByText('Stopped before any output.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('keeps the editor usable while a reply streams', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+
+    const editor = screen.getByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sending...' })).toBeDisabled());
+    expect(editor).toBeEnabled();
+    fireEvent.change(editor, { target: { value: 'next question' } });
+    expect(editor).toHaveValue('next question');
+    stream.push(contentFrame('done'));
+    stream.end();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(editor).toHaveValue('next question');
+  });
+
+  it('moves the last question back into the editor, with undo', async () => {
+    mockStream([contentFrame('answer'), 'data: [DONE]\n\n']);
+    render(<PlaygroundPage />);
+    await sendPrompt('my question');
+    await screen.findByText('answer');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('my question');
+    expect(screen.queryByText('answer')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getByText('answer')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+  });
+
+  it('can undo clearing the conversation', async () => {
+    mockStream([contentFrame('answer'), 'data: [DONE]\n\n']);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    await screen.findByText('answer');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    expect(screen.getByText('Start a chat run')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getByText('answer')).toBeInTheDocument();
+  });
+
+  it('can undo deleting a session', async () => {
+    fetchWithAuth.mockResolvedValue(MODELS);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^Delete session/ })[0]);
+    expect(screen.queryAllByRole('button', { name: /^Delete session/ })).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
+  });
+
+  it('starts a new session with the current settings', async () => {
+    fetchWithAuth.mockResolvedValue(MODELS);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.5' } });
+    fireEvent.change(screen.getByLabelText('Max Tokens'), { target: { value: '8192' } });
+    fireEvent.change(screen.getByLabelText('System instructions'), {
+      target: { value: 'Be terse.' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
+    expect(screen.getByLabelText('Max Tokens')).toHaveValue('8192');
+    expect(screen.getByLabelText('System instructions')).toHaveValue('Be terse.');
+  });
+
+  it('keeps reasoning expansion to the message it was opened on', async () => {
+    mockStream([
+      frame({ choices: [{ index: 0, delta: { reasoning_content: 'pondering' } }] }),
+      contentFrame('answer'),
+      'data: [DONE]\n\n',
+    ]);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    fireEvent.click(await screen.findByRole('button', { name: /^(Thought for|Thinking)/ }));
+    expect(screen.getByText('pondering')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    await sendPrompt();
+    await screen.findByRole('button', { name: /^(Thought for|Thinking)/ });
+    expect(screen.queryByText('pondering')).toBeNull();
+  });
+
+  it('reports a failed copy instead of claiming success', async () => {
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    });
+    document.execCommand = vi.fn(() => false);
+    mockStream([contentFrame('answer'), 'data: [DONE]\n\n']);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    await screen.findByText('answer');
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy message' })[1]);
+    expect(await screen.findByRole('button', { name: 'Copy failed' })).toBeInTheDocument();
+  });
+
+  it('stops following the stream once the reader scrolls up', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response);
+    const { container } = render(<PlaygroundPage />);
+    await sendPrompt();
+    const chat = container.querySelector<HTMLElement>(
+      '.dark-scrollbar.flex-1.overflow-y-auto.px-6',
+    )!;
+    const scrollTo = vi.mocked(Element.prototype.scrollTo);
+    const place = (top: number) => {
+      Object.defineProperty(chat, 'scrollHeight', { value: 1000, configurable: true });
+      Object.defineProperty(chat, 'clientHeight', { value: 400, configurable: true });
+      Object.defineProperty(chat, 'scrollTop', { value: top, configurable: true });
+      fireEvent.scroll(chat);
+    };
+    place(600);
+    place(200);
+    expect(screen.getByRole('button', { name: /Jump to latest/ })).toBeInTheDocument();
+
+    scrollTo.mockClear();
+    stream.push(contentFrame('more text'));
+    await screen.findByText('more text');
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Jump to latest/ }));
+    expect(scrollTo).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
+    stream.end();
+  });
+
+  it('never lets an old Undo overwrite a newer conversation', async () => {
+    mockChats(
+      sseResponse([contentFrame('first answer'), 'data: [DONE]\n\n']),
+      sseResponse([contentFrame('second answer'), 'data: [DONE]\n\n']),
+    );
+    render(<PlaygroundPage />);
+    await sendPrompt('first');
+    await screen.findByText('first answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+
+    await sendPrompt('second');
+    await screen.findByText('second answer');
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.queryByText('first answer')).toBeNull();
+  });
+
+  it('can undo a clear made mid-stream', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response);
+    render(<PlaygroundPage />);
+    await sendPrompt();
+    stream.push(contentFrame('partial'));
+    await screen.findByText('partial');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    stream.end();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getByText('partial')).toBeInTheDocument();
+    expect(screen.getByText('Stopped. The partial reply is kept as context.')).toBeInTheDocument();
+  });
+
+  it('ends the turn on an in-band error even if the connection stays open', async () => {
+    const stream = controlledStream();
+    mockChats(stream.response, sseResponse([contentFrame('fine'), 'data: [DONE]\n\n']));
+    render(<PlaygroundPage />);
+    await sendPrompt('first');
+    stream.push(contentFrame('half an answer'));
+    await screen.findByText('half an answer');
+    stream.push(frame({ error: { message: 'upstream reset' } }));
+
+    // No end(): the upstream never closes, yet the turn is over and still an error.
+    expect(await screen.findByText('Error: upstream reset')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull());
+    await sendPrompt('second');
+    await screen.findByText('fine');
+    expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+  });
+
+  describe('a connection that goes quiet', () => {
+    beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+    afterEach(() => vi.useRealTimers());
+
+    it('gives up after 45 s of silence and keeps it out of context', async () => {
+      // Sends one frame, then nothing, until the request is aborted -- as the
+      // console's proxy does once the backend has dropped.
+      const encoder = new TextEncoder();
+      let sent = false;
+      fetchWithAuth.mockImplementation(
+        async (_base: string, path: string, init?: { signal?: AbortSignal }) => {
+          if (path === '/internal/playground/models') return MODELS;
+          if (sent) return sseResponse([contentFrame('fine'), 'data: [DONE]\n\n']);
+          sent = true;
+          let first = true;
+          const read = () =>
+            first
+              ? ((first = false),
+                Promise.resolve({ done: false, value: encoder.encode(contentFrame('half')) }))
+              : new Promise((_resolve, reject) =>
+                  init?.signal?.addEventListener('abort', () =>
+                    reject(new DOMException('aborted', 'AbortError')),
+                  ),
+                );
+          return { ok: true, body: { getReader: () => ({ read }) } };
+        },
+      );
+      render(<PlaygroundPage />);
+      await sendPrompt('first');
+      await screen.findByText('half');
+
+      await act(() => vi.advanceTimersByTimeAsync(44_000));
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+
+      expect(
+        await screen.findByText(/^Error: Lost the connection: nothing from the server for 45 s\./),
+      ).toBeInTheDocument();
+      expect(screen.getByText('half')).toBeInTheDocument();
+      expect(screen.queryByText(/^Stopped/)).toBeNull();
+      await sendPrompt('second');
+      await screen.findByText('fine');
+      expect(sentHistories()[1]).toEqual([{ role: 'user', content: 'second' }]);
+    });
+
+    it('keeps waiting while keepalives arrive', async () => {
+      const stream = controlledStream();
+      mockChats(stream.response);
+      render(<PlaygroundPage />);
+      await sendPrompt();
+      for (let i = 0; i < 8; i += 1) {
+        await act(() => vi.advanceTimersByTimeAsync(15_000));
+        stream.push(': keepalive\n\n');
+      }
+      stream.push(contentFrame('worth the wait'));
+      stream.push('data: [DONE]\n\n');
+      stream.end();
+
+      expect(await screen.findByText('worth the wait')).toBeInTheDocument();
+      expect(screen.queryByText(/^Error:/)).toBeNull();
+    });
   });
 });

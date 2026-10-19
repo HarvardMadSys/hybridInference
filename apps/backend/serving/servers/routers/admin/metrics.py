@@ -1743,7 +1743,9 @@ async def admin_clear_error_requests(
     Defaults to the past hour. The action is recorded in the admin audit log.
 
     The Request volume cards' stored hours that the delete reached are dropped,
-    to be counted again from what is left, as are the list's cached totals.
+    to be counted again from what is left, as are the list's cached totals. The
+    Users table's stored days are dropped by the delete itself, in its
+    transaction.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """

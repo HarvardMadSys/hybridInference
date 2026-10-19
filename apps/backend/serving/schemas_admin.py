@@ -179,8 +179,8 @@ class UserListItem(BaseModel):
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
     # All-time request count and token total (back the requests/tokens sorts).
-    usage_alltime_requests: int = 0
-    usage_alltime_tokens: int = 0
+    usage_alltime_requests: int | None = 0
+    usage_alltime_tokens: int | None = 0
 
 
 class StatusCounts(BaseModel):
@@ -228,6 +228,19 @@ class BulkUserCostHistoryResponse(BaseModel):
 
     days: int
     histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
+
+
+class UserUsageTotals(BaseModel):
+    """All logged requests and tokens, including free requests."""
+
+    requests: int = 0
+    tokens: int = 0
+
+
+class BulkUserUsageTotalsResponse(BaseModel):
+    """Lifetime metrics fetched independently of the user-management list."""
+
+    totals: dict[str, UserUsageTotals]
 
 
 class UserTurnAverages(BaseModel):

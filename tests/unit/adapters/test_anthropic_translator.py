@@ -1476,3 +1476,33 @@ def test_request_non_dict_message_is_skipped():
     }
     messages, _ = anthropic_request_to_openai(body)
     assert messages == [{"role": "user", "content": "real"}]
+
+
+def test_stream_translator_survives_an_unreadable_usage_chunk():
+    """An upstream's unreadable token count is billed as 0, not a broken stream."""
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b"".join(t.feed(_openai_chunk({"role": "assistant"})))
+    out += b"".join(t.feed(_openai_chunk({"content": "hi"})))
+    out += b"".join(
+        t.feed(
+            _openai_chunk(
+                {},
+                finish_reason="stop",
+                usage={"prompt_tokens": "lots", "completion_tokens": "7"},
+            )
+        )
+    )
+    out += b"".join(t.feed(b"data: [DONE]\n\n"))
+    out += b"".join(t.finalize())
+
+    assert t.usage["input_tokens"] == 0
+    assert t.usage["output_tokens"] == 7
+    assert b"message_stop" in out
+
+
+def test_stream_translator_keeps_the_output_count_when_a_chunk_reports_none():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    b"".join(t.feed(_openai_chunk({"content": "hi"}, usage={"completion_tokens": 4})))
+    b"".join(t.feed(_openai_chunk({}, usage={"prompt_tokens": 2, "completion_tokens": None})))
+
+    assert t.usage["output_tokens"] == 4

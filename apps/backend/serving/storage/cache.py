@@ -526,6 +526,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_user_activity_providers(days=days)
 
+    async def get_bulk_user_usage_totals(self, user_ids: list[str]) -> dict[str, Row]:
+        """Delegate to wrapped store."""
+        return await self._store.get_bulk_user_usage_totals(user_ids)
+
     async def list_users(
         self,
         *,
@@ -548,6 +552,7 @@ class CachedOperationalStore(OperationalStore):
         provider: str | None = None,
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
+        include_usage_totals: bool = True,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -562,6 +567,7 @@ class CachedOperationalStore(OperationalStore):
             provider=provider,
             active_within_hours=active_within_hours,
             anomaly=anomaly,
+            include_usage_totals=include_usage_totals,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:
@@ -751,8 +757,9 @@ class CachedOperationalStore(OperationalStore):
         """Bind or update a verified email atomically without merging identities."""
         bound = await self._store.bind_user_email(user_id, email)
         if bound:
+            # Nothing is cached by e-mail address; the user and auth entries
+            # carry it.
             await self._cache.delete(self._user_key(user_id))
-            await self._cache.delete(self._email_key(email))
             await self._cache.delete_pattern("auth:*")
             await self._cache.delete_pattern("auth_light:*")
         return bound

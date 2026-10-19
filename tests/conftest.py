@@ -99,6 +99,29 @@ def subprocess_env(**overrides: str) -> dict[str, str]:
 # under TEST_DB_REQUIRED, failures) spread over the whole run. One line at the
 # start says it better. Only the controlling process checks: xdist workers start
 # their own sessions, and one answer is enough.
+#: Fixtures that reach the real test database. A test that depends on one,
+#: directly or not, must carry ``dbtest``: unmarked, it is skipped by ``make
+#: test`` (no database) and deselected by ``make test-db-local``, so it runs
+#: nowhere but CI.
+DATABASE_FIXTURES = frozenset({"auth_app", "auth_backend"})
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    unmarked = [
+        item.nodeid
+        for item in items
+        if DATABASE_FIXTURES & set(getattr(item, "fixturenames", ()))
+        and item.get_closest_marker("dbtest") is None
+    ]
+    if unmarked:
+        raise pytest.UsageError(
+            "These tests use a database fixture "
+            f"({', '.join(sorted(DATABASE_FIXTURES))}) but are not marked dbtest; "
+            "add @pytest.mark.dbtest (or pytestmark):\n  " + "\n  ".join(unmarked)
+        )
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     if hasattr(session.config, "workerinput"):
         return

@@ -1745,3 +1745,235 @@ async def test_get_users_summary_with_top_users(admin_client):
     assert top["email"] == "alice@x.com"
     anomaly = body["anomalies"]["top"][0]
     assert anomaly["multiplier"] == 12.5
+
+
+@pytest.mark.asyncio
+async def test_lightweight_users_preserves_null_totals(admin_client):
+    client, op_store, _, _ = admin_client
+    row = _user_row()
+    row.update(usage_alltime_requests=None, usage_alltime_tokens=None)
+    op_store.list_users.return_value = (1, [row], _EMPTY_SC)
+    response = await client.get("/admin/users?include_usage_totals=false", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["users"][0]["usage_alltime_requests"] is None
+    assert response.json()["users"][0]["usage_alltime_tokens"] is None
+    assert op_store.list_users.call_args.kwargs["include_usage_totals"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_usage_totals_requires_admin_and_bounds_request(admin_client):
+    client, op_store, _, _ = admin_client
+    op_store.get_bulk_user_usage_totals = AsyncMock(
+        return_value={"u1": {"requests": 3, "tokens": 5}}
+    )
+    response = await client.get("/admin/users/usage-totals?user_ids=u1", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["totals"]["u1"] == {"requests": 3, "tokens": 5}
+    response = await client.get("/admin/users/usage-totals?user_ids=u1")
+    assert response.status_code in (401, 403)
+    response = await client.get(
+        "/admin/users/usage-totals",
+        params={"user_ids": ",".join(str(i) for i in range(201))},
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    response = await client.get("/admin/users/usage-totals", headers=AUTH)
+    assert response.json() == {"totals": {}}
+    op_store.get_bulk_user_usage_totals.assert_awaited_once_with(["u1"])
+
+
+# ========================================================================
+# Pending signups, account status and quota: the routes' own decisions
+# (end to end against PostgreSQL: test_admin_user_lifecycle_postgres.py)
+# ========================================================================
+
+
+@pytest.fixture
+def sent_emails(monkeypatch):
+    """Record the approval/rejection mails instead of sending them."""
+    sent: list[tuple[str, ...]] = []
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: True)
+    monkeypatch.setattr(
+        "serving.utils.email.send_approval_email", lambda to: sent.append(("approve", to))
+    )
+    monkeypatch.setattr(
+        "serving.utils.email.send_rejection_email",
+        lambda to, reason: sent.append(("reject", to, reason)),
+    )
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_reject_a_pending_user_records_and_tells_them_why(admin_client, sent_emails):
+    client, op_store, _log_store, log_action = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="pending_approval")
+
+    resp = await client.post(
+        "/admin/users/u1/reject", headers=AUTH, json={"reason": "outside the pilot"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "rejected"
+    op_store.reject_user.assert_awaited_once()
+    assert op_store.reject_user.await_args.kwargs["reason"] == "outside the pilot"
+    assert log_action.await_args.args[2:4] == ("reject_user", "u1")
+    assert sent_emails == [("reject", "alice@example.com", "outside the pilot")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+@pytest.mark.parametrize("status", ["active", "suspended", "rejected", "deleted"])
+async def test_only_a_pending_user_can_be_decided(admin_client, sent_emails, decision, status):
+    client, op_store, _log_store, log_action = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status=status)
+
+    resp = await client.post(
+        f"/admin/users/u1/{decision}", headers=AUTH, json={"reason": "r", "note": "n"}
+    )
+
+    assert resp.status_code == 409
+    assert status in resp.json()["detail"]
+    op_store.approve_user.assert_not_awaited()
+    op_store.reject_user.assert_not_awaited()
+    log_action.assert_not_awaited()
+    assert sent_emails == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_deciding_an_unknown_user_is_404(admin_client, decision):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = None
+
+    resp = await client.post(f"/admin/users/ghost/{decision}", headers=AUTH, json={"reason": "r"})
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["", "x" * 501])
+async def test_a_rejection_needs_a_reason_the_user_can_read(admin_client, reason):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="pending_approval")
+
+    resp = await client.post("/admin/users/u1/reject", headers=AUTH, json={"reason": reason})
+
+    assert resp.status_code == 422
+    op_store.reject_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current", "target", "allowed"),
+    [
+        ("active", "suspended", True),
+        ("suspended", "active", True),
+        ("pending_approval", "active", False),  # approve/reject decide a signup
+        ("rejected", "active", False),
+        ("deleted", "active", False),  # resume decides a deletion
+        ("active", "active", False),
+    ],
+)
+async def test_status_moves_only_between_active_and_suspended(
+    admin_client, current, target, allowed
+):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status=current)
+
+    resp = await client.patch("/admin/users/u1", headers=AUTH, json={"status": target})
+
+    assert resp.status_code == (200 if allowed else 409), resp.text
+    if allowed:
+        op_store.update_user_fields.assert_awaited_once_with("u1", status=target)
+    else:
+        op_store.update_user_fields.assert_not_awaited()
+    # Only a suspension takes the key away.
+    if allowed and target == "suspended":
+        op_store.revoke_key.assert_awaited_once_with("u1", hard_delete=False)
+    else:
+        op_store.revoke_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_patch_is_refused(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+
+    resp = await client.patch("/admin/users/u1", headers=AUTH, json={})
+
+    assert resp.status_code == 422
+    op_store.update_user_fields.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_quota_needs_a_live_key_and_is_written_to_it(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.update_key = AsyncMock()
+
+    op_store.get_active_key_by_account.return_value = None
+    resp = await client.patch("/admin/users/u1", headers=AUTH, json={"quota_daily_cost_usd": "5"})
+    assert resp.status_code == 409
+    op_store.update_key.assert_not_awaited()
+
+    op_store.get_active_key_by_account.return_value = {"id": 1}
+    resp = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={
+            "quota_daily_cost_usd": "5",
+            "quota_monthly_cost_usd": "50",
+            "max_concurrent_requests": 3,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    op_store.update_key.assert_awaited_once_with(
+        "u1", quota_daily_cost_usd=Decimal("5"), quota_monthly_cost_usd=Decimal("50")
+    )
+    op_store.update_user_fields.assert_awaited_with("u1", max_concurrent_requests=3)
+    assert set(resp.json()["updated_fields"]) == {
+        "quota_daily_cost_usd",
+        "quota_monthly_cost_usd",
+        "max_concurrent_requests",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_waits_for_the_fence_rollout(admin_client, monkeypatch):
+    client, op_store, _log_store, _log = admin_client
+    monkeypatch.setenv("ERASURE_FENCE_PROTOCOL_READY", "false")
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+
+    resp = await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    assert resp.status_code == 503
+    op_store.begin_hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_keeps_the_claim_when_the_fence_cannot_be_checked(admin_client):
+    """Fail closed: not knowing whether the account is erased means keep it locked."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.hard_delete_user_data.side_effect = RuntimeError("purge failed")
+    log_store.account_has_erasure_fence.side_effect = RuntimeError("database gone")
+
+    with pytest.raises(RuntimeError, match="purge failed"):
+        await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    op_store.release_hard_delete_user_claim.assert_not_awaited()
+    op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_reports_the_first_failure_when_the_release_also_fails(admin_client):
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.hard_delete_user_data.side_effect = RuntimeError("purge failed")
+    log_store.account_has_erasure_fence.return_value = False
+    op_store.release_hard_delete_user_claim.side_effect = RuntimeError("release failed")
+
+    with pytest.raises(RuntimeError, match="purge failed"):
+        await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    op_store.release_hard_delete_user_claim.assert_awaited_once_with("u1", "claim-token")

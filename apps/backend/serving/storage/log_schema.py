@@ -10,8 +10,8 @@ that actually runs — so the columns were never created and every insert failed
 with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
-migrations, its indexes, and the aggregated ``api_stats_hourly`` and
-``request_volume_hourly`` tables — lives here and is applied by both callers. Add
+migrations, its indexes, and the aggregated ``api_stats_hourly``,
+``request_volume_hourly`` and ``user_usage_daily`` tables — lives here and is applied by both callers. Add
 future columns/indexes in this module only.
 
 Lock safety: ``ALTER TABLE`` / ``CREATE INDEX`` acquire strong locks
@@ -387,6 +387,28 @@ _REQUEST_VOLUME_HOURLY_DDL = """
     )
 """
 
+# Completed-day request and token totals per user behind the admin Users table,
+# written and read by ``serving.storage.user_usage_rollup``. A user with no
+# traffic on a day has no row, so the coverage table holds one row per counted
+# UTC day, quiet days included: its presence means "this day is counted".
+_USER_USAGE_DAILY_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS user_usage_daily (
+        user_id       TEXT   NOT NULL,
+        day           DATE   NOT NULL,
+        request_count BIGINT NOT NULL,
+        total_tokens  BIGINT NOT NULL,
+        PRIMARY KEY (user_id, day)
+    )
+""",
+    """
+    CREATE TABLE IF NOT EXISTS user_usage_daily_coverage (
+        day          DATE        PRIMARY KEY,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+""",
+)
+
 
 async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
     """Return the index names defined on ``api_logs`` in the search path."""
@@ -465,9 +487,11 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         )
     """)
 
-    # A new, separate table: creating it locks nothing the log writers use, so
-    # it goes before the deferrable sequence below rather than waiting on it.
+    # New, separate tables: creating them locks nothing the log writers use, so
+    # they go before the deferrable sequence below rather than waiting on it.
     await conn.execute(_REQUEST_VOLUME_HOURLY_DDL)
+    for ddl in _USER_USAGE_DAILY_DDL:
+        await conn.execute(ddl)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path

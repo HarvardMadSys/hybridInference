@@ -20,6 +20,7 @@ import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
+import { useBulkUsageTotals, USAGE_TOTALS_QUERY_KEY } from './hooks/useUserUsageTotals';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
 import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
 import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions';
@@ -117,7 +118,11 @@ export default function UsersTab() {
   // the whole list family rather than refetching only the active offset (which
   // would leave other cached pages stale within the hook's staleTime window).
   const refreshUsers = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY }),
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: USAGE_TOTALS_QUERY_KEY }),
+      ]),
     [queryClient],
   );
 
@@ -130,6 +135,11 @@ export default function UsersTab() {
 
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
+  const usageTotalsQuery = useBulkUsageTotals(
+    users
+      .filter((u) => u.usage_alltime_requests == null || u.usage_alltime_tokens == null)
+      .map((u) => u.id),
+  );
 
   // Clamp the page when the total shrinks beneath the current offset without a
   // filter change — e.g. an admin deletes/approves the last users on a later
@@ -158,8 +168,9 @@ export default function UsersTab() {
     usage_today_usd: String(u.usage_today_usd),
     usage_month_usd: String(u.usage_month_usd),
     usage_alltime_usd: String(u.usage_alltime_usd),
-    usage_alltime_requests: u.usage_alltime_requests ?? 0,
-    usage_alltime_tokens: u.usage_alltime_tokens ?? 0,
+    usage_alltime_requests:
+      u.usage_alltime_requests ?? usageTotalsQuery.data?.[u.id]?.requests ?? null,
+    usage_alltime_tokens: u.usage_alltime_tokens ?? usageTotalsQuery.data?.[u.id]?.tokens ?? null,
   }));
 
   const userIds = users.map((u) => u.id);
@@ -324,6 +335,18 @@ export default function UsersTab() {
             Failed to load users.
             <button type="button" onClick={() => usersQuery.refetch()} className="ml-2 underline">
               Retry
+            </button>
+          </div>
+        )}
+        {usageTotalsQuery.isError && (
+          <div role="status" className="m-3 text-[13px] text-gray-500">
+            Historical request and token totals could not be loaded.
+            <button
+              type="button"
+              onClick={() => usageTotalsQuery.refetch()}
+              className="ml-2 underline"
+            >
+              Retry statistics
             </button>
           </div>
         )}

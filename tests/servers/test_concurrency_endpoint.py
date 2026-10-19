@@ -28,6 +28,9 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import get_user_concurrency_limiter
 
+# Every test here drives the real auth_app, which needs PostgreSQL.
+pytestmark = pytest.mark.dbtest
+
 # ---------------------------- helpers ----------------------------------
 
 

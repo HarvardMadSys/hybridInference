@@ -381,6 +381,10 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_bulk_user_usage_totals(self, user_ids: list[str]) -> dict[str, Row]:
+        """Return all-time logged request/token totals, including zero-cost calls."""
+
+    @abstractmethod
     async def list_users(
         self,
         *,
@@ -404,6 +408,7 @@ class OperationalStore(ABC):
         provider: str | None = None,
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
+        include_usage_totals: bool = True,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -414,6 +419,9 @@ class OperationalStore(ABC):
         ``user_daily_cost`` rollup).  Implementations that cannot access
         ``api_logs`` directly must accept an optional *usage_provider* callback
         or return those columns as zero and let the caller enrich them.
+
+        ``include_usage_totals=False`` skips lifetime request/token enrichment;
+        uncomputed metrics are ``None``. Sorting still computes its selected metric.
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
         ``active``, ``suspended``, ``rejected``, ``deleted``.
