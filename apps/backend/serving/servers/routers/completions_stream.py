@@ -585,9 +585,10 @@ class StreamSession:
                                     out_json["model"] = self._response_model
                             if isinstance(out_json.get("usage"), dict):
                                 # What the client is told matches what is billed
-                                # (token_utils.usage_count); a new dict, so the
-                                # captured usage that billing reads is untouched.
-                                out_json["usage"] = sanitize_usage(out_json["usage"])
+                                # (token_utils.usage_count), with the totals a
+                                # client's usage model requires. A new dict: the
+                                # captured usage billing reads keeps "not reported".
+                                out_json["usage"] = sanitize_usage(out_json["usage"], complete=True)
                             sanitized_chunk = f"data: {json.dumps(out_json)}\n\n"
                             logger.debug(
                                 f"Yielding sanitized chunk {self._chunk_count} "

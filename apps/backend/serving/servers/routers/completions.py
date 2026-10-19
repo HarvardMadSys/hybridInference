@@ -414,7 +414,9 @@ async def _streaming_response_with_keepalive(
         ],
     }
     if usage:
-        response["usage"] = usage
+        # The client's body only (billing ran in the stream session): give it the
+        # totals the response model requires.
+        response["usage"] = sanitize_usage(usage, complete=True)
     sanitized = sanitize_response(response, resolve_mode(request_headers)).response_json
     yield json.dumps(sanitized).encode()
 

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from openai.types import CompletionUsage
 
 from routing.executor import RouteExecutor
 from routing.routers import ProviderPinError
@@ -417,6 +418,49 @@ async def test_a_stream_tells_the_client_the_counts_that_were_billed(monkeypatch
     assert (charged["prompt_tokens"], charged["completion_tokens"]) == (0, 7)
 
 
+_CLIENT_USAGE_CASES = [
+    pytest.param({"prompt_tokens": 5, "completion_tokens": 3}, id="no-total"),
+    pytest.param({"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": "?"}, id="bad-total"),
+    pytest.param({"prompt_tokens": 5, "completion_tokens": None}, id="null-completion"),
+    pytest.param({"prompt_tokens": "lots", "completion_tokens": 3, "total_tokens": 4}, id="text"),
+    pytest.param(
+        {"prompt_tokens": 5, "completion_tokens": 3, "prompt_tokens_details": "n/a"},
+        id="odd-details",
+    ),
+]
+
+
+def _client_usages(response, path: str) -> list[dict[str, Any]]:
+    if path == "stream":
+        return [
+            json.loads(line[6:])["usage"]
+            for line in response.text.splitlines()
+            if line.startswith("data: {") and '"usage"' in line
+        ]
+    return [json.loads(response.content)["usage"]]
+
+
+@pytest.mark.parametrize("usage", _CLIENT_USAGE_CASES)
+@pytest.mark.parametrize("path", ["non-stream", "stream", "buffered"])
+async def test_every_path_hands_the_client_a_valid_openai_usage(monkeypatch, usage, path):
+    """A strict client validates usage with the OpenAI SDK's own model.
+
+    The internal billing copy keeps "not reported"; only what is sent is completed.
+    """
+    stream_script = None if path == "non-stream" else _stream_with_usage(usage)
+    alpha = RecordingAdapter(
+        "alpha", usage=usage if path == "non-stream" else None, stream_script=stream_script
+    )
+    app = _app(monkeypatch, [alpha], force_streaming=path == "buffered")
+
+    response = await _post(app, stream=path == "stream")
+
+    assert response.status_code == 200, response.text
+    [sent] = _client_usages(response, path)
+    CompletionUsage.model_validate(sent)
+    assert isinstance(sent["total_tokens"], int)
+
+
 async def test_an_unreadable_count_is_logged_for_follow_up(monkeypatch, caplog):
     alpha = RecordingAdapter("alpha", usage={"prompt_tokens": "lots", "completion_tokens": 3})
     app = _app(monkeypatch, [alpha])
@@ -511,6 +555,27 @@ async def test_the_buffer_turns_a_late_exception_into_an_error_body(quick_keepal
     error = json.loads(body)["error"]
     assert error["code"] == 500
     assert "secret-internal-detail" not in body.decode()
+
+
+async def test_the_buffer_completes_the_usage_it_returns():
+    """Its own guarantee, not only the stream session's: a body with valid usage."""
+
+    async def _chunks():
+        for chunk in _stream_with_usage({"prompt_tokens": 5, "completion_tokens": 3}):
+            yield chunk
+
+    body = b"".join(
+        [
+            part
+            async for part in completions._streaming_response_with_keepalive(
+                _chunks(), request_id="req-usage", model=_MODEL, request_headers={}
+            )
+        ]
+    )
+
+    usage = json.loads(body)["usage"]
+    CompletionUsage.model_validate(usage)
+    assert usage["total_tokens"] == 8
 
 
 async def test_the_buffer_raises_a_failure_before_any_byte(quick_keepalive):
