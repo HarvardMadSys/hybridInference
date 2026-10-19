@@ -11,6 +11,8 @@ Usage::
     python -m serving.config.manage get KEY
     python -m serving.config.manage set KEY VALUE [--secret]
     python -m serving.config.manage reset KEY
+    python -m serving.config.manage ownership
+    python -m serving.config.manage adopt-custom KEY [--secret]
 
 Run it where the backend runs, for example::
 
@@ -72,7 +74,8 @@ def load_stored_configuration() -> bool:
 
     For tools that run outside the gateway but read its settings, such as the
     documentation indexer: without this they would see the environment alone.
-    Read-only; nothing is imported or generated. The connection gives up after
+    No values are imported or generated; registered ownership migrations and
+    secret metadata upgrades are applied. The connection gives up after
     the boot connection's deadline (``app_config_store.CONNECT_TIMEOUT_SECONDS``),
     so an unreachable host costs seconds, not minutes.
 
@@ -190,6 +193,11 @@ async def run(args: argparse.Namespace) -> list[str]:
         app_config.ConfigUpdateError: The change was refused.
     """
     async with app_config.command_line_session():
+        if args.command == "ownership":
+            return [json.dumps(item, sort_keys=True) for item in app_config.ownership()]
+        if args.command == "adopt-custom":
+            await app_config.adopt_custom(args.key, secret=args.secret, updated_by=UPDATED_BY)
+            return [f"{args.key}: owner=custom; historical value retained (not displayed)."]
         if args.command == "list":
             return list_entries(app_config.describe())
         if args.command == "get":
@@ -221,6 +229,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     commands.add_parser("list", help="list every setting")
+    commands.add_parser("ownership", help="list stored ownership metadata without values")
+    adopt = commands.add_parser(
+        "adopt-custom", help="explicitly claim one unclassified historical custom variable"
+    )
+    adopt.add_argument("key", help="the unclassified setting's name")
+    adopt.add_argument(
+        "--secret", action="store_true", help="permanently mark the adopted row secret"
+    )
     get = commands.add_parser("get", help="show one setting")
     get.add_argument("key", help="the setting's name, e.g. JWT_ALGORITHM")
     store = commands.add_parser("set", help="store a value, validated as the console does")
@@ -266,7 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except app_config.ConfigUpdateError as exc:
         print(f"Refused: {exc.detail}", file=sys.stderr)
         return 1
-    except ManageError as exc:
+    except (ManageError, app_config.ConfigBootstrapError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except _DATABASE_ERRORS as exc:

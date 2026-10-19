@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 import typing
+from dataclasses import replace
 
 import pytest
 
@@ -223,6 +224,7 @@ def test_build_entries_lists_present_numbered_keys_and_custom_rows() -> None:
         {},
         {"MY_CUSTOM_TOKEN": True, "MINIMAX_API_KEY3": True},
         {"MINIMAX_API_KEY2": "k2", "CHUTES_API_KEY2": "", "PATH": "/bin"},
+        owners={"MY_CUSTOM_TOKEN": "custom", "MINIMAX_API_KEY3": "custom"},
     )
     assert entries["MINIMAX_API_KEY2"].origin == "numbered"
     assert entries["MINIMAX_API_KEY3"].origin == "numbered"
@@ -570,6 +572,14 @@ def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
         {"SITE_NAME": True, "MY_BOX_REGION": True, "MY_OTHER_REGION": False},
         {},
         {"LOCAL_BOX_URL": True, "FORGOTTEN_URL": True, "SITE_DOCS_URL": False},
+        owners={
+            "SITE_NAME": "core",
+            "MY_BOX_REGION": "custom",
+            "MY_OTHER_REGION": "custom",
+            "LOCAL_BOX_URL": "custom",
+            "FORGOTTEN_URL": "custom",
+            "SITE_DOCS_URL": "core",
+        },
     )
 
     assert entries["SITE_NAME"].secret  # static, flagged on its row
@@ -584,46 +594,69 @@ def test_a_rows_secret_flag_is_kept_by_every_entry(tmp_path) -> None:
 # --- extension configuration -------------------------------------------------
 
 
-def test_core_has_no_distribution_delivery_settings(extension_registry) -> None:
-    from serving.config.retired_config import RETIRED_EXTENSION_KEYS
-
+def test_core_starts_with_only_builtin_delivery_providers(extension_registry) -> None:
     entries = {entry.key: entry for entry in registry.static_entries()}
-    assert RETIRED_EXTENSION_KEYS.isdisjoint(entries)
     assert entries["EMAIL_PROVIDER"].choices == ("smtp",)
     assert entries["SMS_PROVIDER"].choices == ("none",)
-    assert not any(name.startswith("tencent_") for name in Settings.model_fields)
+    assert all(entry.owner == "core" for entry in entries.values())
 
 
-def test_retired_rows_and_references_do_not_reappear_as_custom(extension_registry) -> None:
-    from serving.config.retired_config import RETIRED_EXTENSION_KEYS
-
-    discovered = {
-        key: registry.DiscoveredReference(key, "providers", {"legacy"}, credential=True)
-        for key in RETIRED_EXTENSION_KEYS
-    }
+@pytest.mark.parametrize("owner", [None, "extension:unloaded", "core"])
+def test_unclassified_or_unloaded_rows_cannot_reappear_through_discovery(
+    extension_registry, owner
+) -> None:
+    key = "SAMPLE_PRIVATE_REGION"
+    discovered = {key: registry.DiscoveredReference(key, "providers", {"legacy"})}
     entries = registry.build_entries(
         discovered,
-        {**dict.fromkeys(RETIRED_EXTENSION_KEYS, False), "MY_CUSTOM_ENDPOINT": False},
-        {},
+        {key: False, "MY_CUSTOM_ENDPOINT": False},
+        {key: "env-value"},
+        owners={key: owner, "MY_CUSTOM_ENDPOINT": "custom"},
     )
-    assert RETIRED_EXTENSION_KEYS.isdisjoint(entries)
+    assert key not in entries
     assert entries["MY_CUSTOM_ENDPOINT"].origin == "custom"
+    assert entries["MY_CUSTOM_ENDPOINT"].owner == "custom"
 
 
-def test_extension_can_reclaim_existing_config_names(extension_registry) -> None:
-    entry = registry.ConfigEntry(
-        "SMS_REGION", "phone", "An installed delivery region.", default="x"
+def test_extension_registration_preserves_its_explicit_owner(extension_registry) -> None:
+    entry = registry.ConfigEntry("SAMPLE_REGION", "phone", "Installed region.", default="x")
+    registry.register_config_entries([entry], owner="extension:sample")
+    assert registry.static_entry("SAMPLE_REGION") == replace(entry, owner="extension:sample")
+
+
+@pytest.mark.parametrize("owner", ["", "core", "custom", "sample"])
+def test_extension_owner_cannot_impersonate_builtin_or_custom(extension_registry, owner) -> None:
+    with pytest.raises(ValueError, match="extension:<stable-id>"):
+        registry.register_config_entries([], owner=owner)
+
+
+def test_migration_checksum_covers_owner_keys_and_secret_flags(extension_registry) -> None:
+    first = registry.ConfigOwnershipMigration(
+        "v1", "extension:sample", ("SAMPLE_B", "SAMPLE_A"), ("SAMPLE_A",)
     )
-    registry.register_config_entries([entry])
-    assert registry.static_entry("SMS_REGION") == entry
-    assert not registry.is_unavailable_extension_key("SMS_REGION")
+    reordered = registry.ConfigOwnershipMigration(
+        "v1", "extension:sample", ("SAMPLE_A", "SAMPLE_B"), ("SAMPLE_A",)
+    )
+    changed = registry.ConfigOwnershipMigration("v1", "extension:sample", first.keys, ())
+    assert first.checksum == reordered.checksum
+    assert first.checksum != changed.checksum
+    registry.register_config_ownership_migration(first)
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register_config_ownership_migration(changed)
+
+
+def test_extension_migration_cannot_claim_core_setting(extension_registry) -> None:
+    with pytest.raises(ValueError, match="another owner"):
+        registry.register_config_ownership_migration(
+            registry.ConfigOwnershipMigration("v1", "extension:sample", ("SITE_NAME",))
+        )
 
 
 def test_extension_registration_is_atomic_and_cannot_override_core(extension_registry) -> None:
     first = registry.ConfigEntry("SAMPLE_REGION", "phone", "Sample region.")
     duplicate = registry.ConfigEntry("SMTP_HOST", "email", "Replace built-in host.")
     with pytest.raises(ValueError, match="already registered"):
-        registry.register_config_entries([first, duplicate])
+        registry.register_config_entries([first, duplicate], owner="extension:sample")
     assert registry.static_entry("SAMPLE_REGION") is None
 
 
@@ -639,4 +672,4 @@ def test_extension_registration_is_atomic_and_cannot_override_core(extension_reg
 )
 def test_extension_registration_rejects_invalid_metadata(extension_registry, entry) -> None:
     with pytest.raises(ValueError):
-        registry.register_config_entries([entry])
+        registry.register_config_entries([entry], owner="extension:sample")

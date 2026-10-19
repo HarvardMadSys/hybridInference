@@ -36,8 +36,8 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
     await store.ensure_schema()
     await store.write(
         [
-            ConfigRow("TRUST_PROXY_HEADERS", "true"),
-            ConfigRow("TRUST_X_REAL_IP", "false"),
+            ConfigRow("TRUST_PROXY_HEADERS", "true", owner="core"),
+            ConfigRow("TRUST_X_REAL_IP", "false", owner="core"),
         ]
     )
     await app_config.load(store, bootstrap=False)
@@ -60,7 +60,10 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
                     "WHERE datname = current_database() AND wait_event_type = 'Lock'"
                 )
                 if second is None:
-                    if any("INSERT INTO app_config" in row["query"] for row in waiters):
+                    if any(
+                        "app_config" in row["query"] and row["wait_event"] != "advisory"
+                        for row in waiters
+                    ):
                         return
                 elif second.done() or any(row["wait_event"] == "advisory" for row in waiters):
                     return
@@ -113,11 +116,11 @@ async def test_failed_config_transaction_rolls_back_and_releases_the_lock(pool) 
     await store.ensure_schema()
     with pytest.raises(ValueError, match="abort"):
         async with store.transaction() as transaction:
-            await transaction.write([ConfigRow("SITE_NAME", "rolled back")])
+            await transaction.write([ConfigRow("SITE_NAME", "rolled back", owner="core")])
             raise ValueError("abort")
     assert await store.fetch_all() == {}
     async with store.transaction() as transaction:
-        await transaction.write([ConfigRow("SITE_NAME", "committed")])
+        await transaction.write([ConfigRow("SITE_NAME", "committed", owner="core")])
     assert (await store.fetch_all())["SITE_NAME"].value == "committed"
 
 
@@ -131,6 +134,7 @@ def pg_dsn() -> str:
 async def pool(pg_dsn: str):
     pool = await postgres.create_pool(min_size=1, max_size=2)
     async with pool.acquire() as connection:
+        await connection.execute("DROP TABLE IF EXISTS app_config_ownership_migrations")
         await connection.execute("DROP TABLE IF EXISTS app_config")
         await connection.execute(
             """
@@ -150,6 +154,7 @@ async def pool(pg_dsn: str):
         yield pool
     finally:
         async with pool.acquire() as connection:
+            await connection.execute("DROP TABLE IF EXISTS app_config_ownership_migrations")
             await connection.execute("DROP TABLE IF EXISTS app_config")
             await connection.execute(
                 "DELETE FROM site_settings WHERE key IN ('user_auth_enabled', 'signup_enabled')"
@@ -165,18 +170,27 @@ async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> N
 
     added = await store.insert_missing(
         [
-            ConfigRow("SITE_NAME", "Imported", source="env_import", updated_by="env-import"),
-            ConfigRow("SMTP_PASSWORD", "pw", secret=True, source="env_import"),
+            ConfigRow(
+                "SITE_NAME", "Imported", source="env_import", updated_by="env-import", owner="core"
+            ),
+            ConfigRow("SMTP_PASSWORD", "pw", secret=True, source="env_import", owner="core"),
         ]
     )
     assert sorted(added) == ["SITE_NAME", "SMTP_PASSWORD"]
     # Existing rows are never overwritten by an import.
-    assert await store.insert_missing([ConfigRow("SITE_NAME", "Other", source="env_import")]) == []
+    assert (
+        await store.insert_missing(
+            [ConfigRow("SITE_NAME", "Other", source="env_import", owner="core")]
+        )
+        == []
+    )
 
     await store.write(
         [
-            ConfigRow("SITE_NAME", "By admin", updated_by="admin@example.com"),
-            ConfigRow("BOX_TOKEN", "t", secret=True, updated_by="admin@example.com"),
+            ConfigRow("SITE_NAME", "By admin", updated_by="admin@example.com", owner="core"),
+            ConfigRow(
+                "BOX_TOKEN", "t", secret=True, updated_by="admin@example.com", owner="custom"
+            ),
         ]
     )
     rows = await store.fetch_all()
@@ -187,8 +201,8 @@ async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> N
     assert rows["SMTP_PASSWORD"].secret is True
     assert rows["BOX_TOKEN"].secret is True
 
-    assert await store.delete("BOX_TOKEN") is True
-    assert await store.delete("BOX_TOKEN") is False
+    assert await store.delete("BOX_TOKEN", owner="custom") is True
+    assert await store.delete("BOX_TOKEN", owner="custom") is False
 
     connection = await postgres.connect()
     try:
@@ -204,30 +218,41 @@ async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> Non
     await store.ensure_schema()
     await store.insert_missing(
         [
-            ConfigRow("SITE_NAME", "Imported", source="env_import"),
-            ConfigRow("JWT_SECRET_KEY", "from-env", secret=True, source="env_import"),
+            ConfigRow("SITE_NAME", "Imported", source="env_import", owner="core"),
+            ConfigRow("JWT_SECRET_KEY", "from-env", secret=True, source="env_import", owner="core"),
         ]
     )
 
-    await store.reset("SITE_NAME", secret=False, updated_by="admin@example.com")
-    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com")
-    await store.reset("SITE_NAME", secret=False, updated_by="admin@example.com")  # idempotent
+    await store.reset("SITE_NAME", secret=False, updated_by="admin@example.com", owner="core")
+    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com", owner="core")
+    await store.reset(
+        "SITE_NAME", secret=False, updated_by="admin@example.com", owner="core"
+    )  # idempotent
     assert await store.fetch_all() == {}
 
     # The boot-time import leaves a reset key alone, so it keeps following the
     # environment...
-    assert await store.insert_missing([ConfigRow("SITE_NAME", "Again", source="env_import")]) == []
+    assert (
+        await store.insert_missing(
+            [ConfigRow("SITE_NAME", "Again", source="env_import", owner="core")]
+        )
+        == []
+    )
     assert await store.fetch_all() == {}
     # ...a secret that has to be generated replaces the reset row...
-    generated = ConfigRow("JWT_SECRET_KEY", "generated", secret=True, source="generated")
+    generated = ConfigRow(
+        "JWT_SECRET_KEY", "generated", secret=True, source="generated", owner="core"
+    )
     assert await store.insert_missing([generated], replace_reset=True) == ["JWT_SECRET_KEY"]
     # ...but never a stored value.
-    newer = ConfigRow("JWT_SECRET_KEY", "newer", secret=True, source="generated")
+    newer = ConfigRow("JWT_SECRET_KEY", "newer", secret=True, source="generated", owner="core")
     assert await store.insert_missing([newer], replace_reset=True) == []
     assert (await store.fetch_all())["JWT_SECRET_KEY"].value == "generated"
 
     # An administrator's value replaces a reset row.
-    await store.write([ConfigRow("SITE_NAME", "By admin", updated_by="admin@example.com")])
+    await store.write(
+        [ConfigRow("SITE_NAME", "By admin", updated_by="admin@example.com", owner="core")]
+    )
     assert (await store.fetch_all())["SITE_NAME"].value == "By admin"
 
 
@@ -235,8 +260,13 @@ async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> Non
 async def test_reset_rows_are_returned_on_request_with_their_secret_flag(pool) -> None:
     store = AppConfigStore(pool)
     await store.ensure_schema()
-    await store.write([ConfigRow("SITE_NAME", "Stored"), ConfigRow("BOX_URL", "u", secret=True)])
-    await store.reset("BOX_URL", secret=True, updated_by="admin@example.com")
+    await store.write(
+        [
+            ConfigRow("SITE_NAME", "Stored", owner="core"),
+            ConfigRow("BOX_URL", "u", secret=True, owner="custom"),
+        ]
+    )
+    await store.reset("BOX_URL", secret=True, updated_by="admin@example.com", owner="custom")
 
     assert set(await store.fetch_all()) == {"SITE_NAME"}
     everything = await store.fetch_all(include_reset=True)
@@ -252,19 +282,21 @@ async def test_the_secret_flag_is_one_way(pool) -> None:
     await store.ensure_schema()
     await store.write(
         [
-            ConfigRow("BOX_REGION", "east", updated_by="admin@example.com"),
-            ConfigRow("BOX_URL", "u", source="env_import", updated_by="env-import"),
+            ConfigRow("BOX_REGION", "east", updated_by="admin@example.com", owner="custom"),
+            ConfigRow("BOX_URL", "u", source="env_import", updated_by="env-import", owner="custom"),
         ]
     )
-    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com")
+    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com", owner="custom")
     before = (await store.fetch_all(include_reset=True))["BOX_REGION"]
 
-    assert sorted(await store.mark_secret(["BOX_REGION", "BOX_URL", "NOT_STORED"])) == [
+    assert sorted(
+        await store.mark_secret(["BOX_REGION", "BOX_URL", "NOT_STORED"], owner="custom")
+    ) == [
         "BOX_REGION",
         "BOX_URL",
     ]
-    assert await store.mark_secret(["BOX_REGION"]) == []  # already secret
-    assert await store.mark_secret([]) == []
+    assert await store.mark_secret(["BOX_REGION"], owner="custom") == []  # already secret
+    assert await store.mark_secret([], owner="custom") == []
     rows = await store.fetch_all(include_reset=True)
     assert rows["BOX_REGION"].secret and rows["BOX_URL"].secret
     # Only the flag: the value and who last set it are unchanged.
@@ -276,9 +308,9 @@ async def test_the_secret_flag_is_one_way(pool) -> None:
     assert rows["BOX_URL"].source == "reset"
 
     # Neither a write nor a reset clears it.
-    await store.write([ConfigRow("BOX_REGION", "west", secret=False)])
-    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com")
-    await store.write([ConfigRow("BOX_URL", "v", secret=False)])
+    await store.write([ConfigRow("BOX_REGION", "west", secret=False, owner="custom")])
+    await store.reset("BOX_URL", secret=False, updated_by="admin@example.com", owner="custom")
+    await store.write([ConfigRow("BOX_URL", "v", secret=False, owner="custom")])
     rows = await store.fetch_all(include_reset=True)
     assert rows["BOX_REGION"].value == "west" and rows["BOX_REGION"].secret
     assert rows["BOX_URL"].value == "v" and rows["BOX_URL"].secret
@@ -288,12 +320,12 @@ async def test_the_secret_flag_is_one_way(pool) -> None:
 async def test_concurrent_workers_replace_a_reset_secret_once(pool) -> None:
     store = AppConfigStore(pool)
     await store.ensure_schema()
-    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com")
+    await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com", owner="core")
 
     results = await asyncio.gather(
         *(
             store.insert_missing(
-                [ConfigRow("JWT_SECRET_KEY", value, secret=True, source="generated")],
+                [ConfigRow("JWT_SECRET_KEY", value, secret=True, source="generated", owner="core")],
                 replace_reset=True,
             )
             for value in ("worker-a", "worker-b")

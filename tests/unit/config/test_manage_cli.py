@@ -366,3 +366,36 @@ def test_db_enabled_false_in_dotenv_is_honoured(monkeypatch, capsys) -> None:
 
     assert manage.main(["list"]) == 1
     assert "DB_ENABLED=false" in capsys.readouterr().err
+
+
+def test_ownership_and_adopt_custom_never_print_legacy_values(store, capsys) -> None:
+    original = row("LEGACY_ENDPOINT", "never-print-this", owner=None)
+    store.rows[original.key] = original
+    assert manage.main(["ownership"]) == 0
+    metadata = capsys.readouterr().out
+    assert '"owner": null' in metadata and "LEGACY_ENDPOINT" in metadata
+    assert "never-print-this" not in metadata
+    assert manage.main(["set", original.key, "overwrite"]) == 1
+    assert "ownership is unavailable" in capsys.readouterr().err
+    assert store.rows[original.key] == original
+    assert manage.main(["adopt-custom", original.key, "--secret"]) == 0
+    output = capsys.readouterr().out
+    assert "owner=custom" in output and "never-print-this" not in output
+    claimed = store.rows[original.key]
+    assert claimed.owner == "custom" and claimed.secret
+    assert (claimed.value, claimed.source, claimed.updated_at, claimed.updated_by) == (
+        original.value,
+        original.source,
+        original.updated_at,
+        original.updated_by,
+    )
+    assert manage.main(["get", original.key]) == 0
+    assert "never-print-this" not in capsys.readouterr().out
+
+
+def test_adopt_custom_cannot_claim_an_unloaded_extensions_row(store, capsys) -> None:
+    original = row("EXTENSION_REGION", "private-region", owner="extension:unloaded")
+    store.rows[original.key] = original
+    assert manage.main(["adopt-custom", original.key]) == 1
+    assert "only an unclassified" in capsys.readouterr().err
+    assert store.rows[original.key] == original

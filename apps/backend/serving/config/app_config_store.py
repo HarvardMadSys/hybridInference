@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import asyncpg
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
     from datetime import datetime
 
+    from serving.config.app_config_registry import ConfigOwnershipMigration
     from serving.config.settings import DatabaseSettings, Settings
 
 #: Connect and statement deadlines for the short-lived boot connection. The
@@ -42,7 +44,8 @@ CREATE TABLE IF NOT EXISTS app_config (
     secret      BOOLEAN NOT NULL DEFAULT FALSE,
     source      TEXT NOT NULL DEFAULT 'admin',
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_by  TEXT
+    updated_by  TEXT,
+    owner       TEXT
 )
 """
 
@@ -50,7 +53,7 @@ CREATE TABLE IF NOT EXISTS app_config (
 RESET_SOURCE = "reset"
 
 SELECT_ALL_WITH_RESET_SQL = (
-    "SELECT key, value, secret, source, updated_at, updated_by FROM app_config"
+    "SELECT key, value, secret, source, updated_at, updated_by, owner FROM app_config"
 )
 
 SELECT_ALL_SQL = f"{SELECT_ALL_WITH_RESET_SQL} WHERE source <> '{RESET_SOURCE}'"
@@ -60,7 +63,7 @@ SELECT_ALL_SQL = f"{SELECT_ALL_WITH_RESET_SQL} WHERE source <> '{RESET_SOURCE}'"
 # updated_* columns describe the value, which does not change.
 MARK_SECRET_SQL = """
 UPDATE app_config SET secret = TRUE
-WHERE key = ANY($1::text[]) AND NOT secret
+WHERE key = ANY($1::text[]) AND NOT secret AND owner = $2
 RETURNING key
 """
 
@@ -70,8 +73,8 @@ RETURNING key
 # keeps a reset setting following the environment. RETURNING names the rows
 # this call added.
 INSERT_MISSING_SQL = """
-INSERT INTO app_config (key, value, secret, source, updated_by)
-SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[])
+INSERT INTO app_config (key, value, secret, source, updated_by, owner)
+SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[], $6::text[])
 ON CONFLICT (key) DO NOTHING
 RETURNING key
 """
@@ -80,42 +83,46 @@ RETURNING key
 # must exist once neither the table nor the environment holds one. The row lock
 # makes a concurrent worker re-check the condition against the winner's row.
 INSERT_MISSING_OR_RESET_SQL = f"""
-INSERT INTO app_config (key, value, secret, source, updated_by)
-SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[])
+INSERT INTO app_config (key, value, secret, source, updated_by, owner)
+SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[], $4::text[], $5::text[], $6::text[])
 ON CONFLICT (key) DO UPDATE SET
     value = EXCLUDED.value,
     secret = app_config.secret OR EXCLUDED.secret,
     source = EXCLUDED.source,
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
-WHERE app_config.source = '{RESET_SOURCE}'
+WHERE app_config.source = '{RESET_SOURCE}' AND app_config.owner = EXCLUDED.owner
 RETURNING key
 """
 
 # Neither a write nor a reset clears the secret flag: it is one-way.
 UPSERT_SQL = """
-INSERT INTO app_config (key, value, secret, source, updated_at, updated_by)
-VALUES ($1, $2, $3, $4, NOW(), $5)
+INSERT INTO app_config (key, value, secret, source, updated_at, updated_by, owner)
+VALUES ($1, $2, $3, $4, NOW(), $5, $6)
 ON CONFLICT (key) DO UPDATE SET
     value = EXCLUDED.value,
     secret = app_config.secret OR EXCLUDED.secret,
     source = EXCLUDED.source,
     updated_at = EXCLUDED.updated_at,
     updated_by = EXCLUDED.updated_by
+WHERE app_config.owner = EXCLUDED.owner
+RETURNING key
 """
 
 RESET_SQL = f"""
-INSERT INTO app_config (key, value, secret, source, updated_at, updated_by)
-VALUES ($1, '', $2, '{RESET_SOURCE}', NOW(), $3)
+INSERT INTO app_config (key, value, secret, source, updated_at, updated_by, owner)
+VALUES ($1, '', $2, '{RESET_SOURCE}', NOW(), $3, $4)
 ON CONFLICT (key) DO UPDATE SET
     value = '',
     secret = app_config.secret OR EXCLUDED.secret,
     source = '{RESET_SOURCE}',
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
+WHERE app_config.owner = EXCLUDED.owner
+RETURNING key
 """
 
-DELETE_SQL = "DELETE FROM app_config WHERE key = $1"
+DELETE_SQL = "DELETE FROM app_config WHERE key = $1 AND owner = $2"
 
 # Shared by boot import, API updates/resets and the recovery CLI. The lock is
 # database-wide, so separate workers also validate against the preceding write.
@@ -133,6 +140,46 @@ class ConfigRow:
     source: str = "admin"
     updated_at: datetime | None = None
     updated_by: str | None = None
+    #: NULL denotes an unclassified legacy row; no ordinary write can claim it.
+    owner: str | None = None
+
+
+class ConfigOwnershipError(RuntimeError):
+    """A claim or write would cross a configuration owner's boundary."""
+
+
+CREATE_MIGRATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS app_config_ownership_migrations (
+    id          TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    checksum    TEXT NOT NULL,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    applied_by  TEXT
+)
+"""
+
+
+def _require_owner(owner: str | None) -> str:
+    if owner not in ("core", "custom"):
+        from serving.config.app_config_registry import _require_extension_owner
+
+        if owner is None:
+            raise ConfigOwnershipError("A configuration write requires an explicit owner")
+        try:
+            _require_extension_owner(owner)
+        except ValueError as exc:
+            raise ConfigOwnershipError(str(exc)) from exc
+    return owner
+
+
+async def _check_owners(conn: Any, expected: dict[str, str]) -> None:
+    records = await conn.fetch(
+        "SELECT key, owner FROM app_config WHERE key = ANY($1::text[]) FOR UPDATE",
+        list(expected),
+    )
+    for record in records:
+        if record["owner"] != expected[record["key"]]:
+            raise ConfigOwnershipError(f"Configuration ownership conflict: {record['key']}")
 
 
 class AppConfigStore:
@@ -150,9 +197,11 @@ class AppConfigStore:
             yield self._db
 
     async def ensure_schema(self) -> None:
-        """Create the table when it is missing."""
-        async with self._connection() as conn:
+        """Upgrade the schema without claiming or changing historical values."""
+        async with self.transaction() as transaction, transaction._connection() as conn:
             await conn.execute(CREATE_TABLE_SQL)
+            await conn.execute("ALTER TABLE app_config ADD COLUMN IF NOT EXISTS owner TEXT")
+            await conn.execute(CREATE_MIGRATIONS_SQL)
 
     @contextlib.asynccontextmanager
     async def transaction(self) -> AsyncIterator[AppConfigStore]:
@@ -186,23 +235,106 @@ class AppConfigStore:
                 source=record["source"],
                 updated_at=record["updated_at"],
                 updated_by=record["updated_by"],
+                owner=record["owner"],
             )
             for record in records
         }
 
+    async def apply_migrations(
+        self,
+        migrations: Sequence[ConfigOwnershipMigration],
+        *,
+        core_keys: Sequence[str] = (),
+        updated_by: str | None = None,
+    ) -> None:
+        """Claim only explicitly declared historical rows, atomically and once.
+
+        Existing values, sources and value audit stamps are preserved. Schema,
+        claims and concurrent worker writes share the same transaction lock.
+        """
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            if core_keys:
+                await self._claim(conn, core_keys, "core", ())
+            for migration in migrations:
+                _require_owner(migration.owner)
+                previous = await conn.fetchrow(
+                    "SELECT owner, checksum FROM app_config_ownership_migrations WHERE id = $1",
+                    migration.id,
+                )
+                if previous is not None:
+                    if (
+                        previous["owner"] != migration.owner
+                        or previous["checksum"] != migration.checksum
+                    ):
+                        raise ConfigOwnershipError(
+                            f"Configuration ownership migration changed: {migration.id}"
+                        )
+                    continue
+                await self._claim(conn, migration.keys, migration.owner, migration.secret_keys)
+                await conn.execute(
+                    "INSERT INTO app_config_ownership_migrations (id, owner, checksum, applied_by) "
+                    "VALUES ($1, $2, $3, $4)",
+                    migration.id,
+                    migration.owner,
+                    migration.checksum,
+                    updated_by,
+                )
+
+    @staticmethod
+    async def _claim(
+        conn: Any, keys: Sequence[str], owner: str, secret_keys: Sequence[str]
+    ) -> None:
+        conflicts = await conn.fetch(
+            "SELECT key FROM app_config WHERE key = ANY($1::text[]) "
+            "AND owner IS NOT NULL AND owner <> $2 FOR UPDATE",
+            list(keys),
+            owner,
+        )
+        if conflicts:
+            names = ", ".join(sorted(record["key"] for record in conflicts))
+            raise ConfigOwnershipError(f"Configuration ownership conflict: {names}")
+        await conn.execute(
+            "UPDATE app_config SET owner = $2, secret = secret OR key = ANY($3::text[]) "
+            "WHERE key = ANY($1::text[]) AND (owner IS NULL OR owner = $2)",
+            list(keys),
+            owner,
+            list(secret_keys),
+        )
+
+    async def adopt_custom(
+        self, key: str, *, secret: bool = False, updated_by: str | None = None
+    ) -> None:
+        """Explicitly adopt one unclassified row, preserving it and recording the claim."""
+        from serving.config.app_config_registry import ConfigOwnershipMigration
+
+        async with self.transaction() as transaction:
+            async with transaction._connection() as conn:
+                record = await conn.fetchrow(
+                    "SELECT owner FROM app_config WHERE key = $1 FOR UPDATE", key
+                )
+                if record is None or record["owner"] is not None:
+                    raise ConfigOwnershipError(f"Configuration is not unclassified: {key}")
+            await transaction.apply_migrations(
+                [
+                    ConfigOwnershipMigration(
+                        id=f"custom-adoption:{key}:{uuid4()}",
+                        owner="custom",
+                        keys=(key,),
+                        secret_keys=(key,) if secret else (),
+                    )
+                ],
+                updated_by=updated_by,
+            )
+
     async def insert_missing(
         self, rows: Sequence[ConfigRow], *, replace_reset: bool = False
     ) -> list[str]:
-        """Insert the rows whose keys are not stored yet; return the keys added.
-
-        Args:
-            rows: The rows to add.
-            replace_reset: Also replace a reset row. Without it, a key an
-                administrator reset is left alone.
-        """
+        """Insert absent rows, optionally replacing same-owner reset markers."""
         if not rows:
             return []
-        async with self._connection() as conn:
+        expected = {row.key: _require_owner(row.owner) for row in rows}
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            await _check_owners(conn, expected)
             records = await conn.fetch(
                 INSERT_MISSING_OR_RESET_SQL if replace_reset else INSERT_MISSING_SQL,
                 [row.key for row in rows],
@@ -210,39 +342,55 @@ class AppConfigStore:
                 [row.secret for row in rows],
                 [row.source for row in rows],
                 [row.updated_by for row in rows],
+                [row.owner for row in rows],
             )
         return [record["key"] for record in records]
 
     async def write(self, rows: Sequence[ConfigRow]) -> None:
-        """Insert or replace *rows* in one transaction."""
+        """Insert or replace rows owned by the writer, atomically."""
         if not rows:
             return
-        async with self._connection() as conn, conn.transaction():
-            await conn.executemany(
-                UPSERT_SQL,
-                [(row.key, row.value, row.secret, row.source, row.updated_by) for row in rows],
-            )
+        expected = {row.key: _require_owner(row.owner) for row in rows}
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            await _check_owners(conn, expected)
+            for row in rows:
+                key = await conn.fetchval(
+                    UPSERT_SQL,
+                    row.key,
+                    row.value,
+                    row.secret,
+                    row.source,
+                    row.updated_by,
+                    row.owner,
+                )
+                if key is None:
+                    raise ConfigOwnershipError(f"Configuration ownership conflict: {row.key}")
 
-    async def mark_secret(self, keys: Sequence[str]) -> list[str]:
-        """Mark the stored rows of *keys* secret, reset rows included; return those changed.
-
-        Never the other way: there is no call that clears the flag.
-        """
+    async def mark_secret(self, keys: Sequence[str], *, owner: str) -> list[str]:
+        """Make same-owner rows secret without changing their value audit stamps."""
         if not keys:
             return []
-        async with self._connection() as conn:
-            records = await conn.fetch(MARK_SECRET_SQL, list(keys))
+        _require_owner(owner)
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            await _check_owners(conn, dict.fromkeys(keys, owner))
+            records = await conn.fetch(MARK_SECRET_SQL, list(keys), owner)
         return [record["key"] for record in records]
 
-    async def reset(self, key: str, *, secret: bool, updated_by: str) -> None:
-        """Replace *key*'s stored value with a reset row, so it follows the environment."""
-        async with self._connection() as conn:
-            await conn.execute(RESET_SQL, key, secret, updated_by)
+    async def reset(self, key: str, *, secret: bool, updated_by: str, owner: str) -> None:
+        """Replace a same-owner value with a reset marker, retaining ownership."""
+        _require_owner(owner)
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            await _check_owners(conn, {key: owner})
+            changed = await conn.fetchval(RESET_SQL, key, secret, updated_by, owner)
+            if changed is None:
+                raise ConfigOwnershipError(f"Configuration ownership conflict: {key}")
 
-    async def delete(self, key: str) -> bool:
-        """Remove one stored setting outright; return whether a row existed."""
-        async with self._connection() as conn:
-            status = await conn.execute(DELETE_SQL, key)
+    async def delete(self, key: str, *, owner: str) -> bool:
+        """Remove a same-owner row; an unclassified or foreign row is never deleted."""
+        _require_owner(owner)
+        async with self.transaction() as transaction, transaction._connection() as conn:
+            await _check_owners(conn, {key: owner})
+            status = await conn.execute(DELETE_SQL, key, owner)
         return status.rsplit(" ", 1)[-1] != "0"
 
     async def api_keys_exist(self) -> bool:

@@ -11,6 +11,7 @@ from serving.utils import delivery
 @pytest.fixture
 def extension_registry(monkeypatch):
     monkeypatch.setattr(registry, "_EXTENSION_ENTRIES", {})
+    monkeypatch.setattr(registry, "_OWNERSHIP_MIGRATIONS", {})
     monkeypatch.setattr(delivery, "_email_providers", {})
     monkeypatch.setattr(delivery, "_sms_providers", {})
     registry.invalidate_config_registry()
@@ -77,7 +78,7 @@ def sample_delivery(extension_registry):
         registry.ConfigEntry(key, "phone", "Sample SMS field.", required=sms_required)
         for key in ("SAMPLE_SMS_APP_ID", "SAMPLE_SMS_SIGN_NAME", "SAMPLE_SMS_TEMPLATE_ID")
     ]
-    registry.register_config_entries(entries)
+    registry.register_config_entries(entries, owner="extension:sample.delivery")
 
     def has_values(keys):
         return all((app_config.config_value(key) or "").strip() for key in keys)

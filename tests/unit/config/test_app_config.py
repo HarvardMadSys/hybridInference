@@ -1626,32 +1626,37 @@ async def test_sms_settings_are_missing_only_while_phone_sign_in_is_on(
 async def test_unloaded_distribution_rows_stay_stored_but_private(
     config_env, extension_registry, monkeypatch
 ) -> None:
-    from serving.config.retired_config import RETIRED_EXTENSION_KEYS
-
-    rows = [row(key, "retained-private-value") for key in RETIRED_EXTENSION_KEYS]
+    private_keys = ("SAMPLE_OLD_REGION", "SAMPLE_OLD_CREDENTIAL")
+    rows = [row(key, "retained-private-value", owner=None) for key in private_keys]
     rows += [
-        row("EMAIL_PROVIDER", "tencent_ses"),
-        row("SMS_PROVIDER", "tencent"),
+        row("SAMPLE_RESET", "", source="reset", owner="extension:unloaded"),
+        row("EMAIL_PROVIDER", "unloaded_email"),
+        row("SMS_PROVIDER", "unloaded_sms"),
         row("MY_CUSTOM_ENDPOINT", "custom-value"),
     ]
-    for key in RETIRED_EXTENSION_KEYS:
+    for key in (*private_keys, "SAMPLE_RESET"):
         monkeypatch.setenv(key, "private-env-value")
     store = FakeAppConfigStore(rows)
     await _boot(store)
-
     entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
-    assert RETIRED_EXTENSION_KEYS.isdisjoint(entries)
+    assert set(private_keys).isdisjoint(entries)
+    assert "SAMPLE_RESET" not in entries
     assert entries["MY_CUSTOM_ENDPOINT"]["value"] == "custom-value"
     assert entries["EMAIL_PROVIDER"]["value"] == "smtp"
-    assert entries["SMS_PROVIDER"]["value"] == "none"
     assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
     assert "retained-private-value" not in str(app_config.describe())
     assert "private-env-value" not in str(app_config.describe())
-    for key in RETIRED_EXTENSION_KEYS:
-        assert store.rows[key].value == "retained-private-value"
+    for key in (*private_keys, "SAMPLE_RESET"):
         assert app_config.config_value(key) is None
-        with pytest.raises(app_config.ConfigUpdateError, match="extension is not loaded"):
+        with pytest.raises(app_config.ConfigUpdateError, match="ownership is unavailable"):
             await app_config.update({key: "attempt"}, updated_by="admin")
+        with pytest.raises(app_config.ConfigUpdateError):
+            await app_config.update({}, {key: True}, updated_by="admin")
+        with pytest.raises(app_config.ConfigUpdateError):
+            await app_config.delete(key, updated_by="admin")
+    for key in private_keys:
+        assert store.rows[key].value == "retained-private-value"
+        assert store.rows[key].owner is None
 
 
 @pytest.mark.asyncio
@@ -1670,18 +1675,30 @@ async def test_registered_extension_reclaims_legacy_rows_and_refreshes(
                 choices=("region-a", "region-b"),
             ),
             registry.ConfigEntry(
-                "TENCENT_CLOUD_SECRET_KEY", "integrations", "Extension secret.", secret=True
+                "SAMPLE_CREDENTIAL", "integrations", "Extension secret.", secret=True
             ),
-        ]
+        ],
+        owner="extension:sample.delivery",
+    )
+    registry.register_config_ownership_migration(
+        registry.ConfigOwnershipMigration(
+            "sample-legacy-v1",
+            "extension:sample.delivery",
+            ("SMS_REGION", "SAMPLE_CREDENTIAL"),
+            ("SAMPLE_CREDENTIAL",),
+        )
     )
     monkeypatch.setenv("SMS_REGION", "region-a")
     store = FakeAppConfigStore(
-        [row("SMS_REGION", "region-b"), row("TENCENT_CLOUD_SECRET_KEY", "retained-secret")]
+        [
+            row("SMS_REGION", "region-b", owner=None),
+            row("SAMPLE_CREDENTIAL", "retained-secret", owner=None),
+        ]
     )
     await _boot(store)
     assert app_config.config_value("SMS_REGION") == "region-b"
-    assert app_config.config_value("TENCENT_CLOUD_SECRET_KEY") == "retained-secret"
-    assert store.rows["TENCENT_CLOUD_SECRET_KEY"].secret
+    assert app_config.config_value("SAMPLE_CREDENTIAL") == "retained-secret"
+    assert store.rows["SAMPLE_CREDENTIAL"].secret
     assert "retained-secret" not in str(app_config.describe())
     await app_config.update({"SMS_REGION": "region-a"}, updated_by="admin")
     assert app_config.config_value("SMS_REGION") == "region-a"
@@ -1700,7 +1717,8 @@ def test_extension_defaults_and_invalid_environment_are_safe_before_load(
             registry.ConfigEntry(
                 "SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1, default="10"
             ),
-        ]
+        ],
+        owner="extension:sample.delivery",
     )
     assert app_config.config_value("SAMPLE_TEMPLATE") == "10"
     monkeypatch.setenv("SAMPLE_TEMPLATE", "not-an-integer")
@@ -1719,7 +1737,8 @@ async def test_extension_database_value_overrides_invalid_environment(
     registry.register_config_entries(
         [
             registry.ConfigEntry("SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1),
-        ]
+        ],
+        owner="extension:sample.delivery",
     )
     monkeypatch.setenv("SAMPLE_TEMPLATE", "not-an-integer")
     store = FakeAppConfigStore([row("SAMPLE_TEMPLATE", "42")])
@@ -1740,7 +1759,8 @@ async def test_invalid_extension_env_is_not_imported(
     registry.register_config_entries(
         [
             registry.ConfigEntry("SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1),
-        ]
+        ],
+        owner="extension:sample.delivery",
     )
     monkeypatch.setenv("SAMPLE_TEMPLATE", "0")
     store = FakeAppConfigStore()
@@ -1752,7 +1772,7 @@ async def test_invalid_extension_env_is_not_imported(
 
 
 @pytest.mark.parametrize(
-    "key,value", [("EMAIL_PROVIDER", "tencent_ses"), ("SMS_PROVIDER", "tencent")]
+    "key,value", [("EMAIL_PROVIDER", "unloaded_email"), ("SMS_PROVIDER", "unloaded_sms")]
 )
 def test_unloaded_provider_environment_is_rejected(
     config_env, extension_registry, monkeypatch, key, value
@@ -1767,7 +1787,7 @@ def test_unloaded_provider_environment_is_rejected(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "key,stored,fallback",
-    [("EMAIL_PROVIDER", "tencent_ses", "smtp"), ("SMS_PROVIDER", "tencent", "none")],
+    [("EMAIL_PROVIDER", "unloaded_email", "smtp"), ("SMS_PROVIDER", "unloaded_sms", "none")],
 )
 async def test_unloaded_stored_provider_refuses_startup_even_with_valid_env(
     config_env, extension_registry, monkeypatch, key, stored, fallback
@@ -1794,3 +1814,168 @@ async def test_registered_provider_selection_starts_with_db_override(
     app_config.require_valid_environment()
     assert get_settings().email_provider == "sample_email"
     assert get_settings().sms_provider == "sample_sms"
+
+
+@pytest.mark.asyncio
+async def test_custom_adoption_is_explicit_audited_and_preserves_value_stamps(
+    config_env, extension_registry
+) -> None:
+    original = row("LEGACY_BOX", "original-private", owner=None)
+    store = FakeAppConfigStore([original])
+    await _boot(store)
+    with pytest.raises(app_config.ConfigUpdateError, match="ownership is unavailable"):
+        await app_config.update({"LEGACY_BOX": "replacement"}, updated_by="admin")
+    await app_config.adopt_custom("LEGACY_BOX", secret=True, updated_by="recovering-admin")
+    adopted = store.rows["LEGACY_BOX"]
+    assert adopted.owner == "custom" and adopted.secret
+    assert (adopted.value, adopted.source, adopted.updated_at, adopted.updated_by) == (
+        original.value,
+        original.source,
+        original.updated_at,
+        original.updated_by,
+    )
+    adoption = next(
+        value
+        for key, value in store.migrations.items()
+        if key.startswith("custom-adoption:LEGACY_BOX:")
+    )
+    assert adoption[2] == "recovering-admin"
+    assert "original-private" not in str(app_config.ownership())
+    assert "original-private" not in str(app_config.describe())
+    with pytest.raises(app_config.ConfigUpdateError, match="only an unclassified"):
+        await app_config.adopt_custom("LEGACY_BOX", updated_by="admin")
+
+
+@pytest.mark.asyncio
+async def test_ownership_migration_claims_reset_without_importing_environment(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    key = "SAMPLE_RESET_REGION"
+    registry.register_config_entries(
+        [registry.ConfigEntry(key, "phone", "Region.")], owner="extension:sample"
+    )
+    registry.register_config_ownership_migration(
+        registry.ConfigOwnershipMigration("sample-reset-v1", "extension:sample", (key,), (key,))
+    )
+    original = row(key, "", source="reset", owner=None)
+    store = FakeAppConfigStore([original])
+    monkeypatch.setenv(key, "first-region")
+    await _boot(store)
+    assert store.rows[key].source == "reset" and store.rows[key].value == ""
+    assert store.rows[key].updated_at == original.updated_at
+    assert store.rows[key].owner == "extension:sample" and store.rows[key].secret
+    assert app_config.config_value(key) == "first-region"
+    monkeypatch.setenv(key, "second-region")
+    assert app_config.config_value(key) == "second-region"
+
+
+@pytest.mark.asyncio
+async def test_registered_metadata_without_migration_cannot_claim_legacy_row(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    key = "SAMPLE_UNCLAIMED"
+    registry.register_config_entries(
+        [registry.ConfigEntry(key, "phone", "Region.", default="default-region")],
+        owner="extension:sample",
+    )
+    monkeypatch.setenv(key, "env-region")
+    store = FakeAppConfigStore([row(key, "legacy-region", owner=None)])
+    await _boot(store)
+    assert app_config.config_value(key) is None
+    assert key not in {entry["key"] for entry in app_config.describe()["entries"]}
+    assert store.rows[key].owner is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_operation", ["refresh", "patch"])
+@pytest.mark.parametrize("unknown_source", ["admin", "reset"])
+async def test_database_recovery_migrates_before_refresh_or_first_patch(
+    config_env, extension_registry, monkeypatch, first_operation, unknown_source
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    owner = "extension:recovery"
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry("SAMPLE_RECOVERY", "phone", "Recovering extension."),
+            registry.ConfigEntry(
+                "SAMPLE_RECOVERY_SECRET", "phone", "Recovering credential.", secret=True
+            ),
+        ],
+        owner=owner,
+    )
+    registry.register_config_ownership_migration(
+        registry.ConfigOwnershipMigration(
+            "recovery-v1",
+            owner,
+            ("SAMPLE_RECOVERY", "SAMPLE_RECOVERY_SECRET"),
+            ("SAMPLE_RECOVERY_SECRET",),
+        )
+    )
+
+    class RecoveringStore(FakeAppConfigStore):
+        available = False
+
+        async def ensure_schema(self):
+            if not self.available:
+                raise OSError("fixture database unavailable")
+            await super().ensure_schema()
+
+    unknown = row(
+        "LEGACY_RECOVERY_UNKNOWN",
+        "private-unknown" if unknown_source == "admin" else "",
+        source=unknown_source,
+        owner=None,
+    )
+    store = RecoveringStore(
+        [
+            row("SITE_NAME", "stored-name", owner=None),
+            row("SAMPLE_RECOVERY", "stored-extension", owner=None),
+            row("SAMPLE_RECOVERY_SECRET", "stored-private", owner=None),
+            unknown,
+        ]
+    )
+    monkeypatch.setenv("SITE_NAME", "environment-name")
+    monkeypatch.setenv("SAMPLE_RECOVERY", "environment-extension")
+    monkeypatch.setenv("LEGACY_RECOVERY_UNKNOWN", "private-environment")
+    monkeypatch.setenv("SITE_DOCS_URL", "https://do-not-import.example")
+    with pytest.raises(OSError, match="fixture database unavailable"):
+        await app_config.load(store)
+    app_config.use_environment(database_enabled=True)
+    app_config.attach(store)
+    assert not app_config.loaded_from_database()
+
+    store.available = True
+    if first_operation == "refresh":
+        await app_config.refresh()
+        assert app_config.config_value("SITE_NAME") == "stored-name"
+        assert app_config.config_value("SAMPLE_RECOVERY") == "stored-extension"
+    else:
+        changes = await app_config.update(
+            {"SITE_NAME": "patched-name", "SAMPLE_RECOVERY": "patched-extension"},
+            updated_by="recovering-admin",
+        )
+        assert {change.key: change.old_value for change in changes} == {
+            "SITE_NAME": "stored-name",
+            "SAMPLE_RECOVERY": "stored-extension",
+        }
+        assert app_config.config_value("SITE_NAME") == "patched-name"
+        assert app_config.config_value("SAMPLE_RECOVERY") == "patched-extension"
+    assert app_config.loaded_from_database()
+    assert store.rows["SITE_NAME"].owner == "core"
+    assert store.rows["SAMPLE_RECOVERY"].owner == owner
+    assert store.rows["SAMPLE_RECOVERY_SECRET"].secret
+    assert app_config.config_value("SAMPLE_RECOVERY_SECRET") == "stored-private"
+    assert store.rows[unknown.key] == unknown
+    assert app_config.config_value(unknown.key) is None
+    body = str(app_config.describe())
+    assert unknown.key not in body
+    assert "stored-private" not in body and "private-environment" not in body
+    assert "SITE_DOCS_URL" not in store.rows
+    assert "JWT_SECRET_KEY" not in store.rows and "API_KEY_SECRET" not in store.rows
+    with pytest.raises(app_config.ConfigUpdateError, match="ownership is unavailable"):
+        await app_config.update({unknown.key: "overwrite"}, updated_by="admin")

@@ -191,8 +191,12 @@ async def test_secrets_stored_in_the_database_satisfy_the_check(
         app_config._STATE.database_enabled = True
         app_config._apply(
             {
-                "JWT_SECRET_KEY": ConfigRow("JWT_SECRET_KEY", "stored-jwt", secret=True),
-                "API_KEY_SECRET": ConfigRow("API_KEY_SECRET", "stored-api", secret=True),
+                "JWT_SECRET_KEY": ConfigRow(
+                    "JWT_SECRET_KEY", "stored-jwt", secret=True, owner="core"
+                ),
+                "API_KEY_SECRET": ConfigRow(
+                    "API_KEY_SECRET", "stored-api", secret=True, owner="core"
+                ),
             },
             boot=True,
         )
