@@ -211,7 +211,7 @@ async def test_a_count_that_ran_out_of_budget_is_not_retried_on_the_next_page():
 
 
 @pytest.mark.asyncio
-async def test_clearing_errors_forgets_cached_totals_stored_hours_and_days():
+async def test_clearing_errors_forgets_cached_totals_and_stored_hours():
     db = _FakeDb(page_rows=10, total=10)
     log_store = MagicMock()
     log_store.delete_recent_error_requests = AsyncMock(return_value=4)
@@ -231,12 +231,7 @@ async def test_clearing_errors_forgets_cached_totals_stored_hours_and_days():
     # rollup's lock so no fill can write back what it read before the delete.
     invalidations = [args for query, args in db.executed if "DELETE FROM request_volume" in query]
     assert invalidations == [(3,)]
-    # So are the Users table's stored days: their rows and their coverage.
-    usage = [query for query, args in db.executed if "DELETE FROM user_usage_daily" in query]
-    assert len(usage) == 2
-    assert any("user_usage_daily_coverage" in query for query in usage)
-    locks = [args for query, args in db.executed if "pg_advisory_xact_lock" in query]
-    assert len(locks) == 2
+    assert any("pg_advisory_xact_lock" in query for query, _ in db.executed)
 
 
 @pytest.mark.asyncio
@@ -249,4 +244,3 @@ async def test_clearing_nothing_leaves_the_stored_hours_alone():
 
     assert resp.status_code == 200, resp.text
     assert not [query for query, _ in db.executed if "request_volume" in query]
-    assert not [query for query, _ in db.executed if "user_usage" in query]

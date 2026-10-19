@@ -33,7 +33,10 @@ transaction-scoped advisory lock, and a fill re-reads whether its day is still
 missing once it holds it.
 
 Deletes are the one way a completed day changes. "Clear errors" invalidates the
-days it reached (:func:`invalidate_recent`). Unlike the anonymous request volume
+days it deleted rows from, in the delete's own transaction
+(:func:`invalidate_days`): were the two separate, a failed invalidation would
+leave a day marked counted with the deleted rows in it, and nothing would ever
+count it again. Unlike the anonymous request volume
 rollup, these rows name a user, so a hard delete removes them in the same
 transaction that purges the user's ``api_logs`` rows (:func:`purge_user`).
 """
@@ -167,12 +170,6 @@ SELECT $1::date < {SETTLED_DAY_SQL}
    AND NOT EXISTS (SELECT 1 FROM user_usage_daily_coverage WHERE day = $1::date)
 """
 
-# From the day holding "now minus N hours", with an hour's margin: the delete
-# this follows took its own "now" a moment earlier, which can fall a day back.
-_INVALIDATE_FROM_SQL = (
-    "((NOW() - make_interval(hours => $1::int) - interval '1 hour') AT TIME ZONE 'UTC')::date"
-)
-
 
 async def fetch_totals(conn: asyncpg.Connection, user_ids: list[str]) -> dict[str, dict[str, int]]:
     """All-time ``{"requests", "tokens"}`` for each of *user_ids*, zeros included."""
@@ -222,22 +219,20 @@ async def backfill_missing(pool: asyncpg.Pool) -> int:
         return await fill_days(conn, days)
 
 
-async def invalidate_recent(pool: asyncpg.Pool, hours: int) -> None:
-    """Drop the stored days a delete of the last *hours* hours of rows reached.
+async def invalidate_days(conn: asyncpg.Connection, days: list[date]) -> None:
+    """Drop the stored *days*, in the caller's transaction.
 
-    Call it once the delete has committed. Under the advisory lock, a fill either
-    finished before this -- and whatever it read from before the delete is
-    dropped here -- or starts after it and reads the rows as they are now. The
+    For a delete of ``api_logs`` rows, in the delete's transaction, so the two
+    commit or fail together. Under the advisory lock, a fill either committed
+    before this -- and whatever it read from before the delete is dropped here --
+    or starts after the delete commits and reads the rows as they are then. The
     dropped days are counted live until the next fill.
     """
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
-        await conn.execute(
-            f"DELETE FROM user_usage_daily_coverage WHERE day >= {_INVALIDATE_FROM_SQL}", hours
-        )
-        await conn.execute(
-            f"DELETE FROM user_usage_daily WHERE day >= {_INVALIDATE_FROM_SQL}", hours
-        )
+    if not days:
+        return
+    await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
+    await conn.execute("DELETE FROM user_usage_daily_coverage WHERE day = ANY($1::date[])", days)
+    await conn.execute("DELETE FROM user_usage_daily WHERE day = ANY($1::date[])", days)
 
 
 async def purge_user(conn: asyncpg.Connection, user_id: str) -> int:

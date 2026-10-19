@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -192,22 +193,58 @@ async def test_dropped_days_are_counted_live_until_they_are_filled_again(db):
     await _assert_matches_oracle(pool, op_store)
 
 
-async def test_clear_errors_invalidates_the_days_it_reached(db):
+async def _seed_stored_error(pool, settled) -> date:
+    """A failed request on the last stored day, which a 48-hour clear reaches."""
+    at = _midnight(settled) - timedelta(hours=1)
+    async with pool.acquire() as conn:
+        await _log(conn, "light", at, 123, status=500, error="boom")
+    return at.date()
+
+
+async def test_clear_errors_drops_exactly_the_days_it_deleted_from(db):
     pool, op_store, log_store, settled = db
     await _seed(pool, settled)
-    async with pool.acquire() as conn:
-        now = await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')")
-        await _log(conn, "light", now - timedelta(hours=2), 40, status=500, error="boom")
+    error_day = await _seed_stored_error(pool, settled)
     await user_usage_rollup.backfill_missing(pool)
+    stored = set(await _covered(pool))
+    assert error_day in stored
 
-    assert await log_store.delete_recent_error_requests(hours=24) == 1
-    await user_usage_rollup.invalidate_recent(pool, 24)
+    assert await log_store.delete_recent_error_requests(hours=48) == 1
+    assert set(await _covered(pool)) == stored - {error_day}
     await _assert_matches_oracle(pool, op_store)
-    dropped = {settled - timedelta(days=d) for d in range(1, 41)} - set(await _covered(pool))
-    assert dropped
-    assert min(dropped) >= (now - timedelta(hours=25)).date()
 
+    assert await user_usage_rollup.backfill_missing(pool) == 1
+    await _assert_matches_oracle(pool, op_store)
+
+
+async def test_a_failed_invalidation_rolls_the_clear_back(db, monkeypatch):
+    """The delete and the invalidation commit together or not at all.
+
+    Were they separate, the delete could commit and the invalidation fail: the
+    day would stay marked counted with the deleted request in it, no backfill
+    would count it again, and a second clear would delete nothing and so
+    invalidate nothing.
+    """
+    pool, op_store, log_store, settled = db
+    await _seed(pool, settled)
+    error_day = await _seed_stored_error(pool, settled)
     await user_usage_rollup.backfill_missing(pool)
+
+    async def fail(conn, days):
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(user_usage_rollup, "invalidate_days", fail)
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await log_store.delete_recent_error_requests(hours=48)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM api_logs WHERE error = 'boom'") == 1
+    assert error_day in await _covered(pool)
+    await _assert_matches_oracle(pool, op_store)
+
+    # The admin retries once the cause is gone, and the clear goes through.
+    monkeypatch.undo()
+    assert await log_store.delete_recent_error_requests(hours=48) == 1
+    assert error_day not in await _covered(pool)
     await _assert_matches_oracle(pool, op_store)
 
 

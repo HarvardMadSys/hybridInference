@@ -49,7 +49,7 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
     resolve_request_outcome_filter,
 )
-from serving.storage import account_schema, user_usage_rollup
+from serving.storage import account_schema
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -1742,9 +1742,10 @@ async def admin_clear_error_requests(
     under a different outcome would silently change what this button deletes.
     Defaults to the past hour. The action is recorded in the admin audit log.
 
-    The Request volume cards' stored hours and the Users table's stored days that
-    the delete reached are dropped, to be counted again from what is left, as are
-    the list's cached totals.
+    The Request volume cards' stored hours that the delete reached are dropped,
+    to be counted again from what is left, as are the list's cached totals. The
+    Users table's stored days are dropped by the delete itself, in its
+    transaction.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1771,10 +1772,6 @@ async def admin_clear_error_requests(
             # The rows are gone and the action is audited; failing the request
             # now would only tell the admin the delete did not happen.
             logger.exception("request volume: could not invalidate cleared hours")
-        try:
-            await user_usage_rollup.invalidate_recent(db_logger.pool, hours)
-        except Exception:
-            logger.exception("user usage: could not invalidate cleared days")
 
     return AdminClearErrorRequestsResponse(
         deleted_count=deleted_count,

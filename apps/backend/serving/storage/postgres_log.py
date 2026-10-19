@@ -1166,24 +1166,45 @@ class PostgresLogStore(LogStore):
         The error predicate mirrors the admin Recent Requests ``outcome=errors``
         filter (``admin_list_recent_requests``) so this clears exactly the rows
         that filter surfaces — client disconnects (status 499) included, since
-        that outcome class carries them. Returns the deleted row count parsed
-        from the asyncpg command tag.
+        that outcome class carries them. Returns the deleted row count.
+
+        The days of ``user_usage_daily`` the deleted rows were counted in are
+        dropped in the same transaction (:func:`user_usage_rollup.invalidate_days`):
+        if that fails, the delete rolls back with it and the admin can retry,
+        rather than the stored days keeping the deleted rows for good.
         """
+        import asyncpg as _asyncpg
+
         hours = max(1, hours)
-        async with self.pool.acquire() as conn:
-            status = await conn.execute(
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
                 """
-                DELETE FROM api_logs
-                WHERE timestamp >= NOW() - make_interval(hours => $1::int)
-                  AND (error IS NOT NULL OR status_code IS NULL
-                       OR status_code < 200 OR status_code >= 400)
+                WITH deleted AS (
+                    DELETE FROM api_logs
+                    WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+                      AND (error IS NOT NULL OR status_code IS NULL
+                           OR status_code < 200 OR status_code >= 400)
+                    RETURNING timestamp
+                )
+                SELECT COUNT(*) AS n,
+                       COALESCE(
+                           array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date),
+                           '{}'
+                       ) AS days
+                FROM deleted
                 """,
                 hours,
             )
-        try:
-            return int(status.rsplit(" ", 1)[-1])
-        except (ValueError, IndexError):
-            return 0
+            deleted, days = int(row["n"]), list(row["days"])
+            if deleted:
+                try:
+                    # Savepoint, as in the hard delete: without the table there
+                    # is nothing to invalidate.
+                    async with conn.transaction():
+                        await user_usage_rollup.invalidate_days(conn, days)
+                except _asyncpg.UndefinedTableError:
+                    pass
+        return deleted
 
     # -- admin: hard-delete user-owned rows ---------------------------------
 
