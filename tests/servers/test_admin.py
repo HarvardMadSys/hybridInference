@@ -106,6 +106,7 @@ async def _insert_api_log(
         )
 
 
+@pytest.mark.dbtest
 @pytest.mark.asyncio
 async def test_admin_performance_metrics_distributions(auth_client, require_db):
     """Insert varied api_logs rows and verify the distribution endpoint output.
@@ -257,6 +258,7 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
             await conn.execute("DELETE FROM api_logs WHERE model_id = $1", tag)
 
 
+@pytest.mark.dbtest
 @pytest.mark.asyncio
 async def test_admin_performance_metrics_requires_auth(auth_client):
     resp = await auth_client.get("/admin/performance-metrics")

@@ -55,7 +55,8 @@ must pass too: it runs the `dbtest` tier, in parallel, against one shared local
 PostgreSQL container (Docker) and a database of this worktree's own. Re-runs
 reuse that database; the full tier takes about 15 seconds. Other agents use the
 same container at the same time: never run `make test-db-local-down`, which
-discards every worktree's databases and breaks their runs.
+discards every worktree's databases and breaks their runs. To start your own
+afresh (e.g. after switching to an older branch), use `make test-db-local-reset`.
 
 ## 5. Workflow
 

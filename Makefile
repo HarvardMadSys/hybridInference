@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov test-db \
-	test-db-local test-db-local-clean test-db-local-down docs docs-gettext docs-translate \
+	test-db-local test-db-local-reset test-db-local-clean test-db-local-down docs docs-gettext docs-translate \
 	docs-lang docs-verify setup-dev clean check all \
        docker-volumes up down restart ps logs build smoke \
        demo demo-smoke demo-down demo-reset _require-demo
@@ -60,6 +60,9 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_HOST and TEST_DB_POR
 
 test-db-local:  ## Database tests on a shared local PostgreSQL container (ARGS="tests/..." to narrow)
 	UV_RUN="$(UV_RUN)" ops/dev/test-db-local.sh run $(ARGS)
+
+test-db-local-reset:  ## Drop this worktree's local test databases (recreated on the next run)
+	UV_RUN="$(UV_RUN)" ops/dev/test-db-local.sh reset
 
 test-db-local-clean:  ## Drop local test databases whose worktree no longer exists
 	UV_RUN="$(UV_RUN)" ops/dev/test-db-local.sh clean
