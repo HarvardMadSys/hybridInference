@@ -1115,6 +1115,7 @@ class PostgresLogStore(LogStore):
                         await user_usage_rollup.invalidate_days(conn, days)
                 except _asyncpg.UndefinedTableError:
                     pass
+                # After user usage, as in the hard delete: one lock order.
                 try:
                     async with conn.transaction():
                         await daily_activity_rollup.invalidate_days(conn, days)
@@ -1206,14 +1207,6 @@ class PostgresLogStore(LogStore):
                 """,
                 user_id,
             )
-            # The growth series' stored days list the user and count their
-            # requests: drop the days their rows were on, to be counted again
-            # without them (savepoint: without the table there is nothing to drop).
-            try:
-                async with conn.transaction():
-                    await daily_activity_rollup.invalidate_days(conn, list(purged["days"]))
-            except _asyncpg.UndefinedTableError:
-                pass
             usage_count: int | None
             try:
                 # Savepoint, like the recipients below: without the table there
@@ -1222,6 +1215,16 @@ class PostgresLogStore(LogStore):
                     usage_count = await user_usage_rollup.purge_user(conn, user_id)
             except _asyncpg.UndefinedTableError:
                 usage_count = None
+            # The growth series' stored days list the user and count their
+            # requests: drop the days their rows were on, to be counted again
+            # without them (savepoint: without the table there is nothing to
+            # drop). After user usage, the order Clear errors takes the two
+            # rollups' locks in too: the reverse deadlocks with it.
+            try:
+                async with conn.transaction():
+                    await daily_activity_rollup.invalidate_days(conn, list(purged["days"]))
+            except _asyncpg.UndefinedTableError:
+                pass
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast

@@ -313,6 +313,42 @@ async def test_a_fill_waits_for_a_delete_holding_the_lock(db):
     assert "erased" not in (await _stored(pool))[day]["user_ids"]
 
 
+async def test_clear_errors_and_a_hard_delete_running_together_do_not_deadlock(db, monkeypatch):
+    """Both deletes take the rollups' locks in the same order: user usage first.
+
+    Clear errors is held just after taking the user-usage lock, and a hard
+    delete starts meanwhile. Taking the daily-activity lock first, the hard
+    delete would then wait on user usage while Clear errors waits on it --
+    PostgreSQL's deadlock detector kills one of them after a second.
+    """
+    pool, log_store, settled, today = db
+    await _seed(pool, settled)
+    async with pool.acquire() as conn:
+        await _log(conn, "light", _midnight(settled) - timedelta(hours=1), status=500, error="boom")
+    await daily_activity_rollup.backfill_missing(pool)
+    await user_usage_rollup.backfill_missing(pool)
+
+    holding, release = asyncio.Event(), asyncio.Event()
+    original = user_usage_rollup.invalidate_days
+
+    async def hold_after_user_usage(conn, days):
+        await original(conn, days)
+        holding.set()
+        await release.wait()
+
+    monkeypatch.setattr(user_usage_rollup, "invalidate_days", hold_after_user_usage)
+    clearing = asyncio.create_task(log_store.delete_recent_error_requests(hours=48))
+    await asyncio.wait_for(holding.wait(), 5)
+    deleting = asyncio.create_task(log_store.hard_delete_user_data("erased"))
+    await asyncio.sleep(0.5)  # the hard delete reaches its first rollup lock
+    release.set()
+
+    cleared, counts = await asyncio.gather(clearing, deleting)
+    assert cleared == 1
+    assert counts["api_logs"] == 3
+    await _assert_matches_oracle(pool, today)
+
+
 async def test_the_hourly_job_purges_days_older_than_kept(db):
     pool, _, settled, _ = db
     await _seed(pool, settled)

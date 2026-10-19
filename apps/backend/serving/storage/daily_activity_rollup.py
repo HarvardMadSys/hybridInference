@@ -24,7 +24,9 @@ The user lists name accounts, so whatever deletes ``api_logs`` rows drops the
 stored days those rows were on in the same transaction (:func:`invalidate_days`):
 "Clear errors", and a user's hard delete, after which the days are counted
 again without the user. Every fill and invalidation holds one transaction-scoped
-advisory lock, as in :mod:`serving.storage.user_usage_rollup`.
+advisory lock, as in :mod:`serving.storage.user_usage_rollup`. A transaction
+that takes both rollups' locks takes user usage's first: both deletes do, and
+the reverse order would deadlock against them.
 """
 
 from __future__ import annotations
