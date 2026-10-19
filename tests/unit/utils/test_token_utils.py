@@ -371,7 +371,7 @@ def test_usage_count_logs_what_it_could_not_read(caplog):
     assert caplog.messages == ["Unreadable upstream prompt_tokens 'lots'; billed as 0"]
 
 
-def test_sanitize_usage_fixes_counts_recomputes_total_and_drops_odd_details():
+def test_sanitize_usage_fixes_counts_unreports_a_bad_total_and_drops_odd_details():
     raw = {
         "prompt_tokens": "lots",
         "completion_tokens": 3,
@@ -387,7 +387,8 @@ def test_sanitize_usage_fixes_counts_recomputes_total_and_drops_odd_details():
     assert clean == {
         "prompt_tokens": 0,
         "completion_tokens": 3,
-        "total_tokens": 3,
+        # Not derived: billing reads a reported total as evidence about reasoning.
+        "total_tokens": None,
         "completion_tokens_details": {"reasoning_tokens": 1},
         "cache_read_input_tokens": 0,
         "model_specific": "kept",

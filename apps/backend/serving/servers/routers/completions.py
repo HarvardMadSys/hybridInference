@@ -1033,9 +1033,10 @@ async def chat_completions(
             sanitize_result = sanitize_response(response, serializer_mode)
             response = sanitize_result.response_json
             if isinstance(response.get("usage"), dict):
-                # An unreadable count is billed as 0 (token_utils.usage_count);
-                # the body reports the counts that were billed.
-                response["usage"] = sanitize_usage(response["usage"], complete=True)
+                # An unreadable count is billed as 0 (token_utils.usage_count).
+                # Not completed here: billing and the log read this usage, and
+                # a total made up for the response model would change billing.
+                response["usage"] = sanitize_usage(response["usage"])
             if response_model is not None:
                 response.pop("provider", None)
                 if "model" in response:
@@ -1180,6 +1181,9 @@ async def chat_completions(
 
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            # The client's copy only: the response model requires all three totals.
+            return {**response, "usage": sanitize_usage(response["usage"], complete=True)}
         return response
 
     except ProviderPinError as exc:

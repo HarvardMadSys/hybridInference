@@ -31,6 +31,7 @@ from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
 from serving.servers.routers.completions_cost import CostTracker
+from serving.storage.utils import billable_output_tokens
 from serving.stream import done_sentinel
 
 if TYPE_CHECKING:
@@ -322,6 +323,98 @@ async def test_a_malformed_usage_block_is_billed_as_read_not_failed(monkeypatch,
         billed["prompt_tokens"],
         billed["completion_tokens"],
     )
+
+
+async def _charged(monkeypatch) -> list[dict[str, Any]]:
+    increments: list[dict[str, Any]] = []
+    original = CostTracker.schedule_increment
+
+    async def _record(self, **kwargs):
+        increments.append(kwargs)
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(CostTracker, "schedule_increment", _record)
+    return increments
+
+
+def _stream_with_usage(usage: dict[str, Any]) -> list[Any]:
+    usage_chunk = {
+        "id": "chatcmpl-usage",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": _MODEL,
+        "choices": [],
+        "usage": usage,
+    }
+    return [
+        RecordingAdapter("alpha").format_stream_chunk(model=_MODEL, content="streamed"),
+        f"data: {json.dumps(usage_chunk)}\n\n",
+        done_sentinel(),
+    ]
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": 5, "completion_tokens": 3, "reasoning_tokens": 4},
+        {"prompt_tokens": 5, "completion_tokens": 3, "reasoning_tokens": 4, "total_tokens": "?"},
+    ],
+    ids=["no-total", "unreadable-total"],
+)
+@pytest.mark.parametrize("stream", [False, True])
+async def test_reasoning_is_billed_the_same_without_a_reported_total(monkeypatch, usage, stream):
+    """Without a reported total, reasoning counts on top of completion (3 + 4).
+
+    A total the gateway fills in for the response model must never reach
+    billing: equal to prompt + completion, it reads as "reasoning already
+    included" and would charge 3.
+    """
+    script = _stream_with_usage(usage) if stream else None
+    alpha = RecordingAdapter("alpha", usage=None if stream else usage, stream_script=script)
+    app = _app(monkeypatch, [alpha])
+    increments = await _charged(monkeypatch)
+
+    response = await _post(app, stream=stream)
+
+    assert response.status_code == 200, response.text
+    [charged] = increments
+    assert charged["total_tokens"] is None
+    assert (
+        billable_output_tokens(
+            prompt_tokens=charged["prompt_tokens"],
+            completion_tokens=charged["completion_tokens"],
+            reasoning_tokens=charged["reasoning_tokens"],
+            total_tokens=charged["total_tokens"],
+        )
+        == 7
+    )
+    if not stream:
+        assert response.json()["usage"]["total_tokens"] == 8  # the client's copy, filled in
+
+
+async def test_a_stream_tells_the_client_the_counts_that_were_billed(monkeypatch):
+    alpha = RecordingAdapter(
+        "alpha",
+        stream_script=_stream_with_usage(
+            {"prompt_tokens": "lots", "completion_tokens": "7", "total_tokens": 7}
+        ),
+    )
+    app = _app(monkeypatch, [alpha])
+    increments = await _charged(monkeypatch)
+
+    response = await _post(app, stream=True)
+
+    [usage_event] = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: {") and '"usage"' in line
+    ]
+    assert {k: usage_event["usage"][k] for k in ("prompt_tokens", "completion_tokens")} == {
+        "prompt_tokens": 0,
+        "completion_tokens": 7,
+    }
+    [charged] = increments
+    assert (charged["prompt_tokens"], charged["completion_tokens"]) == (0, 7)
 
 
 async def test_an_unreadable_count_is_logged_for_follow_up(monkeypatch, caplog):

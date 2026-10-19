@@ -65,13 +65,16 @@ def usage_count(value: Any, *, field: str = "token count") -> int:
 def sanitize_usage(usage: dict[str, Any], *, complete: bool = False) -> dict[str, Any]:
     """Return a copy of *usage* whose counts are all readable (see :func:`usage_count`).
 
-    An unreadable ``total_tokens`` is recomputed from the prompt and completion
-    counts rather than zeroed, and a ``*_details`` field that is not an object
-    is dropped: the response model and billing both need them sane.
+    An unreadable ``total_tokens`` becomes None ("not reported"), never a
+    number derived here: billing reads a reported total as evidence of whether
+    completion_tokens already includes reasoning
+    (``serving.storage.utils.billable_output_tokens``), so a made-up total would
+    change what is charged. A ``*_details`` field that is not an object is
+    dropped.
 
-    ``complete=True`` is for a usage block returned to a client, whose model
-    requires all three totals: a missing prompt or completion count becomes 0
-    and a missing total their sum. Billing keeps "not reported" as None.
+    ``complete=True`` is only for the copy of a usage block returned to a
+    client, whose model requires all three totals: a missing prompt or
+    completion count becomes 0 and a missing total their sum. Never bill from it.
     """
     clean = dict(usage)
     if complete:
@@ -85,12 +88,9 @@ def sanitize_usage(usage: dict[str, Any], *, complete: bool = False) -> dict[str
     if total is not None:
         count = _read_count(total)
         if count is None:
-            count = usage_count(clean.get("prompt_tokens")) + usage_count(
-                clean.get("completion_tokens")
-            )
-            logger.warning("Unreadable upstream total_tokens %r; recomputed as %d", total, count)
+            logger.warning("Unreadable upstream total_tokens %r; treated as not reported", total)
         clean["total_tokens"] = count
-    elif complete:
+    if complete and clean.get("total_tokens") is None:
         clean["total_tokens"] = clean["prompt_tokens"] + clean["completion_tokens"]
     for field in [name for name in clean if name.endswith("_details")]:
         if clean[field] is not None and not isinstance(clean[field], dict):
