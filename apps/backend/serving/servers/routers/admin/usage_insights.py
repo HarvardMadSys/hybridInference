@@ -140,7 +140,7 @@ _SAMPLE_POOL = 5_000
 # fits comfortably under this.
 _MAX_OUTPUT_TOKENS = 8192
 
-# Keep the upstream call well under the edge/proxy timeout (Cloudflare ~100s,
+# Keep the upstream call well under the edge/proxy timeout (Cloudflare 125s,
 # some reverse proxies 60s) so a slow model yields a clean JSON 504 from us
 # rather than an edge HTML error page surfaced to the client as "Network error".
 _ANALYSIS_TIMEOUT_SEC = 55

@@ -78,6 +78,27 @@ const nextConfig = {
   // off here and reimplemented in middleware.ts for everything except the
   // proxied path, which has to reach pgAdmin exactly as the browser asked.
   skipTrailingSlashRedirect: true,
+  // How long a rewrite waits for the next byte from the gateway. Next's default
+  // is 30s, and when it runs out before the response has started the browser
+  // gets a bare HTTP 500: every non-streaming API call that takes longer to
+  // answer -- a long completion on /v1/responses or /anthropic, a usage
+  // insights report -- failed here although the gateway was still working on
+  // it. An hour matches the gateway's own cap on streams
+  // (STREAM_REQUEST_TIMEOUT_SECONDS); the gateway ends everything else sooner
+  // (REQUEST_TIMEOUT_SECONDS, 120s by default) with a proper 504, and streams
+  // send a keepalive every 15s, so this is never the limit that fires.
+  //
+  // And how much of a request body Next keeps. With a middleware in the app
+  // (src/middleware.ts matches every path), Next copies each body for it and
+  // keeps only the first 10MB by default -- and the rewrite then forwards that
+  // copy, cut short, under the caller's original Content-Length. The gateway
+  // waits for bytes that never come, so every API call over 10MB (an image or
+  // two in base64) failed after the proxy timeout. 100MB is what Cloudflare
+  // accepts on its standard plans, so the edge stays the only limit.
+  experimental: {
+    proxyTimeout: 60 * 60 * 1000,
+    middlewareClientMaxBodySize: 100 * 1024 * 1024,
+  },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
     // is `afterFiles`, which Next checks *after* filesystem routes. This app's
