@@ -68,7 +68,7 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip, get_client_ip_info
 from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
-from serving.utils.token_utils import normalize_usage
+from serving.utils.token_utils import normalize_usage, sanitize_usage
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1032,6 +1032,10 @@ async def chat_completions(
         if isinstance(response, dict):
             sanitize_result = sanitize_response(response, serializer_mode)
             response = sanitize_result.response_json
+            if isinstance(response.get("usage"), dict):
+                # An unreadable count is billed as 0 (token_utils.usage_count);
+                # the body reports the counts that were billed.
+                response["usage"] = sanitize_usage(response["usage"], complete=True)
             if response_model is not None:
                 response.pop("provider", None)
                 if "model" in response:

@@ -1,6 +1,15 @@
 """Tests for serving.utils.token_utils — cache token extraction."""
 
-from serving.utils.token_utils import extract_cache_tokens, normalize_usage
+import math
+
+import pytest
+
+from serving.utils.token_utils import (
+    extract_cache_tokens,
+    normalize_usage,
+    sanitize_usage,
+    usage_count,
+)
 
 # ---------------------------------------------------------------------------
 # extract_cache_tokens
@@ -322,3 +331,84 @@ class TestNormalizeUsageCacheTokens:
         usage = {"prompt_tokens": 415, "completion_tokens": 64, "total_tokens": 479}
         result = normalize_usage(usage)
         assert "cache_read_tokens" not in result
+
+
+# ---------------------------------------------------------------------------
+# usage_count / sanitize_usage: an unreadable count is billed as 0, not raised
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "count"),
+    [
+        (12, 12),
+        (0, 0),
+        (12.0, 12),
+        ("12", 12),
+        (" 12.0 ", 12),
+        (None, 0),
+        ("lots", 0),
+        ("", 0),
+        (-1, 0),
+        ("-3", 0),
+        (math.nan, 0),
+        (math.inf, 0),
+        ("inf", 0),
+        (True, 0),
+        ([3], 0),
+        ({"n": 3}, 0),
+    ],
+)
+def test_usage_count_reads_only_non_negative_numbers(value, count):
+    assert usage_count(value) == count
+
+
+def test_usage_count_logs_what_it_could_not_read(caplog):
+    with caplog.at_level("WARNING", logger="serving.utils.token_utils"):
+        usage_count("lots", field="prompt_tokens")
+        usage_count(None, field="completion_tokens")  # not reported: silent
+
+    assert caplog.messages == ["Unreadable upstream prompt_tokens 'lots'; billed as 0"]
+
+
+def test_sanitize_usage_fixes_counts_recomputes_total_and_drops_odd_details():
+    raw = {
+        "prompt_tokens": "lots",
+        "completion_tokens": 3,
+        "total_tokens": "?",
+        "prompt_tokens_details": "n/a",
+        "completion_tokens_details": {"reasoning_tokens": 1},
+        "cache_read_input_tokens": -4,
+        "model_specific": "kept",
+    }
+
+    clean = sanitize_usage(raw)
+
+    assert clean == {
+        "prompt_tokens": 0,
+        "completion_tokens": 3,
+        "total_tokens": 3,
+        "completion_tokens_details": {"reasoning_tokens": 1},
+        "cache_read_input_tokens": 0,
+        "model_specific": "kept",
+    }
+    assert raw["prompt_tokens"] == "lots"  # a copy, not in place
+
+
+def test_sanitize_usage_keeps_not_reported_as_none_unless_completing():
+    """Billing distinguishes "not reported" (None); a response body cannot."""
+    usage = {"prompt_tokens": 5, "completion_tokens": None}
+
+    assert sanitize_usage(usage) == usage
+    assert sanitize_usage(usage, complete=True) == {
+        "prompt_tokens": 5,
+        "completion_tokens": 0,
+        "total_tokens": 5,
+    }
+
+
+def test_normalize_usage_hands_billing_readable_counts():
+    normalized = normalize_usage({"prompt_tokens": "lots", "completion_tokens": "7"})
+
+    assert normalized is not None
+    assert (normalized["prompt_tokens"], normalized["completion_tokens"]) == (0, 7)

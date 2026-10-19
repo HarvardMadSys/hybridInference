@@ -7,7 +7,7 @@ Each test is about the gateway's own behaviour, so no provider is contacted:
 - ``X-Route-Pin`` forces a backend for admins only; anyone else's is ignored.
 - Every sampling and tool parameter a caller sets reaches the adapter.
 - A malformed ``usage`` block from an upstream does not fail a request that
-  succeeded.
+  succeeded: an unreadable count is billed as 0 and logged.
 - When the gateway buffers an upstream stream for a non-streaming caller, an
   upstream failure after the first keepalive byte still ends in an error body.
 """
@@ -30,6 +30,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
+from serving.servers.routers.completions_cost import CostTracker
 from serving.stream import done_sentinel
 
 if TYPE_CHECKING:
@@ -262,76 +263,79 @@ async def test_a_parameter_left_unset_is_not_sent_as_null(monkeypatch):
 # --- a malformed usage block -------------------------------------------------
 
 
-_KNOWN_500 = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known defect: the cost tracker int()s the upstream's usage counts "
-        "(completions.py, schedule_increment) and the response model rejects a "
-        "non-object *_details, so the request fails after the upstream answered "
-        "(500, or a stream that ends in an error event instead of [DONE]). Fixing "
-        "it is a billing decision; remove this mark with the fix."
-    ),
-)
-
+# An upstream that answered has been paid for. A count that cannot be read is
+# billed as 0 and logged (serving.utils.token_utils.usage_count); the request
+# succeeds, and the body reports what was billed.
 _MALFORMED_USAGE = [
     pytest.param(
         {"prompt_tokens": "lots", "completion_tokens": 3, "total_tokens": 4},
+        {"prompt_tokens": 0, "completion_tokens": 3, "total_tokens": 4},
         id="text",
-        marks=_KNOWN_500,
     ),
     pytest.param(
         {"prompt_tokens": 5, "completion_tokens": None, "total_tokens": "?"},
+        {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
         id="null-and-text",
-        marks=_KNOWN_500,
     ),
-    pytest.param({"prompt_tokens": -1, "completion_tokens": 2, "total_tokens": 1}, id="negative"),
     pytest.param(
-        {"prompt_tokens": 10**12, "completion_tokens": 1, "total_tokens": 10**12 + 1},
-        id="absurd",
+        {"prompt_tokens": -1, "completion_tokens": 2, "total_tokens": 1},
+        {"prompt_tokens": 0, "completion_tokens": 2, "total_tokens": 1},
+        id="negative",
+    ),
+    pytest.param(
+        {"prompt_tokens": "12", "completion_tokens": 3.0, "total_tokens": "15"},
+        {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+        id="numeric-strings",
     ),
     pytest.param(
         {"prompt_tokens": 5, "completion_tokens": 3, "prompt_tokens_details": "n/a"},
-        id="odd-details",
-        marks=_KNOWN_500,
+        {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        id="odd-details-and-no-total",
     ),
 ]
 
 
-@pytest.mark.parametrize("usage", _MALFORMED_USAGE)
-async def test_a_malformed_usage_block_does_not_fail_a_successful_request(monkeypatch, usage):
-    """The upstream answered; how it counted tokens must not turn that into an error."""
+@pytest.mark.parametrize(("usage", "billed"), _MALFORMED_USAGE)
+async def test_a_malformed_usage_block_is_billed_as_read_not_failed(monkeypatch, usage, billed):
     alpha = RecordingAdapter("alpha", usage=usage)
     app = _app(monkeypatch, [alpha])
+    increments: list[dict[str, Any]] = []
+    original = CostTracker.schedule_increment
+
+    async def _record(self, **kwargs):
+        increments.append(kwargs)
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(CostTracker, "schedule_increment", _record)
 
     response = await _post(app)
 
     assert response.status_code == 200, response.text
-    assert response.json()["choices"][0]["message"]["content"] == "from alpha"
+    body = response.json()
+    assert body["choices"][0]["message"]["content"] == "from alpha"
+    assert {k: body["usage"][k] for k in billed} == billed
+    assert "prompt_tokens_details" not in body["usage"] or isinstance(
+        body["usage"]["prompt_tokens_details"], dict
+    )
+    [charged] = increments
+    assert (charged["prompt_tokens"], charged["completion_tokens"]) == (
+        billed["prompt_tokens"],
+        billed["completion_tokens"],
+    )
 
 
-@pytest.mark.parametrize(
-    "usage",
-    [
-        pytest.param(
-            {"prompt_tokens": "lots", "completion_tokens": 3, "total_tokens": 4},
-            id="text",
-            marks=_KNOWN_500,
-        ),
-        pytest.param(
-            {"prompt_tokens": 5, "completion_tokens": None, "total_tokens": "?"},
-            id="null-and-text",
-            marks=_KNOWN_500,
-        ),
-        pytest.param(
-            {"prompt_tokens": -1, "completion_tokens": 2, "total_tokens": 1}, id="negative"
-        ),
-        pytest.param(
-            {"prompt_tokens": 5, "completion_tokens": 3, "prompt_tokens_details": "n/a"},
-            id="odd-details",
-        ),
-    ],
-)
-async def test_a_malformed_usage_chunk_does_not_break_a_stream(monkeypatch, usage):
+async def test_an_unreadable_count_is_logged_for_follow_up(monkeypatch, caplog):
+    alpha = RecordingAdapter("alpha", usage={"prompt_tokens": "lots", "completion_tokens": 3})
+    app = _app(monkeypatch, [alpha])
+
+    with caplog.at_level("WARNING", logger="serving.utils.token_utils"):
+        assert (await _post(app)).status_code == 200
+
+    assert "Unreadable upstream prompt_tokens 'lots'" in caplog.text
+
+
+@pytest.mark.parametrize(("usage", "_billed"), _MALFORMED_USAGE)
+async def test_a_malformed_usage_chunk_does_not_break_a_stream(monkeypatch, usage, _billed):
     usage_chunk = {
         "id": "chatcmpl-usage",
         "object": "chat.completion.chunk",
