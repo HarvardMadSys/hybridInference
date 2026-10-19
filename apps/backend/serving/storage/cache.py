@@ -285,6 +285,13 @@ class CachedOperationalStore(OperationalStore):
             await self._cache.delete_pattern("auth:*")
             await self._cache.delete_pattern("auth_light:*")
 
+    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+        """Delegate then invalidate the user and every auth entry (status and keys changed)."""
+        await self._store.suspend_user(user_id, **fields)
+        await self._cache.delete(self._user_key(user_id))
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+
     async def update_user_last_login(self, user_id: str) -> None:
         """Delegate then invalidate user cache."""
         await self._store.update_user_last_login(user_id)

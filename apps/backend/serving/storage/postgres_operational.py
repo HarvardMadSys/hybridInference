@@ -1393,6 +1393,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
 
+    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+        """Suspend *user_id* and revoke its keys and sessions atomically."""
+        from .base import USERS_MUTABLE_COLUMNS
+
+        fields = {**fields, "status": "suspended"}
+        invalid = set(fields) - USERS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for users: {invalid}")
+        set_parts = []
+        params: list[Any] = [user_id]
+        for idx, (key, val) in enumerate(fields.items(), start=2):
+            set_parts.append(f"{USERS_MUTABLE_COLUMNS[key]} = ${idx}")
+            params.append(val)
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
+            await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
+            await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE "
+                "WHERE user_id = $1 AND revoked IS NOT TRUE",
+                user_id,
+            )
+
     async def update_user_last_login(self, user_id: str) -> None:
         """Set ``last_login_at`` to the current timestamp."""
         async with self._pool.acquire() as conn:
