@@ -448,6 +448,81 @@ async def test_restart_required_values_keep_their_boot_value(config_env) -> None
 
 
 @pytest.mark.asyncio
+async def test_wecom_webhook_takes_effect_only_after_a_restart(config_env) -> None:
+    """The DB failed-request detector registers once at startup.
+
+    Applying a WeCom URL live would leave it configured in the console while
+    the detector that reads it was never registered.
+    """
+    store = FakeAppConfigStore()
+    await _boot(store)
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+
+    await app_config.update({"WECOM_ALERTS_WEBHOOK_URL": url}, updated_by="admin")
+
+    assert app_config.config_value("WECOM_ALERTS_WEBHOOK_URL", "") == ""
+    assert get_settings().wecom_alerts_webhook_url == ""
+    assert "WECOM_ALERTS_WEBHOOK_URL" in app_config.get_config_health().pending_restart
+
+    await _restart(store)
+
+    assert app_config.config_value("WECOM_ALERTS_WEBHOOK_URL", "") == url
+    assert get_settings().wecom_alerts_webhook_url == url
+    assert app_config.get_config_health().pending_restart == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_key", "new_key", "old_url", "new_url", "old_name", "new_name"),
+    [
+        (
+            "SLACK_ALERTS_WEBHOOK_URL",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            "https://hooks.slack.test/old",
+            "https://qyapi.weixin.test/cgi-bin/webhook/send?key=new",
+            "slack",
+            "wecom",
+        ),
+        (
+            "WECOM_ALERTS_WEBHOOK_URL",
+            "SLACK_ALERTS_WEBHOOK_URL",
+            "https://qyapi.weixin.test/cgi-bin/webhook/send?key=old",
+            "https://hooks.slack.test/new",
+            "wecom",
+            "slack",
+        ),
+    ],
+)
+async def test_switching_alert_channels_waits_for_restart(
+    config_env, old_key, new_key, old_url, new_url, old_name, new_name
+) -> None:
+    """Clearing one channel and setting the other must not leave a gap.
+
+    Both channel settings are restart-required and are judged together, so the
+    runtime keeps the boot channel until the restart that installs the other.
+    """
+    from serving.observability.alerts import configured_sinks
+
+    store = FakeAppConfigStore([row(old_key, old_url)])
+    await _boot(store)
+    assert [sink.name for sink in configured_sinks()] == [old_name]
+
+    # One admin save clears the old channel and installs the new one.
+    await app_config.update({old_key: "", new_key: new_url}, updated_by="admin")
+
+    # Neither side is applied yet: the old channel keeps serving, and there is
+    # no moment with both (mutual-exclusion error) or neither (missed alert).
+    assert [sink.name for sink in configured_sinks()] == [old_name]
+    pending = app_config.get_config_health().pending_restart
+    assert old_key in pending
+    assert new_key in pending
+
+    await _restart(store)
+
+    assert [sink.name for sink in configured_sinks()] == [new_name]
+
+
+@pytest.mark.asyncio
 async def test_an_equivalent_spelling_is_not_pending(config_env, monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_ROUTEWISE", "1")
     get_settings.cache_clear()
@@ -928,6 +1003,27 @@ async def test_a_save_may_not_break_a_rule_an_environment_value_relies_on(
         {"TRUST_PROXY_HEADERS": False, "TRUST_X_REAL_IP": False}, updated_by="admin"
     )
     assert _in_force_trust() == (False, False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_save_may_not_configure_two_alert_channels(config_env) -> None:
+    """Slack and WeCom are alternatives, not a fan-out pair."""
+    store = FakeAppConfigStore()
+    await _boot(store)
+    slack = "https://hooks.slack.test/x"
+    wecom = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+
+    with pytest.raises(app_config.ConfigUpdateError, match="mutually exclusive"):
+        await app_config.update(
+            {"SLACK_ALERTS_WEBHOOK_URL": slack, "WECOM_ALERTS_WEBHOOK_URL": wecom},
+            updated_by="admin",
+        )
+    assert "SLACK_ALERTS_WEBHOOK_URL" not in await store.fetch_all()
+
+    await app_config.update({"SLACK_ALERTS_WEBHOOK_URL": slack}, updated_by="admin")
+    with pytest.raises(app_config.ConfigUpdateError, match="mutually exclusive"):
+        await app_config.update({"WECOM_ALERTS_WEBHOOK_URL": wecom}, updated_by="admin")
+    assert "WECOM_ALERTS_WEBHOOK_URL" not in await store.fetch_all()
 
 
 @pytest.mark.asyncio
@@ -1756,6 +1852,19 @@ def test_unloaded_provider_environment_is_rejected(
     get_settings.cache_clear()
     app_config.use_environment(database_enabled=False)
     with pytest.raises(app_config.ConfigBootstrapError, match=key):
+        app_config.require_valid_environment()
+
+
+def test_startup_refuses_two_alert_channels(config_env, monkeypatch) -> None:
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+    get_settings.cache_clear()
+    app_config.use_environment(database_enabled=False)
+
+    with pytest.raises(app_config.ConfigBootstrapError, match="mutually exclusive"):
         app_config.require_valid_environment()
 
 

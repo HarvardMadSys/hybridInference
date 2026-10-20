@@ -1,6 +1,8 @@
 """Tests for serving.observability.alerts.alert_slack."""
 
 import asyncio
+import datetime as dt
+import json
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -21,13 +23,19 @@ from serving.observability.alerts import (
     _STATE_TRANSITIONS,
     _TRANSITIONS,
     AlertSeverity,
+    AlertSink,
+    SlackSink,
+    WeComSink,
     _base_url,
     _detect_environment,
     _format_message,
     _post_to_slack,
+    _post_to_wecom,
+    _truncate_utf8,
     alert_delivery_failures_total,
     alert_on_transition,
     alert_slack,
+    configured_sinks,
     reset_dedupe_state,
     reset_transition_state,
     server_info,
@@ -39,6 +47,14 @@ from serving.utils.secret_urls import redact_url, scrub, url_fingerprint
 
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
+    # Never inherit a webhook from the developer's shell: a Slack-only test
+    # would otherwise fan out to a real WeCom endpoint.
+    for variable in (
+        "SLACK_ALERTS_WEBHOOK_URL",
+        "SLACK_WEBHOOK_URL",
+        "WECOM_ALERTS_WEBHOOK_URL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
     reset_dedupe_state()
     yield
     reset_dedupe_state()
@@ -211,14 +227,17 @@ def test_format_message_marks_a_resolution_as_recovery():
     severity emoji would read in Slack as a second outage.
     """
     title = "Provider circuit opened"
-    firing = _format_message(AlertSeverity.ERROR, title, {}, "firing")
-    resolved = _format_message(AlertSeverity.ERROR, title, {}, "resolved")
+    # Freeze the clock so the two renders cannot straddle a second boundary.
+    with patch("serving.observability.alerts.dt.datetime", _FixedDatetime):
+        firing = _format_message(AlertSeverity.ERROR, title, {}, "firing")
+        resolved = _format_message(AlertSeverity.ERROR, title, {}, "resolved")
+        default = _format_message(AlertSeverity.ERROR, title, {})
 
     assert firing.startswith(f"{_EMOJI[AlertSeverity.ERROR]} *{title}*")
     assert resolved.startswith(f"✅ *Recovered:* {title}")
     assert _EMOJI[AlertSeverity.ERROR] not in resolved
     # Defaulting to "firing" keeps every existing caller rendering as before.
-    assert _format_message(AlertSeverity.ERROR, title, {}) == firing
+    assert default == firing
 
 
 class TestResolutionIsNeverSuppressed:
@@ -2017,3 +2036,437 @@ class TestTheRedactedFormNamesTheSinkOnly:
         scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", self.WEBHOOK)
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
+
+
+# --- Slack and WeCom sink selection -----------------------------------------
+
+
+_SERVER_INFO = {
+    "hostname": "gw-1",
+    "fqdn": "gw-1.example.test",
+    "ip": "10.0.0.1",
+    "platform": "Linux-test",
+    "base_url": "https://api.example.test",
+    "environment": "staging",
+}
+
+_FIXED_NOW = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.timezone.utc)
+
+
+class _FixedDatetime(dt.datetime):
+    """``dt.datetime`` whose ``now()`` is frozen for a snapshot assertion."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _FIXED_NOW
+
+
+_EXPECTED_SLACK = "\n".join(
+    [
+        "❌ *Provider circuit opened*",
+        "_2026-10-20 12:00:00 UTC · staging_",
+        "",
+        "• *Provider:* zhipu",
+        "",
+        "*Server*",
+        "• *Host:* gw-1 (10.0.0.1)",
+        "• *FQDN:* gw-1.example.test",
+        "• *Platform:* Linux-test",
+        "• *Base URL:* https://api.example.test",
+    ]
+)
+
+_EXPECTED_WECOM = "\n".join(
+    [
+        "❌ **Provider circuit opened**",
+        "2026-10-20 12:00:00 UTC · staging",
+        "",
+        "• **Provider:** zhipu",
+        "",
+        "**Server**",
+        "• **Host:** gw-1 (10.0.0.1)",
+        "• **FQDN:** gw-1.example.test",
+        "• **Platform:** Linux-test",
+        "• **Base URL:** https://api.example.test",
+    ]
+)
+
+
+def _clear_alert_webhooks(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", "")
+
+
+def test_configured_sinks_empty_when_no_webhook(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    assert configured_sinks() == []
+
+
+def test_configured_sinks_slack_only(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+
+    sinks = configured_sinks()
+
+    assert len(sinks) == 1
+    assert isinstance(sinks[0], SlackSink)
+    assert sinks[0].webhook_url == "https://hooks.slack.test/x"
+    assert sinks[0].name == "slack"
+
+
+def test_configured_sinks_wecom_only(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+
+    sinks = configured_sinks()
+
+    assert len(sinks) == 1
+    assert isinstance(sinks[0], WeComSink)
+    assert sinks[0].name == "wecom"
+
+
+def test_configured_sinks_rejects_both_channels(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        configured_sinks()
+
+
+def test_both_sink_types_implement_the_alert_sink_interface():
+    assert isinstance(SlackSink("https://hooks.slack.test/x"), AlertSink)
+    assert isinstance(
+        WeComSink("https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"),
+        AlertSink,
+    )
+
+
+def test_configured_sinks_keeps_legacy_slack_fallback(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.test/legacy")
+
+    sinks = configured_sinks()
+
+    assert len(sinks) == 1
+    assert sinks[0].webhook_url == "https://hooks.slack.test/legacy"
+
+
+async def test_slack_only_message_and_request_body_are_byte_identical(monkeypatch):
+    """A deployment that only ever configured Slack sees no change at all."""
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200)
+
+    with (
+        patch(
+            "serving.observability.alerts.httpx.AsyncClient",
+            _real_client_over(handler),
+        ),
+        patch("serving.observability.alerts.server_info", return_value=_SERVER_INFO),
+        patch("serving.observability.alerts.dt.datetime", _FixedDatetime),
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            {"provider": "zhipu"},
+            dedupe_key="circuit_open:zhipu",
+        )
+
+    assert sent is True
+    assert bodies == [{"text": _EXPECTED_SLACK}]
+
+
+async def test_wecom_only_sends_without_touching_slack(monkeypatch):
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, json={"errcode": 0})
+
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(handler),
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            {"provider": "zhipu"},
+            dedupe_key="K",
+        )
+
+    assert sent is True
+    assert hosts == ["qyapi.weixin.test"]
+
+
+def test_wecom_render_uses_bold_without_italics(monkeypatch):
+    with (
+        patch("serving.observability.alerts.server_info", return_value=_SERVER_INFO),
+        patch("serving.observability.alerts.dt.datetime", _FixedDatetime),
+    ):
+        message = WeComSink("https://qyapi.weixin.test/cgi-bin/webhook/send?key=x").render(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            {"provider": "zhipu"},
+        )
+
+    assert message == _EXPECTED_WECOM
+    assert "_2026-" not in message
+
+
+def test_wecom_render_neutralises_mentions_and_links():
+    message = WeComSink("https://qyapi.weixin.test/cgi-bin/webhook/send?key=x").render(
+        AlertSeverity.WARN,
+        "Ping <@userid>",
+        {
+            "who": "<@userid>",
+            "request_id": "[login](https://example.invalid)",
+        },
+    )
+
+    assert "<@userid>" not in message
+    assert "\uff1c@userid\uff1e" in message
+    # The Markdown link cannot form: both square brackets are full-width.
+    assert "[login](https://example.invalid)" not in message
+    assert "\uff3blogin\uff3d(https://example.invalid)" in message
+
+
+async def test_wecom_neutralises_a_link_in_the_ambient_request_id(monkeypatch):
+    """``X-Request-ID`` is client-supplied and reaches the alert context verbatim."""
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+    captured = {}
+
+    def handler(request):
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"errcode": 0})
+
+    with (
+        patch(
+            "serving.observability.alerts.httpx.AsyncClient",
+            _real_client_over(handler),
+        ),
+        req_ctx.push(request_id="[login](https://example.invalid)"),
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            {"provider": "zhipu"},
+            dedupe_key="K",
+        )
+
+    content = captured["json"]["markdown"]["content"]
+    assert sent is True
+    assert "[login](https://example.invalid)" not in content
+    assert "\uff3blogin\uff3d(https://example.invalid)" in content
+
+
+async def test_wecom_posts_markdown_and_accepts_errcode_zero():
+    captured = {}
+
+    def handler(request):
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(handler),
+    ):
+        sent = await _post_to_wecom(url, "hello", dedupe_key="K")
+
+    assert sent is True
+    assert captured["json"] == {"msgtype": "markdown", "markdown": {"content": "hello"}}
+    assert alert_delivery_failures_total() == {}
+
+
+@pytest.mark.parametrize(
+    ("body", "failure_key"),
+    [
+        ({"errcode": 40001, "errmsg": "invalid webhook url"}, "errcode:40001"),
+        ({"errcode": "0"}, "invalid-errcode"),
+        ({"errcode": True}, "invalid-errcode"),
+        ({}, "invalid-errcode"),
+    ],
+)
+async def test_wecom_rejects_anything_but_an_integer_zero_errcode(body, failure_key):
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(lambda _request: httpx.Response(200, json=body)),
+    ):
+        sent = await _post_to_wecom(url, "body", dedupe_key="K")
+
+    assert sent is False
+    assert alert_delivery_failures_total() == {failure_key: 1}
+
+
+async def test_wecom_non_2xx_is_a_failure_and_counted():
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(lambda _request: httpx.Response(502, json={"errcode": 0})),
+    ):
+        sent = await _post_to_wecom(url, "body", dedupe_key="K")
+
+    assert sent is False
+    assert alert_delivery_failures_total() == {"502": 1}
+
+
+async def test_wecom_non_json_response_is_a_failure_and_counted():
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(lambda _request: httpx.Response(200, text="not json")),
+    ):
+        sent = await _post_to_wecom(url, "body", dedupe_key="K")
+
+    assert sent is False
+    assert alert_delivery_failures_total() == {"invalid-response": 1}
+
+
+async def test_wecom_timeout_is_a_failure_and_counted():
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+
+    def handler(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(handler),
+    ):
+        sent = await _post_to_wecom(url, "body", dedupe_key="K")
+
+    assert sent is False
+    assert alert_delivery_failures_total() == {"exception": 1}
+
+
+def test_wecom_truncation_cuts_on_a_utf8_boundary():
+    truncated = _truncate_utf8("中" * 2000)
+
+    assert truncated.endswith("…")
+    assert len(truncated.encode("utf-8")) <= 4096
+    assert truncated == "中" * 1364 + "…"
+
+
+async def test_wecom_payload_content_is_truncated():
+    captured = {}
+
+    def handler(request):
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"errcode": 0})
+
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
+    with patch(
+        "serving.observability.alerts.httpx.AsyncClient",
+        _real_client_over(handler),
+    ):
+        sent = await _post_to_wecom(url, "a" * 5000, dedupe_key="K")
+
+    content = captured["json"]["markdown"]["content"]
+    assert sent is True
+    assert content == "a" * 4093 + "…"
+    assert len(content.encode("utf-8")) <= 4096
+
+
+async def test_alert_slack_refuses_to_send_when_both_channels_are_configured(monkeypatch, caplog):
+    """Configuration validation rejects this, and the sender must not fan out."""
+    _clear_alert_webhooks(monkeypatch)
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+    monkeypatch.setenv(
+        "WECOM_ALERTS_WEBHOOK_URL",
+        "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+    )
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, json={"errcode": 0})
+
+    with (
+        patch(
+            "serving.observability.alerts.httpx.AsyncClient",
+            _real_client_over(handler),
+        ),
+        caplog.at_level(logging.ERROR, logger="serving.observability.alerts"),
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            {"provider": "zhipu"},
+            dedupe_key="K",
+        )
+
+    assert sent is False
+    assert hosts == []
+    assert alert_delivery_failures_total() == {}
+    assert "mutually exclusive" in caplog.text
+
+
+async def test_wecom_key_is_scrubbed_from_logs_and_exceptions(caplog):
+    url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=sUpErSeCrEt"
+    key = "sUpErSeCrEt"
+
+    def handler(request):
+        raise RuntimeError(f"could not reach {request.url}")
+
+    with (
+        patch(
+            "serving.observability.alerts.httpx.AsyncClient",
+            _real_client_over(handler),
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        sent = await _post_to_wecom(url, "body", dedupe_key="K")
+
+    assert sent is False
+    assert key not in caplog.text
+    assert "key=" not in caplog.text
+    assert url_fingerprint(url) in caplog.text
+    assert alert_delivery_failures_total() == {"exception": 1}
+
+
+class TestTheQueryStringIsRedacted:
+    """WeCom keeps its credential in the query, not the path."""
+
+    WEBHOOK = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=nOtArEaLtOkEn"
+
+    def test_a_target_with_the_query_is_scrubbed(self):
+        scrubbed = scrub("POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed", self.WEBHOOK)
+
+        assert "nOtArEaLtOkEn" not in scrubbed
+        assert "key=" not in scrubbed
+        assert url_fingerprint(self.WEBHOOK) in scrubbed
+
+    def test_a_bare_query_mention_is_scrubbed(self):
+        scrubbed = scrub("key=nOtArEaLtOkEn was rejected", self.WEBHOOK)
+
+        assert "nOtArEaLtOkEn" not in scrubbed
+        assert url_fingerprint(self.WEBHOOK) in scrubbed
+
+    def test_a_slack_webhook_without_a_query_is_unaffected(self):
+        slack = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
+
+        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", slack)
+
+        assert "nOtArEaLtOkEn" not in scrubbed
+        assert url_fingerprint(slack) in scrubbed

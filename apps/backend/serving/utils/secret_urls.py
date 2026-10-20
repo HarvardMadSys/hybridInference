@@ -2,8 +2,9 @@
 
 Some outbound URLs *are* the credential. A Slack incoming webhook's
 ``T…/B…/…`` path is the entire secret — there is no separate token, and whoever
-holds the URL can post to the channel. ``httpx`` logs the full request URL at
-INFO for every call it makes::
+holds the URL can post to the channel. A WeCom group-bot webhook carries its
+credential in ``?key=…`` instead. ``httpx`` logs the full request URL at INFO
+for every call it makes::
 
     httpx - INFO - HTTP Request: POST https://hooks.slack.com/services/<secret>
     "HTTP/1.1 404 Not Found"
@@ -26,7 +27,7 @@ every *other* outbound call the gateway makes, and a blanket
 ``getLogger("httpx").setLevel(WARNING)`` would silently remove diagnostics far
 from the one sink being fixed.
 
-Used by the two Slack senders (``serving.observability.alerts`` and
+Used by the alert senders (``serving.observability.alerts`` and
 ``serving.admin.failed_request_alerter``) and deliberately nothing else.
 """
 
@@ -80,15 +81,28 @@ def redact_url(url: str) -> str:
 
 
 def scrub(text: str, url: str) -> str:
-    """Replace every occurrence of ``url`` — or of its secret path — in ``text``."""
+    """Replace every occurrence of ``url``, or of its secret parts, in ``text``.
+
+    The path and query string are replaced separately as well as together,
+    because a transport error may quote only the request target. That matters
+    for WeCom, whose credential travels in ``?key=…`` rather than in the path.
+    The replacement still names the sink by fingerprint, never by secret.
+    """
     if not text or not url:
         return text
+    fingerprint = url_fingerprint(url)
     out = text.replace(url, redact_url(url))
-    path = urlsplit(url).path
-    if len(path) > 1:
+    parts = urlsplit(url)
+    if len(parts.path) > 1:
         # Some transport errors are worded in terms of the request *target*
         # alone, which is the secret with the host taken off the front.
-        out = out.replace(path, f"/#{url_fingerprint(url)}")
+        out = out.replace(parts.path, f"/#{fingerprint}")
+    if parts.query:
+        # The path replacement leaves the query behind when only the target is
+        # quoted. Replace the query with the same fingerprint, both in the
+        # ``?query`` form a request line uses and on its own.
+        out = out.replace(f"?{parts.query}", f"?#{fingerprint}")
+        out = out.replace(parts.query, f"#{fingerprint}")
     return out
 
 

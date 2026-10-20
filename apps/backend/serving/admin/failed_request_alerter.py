@@ -1,15 +1,15 @@
-"""Periodic Slack alerter for spikes in service-side request failures.
+"""Periodic alerter for spikes in service-side request failures.
 
 Counts rows in ``api_logs`` where ``status_code >= 500`` or ``error IS NOT NULL``
-over a sliding window and posts to a Slack incoming webhook when the count
-exceeds a configured threshold. A cooldown prevents duplicate alerts during
-sustained incidents. Empty ``SLACK_WEBHOOK_URL`` disables the feature entirely.
+over a sliding window and raises an alert when the count exceeds a configured
+threshold. A cooldown prevents duplicate alerts during sustained incidents.
+With both ``SLACK_WEBHOOK_URL`` and ``WECOM_ALERTS_WEBHOOK_URL`` empty, the
+feature is disabled entirely.
 
-Slack delivery now goes through :func:`serving.observability.alerts.alert_slack`,
-the unified sink for the new alerting framework. The legacy
+Delivery goes through :func:`serving.observability.alerts.alert_slack`, which
+sends to the one configured channel. The legacy
 :func:`post_slack_alert` helper is kept as a thin wrapper for backward
-compatibility (existing call-sites and tests) and delegates to the framework's
-``_post_to_slack``.
+compatibility (existing call-sites and tests) and posts to Slack directly.
 """
 
 from __future__ import annotations
@@ -250,7 +250,6 @@ class FailedRequestAlerter:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        webhook_url: str,
         threshold: int,
         window_minutes: int,
         cooldown_minutes: int,
@@ -262,7 +261,6 @@ class FailedRequestAlerter:
 
         Args:
             pool: asyncpg pool used to query ``api_logs``.
-            webhook_url: Slack incoming-webhook URL.
             threshold: Strict greater-than threshold; ``count > threshold`` fires.
             window_minutes: Sliding-window size for the failure count.
             cooldown_minutes: Minimum interval between alerts.
@@ -274,7 +272,6 @@ class FailedRequestAlerter:
                 a quiet window (1 failure out of 3 requests) does not page.
         """
         self.pool = pool
-        self.webhook_url = webhook_url
         self.threshold = threshold
         self.window_minutes = window_minutes
         self.cooldown_minutes = cooldown_minutes
@@ -367,16 +364,20 @@ class FailedRequestAlerter:
 def register_alerter_job(pool: asyncpg.Pool, settings: Settings) -> None:
     """Register the failure-rate alerter on the running APScheduler.
 
-    Empty ``settings.slack_webhook_url`` disables the feature: no job is
-    registered and no error is raised. When the scheduler has not been
-    started (rare; e.g. DB init failed earlier), the function logs a
-    warning and returns without crashing.
+    With neither ``settings.slack_webhook_url`` nor
+    ``settings.wecom_alerts_webhook_url`` set, the feature is disabled: no job
+    is registered and no error is raised. ``SLACK_ALERTS_WEBHOOK_URL`` alone
+    does not register it, preserving the existing detector's enablement rule.
+    When the scheduler has not been started (rare; e.g. DB init failed earlier),
+    the function logs a warning and returns without crashing.
     """
     from apscheduler.triggers.interval import IntervalTrigger
 
-    webhook_url = settings.slack_webhook_url.strip()
-    if not webhook_url:
-        logger.info("Slack alerter disabled (SLACK_WEBHOOK_URL not set)")
+    if not (settings.slack_webhook_url.strip() or settings.wecom_alerts_webhook_url.strip()):
+        logger.info(
+            "Failed-request alerter disabled (SLACK_WEBHOOK_URL and "
+            "WECOM_ALERTS_WEBHOOK_URL not set)"
+        )
         return
 
     scheduler = get_scheduler()
@@ -386,7 +387,6 @@ def register_alerter_job(pool: asyncpg.Pool, settings: Settings) -> None:
 
     alerter = FailedRequestAlerter(
         pool=pool,
-        webhook_url=webhook_url,
         threshold=settings.failed_request_alert_threshold,
         window_minutes=settings.failed_request_alert_window_minutes,
         cooldown_minutes=settings.failed_request_alert_cooldown_minutes,
