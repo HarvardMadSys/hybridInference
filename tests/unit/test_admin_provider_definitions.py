@@ -757,6 +757,230 @@ async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openro
     assert providers["openrouter"].default_base_url
 
 
+_SELF_HOSTED_DEEPSEEK = """
+models:
+  - id: deepseek-v4.1-flash
+    provider: deepseek
+    route:
+      - kind: deepseek
+        provider: deepseek
+        provider_display_name: DeepSeek
+        route_metadata:
+          key_provider: gpu_cluster
+          route_provider: gpu_cluster
+          upstream_provider: gpu_cluster
+        base_url: http://gpu-cluster.internal:8000/v1
+"""
+
+
+def _write_models_config(tmp_path, monkeypatch, text: str) -> None:
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+
+@pytest.mark.asyncio
+async def test_a_route_that_declares_its_upstream_lists_only_that_upstream(tmp_path, monkeypatch):
+    """A DeepSeek model served by a self-hosted endpoint is one provider, not two.
+
+    The model and its route both say ``deepseek`` (the public identity) while
+    ``route_metadata`` names the endpoint's real owner. Listing ``deepseek``
+    too showed an undeletable row with no keys and the public DeepSeek URL.
+    """
+    _write_models_config(tmp_path, monkeypatch, _SELF_HOSTED_DEEPSEEK)
+
+    specs = _configured_provider_specs()
+    assert provider_definitions._registry_provider_names(specs) == {"gpu_cluster"}
+    assert "deepseek" in provider_definitions._config_managed_provider_names(specs)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            (
+                "deepseek-v4.1-flash",
+                "deepseek",
+                {"key_provider": "gpu_cluster", "upstream_provider": "gpu_cluster"},
+                None,
+            ),
+        ),
+    )
+
+    providers = {row.provider: row for row in response.providers}
+    assert set(providers) == {"gpu_cluster"}
+    assert providers["gpu_cluster"].models_count == 1
+    assert providers["gpu_cluster"].default_base_url == "http://gpu-cluster.internal:8000/v1"
+
+
+@pytest.mark.asyncio
+async def test_a_declared_upstream_is_listed_when_its_route_is_not_loaded(tmp_path, monkeypatch):
+    """Embedding models and routes skipped for a missing credential are not in
+    the chat route table, so the row cannot wait for the runtime to supply it."""
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: local-embedding
+    type: embedding
+    provider: openai_compat
+    route:
+      - kind: openai_compat
+        base_url: http://embedding.internal:8000/v1
+        route_metadata:
+          key_provider: embedding_pool
+          upstream_provider: embedding_pool
+""",
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_empty_services(),
+    )
+
+    assert [
+        (row.provider, row.models_count, row.default_base_url) for row in response.providers
+    ] == [("embedding_pool", 1, "http://embedding.internal:8000/v1")]
+
+
+@pytest.mark.asyncio
+async def test_a_declared_upstream_does_not_shadow_a_custom_provider(tmp_path, monkeypatch):
+    """A route may name a custom provider's key pool as its upstream; that
+    provider must stay custom, editable, and kept at boot."""
+    _write_models_config(tmp_path, monkeypatch, _SELF_HOSTED_DEEPSEEK)
+    monkeypatch.setattr(
+        provider_definitions.provider_registry, "register_provider_definition", lambda _row: None
+    )
+    store = FakeProviderDefinitionStore(
+        {
+            "gpu_cluster": ProviderDefinitionRow(
+                provider="gpu_cluster",
+                display_name="GPU cluster",
+                adapter_kind="openai_compat",
+                default_base_url="http://gpu-cluster.internal:8000/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+
+    specs = _configured_provider_specs()
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin", op_store=store, services=_empty_services()
+    )
+
+    assert [(row.provider, row.source) for row in response.providers] == [("gpu_cluster", "custom")]
+    assert not provider_definitions._is_config_managed_provider("gpu_cluster", specs)
+    assert "gpu_cluster" not in provider_definitions.config_route_provider_labels(specs)
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_openrouter_route_stays_openrouter_whatever_its_metadata_names(
+    tmp_path, monkeypatch
+):
+    """The runtime credits a pinned route to OpenRouter before reading its
+    metadata. `fireworks` is not a preset target, so no slug mapping hides a
+    miss."""
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: pinned-chat
+    provider: openrouter
+    route:
+      - kind: openrouter[fireworks]
+        base_url: https://openrouter.ai/api/v1
+        route_metadata:
+          upstream_provider: fireworks
+""",
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            ("pinned-chat", "openrouter", {"upstream_provider": "fireworks"}, "fireworks"),
+        ),
+    )
+
+    assert [(row.provider, row.models_count) for row in response.providers] == [("openrouter", 1)]
+
+
+def test_a_model_level_provider_is_not_a_registry_row(tmp_path, monkeypatch):
+    """`provider:` on the model names its brand; the routes name who serves it.
+
+    A Kimi model served through the coding endpoint and Ollama never calls the
+    Moonshot API, so a `kimi` row would point at a URL no route uses.
+    """
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: kimi-code
+    provider: kimi
+    route:
+      - kind: kimi_coding
+        base_url: https://api.kimi.com/coding/v1
+      - kind: ollama
+        base_url: https://ollama.com/v1
+  - id: glm-test
+    provider: zai
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert provider_definitions._registry_provider_names(specs) == {"kimi_coding", "ollama", "zai"}
+    assert specs["zai"].model_ids == frozenset(["glm-test"])
+    assert "kimi" in provider_definitions._config_managed_provider_names(specs)
+
+
+def test_a_route_base_url_wins_over_the_model_provider_default(tmp_path, monkeypatch):
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        base_url: http://vllm-box.internal:8002/v1
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert specs["vllm"].listed
+    assert specs["vllm"].default_base_url == "http://vllm-box.internal:8002/v1"
+    assert specs["vllm"].model_ids == frozenset(["qwen-local"])
+
+
+def test_a_route_without_a_base_url_inherits_the_model_base_url(tmp_path, monkeypatch):
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: private-deepseek
+    provider: deepseek
+    base_url: http://private-model.internal:8000/v1
+    route:
+      - kind: deepseek
+        api_key: ${UNSET_PRIVATE_DEEPSEEK_KEY}
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert specs["deepseek"].default_base_url == "http://private-model.internal:8000/v1"
+
+
 @pytest.mark.asyncio
 async def test_create_provider_definition_rejects_key_provider_aliases(monkeypatch):
     """A slug the key registry folds into another provider cannot be custom.

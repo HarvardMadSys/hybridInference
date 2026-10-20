@@ -311,6 +311,12 @@ it. Custom providers are `openai_compat` only; a protocol the generic adapter
 cannot speak needs an adapter, which is a code change
 ([Writing a Provider Adapter](provider-adapters.md)).
 
+Each row is a provider that at least one route goes through. A slug the model
+registry only mentions is reserved the same way but gets no row of its own: a
+model's own `provider:`, which names who makes the model while its routes say
+who serves it, and the `kind:` of a route whose `route_metadata` names a
+different `key_provider`, a route listed under that `key_provider` instead.
+
 A key added here joins the same pool as the keys the registry names through
 `${VAR}` and rotates with them. A key the registry names — an *environment
 key* on this tab, whose value comes from the
