@@ -70,6 +70,12 @@ class ConfigProviderSpec:
     # True when this slug comes from a route-level ``provider:`` label rather
     # than from a provider the gateway knows how to build on its own.
     from_route_label: bool = False
+    # False when config only names the slug without routing through it: a
+    # model-level ``provider:`` (the model's brand) or the kind of a route whose
+    # ``route_metadata`` declares a different upstream. The slug stays reserved
+    # but gets no registry row, which would otherwise show an undeletable
+    # provider with no keys and a default base URL nothing calls.
+    listed: bool = True
 
 
 def _validate_provider_slug(provider: str) -> str:
@@ -177,7 +183,7 @@ def _registry_provider_names(
 ) -> set[str]:
     """Return config-declared provider slugs that belong in the registry."""
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(specs)
+    return {provider for provider, spec in specs.items() if spec.listed}
 
 
 def _is_config_managed_provider(
@@ -204,6 +210,7 @@ def _merge_config_provider_spec(
     model_id: str | None,
     display_name: str = "",
     from_route_label: bool = False,
+    listed: bool = True,
 ) -> None:
     if not provider:
         return
@@ -215,11 +222,29 @@ def _merge_config_provider_spec(
             provider=provider,
             adapter_kind=adapter_kind,
             default_base_url=default_base_url,
-            model_ids=model_ids,
+            model_ids=model_ids if listed else frozenset(),
             display_name=display_name,
             from_route_label=from_route_label,
+            listed=listed,
         )
         return
+    if listed and not current.listed:
+        # The first route that actually goes through this slug owns its row; an
+        # earlier mention contributed no endpoint, models, or name worth keeping.
+        merged_base_url = default_base_url or current.default_base_url
+        current = ConfigProviderSpec(
+            provider=provider,
+            adapter_kind=current.adapter_kind,
+            default_base_url=merged_base_url,
+            model_ids=frozenset(),
+            from_route_label=current.from_route_label,
+            listed=True,
+        )
+        specs[provider] = current
+    if not listed:
+        default_base_url = ""
+        model_ids = frozenset()
+        display_name = ""
     merged_adapter_kind = current.adapter_kind
     if current.adapter_kind == provider and adapter_kind != provider:
         merged_adapter_kind = adapter_kind
@@ -242,6 +267,7 @@ def _merge_config_provider_spec(
             model_ids=merged_model_ids,
             display_name=merged_display_name,
             from_route_label=merged_from_route_label,
+            listed=current.listed,
         )
 
 
@@ -265,12 +291,15 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
             dynamic_keys.normalize_key_provider(raw_model_provider) if raw_model_provider else None
         )
         if model_provider:
+            # The routes below decide which providers serve this model; a model
+            # without `route:` gets a synthesized one of this kind.
             _merge_config_provider_spec(
                 specs,
                 provider=model_provider,
                 adapter_kind=model_provider,
-                default_base_url=_expand_config_string(model.get("base_url")),
+                default_base_url="",
                 model_id=model_id,
+                listed=False,
             )
 
         routes = model.get("route") or [
@@ -292,8 +321,13 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
             # kind stay separate providers in analytics. The label owns the
             # registry slug; the adapter kind still comes from `kind:`.
             route_label = str(route.get("provider") or "").strip()
+            is_relabelled = bool(route_label) and route_label != provider
             if route_label:
                 provider = route_label
+            # Without a label of its own, a route whose metadata names its
+            # upstream belongs to that upstream, as it does at runtime; the
+            # live route table supplies that provider's row.
+            declared_owner = _declared_route_owner(route)
             _merge_config_provider_spec(
                 specs,
                 provider=provider,
@@ -302,8 +336,20 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
                 model_id=model_id,
                 display_name=str(route.get("provider_display_name") or "").strip(),
                 from_route_label=bool(route_label) and route_label != adapter_kind,
+                listed=is_relabelled or declared_owner in (None, provider),
             )
     return specs
+
+
+def _declared_route_owner(route: dict[str, Any]) -> str | None:
+    metadata = route.get("route_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("key_provider", "upstream_provider"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return _credential_owner(value.strip())
+    return None
 
 
 def _strip_chat_completions(base_url: str) -> None:

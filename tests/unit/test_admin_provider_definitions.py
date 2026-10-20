@@ -758,6 +758,137 @@ async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openro
 
 
 @pytest.mark.asyncio
+async def test_a_route_that_declares_its_upstream_lists_only_that_upstream(tmp_path, monkeypatch):
+    """A DeepSeek model served by a self-hosted endpoint is one provider, not two.
+
+    The model and its route both say ``deepseek`` (the public identity) while
+    ``route_metadata`` names the endpoint's real owner. Listing ``deepseek``
+    too showed an undeletable row with no keys and the public DeepSeek URL.
+    """
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: deepseek-v4.1-flash
+    provider: deepseek
+    route:
+      - kind: deepseek
+        provider: deepseek
+        provider_display_name: DeepSeek
+        route_metadata:
+          key_provider: gpu_cluster
+          route_provider: gpu_cluster
+          upstream_provider: gpu_cluster
+        base_url: http://gpu-cluster.internal:8000/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    specs = _configured_provider_specs()
+    assert provider_definitions._registry_provider_names(specs) == set()
+    assert "deepseek" in provider_definitions._config_managed_provider_names(specs)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            (
+                "deepseek-v4.1-flash",
+                "deepseek",
+                {"key_provider": "gpu_cluster", "upstream_provider": "gpu_cluster"},
+                None,
+            ),
+        ),
+    )
+
+    providers = {row.provider: row for row in response.providers}
+    assert set(providers) == {"gpu_cluster"}
+    assert providers["gpu_cluster"].models_count == 1
+
+
+def test_a_model_level_provider_is_not_a_registry_row(tmp_path, monkeypatch):
+    """`provider:` on the model names its brand; the routes name who serves it.
+
+    A Kimi model served through the coding endpoint and Ollama never calls the
+    Moonshot API, so a `kimi` row would point at a URL no route uses.
+    """
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: kimi-code
+    provider: kimi
+    route:
+      - kind: kimi_coding
+        base_url: https://api.kimi.com/coding/v1
+      - kind: ollama
+        base_url: https://ollama.com/v1
+  - id: glm-test
+    provider: zai
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    specs = _configured_provider_specs()
+
+    assert provider_definitions._registry_provider_names(specs) == {"kimi_coding", "ollama", "zai"}
+    assert specs["zai"].model_ids == frozenset(["glm-test"])
+    assert "kimi" in provider_definitions._config_managed_provider_names(specs)
+
+
+def test_a_model_whose_routes_are_all_relabelled_lists_only_the_labels(tmp_path, monkeypatch):
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: quota-demo
+    provider: openai_compat
+    route:
+      - kind: openai_compat
+        provider: example_fallback
+        base_url: http://127.0.0.1:18352/v1
+      - kind: openai_compat
+        provider: example_quota
+        base_url: http://127.0.0.1:18353/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    specs = _configured_provider_specs()
+
+    assert provider_definitions._registry_provider_names(specs) == {
+        "example_fallback",
+        "example_quota",
+    }
+
+
+def test_a_route_base_url_wins_over_the_model_provider_default(tmp_path, monkeypatch):
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        base_url: http://vllm-box.internal:8002/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    specs = _configured_provider_specs()
+
+    assert specs["vllm"].listed
+    assert specs["vllm"].default_base_url == "http://vllm-box.internal:8002/v1"
+    assert specs["vllm"].model_ids == frozenset(["qwen-local"])
+
+
+@pytest.mark.asyncio
 async def test_create_provider_definition_rejects_key_provider_aliases(monkeypatch):
     """A slug the key registry folds into another provider cannot be custom.
 
