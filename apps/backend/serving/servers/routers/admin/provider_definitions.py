@@ -7,7 +7,7 @@ import json
 import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +76,12 @@ class ConfigProviderSpec:
     # but gets no registry row, which would otherwise show an undeletable
     # provider with no keys and a default base URL nothing calls.
     listed: bool = True
+    # False when the slug appears only as the upstream a route's
+    # ``route_metadata`` declares. Such a route lists under that upstream even
+    # when it is not loaded (an embedding model, or a skipped credential), but
+    # the name may belong to a custom provider whose key pool the route uses,
+    # so it is not reserved against one.
+    reserved: bool = True
 
 
 def _validate_provider_slug(provider: str) -> str:
@@ -158,7 +164,11 @@ def _config_managed_provider_names(
     and could be deleted while its routes still ran.
     """
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(PROVIDER_TARGETS) | set(dynamic_keys.aliased_key_providers()) | set(specs)
+    return (
+        set(PROVIDER_TARGETS)
+        | set(dynamic_keys.aliased_key_providers())
+        | {provider for provider, spec in specs.items() if spec.reserved}
+    )
 
 
 def config_route_provider_labels(
@@ -211,64 +221,51 @@ def _merge_config_provider_spec(
     display_name: str = "",
     from_route_label: bool = False,
     listed: bool = True,
+    reserved: bool = True,
 ) -> None:
     if not provider:
         return
-    default_base_url = _base_url_with_provider_default(provider, default_base_url)
+    # A mention that routes nothing contributes no endpoint, models, or name.
+    if not listed:
+        default_base_url = ""
+        display_name = ""
+    model_ids = frozenset([model_id]) if model_id and listed else frozenset()
+    if not reserved:
+        from_route_label = False
     current = specs.get(provider)
-    model_ids = frozenset([model_id]) if model_id else frozenset()
     if current is None:
         specs[provider] = ConfigProviderSpec(
             provider=provider,
             adapter_kind=adapter_kind,
             default_base_url=default_base_url,
-            model_ids=model_ids if listed else frozenset(),
+            model_ids=model_ids,
             display_name=display_name,
             from_route_label=from_route_label,
             listed=listed,
+            reserved=reserved,
         )
         return
-    if listed and not current.listed:
-        # The first route that actually goes through this slug owns its row; an
-        # earlier mention contributed no endpoint, models, or name worth keeping.
-        merged_base_url = default_base_url or current.default_base_url
-        current = ConfigProviderSpec(
-            provider=provider,
-            adapter_kind=current.adapter_kind,
-            default_base_url=merged_base_url,
-            model_ids=frozenset(),
-            from_route_label=current.from_route_label,
-            listed=True,
-        )
-        specs[provider] = current
-    if not listed:
-        default_base_url = ""
-        model_ids = frozenset()
-        display_name = ""
     merged_adapter_kind = current.adapter_kind
     if current.adapter_kind == provider and adapter_kind != provider:
         merged_adapter_kind = adapter_kind
-    merged_model_ids = current.model_ids | model_ids
-    merged_display_name = current.display_name or display_name
     # A slug the gateway can build on its own is never label-only, even if some
-    # other route also names it as a label.
-    merged_from_route_label = current.from_route_label and from_route_label
-    if (
-        (not current.default_base_url and default_base_url)
-        or (merged_adapter_kind != current.adapter_kind)
-        or (merged_model_ids != current.model_ids)
-        or (merged_display_name != current.display_name)
-        or (merged_from_route_label != current.from_route_label)
-    ):
-        specs[provider] = ConfigProviderSpec(
-            provider=provider,
-            adapter_kind=merged_adapter_kind,
-            default_base_url=current.default_base_url or default_base_url,
-            model_ids=merged_model_ids,
-            display_name=merged_display_name,
-            from_route_label=merged_from_route_label,
-            listed=current.listed,
-        )
+    # other route also names it as a label. Only reserving mentions vote.
+    if not reserved:
+        merged_from_route_label = current.from_route_label
+    elif not current.reserved:
+        merged_from_route_label = from_route_label
+    else:
+        merged_from_route_label = current.from_route_label and from_route_label
+    specs[provider] = ConfigProviderSpec(
+        provider=provider,
+        adapter_kind=merged_adapter_kind,
+        default_base_url=current.default_base_url or default_base_url,
+        model_ids=current.model_ids | model_ids,
+        display_name=current.display_name or display_name,
+        from_route_label=merged_from_route_label,
+        listed=current.listed or listed,
+        reserved=current.reserved or reserved,
+    )
 
 
 def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
@@ -324,21 +321,39 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
             is_relabelled = bool(route_label) and route_label != provider
             if route_label:
                 provider = route_label
-            # Without a label of its own, a route whose metadata names its
-            # upstream belongs to that upstream, as it does at runtime; the
-            # live route table supplies that provider's row.
-            declared_owner = _declared_route_owner(route)
+            # The route loader's precedence: the route's URL, else the model's.
+            base_url = _expand_config_string(route.get("base_url") or model.get("base_url"))
+            # Without a label of its own, a route whose metadata names a
+            # different upstream belongs to that upstream, as it does at runtime.
+            owner = None if is_relabelled else _declared_route_owner(route)
+            if owner == provider:
+                owner = None
             _merge_config_provider_spec(
                 specs,
                 provider=provider,
                 adapter_kind=adapter_kind,
-                default_base_url=_expand_config_string(route.get("base_url")),
+                default_base_url=base_url,
                 model_id=model_id,
                 display_name=str(route.get("provider_display_name") or "").strip(),
                 from_route_label=bool(route_label) and route_label != adapter_kind,
-                listed=is_relabelled or declared_owner in (None, provider),
+                listed=owner is None,
             )
-    return specs
+            if owner is not None:
+                _merge_config_provider_spec(
+                    specs,
+                    provider=owner,
+                    adapter_kind=adapter_kind,
+                    default_base_url=base_url,
+                    model_id=model_id,
+                    reserved=False,
+                )
+    return {
+        provider: replace(
+            spec,
+            default_base_url=_base_url_with_provider_default(provider, spec.default_base_url),
+        )
+        for provider, spec in specs.items()
+    }
 
 
 def _declared_route_owner(route: dict[str, Any]) -> str | None:
