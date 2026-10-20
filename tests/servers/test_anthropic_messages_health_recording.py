@@ -157,13 +157,17 @@ async def test_non_streaming_success_closes_an_open_circuit(
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_key_pool_exhausted_opens_the_circuit(
+async def test_non_streaming_key_pool_exhausted_leaves_the_circuit_closed(
     anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
 ):
-    """KeyPoolExhausted on this surface must trip the breaker.
+    """KeyPoolExhausted on this surface answers 429 but must not trip the breaker.
 
-    It carries no HTTP status, so the registry's client-error exemption never
-    applies -- every key is muted and nothing sent here can succeed.
+    It is raised by ``KeyPool.acquire`` before anything is sent — a local
+    precondition refusal, not evidence against the endpoint (issue #1440). The
+    pool's own mutes keep the provider quiet while they last, and the upstream
+    failures that did the muting were counted when they happened. Counting the
+    echo let one muted key pool open the circuit on every route sharing the
+    provider's keys, ending streams in ``AllCircuitsOpenError``.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "300")
@@ -183,8 +187,11 @@ async def test_non_streaming_key_pool_exhausted_opens_the_circuit(
         r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
         assert r.status_code == 429
 
-    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
-    assert registry.allow_request(endpoint_id) is False
+    snapshot = registry.snapshot()[endpoint_id]
+    assert snapshot["circuit_state"] == _CircuitState.CLOSED
+    # Skipped before any accounting, so availability is untouched too.
+    assert snapshot["availability"] == 1.0
+    assert registry.allow_request(endpoint_id) is True
     await asyncio.sleep(0)
 
 

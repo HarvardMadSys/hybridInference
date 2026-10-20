@@ -514,13 +514,18 @@ async def test_a_statusless_failure_never_opens_an_auth_incident(monkeypatch, ca
     """The inverse hazard: pool exhaustion on its own is not a credential fault.
 
     It carries no status, so it must not be classified as an auth rejection, page,
-    or degrade /health/deep — the breaker's own availability and circuit signals
-    cover it.
+    or degrade /health/deep — and it is not counted against the breaker either
+    (issue #1440); the skip is observable as the ``key_pool_exhausted_skip_breaker``
+    log event, not as auth state.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
+    # Selection always ensures the endpoint before dispatch; the snapshot row
+    # below needs that registration because a skipped failure no longer
+    # creates one (issue #1440).
+    registry.ensure(_LOCAL_ENDPOINT)
 
     with (
         patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert,
