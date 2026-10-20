@@ -8,6 +8,7 @@ from tests.fixtures import auth_helpers
 
 
 def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("TEST_DB_HOST", "db-host")
     monkeypatch.setenv("TEST_DB_PORT", "5544")
     monkeypatch.setenv("TEST_DB_NAME", "hybridinference_test_db")
@@ -27,6 +28,16 @@ def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
     assert result["DISTRIBUTION_CONFIG_PATH"] == ""
     assert result["DISTRIBUTION_CONFIG_MODE"] == "dark"
     assert result["MODELS_CONFIG"] == "tests/fixtures/test_models.yaml"
+
+
+def test_build_auth_test_env_defaults_names_the_worker_database(monkeypatch):
+    """The gateway under test uses this worker's database, not the shared base."""
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
+    monkeypatch.setenv("TEST_DB_NAME", "hybridinference_test_db")
+
+    result = auth_helpers.build_auth_test_env_defaults()
+
+    assert result["DB_NAME"] == "hybridinference_test_db_gw2"
 
 
 def test_build_auth_test_env_defaults_applies_overrides():

@@ -10,8 +10,10 @@ that actually runs — so the columns were never created and every insert failed
 with ``UndefinedColumnError``.
 
 To make that class of bug impossible, all ``api_logs`` schema — the table, its
-migrations, its indexes, and the aggregated ``api_stats_hourly`` and
-``request_volume_hourly`` tables — lives here and is applied by both callers. Add
+migrations, its indexes, and the aggregated ``api_stats_hourly``,
+``request_volume_hourly``, ``user_usage_daily``, ``daily_activity``,
+``admin_view_results`` and ``admin_view_state`` tables —
+lives here and is applied by both callers. Add
 future columns/indexes in this module only.
 
 Lock safety: ``ALTER TABLE`` / ``CREATE INDEX`` acquire strong locks
@@ -398,6 +400,120 @@ _REQUEST_VOLUME_HOURLY_DDL = """
     )
 """
 
+# Completed-day request and token totals per user behind the admin Users table,
+# written and read by ``serving.storage.user_usage_rollup``. A user with no
+# traffic on a day has no row, so the coverage table holds one row per counted
+# UTC day, quiet days included: its presence, with the current ``definition``,
+# means "this day is counted".
+_USER_USAGE_DAILY_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS user_usage_daily (
+        user_id            TEXT   NOT NULL,
+        day                DATE   NOT NULL,
+        request_count      BIGINT NOT NULL,
+        total_tokens       BIGINT NOT NULL,
+        turns_sum          BIGINT NOT NULL DEFAULT 0,
+        turns_count        BIGINT NOT NULL DEFAULT 0,
+        user_turns_sum     BIGINT NOT NULL DEFAULT 0,
+        user_turns_count   BIGINT NOT NULL DEFAULT 0,
+        early_requests     BIGINT NOT NULL DEFAULT 0,
+        early_ask_requests BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, day)
+    )
+""",
+    """
+    CREATE TABLE IF NOT EXISTS user_usage_daily_coverage (
+        day          DATE        PRIMARY KEY,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        definition   TEXT        NOT NULL DEFAULT ''
+    )
+""",
+)
+
+# One row per stored UTC day behind the admin Analytics growth series, written
+# and read by ``serving.storage.daily_activity_rollup``: the day's requests,
+# prompt + completion tokens, and the sorted ids of its signed-in users.
+_DAILY_ACTIVITY_DDL = """
+    CREATE TABLE IF NOT EXISTS daily_activity (
+        day          DATE        PRIMARY KEY,
+        requests     BIGINT      NOT NULL,
+        tokens       BIGINT      NOT NULL,
+        user_ids     TEXT[]      NOT NULL,
+        definition   TEXT        NOT NULL,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+"""
+
+# The last computed result of each slow admin view over api_logs -- the Providers
+# tab's performance distributions and TTFT scatter -- as served, so a restarted
+# gateway serves it at once instead of recomputing first. Written and read by
+# ``serving.storage.admin_view_results``; ``definition`` fingerprints the
+# computation, so a result an older revision computed is not served, and
+# ``admin_view_state``'s one row holds the generation a user's hard delete
+# advances, so a result computed before it is never published after it.
+_ADMIN_VIEW_RESULTS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS admin_view_results (
+        name        TEXT        PRIMARY KEY,
+        definition  TEXT        NOT NULL,
+        payload     JSONB       NOT NULL,
+        computed_at TIMESTAMPTZ NOT NULL,
+        generation  BIGINT      NOT NULL
+    )
+""",
+    """
+    CREATE TABLE IF NOT EXISTS admin_view_state (
+        id         BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+        generation BIGINT  NOT NULL
+    )
+""",
+    # The row must exist before any write locks it: a write that found none
+    # would have nothing to wait on while a delete created it.
+    "INSERT INTO admin_view_state (id, generation) VALUES (TRUE, 0) ON CONFLICT (id) DO NOTHING",
+)
+
+# Storage parameters api_logs carries, as ``(name, value)``, set when absent (a
+# value an operator set by hand is left alone).
+#
+# Insert-triggered autovacuum by default waits for inserts of 20% of the table:
+# on a ten-million-row api_logs, ten days of traffic. Until a page is vacuumed
+# the visibility map does not mark it all-visible, and an index-only scan --
+# the admin performance distributions' (``serving.storage.perf_metrics_index``)
+# -- reads the heap for it after all. 1% keeps that to about half a day. Such a
+# vacuum visits only the pages written since the last, and skips index cleanup
+# when there is nothing dead to remove.
+_API_LOGS_STORAGE_PARAMETERS = (("autovacuum_vacuum_insert_scale_factor", "0.01"),)
+
+
+# Columns the tables gained after they first shipped, as ``(table, column, ddl)``.
+# A constant default makes each ``ADD COLUMN`` a catalog-only change on these
+# small tables. Days stored before keep the default ``definition`` and so no
+# longer count as stored: they are counted live and filled again with every
+# column (see ``serving.storage.user_usage_rollup.DEFINITION``).
+_USER_USAGE_DAILY_MIGRATIONS = [
+    *(
+        (
+            "user_usage_daily",
+            column,
+            f"ALTER TABLE user_usage_daily ADD COLUMN IF NOT EXISTS {column} BIGINT NOT NULL DEFAULT 0",
+        )
+        for column in (
+            "turns_sum",
+            "turns_count",
+            "user_turns_sum",
+            "user_turns_count",
+            "early_requests",
+            "early_ask_requests",
+        )
+    ),
+    (
+        "user_usage_daily_coverage",
+        "definition",
+        "ALTER TABLE user_usage_daily_coverage "
+        "ADD COLUMN IF NOT EXISTS definition TEXT NOT NULL DEFAULT ''",
+    ),
+]
+
 
 async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
     """Return the index names defined on ``api_logs`` in the search path."""
@@ -410,6 +526,21 @@ async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
         """
     )
     return {r["indexname"] for r in rows}
+
+
+async def _storage_parameters(conn: asyncpg.Connection) -> set[str]:
+    """Return the names of the storage parameters set on ``api_logs``."""
+    rows = await conn.fetch(
+        """
+        SELECT split_part(option, '=', 1) AS name
+        FROM pg_class c, unnest(c.reloptions) AS option
+        WHERE c.relname = 'api_logs' AND c.relkind = 'r'
+          AND c.relnamespace = ANY(
+              SELECT oid FROM pg_namespace WHERE nspname = ANY(current_schemas(false))
+          )
+        """
+    )
+    return {r["name"] for r in rows}
 
 
 async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
@@ -477,15 +608,25 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         )
     """)
 
-    # A new, separate table: creating it locks nothing the log writers use, so
-    # it goes before the deferrable sequence below rather than waiting on it.
+    # New, separate tables: creating them locks nothing the log writers use, so
+    # they go before the deferrable sequence below rather than waiting on it.
     await conn.execute(_REQUEST_VOLUME_HOURLY_DDL)
+    for ddl in _USER_USAGE_DAILY_DDL:
+        await conn.execute(ddl)
+    await conn.execute(_DAILY_ACTIVITY_DDL)
+    for ddl in _ADMIN_VIEW_RESULTS_DDL:
+        await conn.execute(ddl)
 
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path
     # never queues an ACCESS EXCLUSIVE / SHARE lock on this hot table.
     existing_columns_now = await existing_columns(conn, "api_logs")
     existing_indexes = await _existing_indexes(conn)
+    usage_columns = {
+        table: await existing_columns(conn, table)
+        for table in ("user_usage_daily", "user_usage_daily_coverage")
+    }
+    storage_parameters = await _storage_parameters(conn)
 
     # Everything below takes a strong lock, so it runs under a bounded wait: if
     # a concurrent reader holds the table, fail fast (SchemaLockUnavailable)
@@ -506,6 +647,15 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         for index_name, index_ddl in _API_LOGS_INDEXES:
             if index_name not in existing_indexes:
                 await _execute_ddl(conn, index_ddl)
+
+        for name, value in _API_LOGS_STORAGE_PARAMETERS:
+            if name not in storage_parameters:
+                await _execute_ddl(conn, f"ALTER TABLE api_logs SET ({name} = {value})")
+
+        # Small tables, but the nightly pg_dump holds them as long as api_logs.
+        for table, column, ddl in _USER_USAGE_DAILY_MIGRATIONS:
+            if column not in usage_columns[table]:
+                await _execute_ddl(conn, ddl)
 
     # Aggregated hourly stats.
     await conn.execute("""

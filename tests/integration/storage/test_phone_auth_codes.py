@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -11,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -30,28 +30,13 @@ LIMITS = {
 @pytest_asyncio.fixture
 async def phone_store():
     """Use a disposable schema, never another test's or deployment's rows."""
-    import asyncpg
-
-    database = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    if "_test_" not in database:
-        pytest.fail(f"SAFETY: refusing non-test database {database!r}")
-    config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": database,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-    try:
-        admin = await asyncpg.connect(**config, timeout=2)
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
+    admin = await postgres.connect(timeout=2)
     schema = f"phone_auth_test_{uuid.uuid4().hex}"
     pool = None
     try:
         await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await asyncpg.create_pool(
-            **config, min_size=2, max_size=12, server_settings={"search_path": schema}
+        pool = await postgres.create_pool(
+            min_size=2, max_size=12, server_settings={"search_path": schema}
         )
         store = PostgresOperationalStore(pool)
         await store.initialize()

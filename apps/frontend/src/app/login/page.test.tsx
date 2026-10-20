@@ -106,7 +106,7 @@ describe('signup navigation', () => {
     loginMock.mockResolvedValueOnce(undefined);
     render(<LoginPage />);
     expect(screen.queryByRole('button', { name: 'SMS code login' })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Email or username'), {
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
       target: { value: 'email@example.test' },
     });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
@@ -130,7 +130,7 @@ describe('signup navigation', () => {
       </SiteConfigProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'SMS code login' }));
-    expect(screen.queryByLabelText('Email or username')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Email or login name')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '13812345678' } });
     fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
@@ -176,9 +176,9 @@ describe('signup navigation', () => {
   });
 });
 
-describe('email or username', () => {
+describe('email or login name', () => {
   function signIn(identifier: string, password = 'pw') {
-    fireEvent.change(screen.getByLabelText('Email or username'), {
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
       target: { value: identifier },
     });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: password } });
@@ -194,7 +194,7 @@ describe('email or username', () => {
   it('is one text field, not an email field', () => {
     render(<LoginPage />);
 
-    const field = screen.getByLabelText('Email or username');
+    const field = screen.getByLabelText('Email or login name');
     expect(field).toHaveAttribute('type', 'text');
     expect(field).toHaveAttribute('autocomplete', 'username');
   });
@@ -218,9 +218,9 @@ describe('email or username', () => {
 
   it.each([
     ['not-an-email@', 'Please enter a valid email address'],
-    ['x', 'Please enter a valid email address or username'],
-    ['has space', 'Please enter a valid email address or username'],
-    ['', 'Please enter your email or username'],
+    ['x', 'Please enter a valid email address or login name'],
+    ['has space', 'Please enter a valid email address or login name'],
+    ['', 'Please enter your email or login name'],
   ])('refuses %j', async (identifier, message) => {
     render(<LoginPage />);
 
@@ -282,7 +282,7 @@ describe('accounts already signed in on this browser', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^B/ }));
 
-    expect(screen.getByLabelText('Email or username')).toHaveValue('bob@example.test');
+    expect(screen.getByLabelText('Email or login name')).toHaveValue('bob@example.test');
     expect(switchAccountMock).not.toHaveBeenCalled();
   });
 
@@ -298,7 +298,7 @@ describe('accounts already signed in on this browser', () => {
     render(<LoginPage />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Use another account' }));
-    expect(screen.getByLabelText('Email or username')).toHaveValue('');
+    expect(screen.getByLabelText('Email or login name')).toHaveValue('');
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to your accounts' }));
     expect(screen.getByRole('heading', { name: 'Choose an account' })).toBeInTheDocument();
@@ -312,7 +312,7 @@ describe('accounts already signed in on this browser', () => {
 
     expect(replaceMock).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'Add another account' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Email or username')).toBeInTheDocument();
+    expect(screen.getByLabelText('Email or login name')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(pushMock).toHaveBeenCalledWith('/dashboard');
   });

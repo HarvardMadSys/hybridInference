@@ -93,6 +93,73 @@ def subprocess_env(**overrides: str) -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": os.pathsep.join(entries), **overrides}
 
 
+# --- The test database is checked once, before anything runs -----------------
+#
+# A misconfigured database used to surface as hundreds of identical skips (or,
+# under TEST_DB_REQUIRED, failures) spread over the whole run. One line at the
+# start says it better. Only the controlling process checks: xdist workers start
+# their own sessions, and one answer is enough.
+#: Fixtures that reach the real test database. A test that depends on one,
+#: directly or not, must carry ``dbtest``: unmarked, it is skipped by ``make
+#: test`` (no database) and deselected by ``make test-db-local``, so it runs
+#: nowhere but CI.
+DATABASE_FIXTURES = frozenset({"auth_app", "auth_backend"})
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    unmarked = [
+        item.nodeid
+        for item in items
+        if DATABASE_FIXTURES & set(getattr(item, "fixturenames", ()))
+        and item.get_closest_marker("dbtest") is None
+    ]
+    if unmarked:
+        raise pytest.UsageError(
+            "These tests use a database fixture "
+            f"({', '.join(sorted(DATABASE_FIXTURES))}) but are not marked dbtest; "
+            "add @pytest.mark.dbtest (or pytestmark):\n  " + "\n  ".join(unmarked)
+        )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # Every process (the controller and each xdist worker) runs this before any
+    # test: the gateway the server tests start resolves its fence secret from
+    # the environment, and it must be the secret the storage suites pass
+    # explicitly (tests/fixtures/postgres.py, FENCE_SECRET).
+    from tests.fixtures.postgres import FENCE_SECRET
+
+    os.environ["ERASURE_FENCE_SECRET"] = FENCE_SECRET
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if hasattr(session.config, "workerinput"):
+        return
+    from tests.fixtures import postgres
+
+    problem = postgres.configuration_problem()
+    if problem:
+        pytest.exit(f"Test database: {problem}", returncode=pytest.ExitCode.USAGE_ERROR)
+    if not postgres.database_required():
+        return
+
+    import asyncio
+
+    async def _reachable() -> str | None:
+        # The server, not the test database: the entry point creates and
+        # prepares that one on first use.
+        try:
+            conn = await postgres.connect_maintenance(timeout=5)
+        except (pytest.skip.Exception, pytest.fail.Exception) as exc:
+            return str(exc)
+        await conn.close()
+        return None
+
+    failure = asyncio.run(_reachable())
+    if failure:
+        pytest.exit(f"Test database: {failure}", returncode=pytest.ExitCode.USAGE_ERROR)
+
+
 @pytest.fixture(autouse=True)
 def _reset_settings_cache():
     """Invalidate the cached ``Settings`` instance before/after each test.

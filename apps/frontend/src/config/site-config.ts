@@ -165,6 +165,9 @@ const featuresSchema = z
 // field (a count, say) does not take this console down either.
 const setupStateSchema = z.object({ required: z.boolean() });
 const configurationStateSchema = z.object({ incomplete: z.boolean() });
+const phoneAuthPolicySchema = z.object({
+  default_country_code: z.string().regex(/^(?:[1-9][0-9]{0,2})?$/),
+});
 
 const versionedSiteConfigDocumentSchema = z
   .object({
@@ -178,6 +181,8 @@ const versionedSiteConfigDocumentSchema = z
     branding: z.unknown().nullable(),
     setup: setupStateSchema.nullish(),
     configuration: configurationStateSchema.nullish(),
+    // Public number-input policy; transport credentials remain server-only.
+    phone_auth_policy: phoneAuthPolicySchema.nullish(),
   })
   // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
   // with the branding object below is deliberate. This envelope is what a
@@ -223,6 +228,10 @@ export interface RuntimeSiteConfig {
   /** A required setting has no value. No setting names are published. */
   configuration: {
     incomplete: boolean;
+  };
+  /** Older backends do not publish a phone-input policy. */
+  phoneAuthPolicy?: {
+    defaultCountryCode: string;
   };
 }
 
@@ -324,6 +333,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   // the setup flow: neither has anything to set up or report as missing.
   let setupRequired = false;
   let configurationIncomplete = false;
+  let phoneAuthPolicy: RuntimeSiteConfig['phoneAuthPolicy'];
   if ('schema_version' in document) {
     branding = resolveBranding(
       document.branding,
@@ -332,6 +342,9 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     );
     setupRequired = document.setup?.required === true;
     configurationIncomplete = document.configuration?.incomplete === true;
+    if (document.phone_auth_policy) {
+      phoneAuthPolicy = { defaultCountryCode: document.phone_auth_policy.default_country_code };
+    }
   } else {
     branding = resolveLegacyBranding(
       document.distribution.display_name,
@@ -359,6 +372,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     },
     setup: { required: setupRequired },
     configuration: { incomplete: configurationIncomplete },
+    ...(phoneAuthPolicy ? { phoneAuthPolicy } : {}),
   };
 }
 

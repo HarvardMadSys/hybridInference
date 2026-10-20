@@ -128,7 +128,7 @@ settings govern this:
 
 | Group | Tables | Holds |
 |---|---|---|
-| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `request_volume_hourly` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly rollups used by the dashboards |
+| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards and the admin Users table, and the last computed result of the admin console's slowest views |
 | Settings | `app_config` | The settings on the admin console's Configuration tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
 | Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys and their quotas, refresh sessions and the accounts signed in on each browser, sign-in history |
 | Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |

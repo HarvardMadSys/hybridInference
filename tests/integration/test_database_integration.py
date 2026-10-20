@@ -17,6 +17,7 @@ from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger, calculate_cost
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     import asyncpg
@@ -26,10 +27,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
 
 
 async def _truncate_tables(pool: asyncpg.pool.Pool) -> None:
@@ -543,7 +541,15 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
 
 
 @pytest.mark.asyncio
-async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger):
+async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, monkeypatch):
+    # CI exports both for its database job; supply them when it has not, so
+    # `make test-db` runs this too. Values CI sets are left as they are.
+    from serving.config.settings import get_settings
+
+    for name, value in (("USER_AUTH_ENABLED", "1"), ("API_KEY_SECRET", "integration-secret")):
+        if not os.environ.get(name):
+            monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
     assert db_logger.pool is not None
 
     plaintext_key = "hyi-integration-key"

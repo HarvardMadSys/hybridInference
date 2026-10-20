@@ -334,3 +334,47 @@ def test_registry_returns_anthropic_adapter_for_kind_anthropic():
     adapter = _make_adapter("anthropic", cfg)
     assert isinstance(adapter, AnthropicAdapter)
     assert adapter.native_format == "anthropic"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("declared", "sent"), [(True, 40), (False, None)])
+async def test_stream_chat_completion_passes_top_k_like_chat_completion(
+    monkeypatch, declared, sent
+):
+    """Streaming used to drop top_k that the non-streaming path sends."""
+    captured: dict[str, Any] = {}
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            captured["json"] = json
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    params = ["temperature", "max_tokens", "stream"] + (["top_k"] if declared else [])
+    adapter = AnthropicAdapter(_cfg(supported_params=params))
+    async for _ in adapter.stream_chat_completion(
+        messages=[{"role": "user", "content": "hi"}], top_k=40
+    ):
+        pass
+
+    assert captured["json"].get("top_k") == sent

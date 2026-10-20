@@ -6,7 +6,97 @@ Different models handle reasoning/thinking tokens differently:
 - Qwen3 Coder: non-thinking mode (no explicit reasoning tokens)
 """
 
+import logging
+import math
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+#: Token counts a usage block may carry: OpenAI, Anthropic and normalized names.
+USAGE_COUNT_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _read_count(value: Any) -> int | None:
+    """``value`` as a non-negative int, or None when it is not a readable count."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number: float = value
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number)
+
+
+def usage_count(value: Any, *, field: str = "token count") -> int:
+    """Read one upstream token count as a non-negative int; anything else is 0.
+
+    An upstream that answered has been paid for, so a count we cannot read must
+    not turn that answer into an error. The decided policy is to bill such a
+    count as zero and log it, so the provider sending it can be found. Numbers
+    and numeric strings ("12", "12.0") are read; text, booleans, NaN, infinity
+    and negative values are not. ``None`` (not reported) is 0 without a warning.
+    """
+    if value is None:
+        return 0
+    count = _read_count(value)
+    if count is None:
+        logger.warning("Unreadable upstream %s %r; billed as 0", field, value)
+        return 0
+    return count
+
+
+def sanitize_usage(usage: dict[str, Any], *, complete: bool = False) -> dict[str, Any]:
+    """Return a copy of *usage* whose counts are all readable (see :func:`usage_count`).
+
+    An unreadable ``total_tokens`` becomes None ("not reported"), never a
+    number derived here: billing reads a reported total as evidence of whether
+    completion_tokens already includes reasoning
+    (``serving.storage.utils.billable_output_tokens``), so a made-up total would
+    change what is charged. A ``*_details`` field that is not an object is
+    dropped.
+
+    ``complete=True`` is only for the copy of a usage block returned to a
+    client, whose model requires all three totals: a missing prompt or
+    completion count becomes 0 and a missing total their sum. Never bill from it.
+    """
+    clean = dict(usage)
+    if complete:
+        for field in ("prompt_tokens", "completion_tokens"):
+            if clean.get(field) is None:
+                clean[field] = 0
+    for field in USAGE_COUNT_FIELDS:
+        if clean.get(field) is not None:
+            clean[field] = usage_count(clean[field], field=field)
+    total = clean.get("total_tokens")
+    if total is not None:
+        count = _read_count(total)
+        if count is None:
+            logger.warning("Unreadable upstream total_tokens %r; treated as not reported", total)
+        clean["total_tokens"] = count
+    if complete and clean.get("total_tokens") is None:
+        clean["total_tokens"] = clean["prompt_tokens"] + clean["completion_tokens"]
+    for field in [name for name in clean if name.endswith("_details")]:
+        if clean[field] is not None and not isinstance(clean[field], dict):
+            logger.warning("Unreadable upstream usage %s %r; dropped", field, clean[field])
+            del clean[field]
+    return clean
 
 
 def extract_reasoning_tokens(usage: dict[str, Any] | None) -> int | None:
@@ -213,6 +303,9 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     if not usage:
         return None
+    if not isinstance(usage, dict):
+        return None
+    usage = sanitize_usage(usage)
 
     # Extract reasoning tokens from nested locations
     reasoning_tokens = extract_reasoning_tokens(usage)

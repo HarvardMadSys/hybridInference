@@ -308,13 +308,25 @@ async def test_non_lock_errors_are_not_reclassified():
 @pytest.mark.asyncio
 async def test_steady_state_startup_takes_no_lock_and_no_guard_leak():
     """With the schema current, the guard opens and closes around no DDL."""
-    from serving.storage.log_schema import _API_LOGS_COLUMN_MIGRATIONS, _API_LOGS_INDEXES
+    from serving.storage.log_schema import (
+        _API_LOGS_COLUMN_MIGRATIONS,
+        _API_LOGS_INDEXES,
+        _API_LOGS_STORAGE_PARAMETERS,
+        _USER_USAGE_DAILY_MIGRATIONS,
+    )
 
     conn, statements = _conn()
     conn.fetch = AsyncMock(
         side_effect=[
             [{"attname": name} for name, _ in _API_LOGS_COLUMN_MIGRATIONS],
             [{"indexname": name} for name, _ in _API_LOGS_INDEXES],
+            [{"attname": c} for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS if t == "user_usage_daily"],
+            [
+                {"attname": c}
+                for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS
+                if t == "user_usage_daily_coverage"
+            ],
+            [{"name": name} for name, _ in _API_LOGS_STORAGE_PARAMETERS],
         ]
     )
 

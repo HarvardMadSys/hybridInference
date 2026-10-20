@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -37,10 +36,11 @@ from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin.metrics import REQUEST_METRIC_WINDOWS
 from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
-from tests.fixtures.auth_helpers import assert_test_db_name
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -128,44 +128,10 @@ _OUTCOMES: list[tuple[int | None, str | None, dict[str, Any]]] = [
 ]
 
 
-def _dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if dsn:
-        return dsn
-    host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "5432")
-    name = os.getenv("DB_NAME", "hybridinference_test_db")
-    user = os.getenv("DB_USER", "postgres")
-    password = os.getenv("DB_PASSWORD", "postgres")
-    return f"postgresql://{user}:{password}@{host}:{port}/{name}"
-
-
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    """A reachable test-database DSN, or skip."""
-    import asyncio
-
-    dsn = _dsn()
-
-    async def _probe() -> str | None:
-        try:
-            conn = await asyncpg.connect(dsn, timeout=2)
-        except Exception as exc:
-            return str(exc)
-        try:
-            assert_test_db_name(await conn.fetchval("SELECT current_database()"), "volume")
-        finally:
-            await conn.close()
-        return None
-
-    loop = asyncio.new_event_loop()
-    try:
-        failure = loop.run_until_complete(_probe())
-    finally:
-        loop.close()
-    if failure is not None:
-        pytest.skip(f"PostgreSQL test database not available: {failure}")
-    return dsn
+    """This worker's test database (tests/fixtures/postgres.py), reachable or skipped."""
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture
@@ -175,19 +141,19 @@ async def pool(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerator[as
     Schema-per-test rather than TRUNCATE: CI runs several files against one
     database concurrently.
     """
-    worker = os.getenv("PYTEST_XDIST_WORKER", "master")
+    worker = postgres.worker_id()
     test_digest = hashlib.sha1(request.node.name.encode()).hexdigest()[:10]
     schema = f"volume_{worker}_{test_digest}"
 
-    admin_conn = await asyncpg.connect(pg_dsn)
+    admin_conn = await postgres.connect()
     try:
         await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin_conn.execute(f'CREATE SCHEMA "{schema}"')
     finally:
         await admin_conn.close()
 
-    pool = await asyncpg.create_pool(
-        pg_dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
+    pool = await postgres.create_pool(
+        min_size=1, max_size=4, server_settings={"search_path": schema}
     )
     assert pool is not None
     async with pool.acquire() as conn:
@@ -201,7 +167,7 @@ async def pool(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerator[as
     finally:
         metrics._RECENT_REQUESTS_COUNT_CACHE.clear()
         await pool.close()
-        admin_conn = await asyncpg.connect(pg_dsn)
+        admin_conn = await postgres.connect()
         try:
             await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:
@@ -214,7 +180,7 @@ async def client(pool: asyncpg.Pool) -> AsyncGenerator[AsyncClient, None]:
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=RouteExecutor(),
         db_logger=SimpleNamespace(pool=pool),
-        log_store=PostgresLogStore(pool, fence_secret="test-fence-secret"),
+        log_store=PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET),
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
@@ -381,6 +347,63 @@ async def test_clear_errors_drops_the_stored_hours_it_reached(
     assert resp.json()["deleted_count"] > 0
 
     # What the cards show now is what is left in api_logs.
+    await _compare_with_per_card_queries(client, pool)
+
+
+# The rows "Clear errors" deletes, for knowing which hours it reaches.
+_CLEARED_HOURS_SQL = """
+SELECT DISTINCT to_timestamp(floor(extract(epoch FROM timestamp) / 3600) * 3600) AS hour
+FROM api_logs
+WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+  AND (error IS NOT NULL OR status_code IS NULL OR status_code < 200 OR status_code >= 400)
+"""
+
+
+async def _stored_hours(pool: asyncpg.Pool) -> set[datetime]:
+    async with pool.acquire() as conn:
+        return {
+            r["hour_bucket"]
+            for r in await conn.fetch("SELECT hour_bucket FROM request_volume_hourly")
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_failed_invalidation_rolls_the_clear_back(client: AsyncClient, pool: asyncpg.Pool):
+    """The delete and the invalidation commit together or not at all.
+
+    Were they separate, the delete could commit and the invalidation fail: the
+    hour would stay stored with the deleted rows counted in it, a stored hour is
+    never counted again, and a second clear would delete nothing and so
+    invalidate nothing.
+    """
+    now_minute = await _db_minute(pool)
+    stamps = [now_minute - timedelta(minutes=17 * i + 3) for i in range(18)]
+    await _seed(pool, stamps)
+    assert (await client.get("/admin/request-metrics")).status_code == 200
+    stored = await _stored_hours(pool)
+    async with pool.acquire() as conn:
+        cleared = {r["hour"] for r in await conn.fetch(_CLEARED_HOURS_SQL, 4)}
+    assert stored & cleared, "the clear must reach a stored hour"
+    assert stored - cleared, "and leave one alone"
+
+    store = PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET)
+
+    async def fail(conn: asyncpg.Connection, hours: list[datetime]) -> None:
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await store.delete_recent_error_requests(hours=4, on_deleted=fail)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM api_logs") == len(stamps)
+    assert await _stored_hours(pool) == stored
+    await _compare_with_per_card_queries(client, pool)
+
+    # Retried, the clear drops exactly the stored hours its rows were in.
+    deleted = await store.delete_recent_error_requests(
+        hours=4, on_deleted=request_volume.invalidate_hours
+    )
+    assert deleted > 0
+    assert await _stored_hours(pool) == stored - cleared
     await _compare_with_per_card_queries(client, pool)
 
 

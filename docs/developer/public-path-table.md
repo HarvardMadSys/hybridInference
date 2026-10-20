@@ -84,6 +84,40 @@ Three details matter here:
 - Hop-by-hop headers are removed, cookies are preserved, and redirects that
   name either internal agent service are folded back through its public prefix.
 
+### Runtime route handlers — the gateway's streaming surfaces
+
+Three gateway prefixes are forwarded by route handlers instead of rewrites,
+because their responses stream:
+
+| Source | Handler | Serves |
+|---|---|---|
+| `/v1/:path*` | `src/app/v1/[[...path]]/route.ts` | the OpenAI-compatible API surface |
+| `/anthropic/:path*` | `src/app/anthropic/[[...path]]/route.ts` | the Anthropic Messages surface |
+| `/internal/playground/:path*` | `src/app/internal/playground/[[...path]]/route.ts` | the admin-only model playground the console's dashboard calls |
+
+Each handler forwards to `${BACKEND_INTERNAL_URL}` plus the same path.
+`BACKEND_INTERNAL_URL` is the address fixed at build time, the same one the
+rewrites use. The code that does the forwarding is
+`src/lib/server/gatewayProxy.ts`. A rewrite cannot do this job, for three
+reasons:
+
+- When the gateway drops a connection after the response has started (a crash,
+  a restart or a deploy), Next's rewrite proxy never ends the caller's
+  response. The caller then waits until something in front of the console
+  gives up.
+- The rewrite proxy ends a response after 30 seconds with no data. The handler
+  sets no deadline of its own: the gateway limits every request itself, and
+  streaming responses send a keepalive every 15 seconds.
+- A failure comes back as Next's plain-text 500. The handler answers a
+  gateway it cannot reach with a JSON 502.
+
+The handler sends the gateway the same request the rewrite did. Every request
+header is forwarded except the hop-by-hop ones, `Host` names the gateway, and
+`X-Forwarded-Host` carries the caller's host. One header differs: when the
+caller sent no `X-Forwarded-For`, `-Proto` or `-Port`, Next fills them in from
+the connection. Behind Cloudflare the caller always sends all three. When the
+caller hangs up, the gateway's request is cancelled at once.
+
 ### Legacy `beforeFiles` compatibility
 
 `next.config.js` still emits the same three rules as `beforeFiles` rewrites when
@@ -95,17 +129,16 @@ and cannot be retargeted by changing only the container environment.
 
 ### `afterFiles` — the gateway
 
-Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path.
+Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path. The
+gateway's streaming surfaces (`/v1`, `/anthropic` and `/internal/playground`)
+are route handlers, listed above.
 
 | Source | Serves |
 |---|---|
-| `/v1/:path*` | the OpenAI-compatible API surface |
-| `/anthropic/:path*` | the Anthropic Messages surface |
 | `/auth/:path*` | authentication routes |
 | `/user/:path*` | the user dashboard API |
 | `/admin/:path*` | the admin API |
 | `/internal/verify-admin` | cookie-session admin check (used by the pgAdmin handler) |
-| `/internal/playground/:path*` | the admin-only model playground the console's dashboard calls |
 | `/internal/model-catalog` | model catalog read |
 | `/internal/users/:userId/status` | single-user status read |
 | `/internal/users/:userId/agent-access` | whether one user may use the Cloud Agent, read by the standalone agent (see [Backend Extensions](backend-extensions.md#cloud-agent-access)) |

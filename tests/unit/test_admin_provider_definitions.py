@@ -757,6 +757,230 @@ async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openro
     assert providers["openrouter"].default_base_url
 
 
+_SELF_HOSTED_DEEPSEEK = """
+models:
+  - id: deepseek-v4.1-flash
+    provider: deepseek
+    route:
+      - kind: deepseek
+        provider: deepseek
+        provider_display_name: DeepSeek
+        route_metadata:
+          key_provider: gpu_cluster
+          route_provider: gpu_cluster
+          upstream_provider: gpu_cluster
+        base_url: http://gpu-cluster.internal:8000/v1
+"""
+
+
+def _write_models_config(tmp_path, monkeypatch, text: str) -> None:
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+
+@pytest.mark.asyncio
+async def test_a_route_that_declares_its_upstream_lists_only_that_upstream(tmp_path, monkeypatch):
+    """A DeepSeek model served by a self-hosted endpoint is one provider, not two.
+
+    The model and its route both say ``deepseek`` (the public identity) while
+    ``route_metadata`` names the endpoint's real owner. Listing ``deepseek``
+    too showed an undeletable row with no keys and the public DeepSeek URL.
+    """
+    _write_models_config(tmp_path, monkeypatch, _SELF_HOSTED_DEEPSEEK)
+
+    specs = _configured_provider_specs()
+    assert provider_definitions._registry_provider_names(specs) == {"gpu_cluster"}
+    assert "deepseek" in provider_definitions._config_managed_provider_names(specs)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            (
+                "deepseek-v4.1-flash",
+                "deepseek",
+                {"key_provider": "gpu_cluster", "upstream_provider": "gpu_cluster"},
+                None,
+            ),
+        ),
+    )
+
+    providers = {row.provider: row for row in response.providers}
+    assert set(providers) == {"gpu_cluster"}
+    assert providers["gpu_cluster"].models_count == 1
+    assert providers["gpu_cluster"].default_base_url == "http://gpu-cluster.internal:8000/v1"
+
+
+@pytest.mark.asyncio
+async def test_a_declared_upstream_is_listed_when_its_route_is_not_loaded(tmp_path, monkeypatch):
+    """Embedding models and routes skipped for a missing credential are not in
+    the chat route table, so the row cannot wait for the runtime to supply it."""
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: local-embedding
+    type: embedding
+    provider: openai_compat
+    route:
+      - kind: openai_compat
+        base_url: http://embedding.internal:8000/v1
+        route_metadata:
+          key_provider: embedding_pool
+          upstream_provider: embedding_pool
+""",
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_empty_services(),
+    )
+
+    assert [
+        (row.provider, row.models_count, row.default_base_url) for row in response.providers
+    ] == [("embedding_pool", 1, "http://embedding.internal:8000/v1")]
+
+
+@pytest.mark.asyncio
+async def test_a_declared_upstream_does_not_shadow_a_custom_provider(tmp_path, monkeypatch):
+    """A route may name a custom provider's key pool as its upstream; that
+    provider must stay custom, editable, and kept at boot."""
+    _write_models_config(tmp_path, monkeypatch, _SELF_HOSTED_DEEPSEEK)
+    monkeypatch.setattr(
+        provider_definitions.provider_registry, "register_provider_definition", lambda _row: None
+    )
+    store = FakeProviderDefinitionStore(
+        {
+            "gpu_cluster": ProviderDefinitionRow(
+                provider="gpu_cluster",
+                display_name="GPU cluster",
+                adapter_kind="openai_compat",
+                default_base_url="http://gpu-cluster.internal:8000/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+
+    specs = _configured_provider_specs()
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin", op_store=store, services=_empty_services()
+    )
+
+    assert [(row.provider, row.source) for row in response.providers] == [("gpu_cluster", "custom")]
+    assert not provider_definitions._is_config_managed_provider("gpu_cluster", specs)
+    assert "gpu_cluster" not in provider_definitions.config_route_provider_labels(specs)
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_openrouter_route_stays_openrouter_whatever_its_metadata_names(
+    tmp_path, monkeypatch
+):
+    """The runtime credits a pinned route to OpenRouter before reading its
+    metadata. `fireworks` is not a preset target, so no slug mapping hides a
+    miss."""
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: pinned-chat
+    provider: openrouter
+    route:
+      - kind: openrouter[fireworks]
+        base_url: https://openrouter.ai/api/v1
+        route_metadata:
+          upstream_provider: fireworks
+""",
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            ("pinned-chat", "openrouter", {"upstream_provider": "fireworks"}, "fireworks"),
+        ),
+    )
+
+    assert [(row.provider, row.models_count) for row in response.providers] == [("openrouter", 1)]
+
+
+def test_a_model_level_provider_is_not_a_registry_row(tmp_path, monkeypatch):
+    """`provider:` on the model names its brand; the routes name who serves it.
+
+    A Kimi model served through the coding endpoint and Ollama never calls the
+    Moonshot API, so a `kimi` row would point at a URL no route uses.
+    """
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: kimi-code
+    provider: kimi
+    route:
+      - kind: kimi_coding
+        base_url: https://api.kimi.com/coding/v1
+      - kind: ollama
+        base_url: https://ollama.com/v1
+  - id: glm-test
+    provider: zai
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert provider_definitions._registry_provider_names(specs) == {"kimi_coding", "ollama", "zai"}
+    assert specs["zai"].model_ids == frozenset(["glm-test"])
+    assert "kimi" in provider_definitions._config_managed_provider_names(specs)
+
+
+def test_a_route_base_url_wins_over_the_model_provider_default(tmp_path, monkeypatch):
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        base_url: http://vllm-box.internal:8002/v1
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert specs["vllm"].listed
+    assert specs["vllm"].default_base_url == "http://vllm-box.internal:8002/v1"
+    assert specs["vllm"].model_ids == frozenset(["qwen-local"])
+
+
+def test_a_route_without_a_base_url_inherits_the_model_base_url(tmp_path, monkeypatch):
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: private-deepseek
+    provider: deepseek
+    base_url: http://private-model.internal:8000/v1
+    route:
+      - kind: deepseek
+        api_key: ${UNSET_PRIVATE_DEEPSEEK_KEY}
+""",
+    )
+
+    specs = _configured_provider_specs()
+
+    assert specs["deepseek"].default_base_url == "http://private-model.internal:8000/v1"
+
+
 @pytest.mark.asyncio
 async def test_create_provider_definition_rejects_key_provider_aliases(monkeypatch):
     """A slug the key registry folds into another provider cannot be custom.
@@ -858,3 +1082,270 @@ models:
 
     monkeypatch.setenv("CHUTES_BASE_URL", "https://chutes.internal/v1")
     assert _configured_provider_specs()["chutes"].default_base_url == "https://chutes.internal/v1"
+
+
+# ---------------------------------------------------------------------------
+# Create / update / delete: the paths a successful probe leads to
+# ---------------------------------------------------------------------------
+
+_KEY = "sk-acme-secret-1234567890"
+
+
+def _acme_row(base_url: str = "https://api.acme.test/v1") -> ProviderDefinitionRow:
+    return ProviderDefinitionRow(
+        provider="acme",
+        display_name="Acme",
+        adapter_kind="openai_compat",
+        default_base_url=base_url,
+        status="active",
+        created_at=None,  # type: ignore[arg-type]
+        updated_at=None,  # type: ignore[arg-type]
+    )
+
+
+class _KeyStore(FakeProviderDefinitionStore):
+    def __init__(self, rows=None, *, key_error: Exception | None = None):
+        super().__init__(rows)
+        self.keys: list[dict[str, object]] = []
+        self.key_error = key_error
+
+    async def add_provider_key(self, *, provider, api_key, label, created_by):
+        if self.key_error is not None:
+            raise self.key_error
+        self.keys.append({"provider": provider, "api_key": api_key, "label": label})
+        return "key-1"
+
+
+@pytest.fixture
+def wiring(monkeypatch):
+    """Record what a write registers, probes and audits, without global state."""
+    seen: dict[str, list] = {"probes": [], "registered": [], "pooled": [], "audits": []}
+
+    async def probe(**kwargs):
+        seen["probes"].append(kwargs)
+
+    async def base_url(value: str) -> str:
+        return value.rstrip("/")
+
+    async def audit(_store, _admin, action, _target, details):
+        seen["audits"].append((action, details))
+
+    async def load_roles(_store, _provider):
+        return None
+
+    monkeypatch.setattr(provider_definitions, "_probe_openai_compat", probe)
+    monkeypatch.setattr(provider_definitions, "_validate_base_url", base_url)
+    monkeypatch.setattr(provider_definitions, "log_admin_action", audit)
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+    monkeypatch.setattr(
+        provider_definitions.dynamic_keys, "load_min_role_declarations_for_provider", load_roles
+    )
+    monkeypatch.setattr(
+        provider_definitions.dynamic_keys,
+        "add_key_to_provider",
+        lambda provider, key: seen["pooled"].append((provider, key)),
+    )
+    monkeypatch.setattr(
+        provider_registry, "register_provider_definition", seen["registered"].append
+    )
+    return seen
+
+
+def _create_request(**overrides) -> CreateProviderDefinitionRequest:
+    return CreateProviderDefinitionRequest(
+        **{
+            "provider": "acme",
+            "display_name": " Acme ",
+            "adapter_kind": "openai_compat",
+            "default_base_url": "https://api.acme.test/v1/",
+            "api_key": f"  {_KEY}  ",
+            "probe_model_id": "acme/model",
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_probes_then_stores_registers_and_pools_the_key(wiring):
+    store = _KeyStore()
+
+    item = await provider_definitions.create_provider_definition(
+        _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+    )
+
+    assert item.provider == "acme" and item.source == "custom"
+    [probe] = wiring["probes"]
+    assert probe["default_base_url"] == "https://api.acme.test/v1"
+    assert store.rows["acme"].display_name == "Acme"
+    assert store.keys == [{"provider": "acme", "api_key": _KEY, "label": "Initial key"}]
+    assert [row.provider for row in wiring["registered"]] == ["acme"]
+    assert wiring["pooled"] == [("acme", _KEY)]
+    [(action, details)] = wiring["audits"]
+    assert action == "provider_definition.create"
+    # The audit names the key by its row id, never by its value.
+    assert details["provider_key_id"] == "key-1"
+    assert _KEY not in repr(details)
+
+
+@pytest.mark.asyncio
+async def test_a_key_that_cannot_be_stored_leaves_no_keyless_provider(wiring):
+    store = _KeyStore(key_error=RuntimeError("key table unavailable"))
+
+    with pytest.raises(RuntimeError, match="key table unavailable"):
+        await provider_definitions.create_provider_definition(
+            _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+        )
+
+    assert "acme" not in store.rows
+    assert wiring["registered"] == [] and wiring["pooled"] == [] and wiring["audits"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_probe_writes_nothing(wiring, monkeypatch):
+    async def refuse(**_kwargs):
+        raise HTTPException(status_code=400, detail="Authentication failed. Check the API key.")
+
+    monkeypatch.setattr(provider_definitions, "_probe_openai_compat", refuse)
+    store = _KeyStore()
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions.create_provider_definition(
+            _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+        )
+
+    assert caught.value.status_code == 400
+    assert store.rows == {} and store.keys == [] and wiring["registered"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setup", "status"),
+    [
+        ("existing-definition", 409),
+        ("known-runtime-provider", 409),
+        ("unsupported-adapter", 422),
+    ],
+)
+async def test_create_refuses_before_probing(wiring, monkeypatch, setup, status):
+    store = _KeyStore({"acme": _acme_row()} if setup == "existing-definition" else None)
+    if setup == "known-runtime-provider":
+        monkeypatch.setattr(
+            provider_definitions.dynamic_keys, "get_known_providers", lambda: {"acme"}
+        )
+    request = _create_request()
+    if setup == "unsupported-adapter":
+        request = request.model_copy(update={"adapter_kind": "anthropic"})
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions.create_provider_definition(
+            request, admin_id="admin", op_store=store, services=_empty_services()
+        )
+
+    assert caught.value.status_code == status
+    assert wiring["probes"] == [] and store.keys == []
+
+
+@pytest.mark.asyncio
+async def test_a_base_url_change_needs_a_key_and_model_to_probe(wiring):
+    store = _KeyStore({"acme": _acme_row()})
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions.update_provider_definition(
+            "acme",
+            UpdateProviderDefinitionRequest(default_base_url="https://new.acme.test/v1"),
+            admin_id="admin",
+            op_store=store,
+            services=_empty_services(),
+        )
+
+    assert caught.value.status_code == 422
+    assert wiring["probes"] == [] and store.upserts == []
+
+
+@pytest.mark.asyncio
+async def test_a_base_url_change_is_probed_before_it_is_saved(wiring):
+    store = _KeyStore({"acme": _acme_row()})
+
+    item = await provider_definitions.update_provider_definition(
+        "acme",
+        UpdateProviderDefinitionRequest(
+            default_base_url="https://new.acme.test/v1/",
+            api_key=_KEY,
+            probe_model_id="acme/model",
+        ),
+        admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    [probe] = wiring["probes"]
+    assert probe["default_base_url"] == "https://new.acme.test/v1"
+    assert item.default_base_url == "https://new.acme.test/v1"
+    [(action, details)] = wiring["audits"]
+    assert action == "provider_definition.update" and details["base_url_changed"] is True
+    assert _KEY not in repr(details)
+
+
+@pytest.mark.asyncio
+async def test_the_same_base_url_is_not_a_change_and_is_not_probed(wiring):
+    store = _KeyStore({"acme": _acme_row()})
+
+    await provider_definitions.update_provider_definition(
+        "acme",
+        UpdateProviderDefinitionRequest(default_base_url="https://api.acme.test/v1/"),
+        admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    assert wiring["probes"] == []
+    assert wiring["audits"][0][1]["base_url_changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_provider_models_route_to_cannot_move_or_go(wiring):
+    """Moving or deleting it would silently break the models routed to it."""
+    store = _KeyStore({"acme": _acme_row()})
+    services = _services_with_runtime_provider("acme")
+
+    with pytest.raises(HTTPException) as moved:
+        await provider_definitions.update_provider_definition(
+            "acme",
+            UpdateProviderDefinitionRequest(
+                default_base_url="https://new.acme.test/v1", api_key=_KEY, probe_model_id="m"
+            ),
+            admin_id="admin",
+            op_store=store,
+            services=services,
+        )
+    with pytest.raises(HTTPException) as deleted:
+        await provider_definitions.delete_provider_definition(
+            "acme", admin_id="admin", op_store=store, services=services
+        )
+
+    assert (moved.value.status_code, deleted.value.status_code) == (409, 409)
+    assert wiring["probes"] == [] and store.upserts == []
+    assert "acme" in store.rows and store.deleted_keys == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", ["update", "delete"])
+async def test_an_unknown_provider_is_404(wiring, call):
+    store = _KeyStore()
+
+    with pytest.raises(HTTPException) as caught:
+        if call == "update":
+            await provider_definitions.update_provider_definition(
+                "acme",
+                UpdateProviderDefinitionRequest(display_name="x"),
+                admin_id="admin",
+                op_store=store,
+                services=_empty_services(),
+            )
+        else:
+            await provider_definitions.delete_provider_definition(
+                "acme", admin_id="admin", op_store=store, services=_empty_services()
+            )
+
+    assert caught.value.status_code == 404

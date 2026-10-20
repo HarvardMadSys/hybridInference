@@ -39,10 +39,10 @@ async def _boot(store: FakeAppConfigStore) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ses_configuration_reports_its_missing_fields_and_redacts_secrets(
-    config_env, monkeypatch
+async def test_extension_email_configuration_reports_missing_fields_and_redacts_secrets(
+    config_env, monkeypatch, sample_delivery
 ):
-    from serving.utils import email, tencent_ses
+    from serving.utils import email
 
     monkeypatch.setenv("SIGNUP_ENABLED", "true")
     monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "true")
@@ -50,36 +50,35 @@ async def test_ses_configuration_reports_its_missing_fields_and_redacts_secrets(
 
     # Simulate process startup after the fixture clears the cached instance.
     monkeypatch.setattr(email, "settings", get_settings())
-    monkeypatch.setattr(tencent_ses, "settings", get_settings())
-    store = FakeAppConfigStore([row("EMAIL_PROVIDER", "tencent_ses")])
+    store = FakeAppConfigStore([row("EMAIL_PROVIDER", "sample_email")])
     await _boot(store)
     missing = app_config.get_config_health().missing
     assert "SMTP_PASSWORD" not in missing
-    assert "TENCENT_CLOUD_SECRET_KEY" in missing
-    assert "TENCENT_SES_TEMPLATE_VERIFICATION" in missing
-    assert "TENCENT_SES_TEMPLATE_PASSWORD_RESET" in missing
+    assert "SAMPLE_DELIVERY_SECRET" in missing
+    assert "SAMPLE_EMAIL_VERIFICATION" in missing
+    assert "SAMPLE_EMAIL_PASSWORD_RESET" in missing
     assert not email.is_email_enabled()
     await app_config.update(
         {
-            "TENCENT_CLOUD_SECRET_ID": "synthetic-ses-id",
-            "TENCENT_CLOUD_SECRET_KEY": "synthetic-ses-secret",
-            "TENCENT_CLOUD_TOKEN": "synthetic-ses-session",
-            "TENCENT_SES_FROM_EMAIL": "noreply@example.org",
-            "TENCENT_SES_TEMPLATE_VERIFICATION": 101,
-            "TENCENT_SES_TEMPLATE_PASSWORD_RESET": 102,
+            "SAMPLE_DELIVERY_ID": "synthetic-ses-id",
+            "SAMPLE_DELIVERY_SECRET": "synthetic-ses-secret",
+            "SAMPLE_DELIVERY_TOKEN": "synthetic-ses-session",
+            "SAMPLE_EMAIL_FROM": "noreply@example.org",
+            "SAMPLE_EMAIL_VERIFICATION": 101,
+            "SAMPLE_EMAIL_PASSWORD_RESET": 102,
         },
         updated_by="admin",
     )
     assert email.is_email_enabled()
     assert not any(
-        key.startswith(("SMTP_", "TENCENT_")) for key in app_config.get_config_health().missing
+        key.startswith(("SMTP_", "SAMPLE_")) for key in app_config.get_config_health().missing
     )
     description = str(app_config.describe())
     assert "synthetic-ses-secret" not in description
     assert "synthetic-ses-session" not in description
-    await app_config.delete("TENCENT_SES_TEMPLATE_VERIFICATION", updated_by="admin")
+    await app_config.delete("SAMPLE_EMAIL_VERIFICATION", updated_by="admin")
     assert not email.is_email_enabled()
-    assert "TENCENT_SES_TEMPLATE_VERIFICATION" in app_config.get_config_health().missing
+    assert "SAMPLE_EMAIL_VERIFICATION" in app_config.get_config_health().missing
 
 
 # --- resolution --------------------------------------------------------------
@@ -1303,7 +1302,7 @@ async def test_a_lower_case_environment_value_is_compared_for_environment_ignore
 
 @pytest.mark.asyncio
 async def test_sms_delivery_settings_use_db_precedence_and_redact_credentials(
-    config_env, monkeypatch
+    config_env, monkeypatch, sample_delivery
 ):
     from serving.utils.sms import is_sms_enabled
 
@@ -1311,21 +1310,20 @@ async def test_sms_delivery_settings_use_db_precedence_and_redact_credentials(
     store = FakeAppConfigStore(
         [
             row("SMS_AUTH_ENABLED", "false"),
-            row("SMS_PROVIDER", "tencent"),
-            row("TENCENT_CLOUD_SECRET_ID", "synthetic-sms-id"),
-            row("TENCENT_CLOUD_SECRET_KEY", "synthetic-sms-secret"),
-            row("TENCENT_CLOUD_TOKEN", "synthetic-sms-session"),
-            row("SMS_SDK_APP_ID", "1400000000"),
-            row("SMS_SIGN_NAME", "Test sign"),
-            row("SMS_TEMPLATE_ID", "201"),
+            row("SMS_PROVIDER", "sample_sms"),
+            row("SAMPLE_DELIVERY_ID", "synthetic-sms-id"),
+            row("SAMPLE_DELIVERY_SECRET", "synthetic-sms-secret"),
+            row("SAMPLE_DELIVERY_TOKEN", "synthetic-sms-session"),
+            row("SAMPLE_SMS_APP_ID", "1400000000"),
+            row("SAMPLE_SMS_SIGN_NAME", "Test sign"),
+            row("SAMPLE_SMS_TEMPLATE_ID", "201"),
         ]
     )
     # Match a process boot: the delivery modules share the instance overlaid
     # by app_config; the test suite clears get_settings between test cases.
-    from serving.utils import sms, tencent_sms
+    from serving.utils import sms
 
     monkeypatch.setattr(sms, "settings", get_settings())
-    monkeypatch.setattr(tencent_sms, "settings", get_settings())
     await _boot(store)
     assert not is_sms_enabled()
     await app_config.update({"SMS_AUTH_ENABLED": True}, updated_by="admin")
@@ -1335,7 +1333,6 @@ async def test_sms_delivery_settings_use_db_precedence_and_redact_credentials(
     assert "synthetic-sms-session" not in description
     await _restart(store)
     monkeypatch.setattr(sms, "settings", get_settings())
-    monkeypatch.setattr(tencent_sms, "settings", get_settings())
     assert is_sms_enabled()
 
 
@@ -1423,6 +1420,8 @@ def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, ca
     from serving.config.settings import Settings
     from serving.storage import log_schema
 
+    # Settings reads the process environment too, and CI's database job sets one.
+    monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
     monkeypatch.setattr(
         "serving.config.settings.get_settings",
         lambda: Settings(api_key_secret="fallback-secret"),
@@ -1594,25 +1593,199 @@ async def test_a_refused_row_reports_the_value_in_force(config_env, monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-async def test_sms_settings_are_missing_only_while_phone_sign_in_is_on(config_env, enabled) -> None:
+async def test_sms_settings_are_missing_only_while_phone_sign_in_is_on(
+    config_env, sample_delivery, enabled
+) -> None:
     store = FakeAppConfigStore(
-        [row("SMS_PROVIDER", "tencent"), row("SMS_AUTH_ENABLED", "true" if enabled else "false")]
+        [row("SMS_PROVIDER", "sample_sms"), row("SMS_AUTH_ENABLED", "true" if enabled else "false")]
     )
 
     await _boot(store)
 
     missing = set(app_config.get_config_health().missing)
     needed = {
-        "TENCENT_CLOUD_SECRET_ID",
-        "TENCENT_CLOUD_SECRET_KEY",
-        "SMS_SDK_APP_ID",
-        "SMS_SIGN_NAME",
-        "SMS_TEMPLATE_ID",
+        "SAMPLE_DELIVERY_ID",
+        "SAMPLE_DELIVERY_SECRET",
+        "SAMPLE_SMS_APP_ID",
+        "SAMPLE_SMS_SIGN_NAME",
+        "SAMPLE_SMS_TEMPLATE_ID",
     }
     if enabled:
         assert needed <= missing
     else:
         assert not needed & missing
     # SMS_REGION has a default, so it is set either way.
-    assert "SMS_REGION" not in missing
-    assert "TENCENT_CLOUD_TOKEN" not in missing
+    assert "SAMPLE_SMS_REGION" not in missing
+    assert "SAMPLE_DELIVERY_TOKEN" not in missing
+
+
+# --- distribution extension boundaries ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unloaded_distribution_rows_list_as_custom_and_keep_their_secrecy(
+    config_env, extension_registry
+) -> None:
+    store = FakeAppConfigStore(
+        [
+            row("EMAIL_PROVIDER", "unloaded_email"),
+            row("SMS_PROVIDER", "unloaded_sms"),
+            row("SMS_SIGN_NAME", "former-sign"),
+            row("VENDOR_DELIVERY_TOKEN", "former-token", secret=True),
+        ]
+    )
+    await _boot(store)
+
+    described = app_config.describe()
+    entries = {entry["key"]: entry for entry in described["entries"]}
+    assert entries["EMAIL_PROVIDER"]["value"] == "smtp"
+    assert entries["SMS_PROVIDER"]["value"] == "none"
+    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
+    assert entries["SMS_SIGN_NAME"]["origin"] == "custom"
+    assert entries["SMS_SIGN_NAME"]["value"] == "former-sign"
+    assert entries["VENDOR_DELIVERY_TOKEN"]["origin"] == "custom"
+    assert entries["VENDOR_DELIVERY_TOKEN"]["secret"] is True
+    assert "former-token" not in str(described)
+    assert app_config.config_value("SMS_SIGN_NAME") == "former-sign"
+
+
+@pytest.mark.asyncio
+async def test_registered_extension_reclaims_legacy_rows_and_refreshes(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry(
+                "SMS_REGION",
+                "phone",
+                "Extension region.",
+                default="region-a",
+                choices=("region-a", "region-b"),
+            ),
+            registry.ConfigEntry(
+                "TENCENT_CLOUD_SECRET_KEY", "integrations", "Extension secret.", secret=True
+            ),
+        ]
+    )
+    monkeypatch.setenv("SMS_REGION", "region-a")
+    store = FakeAppConfigStore(
+        [row("SMS_REGION", "region-b"), row("TENCENT_CLOUD_SECRET_KEY", "retained-secret")]
+    )
+    await _boot(store)
+    assert app_config.config_value("SMS_REGION") == "region-b"
+    assert app_config.config_value("TENCENT_CLOUD_SECRET_KEY") == "retained-secret"
+    assert store.rows["TENCENT_CLOUD_SECRET_KEY"].secret
+    assert "retained-secret" not in str(app_config.describe())
+    await app_config.update({"SMS_REGION": "region-a"}, updated_by="admin")
+    assert app_config.config_value("SMS_REGION") == "region-a"
+    assert "SMS_REGION" not in app_config.get_config_health().pending_restart
+    with pytest.raises(app_config.ConfigUpdateError, match="must be one of"):
+        await app_config.update({"SMS_REGION": "invalid-region"}, updated_by="admin")
+
+
+def test_extension_defaults_and_invalid_environment_are_safe_before_load(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry(
+                "SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1, default="10"
+            ),
+        ]
+    )
+    assert app_config.config_value("SAMPLE_TEMPLATE") == "10"
+    monkeypatch.setenv("SAMPLE_TEMPLATE", "not-an-integer")
+    assert app_config.config_value("SAMPLE_TEMPLATE") == "10"
+    app_config.use_environment(database_enabled=False)
+    with pytest.raises(app_config.ConfigBootstrapError, match="SAMPLE_TEMPLATE"):
+        app_config.require_valid_environment()
+
+
+@pytest.mark.asyncio
+async def test_extension_database_value_overrides_invalid_environment(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry("SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1),
+        ]
+    )
+    monkeypatch.setenv("SAMPLE_TEMPLATE", "not-an-integer")
+    store = FakeAppConfigStore([row("SAMPLE_TEMPLATE", "42")])
+    await _boot(store)
+    app_config.require_valid_environment()
+    assert app_config.config_value("SAMPLE_TEMPLATE") == "42"
+    with pytest.raises(app_config.ConfigUpdateError, match="must be an integer"):
+        await app_config.delete("SAMPLE_TEMPLATE", updated_by="admin")
+    assert store.rows["SAMPLE_TEMPLATE"].value == "42"
+
+
+@pytest.mark.asyncio
+async def test_invalid_extension_env_is_not_imported(
+    config_env, extension_registry, monkeypatch
+) -> None:
+    from serving.config import app_config_registry as registry
+
+    registry.register_config_entries(
+        [
+            registry.ConfigEntry("SAMPLE_TEMPLATE", "email", "Template ID.", type="int", minimum=1),
+        ]
+    )
+    monkeypatch.setenv("SAMPLE_TEMPLATE", "0")
+    store = FakeAppConfigStore()
+    await _boot(store)
+    assert "SAMPLE_TEMPLATE" not in store.rows
+    assert app_config.config_value("SAMPLE_TEMPLATE") is None
+    with pytest.raises(app_config.ConfigBootstrapError, match="SAMPLE_TEMPLATE"):
+        app_config.require_valid_environment()
+
+
+@pytest.mark.parametrize(
+    "key,value", [("EMAIL_PROVIDER", "tencent_ses"), ("SMS_PROVIDER", "tencent")]
+)
+def test_unloaded_provider_environment_is_rejected(
+    config_env, extension_registry, monkeypatch, key, value
+) -> None:
+    monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    app_config.use_environment(database_enabled=False)
+    with pytest.raises(app_config.ConfigBootstrapError, match=key):
+        app_config.require_valid_environment()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key,stored,fallback",
+    [("EMAIL_PROVIDER", "tencent_ses", "smtp"), ("SMS_PROVIDER", "tencent", "none")],
+)
+async def test_unloaded_stored_provider_refuses_startup_even_with_valid_env(
+    config_env, extension_registry, monkeypatch, key, stored, fallback
+) -> None:
+    monkeypatch.setenv(key, fallback)
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row(key, stored)])
+    await _boot(store)
+    with pytest.raises(app_config.ConfigBootstrapError, match="Stored delivery provider selection"):
+        app_config.require_valid_environment()
+    assert store.rows[key].value == stored
+
+
+@pytest.mark.asyncio
+async def test_registered_provider_selection_starts_with_db_override(
+    config_env, sample_delivery, monkeypatch
+) -> None:
+    monkeypatch.setenv("EMAIL_PROVIDER", "unavailable")
+    get_settings.cache_clear()
+    store = FakeAppConfigStore(
+        [row("EMAIL_PROVIDER", "sample_email"), row("SMS_PROVIDER", "sample_sms")]
+    )
+    await _boot(store)
+    app_config.require_valid_environment()
+    assert get_settings().email_provider == "sample_email"
+    assert get_settings().sms_provider == "sample_sms"

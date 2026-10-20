@@ -179,8 +179,8 @@ class UserListItem(BaseModel):
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
     # All-time request count and token total (back the requests/tokens sorts).
-    usage_alltime_requests: int = 0
-    usage_alltime_tokens: int = 0
+    usage_alltime_requests: int | None = 0
+    usage_alltime_tokens: int | None = 0
 
 
 class StatusCounts(BaseModel):
@@ -228,6 +228,19 @@ class BulkUserCostHistoryResponse(BaseModel):
 
     days: int
     histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
+
+
+class UserUsageTotals(BaseModel):
+    """All logged requests and tokens, including free requests."""
+
+    requests: int = 0
+    tokens: int = 0
+
+
+class BulkUserUsageTotalsResponse(BaseModel):
+    """Lifetime metrics fetched independently of the user-management list."""
+
+    totals: dict[str, UserUsageTotals]
 
 
 class UserTurnAverages(BaseModel):
@@ -630,10 +643,19 @@ class AdminPerformanceMetricsWindow(BaseModel):
 
 
 class AdminPerformanceMetricsResponse(BaseModel):
-    """Performance metric distributions across admin dashboard lookback windows."""
+    """Performance metric distributions across admin dashboard lookback windows.
 
-    generated_at: datetime
+    ``generated_at`` is when the server computed it, or ``None`` while the
+    first computation is still running (and the list is empty). ``refreshing``
+    says a computation is running now; the console polls until it is not.
+    ``refresh_error`` is why the last computation failed, if it did and none
+    has succeeded since: what is shown is then older than intended.
+    """
+
+    generated_at: datetime | None
     windows: list[AdminPerformanceMetricsWindow]
+    refreshing: bool = False
+    refresh_error: str | None = None
 
 
 class AdminTtftScatterPoint(BaseModel):
@@ -658,9 +680,19 @@ class AdminTtftScatterModel(BaseModel):
 
 
 class AdminTtftScatterResponse(BaseModel):
-    """TTFT vs input length scatter data, grouped by (model_id, provider)."""
+    """TTFT vs input length scatter data, grouped by (model_id, provider).
 
+    ``generated_at`` is when the server computed it, or ``None`` while the
+    first computation is still running (and the list is empty). ``refreshing``
+    says a computation is running now; the console polls until it is not.
+    ``refresh_error`` is why the last computation failed, if it did and none
+    has succeeded since: what is shown is then older than intended.
+    """
+
+    generated_at: datetime | None
     models: list[AdminTtftScatterModel]
+    refreshing: bool = False
+    refresh_error: str | None = None
 
 
 class AdminRequestPerfDistribution(BaseModel):

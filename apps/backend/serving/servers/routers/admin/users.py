@@ -26,6 +26,7 @@ from serving.schemas_admin import (
     BulkUserAutomationScoresResponse,
     BulkUserCostHistoryResponse,
     BulkUserTurnAveragesResponse,
+    BulkUserUsageTotalsResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     HardDeleteUserRequest,
@@ -107,6 +108,7 @@ async def list_users(
     provider: str | None = None,
     active_within_hours: int | None = Query(None, ge=1),
     anomaly: bool | None = None,
+    include_usage_totals: bool = True,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -120,6 +122,8 @@ async def list_users(
       (created|cost_today|cost_month|cost_alltime|last_login|requests|tokens).
       ``requests`` / ``tokens`` sort by the user's all-time request count and
       total token usage, respectively.
+    - include_usage_totals: Set false to fetch lifetime request/token metrics separately.
+      Metrics needed for sorting are still computed; others return null.
     - limit: Max results (default: 100)
     - offset: Pagination offset
     - min_cost_today / min_cost_month: filter to users whose today/month spend
@@ -150,6 +154,7 @@ async def list_users(
         provider=provider,
         active_within_hours=active_within_hours,
         anomaly=anomaly,
+        include_usage_totals=include_usage_totals,
     )
 
     status_counts = StatusCounts(
@@ -190,8 +195,8 @@ async def list_users(
                 usage_today_usd=Decimal(str(row.get("usage_today", 0))),
                 usage_month_usd=Decimal(str(row.get("usage_month", 0))),
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
-                usage_alltime_requests=int(row.get("usage_alltime_requests", 0) or 0),
-                usage_alltime_tokens=int(row.get("usage_alltime_tokens", 0) or 0),
+                usage_alltime_requests=row.get("usage_alltime_requests", 0),
+                usage_alltime_tokens=row.get("usage_alltime_tokens", 0),
             )
         )
 
@@ -278,6 +283,23 @@ async def admin_get_bulk_user_cost_history(
         for uid, points in raw.items()
     }
     return BulkUserCostHistoryResponse(days=days, histories=histories)
+
+
+@router.get("/users/usage-totals", response_model=BulkUserUsageTotalsResponse)
+async def admin_get_bulk_user_usage_totals(
+    user_ids: str = "",
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> BulkUserUsageTotalsResponse:
+    """Fetch lifetime request/token metrics for at most 200 users."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+    if not ids:
+        return BulkUserUsageTotalsResponse(totals={})
+    return BulkUserUsageTotalsResponse(totals=await op_store.get_bulk_user_usage_totals(ids))
 
 
 @router.get("/users/turn-averages", response_model=BulkUserTurnAveragesResponse)
@@ -802,12 +824,17 @@ async def update_user(
         user_table_updates["suspension_message"] = msg
         payload_dict["suspension_message"] = msg
         updated.append("suspension_message")
-    if user_table_updates:
-        await op_store.update_user_fields(user_id, **user_table_updates)
-
-    # Post-write side-effects that depend on the new status
     if new_status == "suspended":
-        await op_store.revoke_key(user_id, hard_delete=False)
+        # The status, the key and every signed-in session go together, as a
+        # soft delete does: each gate also checks the account's status, but a
+        # suspension should not depend on every one of them remembering to.
+        # One transaction, because a suspension that committed its status alone
+        # could not be retried (suspended -> suspended is refused) and its
+        # sessions would come back on resume. Resuming does not restore them.
+        fields = {k: v for k, v in user_table_updates.items() if k != "status"}
+        await op_store.suspend_user(user_id, **fields)
+    elif user_table_updates:
+        await op_store.update_user_fields(user_id, **user_table_updates)
 
     # Update key-level fields
     key_fields = {

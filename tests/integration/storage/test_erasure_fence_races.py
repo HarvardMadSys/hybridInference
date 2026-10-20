@@ -14,10 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -33,45 +31,19 @@ from serving.storage.log_schema import (
 )
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
+from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest]
 
-_SECRET = "test-fence-secret-not-for-production"
+_SECRET = postgres.FENCE_SECRET
 _OWNER = "u-fence-owner"
 _BYSTANDER = "u-fence-bystander"
-
-_ALLOWED_TEST_DB_PATTERN = "_test_"
-
-
-def _test_db_config() -> dict[str, object]:
-    """Use the repository's canonical TEST_DB_* configuration for dbtest."""
-    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-    test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
-    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run."
-        )
-    return {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": test_db_name,
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
 
 
 @pytest_asyncio.fixture
 async def fence_store():
     """Provide a PostgresLogStore with the erasure fence enabled."""
-    db_config = _test_db_config()
-
-    try:
-        pool = await asyncpg.create_pool(**db_config, min_size=2, max_size=10)
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
-        return  # unreachable
+    pool = await postgres.create_pool(min_size=2, max_size=10)
 
     store = PostgresLogStore(pool, fence_secret=_SECRET)
     await store.initialize()

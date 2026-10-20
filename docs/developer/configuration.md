@@ -9,9 +9,15 @@ and [Routing](routing.md) (what the routing engine does with the result).
 For distribution manifests, branding, UI modules and backend extensions, see
 [Distribution customization](distribution-customization.md).
 
-## Optional Tencent SES email delivery
+## Email and SMS delivery providers
 
-`EMAIL_PROVIDER` defaults to `smtp`. Select `tencent_ses` in **Admin > Configuration** to use Tencent Cloud transactional email instead. The selection is explicit: a failed SES request or missing SES template does not fall back to SMTP. The existing verification, password-reset and notification callers use the selected transport.
+`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+
+Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
+
+### Tencent Cloud SES and SMS
+
+The gateway ships one such module, `serving.integrations.tencent_cloud`, for Tencent Cloud transactional email and SMS. It is not loaded by default. Add it to `BACKEND_EXTENSIONS` to offer `EMAIL_PROVIDER=tencent_ses` and `SMS_PROVIDER=tencent`. A failed SES request or missing SES template does not fall back to SMTP.
 
 Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the selected region. Secret values remain server-side and are redacted in the configuration API. Keep production credentials and sender identities in deployment configuration.
 
@@ -20,6 +26,10 @@ Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLA
 Reference HTML lives in `config/examples/tencent-ses/`. Before submitting templates for provider approval, replace the example domain with the deployment console domain and choose the desired language and wording. Verification and reset templates contain a fixed HTTPS origin and path; only the encoded `token` query value varies. Other templates use `site_name` and, where applicable, `reason`, `identifier` or `body`. Keep template links consistent with `FRONTEND_URL`; the gateway cannot inspect approved template contents.
 
 SES receives approved templates with escaped scalar values, never arbitrary HTML variables. Serialized template data is limited to 800 UTF-8 bytes; oversized notices and HTML-only notices fail rather than being truncated. Successful submission means provider acceptance, not inbox delivery. Calls are not automatically retried because a timeout can follow acceptance. Deployments that require unrestricted HTML mail or long notices can continue to use SMTP.
+
+The SMS provider requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. It currently sends to mainland China mobile numbers only: set `SMS_DEFAULT_COUNTRY_CODE` to `86` if local input is desired and `SMS_ALLOWED_PREFIXES` to `+86`. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control.
+
+A deployment that used the Tencent adapter before it became optional adds the module to `BACKEND_EXTENSIONS` when it upgrades; setting names and stored values are unchanged. On a gateway that does not load a provider, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it.
 
 ## What the gateway reads at startup
 
@@ -300,6 +310,12 @@ that reuses one of those slugs is skipped at boot rather than allowed to shadow
 it. Custom providers are `openai_compat` only; a protocol the generic adapter
 cannot speak needs an adapter, which is a code change
 ([Writing a Provider Adapter](provider-adapters.md)).
+
+Each row is a provider that at least one route goes through. A slug the model
+registry only mentions is reserved the same way but gets no row of its own: a
+model's own `provider:`, which names who makes the model while its routes say
+who serves it, and the `kind:` of a route whose `route_metadata` names a
+different `key_provider`, a route listed under that `key_provider` instead.
 
 A key added here joins the same pool as the keys the registry names through
 `${VAR}` and rotates with them. A key the registry names — an *environment
@@ -615,11 +631,9 @@ output as sensitive.
 
 ## Optional phone authentication
 
-Phone signup, login and binding are disabled by default. Enable `SMS_AUTH_ENABLED` and select `SMS_PROVIDER=tencent` in **Admin > Configuration** only after delivery is configured. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work.
+Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work.
 
-The Tencent adapter requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. This adapter currently sends to mainland China mobile numbers only. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control.
-
-Account identifiers use international format, such as `+8613812345678`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. For the Tencent domestic adapter, set the former to `86` if local input is desired and the latter to `+86`. Number policy belongs to the deployment, while provider delivery remains separate from account storage.
+Account identifiers use international format, such as `+12025550123`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. The distribution chooses a number policy supported by its delivery provider; account storage and verification-code policy remain shared.
 
 Codes expire after 300 seconds by default, allow at most five guesses, and can be consumed once. PostgreSQL serializes send and verification quotas across workers; the `SMS_OTP_*` settings control their bounds. Turnstile and trusted-proxy client IP handling remain shared with signup. Phone registration follows public-signup and approval policy, never automatically merges with an email account, and creates no password. Like email signup, it is refused with `503` while first-run setup is pending. Binding requires an authenticated session and a separate code for that account.
 

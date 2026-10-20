@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException
 from serving.auth.signup_policy import is_public_signup_enabled
 from serving.config.app_config import get_config_health
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
+from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 from serving.setup_state import refresh_setup_state
 from serving.utils.sms import is_sms_enabled
@@ -82,6 +83,12 @@ async def get_site_config() -> dict[str, Any]:
         ) from None
     public_signup = await is_public_signup_enabled()
     deployment_state = await _deployment_state()
+    phone_auth_enabled = is_sms_enabled()
+    phone_policy = (
+        {"phone_auth_policy": {"default_country_code": get_settings().sms_default_country_code}}
+        if phone_auth_enabled
+        else {}
+    )
     if config is None:
         return {
             **_NEUTRAL,
@@ -89,10 +96,11 @@ async def get_site_config() -> dict[str, Any]:
                 {
                     **_NEUTRAL["features"],
                     "public_signup": public_signup,
-                    "phone_auth": is_sms_enabled(),
+                    "phone_auth": phone_auth_enabled,
                 }
             ),
             **deployment_state,
+            **phone_policy,
         }
     site_identity = get_site_identity()
     branding = config.branding_config
@@ -107,7 +115,7 @@ async def get_site_config() -> dict[str, Any]:
             {
                 **config.features.model_dump(),
                 "public_signup": public_signup,
-                "phone_auth": is_sms_enabled(),
+                "phone_auth": phone_auth_enabled,
             }
         ),
         "branding": (
@@ -116,4 +124,5 @@ async def get_site_config() -> dict[str, Any]:
             else None
         ),
         **deployment_state,
+        **phone_policy,
     }

@@ -819,6 +819,49 @@ class TestEmailVerification:
         assert user["email_verified"] is True or user["email_verified"] == 1
 
     @pytest.mark.asyncio
+    async def test_verify_email_binds_a_pending_email_through_the_cached_store(
+        self, auth_app_client: AsyncClient, test_user, auth_backend, monkeypatch
+    ):
+        """Confirming an email change binds it, uses the token and tells the old address.
+
+        Through ``CachedOperationalStore``, as in production: the route tests
+        mock the store, and the cache layer's bind once raised after the
+        database had already changed, so the link answered 500, stayed unused
+        and the old address was never told.
+        """
+        import secrets
+
+        from serving.servers.routers import auth_routes
+
+        operational_store, _, _, _ = auth_backend
+        notices: list[tuple[str, str]] = []
+
+        async def _notice(previous: str, current: str) -> None:
+            notices.append((previous, current))
+
+        monkeypatch.setattr(auth_routes, "send_email_changed_email", _notice)
+        previous_email = (await operational_store.get_user_by_id(test_user["id"]))["email"]
+        new_email = f"moved-{secrets.token_hex(4)}@example.com"
+        token = secrets.token_urlsafe(32)
+        await operational_store.create_verification_token(
+            token=token,
+            user_id=test_user["id"],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            pending_email=new_email,
+        )
+
+        response = await auth_app_client.get(f"/auth/verify-email?token={token}")
+
+        assert response.status_code == 200, response.text
+        user = await operational_store.get_user_by_id(test_user["id"])
+        assert user["email"] == new_email
+        assert notices == [(previous_email, new_email)]
+        # The link is spent: a second click is the "already verified" answer.
+        again = await auth_app_client.get(f"/auth/verify-email?token={token}")
+        assert again.status_code == 200
+        assert "already been verified" in again.json()["message"]
+
+    @pytest.mark.asyncio
     async def test_verify_email_invalid_token(self, auth_app_client: AsyncClient):
         """Test email verification with invalid token fails."""
         response = await auth_app_client.get("/auth/verify-email?token=invalid-token")

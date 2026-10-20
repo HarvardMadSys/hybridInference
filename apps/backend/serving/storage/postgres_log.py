@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
+from serving.storage import admin_view_results, daily_activity_rollup, user_usage_rollup
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import (
     check_erasure_fence,
@@ -29,34 +30,11 @@ from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import asyncpg
 
 logger = get_logger(__name__)
-
-# Tool names (lowercased) that let the model ask the end user a clarifying
-# question. Matched case-insensitively against each request's ``tools`` list; a
-# tool name lives at ``function.name`` (OpenAI shape) or ``name`` (Anthropic
-# shape). Deliberately broad — it spans the coding-agent clients we serve
-# (e.g. Claude Code's ``AskUserQuestion``, plus ``question`` /
-# ``ask_followup_question`` / ``vscode_askquestions`` and the ``ask_user_*``
-# variants).
-ASK_QUESTION_TOOL_NAMES: tuple[str, ...] = (
-    "question",
-    "askuserquestion",
-    "ask_user_question",
-    "ask_user_questions",
-    "ask_followup_question",
-    "vscode_askquestions",
-)
-
-# Ask-question adoption is measured over each user's *early-conversation*
-# requests only — those with ``num_turns <= ASK_QUESTION_TURN_CAP``. Agentic
-# clients re-send the same tool manifest on every turn, so a single long
-# conversation would otherwise dominate the per-request count; capping to the
-# opening turns approximates one observation per conversation. The manifest is
-# fixed within a conversation (an ask tool present at turn 1 is present
-# throughout), so the opening turns are representative of the whole trajectory.
-ASK_QUESTION_TURN_CAP = 5
 
 
 def _metadata_dict(value: object) -> dict[str, Any]:
@@ -164,10 +142,13 @@ class PostgresLogStore(LogStore):
         ``hour_iso`` is an ISO-8601 timestamp truncated to the hour (e.g.
         ``2026-05-03T12:00:00+00:00``). Used by ``ProviderHourlySpendJob``.
         """
+        # A range rather than truncating the column to the hour: truncation
+        # happens in the session's time zone (a half-hour zone never matches a
+        # UTC hour), and a range can use the timestamp index.
         sql = """
             SELECT provider, COALESCE(SUM(cost_usd), 0) AS total
             FROM api_logs
-            WHERE date_trunc('hour', timestamp) = $1
+            WHERE timestamp >= $1 AND timestamp < $1 + interval '1 hour'
             GROUP BY provider
         """
         hour_dt = dt.datetime.fromisoformat(hour_iso)
@@ -559,7 +540,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost_spent
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -578,7 +559,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost_spent
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -595,7 +576,7 @@ class PostgresLogStore(LogStore):
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -619,7 +600,7 @@ class PostgresLogStore(LogStore):
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -672,7 +653,7 @@ class PostgresLogStore(LogStore):
                 SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
                 FROM api_logs
                 WHERE user_id = ANY($1::text[])
-                  AND timestamp >= date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 GROUP BY user_id
                 """,
                 user_ids,
@@ -684,14 +665,14 @@ class PostgresLogStore(LogStore):
     ) -> dict[str, Any]:
         """Return usage detail for admin user-detail view.
 
-        The all-time turn averages (``avg_turns``, ``avg_user_turns``) require
-        full-history scans of the user's ``api_logs`` rows (no time bound), so
-        for heavy users they dominate the cost of this call; ``ask_question_fraction``
-        is measured over just the early-conversation requests (first few turns,
-        see ``ASK_QUESTION_TURN_CAP``). These three are computed only when
-        ``include_activity_stats`` is set; otherwise those keys are ``None`` and
-        the admin UI loads them on demand behind a button. The remaining fields
-        are time-bounded (or an indexed ``MAX``) and are always computed.
+        The all-time turn averages (``avg_turns``, ``avg_user_turns``) and
+        ``ask_question_fraction`` (measured over just the early-conversation
+        requests, see ``user_usage_rollup.ASK_QUESTION_TURN_CAP``) are read
+        through the daily rollup in :mod:`serving.storage.user_usage_rollup`.
+        They are computed only when ``include_activity_stats`` is set; otherwise
+        those keys are ``None`` and the admin UI loads them on demand behind a
+        button. The remaining fields are time-bounded (or an indexed ``MAX``)
+        and are always computed.
         """
         avg_turns: float | None = None
         avg_user_turns: float | None = None
@@ -702,7 +683,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -711,7 +692,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -728,52 +709,15 @@ class PostgresLogStore(LogStore):
                 user_id,
             )
             if include_activity_stats:
-                # AVG ignores the NULL num_turns / num_user_turns of non-chat
-                # requests, so these average over chat-style requests only.
-                turns = await conn.fetchrow(
-                    """
-                    SELECT AVG(num_turns) AS avg_turns,
-                           AVG(num_user_turns) AS avg_user_turns
-                    FROM api_logs
-                    WHERE user_id = $1
-                    """,
-                    user_id,
-                )
-                avg_turns = (
-                    float(turns["avg_turns"]) if turns and turns["avg_turns"] is not None else None
-                )
-                avg_user_turns = (
-                    float(turns["avg_user_turns"])
-                    if turns and turns["avg_user_turns"] is not None
-                    else None
-                )
-                # Share of the user's early-conversation requests (first
-                # ``ASK_QUESTION_TURN_CAP`` turns) whose available ``tools`` offer
-                # an ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
-                ask = await conn.fetchrow(
-                    """
-                    SELECT COUNT(*) AS n_requests,
-                           COUNT(*) FILTER (
-                               WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
-                                   SELECT 1 FROM jsonb_array_elements(tools) AS t
-                                   WHERE lower(
-                                           COALESCE(t->'function'->>'name', t->>'name')
-                                         ) = ANY($2)
-                               )
-                           ) AS n_ask_requests
-                    FROM api_logs
-                    WHERE user_id = $1
-                      AND num_turns <= $3
-                    """,
-                    user_id,
-                    list(ASK_QUESTION_TOOL_NAMES),
-                    ASK_QUESTION_TURN_CAP,
-                )
-                ask_question_fraction = (
-                    int(ask["n_ask_requests"]) / int(ask["n_requests"])
-                    if ask and ask["n_requests"]
-                    else None
-                )
+                # All-time, read through the daily rollup (see user_usage_rollup).
+                metrics = (await user_usage_rollup.fetch_metrics(conn, [user_id])).get(user_id)
+                if metrics:
+                    averages = user_usage_rollup.turn_averages(metrics)
+                    avg_turns = averages["avg_turns"]
+                    avg_user_turns = averages["avg_user_turns"]
+                    ask_question_fraction = user_usage_rollup.ask_question_share(metrics)[
+                        "ask_question_fraction"
+                    ]
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -795,31 +739,14 @@ class PostgresLogStore(LogStore):
         Maps ``user_id`` → ``{"avg_turns": float|None, "avg_user_turns": float|None}``
         for users with chat-style requests; users with no chat logs are omitted
         (the caller fills a default). AVG ignores the NULL turn counts of
-        non-chat requests.
+        non-chat requests. Read through the daily rollup in
+        :mod:`serving.storage.user_usage_rollup`.
         """
         if not user_ids:
             return {}
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT user_id,
-                       AVG(num_turns) AS avg_turns,
-                       AVG(num_user_turns) AS avg_user_turns
-                FROM api_logs
-                WHERE user_id = ANY($1)
-                GROUP BY user_id
-                """,
-                user_ids,
-            )
-        return {
-            r["user_id"]: {
-                "avg_turns": float(r["avg_turns"]) if r["avg_turns"] is not None else None,
-                "avg_user_turns": float(r["avg_user_turns"])
-                if r["avg_user_turns"] is not None
-                else None,
-            }
-            for r in rows
-        }
+            metrics = await user_usage_rollup.fetch_metrics(conn, user_ids)
+        return {uid: user_usage_rollup.turn_averages(m) for uid, m in metrics.items()}
 
     async def get_bulk_user_ask_question_fractions(
         self, user_ids: list[str]
@@ -828,50 +755,25 @@ class PostgresLogStore(LogStore):
 
         Maps ``user_id`` → ``{"ask_question_fraction", "n_requests",
         "n_ask_requests"}`` over the user's early-conversation ``api_logs`` rows
-        (those with ``num_turns <= ASK_QUESTION_TURN_CAP``). A request counts
-        toward ``n_ask_requests`` when its ``tools`` list offers a tool from
-        :data:`ASK_QUESTION_TOOL_NAMES` (matched case-insensitively across the
-        OpenAI and Anthropic tool shapes); ``ask_question_fraction`` is
-        ``n_ask_requests / n_requests``. Capping to opening turns keeps a long
-        agentic conversation (which re-sends the same manifest every turn) from
-        dominating the count. Users with no early-conversation requests are
-        omitted (the caller fills a default). Bounded to the page's ``user_ids``
-        so it stays an indexed lookup.
+        (``num_turns <= user_usage_rollup.ASK_QUESTION_TURN_CAP``). A request
+        counts toward ``n_ask_requests`` when its ``tools`` list offers a tool
+        from :data:`user_usage_rollup.ASK_QUESTION_TOOL_NAMES` (matched
+        case-insensitively across the OpenAI and Anthropic tool shapes);
+        ``ask_question_fraction`` is ``n_ask_requests / n_requests``. Capping to
+        opening turns keeps a long agentic conversation (which re-sends the same
+        manifest every turn) from dominating the count. Users with no
+        early-conversation requests are omitted (the caller fills a default).
+        Read through the daily rollup in :mod:`serving.storage.user_usage_rollup`.
         """
         if not user_ids:
             return {}
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT user_id,
-                       COUNT(*) AS n_requests,
-                       COUNT(*) FILTER (
-                           WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
-                               SELECT 1 FROM jsonb_array_elements(tools) AS t
-                               WHERE lower(
-                                       COALESCE(t->'function'->>'name', t->>'name')
-                                     ) = ANY($2)
-                           )
-                       ) AS n_ask_requests
-                FROM api_logs
-                WHERE user_id = ANY($1)
-                  AND num_turns <= $3
-                GROUP BY user_id
-                """,
-                user_ids,
-                list(ASK_QUESTION_TOOL_NAMES),
-                ASK_QUESTION_TURN_CAP,
-            )
-        result: dict[str, dict[str, float | int | None]] = {}
-        for r in rows:
-            n_requests = int(r["n_requests"])
-            n_ask = int(r["n_ask_requests"])
-            result[r["user_id"]] = {
-                "ask_question_fraction": (n_ask / n_requests) if n_requests else None,
-                "n_requests": n_requests,
-                "n_ask_requests": n_ask,
-            }
-        return result
+            metrics = await user_usage_rollup.fetch_metrics(conn, user_ids)
+        return {
+            uid: user_usage_rollup.ask_question_share(m)
+            for uid, m in metrics.items()
+            if m["early_requests"]
+        }
 
     async def get_user_automation_score(
         self, user_id: str, *, days: int = 30
@@ -909,7 +811,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -918,7 +820,7 @@ class PostgresLogStore(LogStore):
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                 """,
                 user_id,
             )
@@ -1160,38 +1062,88 @@ class PostgresLogStore(LogStore):
 
     # -- admin: bulk delete --------------------------------------------------
 
-    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+    async def delete_recent_error_requests(
+        self,
+        *,
+        hours: int = 1,
+        on_deleted: Callable[[Any, list[dt.datetime]], Awaitable[None]] | None = None,
+    ) -> int:
         """Hard-delete error requests from ``api_logs`` in the last *hours*.
 
         The error predicate mirrors the admin Recent Requests ``outcome=errors``
         filter (``admin_list_recent_requests``) so this clears exactly the rows
         that filter surfaces — client disconnects (status 499) included, since
-        that outcome class carries them. Returns the deleted row count parsed
-        from the asyncpg command tag.
+        that outcome class carries them. Returns the deleted row count.
+
+        The days of ``user_usage_daily`` and ``daily_activity`` the deleted rows
+        were counted in are dropped in the same transaction (``invalidate_days``):
+        if that fails, the delete rolls back with it and the admin can retry,
+        rather than the stored days keeping the deleted rows for good.
+        *on_deleted* gets the same guarantee for the hours the rows were in
+        (see :meth:`LogStore.delete_recent_error_requests`).
         """
+        import asyncpg as _asyncpg
+
         hours = max(1, hours)
-        async with self.pool.acquire() as conn:
-            status = await conn.execute(
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
                 """
-                DELETE FROM api_logs
-                WHERE timestamp >= NOW() - make_interval(hours => $1::int)
-                  AND (error IS NOT NULL OR status_code IS NULL
-                       OR status_code < 200 OR status_code >= 400)
+                WITH deleted AS (
+                    DELETE FROM api_logs
+                    WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+                      AND (error IS NOT NULL OR status_code IS NULL
+                           OR status_code < 200 OR status_code >= 400)
+                    RETURNING timestamp
+                )
+                SELECT COUNT(*) AS n,
+                       COALESCE(
+                           array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date),
+                           '{}'
+                       ) AS days,
+                       COALESCE(
+                           array_agg(DISTINCT to_timestamp(
+                               floor(extract(epoch FROM timestamp) / 3600) * 3600
+                           )),
+                           '{}'
+                       ) AS hours
+                FROM deleted
                 """,
                 hours,
             )
-        try:
-            return int(status.rsplit(" ", 1)[-1])
-        except (ValueError, IndexError):
-            return 0
+            deleted, days = int(row["n"]), list(row["days"])
+            if deleted:
+                try:
+                    # Savepoint, as in the hard delete: without the table there
+                    # is nothing to invalidate.
+                    async with conn.transaction():
+                        await user_usage_rollup.invalidate_days(conn, days)
+                except _asyncpg.UndefinedTableError:
+                    pass
+                # After user usage, as in the hard delete: one lock order.
+                try:
+                    async with conn.transaction():
+                        await daily_activity_rollup.invalidate_days(conn, days)
+                except _asyncpg.UndefinedTableError:
+                    pass
+                if on_deleted is not None:
+                    await on_deleted(conn, list(row["hours"]))
+        return deleted
 
     # -- admin: hard-delete user-owned rows ---------------------------------
 
     async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:
-        """Wipe ``api_logs`` and ``email_broadcast_recipients`` for *user_id*.
+        """Wipe ``api_logs``, ``user_usage_daily`` and ``email_broadcast_recipients`` for *user_id*.
 
-        Both DELETEs run in a single transaction.  Returns row counts parsed
-        from asyncpg command tags.  ``email_broadcast_recipients`` is created
+        All DELETEs run in a single transaction.  Returns row counts parsed
+        from asyncpg command tags.  ``user_usage_daily`` is the daily rollup of
+        the user's ``api_logs`` rows, so it names the user too; it is purged
+        under the rollup's lock so that no fill can write back what it read
+        before the purge (see :func:`user_usage_rollup.purge_user`).  The
+        growth series' ``daily_activity`` lists the user on the days they were
+        active, so those days are dropped too, to be counted again without them
+        (:func:`daily_activity_rollup.invalidate_days`), and the admin views'
+        stored results, computed over every row, are dropped
+        (:func:`admin_view_results.clear`).  ``email_broadcast_recipients`` is created
         by ``DatabaseLogger.initialize`` (``database.py``) — when the
         broadcast subsystem hasn't been provisioned, that DELETE is skipped
         via a savepoint and the key is omitted from the result.
@@ -1244,10 +1196,50 @@ class PostgresLogStore(LogStore):
             # abort the transaction and preserve the fail-closed invariant.
             await validate_or_init_fingerprint(conn, secret=self.fence_secret)
 
-            logs_status = await conn.execute(
-                "DELETE FROM api_logs WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1",
+            purged = await conn.fetchrow(
+                """
+                WITH deleted AS (
+                    DELETE FROM api_logs
+                    WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1
+                    RETURNING timestamp
+                )
+                SELECT COUNT(*) AS n,
+                       COALESCE(
+                           array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date)
+                               FILTER (WHERE timestamp IS NOT NULL),
+                           '{}'
+                       ) AS days
+                FROM deleted
+                """,
                 user_id,
             )
+            usage_count: int | None
+            try:
+                # Savepoint, like the recipients below: without the table there
+                # is nothing to erase.
+                async with conn.transaction():
+                    usage_count = await user_usage_rollup.purge_user(conn, user_id)
+            except _asyncpg.UndefinedTableError:
+                usage_count = None
+            # The growth series' stored days list the user and count their
+            # requests: drop the days their rows were on, to be counted again
+            # without them (savepoint: without the table there is nothing to
+            # drop). After user usage, the order Clear errors takes the two
+            # rollups' locks in too: the reverse deadlocks with it.
+            try:
+                async with conn.transaction():
+                    await daily_activity_rollup.invalidate_days(conn, list(purged["days"]))
+            except _asyncpg.UndefinedTableError:
+                pass
+            # The admin views' stored results were computed over their rows
+            # too (the scatter keeps single requests): drop them, to be
+            # computed again on next view.
+            if purged["n"]:
+                try:
+                    async with conn.transaction():
+                        await admin_view_results.clear(conn)
+                except _asyncpg.UndefinedTableError:
+                    pass
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast
@@ -1267,7 +1259,9 @@ class PostgresLogStore(LogStore):
                 )
                 recipients_count = None
 
-        counts = {"api_logs": _row_count(logs_status)}
+        counts = {"api_logs": int(purged["n"])}
+        if usage_count is not None:
+            counts["user_usage_daily"] = usage_count
         if recipients_count is not None:
             counts["email_broadcast_recipients"] = recipients_count
         return counts

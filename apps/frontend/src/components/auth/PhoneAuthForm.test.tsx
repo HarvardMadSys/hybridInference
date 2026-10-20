@@ -18,6 +18,7 @@ import { sendPhoneCode, bindPhone, signupPhone } from '@/lib/api/auth';
 import { APIError } from '@/lib/utils/errors';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
+import { AuthAppearanceProvider, NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
 import { PhoneAuthForm } from './PhoneAuthForm';
 
 function enterPhone(phone = '13812345678') {
@@ -26,12 +27,16 @@ function enterPhone(phone = '13812345678') {
 
 function selectCountry(name: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Country code' }));
+  // Narrow the list first, as a user would: getByRole computes the accessible
+  // name of every option it considers, and over the full list of ~250 that
+  // took seconds per call on a loaded CI runner -- past vitest's 5s timeout.
+  fireEvent.change(screen.getByLabelText('Search country or code'), { target: { value: name } });
   fireEvent.click(screen.getByRole('option', { name: new RegExp(`^${name}\\s*\\+\\d+$`) }));
 }
 
 function enterSignupDetails() {
   fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
-  fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+  fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Phone User' } });
 }
 
 beforeEach(() => {
@@ -113,7 +118,7 @@ describe('phone verification', () => {
       render(<PhoneAuthForm purpose="signup" onSuccess={onSuccess} />);
       enterPhone();
       fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
-      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+      fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Phone User' } });
       fireEvent.click(screen.getByRole('button', { name: 'Sign Up' }));
       await waitFor(() =>
         expect(onSuccess).toHaveBeenCalledWith(
@@ -221,6 +226,45 @@ describe('phone verification', () => {
 });
 
 describe('signup country code selection', () => {
+  it.each([
+    ['example-site', '86', '🇨🇳', '+86'],
+    ['tencent', '44', '🇬🇧', '+44'],
+  ])('uses the configured calling code for %s', (id, defaultCountryCode, flag, code) => {
+    render(
+      <SiteConfigProvider
+        initialConfig={{
+          ...buildTimeSiteConfig,
+          distribution: { id, release: '' },
+          phoneAuthPolicy: { defaultCountryCode },
+        }}
+      >
+        <PhoneAuthForm purpose="signup" onSuccess={vi.fn()} />
+      </SiteConfigProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Country code' })).toHaveTextContent(flag);
+    expect(screen.getByRole('button', { name: 'Country code' })).toHaveTextContent(code);
+  });
+
+  it('keeps custom auth local-number input and delivery unchanged', async () => {
+    vi.mocked(sendPhoneCode).mockResolvedValueOnce({ message: 'Code sent.', retry_after: 60 });
+    render(
+      <SiteConfigProvider
+        initialConfig={{ ...buildTimeSiteConfig, phoneAuthPolicy: { defaultCountryCode: '86' } }}
+      >
+        <AuthAppearanceProvider value={{ ...NEUTRAL_AUTH_APPEARANCE }}>
+          <PhoneAuthForm purpose="signup" onSuccess={vi.fn()} />
+        </AuthAppearanceProvider>
+      </SiteConfigProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Country code' })).not.toBeInTheDocument();
+    enterPhone('13812345678');
+    fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }));
+    expect(await screen.findByText('Code sent.')).toBeInTheDocument();
+    expect(sendPhoneCode).toHaveBeenCalledWith(
+      expect.objectContaining({ phone: '13812345678', purpose: 'signup' }),
+    );
+  });
+
   it('localizes the country picker and national-number guidance', () => {
     wording.messages['auth.phone.country_code_label'] = '国家或地区区号';
     wording.messages['auth.phone.country_code_options_label'] = '可选区号';

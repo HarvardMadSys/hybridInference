@@ -512,7 +512,6 @@ async def test_boot_marks_secret_the_rows_of_secret_settings(config_env) -> None
         [
             row("ACME_ZZZ", "legacy-" + "credential", source="env_import"),
             row("ACME_PASS", "legacy-" + "pass"),
-            row("TENCENT_CLOUD_SECRET_KEY", "legacy-" + "tencent"),
             row("SITE_NAME", "Public"),
             row("SMTP_PASSWORD", "", source="reset"),
         ]
@@ -524,7 +523,6 @@ async def test_boot_marks_secret_the_rows_of_secret_settings(config_env) -> None
         "ACME_PASS",
         "ACME_ZZZ",
         "SMTP_PASSWORD",
-        "TENCENT_CLOUD_SECRET_KEY",
     ]
     assert not store.rows["SITE_NAME"].secret
     # Even once the reference is gone, the row keeps the value hidden.

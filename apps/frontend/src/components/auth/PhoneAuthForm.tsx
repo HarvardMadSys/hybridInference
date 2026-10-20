@@ -39,8 +39,15 @@ export function PhoneAuthForm(props: Props) {
   const isNeutral = skin === NEUTRAL_AUTH_APPEARANCE;
   const isNeutralBind = purpose === 'bind' && isNeutral;
   const hasCountryPicker = isNeutral && (purpose === 'signup' || purpose === 'bind');
-  const { branding, distribution } = useSiteConfig();
-  const [countryIso, setCountryIso] = useState(() => (distribution.id === 'tencent' ? 'CN' : 'US'));
+  const { branding, phoneAuthPolicy } = useSiteConfig();
+  const [countryIso, setCountryIso] = useState(() => {
+    const callingCode = phoneAuthPolicy?.defaultCountryCode;
+    if (!callingCode) return 'US';
+    return (
+      PHONE_COUNTRY_CODES.find((country) => country.code === `+${callingCode}`)?.iso ??
+      'international'
+    );
+  });
   const [countrySearch, setCountrySearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -546,10 +553,10 @@ export function PhoneAuthForm(props: Props) {
         <>
           <AuthField
             id="phone-userName"
-            label={t('auth.signup.username_label', 'Username')}
+            label={t('auth.signup.username_label', 'Nickname')}
             hint={t(
               'auth.signup.username_hint',
-              'This name is shown in your account and admin review.',
+              'Shown in your account and admin review. This is not a login name.',
             )}
             error={errors.userName?.message}
           >
@@ -557,7 +564,7 @@ export function PhoneAuthForm(props: Props) {
               id="phone-userName"
               className={errors.userName ? skin.inputError : skin.input}
               data-auth="control"
-              autoComplete="username"
+              autoComplete="nickname"
               disabled={loading}
               {...register('userName')}
             />

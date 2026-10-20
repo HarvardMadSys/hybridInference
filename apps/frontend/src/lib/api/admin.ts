@@ -35,8 +35,8 @@ export interface AdminUser {
   usage_today_usd: number;
   usage_month_usd: number;
   usage_alltime_usd: number;
-  usage_alltime_requests: number;
-  usage_alltime_tokens: number;
+  usage_alltime_requests: number | null;
+  usage_alltime_tokens: number | null;
 }
 
 export type UserSortBy =
@@ -83,6 +83,7 @@ export interface ListUsersOptions {
   provider?: string;
   activeWithinHours?: number;
   anomaly?: boolean;
+  includeUsageTotals?: boolean;
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -100,6 +101,9 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
     params.set('active_within_hours', String(opts.activeWithinHours));
   }
   if (opts.anomaly !== undefined) params.set('anomaly', String(opts.anomaly));
+  if (opts.includeUsageTotals !== undefined) {
+    params.set('include_usage_totals', String(opts.includeUsageTotals));
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }
@@ -233,6 +237,20 @@ export async function getUserDetail(
     `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
   );
   return jsonOrThrow<UserDetail>(resp);
+}
+
+export interface UserUsageTotals {
+  requests: number;
+  tokens: number;
+}
+
+export async function getBulkUsageTotals(userIds: string[], signal?: AbortSignal) {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/usage-totals?user_ids=${encodeURIComponent(userIds.join(','))}`,
+    { signal },
+  );
+  return jsonOrThrow<{ totals: Record<string, UserUsageTotals> }>(resp);
 }
 
 export interface UserTurnAverages {
@@ -494,8 +512,13 @@ export interface AdminPerformanceMetricsWindow {
 }
 
 export interface AdminPerformanceMetricsResponse {
-  generated_at: string;
+  /** When the server computed these; null while its first computation runs. */
+  generated_at: string | null;
   windows: AdminPerformanceMetricsWindow[];
+  /** The server is computing new ones; ask again to get them. */
+  refreshing: boolean;
+  /** Why the last computation failed, if none has succeeded since. */
+  refresh_error?: string | null;
 }
 
 export async function getPerformanceMetrics({
@@ -526,11 +549,31 @@ export interface AdminTtftScatterModel {
 }
 
 export interface AdminTtftScatterResponse {
+  /** When the server computed this scatter; null while its first computation runs. */
+  generated_at: string | null;
   models: AdminTtftScatterModel[];
+  /** The server is computing a new one; ask again to get it. */
+  refreshing: boolean;
+  /** Why the last computation failed, if none has succeeded since. */
+  refresh_error?: string | null;
 }
 
-export async function getTtftScatter(): Promise<AdminTtftScatterResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/ttft-scatter');
+/**
+ * The TTFT scatter; with `provider`, only that provider's series (every
+ * provider's together run to megabytes).
+ */
+export async function getTtftScatter({
+  refresh = false,
+  provider,
+}: { refresh?: boolean; provider?: string } = {}): Promise<AdminTtftScatterResponse> {
+  const params = new URLSearchParams();
+  if (refresh) params.set('refresh', 'true');
+  if (provider !== undefined) params.set('provider', provider);
+  const query = params.toString();
+  const resp = await fetchWithAuth(
+    API_BASE,
+    query ? `/admin/ttft-scatter?${query}` : '/admin/ttft-scatter',
+  );
   return jsonOrThrow<AdminTtftScatterResponse>(resp);
 }
 

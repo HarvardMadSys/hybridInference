@@ -12,6 +12,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.servers.deps import AppServices
 from serving.servers.routers import internal
 from serving.servers.routers.auth_routes import hash_refresh_token
 
@@ -118,3 +119,106 @@ class TestVerifyAdmin:
 
         assert response.status_code == 401
         assert response.json()["detail"] == "Invalid session."
+
+
+class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
+    """Every way a pre-browser-session cookie must fail the pgAdmin gate.
+
+    pgAdmin is the whole database, and the console's proxy admits on this 200
+    alone, so each refusal below is an access-control guarantee.
+    """
+
+    @staticmethod
+    async def _admin_with_session(op_store, user_id: str, *, expires_in: timedelta) -> str:
+        token = f"test-refresh-{uuid4()}"
+        await _set_user_role(op_store, user_id, "admin")
+        await op_store.create_session(
+            session_id=str(uuid4()),
+            user_id=user_id,
+            refresh_token_hash=hash_refresh_token(token),
+            jti=str(uuid4()),
+            sid=str(uuid4()),
+            expires_at=datetime.now(timezone.utc) + expires_in,
+        )
+        return token
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["suspended", "pending_approval", "rejected"])
+    async def test_an_admin_who_is_not_active_is_refused(
+        self, internal_client: AsyncClient, auth_backend, test_user, status
+    ) -> None:
+        """A suspended admin keeps a live session cookie; it must not open pgAdmin."""
+        operational_store, _, _, _ = auth_backend
+        token = await self._admin_with_session(
+            operational_store, test_user["id"], expires_in=timedelta(days=1)
+        )
+        cookies = {"refresh_token": token}
+        assert (
+            await internal_client.get("/internal/verify-admin", cookies=cookies)
+        ).status_code == 200
+
+        await operational_store.update_user_fields(test_user["id"], status=status)
+
+        response = await internal_client.get("/internal/verify-admin", cookies=cookies)
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_admin_session_is_refused(
+        self, internal_client: AsyncClient, auth_backend, test_user
+    ) -> None:
+        operational_store, _, _, _ = auth_backend
+        token = await self._admin_with_session(
+            operational_store, test_user["id"], expires_in=timedelta(days=1)
+        )
+        await operational_store.revoke_user_sessions(test_user["id"])
+
+        response = await internal_client.get(
+            "/internal/verify-admin", cookies={"refresh_token": token}
+        )
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Session revoked."
+
+    @pytest.mark.asyncio
+    async def test_an_expired_admin_session_is_refused(
+        self, internal_client: AsyncClient, auth_backend, test_user
+    ) -> None:
+        operational_store, _, _, _ = auth_backend
+        token = await self._admin_with_session(
+            operational_store, test_user["id"], expires_in=-timedelta(minutes=1)
+        )
+
+        response = await internal_client.get(
+            "/internal/verify-admin", cookies={"refresh_token": token}
+        )
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Session expired."
+
+    @pytest.mark.asyncio
+    async def test_no_cookie_is_refused(self, internal_client: AsyncClient) -> None:
+        response = await internal_client.get("/internal/verify-admin")
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Not authenticated."
+
+    @pytest.mark.asyncio
+    async def test_a_user_without_a_role_is_not_an_admin(
+        self, internal_client: AsyncClient, auth_backend, test_user
+    ) -> None:
+        operational_store, _, _, _ = auth_backend
+        token = f"test-refresh-{uuid4()}"
+        await _create_refresh_session(operational_store, test_user["id"], token)
+
+        response = await internal_client.get(
+            "/internal/verify-admin", cookies={"refresh_token": token}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_without_a_database_it_fails_closed(self) -> None:
+        app = FastAPI()
+        app.state.services = AppServices(router=None, operational_store=None)
+        app.include_router(internal.router)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/internal/verify-admin", cookies={"refresh_token": "anything"}
+            )
+        assert response.status_code == 500

@@ -202,13 +202,37 @@ uv run pytest tests/unit/routing/test_manager.py           # one file
 uv run pytest -m dbtest tests/integration/                 # one tier
 ```
 
-The `dbtest` tier needs a reachable PostgreSQL. Tests read `TEST_DB_HOST`,
-`TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` (defaulting to `localhost:5432`
-and `postgres`/`postgres`), and some read a full `TEST_PG_DSN`. Starting just
-the database container is enough:
+The `dbtest` tier needs a reachable PostgreSQL. Every test finds it through
+`tests/fixtures/postgres.py`, which reads `TEST_DB_HOST`, `TEST_DB_PORT`,
+`TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` (defaulting to
+`localhost:5432`, `postgres`/`postgres` and `hybridinference_test_db`). Starting
+just the database container is enough:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgres
+```
+
+`make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, so a
+database test that cannot connect fails instead of skipping, and `TEST_DB_HOST`
+and `TEST_DB_PORT` must be set explicitly. CI sets the same variable. No setup
+step is needed otherwise: each test process creates and migrates its own
+database on first use. `uv run python -m tests.fixtures.postgres prepare
+--workers N` does the same up front, which is faster before a run with `-n N`.
+
+With Docker, `make test-db-local` needs no setup at all. It starts one
+PostgreSQL container for the whole machine (`hybridinference-test-postgres` on
+`127.0.0.1:54329`, data in memory), gives each checkout its own database named
+from its path, prepares it, and runs the tier with one worker per CPU, up to
+eight. The container and the databases are kept between runs, so a re-run only
+re-reads the schema; the whole tier takes about 15 seconds.
+
+```bash
+make test-db-local                                     # the dbtest tier
+make test-db-local ARGS="tests/integration/test_x.py"  # narrower
+eval "$(ops/dev/test-db-local.sh env)"                 # TEST_DB_* for plain pytest
+make test-db-local-reset                               # start this worktree's databases afresh
+make test-db-local-clean                               # drop removed worktrees' databases
+make test-db-local-down                                # remove the container: every checkout's databases
 ```
 
 `make test` parallelises with `pytest-xdist` at file granularity. Run serially

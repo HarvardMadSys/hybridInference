@@ -3,32 +3,53 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
 from serving.storage.database import DatabaseLogger
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     import asyncpg
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
+# The instant the frozen_clock fixture fixes, past the job's minute so the
+# hour before it is due. Tests that depend on which hours are due use it, so
+# they do not change behaviour when the suite runs early in an hour.
+NOW = datetime(2026, 5, 10, 12, 30, tzinfo=timezone.utc)
+DUE_END = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+
+# completed_at for markers a test writes itself; a rollup writes NOW().
+SEEDED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
 
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("TEST_PG_DSN is not set; skipping database integration tests")
-    return dsn
+    return postgres.worker_dsn()
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Fix the rollup module's clock at NOW."""
+    from serving.admin import provider_stats_rollup
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is None else NOW.astimezone(tz)
+
+    monkeypatch.setattr(provider_stats_rollup, "datetime", FrozenDateTime)
+    return NOW
 
 
 async def _truncate(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
-        for table in ("provider_hourly_stats", "api_logs"):
+        for table in ("provider_hourly_stats", "provider_hourly_coverage", "api_logs"):
             exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
             if exists:
                 await conn.execute(f"TRUNCATE TABLE {table}")
@@ -152,6 +173,77 @@ async def _insert_api_log(
             error,
             json.dumps(metadata) if metadata else None,
         )
+
+
+async def _insert_traffic(pool, hour: datetime) -> None:
+    """One successful zai request ten minutes into *hour*."""
+    await _insert_api_log(
+        pool,
+        request_id=f"traffic-{hour.isoformat()}",
+        provider="zai",
+        model_id="zai/glm-4.6",
+        timestamp=hour + timedelta(minutes=10),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=100,
+    )
+
+
+async def _insert_stats_row(pool, hour: datetime, *, request_count: int = 99) -> None:
+    """A zai stats row whose count _insert_traffic's rows would not produce.
+
+    Stands for an hour rolled up earlier: a re-roll would rewrite the count.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens, total_prompt_tokens
+            ) VALUES ($1, 'zai', 'zai/glm-4.6', $2, 0, 0, 0, 0)
+            """,
+            hour,
+            request_count,
+        )
+
+
+async def _mark_covered(
+    pool, start: datetime, end: datetime, *, skip: tuple[datetime, ...] = ()
+) -> None:
+    """Mark the hours in [start, end) covered, except *skip*, as of SEEDED_AT."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_coverage (hour_bucket, completed_at)
+            SELECT h, $4::timestamptz
+            FROM generate_series($1::timestamptz, $2::timestamptz - interval '1 hour',
+                                 interval '1 hour') AS h
+            WHERE h <> ALL($3::timestamptz[])
+            """,
+            start,
+            end,
+            list(skip),
+            SEEDED_AT,
+        )
+
+
+async def _request_counts(pool) -> dict[datetime, int]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT hour_bucket, request_count FROM provider_hourly_stats")
+    return {row["hour_bucket"]: row["request_count"] for row in rows}
+
+
+async def _coverage(pool) -> dict[datetime, datetime]:
+    """Map each covered hour to its completed_at."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT hour_bucket, completed_at FROM provider_hourly_coverage")
+    return {row["hour_bucket"]: row["completed_at"] for row in rows}
+
+
+def _hours(start: datetime, end: datetime) -> set[datetime]:
+    return {start + timedelta(hours=i) for i in range(int((end - start) / timedelta(hours=1)))}
 
 
 @pytest.mark.asyncio
@@ -391,14 +483,13 @@ async def test_run_rollup_is_idempotent(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
-async def test_hourly_job_rolls_up_previous_hour(db_logger: DatabaseLogger):
+async def test_hourly_job_rolls_up_previous_hour(db_logger: DatabaseLogger, frozen_clock):
     from serving.admin.provider_stats_rollup import hourly_job
 
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    prev = now - timedelta(hours=1)
+    prev = DUE_END - timedelta(hours=1)
 
     await _insert_api_log(
         pool,
@@ -426,6 +517,7 @@ async def test_hourly_job_rolls_up_previous_hour(db_logger: DatabaseLogger):
     assert row["request_count"] == 1
     # The bucket equals the previous hour (hour-truncated)
     assert row["hour_bucket"] == prev
+    assert prev in await _coverage(pool)
 
 
 @pytest.mark.asyncio
@@ -435,8 +527,12 @@ async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    old = datetime.now(timezone.utc) - timedelta(days=45)
-    new = datetime.now(timezone.utc) - timedelta(days=2)
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).replace(
+        minute=0, second=0, microsecond=0
+    )
+    new = (datetime.now(timezone.utc) - timedelta(days=2)).replace(
+        minute=0, second=0, microsecond=0
+    )
 
     async with pool.acquire() as conn:
         for ts in (old, new):
@@ -449,8 +545,9 @@ async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
                 ) VALUES ($1, 'p', 'm', 1, 0, 1, 100)
                 ON CONFLICT DO NOTHING
                 """,
-                ts.replace(minute=0, second=0, microsecond=0),
+                ts,
             )
+            await _mark_covered(pool, ts, ts + timedelta(hours=1))
 
     deleted = await purge_old(pool, retention_days=30)
     assert deleted == 1
@@ -458,12 +555,13 @@ async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
     async with pool.acquire() as conn:
         n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
     assert n == 1
+    # An hour's marker goes with its rows.
+    assert set(await _coverage(pool)) == {new}
 
 
 @pytest.mark.asyncio
 async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: str):
     """A second concurrent hourly_job acquires no lock and returns no work."""
-    import asyncpg
 
     from serving.admin.provider_stats_rollup import ADVISORY_LOCK_KEY, hourly_job
 
@@ -471,7 +569,7 @@ async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: s
     pool = db_logger.pool
 
     # Hold the advisory lock on a separate session.
-    holder = await asyncpg.connect(pg_dsn)
+    holder = await postgres.connect()
     try:
         got = await holder.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_KEY)
         assert got is True
@@ -488,38 +586,218 @@ async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: s
 
 
 @pytest.mark.asyncio
-async def test_backfill_if_empty_seeds_history(db_logger: DatabaseLogger):
-    from serving.admin.provider_stats_rollup import backfill_if_empty
+async def test_backfill_missing_seeds_an_empty_table(db_logger: DatabaseLogger, frozen_clock):
+    """A first start rolls up every due hour of the window, quiet ones included."""
+    from serving.admin.provider_stats_rollup import backfill_missing
 
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    # Seed 3 distinct hours of traffic
-    for h in (now - timedelta(hours=3), now - timedelta(hours=2), now - timedelta(hours=1)):
+    busy = [DUE_END - timedelta(hours=n) for n in (3, 2, 1)]
+    for hour in busy:
+        await _insert_traffic(pool, hour)
+
+    assert await backfill_missing(pool, days=1) == 24
+
+    assert await _request_counts(pool) == dict.fromkeys(busy, 1)
+    assert set(await _coverage(pool)) == _hours(DUE_END - timedelta(days=1), DUE_END)
+
+    # Every hour is covered now, so a second start has nothing to do.
+    assert await backfill_missing(pool, days=1) == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_fills_a_missed_hour(db_logger: DatabaseLogger, frozen_clock):
+    """An hour whose run was missed is rolled up; covered hours are left alone."""
+    from serving.admin.provider_stats_rollup import backfill_missing
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    missed = DUE_END - timedelta(hours=3)
+    covered = DUE_END - timedelta(hours=5)
+    await _mark_covered(pool, DUE_END - timedelta(days=1), DUE_END, skip=(missed,))
+    for hour in (missed, covered):
+        await _insert_traffic(pool, hour)
+    await _insert_stats_row(pool, covered)
+
+    assert await backfill_missing(pool, days=1) == 1
+
+    assert await _request_counts(pool) == {missed: 1, covered: 99}
+    coverage = await _coverage(pool)
+    assert set(coverage) == _hours(DUE_END - timedelta(days=1), DUE_END)
+    assert coverage[missed] != SEEDED_AT
+    assert {at for hour, at in coverage.items() if hour != missed} == {SEEDED_AT}
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_does_no_work_on_a_complete_table(
+    db_logger: DatabaseLogger, frozen_clock, monkeypatch
+):
+    """Startup on a complete table reads the gaps once, takes no lock, re-rolls nothing."""
+    from serving.admin import provider_stats_rollup
+    from serving.admin.provider_stats_rollup import backfill_missing
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = DUE_END - timedelta(hours=2)
+    await _mark_covered(pool, DUE_END - timedelta(days=1), DUE_END)
+    await _insert_traffic(pool, hour)
+    await _insert_stats_row(pool, hour)
+    lock = AsyncMock(side_effect=AssertionError("took the rollup lock"))
+    monkeypatch.setattr(provider_stats_rollup, "_try_lock_run", lock)
+
+    assert await backfill_missing(pool, days=1) == 0
+
+    lock.assert_not_awaited()
+    assert await _request_counts(pool) == {hour: 99}
+    assert set((await _coverage(pool)).values()) == {SEEDED_AT}
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_leaves_the_hour_before_the_job_minute(
+    db_logger: DatabaseLogger, monkeypatch
+):
+    """Before minute 5 the previous hour is not due, so a start leaves it to the job."""
+    from serving.admin import provider_stats_rollup
+    from serving.admin.provider_stats_rollup import backfill_missing
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    early = DUE_END + timedelta(minutes=3)
+
+    class EarlyDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return early if tz is None else early.astimezone(tz)
+
+    monkeypatch.setattr(provider_stats_rollup, "datetime", EarlyDateTime)
+    previous = DUE_END - timedelta(hours=1)
+    await _mark_covered(pool, DUE_END - timedelta(days=2), previous)
+    await _insert_traffic(pool, previous)
+
+    assert await backfill_missing(pool, days=1) == 0
+    assert await _request_counts(pool) == {}
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_marks_rows_from_before_coverage(
+    db_logger: DatabaseLogger, frozen_clock
+):
+    """The first repair marks hours that already have rows instead of re-rolling them.
+
+    That is the upgrade path: a populated table, no markers yet. Only the hours
+    without rows -- quiet, or missed before this change -- are rolled up.
+    """
+    from serving.admin.provider_stats_rollup import backfill_missing
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    rolled = DUE_END - timedelta(hours=4)
+    missed = DUE_END - timedelta(hours=2)
+    for hour in (rolled, missed):
+        await _insert_traffic(pool, hour)
+    await _insert_stats_row(pool, rolled)
+
+    assert await backfill_missing(pool, days=1) == 23
+
+    assert await _request_counts(pool) == {rolled: 99, missed: 1}
+    assert set(await _coverage(pool)) == _hours(DUE_END - timedelta(days=1), DUE_END)
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_fills_missed_hours(db_logger: DatabaseLogger, frozen_clock):
+    """The job rolls up the previous hour and any earlier hour whose run was missed."""
+    from serving.admin.provider_stats_rollup import hourly_job
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    previous = DUE_END - timedelta(hours=1)
+    missed = DUE_END - timedelta(hours=4)
+    covered = DUE_END - timedelta(hours=6)
+    await _mark_covered(pool, DUE_END - timedelta(days=1), DUE_END, skip=(previous, missed))
+    for hour in (previous, missed, covered):
+        await _insert_traffic(pool, hour)
+    await _insert_stats_row(pool, covered)
+
+    await hourly_job(pool, retention_days=1)
+
+    assert await _request_counts(pool) == {previous: 1, missed: 1, covered: 99}
+    assert set(await _coverage(pool)) == _hours(DUE_END - timedelta(days=1), DUE_END)
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_rolls_up_the_previous_hour_past_one_that_keeps_failing(
+    db_logger: DatabaseLogger, frozen_clock
+):
+    """An older hour whose rollup always fails holds up neither the previous hour nor the purge."""
+    from serving.admin.provider_stats_rollup import hourly_job
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    start = DUE_END - timedelta(days=1)
+    previous = DUE_END - timedelta(hours=1)
+    failing = DUE_END - timedelta(hours=3)
+    expired = start - timedelta(hours=1)
+    await _mark_covered(pool, start, DUE_END, skip=(previous, failing))
+    await _insert_stats_row(pool, expired)
+    await _insert_traffic(pool, previous)
+    # Enough cost in one group that its hourly total overflows DECIMAL(14, 8).
+    for i in range(101):
         await _insert_api_log(
             pool,
-            request_id=f"bf-{h.isoformat()}",
+            request_id=f"overflow-{i}",
             provider="zai",
             model_id="zai/glm-4.6",
-            timestamp=h + timedelta(minutes=5),
-            stream=True,
-            ttft_ms=500,
-            latency_ms=3500,
-            completion_tokens=200,
+            timestamp=failing + timedelta(minutes=1),
+            stream=False,
+            ttft_ms=None,
+            latency_ms=1000,
+            completion_tokens=10,
+            cost_usd=9999.99999999,
         )
 
-    await backfill_if_empty(pool, days=1)
+    await hourly_job(pool, retention_days=1)
 
-    async with pool.acquire() as conn:
-        n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
-    assert n == 3
+    assert await _request_counts(pool) == {previous: 1}
+    coverage = await _coverage(pool)
+    assert previous in coverage
+    assert failing not in coverage
 
-    # Second call must be a no-op (table not empty).
-    await backfill_if_empty(pool, days=1)
-    async with pool.acquire() as conn:
-        n2 = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
-    assert n2 == 3
+
+@pytest.mark.asyncio
+async def test_hourly_job_purge_leaves_no_hour_missing(
+    db_logger: DatabaseLogger, frozen_clock, monkeypatch
+):
+    """The purge cuts where the repair window starts, so a purged hour never reads as missing."""
+    from serving.admin import provider_stats_rollup
+    from serving.admin.provider_stats_rollup import backfill_missing, hourly_job
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    start = DUE_END - timedelta(days=1)
+    expired = start - timedelta(hours=1)
+    await _insert_stats_row(pool, expired)
+    # A complete window, plus one hour that has just passed retention.
+    await _mark_covered(pool, expired, DUE_END)
+
+    await hourly_job(pool, retention_days=1)
+
+    assert await _request_counts(pool) == {}
+    coverage = await _coverage(pool)
+    assert set(coverage) == _hours(start, DUE_END)
+    # Nothing in the window was rolled up again, its oldest hour included.
+    assert set(coverage.values()) == {SEEDED_AT}
+
+    lock = AsyncMock(side_effect=AssertionError("took the rollup lock"))
+    monkeypatch.setattr(provider_stats_rollup, "_try_lock_run", lock)
+    assert await backfill_missing(pool, days=1) == 0
 
 
 @pytest.mark.asyncio

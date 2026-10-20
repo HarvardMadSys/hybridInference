@@ -24,6 +24,8 @@ from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import (
     _API_LOGS_COLUMN_MIGRATIONS,
     _API_LOGS_INDEXES,
+    _API_LOGS_STORAGE_PARAMETERS,
+    _USER_USAGE_DAILY_MIGRATIONS,
     ensure_api_logs_schema,
 )
 from serving.storage.postgres_log import PostgresLogStore
@@ -105,8 +107,21 @@ async def test_helper_skips_migration_ddl_when_schema_current():
     conn, statements = _capturing_conn()
     column_rows = [{"attname": name} for name, _ in _API_LOGS_COLUMN_MIGRATIONS]
     index_rows = [{"indexname": name} for name, _ in _API_LOGS_INDEXES]
-    # First fetch = columns, second fetch = indexes (order matches the helper).
-    conn.fetch = AsyncMock(side_effect=[column_rows, index_rows])
+    # Columns, indexes, the two usage rollup tables' columns, then the storage
+    # parameters (the helper's order).
+    conn.fetch = AsyncMock(
+        side_effect=[
+            column_rows,
+            index_rows,
+            [{"attname": c} for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS if t == "user_usage_daily"],
+            [
+                {"attname": c}
+                for t, c, _ in _USER_USAGE_DAILY_MIGRATIONS
+                if t == "user_usage_daily_coverage"
+            ],
+            [{"name": name} for name, _ in _API_LOGS_STORAGE_PARAMETERS],
+        ]
+    )
 
     await ensure_api_logs_schema(conn)
 
@@ -114,10 +129,13 @@ async def test_helper_skips_migration_ddl_when_schema_current():
         s for s in statements if s.strip().startswith(("ALTER TABLE", "CREATE INDEX", "DROP INDEX"))
     ]
     assert migrations == [], f"expected no migration DDL, got: {migrations}"
-    # The two idempotent CREATE TABLE IF NOT EXISTS statements still run. The
-    # lock_timeout guard brackets the (here empty) DDL phase either way.
+    # The idempotent CREATE TABLE IF NOT EXISTS statements still run, and the
+    # admin views' generation row is seeded if missing. The lock_timeout guard
+    # brackets the (here empty) DDL phase either way.
     non_guard = [s for s in statements if not s.strip().startswith("SET lock_timeout")]
-    assert all("CREATE TABLE IF NOT EXISTS" in s for s in non_guard)
+    assert all(
+        "CREATE TABLE IF NOT EXISTS" in s or "INSERT INTO admin_view_state" in s for s in non_guard
+    )
 
 
 @pytest.mark.asyncio
@@ -157,6 +175,23 @@ async def test_database_logger_creates_geo_rollup_and_coverage_tables():
     assert "rows_with_ip" in joined
     assert "metadata" not in joined
     assert "user_id" not in joined
+
+
+@pytest.mark.asyncio
+async def test_database_logger_creates_provider_rollup_coverage_table():
+    """Bootstrap creates the per-hour markers the provider rollup repairs gaps from."""
+    pool, statements = _capturing_pool()
+    db = DatabaseLogger({"dsn": "postgres://ignored"})
+    db.pool = pool
+
+    await db._create_tables()
+
+    create = next(
+        " ".join(statement.split())
+        for statement in statements
+        if "CREATE TABLE IF NOT EXISTS provider_hourly_coverage" in statement
+    )
+    assert "hour_bucket TIMESTAMPTZ PRIMARY KEY" in create
 
 
 @pytest.mark.asyncio

@@ -923,7 +923,7 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_geo_rollup_job,
                         )
                         from serving.admin.provider_stats_rollup import (
-                            backfill_if_empty,
+                            backfill_missing as backfill_provider_stats,
                             backfill_token_columns,
                             register_rollup_job,
                         )
@@ -931,12 +931,15 @@ async def initialize() -> AppServices:
                             backfill_missing as backfill_request_volume,
                             register_rollup_job as register_request_volume_job,
                         )
+                        from serving.storage import daily_activity_rollup, user_usage_rollup
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
                             register_rollup_job(sched, db_logger.pool)
                             register_geo_rollup_job(sched, db_logger.pool)
                             register_request_volume_job(sched, db_logger.pool)
+                            user_usage_rollup.register_rollup_job(sched, db_logger.pool)
+                            daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
 
                             # Failed-request Slack alerter (no-op if
                             # SLACK_WEBHOOK_URL is unset).
@@ -950,15 +953,17 @@ async def initialize() -> AppServices:
                                 "Slack alerter not registered: APScheduler did not start"
                             )
 
-                        # Seed provider_hourly_stats with the last 30 days when it
-                        # is empty, and fill the token totals that rows from
-                        # before those columns lack. Both are cheap no-ops on a
-                        # complete table. Run in the background so a slow 30-day
+                        # Roll up the hours of the last 30 days that
+                        # provider_hourly_stats has not covered -- every hour on a
+                        # new table, otherwise those that came due while no
+                        # hourly job ran -- and fill the token totals that rows
+                        # from before those columns lack. Both are cheap no-ops on
+                        # a complete table. Run in the background so a slow 30-day
                         # aggregation on a large api_logs table cannot block
                         # server startup or trip readiness checks.
                         async def _run_backfill(pool=db_logger.pool):
                             try:
-                                await backfill_if_empty(pool, days=30)
+                                await backfill_provider_stats(pool, days=30)
                             except Exception as bf_exc:
                                 logger.warning(
                                     f"provider-stats backfill failed (non-fatal): {bf_exc}"
@@ -1002,6 +1007,49 @@ async def initialize() -> AppServices:
                         _volume_bf_task = asyncio.create_task(_run_request_volume_backfill())
                         _BACKGROUND_TASKS.add(_volume_bf_task)
                         _volume_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # The days of the Analytics growth series (the last 95) the
+                        # rollup lacks, the same way.
+                        async def _run_daily_activity_backfill(pool=db_logger.pool):
+                            try:
+                                await daily_activity_rollup.backfill_missing(pool)
+                            except Exception as bf_exc:
+                                logger.warning(
+                                    f"daily-activity backfill failed (non-fatal): {bf_exc}"
+                                )
+
+                        _activity_bf_task = asyncio.create_task(_run_daily_activity_backfill())
+                        _BACKGROUND_TASKS.add(_activity_bf_task)
+                        _activity_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # Store the completed days the Users table's all-time
+                        # request and token totals read and the table lacks: the
+                        # whole history on the first start with the table,
+                        # otherwise the days that ended while the server was
+                        # down. Until then the totals count those days live.
+                        async def _run_user_usage_backfill(pool=db_logger.pool):
+                            try:
+                                await user_usage_rollup.backfill_missing(pool)
+                            except Exception as bf_exc:
+                                logger.warning(f"user-usage backfill failed (non-fatal): {bf_exc}")
+
+                        _usage_bf_task = asyncio.create_task(_run_user_usage_backfill())
+                        _BACKGROUND_TASKS.add(_usage_bf_task)
+                        _usage_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # The Providers tab's percentile and TTFT-scatter views
+                        # take seconds to minutes over a large api_logs and are
+                        # served from their last stored result; build the
+                        # percentiles' covering index if missing, then refresh
+                        # both, so the first admin to open the tab sees fresh
+                        # numbers.
+                        from serving.servers.routers.admin.metrics import (
+                            warm_performance_caches,
+                        )
+
+                        _perf_warm_task = asyncio.create_task(warm_performance_caches(db_logger))
+                        _BACKGROUND_TASKS.add(_perf_warm_task)
+                        _perf_warm_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:

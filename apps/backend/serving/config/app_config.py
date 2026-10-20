@@ -167,14 +167,19 @@ _LISTENERS: list[Callable[[], None]] = []
 def config_value(key: str, default: str | None = None) -> str | None:
     """Resolve a setting: database row, then environment, then *default*.
 
-    Cheap enough for a request path: one dictionary lookup, then the
-    environment. Before the configuration loads, and in a database-free
-    deployment, it is exactly ``os.environ.get(key, default)``.
+    Registered extension settings also supply their declared default, including
+    before the database loads. Invalid environment values never reach a delivery
+    adapter; startup reports them unless a valid database row takes precedence.
     """
     row = _STATE.effective.get(key)
     if row is not None:
         return row.value
-    return os.environ.get(key, default)
+    entry = registry.extension_entry(key)
+    fallback = default if default is not None else (entry.default if entry is not None else None)
+    value = _environ_value(key, entry)
+    if entry is not None and _value_problem(entry, value):
+        return fallback
+    return value if value is not None else fallback
 
 
 # LOG_LEVEL and LOG_FORMAT are database-backed too. Logging cannot import this
@@ -936,6 +941,11 @@ async def _import_environment(
         value = _environ_value(key, entry)
         if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
+        if registry.extension_entry(key) is not None or key in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+            problem = _value_problem(entry, value)
+            if problem is not None:
+                logger.warning("Not importing invalid %s from the environment: %s", key, problem)
+                continue
         rule = in_force.overridden.get(key)
         if rule is not None:
             logger.warning(
@@ -1054,6 +1064,20 @@ def require_valid_environment() -> None:
         ConfigBootstrapError: Naming each such setting or broken rule, what is
             wrong, and how to fix it.
     """
+    unavailable_providers = {
+        key: problem
+        for key in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+        if (row := _STATE.rows.get(key)) is not None
+        and (problem := _row_problem(key, row)) is not None
+    }
+    if unavailable_providers:
+        listed = "; ".join(f"{key}: {problem}" for key, problem in unavailable_providers.items())
+        raise ConfigBootstrapError(
+            f"Stored delivery provider selection is not available ({listed}). "
+            "Load its owning BACKEND_EXTENSIONS module, or correct the stored selection "
+            "with `python -m serving.config.manage set`. The gateway will not switch "
+            "delivery providers automatically."
+        )
     unresolved: dict[str, str] = {}
     for name, problem in invalid_environment().items():
         key = registry.settings_env_name(name)
@@ -1061,6 +1085,22 @@ def require_valid_environment() -> None:
             logger.warning(
                 "Ignoring %s from the environment, which is not valid (%s): the value "
                 "stored in the database applies",
+                key,
+                problem,
+            )
+        else:
+            unresolved[key] = problem
+    # Extension fields and dynamically registered provider names are outside
+    # Settings' schema. Apply the same DB-over-env rule to their registry bounds.
+    for key, entry in _STATE.entries.items():
+        if registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+            continue
+        problem = _value_problem(entry, _environ_value(key, entry))
+        if problem is None:
+            continue
+        if key in _STATE.effective and key not in _STATE.invalid:
+            logger.warning(
+                "Ignoring invalid %s from the environment (%s): the stored value applies",
                 key,
                 problem,
             )
@@ -1188,6 +1228,9 @@ async def command_line_session() -> AsyncIterator[None]:
     included. The connection serves :func:`update` and :func:`delete` until the
     block ends; what was loaded stays applied afterwards.
     """
+    from serving.extensions import load_backend_extensions
+
+    load_backend_extensions()
     connection = await connect(DatabaseSettings())
     try:
         store = AppConfigStore(connection)
@@ -1391,6 +1434,16 @@ def _damage(
         after: The table as the write would leave it.
         written: The keys the write stores or resets, in the request's order.
     """
+    entries = _build_entries(rows)
+    for key in written:
+        entry = entries.get(key)
+        if entry is None or (
+            registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+        ):
+            continue
+        problem = _value_problem(entry, _resolve(after, key, entry))
+        if problem and not _value_problem(entry, _resolve(rows, key, entry)):
+            return _Damage(key, (problem,))
     if not any(
         (entry := registry.static_entry(key)) is not None and entry.field is not None
         for key in written

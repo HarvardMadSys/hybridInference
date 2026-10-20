@@ -1,28 +1,36 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
 from tests.fixtures.auth_factories import create_test_user
+from tests.fixtures.postgres import (
+    ALLOWED_TEST_DB_PATTERN,
+    assert_test_db_from_pool,
+    assert_test_db_name,
+    target,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from httpx import AsyncClient
 
-ALLOWED_TEST_DB_PATTERN = "_test_"
+__all__ = [
+    "ALLOWED_TEST_DB_PATTERN",
+    "assert_test_db_from_pool",
+    "assert_test_db_name",
+    "build_auth_test_env_defaults",
+    "cleanup_auth_tables",
+    "login_and_get_auth_headers",
+    "seed_test_user",
+]
 
 
 def build_auth_test_env_defaults(overrides: Mapping[str, str] | None = None) -> dict[str, str]:
     env = {
         "DB_ENABLED": "true",
-        "DB_HOST": os.getenv("TEST_DB_HOST", "localhost"),
-        "DB_PORT": os.getenv("TEST_DB_PORT", "5432"),
-        "DB_NAME": os.getenv("TEST_DB_NAME", "hybridinference_test_db"),
-        "DB_USER": os.getenv("TEST_DB_USER", "postgres"),
-        "DB_PASSWORD": os.getenv("TEST_DB_PASSWORD", "postgres"),
+        # The database this worker uses, from TEST_DB_* (tests/fixtures/postgres.py).
+        **target().app_env(),
         "JWT_SECRET_KEY": "test-secret-key-for-testing-only-do-not-use-in-production",
         "JWT_ALGORITHM": "HS256",
         "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "15",
@@ -46,22 +54,6 @@ def build_auth_test_env_defaults(overrides: Mapping[str, str] | None = None) -> 
     if overrides:
         env.update(dict(overrides))
     return env
-
-
-def assert_test_db_name(db_name: str, context: str = "") -> None:
-    if ALLOWED_TEST_DB_PATTERN not in (db_name or ""):
-        pytest.fail(
-            f"SAFETY: refusing to run tests against database '{db_name}' "
-            f"(name does not contain '{ALLOWED_TEST_DB_PATTERN}')"
-            f"{f' [{context}]' if context else ''}. "
-            "Set TEST_DB_NAME / DB_NAME to a dedicated test database."
-        )
-
-
-async def assert_test_db_from_pool(pool, context: str = "") -> None:
-    async with pool.acquire() as conn:
-        db_name = await conn.fetchval("SELECT current_database()")
-    assert_test_db_name(db_name, context)
 
 
 async def cleanup_auth_tables(pool) -> None:

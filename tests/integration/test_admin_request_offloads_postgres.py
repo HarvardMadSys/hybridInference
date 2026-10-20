@@ -5,10 +5,8 @@ against a mocked connection; these run the real query over seeded ``api_logs``
 rows and check the numbers: which rows count as offloaded, how they split by
 route and reason, what a model's total is, and what counts as a failure.
 
-Connection: ``TEST_PG_DSN`` when set, otherwise the ``DB_HOST`` / ``DB_PORT`` /
-``DB_NAME`` / ``DB_USER`` / ``DB_PASSWORD`` variables CI exports for its
-``postgres`` service, as ``test_admin_request_perf_breakdown_postgres.py`` does.
-Skipped when no database is reachable.
+Connection: the PostgreSQL test database from ``tests/fixtures/postgres.py``.
+Skipped when it is not reachable (a failure under ``TEST_DB_REQUIRED``).
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-import asyncpg
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -33,10 +30,12 @@ from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics as admin_metrics
 from serving.servers.routers.admin.metrics import _load_request_offloads
 from serving.storage.log_schema import ensure_api_logs_schema
-from tests.fixtures.auth_helpers import assert_test_db_name
+from tests.fixtures import postgres
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    import asyncpg
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -45,44 +44,10 @@ ENGINE = "glm-4.6:local-12003"
 OFFLOAD = "glm-4.6:reserved-api"
 
 
-def _dsn() -> str:
-    dsn = os.getenv("TEST_PG_DSN")
-    if dsn:
-        return dsn
-    host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "5432")
-    name = os.getenv("DB_NAME", "hybridinference_test_db")
-    user = os.getenv("DB_USER", "postgres")
-    password = os.getenv("DB_PASSWORD", "postgres")
-    return f"postgresql://{user}:{password}@{host}:{port}/{name}"
-
-
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
-    """A reachable test-database DSN, or skip."""
-    import asyncio
-
-    dsn = _dsn()
-
-    async def _probe() -> str | None:
-        try:
-            conn = await asyncpg.connect(dsn, timeout=2)
-        except Exception as exc:
-            return str(exc)
-        try:
-            assert_test_db_name(await conn.fetchval("SELECT current_database()"), "offloads")
-        finally:
-            await conn.close()
-        return None
-
-    loop = asyncio.new_event_loop()
-    try:
-        failure = loop.run_until_complete(_probe())
-    finally:
-        loop.close()
-    if failure is not None:
-        pytest.skip(f"PostgreSQL test database not available: {failure}")
-    return dsn
+    """This worker's test database (tests/fixtures/postgres.py), reachable or skipped."""
+    return postgres.worker_dsn()
 
 
 @pytest_asyncio.fixture
@@ -97,15 +62,15 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     test_digest = hashlib.sha1(request.node.name.encode()).hexdigest()[:10]
     schema = f"offloads_{worker}_{test_digest}"
 
-    admin_conn = await asyncpg.connect(pg_dsn)
+    admin_conn = await postgres.connect()
     try:
         await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin_conn.execute(f'CREATE SCHEMA "{schema}"')
     finally:
         await admin_conn.close()
 
-    pool = await asyncpg.create_pool(
-        pg_dsn, min_size=1, max_size=3, server_settings={"search_path": schema}
+    pool = await postgres.create_pool(
+        min_size=1, max_size=3, server_settings={"search_path": schema}
     )
     assert pool is not None
     async with pool.acquire() as conn:
@@ -126,7 +91,7 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     finally:
         admin_metrics._OFFLOAD_SUMMARY_CACHE.clear()
         await pool.close()
-        admin_conn = await asyncpg.connect(pg_dsn)
+        admin_conn = await postgres.connect()
         try:
             await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:

@@ -31,7 +31,7 @@ def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
 
 
 @contextmanager
-def _provider_stats_startup(*, scheduler, backfill_if_empty, backfill_token_columns):
+def _provider_stats_startup(*, scheduler, backfill_missing, backfill_token_columns):
     """Stub a database-backed initialize() around its provider-stats backfill.
 
     The stores and the email scheduler are doubles, ``scheduler`` is what
@@ -60,7 +60,7 @@ def _provider_stats_startup(*, scheduler, backfill_if_empty, backfill_token_colu
             "serving.servers.bootstrap.email_scheduler.get_scheduler",
             return_value=scheduler,
         ),
-        patch("serving.admin.provider_stats_rollup.backfill_if_empty", new=backfill_if_empty),
+        patch("serving.admin.provider_stats_rollup.backfill_missing", new=backfill_missing),
         patch(
             "serving.admin.provider_stats_rollup.backfill_token_columns",
             new=backfill_token_columns,
@@ -321,30 +321,30 @@ class TestBootstrapInitialization:
         """
         # Empty rather than unset, so a developer's .env cannot supply one.
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
-        backfill_if_empty = AsyncMock(return_value=0)
+        backfill_missing = AsyncMock(return_value=0)
         backfill_token_columns = AsyncMock(return_value=0)
 
         with _provider_stats_startup(
             scheduler=MagicMock() if scheduler_started else None,
-            backfill_if_empty=backfill_if_empty,
+            backfill_missing=backfill_missing,
             backfill_token_columns=backfill_token_columns,
         ) as pool:
             await bootstrap.initialize()
             await _until_awaited(backfill_token_columns)
 
-        backfill_if_empty.assert_awaited_once_with(pool, days=30)
+        backfill_missing.assert_awaited_once_with(pool, days=30)
         backfill_token_columns.assert_awaited_once_with(pool, days=30)
 
     @pytest.mark.asyncio
     async def test_initialize_survives_failing_provider_stats_backfill(self, mock_env):
         """A failing backfill step is logged; the next step and startup go on."""
-        backfill_if_empty = AsyncMock(side_effect=RuntimeError("seed failed"))
+        backfill_missing = AsyncMock(side_effect=RuntimeError("seed failed"))
         backfill_token_columns = AsyncMock(side_effect=RuntimeError("fill failed"))
 
         with (
             _provider_stats_startup(
                 scheduler=MagicMock(),
-                backfill_if_empty=backfill_if_empty,
+                backfill_missing=backfill_missing,
                 backfill_token_columns=backfill_token_columns,
             ),
             patch("serving.servers.bootstrap.logger") as mock_logger,

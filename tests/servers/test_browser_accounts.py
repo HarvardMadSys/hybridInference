@@ -317,3 +317,30 @@ async def test_pgadmin_admits_a_browser_with_any_live_admin_account(
 
     stranger = Browser(auth_app_client)
     assert (await stranger.send("GET", "/internal/verify-admin")).status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lose_it", ["suspend", "revoke"])
+async def test_pgadmin_refuses_a_browser_whose_admin_account_is_no_longer_live(
+    browser, auth_test_app, auth_backend, test_user, second_user, lose_it
+):
+    """Having once signed in an admin is not enough: that account must still be live.
+
+    With a member still signed in the browser is known (403); with nobody live
+    it is not (401).
+    """
+    operational_store, _, _, _ = auth_backend
+    auth_test_app.include_router(internal.router)
+    await operational_store.update_user_fields(test_user["id"], role="admin")
+    await browser.login(second_user)
+    await browser.login(test_user)
+    assert (await browser.send("GET", "/internal/verify-admin")).status_code == 200
+
+    if lose_it == "suspend":
+        await operational_store.update_user_fields(test_user["id"], status="suspended")
+    else:
+        await operational_store.revoke_user_sessions(test_user["id"])
+    assert (await browser.send("GET", "/internal/verify-admin")).status_code == 403
+
+    await operational_store.revoke_user_sessions(second_user["id"])
+    assert (await browser.send("GET", "/internal/verify-admin")).status_code == 401

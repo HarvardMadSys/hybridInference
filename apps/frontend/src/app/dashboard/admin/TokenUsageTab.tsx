@@ -10,6 +10,8 @@ import {
   getProviderTokenUsage,
   getPerformanceMetrics,
 } from '@/lib/api/admin';
+import { ComputedAt } from '@/components/features/admin/ComputedAt';
+import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const RANGES: { key: TokenUsageRange; label: string }[] = [
@@ -266,23 +268,18 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
 }
 
 function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
+  const {
+    data,
+    busy: perfMetricsLoading,
+    load: loadPerformanceMetrics,
+  } = useRefreshedAdminView(getPerformanceMetrics);
+  const perfMetrics = data?.windows ?? [];
 
-  const loadPerformanceMetrics = useCallback(async () => {
-    setPerfMetricsLoading(true);
-    try {
-      const d = await getPerformanceMetrics();
-      setPerfMetrics(d.windows);
-    } catch {
-      // ignore
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
-
+  // The server keeps these for a few minutes; an explicit refresh of the page
+  // (refreshKey > 0) asks it to recompute, and the section shows the new ones
+  // once computed.
   useEffect(() => {
-    void loadPerformanceMetrics();
+    void loadPerformanceMetrics((refreshKey ?? 0) > 0);
   }, [loadPerformanceMetrics, refreshKey]);
 
   return (
@@ -294,9 +291,12 @@ function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
             Prompt/response length, time-to-first-token, and inter-token latency distributions.
           </p>
         </div>
-        {perfMetricsLoading && (
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-        )}
+        <div className="flex items-center gap-2">
+          <ComputedAt at={data?.generated_at} refreshing={data?.refreshing} />
+          {perfMetricsLoading && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
+        </div>
       </div>
       {perfMetrics.length > 0 ? (
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ValidationError
 
 from serving.schemas_admin import (
     AdminClearErrorRequestsResponse,
@@ -49,7 +52,8 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
     resolve_request_outcome_filter,
 )
-from serving.storage import account_schema
+from serving.servers.routers.admin._refreshing_cache import RefreshingResult
+from serving.storage import account_schema, admin_view_results, perf_metrics_index
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -75,26 +79,20 @@ _TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768,
 _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 _THROUGHPUT_HISTOGRAM_EDGES: tuple[float, ...] = (0, 5, 10, 25, 50, 100, 250, 500, 1000)
 
-# The dashboard can mount this section multiple times in a short period (for
-# example while switching admin tabs).  Exact percentiles over a month's log
-# history are deliberately expensive, and the underlying data does not need
-# sub-second freshness.  Keep one short, per-process result cache and
-# coalesce concurrent misses so a tab switch cannot multiply that work.
-_PERFORMANCE_METRICS_CACHE_TTL_SECONDS = 30.0
-_PERFORMANCE_METRICS_CACHE: tuple[float, int, AdminPerformanceMetricsResponse] | None = None
-_PERFORMANCE_METRICS_LOCK: asyncio.Lock | None = None
-_PERFORMANCE_METRICS_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-
-
-def _performance_metrics_lock() -> asyncio.Lock:
-    """Return a lock bound to the active event loop for metric-cache misses."""
-    global _PERFORMANCE_METRICS_LOCK, _PERFORMANCE_METRICS_LOCK_LOOP
-
-    loop = asyncio.get_running_loop()
-    if _PERFORMANCE_METRICS_LOCK is None or _PERFORMANCE_METRICS_LOCK_LOOP is not loop:
-        _PERFORMANCE_METRICS_LOCK = asyncio.Lock()
-        _PERFORMANCE_METRICS_LOCK_LOOP = loop
-    return _PERFORMANCE_METRICS_LOCK
+# Exact percentiles over a month of logs, and the newest scatter points of each
+# series over 90 days, take seconds to minutes on a production-sized api_logs
+# and need not be fresher than a few minutes; each view shows when its numbers
+# were computed. So both are computed in the background, kept in memory and in
+# the database, and served from there (see ``_refreshing_cache``;
+# ``PERFORMANCE_METRICS`` and ``TTFT_SCATTER`` follow their loaders below).
+_PERFORMANCE_CACHE_FRESH_SECONDS = 300.0
+# How long a request finding no result at all waits for the first: below the
+# console proxy's 30 s timeout. After it the console polls.
+_PERFORMANCE_FIRST_WAIT_SECONDS = 20.0
+# How long after a failed computation a stale result is served without trying
+# again (an explicit refresh always tries): the console's polling then ends
+# with the failure reported, and a failing query is not rerun on every poll.
+_PERFORMANCE_RETRY_SECONDS = 120.0
 
 
 def _distribution_from_row(
@@ -122,7 +120,7 @@ def _distribution_from_row(
 # Shared CTE prefix used by both the stats query and the histogram query for
 # each window. Defining it once keeps the row filter / throughput derivation in sync
 # so the "histogram sums to count" invariant cannot drift.
-_PERF_METRICS_CTE = """
+_PERF_METRICS_CTE = f"""
 WITH base AS (
     SELECT
         prompt_tokens,
@@ -132,10 +130,9 @@ WITH base AS (
         stream
     FROM api_logs
     WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
-      AND status_code BETWEEN 200 AND 399
-      -- Embeddings have a fundamentally different latency/token profile and no
-      -- completion tokens; exclude them so they don't skew chat-perf percentiles.
-      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
+      -- Successful requests less embeddings, verbatim the covering index's
+      -- predicate so these statements run as index-only scans over it.
+      AND {perf_metrics_index.ROW_FILTER}
 ),
 derived AS (
     SELECT
@@ -227,7 +224,7 @@ _PERF_BREAKDOWN_MAX_GROUPS = 100
 # and an admin can pick a 90-day lookback. Cache per filter tuple for a few
 # seconds and serialize misses, so a burst of filter edits — or a second admin
 # on the same tab — cannot pile overlapping month-scale scans onto the pool.
-# Same reasoning as _PERFORMANCE_METRICS_CACHE; keyed because this view is
+# Same reasoning as PERFORMANCE_METRICS; keyed because this view is
 # parameterized rather than fixed-window. Queued misses for *different* filters
 # still run once the lock frees (the query cannot be cancelled server-side),
 # but at most one runs at a time.
@@ -583,36 +580,32 @@ async def _get_cached_performance_metrics(
     *,
     refresh: bool = False,
 ) -> AdminPerformanceMetricsResponse:
-    """Load performance metrics, reusing a short-lived result when possible."""
-    global _PERFORMANCE_METRICS_CACHE
+    """Performance metrics from :data:`PERFORMANCE_METRICS`; ``refresh`` starts new ones."""
+    served = await PERFORMANCE_METRICS.get(
+        db_logger.pool, lambda: _load_performance_metrics(db_logger), refresh=refresh
+    )
+    response = served.value or AdminPerformanceMetricsResponse(generated_at=None, windows=[])
+    return response.model_copy(
+        update={"refreshing": served.refreshing, "refresh_error": served.refresh_error}
+    )
 
-    pool_id = id(db_logger.pool)
-    now = time.monotonic()
-    cached = _PERFORMANCE_METRICS_CACHE
-    if (
-        not refresh
-        and cached is not None
-        and cached[1] == pool_id
-        and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
-    ):
-        return cached[2]
 
-    # Serialize cache misses. The inner check means simultaneous dashboard
-    # mounts all reuse the one query instead of each executing eight scans.
-    async with _performance_metrics_lock():
-        now = time.monotonic()
-        cached = _PERFORMANCE_METRICS_CACHE
-        if (
-            not refresh
-            and cached is not None
-            and cached[1] == pool_id
-            and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
-        ):
-            return cached[2]
+async def warm_performance_caches(db_logger) -> None:
+    """Prepare the Providers tab's cached views before the first admin asks.
 
-        metrics = await _load_performance_metrics(db_logger)
-        _PERFORMANCE_METRICS_CACHE = (time.monotonic(), pool_id, metrics)
-        return metrics
+    First the performance distributions' covering index, built concurrently if
+    missing -- minutes on a large api_logs, during which the stored results are
+    served -- then each view, one after the other, so a starting gateway adds
+    one heavy scan at a time. A failure is logged and left to the next start;
+    the views work without the index, only slower.
+    """
+    pool = db_logger.pool
+    try:
+        await perf_metrics_index.ensure_index(pool)
+    except Exception:
+        logger.exception(f"{perf_metrics_index.INDEX_NAME}: build failed")
+    await PERFORMANCE_METRICS.warm(pool, lambda: _load_performance_metrics(db_logger))
+    await TTFT_SCATTER.warm(pool, lambda: _load_ttft_scatter(db_logger))
 
 
 @router.get("/performance-metrics", response_model=AdminPerformanceMetricsResponse)
@@ -621,7 +614,11 @@ async def admin_get_performance_metrics(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminPerformanceMetricsResponse:
-    """Return cached performance distributions; ``refresh`` bypasses the cache."""
+    """Return performance distributions, at most a few minutes old.
+
+    ``generated_at`` says when they were computed; ``refresh`` starts a new
+    computation and returns at once, with ``refreshing`` set while it runs.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
     return await _get_cached_performance_metrics(db_logger, refresh=refresh)
@@ -629,9 +626,37 @@ async def admin_get_performance_metrics(
 
 @router.get("/ttft-scatter", response_model=AdminTtftScatterResponse)
 async def admin_get_ttft_scatter(
+    refresh: bool = False,
+    provider: str | None = None,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminTtftScatterResponse:
+    """Return TTFT vs input length scatter data, at most a few minutes old.
+
+    ``generated_at`` says when it was computed; ``refresh`` starts a new
+    computation and returns at once, with ``refreshing`` set while it runs. See
+    :func:`_load_ttft_scatter` for what it holds.
+
+    ``provider`` returns only that provider's series. The console shows one
+    provider at a time, and every provider's series together run to megabytes;
+    the whole scatter is still what is computed and kept.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+    served = await TTFT_SCATTER.get(
+        db_logger.pool, lambda: _load_ttft_scatter(db_logger), refresh=refresh
+    )
+    response = served.value or AdminTtftScatterResponse(generated_at=None, models=[])
+    update: dict[str, Any] = {
+        "refreshing": served.refreshing,
+        "refresh_error": served.refresh_error,
+    }
+    if provider is not None:
+        update["models"] = [m for m in response.models if m.provider == provider]
+    return response.model_copy(update=update)
+
+
+async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
     """Return TTFT vs input length scatter data per (model, provider).
 
     For each (model_id, provider) pair, returns up to the last 1000 successful
@@ -642,9 +667,6 @@ async def admin_get_ttft_scatter(
     so the `ROW_NUMBER()` scan stays bounded as `api_logs` grows. `cache_hit`
     is true iff `cache_read_tokens > 0`.
     """
-    if not db_logger or not db_logger.pool:
-        raise HTTPException(500, "Database not configured")
-
     async with db_logger.pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -695,7 +717,93 @@ async def admin_get_ttft_scatter(
     ]
     models.sort(key=lambda m: len(m.points), reverse=True)
 
-    return AdminTtftScatterResponse(models=models)
+    return AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=models)
+
+
+_ResponseT = TypeVar("_ResponseT", AdminPerformanceMetricsResponse, AdminTtftScatterResponse)
+
+
+def _definition(*parts: Any) -> str:
+    """Fingerprint of a view's computation: its loader's source, constants and response shape."""
+    text = []
+    for part in parts:
+        if inspect.isfunction(part):
+            try:
+                text.append(inspect.getsource(part))
+            except OSError:  # no source shipped: fall back to the name
+                text.append(part.__qualname__)
+        elif isinstance(part, type) and issubclass(part, BaseModel):
+            text.append(json.dumps(part.model_json_schema(), sort_keys=True))
+        else:
+            text.append(repr(part))
+    return hashlib.sha256("\n".join(text).encode()).hexdigest()[:16]
+
+
+class _StoredView(Generic[_ResponseT]):
+    """A view's result in ``admin_view_results``; keyed by the database pool."""
+
+    def __init__(self, name: str, model: type[_ResponseT], definition: str) -> None:
+        self.name = name
+        self.model = model
+        self.definition = definition
+
+    async def generation(self, pool: asyncpg.Pool) -> int:
+        return await admin_view_results.generation(pool)
+
+    async def read(self, pool: asyncpg.Pool) -> tuple[_ResponseT, datetime, int] | None:
+        stored = await admin_view_results.read(pool, self.name, self.definition)
+        if stored is None:
+            return None
+        payload, generation = stored
+        try:
+            value = self.model.model_validate(payload)
+        except ValidationError as exc:
+            logger.warning(f"{self.name}: ignoring a stored result that no longer parses: {exc}")
+            return None
+        if value.generated_at is None:
+            return None
+        return value, value.generated_at, generation
+
+    async def write(
+        self, pool: asyncpg.Pool, value: _ResponseT, computed_at: datetime, generation: int
+    ) -> bool:
+        # The served state (refreshing, refresh_error) is the request's, not the result's.
+        payload = value.model_dump(mode="json", exclude={"refreshing", "refresh_error"})
+        return await admin_view_results.write(
+            pool, self.name, self.definition, payload, computed_at, generation
+        )
+
+
+PERFORMANCE_METRICS: RefreshingResult[AdminPerformanceMetricsResponse] = RefreshingResult(
+    "performance_metrics",
+    fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
+    first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    retry_seconds=_PERFORMANCE_RETRY_SECONDS,
+    store=_StoredView(
+        "performance_metrics",
+        AdminPerformanceMetricsResponse,
+        _definition(
+            _load_performance_metrics,
+            _PERF_METRICS_CTE,
+            REQUEST_METRIC_WINDOWS,
+            _TOKEN_HISTOGRAM_EDGES,
+            _LATENCY_HISTOGRAM_EDGES,
+            _THROUGHPUT_HISTOGRAM_EDGES,
+            AdminPerformanceMetricsResponse,
+        ),
+    ),
+)
+TTFT_SCATTER: RefreshingResult[AdminTtftScatterResponse] = RefreshingResult(
+    "ttft_scatter",
+    fresh_seconds=_PERFORMANCE_CACHE_FRESH_SECONDS,
+    first_wait_seconds=_PERFORMANCE_FIRST_WAIT_SECONDS,
+    retry_seconds=_PERFORMANCE_RETRY_SECONDS,
+    store=_StoredView(
+        "ttft_scatter",
+        AdminTtftScatterResponse,
+        _definition(_load_ttft_scatter, AdminTtftScatterResponse),
+    ),
+)
 
 
 def _build_recent_requests_filters(
@@ -1732,7 +1840,6 @@ async def admin_clear_error_requests(
     _admin_id: str = Depends(verify_admin_access),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
-    db_logger=Depends(get_db_logger),
 ) -> AdminClearErrorRequestsResponse:
     """Hard-delete error requests logged within the last *hours* hours.
 
@@ -1742,8 +1849,11 @@ async def admin_clear_error_requests(
     under a different outcome would silently change what this button deletes.
     Defaults to the past hour. The action is recorded in the admin audit log.
 
-    The Request volume cards' stored hours that the delete reached are dropped,
-    to be counted again from what is left, as are the list's cached totals.
+    The Request volume cards' stored hours and the Users table's stored days
+    that the deleted rows were in are dropped in the delete's own transaction,
+    to be counted again from what is left: if dropping them fails, nothing is
+    deleted and the request fails, for the admin to retry. The list's cached
+    totals are dropped too.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1751,7 +1861,9 @@ async def admin_clear_error_requests(
         raise HTTPException(500, "Database not configured")
 
     hours = max(1, min(hours, 24))
-    deleted_count = await log_store.delete_recent_error_requests(hours=hours)
+    deleted_count = await log_store.delete_recent_error_requests(
+        hours=hours, on_deleted=request_volume.invalidate_hours
+    )
 
     if op_store is not None:
         await log_admin_action(
@@ -1763,13 +1875,6 @@ async def admin_clear_error_requests(
         )
 
     _RECENT_REQUESTS_COUNT_CACHE.clear()
-    if deleted_count and db_logger is not None and db_logger.pool is not None:
-        try:
-            await request_volume.invalidate_recent(db_logger.pool, hours)
-        except Exception:
-            # The rows are gone and the action is audited; failing the request
-            # now would only tell the admin the delete did not happen.
-            logger.exception("request volume: could not invalidate cleared hours")
 
     return AdminClearErrorRequestsResponse(
         deleted_count=deleted_count,

@@ -1,14 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminMetricDistribution,
   AdminPerformanceMetricsWindow,
   getPerformanceMetrics,
 } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
 import { ProviderPerformanceTab } from '@/app/dashboard/admin/ProviderPerformanceTab';
+import { ComputedAt } from '@/components/features/admin/ComputedAt';
+import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 
 function formatLatency(ms?: number | null): string {
   if (ms == null) return '—';
@@ -90,27 +91,21 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
 
 export function PerformanceTab() {
   const toast = useAccountToast();
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
-
-  const loadPerformanceMetrics = useCallback(
-    async (refresh = false) => {
-      setPerfMetricsLoading(true);
-      try {
-        const d = await getPerformanceMetrics({ refresh });
-        setPerfMetrics(d.windows);
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      } finally {
-        setPerfMetricsLoading(false);
-      }
-    },
-    [toast],
-  );
+  const {
+    data,
+    busy: perfMetricsLoading,
+    error,
+    load: loadPerformanceMetrics,
+  } = useRefreshedAdminView(getPerformanceMetrics);
+  const perfMetrics = data?.windows ?? [];
 
   useEffect(() => {
-    loadPerformanceMetrics();
+    void loadPerformanceMetrics();
   }, [loadPerformanceMetrics]);
+
+  useEffect(() => {
+    if (error) toast.error(error);
+  }, [error, toast]);
 
   return (
     <div className="mt-5 space-y-6">
@@ -124,12 +119,13 @@ export function PerformanceTab() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <ComputedAt at={data?.generated_at} refreshing={data?.refreshing} />
             {perfMetricsLoading && (
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
             )}
             <button
               type="button"
-              onClick={() => loadPerformanceMetrics(true)}
+              onClick={() => void loadPerformanceMetrics(true)}
               disabled={perfMetricsLoading}
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
             >

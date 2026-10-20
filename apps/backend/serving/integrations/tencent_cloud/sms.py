@@ -1,12 +1,17 @@
-"""Tencent Cloud delivery of domestic phone verification codes."""
+"""Tencent Cloud delivery of mainland China phone verification codes."""
+
+from __future__ import annotations
 
 import re
 
-from serving.config.settings import settings
+from serving.integrations.tencent_cloud.api import TencentCloudError, call_tencent_cloud
+from serving.integrations.tencent_cloud.config import settings
 from serving.utils.logging import get_logger
-from serving.utils.tencent_cloud import TencentCloudError, call_tencent_cloud
 
 logger = get_logger(__name__)
+
+_MAINLAND_MOBILE_RE = re.compile(r"\+861[3-9][0-9]{9}")
+_CODE_RE = re.compile(r"[0-9]{6}")
 
 
 def is_configured() -> bool:
@@ -25,7 +30,7 @@ def send_verification_sms(phone: str, code: str) -> bool:
     """Send a code using the approved template's code and minutes parameters."""
     if not is_configured():
         return False
-    if not re.fullmatch(r"\+861[3-9][0-9]{9}", phone) or not re.fullmatch(r"[0-9]{6}", code):
+    if not _MAINLAND_MOBILE_RE.fullmatch(phone) or not _CODE_RE.fullmatch(code):
         return False
     try:
         result = call_tencent_cloud(
@@ -41,17 +46,17 @@ def send_verification_sms(phone: str, code: str) -> bool:
                 "TemplateParamSet": [code, str((settings.sms_otp_expire_seconds + 59) // 60)],
             },
         )
-        statuses = result.get("SendStatusSet")
-        accepted = (
-            isinstance(statuses, list)
-            and len(statuses) == 1
-            and isinstance(statuses[0], dict)
-            and statuses[0].get("Code") == "Ok"
-            and statuses[0].get("PhoneNumber") == phone
-        )
-        if not accepted:
-            logger.warning("Tencent SMS did not accept the verification message")
-        return accepted
     except TencentCloudError as error:
         logger.warning("Tencent SMS request failed: %s", error)
         return False
+    statuses = result.get("SendStatusSet")
+    accepted = (
+        isinstance(statuses, list)
+        and len(statuses) == 1
+        and isinstance(statuses[0], dict)
+        and statuses[0].get("Code") == "Ok"
+        and statuses[0].get("PhoneNumber") == phone
+    )
+    if not accepted:
+        logger.warning("Tencent SMS did not accept the verification message")
+    return accepted

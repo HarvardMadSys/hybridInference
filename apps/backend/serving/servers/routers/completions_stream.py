@@ -44,7 +44,7 @@ from serving.stream import make_role_chunk, new_completion_id, stamp_completion_
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
-from serving.utils.token_utils import normalize_usage
+from serving.utils.token_utils import normalize_usage, sanitize_usage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Keepalive cadence: emit an SSE comment after this many idle seconds so
-# intermediate proxies (the Cloudflare tunnel, 100s) see activity and don't
+# intermediate proxies (Cloudflare, 125s by default) see activity and don't
 # drop the connection during long upstream pauses (e.g., reasoning).
 _KEEPALIVE_INTERVAL = 15
 _SENTINEL: Any = object()
@@ -583,6 +583,12 @@ class StreamSession:
                                 out_json.pop("provider", None)
                                 if "model" in out_json:
                                     out_json["model"] = self._response_model
+                            if isinstance(out_json.get("usage"), dict):
+                                # What the client is told matches what is billed
+                                # (token_utils.usage_count), with the totals a
+                                # client's usage model requires. A new dict: the
+                                # captured usage billing reads keeps "not reported".
+                                out_json["usage"] = sanitize_usage(out_json["usage"], complete=True)
                             sanitized_chunk = f"data: {json.dumps(out_json)}\n\n"
                             logger.debug(
                                 f"Yielding sanitized chunk {self._chunk_count} "
