@@ -106,6 +106,7 @@ describe('DashboardView account identity', () => {
     render(<DashboardView />);
 
     expect(screen.getByText('Welcome back, admin')).toBeInTheDocument();
+    expect(screen.getByText('Nickname:').nextElementSibling).toHaveTextContent('Not set');
     expect(screen.getByText('Email:').nextElementSibling).toHaveTextContent('Not set');
     expect(screen.getByText('Login name:').nextElementSibling).toHaveTextContent('admin');
   });

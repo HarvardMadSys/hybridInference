@@ -177,8 +177,8 @@ function SettingsContent() {
     try {
       await updateProfile({ user_name: data.userName?.trim() });
       await refreshUser();
-      setProfileSuccess(t('settings.username.updated', 'Username updated successfully.'));
-      toast.success(t('settings.username.updated_toast', 'Username updated successfully!'));
+      setProfileSuccess(t('settings.username.updated', 'Nickname updated successfully.'));
+      toast.success(t('settings.username.updated_toast', 'Nickname updated successfully!'));
     } catch (err) {
       const errorMsg = getErrorMessage(err);
       setProfileError(errorMsg);
@@ -265,10 +265,10 @@ function SettingsContent() {
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.username.title', 'Change Username')}
+        title={t('settings.username.title', 'Change Nickname')}
         description={t(
           'settings.username.description',
-          'This name is shown on your dashboard and admin request views.',
+          'Shown on your dashboard and admin request views. Changing your nickname does not change how you log in.',
         )}
       >
         <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="space-y-5">
@@ -337,9 +337,9 @@ function SettingsContent() {
           </div>
 
           <InputField
-            label={t('settings.username.label', 'Username')}
+            label={t('settings.username.label', 'Nickname')}
             type="text"
-            autoComplete="username"
+            autoComplete="nickname"
             hint={t('settings.username.hint', 'Use 2-50 characters.')}
             error={profileForm.formState.errors.userName?.message}
             {...profileForm.register('userName')}
@@ -347,7 +347,7 @@ function SettingsContent() {
 
           <div className="flex justify-end">
             <Button type="submit" isLoading={profileLoading}>
-              {t('settings.username.submit', 'Update Username')}
+              {t('settings.username.submit', 'Update Nickname')}
             </Button>
           </div>
         </form>

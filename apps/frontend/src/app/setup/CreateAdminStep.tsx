@@ -13,7 +13,7 @@ import {
   normalizeSetupCode,
   SETUP_CODE_LENGTH,
 } from '@/lib/api/setup';
-import { LOGIN_NAME_PATTERN, passwordSchema } from '@/lib/schemas/auth';
+import { passwordSchema } from '@/lib/schemas/auth';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
 
@@ -31,8 +31,8 @@ export const SETUP_CODE_LOG_COMMAND =
 const FIELD_RULES = {
   setupCode: `A setup code has ${SETUP_CODE_LENGTH} letters and digits, like ABCD-EFGH-JKLM.`,
   loginName:
-    'Use 3–32 letters, digits, dots, underscores or hyphens, starting with a letter or digit.',
-  displayName: 'A display name has 2–50 characters.',
+    'Use 3–32 lowercase letters, digits, dots, underscores or hyphens, starting with a lowercase letter or digit.',
+  displayName: 'A nickname has 2–50 characters.',
   password: 'Use at least 8 characters, with an uppercase letter, a lowercase letter and a number.',
 } as const;
 
@@ -43,7 +43,10 @@ const createAdminSchema = z
       .trim()
       .min(1, 'Enter the setup code from the backend log.')
       .refine(isWellFormedSetupCode, FIELD_RULES.setupCode),
-    loginName: z.string().trim().regex(LOGIN_NAME_PATTERN, FIELD_RULES.loginName),
+    loginName: z
+      .string()
+      .trim()
+      .regex(/^[a-z0-9][a-z0-9_.-]{2,31}$/, FIELD_RULES.loginName),
     // Optional; when given, the backend's 2–50 characters.
     displayName: z
       .string()
@@ -215,9 +218,9 @@ export function CreateAdminStep({ onCreated }: { onCreated: () => void }) {
 
       <SetupField
         id="setup-login-name"
-        label="Username"
+        label="Login name"
         error={errors.loginName?.message}
-        hint="You sign in with this. 3–32 letters, digits, dots, underscores or hyphens."
+        hint="You sign in with this. Use 3–32 lowercase letters, digits, dots, underscores or hyphens."
       >
         {(a11y) => (
           <input
@@ -235,16 +238,16 @@ export function CreateAdminStep({ onCreated }: { onCreated: () => void }) {
 
       <SetupField
         id="setup-display-name"
-        label="Display name"
+        label="Nickname"
         optional
         error={errors.displayName?.message}
-        hint="Shown in the console. Defaults to the username."
+        hint="Shown in the console. This is not a login name. Defaults to your login name."
       >
         {(a11y) => (
           <input
             id="setup-display-name"
             type="text"
-            autoComplete="name"
+            autoComplete="nickname"
             className={errors.displayName ? SETUP_INPUT_ERROR_CLASS : SETUP_INPUT_CLASS}
             {...a11y}
             {...register('displayName')}

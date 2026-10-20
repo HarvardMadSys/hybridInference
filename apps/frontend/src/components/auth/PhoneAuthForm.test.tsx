@@ -36,7 +36,7 @@ function selectCountry(name: string) {
 
 function enterSignupDetails() {
   fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
-  fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+  fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Phone User' } });
 }
 
 beforeEach(() => {
@@ -118,7 +118,7 @@ describe('phone verification', () => {
       render(<PhoneAuthForm purpose="signup" onSuccess={onSuccess} />);
       enterPhone();
       fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } });
-      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'Phone User' } });
+      fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Phone User' } });
       fireEvent.click(screen.getByRole('button', { name: 'Sign Up' }));
       await waitFor(() =>
         expect(onSuccess).toHaveBeenCalledWith(

@@ -163,7 +163,7 @@ describe('a module’s legal text', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'visitor@example.test' },
     });
-    fireEvent.change(screen.getByLabelText(/^Username/), { target: { value: 'Visitor' } });
+    fireEvent.change(screen.getByLabelText(/^Nickname/), { target: { value: 'Visitor' } });
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'Visitor123' } });
     fireEvent.change(screen.getByLabelText('Confirm Password'), {
       target: { value: 'Visitor123' },

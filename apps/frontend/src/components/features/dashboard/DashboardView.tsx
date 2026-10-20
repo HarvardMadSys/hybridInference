@@ -108,7 +108,7 @@ export function DashboardView() {
         </h2>
         <div className="space-y-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('dashboard.account.username', 'Username:')}</span>
+            <span className="text-gray-600">{t('dashboard.account.username', 'Nickname:')}</span>
             <span className="font-medium">{state.user?.user_name || notSet}</span>
           </div>
           <div className="flex justify-between">

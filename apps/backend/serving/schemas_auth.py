@@ -294,6 +294,11 @@ class SetupAdminRequest(BaseModel):
     @field_validator("login_name")
     @classmethod
     def _check_login_name(cls, value: str) -> str:
+        if not LOGIN_NAME_PATTERN.fullmatch(value.strip()):
+            raise ValueError(
+                "Login name must be 3-32 characters of lowercase letters, digits, '.', '_' or '-', "
+                "starting with a lowercase letter or digit"
+            )
         return normalize_login_name(value)
 
     @field_validator("password")

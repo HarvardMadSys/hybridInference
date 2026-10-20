@@ -131,8 +131,8 @@ const SCENARIOS: Scenario[] = [
       // One field for an email address or a login name (the first-run
       // administrator has no email), so an empty one asks for either.
       {
-        label: 'Email or username',
-        description: 'Please enter your email or username',
+        label: 'Email or login name',
+        description: 'Please enter your email or login name',
         invalid: true,
       },
       { label: 'Password', description: 'Please enter your password', invalid: true },
@@ -143,7 +143,7 @@ const SCENARIOS: Scenario[] = [
     async submit(wrap) {
       render(wrap(<SignupPage />));
       completeConsentStep();
-      type('Username', 'a');
+      type('Nickname', 'a');
       type('Password', 'short');
       type('Confirm Password', 'short');
       // Past each textarea's `maxLength`, which only limits what a person can
@@ -155,9 +155,9 @@ const SCENARIOS: Scenario[] = [
     controls: [
       { label: 'Email', description: 'Please enter a valid email address', invalid: true },
       {
-        label: 'Username',
+        label: 'Nickname',
         description:
-          'This name is shown in your account and admin review. Username must be at least 2 characters',
+          'Shown in your account and admin review. This is not a login name. Nickname must be at least 2 characters',
         invalid: true,
       },
       {

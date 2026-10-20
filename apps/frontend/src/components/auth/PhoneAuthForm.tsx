@@ -553,10 +553,10 @@ export function PhoneAuthForm(props: Props) {
         <>
           <AuthField
             id="phone-userName"
-            label={t('auth.signup.username_label', 'Username')}
+            label={t('auth.signup.username_label', 'Nickname')}
             hint={t(
               'auth.signup.username_hint',
-              'This name is shown in your account and admin review.',
+              'Shown in your account and admin review. This is not a login name.',
             )}
             error={errors.userName?.message}
           >
@@ -564,7 +564,7 @@ export function PhoneAuthForm(props: Props) {
               id="phone-userName"
               className={errors.userName ? skin.inputError : skin.input}
               data-auth="control"
-              autoComplete="username"
+              autoComplete="nickname"
               disabled={loading}
               {...register('userName')}
             />

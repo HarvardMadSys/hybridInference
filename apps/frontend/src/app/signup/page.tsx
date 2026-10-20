@@ -250,10 +250,10 @@ export default function SignupPage() {
 
           <AuthField
             id="userName"
-            label={t('auth.signup.username_label', 'Username')}
+            label={t('auth.signup.username_label', 'Nickname')}
             hint={t(
               'auth.signup.username_hint',
-              'This name is shown in your account and admin review.',
+              'Shown in your account and admin review. This is not a login name.',
             )}
             error={errors.userName?.message}
           >
@@ -262,7 +262,7 @@ export default function SignupPage() {
               className={errors.userName?.message ? skin.inputError : skin.input}
               data-auth="control"
               type="text"
-              autoComplete="username"
+              autoComplete="nickname"
               {...register('userName')}
             />
           </AuthField>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { translate } from '@/lib/i18n/translate';
+import { catalogTranslator, translate } from '@/lib/i18n/translate';
+import zhCN from '@/lib/i18n/messages/zh-CN.json';
 import {
   createAuthSchemas,
   createSignupSchema,
@@ -131,13 +132,36 @@ describe('auth schemas', () => {
     expect(parse('ab').success).toBe(false);
     expect(parse('_admin').success).toBe(false);
     expect(parse('a'.repeat(33)).success).toBe(false);
+    expect(parse('王哲').success).toBe(false);
     // With an `@`, it is an email address and must be a valid one.
     expect(parse('admin@').error?.issues[0]?.message).toBe('Please enter a valid email address');
-    expect(parse('').error?.issues[0]?.message).toBe('Please enter your email or username');
+    expect(parse('').error?.issues[0]?.message).toBe('Please enter your email or login name');
   });
 });
 
 describe('auth schema distribution messages', () => {
+  it('keeps Chinese nicknames valid and describes them separately from login identifiers', () => {
+    const {
+      createSignupSchema: signup,
+      profileUpdateSchema,
+      loginSchema: login,
+    } = createAuthSchemas(catalogTranslator(zhCN));
+    expect(
+      signup().safeParse({
+        email: 'user@example.org',
+        password: 'SecurePass123',
+        confirmPassword: 'SecurePass123',
+        userName: '王哲',
+      }).success,
+    ).toBe(true);
+    expect(profileUpdateSchema.safeParse({ userName: '王' }).error?.issues[0]?.message).toBe(
+      '昵称至少 2 个字符',
+    );
+    expect(login.safeParse({ email: '王哲', password: 'pw' }).error?.issues[0]?.message).toBe(
+      '请输入有效的邮箱地址或登录名，昵称不能用于登录',
+    );
+  });
+
   it('resolves validation messages through the supplied translator', () => {
     // Validation messages are interface copy: a distribution translates them
     // through the same slots as the page around them.

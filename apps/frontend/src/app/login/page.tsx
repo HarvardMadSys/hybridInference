@@ -252,12 +252,12 @@ function LoginContent() {
               </AuthNotice>
             ))}
 
-          {/* Email or username: the first-run administrator has a login name and
+          {/* Email or login name: the first-run administrator has a login name and
             no email, so this is a text field and the schema decides which rule
             applies. The request still sends it as `email`. */}
           <AuthField
             id="email"
-            label={t('auth.login.email_label', 'Email or username')}
+            label={t('auth.login.email_label', 'Email or login name')}
             error={errors.email?.message}
           >
             <input
