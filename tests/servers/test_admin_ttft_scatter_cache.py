@@ -116,3 +116,35 @@ async def test_a_failed_refresh_still_serves_the_previous_scatter(monkeypatch):
     # Its generated_at still tells the console how old it is, and it says why
     # the refresh failed.
     assert after_failure.json() == {**first.json(), "refresh_error": "statement timeout"}
+
+
+async def test_a_provider_gets_only_its_own_series_from_the_kept_scatter(monkeypatch):
+    def series(model_id: str, provider: str) -> AdminTtftScatterModel:
+        point = AdminTtftScatterPoint(
+            prompt_tokens=100, ttft_ms=50, cache_hit=False, timestamp=datetime.now(timezone.utc)
+        )
+        return AdminTtftScatterModel(model_id=model_id, provider=provider, points=[point])
+
+    scatter = AdminTtftScatterResponse(
+        generated_at=datetime.now(timezone.utc),
+        models=[series("a", "vllm"), series("b", "zai"), series("c", "vllm")],
+    )
+    loader = AsyncMock(return_value=scatter)
+    monkeypatch.setattr(metrics, "_load_ttft_scatter", loader)
+
+    async with _client() as client:
+        vllm = (await client.get("/admin/ttft-scatter", params={"provider": "vllm"})).json()
+        zai = (await client.get("/admin/ttft-scatter", params={"provider": "zai"})).json()
+        unknown = (await client.get("/admin/ttft-scatter", params={"provider": "nope"})).json()
+        everything = (await client.get("/admin/ttft-scatter")).json()
+
+    assert [(m["model_id"], m["provider"]) for m in vllm["models"]] == [
+        ("a", "vllm"),
+        ("c", "vllm"),
+    ]
+    assert [m["model_id"] for m in zai["models"]] == ["b"]
+    assert unknown["models"] == []
+    assert unknown["generated_at"] == everything["generated_at"]
+    # Filtering a response leaves the kept scatter whole, and computes nothing.
+    assert [m["model_id"] for m in everything["models"]] == ["a", "b", "c"]
+    assert loader.await_count == 1

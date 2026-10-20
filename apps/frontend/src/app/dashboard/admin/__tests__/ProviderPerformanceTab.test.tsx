@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
+import { getProviderStats, getTtftScatter } from '@/lib/api/admin';
 import { ProviderPerformanceTab } from '../ProviderPerformanceTab';
 
 vi.mock('recharts', () => ({
@@ -91,8 +92,20 @@ vi.mock('@/lib/api/admin', async () => {
         { error_type: 'model_not_found', count: 1, fraction: 1 / 12 },
       ],
     })),
-    getTtftScatter: vi.fn(async () => ({ models: [] })),
+    getTtftScatter: vi.fn(async () => ({
+      generated_at: '2026-05-08T00:00:00.000Z',
+      models: [],
+      refreshing: false,
+    })),
   };
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 describe('ProviderPerformanceTab', () => {
@@ -137,5 +150,49 @@ describe('ProviderPerformanceTab', () => {
     // Also captioned under the Errors section, so a shared screenshot says
     // which endpoint the numbers belong to.
     expect(screen.getAllByText('OpenAI · openai').length).toBeGreaterThan(1);
+  });
+
+  it("asks for the selected provider's scatter only, and again on a switch", async () => {
+    const stats = vi.mocked(getProviderStats).getMockImplementation()!;
+    vi.mocked(getProviderStats).mockImplementation(async (opts) => {
+      const resp = await stats(opts);
+      return {
+        ...resp,
+        providers: ['openai', 'zai'],
+        pairs: [...resp.pairs, { provider: 'zai', model_id: 'glm-4.6' }],
+      };
+    });
+    onTestFinished(() => {
+      vi.mocked(getProviderStats).mockImplementation(stats);
+    });
+    // Opened by a refresh of the page, which asks the server to recompute.
+    render(<ProviderPerformanceTab refreshKey={1} />);
+
+    await waitFor(() =>
+      expect(getTtftScatter).toHaveBeenCalledWith({ refresh: true, provider: 'openai' }),
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: 'Provider' }), {
+      target: { value: 'zai' },
+    });
+
+    // A switch only reads what the server keeps; it does not recompute again.
+    await waitFor(() =>
+      expect(getTtftScatter).toHaveBeenLastCalledWith({ refresh: false, provider: 'zai' }),
+    );
+    expect(getTtftScatter).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks the server to recompute the scatter on a refresh of the page', async () => {
+    const { rerender } = render(<ProviderPerformanceTab />);
+    await waitFor(() =>
+      expect(getTtftScatter).toHaveBeenCalledWith({ refresh: false, provider: 'openai' }),
+    );
+
+    rerender(<ProviderPerformanceTab refreshKey={1} />);
+
+    await waitFor(() =>
+      expect(getTtftScatter).toHaveBeenLastCalledWith({ refresh: true, provider: 'openai' }),
+    );
+    expect(getTtftScatter).toHaveBeenCalledTimes(2);
   });
 });

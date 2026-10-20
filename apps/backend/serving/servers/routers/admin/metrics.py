@@ -627,6 +627,7 @@ async def admin_get_performance_metrics(
 @router.get("/ttft-scatter", response_model=AdminTtftScatterResponse)
 async def admin_get_ttft_scatter(
     refresh: bool = False,
+    provider: str | None = None,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminTtftScatterResponse:
@@ -635,6 +636,10 @@ async def admin_get_ttft_scatter(
     ``generated_at`` says when it was computed; ``refresh`` starts a new
     computation and returns at once, with ``refreshing`` set while it runs. See
     :func:`_load_ttft_scatter` for what it holds.
+
+    ``provider`` returns only that provider's series. The console shows one
+    provider at a time, and every provider's series together run to megabytes;
+    the whole scatter is still what is computed and kept.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -642,9 +647,13 @@ async def admin_get_ttft_scatter(
         db_logger.pool, lambda: _load_ttft_scatter(db_logger), refresh=refresh
     )
     response = served.value or AdminTtftScatterResponse(generated_at=None, models=[])
-    return response.model_copy(
-        update={"refreshing": served.refreshing, "refresh_error": served.refresh_error}
-    )
+    update: dict[str, Any] = {
+        "refreshing": served.refreshing,
+        "refresh_error": served.refresh_error,
+    }
+    if provider is not None:
+        update["models"] = [m for m in response.models if m.provider == provider]
+    return response.model_copy(update=update)
 
 
 async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
