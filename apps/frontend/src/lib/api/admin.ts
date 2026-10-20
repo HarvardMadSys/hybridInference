@@ -558,12 +558,21 @@ export interface AdminTtftScatterResponse {
   refresh_error?: string | null;
 }
 
+/**
+ * The TTFT scatter; with `provider`, only that provider's series (every
+ * provider's together run to megabytes).
+ */
 export async function getTtftScatter({
   refresh = false,
-}: { refresh?: boolean } = {}): Promise<AdminTtftScatterResponse> {
+  provider,
+}: { refresh?: boolean; provider?: string } = {}): Promise<AdminTtftScatterResponse> {
+  const params = new URLSearchParams();
+  if (refresh) params.set('refresh', 'true');
+  if (provider !== undefined) params.set('provider', provider);
+  const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
-    refresh ? '/admin/ttft-scatter?refresh=true' : '/admin/ttft-scatter',
+    query ? `/admin/ttft-scatter?${query}` : '/admin/ttft-scatter',
   );
   return jsonOrThrow<AdminTtftScatterResponse>(resp);
 }

@@ -666,21 +666,30 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
+  // Only the selected provider's series: all of them together run to megabytes.
+  const fetchTtftScatter = useCallback(
+    (opts: { refresh?: boolean }) => getTtftScatter({ ...opts, provider }),
+    [provider],
+  );
   const {
     data: ttftScatterView,
     busy: ttftScatterLoading,
     error: ttftScatterError,
     load: loadTtftScatter,
-  } = useRefreshedAdminView(getTtftScatter);
+  } = useRefreshedAdminView(fetchTtftScatter);
   const [modelRows, setModelRows] = useState<Record<string, ProviderStatsRow[]>>({});
   const [observability, setObservability] = useState<ProviderObservabilityResponse | null>(null);
 
   // The server keeps the scatter for a few minutes; an explicit refresh of the
-  // page (refreshKey > 0) asks it to recompute, and the new one replaces it
-  // once computed.
+  // page (a new refreshKey) asks it to recompute, and the new one replaces it
+  // once computed. Switching provider only reads what the server keeps.
+  const scatterRefreshKey = useRef(0);
   useEffect(() => {
-    void loadTtftScatter(refreshKey > 0);
-  }, [loadTtftScatter, refreshKey]);
+    if (!provider) return;
+    const refresh = refreshKey !== scatterRefreshKey.current;
+    scatterRefreshKey.current = refreshKey;
+    void loadTtftScatter(refresh);
+  }, [loadTtftScatter, provider, refreshKey]);
 
   const providerModels = useMemo(
     () =>
@@ -794,6 +803,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     void loadObservability(provider, range, model);
   }, [provider, range, model, loadObservability, initializing, refreshKey]);
 
+  // Until the switched-to provider's answer arrives, the view still holds the
+  // previous provider's series.
   const scatterForProvider = useMemo(
     () => (ttftScatterView?.models ?? []).filter((m) => m.provider === provider),
     [ttftScatterView, provider],
