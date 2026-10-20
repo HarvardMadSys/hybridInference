@@ -1345,7 +1345,11 @@ async def _validate_base_url(base_url: str) -> str:
     if "://" not in cleaned:
         cleaned = f"https://{cleaned.lstrip('/')}"
 
-    parsed = urlparse(cleaned)
+    try:
+        parsed = urlparse(cleaned)
+        _ = parsed.port  # Validate malformed and out-of-range ports before DNS.
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="base_url must be a valid URL") from exc
     if parsed.scheme != "https":
         raise HTTPException(status_code=422, detail="base_url must use https")
     if not parsed.netloc or not parsed.hostname:
@@ -1505,12 +1509,16 @@ def _canonical_base_url(base_url: str | None) -> str | None:
         # separator while the adapter keeps it, which would make two different
         # request paths look identical.
         return None
-    parts = urlsplit(cleaned)
+    try:
+        parts = urlsplit(cleaned)
+        port = parts.port
+    except ValueError:
+        return None
     if not parts.scheme:
         return cleaned.rstrip("/")
     scheme = parts.scheme.lower()
     netloc = parts.netloc.lower()
-    if (scheme, parts.port) in {("https", 443), ("http", 80)}:
+    if (scheme, port) in {("https", 443), ("http", 80)}:
         netloc = netloc.rsplit(":", 1)[0]
     return urlunsplit((scheme, netloc, parts.path.rstrip("/"), "", ""))
 
@@ -1966,6 +1974,7 @@ async def _prepare_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     route_id: str | None = None,
+    deployment_type: str = "auto",
 ) -> PreparedRouteCandidate:
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -2025,6 +2034,7 @@ async def _prepare_route_candidate(
             "name": model_id,
             "provider": provider_for_cfg,
             "base_url": cleaned_base_url,
+            "deployment_type": deployment_type,
             "api_key": api_key,
             "api_keys": api_keys,
             "provider_model_id": provider_model_id,
@@ -2104,6 +2114,7 @@ async def _prepare_model_route_candidate(
     pricing: dict[str, str] | str | None,
     strategy: str,
     route_id: str | None = None,
+    deployment_type: str = "auto",
 ) -> PreparedRouteCandidate:
     model_id = _validate_new_model_id(services, model_id)
     if route_type not in {"quota", "concurrency", "on_demand"}:
@@ -2157,6 +2168,7 @@ async def _prepare_model_route_candidate(
         "name": model_id,
         "provider": provider_for_cfg,
         "base_url": cleaned_base_url,
+        "deployment_type": deployment_type,
         "api_key": api_key,
         "api_keys": api_keys,
         "provider_model_id": provider_model_id,
@@ -2226,6 +2238,7 @@ async def _prepare_route_update(
     provider_model_id_override: str | None = None,
     quota_limit_override: int | None = None,
     concurrency_limit_override: int | None = None,
+    deployment_type_override: str | None = None,
 ) -> PreparedRouteUpdate:
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -2260,8 +2273,20 @@ async def _prepare_route_update(
         _primary_provider_for_target(target),
         openrouter_sort,
     )
-    cleaned_base_url = await _validate_base_url(base_url)
-    _validate_base_url_for_target(target, cleaned_base_url)
+    # Deployment YAML may deliberately point at an HTTP/LAN engine. Reusing
+    # that exact registered target does not grant access to a new destination;
+    # keep its trusted URL verbatim for metadata/credential edits and reloads.
+    # Any URL or provider change still passes the full public-endpoint policy.
+    canonical_url = _canonical_base_url(base_url)
+    same_target = upstream_provider == _upstream_provider(current_adapter)
+    same_url = canonical_url is not None and canonical_url == _canonical_base_url(
+        current_adapter.config.base_url
+    )
+    if same_target and same_url:
+        cleaned_base_url = current_adapter.config.base_url
+    else:
+        cleaned_base_url = await _validate_base_url(base_url)
+        _validate_base_url_for_target(target, cleaned_base_url)
 
     api_key, api_keys = await _resolve_key_material(
         op_store,
@@ -2272,13 +2297,30 @@ async def _prepare_route_update(
         model_id, upstream_provider, entries, current_adapter
     )
 
+    # Validation may normalize a scheme-less public URL. Compare the actual
+    # resulting endpoint before deciding whether its ownership still applies.
+    effective_url = _canonical_base_url(cleaned_base_url)
+    same_url = effective_url is not None and effective_url == _canonical_base_url(
+        current_adapter.config.base_url
+    )
     cfg = _config_to_dict(current_adapter.config)
+    if deployment_type_override is not None:
+        cfg["deployment_type"] = deployment_type_override
+    elif not (same_target and same_url):
+        # Older clients and legacy DB overrides omit this field. A declaration
+        # about the old endpoint must not follow a move to a different service.
+        cfg["deployment_type"] = "auto"
     cfg["base_url"] = cleaned_base_url
     cfg["api_key"] = api_key
     cfg["api_keys"] = api_keys
     cfg["provider_model_id"] = provider_model_id
     cfg["openrouter_sort"] = openrouter_sort
-    cfg["endpoint_id"] = _make_provider_id(model_id, target.kind, cleaned_base_url)
+    # An ownership-only edit keeps route identities and their in-flight accounting.
+    cfg["endpoint_id"] = (
+        endpoint_id_for_adapter(current_adapter)
+        if same_target and same_url
+        else _make_provider_id(model_id, target.kind, cleaned_base_url)
+    )
     if quota_limit_override is not None:
         quota = dict(cfg.get("quota") or {})
         quota["limit"] = quota_limit_override
@@ -2673,6 +2715,7 @@ async def _prepare_candidate_from_payload(
         quota_limit=payload.quota_limit,
         concurrency_limit=payload.concurrency_limit,
         weight=payload.weight,
+        deployment_type=payload.deployment_type,
     )
 
 
@@ -2714,6 +2757,7 @@ async def _prepare_model_candidate_from_payload(
         quota_limit=payload.quota_limit,
         concurrency_limit=payload.concurrency_limit,
         weight=payload.weight,
+        deployment_type=payload.deployment_type,
         pricing=payload.pricing,
         strategy=payload.strategy,
         route_id=route_id,
@@ -2761,6 +2805,7 @@ async def _prepare_update_context_from_payload(
         provider_model_id_override=provider_model_id,
         quota_limit_override=payload.quota_limit,
         concurrency_limit_override=payload.concurrency_limit,
+        deployment_type_override=payload.deployment_type,
     )
     return PreparedRouteUpdateContext(
         model_id=model_id,
@@ -3099,6 +3144,11 @@ async def _route_row(
         openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
         base_url=base_url,
+        deployment_type=(
+            effective_override.get("deployment_type")
+            if effective_override and effective_override.get("deployment_type") is not None
+            else getattr(adapter.config, "deployment_type", "auto")
+        ),
         api_key_id=api_key_id,
         api_key=api_key,
         provider_model_id=provider_model_id,
@@ -3168,6 +3218,7 @@ async def _restore_provider_route_config_snapshot(
         snapshot.get("quota_limit"),
         snapshot.get("concurrency_limit"),
         snapshot.get("updated_by"),
+        deployment_type=snapshot.get("deployment_type"),
     )
 
 
@@ -3193,6 +3244,7 @@ async def _restore_provider_route_candidate_snapshot(
         float(snapshot["weight"]),
         snapshot.get("pricing"),
         snapshot.get("updated_by"),
+        deployment_type=snapshot.get("deployment_type") or "auto",
     )
 
 
@@ -3411,6 +3463,7 @@ async def create_provider_route_model(
             candidate.weight,
             candidate.adapter.config.pricing,
             admin_id,
+            deployment_type=candidate.adapter.config.deployment_type,
         )
         if services.model_router_registry is not None:
             strategy_key = _model_strategy_setting_key(model_id)
@@ -3657,6 +3710,7 @@ async def create_provider_route_candidate(
                         else None
                     ),
                     admin_id,
+                    deployment_type=candidate.adapter.config.deployment_type,
                 )
                 _install_route_candidate(services, candidate)
             except BaseException:
@@ -3781,6 +3835,7 @@ async def update_provider_route_candidate(
                 float(raw_weight),
                 adapter.config.pricing if _is_runtime_created_route(route) else None,
                 admin_id,
+                deployment_type=adapter.config.deployment_type,
             )
 
         async def persist_and_update() -> None:
@@ -3884,6 +3939,7 @@ async def update_provider_route(
                     update.quota_limit,
                     update.concurrency_limit,
                     admin_id,
+                    deployment_type=update.adapter.config.deployment_type,
                 )
                 _install_route_update(services, update)
             except BaseException:
@@ -4354,6 +4410,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
+                    deployment_type=row.get("deployment_type") or "auto",
                     pricing=row.get("pricing"),
                     strategy=strategy_overrides.get(model_id, "fixed"),
                 )
@@ -4402,6 +4459,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
+                    deployment_type=row.get("deployment_type") or "auto",
                 )
                 _install_route_candidate(services, candidate)
         except BaseException as exc:
@@ -4452,6 +4510,7 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 provider_model_id_override=str(row["provider_model_id"]),
                 quota_limit_override=row.get("quota_limit"),
                 concurrency_limit_override=row.get("concurrency_limit"),
+                deployment_type_override=row.get("deployment_type"),
             )
             _install_route_update(services, update)
         except Exception as exc:

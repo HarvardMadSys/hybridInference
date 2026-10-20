@@ -1202,6 +1202,7 @@ class CachedOperationalStore(OperationalStore):
         quota_limit: int | None,
         concurrency_limit: int | None,
         updated_by: str | None,
+        deployment_type: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         await self._store.upsert_provider_route_config(
@@ -1215,6 +1216,7 @@ class CachedOperationalStore(OperationalStore):
             quota_limit,
             concurrency_limit,
             updated_by,
+            deployment_type=deployment_type,
         )
 
     async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
@@ -1244,6 +1246,7 @@ class CachedOperationalStore(OperationalStore):
         weight: float,
         pricing: dict[str, str] | None,
         updated_by: str | None,
+        deployment_type: str = "auto",
     ) -> None:
         """Delegate to wrapped store."""
         await self._store.upsert_provider_route_candidate(
@@ -1260,6 +1263,7 @@ class CachedOperationalStore(OperationalStore):
             weight,
             pricing,
             updated_by,
+            deployment_type=deployment_type,
         )
 
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:

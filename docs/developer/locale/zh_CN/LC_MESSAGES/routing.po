@@ -807,15 +807,9 @@ msgstr ""
 "`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` "
 "秒内拿不到槽位的请求，会转去尝试模型的下一条路由，并且不会记到该端点的熔断器上：provider 根本没见过这个请求。"
 
-#: ../developer/routing.md:301
-msgid ""
-"Servers addressed as `localhost`, `127.0.0.1`, `0.0.0.0` or "
-"`host.docker.internal` are never limited, because they schedule their own"
-" work. A server you run on another machine is limited like a hosted "
-"provider."
-msgstr ""
-"地址是 `localhost`、`127.0.0.1`、`0.0.0.0` 或 `host.docker.internal` "
-"的服务器从不受限，因为它们会自己调度工作。你在另一台机器上运行的服务器，则和托管 provider 一样受限。"
+#: ../developer/routing.md
+msgid "Self-hosted engines bypass the provider-key limit because they schedule their own work. Set `deployment_type: self_hosted` on a route to an engine you operate, including one reached over a LAN or cluster DNS. With `deployment_type: auto` (the default), only `localhost`, `127.0.0.1`, `0.0.0.0` and `host.docker.internal` count as self-hosted. Set `deployment_type: provider_api` to use provider-key concurrency even through a loopback proxy."
+msgstr "自部署引擎会自行调度工作，因此不受 provider key 并发上限限制。对于自己运维的引擎，在路由上设置 `deployment_type: self_hosted`，包括通过局域网或集群 DNS 访问的引擎。`deployment_type: auto`（默认值）只把 `localhost`、`127.0.0.1`、`0.0.0.0` 和 `host.docker.internal` 识别为自部署。设置 `deployment_type: provider_api` 后，即使通过回环地址上的代理访问，也按 provider key 限制并发。"
 
 #: ../developer/routing.md
 msgid "`UPSTREAM_CONCURRENCY_ENABLED`"
@@ -826,8 +820,8 @@ msgid "`true`"
 msgstr ""
 
 #: ../developer/routing.md
-msgid "`false` sends every request immediately"
-msgstr "设为 `false` 时，每个请求都立即发出"
+msgid "`false` disables the provider-key limit; a configured engine queue limit still applies"
+msgstr "`false` 关闭 provider key 并发限制；已配置的引擎队列上限仍然生效"
 
 #: ../developer/routing.md
 msgid "`UPSTREAM_CONCURRENCY_INITIAL_LIMIT`"
@@ -1060,17 +1054,9 @@ msgstr "管理后台的 **Recent Requests** 标签页用一张 **Offloaded reque
 msgid "What does not offload:"
 msgstr "以下情况不会卸载："
 
-#: ../developer/routing.md:393
-msgid ""
-"**A non-streaming request the gateway does not queue.** Only the limiter "
-"queues, and it exempts local inference servers (a host in "
-"`registry._LOCAL_HOSTS`), which schedule their own work, except for the "
-"streaming requests an [engine queue limit](#engine-queue-limit) holds. "
-"Nothing queues for a remote route while "
-"`UPSTREAM_CONCURRENCY_ENABLED=false`. A streaming request there is still "
-"offloaded when its engine sends no first token in time, and the offload "
-"route still serves as the last resort."
-msgstr "**网关不会让它排队的非流式请求**。只有限流器会让请求排队，而它豁免了本地推理服务器（主机在 `registry._LOCAL_HOSTS` 里），因为它们自己调度请求；但设置了[引擎队列上限](#engine-queue-limit)时，发往它们的流式请求会在网关排队。`UPSTREAM_CONCURRENCY_ENABLED=false` 时，远程路由完全不排队。在这些情况下，流式请求如果没能及时等到引擎的首个 token，仍然会被卸载，卸载路由也仍然是兜底。"
+#: ../developer/routing.md
+msgid "**A non-streaming request the gateway does not queue.** Only the limiter queues, and it exempts self-hosted engines, except for the streaming requests an [engine queue limit](#engine-queue-limit) holds. Nothing queues for a provider API route while `UPSTREAM_CONCURRENCY_ENABLED=false`. A streaming request there is still offloaded when its engine sends no first token in time, and the offload route still serves as the last resort."
+msgstr "**网关不排队的非流式请求。** 只有出站限流器会排队，而自部署引擎不受它限制，除非是被[引擎队列上限](#engine-queue-limit)拦住的流式请求。`UPSTREAM_CONCURRENCY_ENABLED=false` 时，供应商 API 路由不会排队。那里没有及时返回首个 token 的流式请求仍会被卸载，卸载路由也仍然作为最后的回退。"
 
 #: ../developer/routing.md:399
 msgid ""
@@ -1142,18 +1128,9 @@ msgstr ""
 msgid "Engine queue limit"
 msgstr "引擎队列上限"
 
-#: ../developer/routing.md:449
-msgid ""
-"An engine wait tells the gateway a request has waited only once it is "
-"already in the engine's queue, and leaving then means aborting it there. The "
-"policy can keep that queue in the gateway instead. With an **engine queue "
-"limit** of N (**Engine queue limit** in the console, `engine_queue_limit` in "
-"the API), each local inference server the model routes to is sent at most N "
-"streaming requests that have not returned a first token yet. Further "
-"streaming requests wait in the gateway, in arrival order, one line per "
-"engine (`EngineHold` in "
-"`apps/backend/serving/adapters/upstream_limiter.py`):"
-msgstr "引擎等待只能在请求已经进了引擎的队列之后，才告诉网关它等久了，这时再离开就意味着要在引擎那边中止它。卸载策略可以让这个队列改为留在网关里。设置**引擎队列上限** N（控制台里的 **Engine queue limit**，API 里的 `engine_queue_limit`）之后，该模型路由到的每个本地推理服务器，同时最多只会收到 N 个还没返回首个 token 的流式请求。其余流式请求在网关里按到达顺序排队，每个引擎一条队（`apps/backend/serving/adapters/upstream_limiter.py` 里的 `EngineHold`）："
+#: ../developer/routing.md
+msgid "An engine wait tells the gateway a request has waited only once it is already in the engine's queue, and leaving then means aborting it there. The policy can keep that queue in the gateway instead. With an **engine queue limit** of N (**Engine queue limit** in the console, `engine_queue_limit` in the API), each self-hosted engine the model routes to is sent at most N streaming requests that have not returned a first token yet. Further streaming requests wait in the gateway, in arrival order, one line per engine (`EngineHold` in `apps/backend/serving/adapters/upstream_limiter.py`):"
+msgstr "引擎等待只能在请求已经进了引擎的队列之后，才告诉网关它等久了，这时再离开就意味着要在引擎那边中止它。卸载策略可以让这个队列改为留在网关里。设置**引擎队列上限** N（控制台里的 **Engine queue limit**，API 里的 `engine_queue_limit`）之后，该模型路由到的每个自部署引擎，同时最多只会收到 N 个还没返回首个 token 的流式请求。其余流式请求在网关里按到达顺序排队，每个引擎一条队（`apps/backend/serving/adapters/upstream_limiter.py` 里的 `EngineHold`）："
 
 #: ../developer/routing.md:458
 msgid ""
@@ -1184,25 +1161,13 @@ msgid ""
 "fails one."
 msgstr "**不能卸载的请求按顺序等**。无处可去的尝试——固定路由（pinned）的请求、由调用方决定候选顺序的请求、卸载路由里没有其可用 key 的调用方、prompt 超过[最大卸载输入](#max-offload-input)的请求、卸载失败后的重试、卸载尝试本身——没有自己的截止时间，但同样计数。它最多保留位置到获取超时（`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`），之后无论如何都会超出上限发给引擎。排队只决定请求在哪里等，从不让请求失败。"
 
-#: ../developer/routing.md:471
-msgid ""
-"**Only streaming requests to a local server are held.** A non-streaming "
-"request has no first token to give its place up on and goes straight to the "
-"engine, and a remote route has the limiter's own queue. The hold applies "
-"whether `UPSTREAM_CONCURRENCY_ENABLED` is on or not."
-msgstr "**只有发往本地服务器的流式请求会在网关排队**。非流式请求没有首个 token 可以用来让出位置，会直接发给引擎；远程路由有限流器自己的队列。无论 `UPSTREAM_CONCURRENCY_ENABLED` 是否开启，这个上限都生效。"
+#: ../developer/routing.md
+msgid "**Only streaming requests to a self-hosted engine are held.** A non-streaming request has no first token to give its place up on and goes straight to the engine, and a provider API route has the limiter's own queue. The hold applies whether `UPSTREAM_CONCURRENCY_ENABLED` is on or not."
+msgstr "**只有发往自部署引擎的流式请求会在网关排队**。非流式请求没有首个 token 可以用来让出位置，会直接发给引擎；供应商 API 路由有限流器自己的队列。无论 `UPSTREAM_CONCURRENCY_ENABLED` 是否开启，这个上限都生效。"
 
-#: ../developer/routing.md:476
-msgid ""
-"Leave the limit empty to send every request straight to its engine. A limit "
-"of `1` sends an engine a new request only once the one before it has started "
-"answering; a higher one lets the engine prefill several prompts at once, so "
-"one long prompt does not hold up the requests behind it. A new limit applies "
-"from the next request on, to the requests already waiting as well; an engine "
-"two models share follows the limit of the latest request sent its way. The "
-"count covers the requests this gateway process sends, so an engine that "
-"other clients also use can still queue theirs."
-msgstr "上限留空，所有请求都会直接发给各自的引擎。上限为 `1` 时，只有前一个请求开始回答之后，引擎才会收到下一个；更高的上限让引擎可以同时为多个 prompt 做 prefill，这样一个长 prompt 不会卡住排在它后面的请求。新的上限从下一个请求起生效，对已经在排队的请求同样适用；两个模型共用的引擎，按最近一个发给它的请求所带的上限计。计数只覆盖本网关进程发出的请求，所以如果引擎还有其他客户端，它们的请求仍可能在引擎里排队。"
+#: ../developer/routing.md
+msgid "Leave the limit empty to send every request straight to its engine. A limit of `1` sends an engine a new request only once the one before it has started answering; a higher one lets the engine prefill several prompts at once, so one long prompt does not hold up the requests behind it. A new limit applies from the next request on, to the requests already waiting as well; an engine two models share follows the limit of the latest request sent its way. The count covers only requests this gateway process sends. Other workers, gateways and direct clients keep their own counts or none, so this is not a shared engine capacity limit and the engine can still queue their requests."
+msgstr "上限留空，所有请求都会直接发给各自的引擎。上限为 `1` 时，只有前一个请求开始回答之后，引擎才会收到下一个；更高的上限让引擎可以同时为多个 prompt 做 prefill，这样一个长 prompt 不会卡住排在它后面的请求。新的上限从下一个请求起生效，对已经在排队的请求同样适用；两个模型共用的引擎，按最近一个发给它的请求所带的上限计。计数只覆盖本网关进程发出的请求。其他 worker、网关和直连客户端各自计数或不计数，因此这不是多个客户端共享的引擎容量上限，引擎仍可能为它们的请求排队。"
 
 #: ../developer/routing.md:492
 msgid "Max offload input"
@@ -3053,3 +3018,12 @@ msgstr "用这条命令跑路由相关的测试："
 
 #~ msgid "EWMA success floor below which the endpoint counts as unhealthy."
 #~ msgstr "EWMA 成功率下限，低于此值即视该端点为不健康。"
+
+
+#: ../developer/routing.md
+msgid "Declare `deployment_type` inside `route:`, not at the model level; the Admin Routing tab exposes the same choice when adding or editing a route. It changes outbound admission and the experimental hybrid composition's default local/cloud scope. It does not change the URL, adapter protocol, provider label, endpoint ID, credentials or RouteWise resource type (`on_demand`, `quota`, `concurrency`)."
+msgstr "把 `deployment_type` 声明在 `route:` 内，不要放在模型级别；管理后台的 Routing 页在添加和编辑路由时也提供同样的选项。它决定出站请求的准入方式，以及实验性混合组合的默认本地/云端范围。它不会改变 URL、适配器协议、provider 标签、端点 ID、凭据或 RouteWise 资源类型（`on_demand`、`quota`、`concurrency`）。"
+
+#: ../developer/routing.md
+msgid "Use `deployment_type: self_hosted` for an engine on another machine; its private IP or DNS name can stay as the route's `base_url`. This declaration alone does not enable a queue limit or reserve an offload route: set those separately under **Queue offload**. Reserving a route excludes it from ordinary weighted traffic; use route weights without an offload reservation when both routes should serve ordinary traffic."
+msgstr "另一台机器上的引擎应使用 `deployment_type: self_hosted`；路由的 `base_url` 可以保留私有 IP 或 DNS 名。只声明这个字段不会启用队列上限，也不会预留卸载路由：这两项需要另行在 **Queue offload** 中配置。预留的卸载路由不接收常规加权流量；如果希望两条路由都接收常规流量，应设置路由权重，不要预留卸载路由。"

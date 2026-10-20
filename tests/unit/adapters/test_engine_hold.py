@@ -17,7 +17,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from serving.adapters.base import ModelConfig
+from serving.adapters.base import DeploymentType, ModelConfig
 from serving.adapters.dispatch_watch import report_first_token
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.upstream_limiter import (
@@ -37,6 +37,8 @@ ENGINE = "http://localhost:18003/v1"
 ENGINE_ADDRESS = "localhost:18003"
 OTHER_ENGINE = "http://localhost:18004/v1"
 REMOTE = "https://api.example.com/v1"
+LAN_ENGINE = "http://10.0.0.5:8000/v1"
+LAN_ENGINE_ADDRESS = "10.0.0.5:8000"
 
 
 def _limiter(**kwargs) -> UpstreamConcurrencyLimiter:
@@ -61,9 +63,12 @@ async def _send(
     *,
     base_url: str = ENGINE,
     deadline_in: float | None = None,
+    deployment_type: DeploymentType = "auto",
 ):
     with _held(hold, deadline_in=deadline_in):
-        return await limiter.acquire(PROVIDER, KEY, base_url=base_url)
+        return await limiter.acquire(
+            PROVIDER, KEY, base_url=base_url, deployment_type=deployment_type
+        )
 
 
 def _line(limiter: UpstreamConcurrencyLimiter, address: str = ENGINE_ADDRESS) -> dict[str, int]:
@@ -486,13 +491,16 @@ def _chunk(delta: dict, finish_reason: str | None = None) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _local_adapter() -> OpenAICompatAdapter:
+def _local_adapter(
+    *, base_url: str = ENGINE, deployment_type: DeploymentType = "auto"
+) -> OpenAICompatAdapter:
     adapter = OpenAICompatAdapter(
         ModelConfig(
             id="local-model",
             name="Local model",
             provider=PROVIDER,
-            base_url=ENGINE,
+            base_url=base_url,
+            deployment_type=deployment_type,
             api_key=KEY,
             provider_model_id="local-model",
             processor="default",
@@ -512,10 +520,18 @@ def installed_limiter():
     reset_upstream_limiter()
 
 
+@pytest.mark.parametrize(
+    ("base_url", "deployment_type", "address"),
+    [
+        (ENGINE, "auto", ENGINE_ADDRESS),
+        (LAN_ENGINE, "self_hosted", LAN_ENGINE_ADDRESS),
+        ("http://inference.svc:8000/v1", "self_hosted", "inference.svc:8000"),
+    ],
+)
 async def test_an_engines_first_output_gives_the_place_up_mid_stream(
-    installed_limiter, monkeypatch
+    installed_limiter, monkeypatch, base_url, deployment_type, address
 ):
-    adapter = _local_adapter()
+    adapter = _local_adapter(base_url=base_url, deployment_type=deployment_type)
     rest = asyncio.Event()
 
     async def fake_stream_post(*_args, **_kwargs):
@@ -533,7 +549,7 @@ async def test_an_engines_first_output_gives_the_place_up_mid_stream(
         with _held(hold):
             async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 if '"hel"' in chunk:
-                    seen.append(dict(_line(installed_limiter)))
+                    seen.append(dict(_line(installed_limiter, address)))
                     rest.set()
 
     await consume()
@@ -541,7 +557,7 @@ async def test_an_engines_first_output_gives_the_place_up_mid_stream(
     # The place was free while the stream was still being generated...
     assert seen == [{"pending": 0, "waiting": 0}]
     # ...and ending the stream gave nothing back a second time.
-    assert _line(installed_limiter) == {"pending": 0, "waiting": 0}
+    assert _line(installed_limiter, address) == {"pending": 0, "waiting": 0}
 
 
 async def test_a_first_token_report_reaches_the_hold_and_a_broken_one_is_logged(caplog):
@@ -564,3 +580,89 @@ async def test_a_first_token_report_reaches_the_hold_and_a_broken_one_is_logged(
     assert (working.calls, broken.calls) == (1, 1)
     failures = [r for r in caplog.records if r.getMessage() == "upstream_dispatch_watch_failed"]
     assert [getattr(r, "target", None) for r in failures] == [req_ctx.UPSTREAM_ENGINE_HOLD]
+
+
+async def test_self_hosted_lan_queue_releases_cancelled_waiter_and_first_token():
+    limiter = _limiter()
+    first_hold = EngineHold(1)
+    first = await _send(limiter, first_hold, base_url=LAN_ENGINE, deployment_type="self_hosted")
+    leaving = asyncio.ensure_future(
+        _send(limiter, EngineHold(1), base_url=LAN_ENGINE, deployment_type="self_hosted")
+    )
+    behind = asyncio.ensure_future(
+        _send(limiter, EngineHold(1), base_url=LAN_ENGINE, deployment_type="self_hosted")
+    )
+    await _settle()
+    assert _line(limiter, LAN_ENGINE_ADDRESS) == {"pending": 1, "waiting": 2}
+    assert limiter.snapshot() == {}
+
+    leaving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leaving
+    assert _line(limiter, LAN_ENGINE_ADDRESS) == {"pending": 1, "waiting": 1}
+
+    first_hold.on_first_token()
+    second = await behind
+    first.release(status_code=200)
+    assert _line(limiter, LAN_ENGINE_ADDRESS) == {"pending": 1, "waiting": 0}
+    second.release(status_code=200)
+    assert _line(limiter, LAN_ENGINE_ADDRESS) == {"pending": 0, "waiting": 0}
+
+
+async def test_self_hosted_lan_queue_expires_before_engine_dispatch():
+    limiter = _limiter()
+    first = await _send(limiter, EngineHold(1), base_url=LAN_ENGINE, deployment_type="self_hosted")
+    try:
+        with pytest.raises(UpstreamQueueWaitExpired):
+            await _send(
+                limiter,
+                EngineHold(1),
+                base_url=LAN_ENGINE,
+                deployment_type="self_hosted",
+                deadline_in=0.01,
+            )
+        assert _line(limiter, LAN_ENGINE_ADDRESS) == {"pending": 1, "waiting": 0}
+    finally:
+        first.release()
+
+
+async def test_localhost_provider_api_uses_account_limit_despite_engine_hold():
+    limiter = _limiter(initial_limit=1, acquire_timeout=0.01)
+    slot = await _send(limiter, EngineHold(1), deployment_type="provider_api")
+    try:
+        with pytest.raises(UpstreamSaturated):
+            await _send(limiter, EngineHold(1), deployment_type="provider_api")
+        assert limiter.engine_snapshot() == {}
+        assert len(limiter.snapshot()) == 1
+    finally:
+        slot.release()
+
+
+async def test_cancelled_self_hosted_stream_releases_engine_before_first_output(
+    installed_limiter, monkeypatch
+):
+    adapter = _local_adapter(base_url=LAN_ENGINE, deployment_type="self_hosted")
+    entered = asyncio.Event()
+    stalled = asyncio.Event()
+
+    async def fake_stream_post(*_args, **_kwargs):
+        entered.set()
+        await stalled.wait()
+        yield _chunk({"content": "unused"})
+
+    monkeypatch.setattr(adapter.http, "stream_post", fake_stream_post)
+
+    async def consume():
+        with _held(EngineHold(1)):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+                pass
+
+    stream = asyncio.ensure_future(consume())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert _line(installed_limiter, LAN_ENGINE_ADDRESS) == {"pending": 1, "waiting": 0}
+    finally:
+        stream.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stream
+    assert _line(installed_limiter, LAN_ENGINE_ADDRESS) == {"pending": 0, "waiting": 0}

@@ -37,8 +37,21 @@ Point the route at the private address:
       - kind: openai_compat
         weight: 1.0
         base_url: "http://10.0.12.34:8000/v1"
+        deployment_type: self_hosted
         provider_model_id: "your-served-model-name"
 ```
+
+`deployment_type: self_hosted` tells the gateway this route reaches an engine
+you operate, even though its address is on another machine. It bypasses the
+provider-key concurrency limit and makes streaming requests eligible for a
+configured [engine queue limit](routing.md#engine-queue-limit). It does not
+enable queue offload by itself. Keep the reachable private address: `localhost`
+inside a gateway container refers to that container, not the model server.
+
+Declare new private endpoints in the model registry. The Admin Routing tab can
+change the deployment type of an existing route while keeping its provider and
+target URL. Choosing **Self-hosted engine** does not waive the address checks
+for creating a route or pointing one at a different target.
 
 Or forward the port to the gateway host with an SSH reverse tunnel:
 

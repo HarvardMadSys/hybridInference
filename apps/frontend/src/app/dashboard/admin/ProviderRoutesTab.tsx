@@ -10,6 +10,7 @@ import {
   ProviderRoute,
   ProviderRouteStrategy,
   ProviderRouteType,
+  RouteDeploymentType,
   ProviderRouteOption,
   Role,
   RouteWeight,
@@ -33,6 +34,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
+import { RouteDeploymentField } from './RouteDeploymentField';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
@@ -43,6 +45,7 @@ type RouteForm = {
   customOpenRouterProvider: string;
   openRouterSort: string;
   baseUrl: string;
+  deploymentType: RouteDeploymentType;
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
@@ -56,6 +59,7 @@ type CreateRouteForm = {
   customOpenRouterProvider: string;
   openRouterSort: string;
   baseUrl: string;
+  deploymentType: RouteDeploymentType;
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
@@ -74,6 +78,7 @@ const emptyCreateForm: CreateRouteForm = {
   customOpenRouterProvider: '',
   openRouterSort: '',
   baseUrl: '',
+  deploymentType: 'auto',
   apiKeyId: '',
   providerModelId: '',
   quotaLimit: '5000',
@@ -585,6 +590,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     customOpenRouterProvider: '',
     openRouterSort: '',
     baseUrl: '',
+    deploymentType: 'auto',
     apiKeyId: '',
     providerModelId: '',
     quotaLimit: '',
@@ -810,6 +816,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         form.openRouterSort,
       ),
       base_url: form.baseUrl.trim(),
+      deployment_type: form.deploymentType,
       api_key_id: form.apiKeyId || null,
       provider_model_id: form.providerModelId.trim(),
       quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
@@ -821,6 +828,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     editsLocalQuota,
     form.apiKeyId,
     form.baseUrl,
+    form.deploymentType,
     form.openRouterProvider,
     form.openRouterSort,
     form.providerModelId,
@@ -842,6 +850,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         createForm.openRouterSort,
       ),
       base_url: createForm.baseUrl.trim(),
+      deployment_type: createForm.deploymentType,
       api_key_id: createForm.apiKeyId || null,
       provider_model_id: createForm.providerModelId.trim(),
       quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
@@ -852,6 +861,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [
       createForm.apiKeyId,
       createForm.baseUrl,
+      createForm.deploymentType,
       createForm.openRouterProvider,
       createForm.openRouterSort,
       createForm.providerModelId,
@@ -893,6 +903,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         customOpenRouterProvider: '',
         openRouterSort: '',
         baseUrl: '',
+        deploymentType: 'auto',
         apiKeyId: '',
         providerModelId: '',
         quotaLimit: '',
@@ -907,6 +918,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       customOpenRouterProvider: '',
       openRouterSort: editingRoute.openrouter_sort ?? '',
       baseUrl: editingRoute.base_url,
+      deploymentType: editingRoute.deployment_type ?? 'auto',
       apiKeyId: editingRoute.api_key_id ?? '',
       providerModelId: editingRoute.provider_model_id ?? '',
       quotaLimit: editingRoute.quota_limit ? String(editingRoute.quota_limit) : '',
@@ -1097,6 +1109,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         customOpenRouterProvider: '',
         openRouterSort: '',
         baseUrl: '',
+        deploymentType: 'auto',
         apiKeyId: '',
         providerModelId: '',
       }));
@@ -1169,6 +1182,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           ? (editingRoute?.openrouter_sort ?? current.openRouterSort)
           : '',
       baseUrl: selected?.default_base_url || current.baseUrl,
+      deploymentType:
+        upstreamProvider === current.upstreamProvider ? current.deploymentType : 'auto',
       apiKeyId: '',
       providerModelId:
         editingRoute && upstreamProvider === routePrimaryUpstreamProvider(editingRoute)
@@ -2276,6 +2291,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </div>
               </div>
 
+              <RouteDeploymentField
+                id="new-route-deployment-type"
+                value={createForm.deploymentType}
+                onChange={(deploymentType) =>
+                  setCreateForm((current) => ({ ...current, deploymentType }))
+                }
+              />
+
               {createForm.upstreamProvider === 'openrouter' && (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <div>
@@ -2546,6 +2569,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   required
                 />
               </div>
+
+              <RouteDeploymentField
+                id="route-deployment-type"
+                value={form.deploymentType}
+                onChange={(deploymentType) =>
+                  setForm((current) => ({ ...current, deploymentType }))
+                }
+              />
 
               <div className="mt-3">
                 <label

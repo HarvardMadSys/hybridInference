@@ -153,9 +153,11 @@ For the full diagram (network layer, observability, storage), see
   owner across updates; preserving configuration alone is not proof of this.
   Execution scopes currently come from the composition root
   ([hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)).
-  Explicit `local_scope` / `local_ownership` are supported; bootstrap currently
-  uses the hostname default, which can classify an owned LAN or cluster DNS
-  endpoint as remote. Do not infer a RouteWise resource type from that domain.
+  Explicit `local_scope` / `local_ownership` are supported. Bootstrap uses the
+  route's `deployment_type`: `self_hosted` owns a LAN or cluster DNS endpoint,
+  `provider_api` keeps a loopback proxy in the cloud scope, and `auto` retains
+  the hostname default. Outbound admission uses the same classification.
+  This does not change endpoint IDs or RouteWise resource types.
   See
   [docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
   for the current router, leaf and pool contracts, opt-in wiring and deferred work.

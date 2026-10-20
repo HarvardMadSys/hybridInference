@@ -42,7 +42,8 @@ credential is never stored on a bucket and never logged.
 **Local endpoints are exempt.** A vLLM/SGLang/Ollama server this deployment runs
 does its own admission control and has no account quota to protect, so queueing
 in front of it would only add latency to a server that is already scheduling the
-work. The host test reuses ``registry._LOCAL_HOSTS`` rather than restating it.
+work. Routes declare ``deployment_type`` explicitly; the default ``auto``
+reuses ``registry._LOCAL_HOSTS`` for backward-compatible hostname detection.
 The one queue a local endpoint can have here is the engine hold below, which a
 router asks for and which counts something else entirely.
 
@@ -104,6 +105,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from serving.adapters.base import DeploymentType, validate_deployment_type
 from serving.adapters.dispatch_watch import report_queued, report_sent
 from serving.config.settings import get_settings
 from serving.utils import context as req_ctx
@@ -161,15 +163,16 @@ def key_fingerprint(api_key: str | None) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def is_local_endpoint(base_url: str | None) -> bool:
-    """Whether *base_url* names an inference server this gateway runs itself.
+def is_local_endpoint(base_url: str | None, *, deployment_type: DeploymentType = "auto") -> bool:
+    """Whether this endpoint is a self-hosted inference server.
 
-    Reuses the registry's ``_LOCAL_HOSTS`` — the same set ``_make_provider_id``
-    stamps ``:local-<port>`` from — so the limiter's notion of "local" cannot
-    drift from the one the rest of the gateway already uses. The import is
-    deferred to the call because ``servers.registry`` imports every adapter at
-    module scope, and this module is imported *by* those adapters.
+    An explicit route declaration takes precedence over its address. Auto keeps
+    the historical registry hostname heuristic; endpoint IDs remain unchanged.
+    The registry import is deferred because it imports the adapter modules.
     """
+    deployment_type = validate_deployment_type(deployment_type)
+    if deployment_type != "auto":
+        return deployment_type == "self_hosted"
     if not base_url:
         return False
     from serving.servers.registry import _LOCAL_HOSTS
@@ -622,6 +625,7 @@ class UpstreamConcurrencyLimiter:
         api_key: str | None,
         *,
         base_url: str | None = None,
+        deployment_type: DeploymentType = "auto",
     ) -> UpstreamSlot:
         """Take an outbound slot for *provider*/*api_key*, waiting if saturated.
 
@@ -635,6 +639,8 @@ class UpstreamConcurrencyLimiter:
             base_url: The endpoint's base URL, used to exempt local inference
                 servers from the limit, and to find the engine a held dispatch
                 waits for.
+            deployment_type: Explicit engine or provider classification; auto
+                uses the existing local-host heuristic.
 
         Returns:
             A slot the caller must release once the request (for a stream, the
@@ -646,7 +652,7 @@ class UpstreamConcurrencyLimiter:
                 held for its local engine (see :meth:`_admit_to_engine`).
             UpstreamSaturated: No slot came free within the acquire timeout.
         """
-        if is_local_endpoint(base_url):
+        if is_local_endpoint(base_url, deployment_type=deployment_type):
             return await self._admit_to_engine(base_url)
         if not self._enabled:
             report_sent()
@@ -935,9 +941,12 @@ async def acquire_upstream_slot(
     api_key: str | None,
     *,
     base_url: str | None = None,
+    deployment_type: DeploymentType = "auto",
 ) -> UpstreamSlot:
     """Acquire a slot from the process-wide limiter. See :meth:`acquire`."""
-    return await get_upstream_limiter().acquire(provider, api_key, base_url=base_url)
+    return await get_upstream_limiter().acquire(
+        provider, api_key, base_url=base_url, deployment_type=deployment_type
+    )
 
 
 def outcome_status(exc: BaseException | None) -> int | None:
@@ -969,6 +978,7 @@ async def upstream_slot(
     api_key: str | None,
     *,
     base_url: str | None = None,
+    deployment_type: DeploymentType = "auto",
 ) -> AsyncIterator[UpstreamSlot]:
     """Hold an outbound slot for the duration of the block.
 
@@ -982,7 +992,9 @@ async def upstream_slot(
     Raises:
         UpstreamSaturated: no slot came free within the acquire timeout.
     """
-    slot = await acquire_upstream_slot(provider, api_key, base_url=base_url)
+    slot = await acquire_upstream_slot(
+        provider, api_key, base_url=base_url, deployment_type=deployment_type
+    )
     try:
         yield slot
     except BaseException as exc:

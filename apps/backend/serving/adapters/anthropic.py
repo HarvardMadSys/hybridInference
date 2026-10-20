@@ -151,6 +151,7 @@ class AnthropicAdapter(BaseAdapter):
             _key_pool_provider_label(self.config),
             self.config.api_key,
             base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
         )
 
     # ------------------------------------------------------------------

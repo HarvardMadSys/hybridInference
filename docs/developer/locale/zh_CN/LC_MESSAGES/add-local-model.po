@@ -731,3 +731,12 @@ msgstr "[路由](routing.md)——权重、健康检查与策略"
 #~ "`ROUTING_CONFIG_PATH`，再 manifest 的 "
 #~ "`paths.routing`，最后 "
 #~ "`config/examples/routing.minimal.yaml`。没有这个文件时，网关使用模型注册表里写的权重。见[路由](routing.md)。"
+
+
+#: ../developer/add-local-model.md
+msgid "`deployment_type: self_hosted` tells the gateway this route reaches an engine you operate, even though its address is on another machine. It bypasses the provider-key concurrency limit and makes streaming requests eligible for a configured [engine queue limit](routing.md#engine-queue-limit). It does not enable queue offload by itself. Keep the reachable private address: `localhost` inside a gateway container refers to that container, not the model server."
+msgstr "`deployment_type: self_hosted` 告诉网关，这条路由连接的是你运维的引擎，即使地址位于另一台机器上。它绕过 provider key 并发上限，让流式请求受已配置的[引擎队列上限](routing.md#engine-queue-limit)约束。它本身不会启用队列卸载。保留可访问的私有地址即可：网关容器里的 `localhost` 指的是容器自身，不是模型服务器。"
+
+#: ../developer/add-local-model.md
+msgid "Declare new private endpoints in the model registry. The Admin Routing tab can change the deployment type of an existing route while keeping its provider and target URL. Choosing **Self-hosted engine** does not waive the address checks for creating a route or pointing one at a different target."
+msgstr "新的私有端点应在模型注册表中声明。管理后台的 Routing 页可以在保持 provider 和目标 URL 不变的情况下，修改已有路由的部署类型。选择 **Self-hosted engine** 不会绕过创建路由或修改目标地址时的地址检查。"

@@ -5,11 +5,20 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, cast
 
 from serving.http import AsyncHTTPClient
 from serving.pricing import PricingSchedule
 from serving.stream import make_stream_chunk
+
+DeploymentType = Literal["auto", "self_hosted", "provider_api"]
+
+
+def validate_deployment_type(value: object) -> DeploymentType:
+    """Validate an endpoint's deployment classification without coercion."""
+    if not isinstance(value, str) or value not in ("auto", "self_hosted", "provider_api"):
+        raise ValueError("deployment_type must be one of: auto, self_hosted, provider_api")
+    return cast("DeploymentType", value)
 
 
 @dataclass
@@ -170,6 +179,9 @@ class ModelConfig:
     # Generic per-route metadata consumed by routing strategies. RouteWise
     # mirrors `provider_type` here during config loading.
     route_metadata: dict[str, Any] = field(default_factory=dict)
+    # Deployment ownership, independent of adapter protocol and RouteWise category.
+    # Auto preserves hostname detection; self_hosted also covers LAN/cluster engines.
+    deployment_type: DeploymentType = "auto"
     # RouteWise provider category for this endpoint.
     provider_type: str = "on_demand"
     # RouteWise route-level metadata. These fields are not sent upstream; they
@@ -206,6 +218,7 @@ class ModelConfig:
         ``TypeError: 'NoneType' object is not a mapping``. Coerce the dict-typed
         request/transport fields back to ``{}`` here as a last line of defense.
         """
+        self.deployment_type = validate_deployment_type(self.deployment_type)
         for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):
             if getattr(self, _name) is None:
                 setattr(self, _name, {})

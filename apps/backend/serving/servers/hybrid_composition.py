@@ -9,13 +9,11 @@ enables ``router_params.hybrid_composition``. Existing models keep FixedRouter.
 Locality is a deployment decision, and this builder takes it as one. A caller
 may declare the local range directly (``local_scope``), supply its own ownership
 resolver (``local_ownership``), or say nothing and get the gateway's existing
-locality predicate: ``_LOCAL_HOSTS``, the set ``servers.registry.
-_make_provider_id`` stamps ``:local-<port>`` from and that ``serving.adapters.
-upstream_limiter.is_local_endpoint`` already reuses for outbound limiting. That
-predicate is a compatibility default, not a definition -- it classifies by
-hostname, so a gateway-owned server reached over the LAN or a cluster DNS name
-reads as remote, and ``0.0.0.0`` reads as local. Deployments in that position
-should pass one of the two explicit inputs instead.
+locality predicate: an explicit per-route ``deployment_type`` takes precedence,
+while ``auto`` keeps the historical ``registry._LOCAL_HOSTS`` heuristic. This is
+shared with outbound admission, so a declared self-hosted LAN or cluster DNS
+endpoint receives both engine admission and local composition ownership. The
+address-derived endpoint ID does not change.
 
 The split is re-derived from the live route table on every read, because a route
 edit can move an endpoint between domains and ``ModelRouterRegistry.
@@ -81,9 +79,9 @@ def local_endpoint_scope(
 
     ``is_local`` receives one ``ModelConfig`` and its endpoint id, and answers
     whether that endpoint is this deployment's own. The default is the gateway's
-    hostname-based predicate; see the module docstring for what it cannot see.
+    deployment classification with a hostname fallback; see the module docstring.
     """
-    owns = is_local if is_local is not None else _default_local_by_host
+    owns = is_local if is_local is not None else _default_local_by_deployment
     route = router.routes.get(model_id)
     if route is None or not route.adapters:
         return frozenset()
@@ -95,8 +93,8 @@ def local_endpoint_scope(
     )
 
 
-def _default_local_by_host(config: Any, endpoint_id: str) -> bool:
-    """Adapt the hostname predicate to the resolver signature."""
+def _default_local_by_deployment(config: Any, endpoint_id: str) -> bool:
+    """Adapt the deployment predicate to the resolver signature."""
     del endpoint_id
     return default_local_ownership(config)
 
@@ -104,11 +102,13 @@ def _default_local_by_host(config: Any, endpoint_id: str) -> bool:
 def default_local_ownership(config: Any) -> bool:
     """Return whether ``config`` names a server this gateway runs itself.
 
-    Compatibility default for a deployment that has not declared its local range:
-    the ``_LOCAL_HOSTS`` predicate the registry and the outbound limiter already
-    share. Prefer an explicit ``local_scope`` or ``local_ownership``.
+    Use the same explicit declaration and auto fallback as outbound admission.
+    A caller may still override this via ``local_scope`` or ``local_ownership``.
     """
-    return is_local_endpoint(getattr(config, "base_url", None))
+    return is_local_endpoint(
+        getattr(config, "base_url", None),
+        deployment_type=getattr(config, "deployment_type", "auto"),
+    )
 
 
 class HybridFixedRouterFactory:
@@ -132,7 +132,7 @@ class HybridFixedRouterFactory:
             endpoint with ``local_ownership``.
         local_ownership: Optional ownership resolver, called with one
             ``ModelConfig`` and the endpoint id. ``None`` uses
-            :func:`default_local_ownership`, the hostname predicate.
+            :func:`default_local_ownership`, the deployment predicate.
         cloud_scope: Optional explicit cloud endpoint set. ``None`` derives it as
             "every registered endpoint of the model that is not local".
         cloud_backend: The cloud execution path, as a builder taking the shared
