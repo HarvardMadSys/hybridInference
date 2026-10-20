@@ -877,6 +877,39 @@ async def test_a_declared_upstream_does_not_shadow_a_custom_provider(tmp_path, m
     assert "gpu_cluster" not in provider_definitions.config_route_provider_labels(specs)
 
 
+@pytest.mark.asyncio
+async def test_a_pinned_openrouter_route_stays_openrouter_whatever_its_metadata_names(
+    tmp_path, monkeypatch
+):
+    """The runtime credits a pinned route to OpenRouter before reading its
+    metadata. `fireworks` is not a preset target, so no slug mapping hides a
+    miss."""
+    _write_models_config(
+        tmp_path,
+        monkeypatch,
+        """
+models:
+  - id: pinned-chat
+    provider: openrouter
+    route:
+      - kind: openrouter[fireworks]
+        base_url: https://openrouter.ai/api/v1
+        route_metadata:
+          upstream_provider: fireworks
+""",
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=FakeProviderDefinitionStore(),
+        services=_services_with_runtime_routes(
+            ("pinned-chat", "openrouter", {"upstream_provider": "fireworks"}, "fireworks"),
+        ),
+    )
+
+    assert [(row.provider, row.models_count) for row in response.providers] == [("openrouter", 1)]
+
+
 def test_a_model_level_provider_is_not_a_registry_row(tmp_path, monkeypatch):
     """`provider:` on the model names its brand; the routes name who serves it.
 

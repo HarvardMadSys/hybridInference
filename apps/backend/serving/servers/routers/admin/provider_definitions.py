@@ -324,8 +324,10 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
             # The route loader's precedence: the route's URL, else the model's.
             base_url = _expand_config_string(route.get("base_url") or model.get("base_url"))
             # Without a label of its own, a route whose metadata names a
-            # different upstream belongs to that upstream, as it does at runtime.
-            owner = None if is_relabelled else _declared_route_owner(route)
+            # different upstream belongs to that upstream, as it does at runtime;
+            # a pinned OpenRouter route stays OpenRouter's whatever it names.
+            _base_kind, pinned_provider = parse_openrouter_kind(raw_kind)
+            owner = None if is_relabelled or pinned_provider else _declared_route_owner(route)
             if owner == provider:
                 owner = None
             _merge_config_provider_spec(
