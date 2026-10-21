@@ -148,8 +148,11 @@ describe('ProviderPerformanceTab', () => {
     const option = await screen.findByRole('option', { name: 'OpenAI · openai' });
     expect(option).toHaveValue('openai');
     // Also captioned under the Errors section, so a shared screenshot says
-    // which endpoint the numbers belong to.
-    expect(screen.getAllByText('OpenAI · openai').length).toBeGreaterThan(1);
+    // which endpoint the numbers belong to. Its data loads separately from
+    // the provider options, so wait for that caption rather than only the option.
+    await waitFor(() => {
+      expect(screen.getAllByText('OpenAI · openai').length).toBeGreaterThan(1);
+    });
   });
 
   it("asks for the selected provider's scatter only, and again on a switch", async () => {
