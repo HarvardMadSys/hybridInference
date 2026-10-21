@@ -95,6 +95,7 @@ export function ConfigEntryField({
   entry,
   label = entry.key,
   allowSecretClear = true,
+  presentation = 'default',
   draft,
   onChange,
   serverError,
@@ -105,6 +106,8 @@ export function ConfigEntryField({
   entry: ConfigEntry;
   label?: string;
   allowSecretClear?: boolean;
+  /** Compact cards supply their own privacy and restart notes. */
+  presentation?: 'default' | 'compact';
   draft: ConfigDraft | undefined;
   onChange: (key: string, draft: ConfigDraft | undefined) => void;
   /** The reason the last save gave for this key. */
@@ -235,16 +238,19 @@ export function ConfigEntryField({
     );
   }
 
-  const badges = configBadges(entry);
+  const compact = presentation === 'compact';
+  const badges = configBadges(entry).filter(
+    (badge) => !compact || !['Secret', 'Restart required', 'Pending restart'].includes(badge.label),
+  );
 
   return (
-    <div className="py-4" data-config-key={entry.key}>
+    <div className={compact ? undefined : 'py-4'} data-config-key={entry.key}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <label
               htmlFor={controlId}
-              className="break-all font-mono text-[13px] font-medium text-gray-900"
+              className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
             >
               {label}
             </label>
@@ -318,7 +324,7 @@ export function ConfigEntryField({
         {entry.invalid ? (
           <p className="text-red-600">The stored value could not be applied: {entry.invalid}</p>
         ) : null}
-        {entry.updated_at ? (
+        {entry.updated_at && !compact ? (
           <p className="text-gray-400">
             Updated {relativeTime(entry.updated_at)}
             {entry.updated_by ? ` by ${entry.updated_by}` : ''}
