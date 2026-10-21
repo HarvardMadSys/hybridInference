@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
@@ -9,6 +9,20 @@ import {
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
+import {
+  AlertNotificationFields,
+  type AlertTestResult,
+} from '@/components/features/configuration/AlertNotificationFields';
+import {
+  ALERT_WEBHOOK_KEYS,
+  alertWebhookEntries,
+  alertWebhookError,
+  buildAlertChannelPatch,
+  isAlertWebhook,
+  savedAlertChannel,
+  selectedWebhookEntry,
+  type AlertChannelChoice,
+} from '@/components/features/configuration/alertNotificationDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
 import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
 import {
@@ -34,6 +48,7 @@ import {
   markConfigSecret,
   patchConfig,
   resetConfigKey,
+  testAlertNotification,
   type ConfigEntry,
   type ConfigResponse,
 } from '@/lib/api/config';
@@ -74,6 +89,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [markingSecret, setMarkingSecret] = useState(false);
   const [markSecretError, setMarkSecretError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [alertChannelDraft, setAlertChannelDraft] = useState<AlertChannelChoice | null>(null);
+  const [testingAlert, setTestingAlert] = useState(false);
+  const alertTestInFlight = useRef(false);
+  const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,6 +120,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       setConfig(next);
       setDrafts((prev) => withoutKeys(prev, writtenKeys));
       setEntryErrors((prev) => withoutKeys(prev, writtenKeys));
+      if (writtenKeys.some(isAlertWebhook)) setAlertTestResult(null);
       // Re-render the server components: the banner reads site-config there.
       router.refresh();
     },
@@ -115,7 +135,51 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       return next;
     });
     setEntryErrors((prev) => withoutKeys(prev, [key]));
+    if (isAlertWebhook(key)) setAlertTestResult(null);
   }, []);
+
+  const webhookEntries = config ? alertWebhookEntries(config.entries) : null;
+  const alertChannel =
+    alertChannelDraft ?? (webhookEntries ? savedAlertChannel(webhookEntries) : 'none');
+
+  const changeAlertChannel = (channel: AlertChannelChoice) => {
+    if (!webhookEntries || alertTestInFlight.current) return;
+    setAlertChannelDraft(channel === savedAlertChannel(webhookEntries) ? null : channel);
+    setDrafts((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
+    setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
+    setGroupErrors((prev) => withoutKeys(prev, [webhookEntries.slack.category]));
+    setAlertTestResult(null);
+  };
+
+  const sendAlertTest = async () => {
+    if (!webhookEntries || alertChannel === 'none' || alertTestInFlight.current) return;
+    const entry = selectedWebhookEntry(webhookEntries, alertChannel);
+    if (!entry || alertWebhookError(entry, drafts)) return;
+    const draft = drafts[entry.key];
+    alertTestInFlight.current = true;
+    setTestingAlert(true);
+    setAlertTestResult(null);
+    try {
+      const result = await testAlertNotification({
+        channel: alertChannel,
+        ...(draft?.kind === 'replace' ? { webhook_url: draft.value.trim() } : {}),
+      });
+      setAlertTestResult({ sent: true, testId: result.test_id });
+    } catch (e) {
+      setAlertTestResult({
+        sent: false,
+        message:
+          e instanceof APIError && e.statusCode === 404
+            ? 'This backend does not support test notifications. Upgrade it and try again.'
+            : e instanceof APIError && e.statusCode === 429
+              ? 'Test notifications are temporarily limited. Wait a few seconds and try again.'
+              : 'The test could not be sent. Check the webhook URL and try again.',
+      });
+    } finally {
+      alertTestInFlight.current = false;
+      setTestingAlert(false);
+    }
+  };
 
   const groups = useMemo(
     () => (config ? groupEntries(config.categories, config.entries) : []),
@@ -128,7 +192,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         .map((group) => ({
           ...group,
           entries: group.entries.filter(
-            (entry) => (!missingOnly || entry.missing) && matchesQuery(entry, query, group.label),
+            (entry) =>
+              (!missingOnly || entry.missing) &&
+              (matchesQuery(entry, query, group.label) ||
+                (isAlertWebhook(entry.key) &&
+                  'notification channel'.includes(query.trim().toLowerCase()))),
           ),
         }))
         .filter((group) => group.entries.length > 0),
@@ -138,7 +206,22 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const saveGroup = async (group: ConfigGroup) => {
     // The whole category, including entries a filter is hiding: a change the
     // administrator made stays part of the save it was made for.
-    const { values, errors } = buildPatch(group.entries, drafts);
+    const channelEntries = alertWebhookEntries(group.entries);
+    if (channelEntries && alertTestInFlight.current) return;
+    const { values, errors } = buildPatch(
+      channelEntries ? group.entries.filter((entry) => !isAlertWebhook(entry.key)) : group.entries,
+      drafts,
+    );
+    if (channelEntries) {
+      const channelPatch = buildAlertChannelPatch(
+        channelEntries,
+        drafts,
+        alertChannel,
+        alertChannelDraft !== null,
+      );
+      Object.assign(values, channelPatch.values);
+      Object.assign(errors, channelPatch.errors);
+    }
     if (Object.keys(errors).length > 0) {
       setEntryErrors((prev) => ({ ...prev, ...errors }));
       setGroupErrors((prev) => ({
@@ -155,6 +238,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     try {
       const next = await patchConfig({ values });
       applyResponse(next, keys);
+      if (channelEntries) setAlertChannelDraft(null);
       toast.success(keys.length === 1 ? `Saved ${keys[0]}.` : `Saved ${keys.length} settings.`);
     } catch (e) {
       const message = getErrorMessage(e);
@@ -167,6 +251,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   };
 
   const discardGroup = (group: ConfigGroup) => {
+    if (alertWebhookEntries(group.entries)) {
+      if (alertTestInFlight.current) return;
+      setAlertChannelDraft(null);
+      setAlertTestResult(null);
+    }
     const keys = group.entries.map((entry) => entry.key);
     setDrafts((prev) => withoutKeys(prev, keys));
     setEntryErrors((prev) => withoutKeys(prev, keys));
@@ -334,8 +423,22 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
       {visibleGroups.map((visible) => {
         const group = groups.find((candidate) => candidate.id === visible.id) ?? visible;
-        const dirty = countDirty(group.entries, drafts);
+        const channelEntries = alertWebhookEntries(group.entries);
+        const selectedEntry = channelEntries
+          ? selectedWebhookEntry(channelEntries, alertChannel)
+          : null;
+        const dirty = channelEntries
+          ? countDirty(
+              group.entries.filter((entry) => !isAlertWebhook(entry.key)),
+              drafts,
+            ) +
+            Number(
+              alertChannelDraft !== null ||
+                (selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])),
+            )
+          : countDirty(group.entries, drafts);
         const saving = savingGroup === group.id;
+        const busy = saving || Boolean(channelEntries && testingAlert);
         const headingId = `${searchId}-${group.id}`;
         return (
           <section
@@ -367,28 +470,44 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
               noValidate
               onSubmit={(event) => {
                 event.preventDefault();
-                if (!saving) void saveGroup(group);
+                if (!busy) void saveGroup(group);
               }}
             >
               <div className="mt-1 divide-y divide-gray-100">
-                {visible.entries.map((entry) => (
-                  <ConfigEntryField
-                    key={entry.key}
-                    entry={entry}
-                    draft={drafts[entry.key]}
-                    onChange={onDraftChange}
-                    serverError={entryErrors[entry.key]}
-                    onReset={(target) => {
-                      setResetError(null);
-                      setResetTarget(target);
-                    }}
-                    onMarkSecret={(target) => {
-                      setMarkSecretError(null);
-                      setMarkSecretKey(target.key);
-                    }}
-                    disabled={saving}
+                {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
+                  <AlertNotificationFields
+                    entries={channelEntries}
+                    channel={alertChannel}
+                    onChannelChange={changeAlertChannel}
+                    drafts={drafts}
+                    onDraftChange={onDraftChange}
+                    errors={entryErrors}
+                    disabled={busy}
+                    testing={testingAlert}
+                    testResult={alertTestResult}
+                    onTest={() => void sendAlertTest()}
                   />
-                ))}
+                ) : null}
+                {visible.entries
+                  .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
+                  .map((entry) => (
+                    <ConfigEntryField
+                      key={entry.key}
+                      entry={entry}
+                      draft={drafts[entry.key]}
+                      onChange={onDraftChange}
+                      serverError={entryErrors[entry.key]}
+                      onReset={(target) => {
+                        setResetError(null);
+                        setResetTarget(target);
+                      }}
+                      onMarkSecret={(target) => {
+                        setMarkSecretError(null);
+                        setMarkSecretKey(target.key);
+                      }}
+                      disabled={busy}
+                    />
+                  ))}
               </div>
 
               {dirty > 0 ? (
@@ -399,14 +518,14 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                   <button
                     type="button"
                     onClick={() => discardGroup(group)}
-                    disabled={saving}
+                    disabled={busy}
                     className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
                   >
                     Discard
                   </button>
                   <button
                     type="submit"
-                    disabled={saving}
+                    disabled={busy}
                     aria-busy={saving || undefined}
                     aria-label={`Save ${group.label}`}
                     className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"

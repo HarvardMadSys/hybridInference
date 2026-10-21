@@ -102,6 +102,32 @@ export interface ConfigPatchRequest {
   secrets?: Record<string, boolean>;
 }
 
+export type AlertNotificationChannel = 'slack' | 'wecom';
+
+export interface AlertNotificationTestRequest {
+  channel: AlertNotificationChannel;
+  /** Omit to test the latest saved URL, including changes pending restart. */
+  webhook_url?: string;
+}
+
+export interface AlertNotificationTestResponse {
+  channel: AlertNotificationChannel;
+  sent: true;
+  test_id: string;
+}
+
+/** Send a test without saving settings or changing alert state. */
+export async function testAlertNotification(
+  request: AlertNotificationTestRequest,
+): Promise<AlertNotificationTestResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson<AlertNotificationTestResponse>(resp);
+}
+
 export interface RestartResponse {
   restarting: boolean;
   /** The process that is exiting; `/health` names a different one once it is back. */

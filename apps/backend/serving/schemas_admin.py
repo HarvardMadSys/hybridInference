@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictInt, field_validator
 
 from serving.config.settings import ROUTE_TYPE_ORDER
 
@@ -1256,19 +1256,38 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class TestAlertRequest(BaseModel):
+    """Test the selected saved channel, or an unsaved webhook draft."""
+
+    channel: Literal["slack", "wecom"]
+    webhook_url: SecretStr | None = Field(
+        None,
+        max_length=4096,
+        description="Omit to test the latest saved webhook, including pending restart changes.",
+    )
+
+
+class TestAlertResponse(BaseModel):
+    """A channel accepted a test message; no alert incident was created."""
+
+    channel: Literal["slack", "wecom"]
+    sent: Literal[True] = True
+    test_id: str
+
+
 class SnoozeAlertsRequest(BaseModel):
-    """Request payload for snoozing Slack alerts for a duration."""
+    """Request payload for snoozing alerts for a duration."""
 
     duration_seconds: int = Field(
         ...,
         gt=0,
         le=7 * 24 * 60 * 60,
-        description="How long to suppress Slack alerts, in seconds (max 7 days).",
+        description="How long to suppress alerts, in seconds (max 7 days).",
     )
 
 
 class AlertSnoozeStatus(BaseModel):
-    """Current Slack-alert snooze state."""
+    """Current alert snooze state."""
 
     snoozed: bool
     snooze_until: float | None = None
@@ -1276,7 +1295,7 @@ class AlertSnoozeStatus(BaseModel):
 
 
 class MuteAlertTypeRequest(BaseModel):
-    """Request payload for muting one alert type's Slack alerts."""
+    """Request payload for muting one alert type's notifications."""
 
     duration_seconds: int | None = Field(
         None,
@@ -1290,7 +1309,7 @@ class MuteAlertTypeRequest(BaseModel):
 
 
 class AlertTypeMuteStatus(BaseModel):
-    """One alert type from the catalog, and whether its Slack alerts are muted."""
+    """One alert type from the catalog, and whether its notifications are muted."""
 
     alert_type: str
     label: str

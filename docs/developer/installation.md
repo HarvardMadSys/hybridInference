@@ -211,7 +211,7 @@ The settings you are most likely to want:
 | `FRONTEND_URL` | absolute URL your users click in verification and reset emails |
 | `BASE_URL` | this gateway's own public origin, used to build the absolute links in signup and password-reset emails. Set it: the server does not interpret `X-Forwarded-*`, so a blank value derives `http://…` from the request even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `LOG_LEVEL`, `LOG_FORMAT` | logging verbosity and `json`/text output |
-| `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
+| `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL` | in-process alerting, off by default; choose one Slack or WeCom channel in Admin Configuration, then restart |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES` | trust `X-Forwarded-For` from the proxies listed in `TRUSTED_PROXIES`; the Cloudflare settings below also need the flag |
 | `TRUSTED_DIRECT_CLIENT_NETWORKS` | optional CIDRs for clients that connect directly from a private network; does not authorize forwarding headers |
 | `TRUST_CLOUDFLARE_HEADERS`, `TRUSTED_CLOUDFLARE_NETWORKS` | trust Cloudflare's `CF-Connecting-IP` from the listed peers; also needs `TRUST_PROXY_HEADERS` on |

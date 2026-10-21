@@ -342,17 +342,36 @@ the routing-observation and `X-Provider` behaviour is unchanged.
 
 ## Alerting
 
-The backend has an in-process alert engine that posts to a Slack webhook. It is
-off unless you turn it on, with two settings under **Alerts** on the
-**Configuration** tab:
+The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In
+**Admin → Configuration → Alerts**, choose a **Notification channel** and enter
+its webhook URL. Only the selected channel's field is shown; saved URLs remain
+write-only. Choose **None** to turn off notifications.
+
+The in-process engine is off unless you enable `ALERTS_ENABLED`. Its underlying
+configuration keys are:
 
 | Setting | Value |
 |---|---|
 | `ALERTS_ENABLED` | on; applies after a backend restart |
-| `SLACK_ALERTS_WEBHOOK_URL` | `https://hooks.slack.com/services/...` |
+| `SLACK_ALERTS_WEBHOOK_URL` | optional dedicated Slack webhook |
+| `SLACK_WEBHOOK_URL` | Slack fallback; also enables the failed-request detector |
+| `WECOM_ALERTS_WEBHOOK_URL` | WeCom group webhook; also enables the failed-request detector |
 
 If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to `SLACK_WEBHOOK_URL`, so
-one webhook can serve both code paths.
+one webhook can serve both code paths. The console preserves existing dedicated
+Slack settings and uses the fallback key for a new Slack configuration.
+
+Slack and WeCom are mutually exclusive. Saving a channel switch clears the old
+channel in the same update. All webhook changes require a backend restart;
+until then, normal alerts continue using the previous channel. **Pending
+restart** identifies saved changes waiting to take effect.
+
+**Send test notification** sends a marked test using the URL currently entered,
+or the latest saved URL when no draft is entered. It works before a restart and
+does not save changes, enable alerting or change incident/cooldown state. The
+success message includes a test ID to check in the receiving group. Testing
+accepts the selected platform's official HTTPS webhook endpoint. Discord,
+Telegram and arbitrary webhook formats are not supported by this selector.
 
 Rules and thresholds are a deployment's own; this repository ships no alerts
 file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in

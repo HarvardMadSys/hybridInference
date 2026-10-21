@@ -91,6 +91,31 @@ def test_before_loading_the_resolver_is_the_environment(config_env, monkeypatch)
     assert app_config.config_value("SITE_DOCS_URL", "fallback") == "fallback"
 
 
+def test_admin_preview_uses_environment_but_skips_invalid_values(config_env, monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", "https://example.invalid/synthetic-secret")
+    monkeypatch.setenv("STREAM_MAX_IDLE_S", "0")
+
+    assert app_config.configured_value("WECOM_ALERTS_WEBHOOK_URL") == (
+        "https://example.invalid/synthetic-secret"
+    )
+    assert app_config.configured_value("STREAM_MAX_IDLE_S", "240") == "240"
+
+
+@pytest.mark.asyncio
+async def test_admin_preview_tracks_replaced_and_cleared_pending_secrets(config_env) -> None:
+    key = "WECOM_ALERTS_WEBHOOK_URL"
+    store = FakeAppConfigStore([row(key, "https://example.invalid/old", secret=True)])
+    await _boot(store)
+
+    await app_config.update({key: "https://example.invalid/new"}, updated_by="admin")
+    assert app_config.configured_value(key) == "https://example.invalid/new"
+    assert app_config.config_value(key) == "https://example.invalid/old"
+
+    await app_config.update({key: ""}, updated_by="admin")
+    assert app_config.configured_value(key) == ""
+    assert app_config.config_value(key) == "https://example.invalid/old"
+
+
 @pytest.mark.asyncio
 async def test_a_row_wins_over_the_environment_even_when_empty(config_env, monkeypatch) -> None:
     monkeypatch.setenv("SITE_NAME", "From env")

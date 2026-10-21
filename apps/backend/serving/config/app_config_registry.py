@@ -88,7 +88,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "network", "Network", "Browser origins and which proxies may report client addresses."
     ),
-    Category("alerts", "Alerts", "Slack and WeCom alerting."),
+    Category("alerts", "Alerts", "Backend alert notifications."),
     Category(
         "integrations",
         "Integrations",

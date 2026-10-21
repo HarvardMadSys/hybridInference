@@ -93,6 +93,8 @@ const LINK_BUTTON_CLASS =
  */
 export function ConfigEntryField({
   entry,
+  label = entry.key,
+  allowSecretClear = true,
   draft,
   onChange,
   serverError,
@@ -101,6 +103,8 @@ export function ConfigEntryField({
   disabled = false,
 }: {
   entry: ConfigEntry;
+  label?: string;
+  allowSecretClear?: boolean;
   draft: ConfigDraft | undefined;
   onChange: (key: string, draft: ConfigDraft | undefined) => void;
   /** The reason the last save gave for this key. */
@@ -152,6 +156,8 @@ export function ConfigEntryField({
     control = (
       <SecretEditor
         entry={entry}
+        label={label}
+        allowClear={allowSecretClear}
         draft={draft}
         controlId={controlId}
         describedBy={describedBy}
@@ -240,7 +246,7 @@ export function ConfigEntryField({
               htmlFor={controlId}
               className="break-all font-mono text-[13px] font-medium text-gray-900"
             >
-              {entry.key}
+              {label}
             </label>
             {badges.map((badge) => (
               <span
@@ -331,6 +337,8 @@ export function ConfigEntryField({
 
 function SecretEditor({
   entry,
+  label,
+  allowClear,
   draft,
   controlId,
   describedBy,
@@ -339,6 +347,8 @@ function SecretEditor({
   onChange,
 }: {
   entry: ConfigEntry;
+  label: string;
+  allowClear: boolean;
   draft: ConfigDraft | undefined;
   controlId: string;
   describedBy: string | undefined;
@@ -360,7 +370,7 @@ function SecretEditor({
           type="button"
           onClick={() => onChange(entry.key, undefined)}
           disabled={disabled}
-          aria-label={`Keep ${entry.key}`}
+          aria-label={`Keep ${label}`}
           className={LINK_BUTTON_CLASS}
         >
           Undo
@@ -386,20 +396,22 @@ function SecretEditor({
           type="button"
           onClick={() => onChange(entry.key, { kind: 'replace', value: '' })}
           disabled={disabled}
-          aria-label={`Replace ${entry.key}`}
+          aria-label={`Replace ${label}`}
           className={LINK_BUTTON_CLASS}
         >
           Replace
         </button>
-        <button
-          type="button"
-          onClick={() => onChange(entry.key, { kind: 'clear' })}
-          disabled={disabled}
-          aria-label={`Clear ${entry.key}`}
-          className={`${LINK_BUTTON_CLASS} text-red-600 hover:bg-red-50 hover:text-red-700`}
-        >
-          Clear
-        </button>
+        {allowClear ? (
+          <button
+            type="button"
+            onClick={() => onChange(entry.key, { kind: 'clear' })}
+            disabled={disabled}
+            aria-label={`Clear ${label}`}
+            className={`${LINK_BUTTON_CLASS} text-red-600 hover:bg-red-50 hover:text-red-700`}
+          >
+            Clear
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -447,7 +459,7 @@ function SecretEditor({
           type="button"
           onClick={() => onChange(entry.key, undefined)}
           disabled={disabled}
-          aria-label={`Keep the current ${entry.key}`}
+          aria-label={`Keep the current ${label}`}
           className={LINK_BUTTON_CLASS}
         >
           Cancel

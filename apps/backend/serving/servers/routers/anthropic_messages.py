@@ -395,9 +395,9 @@ async def anthropic_aware_validation_exception_handler(
         # cannot render). Answering the request matters more than the log line,
         # and a body with no field list is still a correct 422.
         errors = None
-    if request.url.path.startswith("/auth/phone/"):
-        # A missing signup field carries the whole body in ``input``, including
-        # a valid OTP. Keep diagnostics without retaining that credential.
+    if request.url.path.startswith("/auth/phone/") or request.url.path == "/admin/alerts/test":
+        # A missing field carries the whole body in ``input``, including a
+        # valid OTP or webhook. Keep diagnostics without that credential.
         detail = (
             str(
                 [
@@ -406,7 +406,7 @@ async def anthropic_aware_validation_exception_handler(
                 ]
             )
             if errors is not None
-            else "Invalid phone authentication request"
+            else "Invalid request"
         )
     else:
         detail = str(errors) if errors is not None else str(exc)

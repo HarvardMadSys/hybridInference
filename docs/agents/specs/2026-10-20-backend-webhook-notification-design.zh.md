@@ -107,18 +107,13 @@ Slack 的两个 Webhook 配置和企微 Webhook 统一要求重启后生效。DB
 
 ### 3.4 管理台配置
 
-现有 `Admin → Configuration → Alerts` 页面根据后端配置注册表生成表单。
-后端部署本次改动后，该页面自动出现 `WECOM_ALERTS_WEBHOOK_URL`，无需新增前端页面。
-Webhook 按 secret 字段处理：可输入或替换，读取配置时不返回明文；保存后显示
-`Pending restart`，后端重启后生效。
+本节由 [2026-10-21 管理台通知配置设计](2026-10-21-admin-alert-notifications-design.zh.md)
+更新：`Admin → Configuration → Alerts` 使用单渠道下拉框，只展示所选渠道的 Webhook，
+并提供测试通知按钮。前端在一次保存中清空旧渠道的全部配置并写入新渠道，复用现有
+配置校验和重启机制。Webhook 仍为只写 secret，读取配置时不返回明文。
 
-配置企微时，将 `WECOM_ALERTS_WEBHOOK_URL` 设为群内自定义消息推送提供的地址，
-并将两个 Slack Webhook 配置显式设为空。启用规则引擎还需设置 `ALERTS_ENABLED`；
-验收环境应显式设置 `DEPLOYMENT_ENV`，避免依赖域名推断环境。
-已有环境变量配置的部署应注意：删除数据库配置行会重新使用环境变量，
-因此切换渠道时应保存空值，不应以“重置”代替清空。
-
-本次复用现有配置、校验和重启交互；独立的渠道选择界面和“发送测试通知”按钮不在本次范围内。
+启用规则引擎仍需设置 `ALERTS_ENABLED`；验收环境应显式设置 `DEPLOYMENT_ENV`。
+切换渠道保存空值，不删除数据库行，避免重新启用环境变量中的旧 Webhook。
 
 ## 4 测试
 
