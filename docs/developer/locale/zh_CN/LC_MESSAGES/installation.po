@@ -505,12 +505,14 @@ msgid "logging verbosity and `json`/text output"
 msgstr "日志详细程度，以及 `json`/纯文本输出"
 
 #: ../developer/installation.md:109
-msgid "`ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL`"
-msgstr ""
+msgid "`ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL`"
+msgstr "`ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL`"
 
 #: ../developer/installation.md:109
-msgid "in-process alerting, off by default"
-msgstr "进程内告警，默认关闭"
+msgid ""
+"in-process alerting, off by default; choose one Slack or WeCom channel in "
+"Admin Configuration, then restart"
+msgstr "进程内告警，默认关闭；在管理台 Configuration 中选择 Slack 或企业微信中的一个渠道，然后重启"
 
 #: ../developer/installation.md:109
 msgid "`TRUST_PROXY_HEADERS`, `TRUSTED_PROXIES`"
