@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 from datetime import datetime, timezone
@@ -74,6 +75,12 @@ RUNTIME_PRICING = {
     "completion": "0.28",
     "input_cache_reads": "0.0028",
     "input_cache_writes": "0",
+}
+RUNTIME_CAPABILITIES = {
+    "context_length": 131072,
+    "max_output_length": 65536,
+    "input_modalities": ["text", "image"],
+    "supports_tools": True,
 }
 OPENROUTER_DEEPINFRA_PRICING = {
     "prompt": "0.15",
@@ -1999,6 +2006,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         None,
         2.5,
         None,
+        None,
         "admin-token",
     )
     verify_mock.assert_awaited_once()
@@ -2053,6 +2061,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
         None,
         None,
         2.0,
+        None,
         None,
         "admin-token",
     )
@@ -2124,6 +2133,7 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
             "concurrency_limit": persisted[9],
             "weight": persisted[10],
             "pricing": persisted[11],
+            "capabilities": persisted[12],
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         }
@@ -2222,6 +2232,7 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
         2,
         1.0,
         None,
+        None,
         "admin-token",
     )
     verify_mock.assert_awaited_once()
@@ -2316,6 +2327,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
         None,
         4,
         1.0,
+        None,
         None,
         "admin-token",
     )
@@ -2526,6 +2538,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2559,6 +2572,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
         None,
         1.25,
         RUNTIME_PRICING,
+        RUNTIME_CAPABILITIES,
         "admin-token",
     )
     op_store.set_setting.assert_has_awaits(
@@ -2587,6 +2601,11 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert runtime_adapter.config.pricing == RUNTIME_PRICING
     assert runtime_adapter.config.route_metadata["api_key_id"] == "db-openrouter"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.context_length == 131072
+    assert runtime_adapter.config.max_output_length == 65536
+    assert runtime_adapter.config.input_modalities == ["text", "image"]
+    assert runtime_adapter.config.supports_tools is True
+    assert runtime_adapter.config.route_metadata["declared_capabilities"] is True
 
     list_response = await client.get(
         "/admin/routing/provider-routes/deepseek-v4-flash",
@@ -2597,6 +2616,265 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert route["api_key_id"] == "db-openrouter"
     assert route["api_key"]["source"] == "db"
     fake_routewise.refresh_route_table.assert_called_once_with()
+
+
+def _runtime_model_payload(**overrides):
+    payload = {
+        "model_id": "deepseek-v4-flash",
+        "strategy": "fixed",
+        "route_type": "on_demand",
+        "upstream_provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "deepseek/deepseek-v4-flash",
+        "pricing": RUNTIME_PRICING,
+        "capabilities": RUNTIME_CAPABILITIES,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
+    sent: list[dict] = []
+
+    async def post(_url, payload):
+        sent.append(payload)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "model": payload["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(adapter, "_post_with_pool", post)
+    return sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        None,
+        {key: value for key, value in RUNTIME_CAPABILITIES.items() if key != "supports_tools"},
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["image"]},
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]},
+        {**RUNTIME_CAPABILITIES, "context_length": 0},
+        {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
+    ],
+    ids=[
+        "missing",
+        "tools-unanswered",
+        "no-text",
+        "unoffered-modality",
+        "zero-context",
+        "output-over-context",
+    ],
+)
+async def test_post_provider_route_model_requires_declared_capabilities(
+    admin_client,
+    capabilities,
+):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    payload = _runtime_model_payload()
+    if capabilities is None:
+        del payload["capabilities"]
+    else:
+        payload["capabilities"] = capabilities
+
+    for path in (
+        "/admin/routing/provider-route-models",
+        "/admin/routing/provider-route-model-verifications",
+    ):
+        response = await client.post(path, json=payload, headers=AUTH)
+        assert response.status_code == 422, response.text
+
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    assert "deepseek-v4-flash" not in route_executor.routes
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_capabilities_are_stored_once_in_a_fixed_order(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json=_runtime_model_payload(
+            capabilities={
+                "context_length": 65536,
+                "max_output_length": 65536,
+                "input_modalities": ["image", "text", "image"],
+                "supports_tools": False,
+            }
+        ),
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    declared = {
+        "context_length": 65536,
+        "max_output_length": 65536,
+        "input_modalities": ["text", "image"],
+        "supports_tools": False,
+    }
+    assert op_store.upsert_provider_route_candidate.await_args.args[12] == declared
+    runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
+    assert runtime_adapter.config.input_modalities == ["text", "image"]
+    assert runtime_adapter.config.supports_tools is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_requests_follow_declared_capabilities(admin_client, monkeypatch):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json=_runtime_model_payload(),
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
+    sent = _capture_upstream_payloads(adapter, monkeypatch)
+
+    # What a coding agent sends: tool definitions, a long output budget and,
+    # on the chat surface, a screenshot.
+    await adapter.chat_completion(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this picture?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            }
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        tool_choice="auto",
+        max_tokens=32000,
+    )
+    await adapter.messages(
+        {
+            "model": "deepseek-v4-flash",
+            "max_tokens": 32000,
+            "tools": [
+                {
+                    "name": "read_file",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ],
+            "messages": [{"role": "user", "content": "Read README.md"}],
+        },
+        request_id="req-capabilities",
+    )
+
+    chat, anthropic = sent
+    assert [tool["function"]["name"] for tool in chat["tools"]] == ["read_file"]
+    assert chat["max_tokens"] == 32000
+    assert [block["type"] for block in chat["messages"][0]["content"]] == ["text", "image_url"]
+    assert [tool["function"]["name"] for tool in anthropic["tools"]] == ["read_file"]
+    assert anthropic["max_tokens"] == 32000
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_requests_hold_to_a_narrow_declaration(admin_client, monkeypatch):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json=_runtime_model_payload(
+            capabilities={
+                "context_length": 32768,
+                "max_output_length": 8192,
+                "input_modalities": ["text"],
+                "supports_tools": False,
+            }
+        ),
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
+    sent = _capture_upstream_payloads(adapter, monkeypatch)
+
+    await adapter.chat_completion(
+        [{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        max_tokens=32000,
+    )
+
+    (payload,) = sent
+    assert "tools" not in payload
+    assert payload["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_added_to_a_declared_model_keeps_its_capabilities(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    create = await client.post(
+        "/admin/routing/provider-route-models",
+        json=_runtime_model_payload(strategy="routewise"),
+        headers=AUTH,
+    )
+    assert create.status_code == 200, create.text
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/deepseek-v4-flash",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+    op_store.upsert_provider_route_candidate.reset_mock()
+
+    # Rewriting the added route's row, as a concurrency edit does, must keep the
+    # declaration the route was created with.
+    response = await client.patch(
+        "/admin/routing/provider-route-candidates/deepseek-v4-flash/"
+        "deepseek-v4-flash:openrouter[parasail]-api",
+        json={"concurrency_limit": 4},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert op_store.upsert_provider_route_candidate.await_args.args[12] == RUNTIME_CAPABILITIES
+    added_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
+    assert added_adapter.config.route_metadata["declared_capabilities"] is True
+    assert added_adapter.config.context_length == 131072
+    assert added_adapter.config.supports_tools is True
 
 
 @pytest.mark.asyncio
@@ -2625,6 +2903,7 @@ async def test_post_provider_route_model_rejects_orphaned_routewise_settings(adm
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.0,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2656,6 +2935,7 @@ async def test_post_provider_route_model_refuses_an_auto_model_name(admin_client
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.0,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2698,6 +2978,7 @@ async def test_post_provider_route_model_creates_openrouter_concurrency_model(ad
             "concurrency_limit": 2,
             "weight": 1.0,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2725,6 +3006,7 @@ async def test_post_provider_route_model_creates_openrouter_concurrency_model(ad
         2,
         1.0,
         RUNTIME_PRICING,
+        RUNTIME_CAPABILITIES,
         "admin-token",
     )
     verify_mock.assert_awaited_once()
@@ -2761,6 +3043,7 @@ async def test_post_provider_route_model_rejects_unpinned_openrouter_concurrency
             "concurrency_limit": 2,
             "weight": 1.0,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2791,6 +3074,7 @@ async def test_post_provider_route_model_rejects_resource_route_for_fixed_strate
             "concurrency_limit": 2,
             "weight": 1.0,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2829,6 +3113,7 @@ async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2865,6 +3150,7 @@ async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(
         None,
         0.75,
         RUNTIME_PRICING,
+        RUNTIME_CAPABILITIES,
         "admin-token",
     )
     runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
@@ -2891,6 +3177,7 @@ async def test_post_provider_route_model_accepts_explicit_required_role(admin_cl
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2932,6 +3219,7 @@ async def test_post_provider_route_model_rejects_invalid_required_role(admin_cli
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -2977,6 +3265,7 @@ async def test_post_provider_route_model_registers_under_router_lock(admin_clien
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -3008,6 +3297,7 @@ async def test_post_provider_route_model_rollback_pops_route_under_router_lock(a
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1,
                 "pricing": RUNTIME_PRICING,
+                "capabilities": RUNTIME_CAPABILITIES,
             },
             headers=AUTH,
         )
@@ -3041,6 +3331,7 @@ async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(a
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1.25,
                 "pricing": RUNTIME_PRICING,
+                "capabilities": RUNTIME_CAPABILITIES,
             },
             headers=AUTH,
         )
@@ -3075,6 +3366,7 @@ async def test_post_provider_route_model_rolls_back_when_setting_fails(admin_cli
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1.25,
                 "pricing": RUNTIME_PRICING,
+                "capabilities": RUNTIME_CAPABILITIES,
             },
             headers=AUTH,
         )
@@ -3104,6 +3396,7 @@ async def test_post_provider_route_model_rejects_existing_model(admin_client):
             "provider_model_id": "minimax/minimax-m2.5",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -3143,6 +3436,7 @@ async def test_concurrent_same_id_model_create_loser_does_not_detach_winner(admi
         "provider_model_id": "deepseek/deepseek-v4-flash",
         "weight": 1,
         "pricing": RUNTIME_PRICING,
+        "capabilities": RUNTIME_CAPABILITIES,
     }
 
     first = asyncio.create_task(
@@ -3206,6 +3500,7 @@ async def test_runtime_model_stays_unpublished_until_persistence_and_strategy_co
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1,
                 "pricing": RUNTIME_PRICING,
+                "capabilities": RUNTIME_CAPABILITIES,
             },
             headers=AUTH,
         )
@@ -3278,6 +3573,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1,
                 "pricing": RUNTIME_PRICING,
+                "capabilities": RUNTIME_CAPABILITIES,
             },
             headers=AUTH,
         )
@@ -3348,6 +3644,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
             "quota_limit": 5000,
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -3388,6 +3685,7 @@ async def test_verify_provider_route_model_does_not_create_model(admin_client):
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -3721,6 +4019,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
         None,
         1.0,
         None,
+        None,
         "admin-token",
     )
     verify_mock.assert_awaited_once()
@@ -3782,6 +4081,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
         None,
         None,
         1.0,
+        None,
         None,
         "admin-token",
     )
@@ -3934,6 +4234,7 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -3998,6 +4299,7 @@ async def test_ambiguous_last_route_delete_tombstones_live_model(admin_client):
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -4044,6 +4346,7 @@ async def test_last_route_delete_racing_candidate_add_leaves_no_orphan(admin_cli
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -4153,6 +4456,7 @@ async def test_last_route_delete_serializes_policy_writes(
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
         },
         headers=AUTH,
     )
@@ -4356,9 +4660,106 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.pricing == RUNTIME_PRICING
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    # A row from before capabilities were declared restores exactly as it did.
+    assert runtime_adapter.config.context_length == 8192
+    assert runtime_adapter.config.max_output_length == 4096
+    assert runtime_adapter.config.input_modalities == ["text"]
+    assert runtime_adapter.config.supports_tools is False
+    assert "declared_capabilities" not in runtime_adapter.config.route_metadata
     registry.prepare_router_strategy_change.assert_called_once_with("deepseek-v4-flash", "fixed")
     registry.commit_router_strategy_change.assert_called_once_with(change)
     registry.refresh_route_tables.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates_restores_declared_capabilities(
+    admin_client,
+):
+    _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    def row(route_id: str, provider: str) -> dict:
+        return {
+            "model_id": "deepseek-v4-flash",
+            "route_id": route_id,
+            "route_type": "on_demand",
+            "provider": provider,
+            "openrouter_sort": None,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.0,
+            # asyncpg hands JSONB back as text on this pool.
+            "pricing": json.dumps(RUNTIME_PRICING),
+            "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+
+    op_store.list_all_provider_route_candidates.return_value = [
+        row("deepseek-v4-flash:openrouter-api", "openrouter"),
+        row("deepseek-v4-flash:openrouter[parasail]-api", "openrouter[parasail]"),
+    ]
+    op_store.list_settings.return_value = [
+        {"key": "model_required_role:deepseek-v4-flash", "value": "admin"},
+        {"key": "model_router_strategy:deepseek-v4-flash", "value": "fixed"},
+    ]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=MagicMock(),
+        managed_routers=[],
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    restored = [
+        adapter
+        for adapter, _weight, _endpoint_id in route_executor.routes[
+            "deepseek-v4-flash"
+        ].raw_adapters
+    ]
+    assert len(restored) == 2
+    for adapter in restored:
+        assert adapter.config.context_length == 131072
+        assert adapter.config.max_output_length == 65536
+        assert adapter.config.input_modalities == ["text", "image"]
+        assert adapter.config.supports_tools is True
+        assert adapter.config.route_metadata["declared_capabilities"] is True
+
+
+@pytest.mark.asyncio
+async def test_candidate_snapshot_restore_decodes_jsonb_columns():
+    op_store = MagicMock()
+    op_store.upsert_provider_route_candidate = AsyncMock()
+
+    await provider_routes._restore_provider_route_candidate_snapshot(
+        op_store,
+        model_id="deepseek-v4-flash",
+        route_id="deepseek-v4-flash:openrouter-api",
+        snapshot={
+            "route_type": "on_demand",
+            "provider": "openrouter",
+            "openrouter_sort": None,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.0,
+            "pricing": json.dumps(RUNTIME_PRICING),
+            "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+            "updated_by": "127.0.0.1",
+        },
+    )
+
+    args = op_store.upsert_provider_route_candidate.await_args.args
+    assert args[11] == RUNTIME_PRICING
+    assert args[12] == RUNTIME_CAPABILITIES
 
 
 @pytest.mark.asyncio
@@ -4768,6 +5169,7 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
         None,
         None,
         1.0,
+        None,
         None,
         "seed-admin",
     )

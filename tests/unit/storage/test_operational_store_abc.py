@@ -91,6 +91,7 @@ def test_provider_route_candidate_signatures():
         "concurrency_limit",
         "weight",
         "pricing",
+        "capabilities",
         "updated_by",
     ]
     assert list(inspect.signature(OperationalStore.delete_provider_route_candidate).parameters) == [

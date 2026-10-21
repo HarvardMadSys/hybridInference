@@ -13,6 +13,7 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
+  RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
   createProviderRouteCandidate,
@@ -49,6 +50,9 @@ type RouteForm = {
   concurrencyLimit: string;
 };
 
+// Starts unanswered: a choice the admin never made must not be sent as "no".
+type DeclaredChoice = '' | 'yes' | 'no';
+
 type CreateRouteForm = {
   routeType: ProviderRouteType;
   upstreamProvider: string;
@@ -65,6 +69,10 @@ type CreateRouteForm = {
   pricingCompletion: string;
   pricingCacheReads: string;
   pricingCacheWrites: string;
+  contextLength: string;
+  maxOutputLength: string;
+  imageInput: DeclaredChoice;
+  toolCalling: DeclaredChoice;
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -83,6 +91,10 @@ const emptyCreateForm: CreateRouteForm = {
   pricingCompletion: '',
   pricingCacheReads: '',
   pricingCacheWrites: '',
+  contextLength: '',
+  maxOutputLength: '',
+  imageInput: '',
+  toolCalling: '',
 };
 
 const OPENROUTER_PROVIDER_AUTO = '';
@@ -149,6 +161,28 @@ function runtimePricingPayload(form: CreateRouteForm): Record<string, string> {
   if (cacheReads) pricing.input_cache_reads = cacheReads;
   if (cacheWrites) pricing.input_cache_writes = cacheWrites;
   return pricing;
+}
+
+function positiveIntegerOrNull(value: string) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return parsed > 0 ? parsed : null;
+}
+
+function runtimeCapabilitiesPayload(form: CreateRouteForm): RuntimeModelCapabilities | null {
+  const contextLength = positiveIntegerOrNull(form.contextLength);
+  const maxOutputLength = positiveIntegerOrNull(form.maxOutputLength);
+  if (contextLength === null || maxOutputLength === null || maxOutputLength > contextLength) {
+    return null;
+  }
+  if (!form.imageInput || !form.toolCalling) return null;
+  return {
+    context_length: contextLength,
+    max_output_length: maxOutputLength,
+    input_modalities: form.imageInput === 'yes' ? ['text', 'image'] : ['text'],
+    supports_tools: form.toolCalling === 'yes',
+  };
 }
 
 function formatWeight(value: number) {
@@ -756,6 +790,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       pricingValueValid(createForm.pricingCompletion) &&
       optionalPricingValueValid(createForm.pricingCacheReads) &&
       optionalPricingValueValid(createForm.pricingCacheWrites));
+  const runtimeCapabilities = runtimeCapabilitiesPayload(createForm);
+  const createCapabilitiesValid = !creatingModel || runtimeCapabilities !== null;
+  const parsedCreateContextLength = positiveIntegerOrNull(createForm.contextLength);
+  const parsedCreateMaxOutputLength = positiveIntegerOrNull(createForm.maxOutputLength);
+  const createMaxOutputExceedsContext =
+    parsedCreateContextLength !== null &&
+    parsedCreateMaxOutputLength !== null &&
+    parsedCreateMaxOutputLength > parsedCreateContextLength;
   const createQuotaValid =
     createForm.routeType !== 'quota' ||
     (parsedCreateQuotaLimit !== null &&
@@ -787,7 +829,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createQuotaValid &&
     createConcurrencyValid &&
     createWeightValid &&
-    createPricingValid;
+    createPricingValid &&
+    createCapabilitiesValid;
   const editFormValid =
     Boolean(editingRoute) &&
     Boolean(form.upstreamProvider) &&
@@ -879,6 +922,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     strategy: creatingModel ? newModelStrategy : strategy,
     required_role: creatingModel ? newModelRequiredRole : undefined,
     pricing: creatingModel ? runtimePricing : undefined,
+    capabilities: creatingModel ? runtimeCapabilities : undefined,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -1336,12 +1380,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     try {
       let created: ProviderRoute;
       if (creatingModel) {
+        // createFormValid already requires it; this check narrows the type.
+        if (!runtimeCapabilities) return;
         created = await createProviderRouteModel({
           ...createRoutePayload,
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
           pricing: runtimePricing,
+          capabilities: runtimeCapabilities,
         });
       } else {
         created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -1366,12 +1413,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setVerifyingCreateRoute(true);
     try {
       if (creatingModel) {
+        // createFormValid already requires it; this check narrows the type.
+        if (!runtimeCapabilities) return;
         await verifyProviderRouteModel({
           ...createRoutePayload,
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
           pricing: runtimePricing,
+          capabilities: runtimeCapabilities,
         });
       } else {
         await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -2158,6 +2208,121 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     />
                   </div>
+                </div>
+              )}
+
+              {creatingModel && (
+                <div className="mb-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-model-context-length"
+                      >
+                        Context length (tokens)
+                      </label>
+                      <input
+                        id="new-model-context-length"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={createForm.contextLength}
+                        onChange={(event) => {
+                          setCreateForm((current) => ({
+                            ...current,
+                            contextLength: event.target.value,
+                          }));
+                          setVerifiedCreateSignature(null);
+                        }}
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-model-max-output-length"
+                      >
+                        Max output (tokens)
+                      </label>
+                      <input
+                        id="new-model-max-output-length"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={createForm.maxOutputLength}
+                        onChange={(event) => {
+                          setCreateForm((current) => ({
+                            ...current,
+                            maxOutputLength: event.target.value,
+                          }));
+                          setVerifiedCreateSignature(null);
+                        }}
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      />
+                      {createMaxOutputExceedsContext && (
+                        <p className="mt-1 text-[11px] leading-5 text-red-600">
+                          Max output cannot exceed the context length.
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-model-image-input"
+                      >
+                        Image input
+                      </label>
+                      <select
+                        id="new-model-image-input"
+                        value={createForm.imageInput}
+                        onChange={(event) => {
+                          setCreateForm((current) => ({
+                            ...current,
+                            imageInput: event.target.value as DeclaredChoice,
+                          }));
+                          setVerifiedCreateSignature(null);
+                        }}
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      >
+                        <option value="">Choose…</option>
+                        <option value="no">Text only</option>
+                        <option value="yes">Accepts images</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-model-tool-calling"
+                      >
+                        Tool calling
+                      </label>
+                      <select
+                        id="new-model-tool-calling"
+                        value={createForm.toolCalling}
+                        onChange={(event) => {
+                          setCreateForm((current) => ({
+                            ...current,
+                            toolCalling: event.target.value as DeclaredChoice,
+                          }));
+                          setVerifiedCreateSignature(null);
+                        }}
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      >
+                        <option value="">Choose…</option>
+                        <option value="no">Not supported</option>
+                        <option value="yes">Supported</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-5 text-gray-400">
+                    Take these from the provider&apos;s model page. Requests follow them: tool
+                    definitions are dropped without tool calling, max_tokens is capped at the max
+                    output, and images reach the model only if it accepts them.
+                  </p>
                 </div>
               )}
 

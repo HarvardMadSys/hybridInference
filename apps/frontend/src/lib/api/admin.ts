@@ -2464,11 +2464,20 @@ export interface UpdateProviderRouteCandidatePayload {
   concurrency_limit: number;
 }
 
+/** What a runtime model accepts; every field is required when it is created. */
+export interface RuntimeModelCapabilities {
+  context_length: number;
+  max_output_length: number;
+  input_modalities: Array<'text' | 'image'>;
+  supports_tools: boolean;
+}
+
 export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
   model_id: string;
   strategy: ProviderRouteStrategy;
   required_role?: Role;
   pricing: Record<string, string>;
+  capabilities: RuntimeModelCapabilities;
 }
 
 export interface VerifyProviderRouteResponse {

@@ -1315,9 +1315,15 @@ class OperationalStore(ABC):
         concurrency_limit: int | None,
         weight: float,
         pricing: dict[str, str] | None,
+        capabilities: dict[str, Any] | None,
         updated_by: str | None,
     ) -> None:
-        """Upsert a DB-backed runtime provider route candidate."""
+        """Upsert a DB-backed runtime provider route candidate.
+
+        ``capabilities`` holds a runtime model's declared context window, output
+        cap, input modalities and tool support; None for a row that never
+        declared them, which keeps ``ModelConfig``'s defaults on restore.
+        """
 
     @abstractmethod
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:

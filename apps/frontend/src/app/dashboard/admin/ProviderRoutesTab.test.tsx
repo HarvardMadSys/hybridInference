@@ -143,6 +143,24 @@ function fillRuntimeModelPricing() {
   fireEvent.change(screen.getByLabelText('Completion $/M'), { target: { value: '0.28' } });
 }
 
+const RUNTIME_MODEL_CAPABILITIES = {
+  context_length: 131072,
+  max_output_length: 65536,
+  input_modalities: ['text', 'image'],
+  supports_tools: true,
+};
+
+function fillRuntimeModelCapabilities() {
+  fireEvent.change(screen.getByLabelText('Context length (tokens)'), {
+    target: { value: '131072' },
+  });
+  fireEvent.change(screen.getByLabelText('Max output (tokens)'), {
+    target: { value: '65536' },
+  });
+  fireEvent.change(screen.getByLabelText('Image input'), { target: { value: 'yes' } });
+  fireEvent.change(screen.getByLabelText('Tool calling'), { target: { value: 'yes' } });
+}
+
 const route = {
   model_id: 'minimax-fast',
   strategy: 'routewise',
@@ -1452,6 +1470,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
     fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
@@ -1481,6 +1500,7 @@ describe('ProviderRoutesTab', () => {
           prompt: '0.14',
           completion: '0.28',
         },
+        capabilities: RUNTIME_MODEL_CAPABILITIES,
       });
     });
     expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
@@ -1550,6 +1570,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: '2' },
     });
     fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
@@ -1577,6 +1598,7 @@ describe('ProviderRoutesTab', () => {
           prompt: '0.14',
           completion: '0.28',
         },
+        capabilities: RUNTIME_MODEL_CAPABILITIES,
       });
     });
     expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
@@ -1604,6 +1626,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
     fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
@@ -1625,6 +1648,7 @@ describe('ProviderRoutesTab', () => {
           prompt: '0.14',
           completion: '0.28',
         },
+        capabilities: RUNTIME_MODEL_CAPABILITIES,
       });
     });
     expect(createProviderRouteModel).not.toHaveBeenCalled();
@@ -1652,6 +1676,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
     fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
@@ -1662,6 +1687,105 @@ describe('ProviderRoutesTab', () => {
         }),
       );
     });
+  });
+
+  it('keeps a new model unsubmittable until every capability is answered', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+
+    const create = screen.getByRole('button', { name: 'Create' });
+    const verify = screen.getByRole('button', { name: 'Verify' });
+    expect(screen.getByLabelText('Image input')).toHaveValue('');
+    expect(screen.getByLabelText('Tool calling')).toHaveValue('');
+    expect(create).toBeDisabled();
+    expect(verify).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Context length (tokens)'), {
+      target: { value: '65536' },
+    });
+    fireEvent.change(screen.getByLabelText('Max output (tokens)'), {
+      target: { value: '8192' },
+    });
+    fireEvent.change(screen.getByLabelText('Image input'), { target: { value: 'no' } });
+    // Unanswered is not "no": leaving tool calling unset still blocks the form.
+    expect(create).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Tool calling'), { target: { value: 'no' } });
+    expect(create).toBeEnabled();
+    fireEvent.click(verify);
+
+    await waitFor(() => {
+      expect(verifyProviderRouteModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: {
+            context_length: 65536,
+            max_output_length: 8192,
+            input_modalities: ['text'],
+            supports_tools: false,
+          },
+        }),
+      );
+    });
+  });
+
+  it('refuses a max output larger than the context length', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText('Max output (tokens)'), {
+      target: { value: '262144' },
+    });
+
+    expect(screen.getByText('Max output cannot exceed the context length.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+
+  it('does not ask for capabilities when adding a route to an existing model', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    await screen.findByRole('dialog', { name: 'Add provider route' });
+    expect(screen.queryByLabelText('Context length (tokens)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool calling')).not.toBeInTheDocument();
   });
 
   it('does not filter create-model providers by the selected model routes', async () => {

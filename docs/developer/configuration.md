@@ -352,11 +352,19 @@ use any of the three.
 A model created here is a **runtime model**: it exists only in the database,
 carries an id, a first route, a pricing table, a router strategy and a
 `required_role` (default `admin`, so a new model stays invisible to ordinary
-users until you lower it), and is restored at every start. It does not carry
-the catalog metadata a registry entry declares — context length, modalities,
-supported parameters, aliases — and takes `ModelConfig`'s defaults for those:
-`context_length` 8192, `max_output_length` 4096, text in and out, no tool
-support. When a model needs any of that, put it in the registry.
+users until you lower it), and is restored at every start. It also declares
+what it accepts, as `capabilities` in the request: `context_length`,
+`max_output_length`, `input_modalities` (`text`, optionally `image`) and
+`supports_tools`. All four are required, because each changes what a request
+does: a model without tool support has tool definitions dropped, `max_tokens`
+is clamped to `max_output_length`, an image reaches only a route that accepts
+images, and Auto and the context-overflow fallback read `context_length`. A
+route added to the model later copies the four from its first route. A runtime
+model created before they could be declared keeps the defaults it was given:
+`context_length` 8192, `max_output_length` 4096, text only, no tool support.
+Supported parameters such as `reasoning_effort`, structured output and aliases
+still take `ModelConfig`'s defaults; when a model needs any of those, put it in
+the registry.
 
 ### Settings tab
 
