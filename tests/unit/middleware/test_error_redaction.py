@@ -177,6 +177,7 @@ def client() -> TestClient:
     # the same on /admin as it is on the public routers, and the way to show
     # that is to drive an admin path rather than to assert it in prose.
     app.add_api_route("/admin/probe/validate", validate, methods=["POST"])
+    app.add_api_route("/custom/admin/probe/validate/", validate, methods=["POST"])
 
     app.add_middleware(RequestIdMiddleware)
     _wire_like_create_app(app)
@@ -488,16 +489,25 @@ class TestEnvelope5RequestValidation:
         assert len(paths) == anthropic_messages._MAX_REPORTED_VALIDATION_FIELDS
         assert not any("sk-secret" in p for p in paths)
 
-    def test_detail_still_reaches_the_log(
-        self, client: TestClient, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        "path",
+        ["/probe/validate", "/v1/messages/probe/validate", "/custom/admin/probe/validate/"],
+    )
+    def test_safe_detail_still_reaches_the_log(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture, path: str
     ) -> None:
         logger_name = "serving.servers.routers.anthropic_messages"
         with caplog.at_level(logging.WARNING, logger=logger_name):
-            client.post("/probe/validate", json={"model": {"a": "sk-secret-value"}})
+            response = client.post(path, json={"model": {"a": "sk-secret-value"}})
 
+        assert response.status_code == 422
         records = [r for r in caplog.records if r.msg == "request_validation_error"]
         assert records, "the validation detail must still be logged"
-        assert "sk-secret-value" in records[0].detail
+        assert "model" in records[0].detail
+        assert "max_tokens" in records[0].detail
+        assert "sk-secret-value" not in records[0].detail
+        assert "input" not in records[0].detail
+        assert "ctx" not in records[0].detail
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +563,7 @@ class TestRedactedDetailReachesTheEmittedLine:
             # makes the record greppable by failure kind rather than by prose.
             assert "USER_NOT_FOUND" in rendered, rendered
 
-    def test_validation_input_is_emitted(
+    def test_validation_diagnostics_are_emitted_without_submitted_input(
         self, client: TestClient, caplog: pytest.LogCaptureFixture
     ) -> None:
         logger_name = "serving.servers.routers.anthropic_messages"
@@ -562,8 +572,10 @@ class TestRedactedDetailReachesTheEmittedLine:
 
         record = next(r for r in caplog.records if r.msg == "request_validation_error")
         for rendered in _formatted(record):
-            # The submitted value that the 422 body no longer echoes.
-            assert "sk-secret-value" in rendered, rendered
+            assert "model" in rendered, rendered
+            assert "max_tokens" in rendered, rendered
+            assert "sk-secret-value" not in rendered, rendered
+            assert "input" not in rendered, rendered
 
     def test_identity_configuration_fault_is_emitted(
         self, identity_client: TestClient, caplog: pytest.LogCaptureFixture

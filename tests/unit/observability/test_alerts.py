@@ -2360,6 +2360,44 @@ async def test_wecom_timeout_is_a_failure_and_counted():
     assert alert_delivery_failures_total() == {"exception": 1}
 
 
+@pytest.mark.parametrize(
+    ("channel", "failure", "failure_key"),
+    [
+        ("slack", "http", "502"),
+        ("slack", "timeout", "exception"),
+        ("wecom", "http", "502"),
+        ("wecom", "timeout", "exception"),
+        ("wecom", "json", "invalid-response"),
+        ("wecom", "missing-code", "invalid-errcode"),
+        ("wecom", "rejected-code", "errcode:40001"),
+    ],
+)
+async def test_admin_delivery_failures_do_not_change_runtime_health_counters(
+    channel, failure, failure_key
+):
+    def handler(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        if failure == "http":
+            return httpx.Response(502)
+        if failure == "json":
+            return httpx.Response(200, text="not json")
+        return httpx.Response(200, json={} if failure == "missing-code" else {"errcode": 40001})
+
+    sink = (
+        SlackSink("https://hooks.slack.test/services/test/channel/token")
+        if channel == "slack"
+        else WeComSink("https://qyapi.weixin.test/cgi-bin/webhook/send?key=test-token")
+    )
+    with patch("serving.observability.alerts.httpx.AsyncClient", _real_client_over(handler)):
+        assert await sink.post("live alert", dedupe_key="live") is False
+        assert alert_delivery_failures_total() == {failure_key: 1}
+        assert await sink.post("test", dedupe_key="test", record_failure=False) is False
+        assert alert_delivery_failures_total() == {failure_key: 1}
+        assert await sink.post("live alert", dedupe_key="live-2") is False
+        assert alert_delivery_failures_total() == {failure_key: 2}
+
+
 def test_wecom_truncation_cuts_on_a_utf8_boundary():
     truncated = _truncate_utf8("中" * 2000)
 
@@ -2449,6 +2487,26 @@ class TestTheQueryStringIsRedacted:
     """WeCom keeps its credential in the query, not the path."""
 
     WEBHOOK = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=nOtArEaLtOkEn"
+
+    @pytest.mark.parametrize("failure", [False, True])
+    async def test_normalized_queries_are_scrubbed_from_real_httpx_logs(self, caplog, failure):
+        url = self.WEBHOOK + "&source=中文"
+
+        def handler(request):
+            if failure:
+                raise RuntimeError(f"could not reach {request.url}")
+            return httpx.Response(200, json={"errcode": 0})
+
+        with (
+            patch("serving.observability.alerts.httpx.AsyncClient", _real_client_over(handler)),
+            caplog.at_level(logging.INFO),
+        ):
+            sent = await _post_to_wecom(url, "test", dedupe_key="test", record_failure=False)
+
+        assert sent is not failure
+        assert "nOtArEaLtOkEn" not in caplog.text
+        assert "key=" not in caplog.text
+        assert url_fingerprint(url) in caplog.text
 
     def test_a_target_with_the_query_is_scrubbed(self):
         scrubbed = scrub("POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed", self.WEBHOOK)

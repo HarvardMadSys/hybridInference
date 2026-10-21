@@ -7,7 +7,7 @@ import math
 import re
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -65,17 +65,19 @@ def _test_webhook(payload: TestAlertRequest) -> str:
             and parts.scheme == "https"
             and "#" not in webhook_url
         ):
+            query = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=True)
             if payload.channel == "slack":
                 valid = bool(
                     parts.netloc.lower() in {"hooks.slack.com", "hooks.slack-gov.com"}
-                    and "?" not in webhook_url
-                    and re.fullmatch(r"/services/[\w-]+/[\w-]+/[\w-]+", parts.path, re.ASCII)
+                    and re.fullmatch(r"/services/[\w-]+/[\w-]+/[\w-]+/?", parts.path, re.ASCII)
                 )
             else:
+                keys = [value for name, value in query if name == "key"]
                 valid = bool(
                     parts.netloc.lower() == "qyapi.weixin.qq.com"
-                    and parts.path == "/cgi-bin/webhook/send"
-                    and re.fullmatch(r"key=[\w-]+", parts.query, re.ASCII)
+                    and parts.path in {"/cgi-bin/webhook/send", "/cgi-bin/webhook/send/"}
+                    and len(keys) == 1
+                    and re.fullmatch(r"[\w-]+", keys[0], re.ASCII)
                 )
     except ValueError:
         pass
@@ -98,6 +100,16 @@ async def test_alert_endpoint(
     channel configuration, even when normal delivery is awaiting a restart.
     """
     global _test_send_not_before
+    now = time.monotonic()
+    if now < _test_send_not_before:
+        raise HTTPException(
+            429,
+            "Wait a few seconds before sending another test notification",
+            headers={"Retry-After": str(math.ceil(_test_send_not_before - now))},
+        )
+    # Reserve before any await so throttled requests cannot refresh the DB or
+    # race another test that is still resolving its saved destination.
+    _test_send_not_before = now + _TEST_SEND_INTERVAL_SECONDS
     if payload.webhook_url is None:
         try:
             # The save may have reached a different worker. Do not test this
@@ -107,15 +119,6 @@ async def test_alert_endpoint(
             logger.warning("alert test configuration refresh failed: channel=%s", payload.channel)
             raise HTTPException(503, "Could not read the saved webhook; retry the test") from None
     webhook_url = _test_webhook(payload)
-    now = time.monotonic()
-    if now < _test_send_not_before:
-        raise HTTPException(
-            429,
-            "Wait a few seconds before sending another test notification",
-            headers={"Retry-After": str(math.ceil(_test_send_not_before - now))},
-        )
-    # No await between the check and reservation; one bounded slot per worker.
-    _test_send_not_before = now + _TEST_SEND_INTERVAL_SECONDS
     test_id = f"alert-test-{uuid.uuid4().hex[:12]}"
     sink = SlackSink(webhook_url) if payload.channel == "slack" else WeComSink(webhook_url)
     sent = False
@@ -128,7 +131,7 @@ async def test_alert_endpoint(
                 "message": "Sent from Admin Configuration. No alert incident was created.",
             },
         )
-        sent = await sink.post(message, dedupe_key=test_id)
+        sent = await sink.post(message, dedupe_key=test_id, record_failure=False)
     except Exception:
         # Adapter exceptions may contain the credential; retain only safe context.
         logger.warning("alert test failed: channel=%s test_id=%s", payload.channel, test_id)

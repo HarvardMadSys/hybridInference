@@ -1031,7 +1031,8 @@ async def test_a_save_may_not_break_a_rule_an_environment_value_relies_on(
 
 
 @pytest.mark.asyncio
-async def test_a_save_may_not_configure_two_alert_channels(config_env) -> None:
+@pytest.mark.parametrize("slack_key", ["SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL"])
+async def test_a_save_may_not_configure_two_alert_channels(config_env, slack_key) -> None:
     """Slack and WeCom are alternatives, not a fan-out pair."""
     store = FakeAppConfigStore()
     await _boot(store)
@@ -1040,12 +1041,12 @@ async def test_a_save_may_not_configure_two_alert_channels(config_env) -> None:
 
     with pytest.raises(app_config.ConfigUpdateError, match="mutually exclusive"):
         await app_config.update(
-            {"SLACK_ALERTS_WEBHOOK_URL": slack, "WECOM_ALERTS_WEBHOOK_URL": wecom},
+            {slack_key: slack, "WECOM_ALERTS_WEBHOOK_URL": wecom},
             updated_by="admin",
         )
-    assert "SLACK_ALERTS_WEBHOOK_URL" not in await store.fetch_all()
+    assert slack_key not in await store.fetch_all()
 
-    await app_config.update({"SLACK_ALERTS_WEBHOOK_URL": slack}, updated_by="admin")
+    await app_config.update({slack_key: slack}, updated_by="admin")
     with pytest.raises(app_config.ConfigUpdateError, match="mutually exclusive"):
         await app_config.update({"WECOM_ALERTS_WEBHOOK_URL": wecom}, updated_by="admin")
     assert "WECOM_ALERTS_WEBHOOK_URL" not in await store.fetch_all()
@@ -1562,6 +1563,76 @@ def _entry(key: str) -> dict:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_key,environment_keys,channel",
+    [
+        ("SLACK_ALERTS_WEBHOOK_URL", ("WECOM_ALERTS_WEBHOOK_URL",), "slack"),
+        ("SLACK_WEBHOOK_URL", ("WECOM_ALERTS_WEBHOOK_URL",), "slack"),
+        ("WECOM_ALERTS_WEBHOOK_URL", ("SLACK_ALERTS_WEBHOOK_URL",), "wecom"),
+        ("WECOM_ALERTS_WEBHOOK_URL", ("SLACK_WEBHOOK_URL",), "wecom"),
+        (
+            "WECOM_ALERTS_WEBHOOK_URL",
+            ("SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL"),
+            "wecom",
+        ),
+    ],
+    ids=[
+        "canonical-slack-stored",
+        "legacy-slack-stored",
+        "wecom-stored-canonical-slack-env",
+        "wecom-stored-legacy-slack-env",
+        "wecom-stored-both-slack-env",
+    ],
+)
+async def test_stored_alert_channel_wins_over_conflicting_environment_at_startup(
+    config_env, monkeypatch, caplog, stored_key, environment_keys, channel
+) -> None:
+    from serving.observability.alerts import configured_sinks
+
+    urls = {
+        "slack": "https://hooks.slack.test/services/stored/test/token",
+        "wecom": "https://qyapi.weixin.test/cgi-bin/webhook/send?key=stored-token",
+    }
+    other_channel = "wecom" if channel == "slack" else "slack"
+    for key in environment_keys:
+        monkeypatch.setenv(key, urls[other_channel])
+    get_settings.cache_clear()
+    store = FakeAppConfigStore([row(stored_key, urls[channel], secret=True)])
+
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        await _boot(store)
+    app_config.require_valid_environment()
+
+    settings = get_settings()
+    assert settings.broken_rules() == {}
+    assert settings.slack_alerts_webhook_url == (urls["slack"] if channel == "slack" else "")
+    assert settings.wecom_alerts_webhook_url == (urls["wecom"] if channel == "wecom" else "")
+    assert settings.slack_webhook_url == (
+        urls["slack"] if stored_key == "SLACK_WEBHOOK_URL" else ""
+    )
+    sinks = configured_sinks()
+    assert len(sinks) == 1
+    assert sinks[0].name == channel
+    assert sinks[0].webhook_url == urls[channel]
+    stored = _entry(stored_key)
+    assert (stored["source"], stored["is_set"], stored["invalid"]) == ("database", True, None)
+    assert store.rows[stored_key].value == urls[channel]
+    for key in environment_keys:
+        # Importing the losing environment value would make the conflict
+        # permanent in the database on the next restart.
+        assert key not in store.rows
+        assert key in app_config._STATE.environment_aside
+        assert app_config.configured_value(key, "") == ""
+        ignored = _entry(key)
+        assert (ignored["source"], ignored["is_set"], ignored["invalid"]) == (
+            "default",
+            False,
+            None,
+        )
+        assert f"Not importing {key} from the environment" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_an_environment_value_never_beats_a_stored_row_through_a_rule(
     config_env, monkeypatch, caplog
 ) -> None:
@@ -1880,8 +1951,9 @@ def test_unloaded_provider_environment_is_rejected(
         app_config.require_valid_environment()
 
 
-def test_startup_refuses_two_alert_channels(config_env, monkeypatch) -> None:
-    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
+@pytest.mark.parametrize("slack_key", ["SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL"])
+def test_startup_refuses_two_alert_channels(config_env, monkeypatch, slack_key) -> None:
+    monkeypatch.setenv(slack_key, "https://hooks.slack.test/x")
     monkeypatch.setenv(
         "WECOM_ALERTS_WEBHOOK_URL",
         "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",

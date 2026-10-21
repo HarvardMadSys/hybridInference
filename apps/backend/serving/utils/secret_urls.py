@@ -41,6 +41,8 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -91,18 +93,27 @@ def scrub(text: str, url: str) -> str:
     if not text or not url:
         return text
     fingerprint = url_fingerprint(url)
-    out = text.replace(url, redact_url(url))
-    parts = urlsplit(url)
-    if len(parts.path) > 1:
-        # Some transport errors are worded in terms of the request *target*
-        # alone, which is the secret with the host taken off the front.
-        out = out.replace(parts.path, f"/#{fingerprint}")
-    if parts.query:
-        # The path replacement leaves the query behind when only the target is
-        # quoted. Replace the query with the same fingerprint, both in the
-        # ``?query`` form a request line uses and on its own.
-        out = out.replace(f"?{parts.query}", f"?#{fingerprint}")
-        out = out.replace(parts.query, f"#{fingerprint}")
+    variants = [url]
+    try:
+        # HTTPX percent-encodes Unicode and normalizes the request URL before
+        # logging it. An extra query parameter must not prevent a key in that
+        # same query from matching. Retain the original fingerprint for both.
+        normalized = str(httpx.URL(url))
+        if normalized != url:
+            variants.append(normalized)
+    except (httpx.InvalidURL, ValueError):
+        pass
+    out = text
+    for variant in variants:
+        out = out.replace(variant, redact_url(url))
+    for variant in variants:
+        parts = urlsplit(variant)
+        if len(parts.path) > 1:
+            # A transport error may quote only the request target.
+            out = out.replace(parts.path, f"/#{fingerprint}")
+        if parts.query:
+            out = out.replace(f"?{parts.query}", f"?#{fingerprint}")
+            out = out.replace(parts.query, f"#{fingerprint}")
     return out
 
 

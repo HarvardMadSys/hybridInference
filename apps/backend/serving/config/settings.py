@@ -455,9 +455,11 @@ class Settings(BaseSettings):
             self.slack_alerts_webhook_url or self.slack_webhook_url
         ) and self.wecom_alerts_webhook_url:
             broken[
-                "SLACK_ALERTS_WEBHOOK_URL and WECOM_ALERTS_WEBHOOK_URL are mutually exclusive"
+                "Slack webhooks (SLACK_ALERTS_WEBHOOK_URL or SLACK_WEBHOOK_URL) and "
+                "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive"
             ] = (
                 "slack_alerts_webhook_url",
+                "slack_webhook_url",
                 "wecom_alerts_webhook_url",
             )
         return broken

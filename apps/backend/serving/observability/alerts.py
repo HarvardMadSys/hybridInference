@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 
 from serving.config.app_config import config_value
+from serving.config.settings import get_settings
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
@@ -397,7 +398,9 @@ def _format_message(
     return "\n".join(lines)
 
 
-async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
+async def _post_to_slack(
+    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
+) -> bool:
     """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx.
 
     A non-2xx raises nothing, so this used to log only from the ``except``
@@ -421,7 +424,8 @@ async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = ""
                 resp = await client.post(webhook_url, json={"text": message})
             if 200 <= resp.status_code < 300:
                 return True
-            _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
+            if record_failure:
+                _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
             log.warning(
                 "slack webhook post rejected: status=%s alert=%s sink=%s",
                 resp.status_code,
@@ -430,7 +434,8 @@ async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = ""
             )
             return False
         except Exception:
-            _DELIVERY_FAILURES_TOTAL["exception"] += 1
+            if record_failure:
+                _DELIVERY_FAILURES_TOTAL["exception"] += 1
             # Rendered and scrubbed here rather than handed to ``log.exception``:
             # a transport that words its error in terms of the request puts the
             # URL in the traceback, and the traceback is formatted inside the
@@ -465,7 +470,9 @@ def _truncate_utf8(text: str, limit: int = _WECOM_CONTENT_LIMIT_BYTES) -> str:
     return encoded[:budget].decode("utf-8", errors="ignore") + _WECOM_ELLIPSIS
 
 
-async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
+async def _post_to_wecom(
+    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
+) -> bool:
     """Post a WeCom group-bot markdown message. Returns True only on success.
 
     WeCom answers transport failures and application failures differently: a
@@ -480,7 +487,8 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(webhook_url, json=payload)
             if not 200 <= resp.status_code < 300:
-                _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
+                if record_failure:
+                    _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
                 log.warning(
                     "wecom webhook post rejected: status=%s alert=%s sink=%s",
                     resp.status_code,
@@ -491,7 +499,8 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
             try:
                 body = resp.json()
             except Exception:
-                _DELIVERY_FAILURES_TOTAL["invalid-response"] += 1
+                if record_failure:
+                    _DELIVERY_FAILURES_TOTAL["invalid-response"] += 1
                 log.warning(
                     "wecom webhook post rejected: non-JSON response alert=%s sink=%s",
                     dedupe_key or "-",
@@ -507,7 +516,8 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
                 # Missing, null or non-integer: the response cannot confirm
                 # delivery, so it is a failure rather than a success.
                 failure_key = "invalid-errcode"
-            _DELIVERY_FAILURES_TOTAL[failure_key] += 1
+            if record_failure:
+                _DELIVERY_FAILURES_TOTAL[failure_key] += 1
             log.warning(
                 "wecom webhook post rejected: errcode=%s alert=%s sink=%s",
                 errcode,
@@ -516,7 +526,8 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
             )
             return False
         except Exception:
-            _DELIVERY_FAILURES_TOTAL["exception"] += 1
+            if record_failure:
+                _DELIVERY_FAILURES_TOTAL["exception"] += 1
             # Same reasoning as the Slack sender: a transport may word its
             # error in terms of the request, so the rendered traceback is
             # scrubbed before it reaches the handler.
@@ -545,8 +556,8 @@ class AlertSink(Protocol):
         """Render one alert in the channel's markup."""
         ...
 
-    async def post(self, message: str, *, dedupe_key: str) -> bool:
-        """Deliver an already-rendered message; True when the channel accepted it."""
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+        """Deliver a message; admin tests opt out of runtime failure counters."""
         ...
 
 
@@ -575,8 +586,12 @@ class SlackSink:
             escape=escape_slack_text,
         )
 
-    async def post(self, message: str, *, dedupe_key: str) -> bool:
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
         """Post ``{"text": message}`` to this webhook."""
+        if not record_failure:
+            return await _post_to_slack(
+                self.webhook_url, message, dedupe_key=dedupe_key, record_failure=False
+            )
         return await _post_to_slack(self.webhook_url, message, dedupe_key=dedupe_key)
 
 
@@ -605,8 +620,12 @@ class WeComSink:
             escape=escape_wecom_text,
         )
 
-    async def post(self, message: str, *, dedupe_key: str) -> bool:
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
         """Post a markdown card to this webhook."""
+        if not record_failure:
+            return await _post_to_wecom(
+                self.webhook_url, message, dedupe_key=dedupe_key, record_failure=False
+            )
         return await _post_to_wecom(self.webhook_url, message, dedupe_key=dedupe_key)
 
 
@@ -619,13 +638,16 @@ def configured_sinks() -> list[AlertSink]:
     (:meth:`serving.config.settings.Settings.broken_rules` rejects it), so this
     raises instead of fanning out. No configured webhook means no sink.
     """
-    slack_url = config_value("SLACK_ALERTS_WEBHOOK_URL", "") or config_value(
-        "SLACK_WEBHOOK_URL", ""
-    )
-    wecom_url = config_value("WECOM_ALERTS_WEBHOOK_URL", "")
+    # The overlay may reject a stored value or set aside a conflicting
+    # environment value. Raw config_value() still exposes those candidates;
+    # Settings contains the validated runtime values, including Slack fallback.
+    settings = get_settings()
+    slack_url = settings.slack_alerts_webhook_url
+    wecom_url = settings.wecom_alerts_webhook_url
     if slack_url and wecom_url:
         raise ValueError(
-            "SLACK_ALERTS_WEBHOOK_URL and WECOM_ALERTS_WEBHOOK_URL are mutually exclusive; "
+            "SLACK_ALERTS_WEBHOOK_URL / SLACK_WEBHOOK_URL and "
+            "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive; "
             "configure one alert channel"
         )
     if slack_url:

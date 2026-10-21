@@ -62,7 +62,20 @@ def test_slack_and_wecom_webhooks_are_mutually_exclusive(monkeypatch, slack_env)
     # get_settings() defers rules so the database can replace either side;
     # startup judges the rule through broken_rules().
     settings = get_settings()
-    assert any("mutually exclusive" in rule for rule in settings.broken_rules())
+    rules = {
+        message: fields
+        for message, fields in settings.broken_rules().items()
+        if "mutually exclusive" in message
+    }
+    assert len(rules) == 1
+    message, fields = next(iter(rules.items()))
+    assert slack_env in message
+    assert "WECOM_ALERTS_WEBHOOK_URL" in message
+    assert set(fields) == {
+        "slack_alerts_webhook_url",
+        "slack_webhook_url",
+        "wecom_alerts_webhook_url",
+    }
 
     # A direct build outside get_settings() applies the rule immediately.
     with pytest.raises(ValueError, match="mutually exclusive"):

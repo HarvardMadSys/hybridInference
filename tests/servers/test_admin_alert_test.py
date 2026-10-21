@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
@@ -109,7 +110,7 @@ async def test_omitted_url_uses_selected_saved_secret(admin_client, channel, key
     assert post.await_args.args[0] == url
     assert post.await_args.args[1].startswith("[TEST]\n")
     assert result["test_id"] in post.await_args.args[1]
-    assert post.await_args.kwargs == {"dedupe_key": result["test_id"]}
+    assert post.await_args.kwargs == {"dedupe_key": result["test_id"], "record_failure": False}
     other.assert_not_awaited()
     assert audit.await_args.args[2] == "alerts.test"
     assert audit.await_args.args[4] == result
@@ -293,11 +294,11 @@ async def test_selected_missing_or_empty_webhook_does_not_use_other_channel(
         ("slack", SLACK_URL.replace("hooks.slack.com", "hooks.slack.com:443")),
         ("slack", SLACK_URL.replace("hooks.slack.com", "user@hooks.slack.com")),
         ("slack", SLACK_URL + "#fragment"),
-        ("slack", SLACK_URL + "?extra=1"),
         ("slack", SLACK_URL.replace("/services/", "/other/")),
         ("slack", SLACK_URL.replace("Tunit", "Tunit%2F..")),
         ("wecom", WECOM_URL + "&key=second"),
-        ("wecom", WECOM_URL + "&redirect=https://evil.invalid"),
+        ("wecom", WECOM_URL.replace("synthetic-secret", "")),
+        ("wecom", WECOM_URL.replace("key=", "other=")),
         ("wecom", WECOM_URL.replace("send?", "send/../other?")),
         ("wecom", WECOM_URL + "\n"),
     ],
@@ -316,6 +317,65 @@ async def test_unsafe_destinations_are_rejected_without_echoing_credentials(
     assert "synthetic-secret" not in response.text + str(
         [record.__dict__ for record in caplog.records]
     )
+    post_slack.assert_not_awaited()
+    post_wecom.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("channel", "key", "url"),
+    [
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", SLACK_URL + "/"),
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", SLACK_URL + "?source=admin"),
+        ("wecom", "WECOM_ALERTS_WEBHOOK_URL", WECOM_URL.replace("send?", "send/?")),
+        ("wecom", "WECOM_ALERTS_WEBHOOK_URL", WECOM_URL + "&source=admin"),
+        (
+            "wecom",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            WECOM_URL.replace("?key=", "?source=admin&key="),
+        ),
+    ],
+)
+@pytest.mark.parametrize("saved", [False, True])
+async def test_official_webhooks_allow_trailing_slash_and_extra_query_parameters(
+    admin_client, channel, key, url, saved
+):
+    client, _, post_slack, post_wecom = admin_client
+    payload = {"channel": channel}
+    if saved:
+        store = FakeAppConfigStore([row(key, url, secret=True)])
+        await app_config.load(store)
+        app_config.attach(store)
+    else:
+        payload["webhook_url"] = url
+
+    response = await client.post("/admin/alerts/test", headers=AUTH, json=payload)
+
+    assert response.status_code == 200
+    post = post_slack if channel == "slack" else post_wecom
+    assert post.await_args.args[0] == url
+
+
+@pytest.mark.parametrize(
+    ("channel", "key", "url"),
+    [
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", SLACK_URL.replace("hooks.slack.com", "127.0.0.1")),
+        (
+            "wecom",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            WECOM_URL.replace("qyapi.weixin.qq.com", "qyapi.weixin.qq.com.evil.invalid"),
+        ),
+    ],
+)
+async def test_saved_webhooks_still_reject_untrusted_destinations(admin_client, channel, key, url):
+    client, audit, post_slack, post_wecom = admin_client
+    store = FakeAppConfigStore([row(key, url, secret=True)])
+    await app_config.load(store)
+    app_config.attach(store)
+
+    response = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": channel})
+
+    assert response.status_code == 400
     post_slack.assert_not_awaited()
     post_wecom.assert_not_awaited()
     audit.assert_not_awaited()
@@ -381,6 +441,31 @@ async def test_delivery_failure_is_safe_and_audited(admin_client, caplog, raise_
     )
 
 
+@pytest.mark.parametrize(("channel", "url"), [("slack", SLACK_URL), ("wecom", WECOM_URL)])
+async def test_failed_tests_disable_live_delivery_failure_accounting(
+    admin_client, monkeypatch, channel, url
+):
+    client, _, post_slack, post_wecom = admin_client
+    counters = {"503": 7}
+    monkeypatch.setattr(alerts, "_DELIVERY_FAILURES_TOTAL", counters)
+
+    async def reject(_url, _message, *, dedupe_key, record_failure=True):
+        if record_failure:
+            counters["503"] += 1
+        return False
+
+    post = post_slack if channel == "slack" else post_wecom
+    post.side_effect = reject
+
+    response = await client.post(
+        "/admin/alerts/test", headers=AUTH, json={"channel": channel, "webhook_url": url}
+    )
+
+    assert response.status_code == 502
+    assert post.await_args.kwargs["record_failure"] is False
+    assert counters == {"503": 7}
+
+
 async def test_audit_failure_does_not_misreport_a_delivered_test(admin_client, caplog):
     client, audit, _, post_wecom = admin_client
     audit.side_effect = RuntimeError("audit unavailable")
@@ -413,3 +498,50 @@ async def test_repeated_tests_are_throttled_then_resume(admin_client, monkeypatc
     assert later.status_code == 200
     assert later.json()["test_id"] != first.json()["test_id"]
     assert post_wecom.await_count == 2
+
+
+async def test_throttled_saved_test_never_refreshes_configuration(admin_client, monkeypatch):
+    client, _, _, post_wecom = admin_client
+    refresh = AsyncMock(side_effect=AssertionError("Throttled requests must not read config"))
+    monkeypatch.setattr(app_config, "refresh", refresh)
+    first = await client.post(
+        "/admin/alerts/test", headers=AUTH, json={"channel": "wecom", "webhook_url": WECOM_URL}
+    )
+
+    again = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": "wecom"})
+
+    assert first.status_code == 200
+    assert again.status_code == 429
+    refresh.assert_not_awaited()
+    post_wecom.assert_awaited_once()
+
+
+async def test_limit_is_reserved_while_a_saved_test_awaits_configuration(admin_client, monkeypatch):
+    client, _, _, post_wecom = admin_client
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_refresh():
+        started.set()
+        await release.wait()
+
+    refresh = AsyncMock(side_effect=blocking_refresh)
+    monkeypatch.setattr(app_config, "refresh", refresh)
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", WECOM_URL)
+    first_task = asyncio.create_task(
+        client.post("/admin/alerts/test", headers=AUTH, json={"channel": "wecom"})
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        concurrent = await client.post(
+            "/admin/alerts/test", headers=AUTH, json={"channel": "wecom"}
+        )
+        assert concurrent.status_code == 429
+        refresh.assert_awaited_once()
+        post_wecom.assert_not_awaited()
+    finally:
+        release.set()
+        first = await asyncio.wait_for(first_task, timeout=2)
+
+    assert first.status_code == 200
+    post_wecom.assert_awaited_once()
