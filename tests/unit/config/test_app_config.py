@@ -526,25 +526,25 @@ async def test_switching_alert_channels_waits_for_restart(
     Both channel settings are restart-required and are judged together, so the
     runtime keeps the boot channel until the restart that installs the other.
     """
-    from serving.observability.alerts import configured_sinks
+    from serving.observability.alerts import configured_sink
 
     store = FakeAppConfigStore([row(old_key, old_url)])
     await _boot(store)
-    assert [sink.name for sink in configured_sinks()] == [old_name]
+    assert configured_sink() is not None and configured_sink().name == old_name
 
     # One admin save clears the old channel and installs the new one.
     await app_config.update({old_key: "", new_key: new_url}, updated_by="admin")
 
     # Neither side is applied yet: the old channel keeps serving, and there is
     # no moment with both (mutual-exclusion error) or neither (missed alert).
-    assert [sink.name for sink in configured_sinks()] == [old_name]
+    assert configured_sink() is not None and configured_sink().name == old_name
     pending = app_config.get_config_health().pending_restart
     assert old_key in pending
     assert new_key in pending
 
     await _restart(store)
 
-    assert [sink.name for sink in configured_sinks()] == [new_name]
+    assert configured_sink() is not None and configured_sink().name == new_name
 
 
 @pytest.mark.asyncio
@@ -1587,7 +1587,7 @@ def _entry(key: str) -> dict:
 async def test_stored_alert_channel_wins_over_conflicting_environment_at_startup(
     config_env, monkeypatch, caplog, stored_key, environment_keys, channel
 ) -> None:
-    from serving.observability.alerts import configured_sinks
+    from serving.observability.alerts import configured_sink
 
     urls = {
         "slack": "https://hooks.slack.test/services/stored/test/token",
@@ -1610,10 +1610,10 @@ async def test_stored_alert_channel_wins_over_conflicting_environment_at_startup
     assert settings.slack_webhook_url == (
         urls["slack"] if stored_key == "SLACK_WEBHOOK_URL" else ""
     )
-    sinks = configured_sinks()
-    assert len(sinks) == 1
-    assert sinks[0].name == channel
-    assert sinks[0].webhook_url == urls[channel]
+    sink = configured_sink()
+    assert sink is not None
+    assert sink.name == channel
+    assert sink.webhook_url == urls[channel]
     stored = _entry(stored_key)
     assert (stored["source"], stored["is_set"], stored["invalid"]) == ("database", True, None)
     assert store.rows[stored_key].value == urls[channel]

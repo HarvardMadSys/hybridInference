@@ -23,7 +23,7 @@ import httpx  # retained for backward-compat import symbol used by tests
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
-from serving.utils.secret_urls import posting_to, scrub
+from serving.utils.secret_urls import posting_to
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -211,7 +211,7 @@ async def post_slack_alert(webhook_url: str, message: str) -> bool:
     # Same credential-in-the-URL problem as the framework sender: httpx logs the
     # full request URL at INFO, and for a Slack webhook that URL is the secret.
     # See :mod:`serving.utils.secret_urls`.
-    with posting_to(webhook_url) as sink:
+    with posting_to(webhook_url) as redaction:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(webhook_url, json={"text": message})
@@ -220,15 +220,15 @@ async def post_slack_alert(webhook_url: str, message: str) -> bool:
             logger.warning(
                 "Slack webhook returned non-2xx: status=%d sink=%s body=%s",
                 resp.status_code,
-                sink,
-                scrub(resp.text[:200], webhook_url),
+                redaction.display,
+                redaction.scrub(resp.text[:200]),
             )
             return False
         except Exception:
             logger.error(
                 "Slack webhook POST failed: sink=%s\n%s",
-                sink,
-                scrub(traceback.format_exc(), webhook_url),
+                redaction.display,
+                redaction.scrub(traceback.format_exc()),
             )
             return False
 

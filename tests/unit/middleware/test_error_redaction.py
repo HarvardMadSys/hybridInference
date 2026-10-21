@@ -509,6 +509,40 @@ class TestEnvelope5RequestValidation:
         assert "input" not in records[0].detail
         assert "ctx" not in records[0].detail
 
+    def test_an_unrenderable_error_list_still_logs_its_type_and_fields(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture, monkeypatch
+    ) -> None:
+        """``errors()`` raising used to leave only "Invalid request" in the log.
+
+        Before the redaction the handler logged ``str(exc)``, which carried the
+        payload; dropping it entirely traded one failure for another -- a 422
+        that leaves nothing to investigate. The replacement keeps the exception
+        type and the field paths, and still publishes no submitted value.
+        """
+        logger_name = "serving.servers.routers.anthropic_messages"
+        real_errors = RequestValidationError.errors
+
+        def explode(self):
+            raise RuntimeError("cannot render ctx: sk-secret-value")
+
+        monkeypatch.setattr(RequestValidationError, "errors", explode, raising=True)
+        try:
+            with caplog.at_level(logging.WARNING, logger=logger_name):
+                response = client.post("/probe/validate", json={"model": {"a": "sk-secret-value"}})
+        finally:
+            monkeypatch.setattr(RequestValidationError, "errors", real_errors, raising=True)
+
+        assert response.status_code == 422
+        records = [r for r in caplog.records if r.msg == "request_validation_error"]
+        assert records, "a 422 must always leave a log line"
+        detail = records[0].detail
+        assert "RuntimeError" in detail, detail
+        assert "body.model" in detail, detail
+        assert "sk-secret-value" not in detail
+        # The body returned to the caller is unchanged: still a 422 with the
+        # same generic sentence.
+        assert "sk-secret-value" not in response.text
+
 
 # ---------------------------------------------------------------------------
 # (b2) The other half of option A: the log, asserted through the formatter

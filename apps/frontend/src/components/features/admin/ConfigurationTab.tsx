@@ -15,6 +15,7 @@ import {
 } from '@/components/features/configuration/AlertNotificationFields';
 import {
   ALERT_WEBHOOK_KEYS,
+  alertTestFailureMessage,
   alertWebhookEntries,
   alertWebhookError,
   buildAlertChannelPatch,
@@ -166,15 +167,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       });
       setAlertTestResult({ sent: true, testId: result.test_id });
     } catch (e) {
-      setAlertTestResult({
-        sent: false,
-        message:
-          e instanceof APIError && e.statusCode === 404
-            ? 'This backend does not support test notifications. Upgrade it and try again.'
-            : e instanceof APIError && e.statusCode === 429
-              ? 'Test notifications are temporarily limited. Wait a few seconds and try again.'
-              : 'The test could not be sent. Check the webhook URL and try again.',
-      });
+      setAlertTestResult({ sent: false, message: alertTestFailureMessage(e) });
     } finally {
       alertTestInFlight.current = false;
       setTestingAlert(false);
@@ -262,6 +255,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
   };
 
+  const requestReset = (target: ConfigEntry) => {
+    setResetError(null);
+    setResetTarget(target);
+  };
+
   const confirmReset = async () => {
     if (!resetTarget) return;
     const { key, custom } = resetTarget;
@@ -270,6 +268,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     try {
       const next = await resetConfigKey(key);
       applyResponse(next, [key]);
+      if (isAlertWebhook(key)) {
+        // The channel is inferred from which webhooks are set, and a reset can
+        // change that: discard a pending choice rather than show it as saved.
+        setAlertChannelDraft(null);
+        setAlertTestResult(null);
+      }
       setResetTarget(null);
       toast.success(custom ? `Deleted ${key}.` : `Reset ${key}.`);
     } catch (e) {
@@ -486,6 +490,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     testing={testingAlert}
                     testResult={alertTestResult}
                     onTest={() => void sendAlertTest()}
+                    onReset={requestReset}
                   />
                 ) : null}
                 {visible.entries
@@ -497,10 +502,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                       draft={drafts[entry.key]}
                       onChange={onDraftChange}
                       serverError={entryErrors[entry.key]}
-                      onReset={(target) => {
-                        setResetError(null);
-                        setResetTarget(target);
-                      }}
+                      onReset={requestReset}
                       onMarkSecret={(target) => {
                         setMarkSecretError(null);
                         setMarkSecretKey(target.key);

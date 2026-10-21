@@ -44,6 +44,19 @@ def test_wecom_alerts_webhook_url_from_env(monkeypatch):
     assert settings.wecom_alerts_webhook_url.endswith("?key=test")
 
 
+def test_a_whitespace_only_webhook_is_not_a_configured_channel(monkeypatch):
+    """The senders strip before deciding a channel is set; the rule must too."""
+    for variable in ("SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL", "WECOM_ALERTS_WEBHOOK_URL"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "   ")
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", "   ")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.broken_rules() == {}
+
+
 @pytest.mark.parametrize(
     "slack_env",
     ["SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL"],

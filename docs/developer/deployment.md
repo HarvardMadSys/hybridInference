@@ -369,9 +369,16 @@ restart** identifies saved changes waiting to take effect.
 **Send test notification** sends a marked test using the URL currently entered,
 or the latest saved URL when no draft is entered. It works before a restart and
 does not save changes, enable alerting or change incident/cooldown state. The
-success message includes a test ID to check in the receiving group. Testing
-accepts the selected platform's official HTTPS webhook endpoint. Discord,
-Telegram and arbitrary webhook formats are not supported by this selector.
+success message includes a test ID to check in the receiving group.
+
+A URL typed into the test field must be the selected platform's official HTTPS
+endpoint (`hooks.slack.com` / `hooks.slack-gov.com`, or
+`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so an admin
+session cannot make the server request an arbitrary address. A **saved** URL is
+not held to that host list: normal delivery already posts to it, so a
+Slack-compatible destination (Mattermost, Rocket.Chat, an egress proxy) tests
+normally. It must still be `https`. Discord, Telegram and arbitrary webhook
+formats are not supported by this selector.
 
 Rules and thresholds are a deployment's own; this repository ships no alerts
 file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in

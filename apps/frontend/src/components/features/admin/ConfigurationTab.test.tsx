@@ -535,6 +535,97 @@ describe('alert notification channel', () => {
     expect(screen.queryByText(/Test sent/)).not.toBeInTheDocument();
     expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
   });
+
+  it('tells the administrator to retry a 503 instead of blaming the webhook', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('HTTP_503', 'Could not read the saved webhook; retry the test', 503),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(
+      await screen.findByText(
+        'The saved webhook could not be read. This is a backend problem, not the address; try again in a moment.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Check the webhook URL/)).not.toBeInTheDocument();
+  });
+
+  it('repeats the backend reason for a rejected draft address without echoing it', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'Enter a valid WeCom incoming webhook URL', 400),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(await screen.findByText('Enter a valid WeCom incoming webhook URL')).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('offers Reset for a channel an earlier save turned off, and calls DELETE', async () => {
+    // Slack is None now, but both Slack rows still hold the empty value that a
+    // previous "None" save wrote, and that value hides SLACK_WEBHOOK_URL in .env.
+    const config = alertConfig([]);
+    config.entries = config.entries.map((item) =>
+      item.key === 'SLACK_WEBHOOK_URL'
+        ? { ...item, is_set: false, value: null, updated_at: STORED_AT }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(alerts.getByText(/empty stored value also hides any webhook/)).toBeInTheDocument();
+
+    fireEvent.click(alerts.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset SLACK_WEBHOOK_URL?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledWith('SLACK_WEBHOOK_URL'));
+  });
+
+  it('does not offer Reset for a channel that never had a stored row', async () => {
+    // No row at all: the value comes from the environment or the default, so
+    // there is nothing to remove. Only a database row earns a Reset.
+    const config = alertConfig();
+    config.entries = config.entries.map((item) =>
+      item.key === 'WECOM_ALERTS_WEBHOOK_URL'
+        ? { ...item, is_set: false, value: null, source: 'default', updated_at: null }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(alerts.queryByRole('button', { name: 'Reset WECOM_ALERTS_WEBHOOK_URL' })).toBeNull();
+  });
+
+  it('offers Reset for the rows a saved None left empty', async () => {
+    // What the backend returns after "None" was saved: the rows exist but are
+    // empty, which is the state that hides the environment.
+    const config = alertConfig([]);
+    config.entries = config.entries.map((item) =>
+      ['SLACK_ALERTS_WEBHOOK_URL', 'SLACK_WEBHOOK_URL', 'WECOM_ALERTS_WEBHOOK_URL'].includes(
+        item.key,
+      )
+        ? { ...item, is_set: false, value: null, updated_at: STORED_AT }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(
+      alerts.getByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' }),
+    ).toBeInTheDocument();
+    expect(alerts.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' })).toBeInTheDocument();
+    expect(
+      alerts.getByRole('button', { name: 'Reset WECOM_ALERTS_WEBHOOK_URL' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(alerts.getByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledWith('SLACK_ALERTS_WEBHOOK_URL'));
+  });
+
+  it('does not offer Reset before the save that empties a channel', async () => {
+    await renderTab(alertConfig(['SLACK_ALERTS_WEBHOOK_URL']));
+    chooseAlertChannel('None');
+    const alerts = within(section('Alerts'));
+    expect(alerts.queryByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' })).toBeNull();
+  });
 });
 
 afterEach(() => {

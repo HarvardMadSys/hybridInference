@@ -35,7 +35,7 @@ from serving.observability.alerts import (
     alert_delivery_failures_total,
     alert_on_transition,
     alert_slack,
-    configured_sinks,
+    configured_sink,
     reset_dedupe_state,
     reset_transition_state,
     server_info,
@@ -2098,38 +2098,36 @@ def _clear_alert_webhooks(monkeypatch):
     monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", "")
 
 
-def test_configured_sinks_empty_when_no_webhook(monkeypatch):
+def test_configured_sink_none_when_no_webhook(monkeypatch):
     _clear_alert_webhooks(monkeypatch)
-    assert configured_sinks() == []
+    assert configured_sink() is None
 
 
-def test_configured_sinks_slack_only(monkeypatch):
+def test_configured_sink_slack_only(monkeypatch):
     _clear_alert_webhooks(monkeypatch)
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
 
-    sinks = configured_sinks()
+    sink = configured_sink()
 
-    assert len(sinks) == 1
-    assert isinstance(sinks[0], SlackSink)
-    assert sinks[0].webhook_url == "https://hooks.slack.test/x"
-    assert sinks[0].name == "slack"
+    assert isinstance(sink, SlackSink)
+    assert sink.webhook_url == "https://hooks.slack.test/x"
+    assert sink.name == "slack"
 
 
-def test_configured_sinks_wecom_only(monkeypatch):
+def test_configured_sink_wecom_only(monkeypatch):
     _clear_alert_webhooks(monkeypatch)
     monkeypatch.setenv(
         "WECOM_ALERTS_WEBHOOK_URL",
         "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
     )
 
-    sinks = configured_sinks()
+    sink = configured_sink()
 
-    assert len(sinks) == 1
-    assert isinstance(sinks[0], WeComSink)
-    assert sinks[0].name == "wecom"
+    assert isinstance(sink, WeComSink)
+    assert sink.name == "wecom"
 
 
-def test_configured_sinks_rejects_both_channels(monkeypatch):
+def test_configured_sink_rejects_both_channels(monkeypatch):
     _clear_alert_webhooks(monkeypatch)
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/x")
     monkeypatch.setenv(
@@ -2138,7 +2136,7 @@ def test_configured_sinks_rejects_both_channels(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="mutually exclusive"):
-        configured_sinks()
+        configured_sink()
 
 
 def test_both_sink_types_implement_the_alert_sink_interface():
@@ -2149,14 +2147,14 @@ def test_both_sink_types_implement_the_alert_sink_interface():
     )
 
 
-def test_configured_sinks_keeps_legacy_slack_fallback(monkeypatch):
+def test_configured_sink_keeps_legacy_slack_fallback(monkeypatch):
     _clear_alert_webhooks(monkeypatch)
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.test/legacy")
 
-    sinks = configured_sinks()
+    sink = configured_sink()
 
-    assert len(sinks) == 1
-    assert sinks[0].webhook_url == "https://hooks.slack.test/legacy"
+    assert sink is not None
+    assert sink.webhook_url == "https://hooks.slack.test/legacy"
 
 
 async def test_slack_only_message_and_request_body_are_byte_identical(monkeypatch):

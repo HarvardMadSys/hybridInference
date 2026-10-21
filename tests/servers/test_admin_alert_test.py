@@ -45,7 +45,7 @@ async def admin_client(monkeypatch, tmp_path):
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
     monkeypatch.setenv("JWT_SECRET_KEY", "unit-test-jwt-secret-at-least-32-characters")
     get_settings.cache_clear()
-    monkeypatch.setattr(admin_alerts, "_test_send_not_before", 0.0)
+    monkeypatch.setattr(admin_alerts, "_test_send_not_before", {})
     audit = AsyncMock()
     monkeypatch.setattr(admin_alerts, "log_admin_action", audit)
     post_slack = AsyncMock(return_value=True)
@@ -147,7 +147,8 @@ async def test_saved_pending_channel_is_tested_before_restart(
     await app_config.load(store)
     app_config.attach(store)
     await app_config.update({old_key: "", new_key: new_url}, updated_by="admin")
-    assert [sink.name for sink in alerts.configured_sinks()] == [old_channel]
+    configured = alerts.configured_sink()
+    assert configured is not None and configured.name == old_channel
     assert app_config.config_value(old_key) == old_url
 
     response = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": new_channel})
@@ -155,7 +156,8 @@ async def test_saved_pending_channel_is_tested_before_restart(
     assert response.status_code == 200
     post = post_slack if new_channel == "slack" else post_wecom
     assert post.await_args.args[0] == new_url
-    assert [sink.name for sink in alerts.configured_sinks()] == [old_channel]
+    configured = alerts.configured_sink()
+    assert configured is not None and configured.name == old_channel
     assert {old_key, new_key}.issubset(app_config.describe()["pending_restart"])
 
 
@@ -359,15 +361,43 @@ async def test_official_webhooks_allow_trailing_slash_and_extra_query_parameters
 @pytest.mark.parametrize(
     ("channel", "key", "url"),
     [
-        ("slack", "SLACK_ALERTS_WEBHOOK_URL", SLACK_URL.replace("hooks.slack.com", "127.0.0.1")),
+        # Slack-compatible destinations: normal delivery already posts to
+        # whatever is saved, so the test must not refuse a URL that the alert
+        # path itself uses (Mattermost, Rocket.Chat, an egress proxy).
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", "https://mattermost.example.test/hooks/abc123"),
         (
             "wecom",
             "WECOM_ALERTS_WEBHOOK_URL",
-            WECOM_URL.replace("qyapi.weixin.qq.com", "qyapi.weixin.qq.com.evil.invalid"),
+            "https://wecom-proxy.example.test/cgi-bin/webhook/send?key=abc",
         ),
     ],
 )
-async def test_saved_webhooks_still_reject_untrusted_destinations(admin_client, channel, key, url):
+async def test_saved_webhooks_are_not_held_to_the_official_hosts(admin_client, channel, key, url):
+    """A saved value is trusted: the whitelist guards an admin-typed draft."""
+    client, _, post_slack, post_wecom = admin_client
+    store = FakeAppConfigStore([row(key, url, secret=True)])
+    await app_config.load(store)
+    app_config.attach(store)
+
+    response = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": channel})
+
+    assert response.status_code == 200
+    post = post_slack if channel == "slack" else post_wecom
+    assert post.await_args.args[0] == url
+
+
+@pytest.mark.parametrize(
+    ("channel", "key", "url"),
+    [
+        # Non-HTTPS is refused even when saved: the test posts the same
+        # request the real alert would, and credentials must not go in clear.
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", "http://mattermost.example.test/hooks/abc123"),
+        ("slack", "SLACK_ALERTS_WEBHOOK_URL", "https://mattermost.example.test/hooks/abc#frag"),
+        ("wecom", "WECOM_ALERTS_WEBHOOK_URL", "not-a-url"),
+        ("wecom", "WECOM_ALERTS_WEBHOOK_URL", " "),
+    ],
+)
+async def test_saved_webhooks_still_reject_unusable_destinations(admin_client, channel, key, url):
     client, audit, post_slack, post_wecom = admin_client
     store = FakeAppConfigStore([row(key, url, secret=True)])
     await app_config.load(store)
@@ -545,3 +575,107 @@ async def test_limit_is_reserved_while_a_saved_test_awaits_configuration(admin_c
 
     assert first.status_code == 200
     post_wecom.assert_awaited_once()
+
+
+async def test_a_rejected_test_does_not_spend_the_interval(admin_client, monkeypatch):
+    """A typo costs a 400, not ten seconds: nothing was sent."""
+    client, _, post_slack, post_wecom = admin_client
+    monkeypatch.setattr(admin_alerts, "time", MagicMock(monotonic=lambda: 100.0))
+
+    rejected = await client.post(
+        "/admin/alerts/test", headers=AUTH, json={"channel": "slack", "webhook_url": "http://x"}
+    )
+    accepted = await client.post(
+        "/admin/alerts/test", headers=AUTH, json={"channel": "wecom", "webhook_url": WECOM_URL}
+    )
+
+    assert rejected.status_code == 400
+    assert accepted.status_code == 200
+    post_slack.assert_not_awaited()
+    post_wecom.assert_awaited_once()
+
+
+async def test_an_unreadable_saved_config_does_not_spend_the_interval(admin_client, monkeypatch):
+    client, _, _, post_wecom = admin_client
+    monkeypatch.setattr(admin_alerts, "time", MagicMock(monotonic=lambda: 100.0))
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", WECOM_URL)
+    failing = AsyncMock(side_effect=RuntimeError("config store down"))
+    monkeypatch.setattr(app_config, "refresh", failing)
+
+    unavailable = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": "wecom"})
+
+    assert unavailable.status_code == 503
+    monkeypatch.setattr(app_config, "refresh", AsyncMock(return_value=None))
+    recovered = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": "wecom"})
+    assert recovered.status_code == 200
+    post_wecom.assert_awaited_once()
+
+
+async def test_the_interval_is_per_administrator(admin_client, monkeypatch):
+    """Another administrator's window does not block this one.
+
+    The guard is keyed by the identity ``verify_admin_access`` returns, so a
+    second operator testing their own channel is not made to wait for the
+    first. Asserted by filling every *other* key with a future deadline.
+    """
+    client, _, _, post_wecom = admin_client
+    monkeypatch.setattr(admin_alerts, "time", MagicMock(monotonic=lambda: 100.0))
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", WECOM_URL)
+    monkeypatch.setattr(
+        admin_alerts,
+        "_test_send_not_before",
+        {"some-other-admin": 1_000.0},
+    )
+
+    response = await client.post("/admin/alerts/test", headers=AUTH, json={"channel": "wecom"})
+
+    assert response.status_code == 200
+    post_wecom.assert_awaited_once()
+    assert "some-other-admin" in admin_alerts._test_send_not_before
+    assert set(admin_alerts._test_send_not_before) != {"some-other-admin"}
+
+
+async def test_an_empty_slack_query_is_accepted(monkeypatch):
+    """Python 3.10's ``parse_qsl("", strict_parsing=True)`` raises; a normal
+    Slack webhook has an empty query, so the parse is skipped when there is
+    nothing to parse."""
+    from serving.servers.routers.admin.alerts import _official_webhook_ok
+
+    assert _official_webhook_ok("slack", SLACK_URL) is True
+    assert _official_webhook_ok("slack", SLACK_URL + "?") is True
+    # A malformed query is still not an official endpoint, on any version.
+    assert _official_webhook_ok("slack", SLACK_URL + "?broken") is False
+    # WeCom's key has to survive the (real) parse.
+    assert _official_webhook_ok("wecom", WECOM_URL) is True
+
+
+async def test_empty_query_never_reaches_parse_qsl(monkeypatch):
+    """The guard itself, so a Python 3.11+ run cannot mask a 3.10 regression."""
+    calls: list[str] = []
+    real = admin_alerts.parse_qsl
+
+    def spy(*args, **kwargs):
+        calls.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(admin_alerts, "parse_qsl", spy)
+
+    assert admin_alerts._official_webhook_ok("slack", SLACK_URL) is True
+    assert calls == []
+    assert admin_alerts._official_webhook_ok("wecom", WECOM_URL) is True
+    assert calls == ["key=synthetic-secret"]
+
+
+async def test_a_whitespace_only_saved_webhook_is_not_a_channel(monkeypatch):
+    """``WECOM_ALERTS_WEBHOOK_URL=' '`` selects nothing, like the alerter says."""
+    from serving.config.settings import get_settings
+    from serving.observability.alerts import configured_sink
+
+    for key in ("SLACK_ALERTS_WEBHOOK_URL", "SLACK_WEBHOOK_URL", "WECOM_ALERTS_WEBHOOK_URL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WECOM_ALERTS_WEBHOOK_URL", "   ")
+    get_settings.cache_clear()
+    try:
+        assert configured_sink() is None
+    finally:
+        get_settings.cache_clear()

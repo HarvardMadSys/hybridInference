@@ -350,6 +350,37 @@ def _validation_field_paths(errors: list[Any] | None) -> list[str]:
     return paths
 
 
+#: The validation error the request was raised with, when ``exc.errors()`` is
+#: what fails. FastAPI keeps it in ``_errors``; naming the attribute keeps this
+#: out of text rendering, which is where the submitted values are.
+_RAW_ERRORS_ATTR = "_errors"
+
+
+def _unrenderable_validation_detail(exc: RequestValidationError, failure: str | None) -> str:
+    """Describe a validation error whose ``errors()`` could not be rendered.
+
+    The log used to say only "Invalid request" in this case, and before the
+    redaction it said ``str(exc)`` — which carried the caller's payload. This
+    keeps the diagnostic value without that: the exception type that broke the
+    rendering and, when they can still be read, the ``loc`` paths of the
+    entries. ``_validation_field_paths`` reads only ``loc``, so no submitted
+    value can reach this string.
+    """
+    if failure is None:
+        return "Invalid request"
+    detail = f"Invalid request (validation errors unrenderable: {failure})"
+    try:
+        raw = getattr(exc, _RAW_ERRORS_ATTR, None)
+        fields = _validation_field_paths(raw if isinstance(raw, list) else None)
+    except Exception:
+        # Reading them can fail the same way rendering them did. The exception
+        # type is already in the line; that is enough.
+        fields = []
+    if fields:
+        detail += f"; fields: {', '.join(fields)}"
+    return detail
+
+
 async def anthropic_aware_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ):
@@ -389,13 +420,19 @@ async def anthropic_aware_validation_exception_handler(
     rides in ``message`` rather than in a sibling key: ``ErrorDetail`` drops
     unknown fields and the Anthropic envelope has nowhere to put one.
     """
+    errors: list[Any] | None
+    errors_failure: str | None = None
     try:
-        errors: list[Any] | None = exc.errors()
-    except Exception:
+        errors = exc.errors()
+    except Exception as render_exc:
         # .errors() can itself raise on exotic payloads (a ctx value pydantic
         # cannot render). Answering the request matters more than the log line,
-        # and a body with no field list is still a correct 422.
+        # and a body with no field list is still a correct 422. The log must not
+        # become empty, though: record the exception *type* and the field paths
+        # the exception itself carries, never its text, because the text (and
+        # the payload it was rendered from) can hold submitted values.
         errors = None
+        errors_failure = type(render_exc).__name__
     # Missing-field errors contain the entire body in ``input``. Do not rely
     # on route names to identify credentials: mounts and future endpoints
     # must receive the same protection. ``ctx`` can carry submitted values too.
@@ -407,7 +444,7 @@ async def anthropic_aware_validation_exception_handler(
             ]
         )
         if errors is not None
-        else "Invalid request"
+        else _unrenderable_validation_detail(exc, errors_failure)
     )
     logger.warning(
         "request_validation_error",

@@ -1,6 +1,8 @@
 import type { AlertNotificationChannel, ConfigEntry } from '@/lib/api/config';
 
-import { buildPatch, type BuiltPatch, type ConfigDrafts } from './configDrafts';
+import { APIError } from '@/lib/utils/errors';
+
+import { buildPatch, hasStoredValue, type BuiltPatch, type ConfigDrafts } from './configDrafts';
 
 export type AlertChannelChoice = AlertNotificationChannel | 'none';
 
@@ -84,4 +86,60 @@ export function buildAlertChannelPatch(
   }
   if (channel !== 'wecom') patch.values[entries.wecom.key] = '';
   return patch;
+}
+
+/**
+ * What the console says when a test notification fails.
+ *
+ * Only the backend's own sentences are repeated: the test endpoint never puts
+ * the webhook in one, but the console cannot check that of an arbitrary proxy
+ * response, and this is the one place in the page where a URL would leak back.
+ * Everything else falls back to guidance chosen by status, which is what makes
+ * a 503 ("try again") read differently from a 400 ("check the address").
+ */
+const SERVER_OWNED_TEST_REASONS = new Set([
+  'Enter a webhook URL or save one for the selected channel first',
+  'Enter a valid Slack incoming webhook URL',
+  'Enter a valid WeCom incoming webhook URL',
+  'Test notification could not be delivered; check the webhook',
+]);
+
+export function alertTestFailureMessage(error: unknown): string {
+  const status = error instanceof APIError ? error.statusCode : undefined;
+  if (status === 404) {
+    return 'This backend does not support test notifications. Upgrade it and try again.';
+  }
+  if (status === 429) {
+    return 'Test notifications are temporarily limited. Wait a few seconds and try again.';
+  }
+  if (status === 503) {
+    return 'The saved webhook could not be read. This is a backend problem, not the address; try again in a moment.';
+  }
+  if (error instanceof APIError && SERVER_OWNED_TEST_REASONS.has(error.message)) {
+    return error.message;
+  }
+  if (status === 400) {
+    return 'The webhook address was rejected. A newly typed address must be an official HTTPS webhook for the selected channel.';
+  }
+  return 'The test could not be sent. Check the webhook URL and try again.';
+}
+
+/**
+ * The webhook entries that still have a database row but are not the one the
+ * card is editing.
+ *
+ * Choosing None, or switching channel, stores an empty string for the channels
+ * it turns off — that is deliberate, because a deleted row would let an
+ * environment value turn the channel back on. The cost is that the empty row
+ * also hides the environment from then on, so these are exactly the settings an
+ * administrator needs a Reset for: it removes the row and restores the
+ * environment.
+ */
+export function resettableAlertWebhooks(
+  entries: AlertWebhookEntries,
+  selected: ConfigEntry | null,
+): ConfigEntry[] {
+  return [entries.slack, entries.legacySlack, entries.wecom].filter(
+    (entry) => entry.key !== selected?.key && hasStoredValue(entry) && !entry.immutable,
+  );
 }

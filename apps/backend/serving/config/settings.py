@@ -451,9 +451,12 @@ class Settings(BaseSettings):
         # One deployment alerts through one channel. The legacy Slack name is
         # part of the same channel, so either Slack spelling conflicts with
         # WeCom; the fallback validator copies it into the canonical field.
+        # Compared stripped, the same way the senders and the failed-request
+        # alerter decide whether a channel is configured: a variable set to
+        # spaces is unset there, so it must not be a conflict here either.
         if (
-            self.slack_alerts_webhook_url or self.slack_webhook_url
-        ) and self.wecom_alerts_webhook_url:
+            self.slack_alerts_webhook_url.strip() or self.slack_webhook_url.strip()
+        ) and self.wecom_alerts_webhook_url.strip():
             broken[
                 "Slack webhooks (SLACK_ALERTS_WEBHOOK_URL or SLACK_WEBHOOK_URL) and "
                 "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive"
