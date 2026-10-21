@@ -53,6 +53,14 @@ change the deployment type of an existing route while keeping its provider and
 target URL. Choosing **Self-hosted engine** does not waive the address checks
 for creating a route or pointing one at a different target.
 
+A choice made in Admin belongs to that endpoint. Changing the Base URL or
+provider resets the deployment type to **Auto** unless you choose again, and
+editing other fields leaves an undeclared route following the model registry.
+If a saved Admin override cannot be applied at startup, for example because the
+registry moved the engine to a new private address, the route is marked
+**Override not applied** and the list shows the registry endpoint that is
+serving. Edit the route or reset its config to clear it.
+
 Or forward the port to the gateway host with an SSH reverse tunnel:
 
 ```bash

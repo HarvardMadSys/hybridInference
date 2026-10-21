@@ -1587,6 +1587,9 @@ class ProviderRouteItem(BaseModel):
     yaml_weight: float
     effective_weight: float
     source: Literal["yaml", "override", "runtime"]
+    # False when a saved override exists but its endpoint is not the one
+    # serving (it failed to apply at boot); the other fields show the live route.
+    override_applied: bool = True
     updated_at: datetime | None = None
     updated_by: str | None = None
 

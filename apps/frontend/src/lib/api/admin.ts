@@ -2418,6 +2418,7 @@ export interface ProviderRoute {
   yaml_weight: number;
   effective_weight: number;
   source: ProviderRouteSource;
+  override_applied?: boolean;
   updated_at: string | null;
   updated_by: string | null;
 }

@@ -3414,7 +3414,11 @@ async def test_verify_provider_route_model_does_not_create_model(admin_client):
 
 @pytest.mark.asyncio
 async def test_provider_route_list_resolves_numbered_env_key_ref(admin_client, monkeypatch):
-    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    # The override below is live: the route already serves its endpoint.
+    route_executor.routes["minimax-fast"].raw_adapters[0][
+        0
+    ].config.base_url = "https://api.featherless.ai/v1"
     base_key = "rc_base111111111111111111111111"
     numbered_key = "rc_numbered222222222222222222"
     monkeypatch.setenv("FEATHERLESS_API_KEY", base_key)
@@ -5301,14 +5305,6 @@ async def test_deployment_type_edit_verify_legacy_update_and_reload(admin_client
     assert updated.config.provider_type == "concurrency"
     assert updated.config.concurrency_pool == adapter.config.concurrency_pool
 
-    # An older client changing credentials must not reset an explicit declaration.
-    payload.pop("deployment_type")
-    response = await client.put(
-        f"/admin/routing/provider-routes/{path}", json=payload, headers=AUTH
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["deployment_type"] == "self_hosted"
-    args = op_store.upsert_provider_route_config.await_args.args
     columns = (
         "model_id",
         "route_id",
@@ -5321,8 +5317,24 @@ async def test_deployment_type_edit_verify_legacy_update_and_reload(admin_client
         "concurrency_limit",
         "updated_by",
     )
-    persisted = dict(zip(columns, args, strict=True))
-    persisted.update(op_store.upsert_provider_route_config.await_args.kwargs)
+
+    def persisted_row():
+        call = op_store.upsert_provider_route_config.await_args
+        row = dict(zip(columns, call.args, strict=True))
+        row.update(call.kwargs)
+        return row
+
+    op_store.list_provider_route_configs_for_model.return_value = [persisted_row()]
+
+    # An older client changing credentials must not reset an explicit declaration.
+    payload.pop("deployment_type")
+    response = await client.put(
+        f"/admin/routing/provider-routes/{path}", json=payload, headers=AUTH
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["deployment_type"] == "self_hosted"
+    persisted = persisted_row()
+    assert persisted["deployment_type"] == "self_hosted"
     op_store.list_all_provider_route_configs.return_value = [persisted]
     # Simulate the freshly loaded YAML route before persisted overrides are applied.
     route.raw_adapters[1] = (adapter, route.raw_adapters[1][1], original_endpoint)
@@ -5451,16 +5463,17 @@ async def test_deployment_edit_cannot_repoint_to_an_untrusted_lan_target(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("provider", "base_url", "declared_type", "expected_type"),
+    ("provider", "base_url", "declared_type", "expected_type", "persisted_type"),
     [
-        ("featherless", "https://api.featherless.ai/v2", None, "auto"),
-        ("openrouter", "https://openrouter.ai/api/v1", None, "auto"),
-        ("openrouter", "https://openrouter.ai/api/v1", "self_hosted", "self_hosted"),
-        ("featherless", "api.featherless.ai/v1/", None, "self_hosted"),
+        ("featherless", "https://api.featherless.ai/v2", None, "auto", "auto"),
+        ("openrouter", "https://openrouter.ai/api/v1", None, "auto", "auto"),
+        ("openrouter", "https://openrouter.ai/api/v1", "self_hosted", "self_hosted", "self_hosted"),
+        # Unmoved and undeclared: the row keeps following the models.yaml value.
+        ("featherless", "api.featherless.ai/v1/", None, "self_hosted", None),
     ],
 )
 async def test_moving_route_does_not_inherit_old_endpoint_deployment_type(
-    admin_client, provider, base_url, declared_type, expected_type
+    admin_client, provider, base_url, declared_type, expected_type, persisted_type
 ):
     client, op_store, executor, _routewise, verify_mock = admin_client
     route = executor.routes["minimax-fast"]
@@ -5483,7 +5496,7 @@ async def test_moving_route_does_not_inherit_old_endpoint_deployment_type(
     assert response.json()["deployment_type"] == expected_type
     assert verify_mock.await_args.args[0].adapter.config.deployment_type == expected_type
     assert op_store.upsert_provider_route_config.await_args.kwargs == {
-        "deployment_type": expected_type
+        "deployment_type": persisted_type
     }
 
     # A pre-migration DB override also omitted ownership. Replay it over the
@@ -5507,3 +5520,112 @@ async def test_moving_route_does_not_inherit_old_endpoint_deployment_type(
     route.raw_adapters[1] = original_entry
     await apply_persisted_provider_route_configs(client.app.state.services, op_store)
     assert route.raw_adapters[1][0].config.deployment_type == expected_type
+
+
+def _persisted_route_config(op_store) -> dict:
+    call = op_store.upsert_provider_route_config.await_args
+    columns = (
+        "model_id",
+        "route_id",
+        "provider",
+        "openrouter_sort",
+        "base_url",
+        "api_key_id",
+        "provider_model_id",
+        "quota_limit",
+        "concurrency_limit",
+        "updated_by",
+    )
+    row = dict(zip(columns, call.args, strict=True))
+    row.update(call.kwargs)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_undeclared_edit_keeps_following_yaml_deployment_type(admin_client):
+    client, op_store, executor, _routewise, _verify_mock = admin_client
+    route = executor.routes["minimax-fast"]
+    yaml_entry = route.raw_adapters[1]
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "featherless",
+            "base_url": "https://api.featherless.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "concurrency_limit": 2,
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    row = _persisted_route_config(op_store)
+    assert row["deployment_type"] is None
+
+    # models.yaml later declares the engine; the saved limit must not pin "auto".
+    yaml_entry[0].config.deployment_type = "self_hosted"
+    route.raw_adapters[1] = yaml_entry
+    op_store.list_all_provider_route_configs.return_value = [row]
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    live = route.raw_adapters[1][0].config
+    assert live.deployment_type == "self_hosted"
+    assert live.concurrency["limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_route_list_reports_an_override_that_failed_to_apply(admin_client):
+    client, op_store, executor, _routewise, _verify_mock = admin_client
+    route = executor.routes["minimax-fast"]
+    yaml_entry = route.raw_adapters[1]
+    yaml_entry[0].config.base_url = "http://10.0.0.5:8000/v1"
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "featherless",
+            "base_url": "http://10.0.0.5:8000/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "deployment_type": "self_hosted",
+            "concurrency_limit": 4,
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["override_applied"] is True
+    row = _persisted_route_config(op_store)
+
+    # models.yaml moves the engine; the saved LAN target no longer passes replay.
+    yaml_entry[0].config.base_url = "http://10.0.0.6:8000/v1"
+    route.raw_adapters[1] = yaml_entry
+    op_store.list_all_provider_route_configs.return_value = [row]
+    op_store.list_provider_route_configs_for_model.return_value = [row]
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+
+    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    listed = next(
+        item
+        for item in response.json()["routes"]
+        if item["route_id"] == "minimax-fast:featherless-api"
+    )
+    assert listed["source"] == "override"
+    assert listed["override_applied"] is False
+    assert listed["base_url"] == "http://10.0.0.6:8000/v1"
+    assert listed["deployment_type"] == "auto"
+    assert listed["concurrency_limit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_route_update_audit_records_deployment_type(admin_client):
+    client, _op_store, _executor, _routewise, _verify_mock = admin_client
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "featherless",
+            "base_url": "https://api.featherless.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "deployment_type": "self_hosted",
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    assert action == "routing.provider_routes.update"
+    assert details["old_deployment_type"] == "auto"
+    assert details["deployment_type"] == "self_hosted"

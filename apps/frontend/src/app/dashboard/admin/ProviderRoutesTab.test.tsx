@@ -813,7 +813,6 @@ describe('ProviderRoutesTab', () => {
           openrouter_provider: 'parasail',
           openrouter_sort: null,
           base_url: 'https://openrouter.ai/api/v1',
-          deployment_type: 'auto' as const,
           api_key_id: 'key-1',
           provider_model_id: 'minimax/minimax-m2.5',
           quota_limit: null,
@@ -873,7 +872,6 @@ describe('ProviderRoutesTab', () => {
           openrouter_provider: 'parasail',
           openrouter_sort: null,
           base_url: 'https://openrouter.ai/api/v1',
-          deployment_type: 'auto' as const,
           api_key_id: 'key-1',
           provider_model_id: 'minimax/minimax-m2.5',
           quota_limit: null,
@@ -1008,7 +1006,6 @@ describe('ProviderRoutesTab', () => {
         openrouter_provider: 'parasail',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
-        deployment_type: 'auto' as const,
         api_key_id: null,
         provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: 8000,
@@ -2161,11 +2158,11 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByLabelText('Deployment type')).toHaveValue('self_hosted');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
-    expect(verifyProviderRoute).toHaveBeenCalledWith(
-      route.model_id,
-      route.route_id,
-      expect.objectContaining({ deployment_type: 'self_hosted', base_url: route.base_url }),
-    );
+    // Untouched, the declaration is left to the server, which keeps it.
+    const verified = vi.mocked(verifyProviderRoute).mock.calls[0];
+    expect(verified.slice(0, 2)).toEqual([route.model_id, route.route_id]);
+    expect(verified[2]).toMatchObject({ base_url: route.base_url });
+    expect(verified[2]).not.toHaveProperty('deployment_type');
     fireEvent.change(screen.getByLabelText('Deployment type'), {
       target: { value: 'provider_api' },
     });
@@ -2179,5 +2176,51 @@ describe('ProviderRoutesTab', () => {
         expect.objectContaining({ deployment_type: 'provider_api', base_url: route.base_url }),
       );
     });
+  });
+
+  it('does not carry an engine declaration to a new base URL', async () => {
+    const engineRoute = { ...route, deployment_type: 'self_hosted' as const };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [engineRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
+    vi.mocked(verifyProviderRoute).mockResolvedValue({ ok: true });
+    vi.mocked(updateProviderRoute).mockResolvedValue({ ...engineRoute, deployment_type: 'auto' });
+    render(<ProviderRoutesTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Deployment type'), {
+      target: { value: 'self_hosted' },
+    });
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://api.featherless.ai/v2' },
+    });
+    expect(screen.getByLabelText('Deployment type')).toHaveValue('auto');
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://API.featherless.ai/v1/' },
+    });
+    // Back on the route's own endpoint, its declaration shows again.
+    expect(screen.getByLabelText('Deployment type')).toHaveValue('self_hosted');
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://api.featherless.ai/v2' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await screen.findByRole('button', { name: 'Verified' });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(updateProviderRoute).toHaveBeenCalled());
+    const payload = vi.mocked(updateProviderRoute).mock.calls[0][2];
+    expect(payload).toMatchObject({ base_url: 'https://api.featherless.ai/v2' });
+    expect(payload).not.toHaveProperty('deployment_type');
+  });
+
+  it('flags a saved override that is not in effect', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [{ ...route, source: 'override', override_applied: false }],
+    });
+    render(<ProviderRoutesTab />);
+    expect(await screen.findByText('Override not applied')).toBeInTheDocument();
+    expect(screen.queryByText('Override active')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset config' })).toBeInTheDocument();
   });
 });
