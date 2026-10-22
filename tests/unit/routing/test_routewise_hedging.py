@@ -488,7 +488,13 @@ class TestHedgedAdapterNonStreaming:
         await asyncio.wait_for(prefill_released.wait(), timeout=0.2)
 
         assert tracker.backlog("test:primary") == 0
-        assert events == ["capacity", "prefill"]
+        # The prefill lease is released before the primary cancellation is
+        # awaited, so once `prefill_released` fires the primary's cleanup may
+        # already have appended `primary-cancellation-started` to `events`.
+        # Assert the ordering that is actually observable: capacity (backup
+        # dispatch release) then the primary's prefill release. The exact
+        # three-event ordering is asserted again below after cleanup.
+        assert events[:2] == ["capacity", "prefill"]
 
         allow_primary_cleanup.set()
         result = await request
