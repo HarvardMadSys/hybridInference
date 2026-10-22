@@ -109,17 +109,37 @@ async def test_initialize_adds_the_column_to_an_existing_table(
 ):
     """A database created before the column existed gains it, keeping old rows NULL."""
     pool = postgres_op_store._pool
-    async with pool.acquire() as conn:
-        await conn.execute("ALTER TABLE provider_route_candidates DROP COLUMN capabilities")
-        await conn.execute(
-            "INSERT INTO provider_route_candidates "
-            "(model_id, route_id, route_type, provider, base_url, provider_model_id, pricing) "
-            "VALUES ('itest-old', 'itest-old:openrouter-api', 'on_demand', 'openrouter', "
-            "'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash', $1::jsonb)",
-            '{"prompt": "0.14", "completion": "0.28"}',
-        )
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("ALTER TABLE provider_route_candidates DROP COLUMN capabilities")
+            await conn.execute(
+                "INSERT INTO provider_route_candidates "
+                "(model_id, route_id, route_type, provider, base_url, provider_model_id, pricing) "
+                "VALUES ('itest-old', 'itest-old:openrouter-api', 'on_demand', 'openrouter', "
+                "'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash', $1::jsonb)",
+                '{"prompt": "0.14", "completion": "0.28"}',
+            )
 
-    await postgres_op_store.initialize()
+        await postgres_op_store.initialize()
 
-    row = await _row(postgres_op_store, "itest-old")
-    assert row["capabilities"] is None
+        row = await _row(postgres_op_store, "itest-old")
+        assert row["capabilities"] is None
+    finally:
+        # The worker's database outlives this test; a failure above must not
+        # leave the table without the column for the tests that follow.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS capabilities JSONB"
+            )
+
+
+async def test_a_write_without_a_declaration_keeps_the_stored_one(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """A NULL write (a route restored undeclared, then edited) never clears a declaration."""
+    await _upsert(postgres_op_store, "itest-keep", CAPABILITIES)
+
+    await _upsert(postgres_op_store, "itest-keep", None)
+
+    row = await _row(postgres_op_store, "itest-keep")
+    assert _normalize_runtime_model_capabilities(row["capabilities"]) == CAPABILITIES

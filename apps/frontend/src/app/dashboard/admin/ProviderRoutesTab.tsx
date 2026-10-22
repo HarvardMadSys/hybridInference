@@ -163,26 +163,50 @@ function runtimePricingPayload(form: CreateRouteForm): Record<string, string> {
   return pricing;
 }
 
-function positiveIntegerOrNull(value: string) {
+// The backend's bound (RUNTIME_MODEL_MAX_TOKENS): the largest window a model ships with.
+const MAX_DECLARED_TOKENS = 10_000_000;
+const TOKEN_COUNT_ERROR = `Enter a whole number of tokens from 1 to ${MAX_DECLARED_TOKENS.toLocaleString('en-US')}.`;
+
+function tokenCountOrNull(value: string) {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number.parseInt(trimmed, 10);
-  return parsed > 0 ? parsed : null;
+  return parsed > 0 && parsed <= MAX_DECLARED_TOKENS ? parsed : null;
 }
 
-function runtimeCapabilitiesPayload(form: CreateRouteForm): RuntimeModelCapabilities | null {
-  const contextLength = positiveIntegerOrNull(form.contextLength);
-  const maxOutputLength = positiveIntegerOrNull(form.maxOutputLength);
-  if (contextLength === null || maxOutputLength === null || maxOutputLength > contextLength) {
-    return null;
+type RuntimeCapabilitiesDraft = {
+  payload: RuntimeModelCapabilities | null;
+  contextLengthError: string | null;
+  maxOutputLengthError: string | null;
+};
+
+// One reading of the four fields, used both for the inline messages and to
+// gate Create/Verify, so a field can never block the form without saying why.
+// An empty field has no message: it is visibly unanswered.
+function runtimeCapabilitiesDraft(form: CreateRouteForm): RuntimeCapabilitiesDraft {
+  const contextLength = tokenCountOrNull(form.contextLength);
+  const maxOutputLength = tokenCountOrNull(form.maxOutputLength);
+  const contextLengthError =
+    form.contextLength.trim() && contextLength === null ? TOKEN_COUNT_ERROR : null;
+  let maxOutputLengthError =
+    form.maxOutputLength.trim() && maxOutputLength === null ? TOKEN_COUNT_ERROR : null;
+  if (contextLength !== null && maxOutputLength !== null && maxOutputLength > contextLength) {
+    maxOutputLengthError = 'Max output cannot exceed the context length.';
   }
-  if (!form.imageInput || !form.toolCalling) return null;
-  return {
-    context_length: contextLength,
-    max_output_length: maxOutputLength,
-    input_modalities: form.imageInput === 'yes' ? ['text', 'image'] : ['text'],
-    supports_tools: form.toolCalling === 'yes',
-  };
+  const payload: RuntimeModelCapabilities | null =
+    contextLength !== null &&
+    maxOutputLength !== null &&
+    maxOutputLengthError === null &&
+    form.imageInput &&
+    form.toolCalling
+      ? {
+          context_length: contextLength,
+          max_output_length: maxOutputLength,
+          input_modalities: form.imageInput === 'yes' ? ['text', 'image'] : ['text'],
+          supports_tools: form.toolCalling === 'yes',
+        }
+      : null;
+  return { payload, contextLengthError, maxOutputLengthError };
 }
 
 function formatWeight(value: number) {
@@ -790,14 +814,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       pricingValueValid(createForm.pricingCompletion) &&
       optionalPricingValueValid(createForm.pricingCacheReads) &&
       optionalPricingValueValid(createForm.pricingCacheWrites));
-  const runtimeCapabilities = runtimeCapabilitiesPayload(createForm);
+  const {
+    payload: runtimeCapabilities,
+    contextLengthError: createContextLengthError,
+    maxOutputLengthError: createMaxOutputLengthError,
+  } = runtimeCapabilitiesDraft(createForm);
   const createCapabilitiesValid = !creatingModel || runtimeCapabilities !== null;
-  const parsedCreateContextLength = positiveIntegerOrNull(createForm.contextLength);
-  const parsedCreateMaxOutputLength = positiveIntegerOrNull(createForm.maxOutputLength);
-  const createMaxOutputExceedsContext =
-    parsedCreateContextLength !== null &&
-    parsedCreateMaxOutputLength !== null &&
-    parsedCreateMaxOutputLength > parsedCreateContextLength;
   const createQuotaValid =
     createForm.routeType !== 'quota' ||
     (parsedCreateQuotaLimit !== null &&
@@ -2237,6 +2259,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                         required
                       />
+                      {createContextLengthError && (
+                        <p className="mt-1 text-[11px] leading-5 text-red-600">
+                          {createContextLengthError}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label
@@ -2261,9 +2288,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                         required
                       />
-                      {createMaxOutputExceedsContext && (
+                      {createMaxOutputLengthError && (
                         <p className="mt-1 text-[11px] leading-5 text-red-600">
-                          Max output cannot exceed the context length.
+                          {createMaxOutputLengthError}
                         </p>
                       )}
                     </div>

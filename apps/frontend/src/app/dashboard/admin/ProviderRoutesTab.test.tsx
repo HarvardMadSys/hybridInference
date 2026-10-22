@@ -1772,6 +1772,40 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
   });
 
+  it.each([
+    ['Context length (tokens)', '128e3'],
+    ['Context length (tokens)', '0'],
+    ['Context length (tokens)', '20000000'],
+    ['Max output (tokens)', '1.5'],
+  ])('says which field blocks Create when %s is %s', async (label, value) => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+    fillRuntimeModelCapabilities();
+    expect(screen.queryByText(/Enter a whole number of tokens/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
+    expect(
+      screen.getByText('Enter a whole number of tokens from 1 to 10,000,000.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+
   it('does not ask for capabilities when adding a route to an existing model', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,

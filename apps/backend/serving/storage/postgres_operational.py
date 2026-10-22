@@ -3756,7 +3756,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "concurrency_limit = EXCLUDED.concurrency_limit, "
                 "weight = EXCLUDED.weight, "
                 "pricing = EXCLUDED.pricing, "
-                "capabilities = EXCLUDED.capabilities, "
+                # A write without a declaration (a route that restored without
+                # one, or a concurrency edit on it) keeps whatever is stored, so
+                # a declaration is never replaced by NULL and then by defaults.
+                "capabilities = COALESCE(EXCLUDED.capabilities, "
+                "provider_route_candidates.capabilities), "
                 "updated_at = NOW(), "
                 "updated_by = EXCLUDED.updated_by",
                 model_id,

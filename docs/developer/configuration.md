@@ -358,9 +358,11 @@ what it accepts, as `capabilities` in the request: `context_length`,
 `supports_tools`. All four are required, because each changes what a request
 does: a model without tool support has tool definitions dropped, `max_tokens`
 is clamped to `max_output_length`, an image reaches only a route that accepts
-images, and Auto and the context-overflow fallback read `context_length`. A
-route added to the model later copies the four from its first route. A runtime
-model created before they could be declared keeps the defaults it was given:
+images, and Auto and the context-overflow fallback read `context_length`. The
+two lengths are whole numbers of tokens, at most 10,000,000. A route added to
+the model later copies the four from its first route. Each route stores and
+restores its own four, since routes of one model can differ. A runtime model
+created before they could be declared keeps the defaults it was given:
 `context_length` 8192, `max_output_length` 4096, text only, no tool support.
 Supported parameters such as `reasoning_effort`, structured output and aliases
 still take `ModelConfig`'s defaults; when a model needs any of those, put it in

@@ -1894,6 +1894,27 @@ def _declared_capabilities(adapter) -> dict[str, Any] | None:
     }
 
 
+def _stored_capabilities(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the capabilities a stored runtime route declared, or None to restore without.
+
+    A stored value that no longer validates (edited by hand, or written by a
+    build that allowed more) restores the route as undeclared rather than
+    dropping it, and is left in place: the store never overwrites a stored
+    declaration with NULL, so nobody's value is replaced by a default.
+    """
+    try:
+        return _normalize_runtime_model_capabilities(row.get("capabilities"))
+    except ValueError as exc:
+        logger.warning(
+            "Ignoring invalid stored capabilities for model=%s route_id=%s; "
+            "restoring the route without them: %s",
+            row.get("model_id"),
+            row.get("route_id"),
+            exc,
+        )
+        return None
+
+
 def _jsonb_value(raw: Any) -> Any:
     """Decode a JSONB column read back without a codec, which asyncpg returns as text."""
     return json.loads(raw) if isinstance(raw, str) else raw
@@ -2009,6 +2030,8 @@ async def _prepare_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     route_id: str | None = None,
+    stored_capabilities: dict[str, Any] | None = None,
+    restoring: bool = False,
 ) -> PreparedRouteCandidate:
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -2090,16 +2113,27 @@ async def _prepare_route_candidate(
             },
         }
     )
-    # The new route copies the first route's capability values along with the
-    # rest of its config, so it also carries the flag saying they were declared.
-    # Without it the route's row would store NULL, and a restart that rebuilds
-    # the model from that row would bring the defaults back.
-    template_metadata = getattr(template_adapter.config, "route_metadata", None)
-    if (
-        isinstance(template_metadata, dict)
-        and template_metadata.get(_DECLARED_CAPABILITIES) is True
-    ):
-        cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
+    if restoring:
+        # A restored route is what its own row says. Each route keeps its own
+        # values because routes of one model can differ (a narrower mirror, a
+        # smaller hosted window), so a row that declared them gets them back
+        # whatever the first route holds. A row that declared none keeps the
+        # first route's values, as before capabilities were stored, but not the
+        # flag: nothing was declared for it, so nothing is written for it.
+        if stored_capabilities is not None:
+            cfg.update(stored_capabilities)
+            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
+    else:
+        # A route added through the API copies the first route's capability
+        # values along with the rest of its config, so it also carries the flag
+        # saying they were declared. Without it the route's row would store
+        # NULL and restore without them.
+        template_metadata = getattr(template_adapter.config, "route_metadata", None)
+        if (
+            isinstance(template_metadata, dict)
+            and template_metadata.get(_DECLARED_CAPABILITIES) is True
+        ):
+            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
     _apply_target_adapter_defaults(cfg, target)
     await _apply_openrouter_endpoint_pricing(
         cfg,
@@ -4421,7 +4455,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
                     pricing=row.get("pricing"),
-                    capabilities=row.get("capabilities"),
+                    capabilities=_stored_capabilities(row),
                     strategy=strategy_overrides.get(model_id, "fixed"),
                 )
                 _install_provider_route_model(
@@ -4469,6 +4503,8 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
+                    stored_capabilities=_stored_capabilities(row),
+                    restoring=True,
                 )
                 _install_route_candidate(services, candidate)
         except BaseException as exc:

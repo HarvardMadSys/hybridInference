@@ -8,6 +8,7 @@ import logging
 import socket
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -2667,6 +2668,12 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]},
         {**RUNTIME_CAPABILITIES, "context_length": 0},
         {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
+        # Lax coercion would read these as 1, 1 (clamping every request to one
+        # token), a number, and False.
+        {**RUNTIME_CAPABILITIES, "context_length": True, "max_output_length": True},
+        {**RUNTIME_CAPABILITIES, "context_length": "131072"},
+        {**RUNTIME_CAPABILITIES, "supports_tools": "no"},
+        {**RUNTIME_CAPABILITIES, "context_length": 10**20},
     ],
     ids=[
         "missing",
@@ -2675,6 +2682,10 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         "unoffered-modality",
         "zero-context",
         "output-over-context",
+        "boolean-lengths",
+        "string-length",
+        "string-tools",
+        "unbounded-context",
     ],
 )
 async def test_post_provider_route_model_requires_declared_capabilities(
@@ -4671,37 +4682,45 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     registry.refresh_route_tables.assert_called_once_with()
 
 
-@pytest.mark.asyncio
-async def test_apply_persisted_provider_route_candidates_restores_declared_capabilities(
-    admin_client,
-):
+# Two runtime routes of one model. The plain route sorts first, so restore
+# builds the model from it and adds the pinned route next to it.
+FIRST_ROUTE = ("deepseek-v4-flash:openrouter-api", "openrouter")
+SECOND_ROUTE = ("deepseek-v4-flash:openrouter[parasail]-api", "openrouter[parasail]")
+NARROW_CAPABILITIES = {
+    "context_length": 32768,
+    "max_output_length": 8192,
+    "input_modalities": ["text"],
+    "supports_tools": False,
+}
+
+
+def _stored_runtime_row(route: tuple[str, str], capabilities) -> dict:
+    route_id, provider = route
+    return {
+        "model_id": "deepseek-v4-flash",
+        "route_id": route_id,
+        "route_type": "on_demand",
+        "provider": provider,
+        "openrouter_sort": None,
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "deepseek/deepseek-v4-flash",
+        "quota_limit": None,
+        "concurrency_limit": None,
+        "weight": 1.0,
+        # asyncpg hands JSONB back as text on this pool.
+        "pricing": json.dumps(RUNTIME_PRICING),
+        "capabilities": json.dumps(capabilities) if capabilities is not None else None,
+        "updated_at": NOW,
+        "updated_by": "127.0.0.1",
+    }
+
+
+async def _restore_runtime_rows(admin_client, rows: list[dict]) -> dict[str, Any]:
+    """Restore ``rows`` as a fixed runtime model; return its adapters by route id."""
     _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
-
-    def row(route_id: str, provider: str) -> dict:
-        return {
-            "model_id": "deepseek-v4-flash",
-            "route_id": route_id,
-            "route_type": "on_demand",
-            "provider": provider,
-            "openrouter_sort": None,
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key_id": "db-openrouter",
-            "provider_model_id": "deepseek/deepseek-v4-flash",
-            "quota_limit": None,
-            "concurrency_limit": None,
-            "weight": 1.0,
-            # asyncpg hands JSONB back as text on this pool.
-            "pricing": json.dumps(RUNTIME_PRICING),
-            "capabilities": json.dumps(RUNTIME_CAPABILITIES),
-            "updated_at": NOW,
-            "updated_by": "127.0.0.1",
-        }
-
-    op_store.list_all_provider_route_candidates.return_value = [
-        row("deepseek-v4-flash:openrouter-api", "openrouter"),
-        row("deepseek-v4-flash:openrouter[parasail]-api", "openrouter[parasail]"),
-    ]
+    op_store.list_all_provider_route_candidates.return_value = rows
     op_store.list_settings.return_value = [
         {"key": "model_required_role:deepseek-v4-flash", "value": "admin"},
         {"key": "model_router_strategy:deepseek-v4-flash", "value": "fixed"},
@@ -4717,19 +4736,120 @@ async def test_apply_persisted_provider_route_candidates_restores_declared_capab
 
     await apply_persisted_provider_route_candidates(services, op_store)
 
-    restored = [
-        adapter
-        for adapter, _weight, _endpoint_id in route_executor.routes[
-            "deepseek-v4-flash"
-        ].raw_adapters
-    ]
+    route = route_executor.routes.get("deepseek-v4-flash")
+    if route is None:
+        return {}
+    return {
+        adapter.config.route_metadata["route_id"]: adapter
+        for adapter, _weight, _endpoint_id in route.raw_adapters
+    }
+
+
+def _assert_capabilities(adapter, capabilities: dict, *, declared: bool) -> None:
+    assert adapter.config.context_length == capabilities["context_length"]
+    assert adapter.config.max_output_length == capabilities["max_output_length"]
+    assert adapter.config.input_modalities == capabilities["input_modalities"]
+    assert adapter.config.supports_tools is capabilities["supports_tools"]
+    # What the route writes back on its next save: its declaration, or nothing.
+    assert provider_routes._declared_capabilities(adapter) == (capabilities if declared else None)
+
+
+DEFAULT_CAPABILITIES = {
+    "context_length": 8192,
+    "max_output_length": 4096,
+    "input_modalities": ["text"],
+    "supports_tools": False,
+}
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates_restores_declared_capabilities(
+    admin_client,
+):
+    restored = await _restore_runtime_rows(
+        admin_client,
+        [
+            _stored_runtime_row(FIRST_ROUTE, RUNTIME_CAPABILITIES),
+            _stored_runtime_row(SECOND_ROUTE, RUNTIME_CAPABILITIES),
+        ],
+    )
+
     assert len(restored) == 2
-    for adapter in restored:
-        assert adapter.config.context_length == 131072
-        assert adapter.config.max_output_length == 65536
-        assert adapter.config.input_modalities == ["text", "image"]
-        assert adapter.config.supports_tools is True
-        assert adapter.config.route_metadata["declared_capabilities"] is True
+    for adapter in restored.values():
+        _assert_capabilities(adapter, RUNTIME_CAPABILITIES, declared=True)
+
+
+@pytest.mark.asyncio
+async def test_restore_gives_each_route_its_own_capabilities(admin_client):
+    """A route restores its own row's values, not the first route's."""
+    restored = await _restore_runtime_rows(
+        admin_client,
+        [
+            _stored_runtime_row(FIRST_ROUTE, NARROW_CAPABILITIES),
+            _stored_runtime_row(SECOND_ROUTE, RUNTIME_CAPABILITIES),
+        ],
+    )
+
+    _assert_capabilities(restored[FIRST_ROUTE[0]], NARROW_CAPABILITIES, declared=True)
+    _assert_capabilities(restored[SECOND_ROUTE[0]], RUNTIME_CAPABILITIES, declared=True)
+
+
+@pytest.mark.asyncio
+async def test_restore_keeps_a_declaration_behind_an_undeclared_first_route(admin_client):
+    """A NULL row sorting first (added by an older build) does not erase the others.
+
+    Before, the declared route copied the first route's defaults and lost its
+    flag, so its next save wrote NULL over the declaration.
+    """
+    restored = await _restore_runtime_rows(
+        admin_client,
+        [
+            _stored_runtime_row(FIRST_ROUTE, None),
+            _stored_runtime_row(SECOND_ROUTE, RUNTIME_CAPABILITIES),
+        ],
+    )
+
+    _assert_capabilities(restored[FIRST_ROUTE[0]], DEFAULT_CAPABILITIES, declared=False)
+    _assert_capabilities(restored[SECOND_ROUTE[0]], RUNTIME_CAPABILITIES, declared=True)
+
+
+@pytest.mark.asyncio
+async def test_restore_does_not_declare_an_undeclared_route(admin_client):
+    """A NULL row behind a declared route takes its values but writes nothing for them."""
+    restored = await _restore_runtime_rows(
+        admin_client,
+        [
+            _stored_runtime_row(FIRST_ROUTE, RUNTIME_CAPABILITIES),
+            _stored_runtime_row(SECOND_ROUTE, None),
+        ],
+    )
+
+    _assert_capabilities(restored[FIRST_ROUTE[0]], RUNTIME_CAPABILITIES, declared=True)
+    second = restored[SECOND_ROUTE[0]]
+    assert second.config.context_length == RUNTIME_CAPABILITIES["context_length"]
+    assert provider_routes._declared_capabilities(second) is None
+
+
+@pytest.mark.asyncio
+async def test_restore_keeps_a_route_whose_stored_capabilities_no_longer_validate(
+    admin_client, caplog
+):
+    """An invalid stored value restores the route undeclared instead of dropping it."""
+    invalid = {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]}
+
+    with caplog.at_level(logging.WARNING):
+        restored = await _restore_runtime_rows(
+            admin_client,
+            [
+                _stored_runtime_row(FIRST_ROUTE, invalid),
+                _stored_runtime_row(SECOND_ROUTE, invalid),
+            ],
+        )
+
+    assert len(restored) == 2
+    for adapter in restored.values():
+        _assert_capabilities(adapter, DEFAULT_CAPABILITIES, declared=False)
+    assert "Ignoring invalid stored capabilities" in caplog.text
 
 
 @pytest.mark.asyncio

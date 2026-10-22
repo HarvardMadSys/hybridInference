@@ -5,7 +5,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from serving.config.settings import ROUTE_TYPE_ORDER
 
@@ -1631,6 +1638,9 @@ class CreateProviderRouteRequest(BaseModel):
 
 # Image is the only non-text input the console offers for a runtime model.
 RUNTIME_MODEL_INPUT_MODALITIES = ("text", "image")
+# The largest window a model ships with today (10M tokens). A larger value is a
+# typo, and an unbounded one could exceed what JSON clients read exactly.
+RUNTIME_MODEL_MAX_TOKENS = 10_000_000
 
 
 class RuntimeModelCapabilities(BaseModel):
@@ -1645,10 +1655,11 @@ class RuntimeModelCapabilities(BaseModel):
     upstream, so none of them may stand in for a value nobody declared.
     """
 
-    context_length: int = Field(..., ge=1)
-    max_output_length: int = Field(..., ge=1)
+    # Strict, so ``true`` or ``"131072"`` is rejected instead of read as 1 or a number.
+    context_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
+    max_output_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
     input_modalities: list[Literal["text", "image"]] = Field(..., min_length=1)
-    supports_tools: bool
+    supports_tools: StrictBool
 
     @field_validator("input_modalities")
     @classmethod

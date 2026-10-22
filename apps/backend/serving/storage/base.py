@@ -1321,8 +1321,9 @@ class OperationalStore(ABC):
         """Upsert a DB-backed runtime provider route candidate.
 
         ``capabilities`` holds a runtime model's declared context window, output
-        cap, input modalities and tool support; None for a row that never
-        declared them, which keeps ``ModelConfig``'s defaults on restore.
+        cap, input modalities and tool support. None declares nothing: a new
+        row stores NULL and an existing row keeps what it has, so a stored
+        declaration is never cleared by a write that did not carry one.
         """
 
     @abstractmethod
