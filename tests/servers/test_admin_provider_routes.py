@@ -5906,6 +5906,7 @@ async def test_created_route_deployment_is_explicit_and_survives_reload(admin_cl
         "concurrency_limit",
         "weight",
         "pricing",
+        "capabilities",
         "updated_by",
     )
     persisted = dict(zip(columns, args, strict=True))
