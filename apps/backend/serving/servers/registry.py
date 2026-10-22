@@ -24,6 +24,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
+from serving.adapters.base import validate_deployment_type
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
@@ -478,6 +479,11 @@ def register_from_models_yaml(
     alias_owner: dict[str, str] = {}
     for m in models:
         try:
+            if "deployment_type" in m:
+                raise ValueError(
+                    f"deployment_type for model {m.get('id')!r} must be declared on a route, "
+                    "not on the model (including shorthand models without a route list)"
+                )
             if "embeddings_path" in m:
                 raise EmbeddingsPathConfigError(
                     f"embeddings_path for model {m.get('id')!r} must be declared on a route, "
@@ -555,6 +561,12 @@ def register_from_models_yaml(
             dynamic_key_registrations: list[tuple[str, object]] = []
             dynamic_key_providers: set[str] = set()
             for route_index, r in enumerate(routes, start=1):
+                try:
+                    deployment_type = validate_deployment_type(r.get("deployment_type", "auto"))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{exc} (model {top_cfg.get('id')!r}, route {route_index})"
+                    ) from exc
                 kind = r.get("kind") or top_cfg.get("provider")
                 raw_base_url = r.get("base_url") or top_cfg.get("base_url")
                 base_url = expand_env(raw_base_url)
@@ -714,6 +726,7 @@ def register_from_models_yaml(
                 # "type" is routing-only metadata, not a ModelConfig field
                 adapter_cfg.pop("type", None)
                 adapter_cfg["base_url"] = base_url
+                adapter_cfg["deployment_type"] = deployment_type
                 adapter_cfg["api_key"] = api_key
                 adapter_cfg["api_keys"] = api_keys
                 # Normalize bracket-form openrouter kind to base "openrouter" for the

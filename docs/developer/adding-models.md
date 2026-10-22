@@ -270,6 +270,7 @@ Beyond the model fields above, a route entry accepts:
 | `optional` | bool | Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or `embeddings_path` resolves unset or blank |
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
+| `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
 
 A route reports its `kind` as the provider label — the value recorded in

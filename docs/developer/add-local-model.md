@@ -37,8 +37,29 @@ Point the route at the private address:
       - kind: openai_compat
         weight: 1.0
         base_url: "http://10.0.12.34:8000/v1"
+        deployment_type: self_hosted
         provider_model_id: "your-served-model-name"
 ```
+
+`deployment_type: self_hosted` tells the gateway this route reaches an engine
+you operate, even though its address is on another machine. It bypasses the
+provider-key concurrency limit and makes streaming requests eligible for a
+configured [engine queue limit](routing.md#engine-queue-limit). It does not
+enable queue offload by itself. Keep the reachable private address: `localhost`
+inside a gateway container refers to that container, not the model server.
+
+The Admin Routing tab can change the deployment type of an existing route while
+keeping its provider and target URL, or set it when you create or repoint a
+route. Choosing **Self-hosted engine** does not waive the Base URL checks for a
+new or changed target.
+
+A choice made in Admin belongs to that endpoint. Changing the Base URL or
+provider resets the deployment type to **Auto** unless you choose again, and
+editing other fields leaves an undeclared route following the model registry.
+If a saved Admin override cannot be applied at startup, for example because its
+saved target no longer passes the Base URL checks, the route is marked
+**Override not applied** and the list shows the registry endpoint that is
+serving. Edit the route or reset its config to clear it.
 
 Or forward the port to the gateway host with an SSH reverse tunnel:
 

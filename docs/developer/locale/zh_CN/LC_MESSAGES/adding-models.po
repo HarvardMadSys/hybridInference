@@ -1560,3 +1560,12 @@ msgstr "通过校验的快照会原子替换已保存的价目表。各 worker �
 #: ../developer/adding-models.md
 msgid "Fetch or parsing failures retain the last validated snapshot and are logged. A first startup needs either a usable stored snapshot or a successful fetch. Unknown calendars and unrecognized price-page rules cannot silently become zero prices or an empty holiday list. The parser currently accepts the documented weekday schedule only while its UTC peak windows stay within the same Chinese calendar day."
 msgstr "抓取或解析失败时保留最近一次有效快照并记录日志。首次启动必须能读取可用的持久化快照，或成功抓取数据。未知日历和无法识别的价格页规则不能静默变成零价格或空假期列表。当前解析器支持官方文档中的工作日规则，并要求 UTC 峰时仍处在同一个中国自然日内。"
+
+
+#: ../developer/adding-models.md
+msgid "`deployment_type`"
+msgstr ""
+
+#: ../developer/adding-models.md
+msgid "Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency)"
+msgstr "只可用于路由的准入分类：`auto`（默认值，识别回环/宿主机端点）、`self_hosted`（自己运维的引擎，包括局域网中的引擎）或 `provider_api`（按 provider key 限制并发，即使通过回环代理访问）。与 `provider_type` 独立；参见[出站并发](routing.md#outbound-concurrency)。"

@@ -10,6 +10,7 @@ import {
   ProviderRoute,
   ProviderRouteStrategy,
   ProviderRouteType,
+  RouteDeploymentType,
   ProviderRouteOption,
   Role,
   RouteWeight,
@@ -34,6 +35,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
+import { RouteDeploymentField } from './RouteDeploymentField';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
@@ -44,6 +46,9 @@ type RouteForm = {
   customOpenRouterProvider: string;
   openRouterSort: string;
   baseUrl: string;
+  // Null until the admin picks one in this edit: the server then keeps the
+  // route's declaration, or resets it to auto when the endpoint moves.
+  deploymentType: RouteDeploymentType | null;
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
@@ -60,6 +65,7 @@ type CreateRouteForm = {
   customOpenRouterProvider: string;
   openRouterSort: string;
   baseUrl: string;
+  deploymentType: RouteDeploymentType;
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
@@ -82,6 +88,7 @@ const emptyCreateForm: CreateRouteForm = {
   customOpenRouterProvider: '',
   openRouterSort: '',
   baseUrl: '',
+  deploymentType: 'auto',
   apiKeyId: '',
   providerModelId: '',
   quotaLimit: '5000',
@@ -250,7 +257,12 @@ function noProviderHelpText(routeType: ProviderRouteType) {
   return 'There are no configured providers left for this route type.';
 }
 
+function overrideNotApplied(route: ProviderRoute) {
+  return route.source === 'override' && route.override_applied === false;
+}
+
 function sourceLabel(route: ProviderRoute) {
+  if (overrideNotApplied(route)) return 'Override not applied';
   if (route.source === 'override') return 'Override active';
   if (route.source === 'runtime') return 'Runtime added';
   return 'Config default';
@@ -427,6 +439,20 @@ function routePrimaryProvider(route: ProviderRoute) {
     return 'openrouter';
   }
   return route.provider;
+}
+
+// Mirrors the gateway's endpoint comparison closely enough to tell whether an
+// edit still points at the route's current endpoint.
+function canonicalEndpointUrl(value: string) {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(
+      trimmed.includes('://') ? trimmed : `https://${trimmed.replace(/^\/+/, '')}`,
+    );
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
 }
 
 function routePrimaryUpstreamProvider(route: ProviderRoute) {
@@ -643,6 +669,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     customOpenRouterProvider: '',
     openRouterSort: '',
     baseUrl: '',
+    deploymentType: 'auto',
     apiKeyId: '',
     providerModelId: '',
     quotaLimit: '',
@@ -861,6 +888,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     formOpenRouterProviderValid &&
     quotaLimitValid &&
     concurrencyLimitValid;
+  const editDeploymentType: RouteDeploymentType =
+    form.deploymentType ??
+    (editingRoute &&
+    form.upstreamProvider === routePrimaryUpstreamProvider(editingRoute) &&
+    (form.upstreamProvider !== 'openrouter' ||
+      selectedOpenRouterProvider ===
+        resolvedOpenRouterProvider(routeOpenRouterProvider(editingRoute), '')) &&
+    canonicalEndpointUrl(form.baseUrl) === canonicalEndpointUrl(editingRoute.base_url)
+      ? (editingRoute.deployment_type ?? 'auto')
+      : 'auto');
   const editRoutePayload = useMemo(() => {
     if (!editingRoute) {
       return null;
@@ -875,6 +912,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         form.openRouterSort,
       ),
       base_url: form.baseUrl.trim(),
+      ...(form.deploymentType ? { deployment_type: form.deploymentType } : {}),
       api_key_id: form.apiKeyId || null,
       provider_model_id: form.providerModelId.trim(),
       quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
@@ -886,6 +924,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     editsLocalQuota,
     form.apiKeyId,
     form.baseUrl,
+    form.deploymentType,
     form.openRouterProvider,
     form.openRouterSort,
     form.providerModelId,
@@ -907,6 +946,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         createForm.openRouterSort,
       ),
       base_url: createForm.baseUrl.trim(),
+      deployment_type: createForm.deploymentType,
       api_key_id: createForm.apiKeyId || null,
       provider_model_id: createForm.providerModelId.trim(),
       quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
@@ -917,6 +957,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [
       createForm.apiKeyId,
       createForm.baseUrl,
+      createForm.deploymentType,
       createForm.openRouterProvider,
       createForm.openRouterSort,
       createForm.providerModelId,
@@ -959,6 +1000,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         customOpenRouterProvider: '',
         openRouterSort: '',
         baseUrl: '',
+        deploymentType: 'auto',
         apiKeyId: '',
         providerModelId: '',
         quotaLimit: '',
@@ -973,6 +1015,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       customOpenRouterProvider: '',
       openRouterSort: editingRoute.openrouter_sort ?? '',
       baseUrl: editingRoute.base_url,
+      deploymentType: null,
       apiKeyId: editingRoute.api_key_id ?? '',
       providerModelId: editingRoute.provider_model_id ?? '',
       quotaLimit: editingRoute.quota_limit ? String(editingRoute.quota_limit) : '',
@@ -1163,6 +1206,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         customOpenRouterProvider: '',
         openRouterSort: '',
         baseUrl: '',
+        deploymentType: 'auto',
         apiKeyId: '',
         providerModelId: '',
       }));
@@ -1235,6 +1279,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           ? (editingRoute?.openrouter_sort ?? current.openRouterSort)
           : '',
       baseUrl: selected?.default_base_url || current.baseUrl,
+      deploymentType: upstreamProvider === current.upstreamProvider ? current.deploymentType : null,
       apiKeyId: '',
       providerModelId:
         editingRoute && upstreamProvider === routePrimaryUpstreamProvider(editingRoute)
@@ -1942,11 +1987,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className={
                           routeDisabled
                             ? 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                            : route.source === 'override'
-                              ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                              : route.source === 'runtime'
-                                ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
-                                : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                            : overrideNotApplied(route)
+                              ? 'inline-flex rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700'
+                              : route.source === 'override'
+                                ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                                : route.source === 'runtime'
+                                  ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                                  : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                        }
+                        title={
+                          !routeDisabled && overrideNotApplied(route)
+                            ? 'The saved override failed to apply at startup, so the config default shown here is serving. Edit the route or reset its config.'
+                            : undefined
                         }
                       >
                         {routeDisabled ? 'Disabled' : sourceLabel(route)}
@@ -2468,6 +2520,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </div>
               </div>
 
+              <RouteDeploymentField
+                id="new-route-deployment-type"
+                value={createForm.deploymentType}
+                onChange={(deploymentType) =>
+                  setCreateForm((current) => ({ ...current, deploymentType }))
+                }
+              />
+
               {createForm.upstreamProvider === 'openrouter' && (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <div>
@@ -2732,12 +2792,24 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   type="url"
                   value={form.baseUrl}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, baseUrl: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      baseUrl: event.target.value,
+                      deploymentType: null,
+                    }))
                   }
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                   required
                 />
               </div>
+
+              <RouteDeploymentField
+                id="route-deployment-type"
+                value={editDeploymentType}
+                onChange={(deploymentType) =>
+                  setForm((current) => ({ ...current, deploymentType }))
+                }
+              />
 
               <div className="mt-3">
                 <label

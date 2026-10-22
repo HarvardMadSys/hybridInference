@@ -1600,6 +1600,7 @@ class ProviderRouteItem(BaseModel):
     openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     key_provider: str
     base_url: str
+    deployment_type: Literal["auto", "self_hosted", "provider_api"] = "auto"
     api_key_id: str | None = None
     api_key: ProviderRouteApiKeyRef
     provider_model_id: str | None = None
@@ -1613,6 +1614,9 @@ class ProviderRouteItem(BaseModel):
     yaml_weight: float
     effective_weight: float
     source: Literal["yaml", "override", "runtime"]
+    # False when a saved override exists but its endpoint is not the one
+    # serving (it failed to apply at boot); the other fields show the live route.
+    override_applied: bool = True
     updated_at: datetime | None = None
     updated_by: str | None = None
 
@@ -1649,6 +1653,7 @@ class CreateProviderRouteRequest(BaseModel):
     openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
     openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     base_url: str = Field(..., min_length=1, max_length=2048)
+    deployment_type: Literal["auto", "self_hosted", "provider_api"] = "auto"
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str = Field(..., min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)
@@ -1755,6 +1760,7 @@ class UpdateProviderRouteRequest(BaseModel):
     openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
     openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     base_url: str = Field(..., min_length=1, max_length=2048)
+    deployment_type: Literal["auto", "self_hosted", "provider_api"] | None = None
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)

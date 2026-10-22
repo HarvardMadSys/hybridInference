@@ -1285,6 +1285,7 @@ class OperationalStore(ABC):
         quota_limit: int | None,
         concurrency_limit: int | None,
         updated_by: str | None,
+        deployment_type: str | None = None,
     ) -> None:
         """Upsert a runtime provider route override row."""
 
@@ -1317,6 +1318,7 @@ class OperationalStore(ABC):
         pricing: dict[str, str] | None,
         capabilities: dict[str, Any] | None,
         updated_by: str | None,
+        deployment_type: str = "auto",
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate.
 

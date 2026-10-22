@@ -59,6 +59,7 @@ def test_provider_route_config_signatures():
         "quota_limit",
         "concurrency_limit",
         "updated_by",
+        "deployment_type",
     ]
     assert list(inspect.signature(OperationalStore.delete_provider_route_config).parameters) == [
         "self",
@@ -93,6 +94,7 @@ def test_provider_route_candidate_signatures():
         "pricing",
         "capabilities",
         "updated_by",
+        "deployment_type",
     ]
     assert list(inspect.signature(OperationalStore.delete_provider_route_candidate).parameters) == [
         "self",
