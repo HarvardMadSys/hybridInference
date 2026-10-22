@@ -67,6 +67,7 @@ from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
 from serving.utils.logging import get_logger
+from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -118,19 +119,6 @@ class OpenRouterEndpointPricing:
 
 def _env_default(name: str, fallback: str) -> str:
     return (config_value(name) or fallback).strip()
-
-
-# Admins are trusted to point a route at any upstream, plain-http and private
-# hosts included (self-hosted engines, on-prem gateways). Only cloud instance
-# metadata endpoints are refused: no inference upstream lives there, and they
-# hand out the host's own credentials.
-BLOCKED_BASE_URL_HOSTS = {
-    "metadata.google.internal",
-}
-METADATA_IP_ADDRESSES = {
-    ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
-    ipaddress.ip_address("fd00:ec2::254"),  # AWS IPv6
-}
 
 
 # Built-in targets whose default base URL a deployment may override, with the
@@ -1361,8 +1349,14 @@ async def _validate_base_url(base_url: str) -> str:
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(status_code=422, detail="base_url must use http or https")
 
+    # Admins are trusted to point a route at any upstream, plain-http and
+    # private hosts included (self-hosted engines, on-prem gateways). Only cloud
+    # instance metadata endpoints are refused: no inference upstream lives there,
+    # and they hand out the host's own credentials. This check gives the admin a
+    # clear error; the connection itself is guarded again at connect time (see
+    # serving.utils.metadata_addresses), since the name may resolve differently.
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in BLOCKED_BASE_URL_HOSTS:
+    if hostname in METADATA_HOSTNAMES:
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
 
     try:
@@ -1398,14 +1392,14 @@ async def _validate_base_url(base_url: str) -> str:
                     status_code=422,
                     detail="base_url host resolved to an invalid address",
                 ) from None
-            if _base_url_ip_blocked(resolved_ip):
+            if is_metadata_address(resolved_ip):
                 raise HTTPException(
                     status_code=422,
                     detail="base_url host is not allowed",
                 ) from None
         return cleaned
 
-    if _base_url_ip_blocked(ip):
+    if is_metadata_address(ip):
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
     return cleaned
 
@@ -1438,14 +1432,6 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
                     f"base_url host belongs to provider {other_provider!r}, not {target_provider!r}"
                 ),
             )
-
-
-def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if ip.version == 6 and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    # 169.254.0.0/16 and fe80::/10 hold the AWS, GCP, Azure and Tencent Cloud
-    # metadata endpoints.
-    return ip.is_link_local or ip in METADATA_IP_ADDRESSES
 
 
 # Fields that describe the *server behind* a route rather than the route's

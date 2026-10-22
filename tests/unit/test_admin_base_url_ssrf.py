@@ -42,6 +42,9 @@ async def _refused(url: str) -> str:
         "http://169.254.0.23/meta-data",  # Tencent Cloud
         "http://100.100.100.200/latest/meta-data",  # Alibaba Cloud
         "http://[fd00:ec2::254]/latest/meta-data",  # AWS IPv6
+        "http://[fd00:ec2::23]/v1/credentials",  # AWS EKS Pod Identity, IPv6
+        "http://[fd00:ec2::254%0]/latest",  # a zone does not change the address
+        "http://[fd00:ec2::254%25eth0]/latest",
         "http://[fe80::1]/v1",
         "http://[::ffff:169.254.169.254]/latest",  # IPv4-mapped
         "http://2852039166/latest",  # 169.254.169.254 as one integer
@@ -61,6 +64,15 @@ async def test_a_metadata_host_name_is_refused_before_any_lookup(monkeypatch):
         await _refused("http://METADATA.google.internal./computeMetadata/v1")
         == "base_url host is not allowed"
     )
+
+
+async def test_a_name_resolving_to_aws_ipv6_metadata_is_refused(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00:ec2::254", port or 443, 0, 0))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert await _refused("http://aws6.example/v1") == "base_url host is not allowed"
 
 
 async def test_a_name_with_any_metadata_address_is_refused(monkeypatch):
