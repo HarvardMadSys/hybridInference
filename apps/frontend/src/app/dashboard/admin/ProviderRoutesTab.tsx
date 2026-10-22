@@ -827,6 +827,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     form.deploymentType ??
     (editingRoute &&
     form.upstreamProvider === routePrimaryUpstreamProvider(editingRoute) &&
+    (form.upstreamProvider !== 'openrouter' ||
+      selectedOpenRouterProvider ===
+        resolvedOpenRouterProvider(routeOpenRouterProvider(editingRoute), '')) &&
     canonicalEndpointUrl(form.baseUrl) === canonicalEndpointUrl(editingRoute.base_url)
       ? (editingRoute.deployment_type ?? 'auto')
       : 'auto');

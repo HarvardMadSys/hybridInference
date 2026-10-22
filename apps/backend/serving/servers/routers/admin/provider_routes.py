@@ -816,6 +816,21 @@ def _target_for_provider(provider: str) -> ProviderTarget:
     )
 
 
+def _same_upstream_target(target: ProviderTarget, current_provider: str) -> bool:
+    """Whether *target* is the upstream a route already goes through.
+
+    A pinned OpenRouter route reports its bare pin (``parasail``) while a request
+    names it ``openrouter[parasail]``; both resolve to the same adapter kind.
+    """
+    try:
+        current = _target_for_provider(current_provider)
+    except HTTPException:
+        return False
+    if parse_openrouter_kind(target.kind)[0] == "openrouter":
+        return target.kind == current.kind
+    return target.provider == current.provider
+
+
 def _openrouter_pin_for_target(target: ProviderTarget) -> str | None:
     base_kind, pinned = parse_openrouter_kind(target.kind)
     if base_kind != "openrouter":
@@ -2281,7 +2296,7 @@ async def _prepare_route_update(
     # keep its trusted URL verbatim for metadata/credential edits and reloads.
     # Any URL or provider change still passes the full public-endpoint policy.
     canonical_url = _canonical_base_url(base_url)
-    same_target = upstream_provider == _upstream_provider(current_adapter)
+    same_target = _same_upstream_target(target, _upstream_provider(current_adapter))
     same_url = canonical_url is not None and canonical_url == _canonical_base_url(
         current_adapter.config.base_url
     )
@@ -3937,6 +3952,16 @@ async def update_provider_route(
         override_snapshot = _rows_by_route_id(
             await op_store.list_provider_route_configs_for_model(model_id)
         ).get(route_id)
+        # An undeclared edit keeps the row's declaration only while that row is
+        # what serves. A row that failed to apply at boot describes another
+        # endpoint; carrying its value would replace the live one on restart.
+        stored_deployment_type = (
+            override_snapshot.get("deployment_type")
+            if override_snapshot is not None
+            and _canonical_base_url(str(override_snapshot["base_url"]))
+            == _canonical_base_url(str(current_adapter.config.base_url))
+            else None
+        )
 
         async def persist_and_install() -> None:
             try:
@@ -3954,7 +3979,7 @@ async def update_provider_route(
                     deployment_type=(
                         update.deployment_type_declaration
                         if update.deployment_type_declaration is not None
-                        else (override_snapshot or {}).get("deployment_type")
+                        else stored_deployment_type
                     ),
                 )
                 _install_route_update(services, update)

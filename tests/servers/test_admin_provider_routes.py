@@ -5612,6 +5612,75 @@ async def test_route_list_reports_an_override_that_failed_to_apply(admin_client)
 
 
 @pytest.mark.asyncio
+async def test_undeclared_edit_does_not_keep_an_unapplied_rows_deployment_type(admin_client):
+    client, op_store, executor, _routewise, _verify_mock = admin_client
+    route = executor.routes["minimax-fast"]
+    yaml_entry = route.raw_adapters[1]
+    yaml_entry[0].config.base_url = "http://10.0.0.5:8000/v1"
+    yaml_entry[0].config.deployment_type = "self_hosted"
+    # A saved move to another engine that failed to apply at boot: models.yaml serves.
+    unapplied = {
+        "model_id": "minimax-fast",
+        "route_id": "minimax-fast:featherless-api",
+        "provider": "featherless",
+        "openrouter_sort": None,
+        "base_url": "http://10.0.0.9:8000/v1",
+        "api_key_id": None,
+        "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+        "quota_limit": None,
+        "concurrency_limit": None,
+        "updated_by": "admin",
+        "deployment_type": "auto",
+    }
+    op_store.list_provider_route_configs_for_model.return_value = [unapplied]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "featherless",
+            "base_url": "http://10.0.0.5:8000/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "concurrency_limit": 3,
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["deployment_type"] == "self_hosted"
+    row = _persisted_route_config(op_store)
+    assert row["deployment_type"] is None
+
+    # Restart: the new row applies and must keep the live declaration.
+    route.raw_adapters[1] = yaml_entry
+    op_store.list_all_provider_route_configs.return_value = [row]
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    assert route.raw_adapters[1][0].config.deployment_type == "self_hosted"
+
+
+@pytest.mark.asyncio
+async def test_pinned_openrouter_edit_keeps_its_deployment_type(admin_client):
+    client, op_store, executor, _routewise, _verify_mock = admin_client
+    route = executor.routes["minimax-fast"]
+    pinned = route.raw_adapters[2][0]
+    pinned.config.deployment_type = "provider_api"
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:openrouter[deepinfra]-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "deepinfra",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider_model_id": "minimax/minimax-m2.5-turbo",
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["deployment_type"] == "provider_api"
+    assert _persisted_route_config(op_store)["deployment_type"] is None
+    live = route.raw_adapters[2][0].config
+    assert live.deployment_type == "provider_api"
+    assert live.endpoint_id == "minimax-fast:openrouter[deepinfra]-api"
+
+
+@pytest.mark.asyncio
 async def test_route_update_audit_records_deployment_type(admin_client):
     client, _op_store, _executor, _routewise, _verify_mock = admin_client
     response = await client.put(

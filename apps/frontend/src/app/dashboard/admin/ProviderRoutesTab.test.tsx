@@ -2213,6 +2213,40 @@ describe('ProviderRoutesTab', () => {
     expect(payload).not.toHaveProperty('deployment_type');
   });
 
+  it('keeps a pinned OpenRouter declaration only while the pin is unchanged', async () => {
+    const openRouterRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      deployment_type: 'provider_api' as const,
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [openRouterRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+    render(<ProviderRoutesTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('Deployment type')).toHaveValue('provider_api');
+    // Another pin is another endpoint; the server resets its declaration.
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:deepinfra' },
+    });
+    expect(screen.getByLabelText('Deployment type')).toHaveValue('auto');
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
+    });
+    expect(screen.getByLabelText('Deployment type')).toHaveValue('provider_api');
+  });
+
   it('flags a saved override that is not in effect', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
