@@ -75,6 +75,21 @@ _SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS idx_public_stats_snapshots_generated
     ON public_stats_snapshots (generated_at DESC)
     """,
+    # Additive counters for successful, non-probe requests removed from
+    # api_logs. The prune writes these in the same transaction as the DELETE
+    # (ops/db/archive-old-logs.sh in the deployment repo). No account id,
+    # address, or message text is stored.
+    """
+    CREATE TABLE IF NOT EXISTS api_log_retained_daily (
+        day            DATE   NOT NULL,
+        model          TEXT   NOT NULL,
+        requests       BIGINT NOT NULL,
+        input_tokens   BIGINT NOT NULL,
+        output_tokens  BIGINT NOT NULL,
+        cached_tokens  BIGINT NOT NULL,
+        PRIMARY KEY (day, model)
+    )
+    """,
 )
 
 LATEST_SNAPSHOT_SQL = """
@@ -104,6 +119,16 @@ WHERE timestamp >= $1 AND timestamp < $2
   AND {_NOT_PROBE}
 GROUP BY 1, 2
 """
+
+# Same day/model grain as DAILY_SQL, for rows the prune has already removed.
+# ``$1`` is inclusive and ``$2`` is exclusive, both UTC dates.
+RETAINED_DAILY_SQL = """
+SELECT day, model, requests, input_tokens, output_tokens, cached_tokens
+FROM api_log_retained_daily
+WHERE day >= $1 AND day < $2
+"""
+
+RETAINED_FIRST_DAY_SQL = "SELECT MIN(day) FROM api_log_retained_daily"
 
 CLIENTS_SQL = f"""
 SELECT
@@ -202,7 +227,7 @@ _ALPHA3_TO_ALPHA2 = {alpha3: alpha2 for alpha2, alpha3 in ALPHA2_TO_ALPHA3.items
 
 
 async def ensure_public_stats_schema(connection: Any) -> None:
-    """Create the snapshot table if it does not exist."""
+    """Create the snapshot and retained-daily tables if they do not exist."""
     for statement in _SCHEMA_STATEMENTS:
         await connection.execute(statement)
 
@@ -233,6 +258,20 @@ def _public_count(n: int) -> int | None:
 
 def _share(part: float, whole: float) -> float:
     return round(part / whole, 6) if whole else 0.0
+
+
+def retained_day_bounds(start: datetime, end: datetime) -> tuple[date, date]:
+    """Return ``[start_day, end_day)`` covering every UTC day that overlaps the window.
+
+    A midnight ``end`` is already the next day, so that date stays exclusive.
+    An ``end`` later in the day still owns that calendar day.
+    """
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    until = end_utc.date()
+    if end_utc.time() != datetime.min.time():
+        until += timedelta(days=1)
+    return start_utc.date(), until
 
 
 def days_between(start: datetime, end: datetime) -> list[date]:
@@ -629,19 +668,44 @@ async def compute_snapshot(
     """Read the logs, the country rollup and account statuses and build the snapshot.
 
     ``models_config`` is the parsed ``models.yaml``; without it the snapshot
-    has no per-model section.
+    has no per-model section. Request and token totals include
+    ``api_log_retained_daily``, so pruning old ``api_logs`` rows does not
+    reduce them.
     """
     now = now or datetime.now(timezone.utc)
     end = now.replace(minute=0, second=0, microsecond=0)
+    await ensure_public_stats_schema(conn)
     first_log = await conn.fetchval(FIRST_LOG_SQL)
+    first_retained = await conn.fetchval(RETAINED_FIRST_DAY_SQL)
     earliest = datetime.combine(
         week_start(end.date()) - timedelta(weeks=lookback_weeks - 1),
         datetime.min.time(),
         timezone.utc,
     )
-    start = max(earliest, first_log) if first_log else earliest
+    candidates: list[datetime] = []
+    if first_log is not None:
+        candidates.append(first_log)
+    if first_retained is not None:
+        if isinstance(first_retained, datetime):
+            first_retained = first_retained.date()
+        candidates.append(datetime.combine(first_retained, datetime.min.time(), timezone.utc))
+    start = max(earliest, min(candidates)) if candidates else earliest
 
-    daily_rows = await conn.fetch(DAILY_SQL, start, end)
+    retained_from, retained_until = retained_day_bounds(start, end)
+    retained_rows = []
+    for row in await conn.fetch(RETAINED_DAILY_SQL, retained_from, retained_until):
+        item = dict(row)
+        # DATE columns can come back as a midnight datetime. build_daily keys
+        # days by datetime.date, so a datetime would miss the chart and the totals.
+        day = item["day"]
+        if isinstance(day, datetime):
+            item["day"] = day.date()
+        # The prune stores a missing model as '' because the primary key
+        # cannot hold NULL. That traffic is not a named model.
+        if item["model"] == "":
+            item["model"] = None
+        retained_rows.append(item)
+    daily_rows = [*await conn.fetch(DAILY_SQL, start, end), *retained_rows]
     client_rows = [
         ClientRow(
             week=row["week"],

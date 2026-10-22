@@ -1811,7 +1811,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
         "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
         json={
             "upstream_provider": "parasail",
-            "base_url": "http://localhost:8000/v1",
+            "base_url": "http://169.254.169.254/latest",
             "api_key_id": "db-openrouter",
             "provider_model_id": "minimax/minimax-m2.5",
         },
@@ -1819,7 +1819,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "base_url must use https"
+    assert response.json()["detail"] == "base_url host is not allowed"
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_config.assert_not_awaited()
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
@@ -1828,7 +1828,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_put_provider_route_rejects_private_dns_base_url(admin_client, monkeypatch):
+async def test_put_provider_route_rejects_metadata_dns_base_url(admin_client, monkeypatch):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     monkeypatch.setattr(
@@ -1840,7 +1840,7 @@ async def test_put_provider_route_rejects_private_dns_base_url(admin_client, mon
                 socket.SOCK_STREAM,
                 6,
                 "",
-                ("10.0.0.5", port or 443),
+                ("169.254.169.254", port or 443),
             )
         ],
     )

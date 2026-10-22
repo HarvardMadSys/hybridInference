@@ -379,6 +379,9 @@ class Settings(BaseSettings):
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
+    # WeCom group-bot webhook, an alternative to Slack: one deployment alerts
+    # through one channel, and an empty value disables WeCom.
+    wecom_alerts_webhook_url: str = Field(default="", alias="WECOM_ALERTS_WEBHOOK_URL")
     alerts_config_path: str = Field(
         default="config/alerts.yaml",
         validation_alias=AliasChoices("ALERTS_CONFIG_PATH", "alerts_config_path"),
@@ -404,8 +407,8 @@ class Settings(BaseSettings):
     def _parse_trusted_proxies(self) -> "Settings":
         """Parse trusted client, proxy, and Cloudflare network CIDRs.
 
-        Every entry has passed :meth:`_check_networks`. The rules between the
-        trust settings (:meth:`broken_rules`) apply here, except inside
+        Every entry has passed :meth:`_check_networks`. The rules between
+        settings (:meth:`broken_rules`) also apply here, except inside
         :func:`rules_deferred`: the database may still replace either side of
         a rule, so the configuration in force is judged once it is known.
         """
@@ -444,6 +447,23 @@ class Settings(BaseSettings):
             broken["TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS"] = (
                 "trust_x_real_ip",
                 "trust_proxy_headers",
+            )
+        # One deployment alerts through one channel. The legacy Slack name is
+        # part of the same channel, so either Slack spelling conflicts with
+        # WeCom; the fallback validator copies it into the canonical field.
+        # Compared stripped, the same way the senders and the failed-request
+        # alerter decide whether a channel is configured: a variable set to
+        # spaces is unset there, so it must not be a conflict here either.
+        if (
+            self.slack_alerts_webhook_url.strip() or self.slack_webhook_url.strip()
+        ) and self.wecom_alerts_webhook_url.strip():
+            broken[
+                "Slack webhooks (SLACK_ALERTS_WEBHOOK_URL or SLACK_WEBHOOK_URL) and "
+                "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive"
+            ] = (
+                "slack_alerts_webhook_url",
+                "slack_webhook_url",
+                "wecom_alerts_webhook_url",
             )
         return broken
 
