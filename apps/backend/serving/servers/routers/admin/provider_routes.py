@@ -93,7 +93,6 @@ OPENROUTER_MODEL_ID_RE = re.compile(
 )
 OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-CGNAT_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _T = TypeVar("_T")
 
 
@@ -121,12 +120,18 @@ def _env_default(name: str, fallback: str) -> str:
     return (config_value(name) or fallback).strip()
 
 
+# Admins are trusted to point a route at any upstream, plain-http and private
+# hosts included (self-hosted engines, on-prem gateways). Only cloud instance
+# metadata endpoints are refused: no inference upstream lives there, and they
+# hand out the host's own credentials.
 BLOCKED_BASE_URL_HOSTS = {
-    "localhost",
-    "localhost.localdomain",
-    "host.docker.internal",
     "metadata.google.internal",
 }
+METADATA_IP_ADDRESSES = {
+    ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
+    ipaddress.ip_address("fd00:ec2::254"),  # AWS IPv6
+}
+
 
 # Built-in targets whose default base URL a deployment may override, with the
 # setting that overrides it and the built-in fallback.
@@ -1346,8 +1351,6 @@ async def _validate_base_url(base_url: str) -> str:
         cleaned = f"https://{cleaned.lstrip('/')}"
 
     parsed = urlparse(cleaned)
-    if parsed.scheme != "https":
-        raise HTTPException(status_code=422, detail="base_url must use https")
     if not parsed.netloc or not parsed.hostname:
         raise HTTPException(status_code=422, detail="base_url must include a host")
     if parsed.username or parsed.password:
@@ -1355,9 +1358,13 @@ async def _validate_base_url(base_url: str) -> str:
     if parsed.query or parsed.fragment:
         raise HTTPException(status_code=422, detail="base_url must not include query or fragment")
 
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=422, detail="base_url must use http or https")
+
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in BLOCKED_BASE_URL_HOSTS or hostname.endswith(".localhost"):
+    if hostname in BLOCKED_BASE_URL_HOSTS:
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
+
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
@@ -1434,15 +1441,11 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
 
 
 def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        ip.is_loopback
-        or ip.is_private
-        or (ip.version == 4 and ip in CGNAT_IPV4_NETWORK)
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    # 169.254.0.0/16 and fe80::/10 hold the AWS, GCP, Azure and Tencent Cloud
+    # metadata endpoints.
+    return ip.is_link_local or ip in METADATA_IP_ADDRESSES
 
 
 # Fields that describe the *server behind* a route rather than the route's
