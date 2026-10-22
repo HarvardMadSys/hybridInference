@@ -75,7 +75,7 @@ class TestInMemoryCache:
         assert await cache.get("key") == "value"
 
     async def test_ttl_expiry(self, cache):
-        with patch("serving.storage.cache.time.monotonic") as mock_time:
+        with patch("serving.storage.cache_backend.time.monotonic") as mock_time:
             mock_time.return_value = 1000.0
             await cache.set("key", "value", ttl=10)
 
@@ -157,13 +157,13 @@ class TestCacheHits:
             "user_status": "active",
         }
         recorded: list[int] = []
-        original_set = cache.set
+        original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
             recorded.append(ttl)
-            await original_set(key, value, ttl)
+            return await original_set_if(key, value, ttl, generation=generation)
 
-        cache.set = _record_ttl
+        cache.set_if_generation = _record_ttl
 
         await cached.get_key_owner_for_audit("h1")
 
@@ -195,13 +195,13 @@ class TestCacheHits:
             "user_status": "active",
         }
         recorded: list[int] = []
-        original_set = cache.set
+        original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
             recorded.append(ttl)
-            await original_set(key, value, ttl)
+            return await original_set_if(key, value, ttl, generation=generation)
 
-        cache.set = _record_ttl
+        cache.set_if_generation = _record_ttl
 
         await cached.get_key_owner_for_audit("h1")
         await cached.get_key_owner_for_audit("h1")
@@ -223,13 +223,13 @@ class TestCacheHits:
             "user_status": "active",
         }
         recorded: list[int] = []
-        original_set = cache.set
+        original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
             recorded.append(ttl)
-            await original_set(key, value, ttl)
+            return await original_set_if(key, value, ttl, generation=generation)
 
-        cache.set = _record_ttl
+        cache.set_if_generation = _record_ttl
 
         await cached.get_key_owner_for_audit("h1")
 
@@ -248,13 +248,13 @@ class TestCacheHits:
             "user_status": "active",
         }
         recorded: list[int] = []
-        original_set = cache.set
+        original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
             recorded.append(ttl)
-            await original_set(key, value, ttl)
+            return await original_set_if(key, value, ttl, generation=generation)
 
-        cache.set = _record_ttl
+        cache.set_if_generation = _record_ttl
 
         await cached.get_key_owner_for_audit("h1")
 

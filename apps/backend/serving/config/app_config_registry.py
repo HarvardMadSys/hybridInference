@@ -88,7 +88,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "network", "Network", "Browser origins and which proxies may report client addresses."
     ),
-    Category("alerts", "Alerts", "Slack alerting."),
+    Category("alerts", "Alerts", "Backend alert notifications."),
     Category(
         "integrations",
         "Integrations",
@@ -974,10 +974,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "slack_alerts_webhook_url",
         "alerts",
-        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL.",
+        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. "
+        "Takes effect after a restart, together with the WeCom channel it alternates with.",
         "str",
         secret=True,
         fallback_key="SLACK_WEBHOOK_URL",
+        restart_required=True,
+    ),
+    _setting(
+        "wecom_alerts_webhook_url",
+        "alerts",
+        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel. "
+        "Takes effect after a restart, like the failed-request detector it enables.",
+        "str",
+        secret=True,
+        restart_required=True,
     ),
     _setting(
         "slack_webhook_url",

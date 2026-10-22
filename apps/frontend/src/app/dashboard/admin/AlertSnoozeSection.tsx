@@ -90,7 +90,7 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
     setBusy(true);
     try {
       setStatus(await snoozeAlerts(seconds));
-      onToast(`Slack alerts snoozed for ${label}`);
+      onToast(`Alert notifications snoozed for ${label}`);
     } catch (e) {
       onToast(`Failed to snooze alerts: ${getErrorMessage(e)}`);
     } finally {
@@ -102,7 +102,7 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
     setBusy(true);
     try {
       setStatus(await clearAlertSnooze());
-      onToast('Slack alerts resumed');
+      onToast('Alert notifications resumed');
     } catch (e) {
       onToast(`Failed to resume alerts: ${getErrorMessage(e)}`);
     } finally {
@@ -115,10 +115,10 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5">
       <div className="mb-3">
-        <h2 className="text-[14px] font-semibold text-gray-900">Slack Alerts</h2>
+        <h2 className="text-[14px] font-semibold text-gray-900">Alert Notifications</h2>
         <p className="mt-1 text-[12px] text-gray-500">
-          Temporarily mute all outgoing Slack alerts (e.g. during maintenance or a known incident).
-          Alerting resumes automatically when the snooze elapses.
+          Temporarily mute all outgoing backend alert notifications (e.g. during maintenance or a
+          known incident). Alerting resumes automatically when the snooze elapses.
         </p>
       </div>
 

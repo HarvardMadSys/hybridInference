@@ -220,7 +220,8 @@ always kept). To run anything else against that database,
   are read by no code. There is one SQL dialect — write Postgres.
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
-  (`apps/backend/serving/observability/alerts.py`) to a Slack webhook;
+  (`apps/backend/serving/observability/alerts.py`) to one configured Slack or
+  WeCom webhook;
   status-monitor alerts go through the status monitor and alert control plane
   workers owned and deployed by the external
   [freeInference repository](https://github.com/HarvardMadSys/freeInference).

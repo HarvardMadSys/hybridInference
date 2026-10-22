@@ -56,6 +56,7 @@ describe('AlertMutesSection', () => {
     render(<AlertMutesSection onToast={vi.fn()} />);
 
     expect(await screen.findByText('Provider circuit opened')).toBeInTheDocument();
+    expect(screen.getByText(/Mute one kind of backend alert/)).toBeInTheDocument();
     expect(screen.getByText('Providers')).toBeInTheDocument();
     expect(screen.getByText('Auth')).toBeInTheDocument();
     expect(screen.getByText('circuit_open:<provider>')).toBeInTheDocument();

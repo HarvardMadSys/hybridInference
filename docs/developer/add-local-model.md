@@ -48,16 +48,16 @@ configured [engine queue limit](routing.md#engine-queue-limit). It does not
 enable queue offload by itself. Keep the reachable private address: `localhost`
 inside a gateway container refers to that container, not the model server.
 
-Declare new private endpoints in the model registry. The Admin Routing tab can
-change the deployment type of an existing route while keeping its provider and
-target URL. Choosing **Self-hosted engine** does not waive the address checks
-for creating a route or pointing one at a different target.
+The Admin Routing tab can change the deployment type of an existing route while
+keeping its provider and target URL, or set it when you create or repoint a
+route. Choosing **Self-hosted engine** does not waive the Base URL checks for a
+new or changed target.
 
 A choice made in Admin belongs to that endpoint. Changing the Base URL or
 provider resets the deployment type to **Auto** unless you choose again, and
 editing other fields leaves an undeclared route following the model registry.
-If a saved Admin override cannot be applied at startup, for example because the
-registry moved the engine to a new private address, the route is marked
+If a saved Admin override cannot be applied at startup, for example because its
+saved target no longer passes the Base URL checks, the route is marked
 **Override not applied** and the list shows the registry endpoint that is
 serving. Edit the route or reset its config to clear it.
 

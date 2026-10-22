@@ -67,6 +67,7 @@ from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
 from serving.utils.logging import get_logger
+from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -93,7 +94,6 @@ OPENROUTER_MODEL_ID_RE = re.compile(
 )
 OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-CGNAT_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _T = TypeVar("_T")
 
 
@@ -120,13 +120,6 @@ class OpenRouterEndpointPricing:
 def _env_default(name: str, fallback: str) -> str:
     return (config_value(name) or fallback).strip()
 
-
-BLOCKED_BASE_URL_HOSTS = {
-    "localhost",
-    "localhost.localdomain",
-    "host.docker.internal",
-    "metadata.google.internal",
-}
 
 # Built-in targets whose default base URL a deployment may override, with the
 # setting that overrides it and the built-in fallback.
@@ -1368,8 +1361,6 @@ async def _validate_base_url(base_url: str) -> str:
         _ = parsed.port  # Validate malformed and out-of-range ports before DNS.
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="base_url must be a valid URL") from exc
-    if parsed.scheme != "https":
-        raise HTTPException(status_code=422, detail="base_url must use https")
     if not parsed.netloc or not parsed.hostname:
         raise HTTPException(status_code=422, detail="base_url must include a host")
     if parsed.username or parsed.password:
@@ -1377,9 +1368,19 @@ async def _validate_base_url(base_url: str) -> str:
     if parsed.query or parsed.fragment:
         raise HTTPException(status_code=422, detail="base_url must not include query or fragment")
 
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=422, detail="base_url must use http or https")
+
+    # Admins are trusted to point a route at any upstream, plain-http and
+    # private hosts included (self-hosted engines, on-prem gateways). Only cloud
+    # instance metadata endpoints are refused: no inference upstream lives there,
+    # and they hand out the host's own credentials. This check gives the admin a
+    # clear error; the connection itself is guarded again at connect time (see
+    # serving.utils.metadata_addresses), since the name may resolve differently.
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in BLOCKED_BASE_URL_HOSTS or hostname.endswith(".localhost"):
+    if hostname in METADATA_HOSTNAMES:
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
+
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
@@ -1413,14 +1414,14 @@ async def _validate_base_url(base_url: str) -> str:
                     status_code=422,
                     detail="base_url host resolved to an invalid address",
                 ) from None
-            if _base_url_ip_blocked(resolved_ip):
+            if is_metadata_address(resolved_ip):
                 raise HTTPException(
                     status_code=422,
                     detail="base_url host is not allowed",
                 ) from None
         return cleaned
 
-    if _base_url_ip_blocked(ip):
+    if is_metadata_address(ip):
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
     return cleaned
 
@@ -1453,18 +1454,6 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
                     f"base_url host belongs to provider {other_provider!r}, not {target_provider!r}"
                 ),
             )
-
-
-def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        ip.is_loopback
-        or ip.is_private
-        or (ip.version == 4 and ip in CGNAT_IPV4_NETWORK)
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
 
 
 # Fields that describe the *server behind* a route rather than the route's
@@ -2291,10 +2280,9 @@ async def _prepare_route_update(
         _primary_provider_for_target(target),
         openrouter_sort,
     )
-    # Deployment YAML may deliberately point at an HTTP/LAN engine. Reusing
-    # that exact registered target does not grant access to a new destination;
-    # keep its trusted URL verbatim for metadata/credential edits and reloads.
-    # Any URL or provider change still passes the full public-endpoint policy.
+    # Reusing the exact registered target does not grant access to a new
+    # destination; keep its URL verbatim for metadata/credential edits and
+    # reloads. Any URL or provider change still passes the Base URL policy.
     canonical_url = _canonical_base_url(base_url)
     same_target = _same_upstream_target(target, _upstream_provider(current_adapter))
     same_url = canonical_url is not None and canonical_url == _canonical_base_url(

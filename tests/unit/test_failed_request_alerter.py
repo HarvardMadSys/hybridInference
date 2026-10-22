@@ -150,7 +150,6 @@ def _make_alerter(pool, *, threshold=20, window=5, cooldown=5, now_fn=None):
 
     return FailedRequestAlerter(
         pool=pool,
-        webhook_url="https://hooks.slack.test/abc",
         threshold=threshold,
         window_minutes=window,
         cooldown_minutes=cooldown,
@@ -379,9 +378,11 @@ async def test_alerter_failed_post_does_not_start_cooldown():
 # ── register_alerter_job ─────────────────────────────────────────────────
 
 
-def _settings_stub(webhook_url=""):
+def _settings_stub(webhook_url="", wecom_url="", slack_alerts_url=""):
     return MagicMock(
         slack_webhook_url=webhook_url,
+        slack_alerts_webhook_url=slack_alerts_url,
+        wecom_alerts_webhook_url=wecom_url,
         failed_request_alert_threshold=20,
         failed_request_alert_window_minutes=5,
         failed_request_alert_cooldown_minutes=5,
@@ -443,6 +444,54 @@ def test_register_adds_job_when_webhook_set():
     assert kwargs["id"] == "failed_request_alerter"
     assert kwargs["replace_existing"] is True
     assert kwargs["max_instances"] == 1
+
+
+def test_register_adds_job_when_only_wecom_is_set():
+    """WECOM_ALERTS_WEBHOOK_URL alone is enough to enable the DB detector."""
+    from serving.admin import failed_request_alerter
+
+    fake_scheduler = MagicMock()
+    pool = MagicMock()
+
+    with patch.object(
+        failed_request_alerter,
+        "get_scheduler",
+        return_value=fake_scheduler,
+    ):
+        failed_request_alerter.register_alerter_job(
+            pool,
+            _settings_stub(
+                webhook_url="",
+                wecom_url="https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc",
+            ),
+        )
+
+    fake_scheduler.add_job.assert_called_once()
+
+
+def test_register_disabled_when_only_slack_alerts_webhook_is_set():
+    """Only SLACK_WEBHOOK_URL enables this detector; the alerting URL does not.
+
+    That asymmetry predates this change: deployments that set just
+    SLACK_ALERTS_WEBHOOK_URL never registered the DB-query detector, and the
+    WeCom channel must not alter that.
+    """
+    from serving.admin import failed_request_alerter
+
+    fake_scheduler = MagicMock()
+    pool = MagicMock()
+
+    with patch.object(
+        failed_request_alerter,
+        "get_scheduler",
+        return_value=fake_scheduler,
+    ):
+        failed_request_alerter.register_alerter_job(
+            pool,
+            _settings_stub(slack_alerts_url="https://hooks.slack.test/alerting"),
+        )
+
+    fake_scheduler.add_job.assert_not_called()
 
 
 def test_register_no_scheduler_is_safe():
@@ -576,7 +625,6 @@ def _rate_alerter(pool, *, threshold=200, rate=0.02, min_count=10):
 
     return FailedRequestAlerter(
         pool=pool,
-        webhook_url="https://hooks.slack.test/abc",
         threshold=threshold,
         window_minutes=5,
         cooldown_minutes=5,
@@ -651,7 +699,6 @@ async def test_rate_zero_restores_pure_absolute_counting():
     pool.fetch = AsyncMock(return_value=[])
     alerter = FailedRequestAlerter(
         pool=pool,
-        webhook_url="https://hooks.slack.test/abc",
         threshold=200,
         window_minutes=5,
         cooldown_minutes=5,

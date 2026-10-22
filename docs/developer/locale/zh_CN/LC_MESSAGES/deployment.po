@@ -772,12 +772,21 @@ msgstr "告警"
 
 #: ../developer/deployment.md:345
 msgid ""
-"The backend has an in-process alert engine that posts to a Slack webhook."
-" It is off unless you turn it on, with two settings under **Alerts** on "
-"the **Configuration** tab:"
+"The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In "
+"**Admin → Configuration → Alerts**, choose a **Notification channel** and enter "
+"its webhook URL. Only the selected channel's field is shown; saved URLs remain "
+"write-only. Choose **None** to turn off notifications."
 msgstr ""
-"后端内置了一个进程内的告警引擎，会把告警推送到 Slack webhook。它默认关闭，要用 **Configuration** 标签页 "
-"**Alerts** 分类下的两个设置项打开："
+"后端将告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Configuration → Alerts** "
+"中选择 **Notification channel**（通知渠道），并填入对应的 webhook URL。界面只显示所选渠道的配置字段；"
+"已保存的 URL 只可写入，不会回显。选择 **None** 可关闭通知。"
+
+#: ../developer/deployment.md:350
+msgid ""
+"The in-process engine is off unless you enable `ALERTS_ENABLED`. Its underlying "
+"configuration keys are:"
+msgstr ""
+"进程内告警引擎默认关闭，需要启用 `ALERTS_ENABLED` 才会运行。对应的底层配置键如下："
 
 #: ../developer/deployment.md
 msgid "Setting"
@@ -803,13 +812,71 @@ msgstr ""
 msgid "`https://hooks.slack.com/services/...`"
 msgstr ""
 
-#: ../developer/deployment.md:354
+#: ../developer/deployment.md
+msgid "optional dedicated Slack webhook"
+msgstr "可选的专用 Slack webhook"
+
+#: ../developer/deployment.md
+msgid "`SLACK_WEBHOOK_URL`"
+msgstr "`SLACK_WEBHOOK_URL`"
+
+#: ../developer/deployment.md
+msgid "Slack fallback; also enables the failed-request detector"
+msgstr "Slack 回退地址；同时启用失败请求检测器"
+
+#: ../developer/deployment.md
+msgid "`WECOM_ALERTS_WEBHOOK_URL`"
+msgstr "`WECOM_ALERTS_WEBHOOK_URL`"
+
+#: ../developer/deployment.md
+msgid "WeCom group webhook; also enables the failed-request detector"
+msgstr "企业微信群 webhook；同时启用失败请求检测器"
+
+#: ../developer/deployment.md:360
 msgid ""
 "If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
-"`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths."
+"`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths. The console "
+"preserves existing dedicated Slack settings and uses the fallback key for a "
+"new Slack configuration."
 msgstr ""
 "`SLACK_ALERTS_WEBHOOK_URL` 为空时会改用 `SLACK_WEBHOOK_URL`，所以两条代码路径可以共用一个 "
-"webhook。"
+"webhook。控制台会保留已有的专用 Slack 配置；首次配置 Slack 时使用回退配置键。"
+
+#: ../developer/deployment.md:364
+msgid ""
+"Slack and WeCom are mutually exclusive. Saving a channel switch clears the old "
+"channel in the same update. All webhook changes require a backend restart; "
+"until then, normal alerts continue using the previous channel. **Pending "
+"restart** identifies saved changes waiting to take effect."
+msgstr ""
+"Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。所有 webhook 变更都需要重启后端才能生效；"
+"在此之前，正常告警继续使用原来的渠道。**Pending restart** 表示变更已保存，等待重启后生效。"
+
+#: ../developer/deployment.md:369
+msgid ""
+"**Send test notification** sends a marked test using the URL currently entered, "
+"or the latest saved URL when no draft is entered. It works before a restart and "
+"does not save changes, enable alerting or change incident/cooldown state. The "
+"success message includes a test ID to check in the receiving group."
+msgstr ""
+"**Send test notification** 使用当前输入的 URL 发送一条带有测试标识的消息；没有输入草稿时，使用最新保存的 URL。"
+"重启前也可以测试，测试不会保存变更、启用告警，也不会改变告警事件或冷却状态。成功提示会包含测试 ID，可在接收群里核对。"
+
+#: ../developer/deployment.md:374
+msgid ""
+"A URL typed into the test field must be the selected platform's official HTTPS "
+"endpoint (`hooks.slack.com` / `hooks.slack-gov.com`, or "
+"`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so an admin "
+"session cannot make the server request an arbitrary address. A **saved** URL is "
+"not held to that host list: normal delivery already posts to it, so a "
+"Slack-compatible destination (Mattermost, Rocket.Chat, an egress proxy) tests "
+"normally. It must still be `https`. Discord, Telegram and arbitrary webhook "
+"formats are not supported by this selector."
+msgstr ""
+"在测试输入框中新填写的 URL 必须是所选平台的官方 HTTPS 端点（`hooks.slack.com` / "
+"`hooks.slack-gov.com`，或 `qyapi.weixin.qq.com/cgi-bin/webhook/send`）；这条限制是为了防止借管理员会话让服务器请求任意地址。"
+"**已保存**的 URL 不受这份域名列表限制：正常告警本来就会发送到它，因此兼容 Slack 的目标（Mattermost、Rocket.Chat、出口代理）"
+"也能正常测试，但仍必须是 `https`。此选择器不支持 Discord、Telegram 或任意自定义 webhook 格式。"
 
 #: ../developer/deployment.md:357
 msgid ""

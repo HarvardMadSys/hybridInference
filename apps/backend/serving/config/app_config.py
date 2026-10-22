@@ -344,6 +344,20 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
     return (entry.default if entry is not None else None), "default"
 
 
+def configured_value(key: str, default: str | None = None) -> str | None:
+    """Resolve the latest valid configured value for an admin preview.
+
+    Includes saved changes pending a restart. Runtime consumers must keep using
+    :func:`config_value`, which preserves the boot value until that restart.
+    The returned value may be a secret and must never be sent to the browser.
+    """
+    entry = _STATE.entries.get(key) or registry.static_entry(key) or registry.extension_entry(key)
+    value, _ = _in_force_raw(key, entry)
+    if entry is not None and _value_problem(entry, value):
+        return default
+    return value if value is not None else default
+
+
 def _configured(key: str) -> str:
     """Return the value currently configured for *key*, or ""."""
     return _in_force_raw(key, _STATE.entries.get(key))[0] or ""

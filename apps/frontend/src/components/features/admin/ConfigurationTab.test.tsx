@@ -19,6 +19,7 @@ vi.mock('@/lib/api/config', () => ({
   patchConfig: vi.fn(),
   markConfigSecret: vi.fn(),
   resetConfigKey: vi.fn(),
+  testAlertNotification: vi.fn(),
   restartBackend: vi.fn(),
   waitForBackendRestart: vi.fn(),
 }));
@@ -37,6 +38,7 @@ import {
   markConfigSecret,
   patchConfig,
   resetConfigKey,
+  testAlertNotification,
   restartBackend,
   waitForBackendRestart,
 } from '@/lib/api/config';
@@ -155,11 +157,475 @@ async function renderTab(config = makeConfig(), props: { initialMissingOnly?: bo
 }
 
 beforeEach(() => {
+  vi.mocked(testAlertNotification).mockResolvedValue({
+    channel: 'slack',
+    sent: true,
+    test_id: 'test-123',
+  });
   vi.mocked(patchConfig).mockImplementation(async () => makeConfig());
   vi.mocked(markConfigSecret).mockImplementation(async () => makeConfig());
   vi.mocked(resetConfigKey).mockImplementation(async () => makeConfig());
   vi.mocked(restartBackend).mockResolvedValue({ restarting: true, instance: 'old-process' });
   vi.mocked(waitForBackendRestart).mockResolvedValue('restarted');
+});
+
+const SLACK_WEBHOOK = 'https://hooks.slack.com/services/test/example/token';
+const WECOM_WEBHOOK = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-example';
+
+function alertConfig(setKeys: string[] = ['SLACK_ALERTS_WEBHOOK_URL']): ConfigResponse {
+  const base = makeConfig();
+  return {
+    ...base,
+    categories: [
+      ...base.categories,
+      { id: 'alerts', label: 'Alerts', description: 'Backend alerting.' },
+    ],
+    entries: [
+      ...base.entries,
+      ...['SLACK_ALERTS_WEBHOOK_URL', 'SLACK_WEBHOOK_URL', 'WECOM_ALERTS_WEBHOOK_URL'].map((key) =>
+        entry({
+          key,
+          category: 'alerts',
+          secret: true,
+          value: LEAKED_SECRET,
+          is_set: setKeys.includes(key),
+          restart_required: true,
+        }),
+      ),
+      entry({ key: 'ALERTS_ENABLED', category: 'alerts', type: 'bool', value: true }),
+    ],
+  };
+}
+
+function chooseAlertChannel(label: 'None' | 'Slack' | 'WeCom') {
+  fireEvent.click(screen.getByRole('combobox', { name: 'Notification channel' }));
+  fireEvent.click(screen.getByRole('option', { name: label }));
+}
+
+describe('alert notification channel', () => {
+  it('infers Slack and shows only its friendly, write-only webhook field', async () => {
+    await renderTab(alertConfig());
+    const alerts = within(section('Alerts'));
+    expect(alerts.getByRole('combobox', { name: 'Notification channel' })).toHaveTextContent(
+      'Slack',
+    );
+    expect(alerts.getByLabelText('Slack webhook URL')).toHaveTextContent('Set');
+    expect(alerts.queryByLabelText('WeCom webhook URL')).not.toBeInTheDocument();
+    expect(alerts.queryByText('SLACK_WEBHOOK_URL')).not.toBeInTheDocument();
+    expect(alerts.queryByText('WECOM_ALERTS_WEBHOOK_URL')).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('switches Slack to WeCom with one write clearing both Slack sources', async () => {
+    await renderTab(alertConfig(['SLACK_ALERTS_WEBHOOK_URL', 'SLACK_WEBHOOK_URL']));
+    chooseAlertChannel('WeCom');
+    expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
+      target: { value: WECOM_WEBHOOK },
+    });
+    vi.mocked(patchConfig).mockResolvedValueOnce(alertConfig(['WECOM_ALERTS_WEBHOOK_URL']));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_ALERTS_WEBHOOK_URL: '',
+          SLACK_WEBHOOK_URL: '',
+          WECOM_ALERTS_WEBHOOK_URL: WECOM_WEBHOOK,
+        },
+      }),
+    );
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByLabelText('WeCom webhook URL')).toHaveTextContent('Set'),
+    );
+    expect(screen.queryByDisplayValue(WECOM_WEBHOOK)).not.toBeInTheDocument();
+  });
+
+  it('does not clear the current channel when the chosen replacement is empty', async () => {
+    await renderTab(alertConfig());
+    chooseAlertChannel('WeCom');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(screen.getByText('Enter a webhook URL before saving this channel.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send test notification' })).toBeDisabled();
+  });
+
+  it('keeps an unsaved webhook replacement when the current channel is reselected', async () => {
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    chooseAlertChannel('Slack');
+    expect(screen.getByLabelText('Slack webhook URL')).toHaveValue(SLACK_WEBHOOK);
+    expect(screen.getByRole('button', { name: 'Save Alerts' })).toBeEnabled();
+  });
+
+  it('keeps environment, invalid and lock notices in the compact webhook field', async () => {
+    const config = alertConfig();
+    config.entries = config.entries.map((item) =>
+      item.key === 'SLACK_ALERTS_WEBHOOK_URL'
+        ? {
+            ...item,
+            environment_ignored: true,
+            invalid: 'The saved webhook was rejected.',
+            locked: true,
+          }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(alerts.getByText(/The environment also sets this variable/)).toBeInTheDocument();
+    expect(alerts.getByText(/The stored value could not be applied/)).toBeInTheDocument();
+    expect(alerts.getByText(/cannot be changed once set/)).toBeInTheDocument();
+    expect(
+      alerts.queryByRole('button', { name: 'Replace Slack webhook URL' }),
+    ).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('switches WeCom to Slack atomically using the URL that also enables failed-request alerts', async () => {
+    await renderTab(alertConfig(['WECOM_ALERTS_WEBHOOK_URL']));
+    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('WeCom');
+    expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
+    chooseAlertChannel('Slack');
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_WEBHOOK_URL: SLACK_WEBHOOK,
+          WECOM_ALERTS_WEBHOOK_URL: '',
+        },
+      }),
+    );
+  });
+
+  it('turns notifications off by clearing every URL including the legacy fallback', async () => {
+    await renderTab(alertConfig(['SLACK_WEBHOOK_URL']));
+    chooseAlertChannel('None');
+    expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Send test notification' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_ALERTS_WEBHOOK_URL: '',
+          SLACK_WEBHOOK_URL: '',
+          WECOM_ALERTS_WEBHOOK_URL: '',
+        },
+      }),
+    );
+  });
+
+  it('keeps an existing legacy Slack URL on its original key when replacing it', async () => {
+    await renderTab(alertConfig(['SLACK_WEBHOOK_URL']));
+    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('Slack');
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_WEBHOOK_URL: SLACK_WEBHOOK,
+          WECOM_ALERTS_WEBHOOK_URL: '',
+        },
+      }),
+    );
+  });
+
+  it('discards hidden credential drafts when switching and restores saved selection on Discard', async () => {
+    await renderTab(alertConfig());
+    chooseAlertChannel('WeCom');
+    fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
+      target: { value: WECOM_WEBHOOK },
+    });
+    chooseAlertChannel('Slack');
+    chooseAlertChannel('WeCom');
+    expect(screen.getByLabelText('WeCom webhook URL')).toHaveValue('');
+    fireEvent.click(within(section('Alerts')).getByRole('button', { name: 'Discard' }));
+    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('Slack');
+    expect(screen.getByLabelText('Slack webhook URL')).toHaveTextContent('Set');
+    expect(screen.queryByRole('button', { name: 'Save Alerts' })).not.toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('preserves channel drafts through filtering and saves hidden category changes together', async () => {
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('switch', { name: 'ALERTS_ENABLED' }));
+    chooseAlertChannel('WeCom');
+    fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
+      target: { value: WECOM_WEBHOOK },
+    });
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'webhook' } });
+    expect(screen.queryByRole('switch', { name: 'ALERTS_ENABLED' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          ALERTS_ENABLED: false,
+          SLACK_ALERTS_WEBHOOK_URL: '',
+          SLACK_WEBHOOK_URL: '',
+          WECOM_ALERTS_WEBHOOK_URL: WECOM_WEBHOOK,
+        },
+      }),
+    );
+  });
+
+  it('keeps generic fields for an older backend without WeCom support', async () => {
+    const config = alertConfig();
+    config.entries = config.entries.filter((item) => item.key !== 'WECOM_ALERTS_WEBHOOK_URL');
+    await renderTab(config);
+    expect(screen.queryByLabelText('Notification channel')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('SLACK_ALERTS_WEBHOOK_URL')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Send test notification' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('starts unconfigured with None and no webhook editor', async () => {
+    await renderTab(alertConfig([]));
+    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('None');
+    expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('WeCom webhook URL')).not.toBeInTheDocument();
+  });
+
+  it('configures fresh Slack through the shared URL used by the engine and failed-request detector', async () => {
+    await renderTab(alertConfig([]));
+    chooseAlertChannel('Slack');
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    vi.mocked(patchConfig).mockResolvedValueOnce(alertConfig(['SLACK_WEBHOOK_URL']));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_WEBHOOK_URL: SLACK_WEBHOOK,
+          WECOM_ALERTS_WEBHOOK_URL: '',
+        },
+      }),
+    );
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Slack webhook URL')).toHaveTextContent('Set'),
+    );
+    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('Slack');
+  });
+
+  it('tests a saved URL pending restart without fetching or returning the secret', async () => {
+    const config = alertConfig(['WECOM_ALERTS_WEBHOOK_URL']);
+    config.entries = config.entries.map((item) =>
+      item.key === 'WECOM_ALERTS_WEBHOOK_URL' ? { ...item, pending_restart: true } : item,
+    );
+    config.pending_restart = ['WECOM_ALERTS_WEBHOOK_URL'];
+    vi.mocked(testAlertNotification).mockResolvedValueOnce({
+      channel: 'wecom',
+      sent: true,
+      test_id: 'test-wecom',
+    });
+    await renderTab(config);
+    expect(within(section('Alerts')).getAllByText('Pending restart').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    await waitFor(() => expect(testAlertNotification).toHaveBeenCalledWith({ channel: 'wecom' }));
+    expect(
+      await screen.findByText('Test sent. Check your WeCom channel for test-wecom.'),
+    ).toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('tests an unsaved replacement and removes the success result when it changes', async () => {
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    await waitFor(() =>
+      expect(testAlertNotification).toHaveBeenCalledWith({
+        channel: 'slack',
+        webhook_url: SLACK_WEBHOOK,
+      }),
+    );
+    await screen.findByText('Test sent. Check your Slack channel for test-123.');
+    expect(patchConfig).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: `${SLACK_WEBHOOK}-new` },
+    });
+    expect(screen.queryByText(/Test sent/)).not.toBeInTheDocument();
+  });
+
+  it('prevents channel changes, saving and repeat sends during a test', async () => {
+    let finish!: (value: { channel: 'slack'; sent: true; test_id: string }) => void;
+    vi.mocked(testAlertNotification).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: SLACK_WEBHOOK },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(screen.getByLabelText('Notification channel')).toBeDisabled();
+    expect(screen.getByLabelText('Slack webhook URL')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save Alerts' })).toBeDisabled();
+    expect(within(section('Alerts')).getByRole('button', { name: 'Discard' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Sending test…' }));
+    expect(testAlertNotification).toHaveBeenCalledTimes(1);
+    finish({ channel: 'slack', sent: true, test_id: 'test-123' });
+    await screen.findByText('Test sent. Check your Slack channel for test-123.');
+  });
+
+  it('uses the same trimmed webhook URL when testing and saving a replacement', async () => {
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
+    fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
+      target: { value: `  ${SLACK_WEBHOOK}  ` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    await screen.findByText('Test sent. Check your Slack channel for test-123.');
+    expect(testAlertNotification).toHaveBeenCalledWith({
+      channel: 'slack',
+      webhook_url: SLACK_WEBHOOK,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          SLACK_ALERTS_WEBHOOK_URL: SLACK_WEBHOOK,
+          WECOM_ALERTS_WEBHOOK_URL: '',
+        },
+      }),
+    );
+  });
+
+  it('explains test rate limiting without echoing the backend response', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('RATE_LIMIT_EXCEEDED', LEAKED_SECRET, 429),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(
+      await screen.findByText(
+        'Test notifications are temporarily limited. Wait a few seconds and try again.',
+      ),
+    ).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('shows a safe failure without echoing a rejected secret', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('DELIVERY_FAILED', `Failed: ${LEAKED_SECRET}`, 502),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(
+      await screen.findByText('The test could not be sent. Check the webhook URL and try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Test sent/)).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('tells the administrator to retry a 503 instead of blaming the webhook', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('HTTP_503', 'Could not read the saved webhook; retry the test', 503),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(
+      await screen.findByText(
+        'The saved webhook could not be read. This is a backend problem, not the address; try again in a moment.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Check the webhook URL/)).not.toBeInTheDocument();
+  });
+
+  it('repeats the backend reason for a rejected draft address without echoing it', async () => {
+    vi.mocked(testAlertNotification).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'Enter a valid WeCom incoming webhook URL', 400),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    expect(await screen.findByText('Enter a valid WeCom incoming webhook URL')).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+
+  it('offers Reset for a channel an earlier save turned off, and calls DELETE', async () => {
+    // Slack is None now, but both Slack rows still hold the empty value that a
+    // previous "None" save wrote, and that value hides SLACK_WEBHOOK_URL in .env.
+    const config = alertConfig([]);
+    config.entries = config.entries.map((item) =>
+      item.key === 'SLACK_WEBHOOK_URL'
+        ? { ...item, is_set: false, value: null, updated_at: STORED_AT }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(alerts.getByText(/empty stored value also hides any webhook/)).toBeInTheDocument();
+
+    fireEvent.click(alerts.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset SLACK_WEBHOOK_URL?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledWith('SLACK_WEBHOOK_URL'));
+  });
+
+  it('does not offer Reset for a channel that never had a stored row', async () => {
+    // No row at all: the value comes from the environment or the default, so
+    // there is nothing to remove. Only a database row earns a Reset.
+    const config = alertConfig();
+    config.entries = config.entries.map((item) =>
+      item.key === 'WECOM_ALERTS_WEBHOOK_URL'
+        ? { ...item, is_set: false, value: null, source: 'default', updated_at: null }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(alerts.queryByRole('button', { name: 'Reset WECOM_ALERTS_WEBHOOK_URL' })).toBeNull();
+  });
+
+  it('offers Reset for the rows a saved None left empty', async () => {
+    // What the backend returns after "None" was saved: the rows exist but are
+    // empty, which is the state that hides the environment.
+    const config = alertConfig([]);
+    config.entries = config.entries.map((item) =>
+      ['SLACK_ALERTS_WEBHOOK_URL', 'SLACK_WEBHOOK_URL', 'WECOM_ALERTS_WEBHOOK_URL'].includes(
+        item.key,
+      )
+        ? { ...item, is_set: false, value: null, updated_at: STORED_AT }
+        : item,
+    );
+    await renderTab(config);
+    const alerts = within(section('Alerts'));
+    expect(
+      alerts.getByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' }),
+    ).toBeInTheDocument();
+    expect(alerts.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' })).toBeInTheDocument();
+    expect(
+      alerts.getByRole('button', { name: 'Reset WECOM_ALERTS_WEBHOOK_URL' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(alerts.getByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledWith('SLACK_ALERTS_WEBHOOK_URL'));
+  });
+
+  it('does not offer Reset before the save that empties a channel', async () => {
+    await renderTab(alertConfig(['SLACK_ALERTS_WEBHOOK_URL']));
+    chooseAlertChannel('None');
+    const alerts = within(section('Alerts'));
+    expect(alerts.queryByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' })).toBeNull();
+  });
 });
 
 afterEach(() => {

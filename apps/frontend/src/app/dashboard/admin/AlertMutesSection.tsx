@@ -157,7 +157,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
           )}
         </div>
         <p className="mt-1 text-[12px] text-gray-500">
-          Mute one kind of Slack alert without silencing the rest. A muted type sends nothing, and
+          Mute one kind of backend alert without silencing the rest. A muted type sends nothing, and
           an incident that opens while it is muted also closes without a recovery message. An
           incident that was already posted still gets its recovery.
         </p>
