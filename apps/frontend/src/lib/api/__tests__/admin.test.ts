@@ -830,6 +830,12 @@ describe('provider route client', () => {
         prompt: '0.14',
         completion: '0.28',
       },
+      capabilities: {
+        context_length: 131072,
+        max_output_length: 65536,
+        input_modalities: ['text', 'image'],
+        supports_tools: true,
+      },
     });
 
     expect(out.model_id).toBe('deepseek-v4-flash');
@@ -854,6 +860,12 @@ describe('provider route client', () => {
       pricing: {
         prompt: '0.14',
         completion: '0.28',
+      },
+      capabilities: {
+        context_length: 131072,
+        max_output_length: 65536,
+        input_modalities: ['text', 'image'],
+        supports_tools: true,
       },
     });
   });
@@ -884,6 +896,12 @@ describe('provider route client', () => {
         prompt: '0.14',
         completion: '0.28',
       },
+      capabilities: {
+        context_length: 131072,
+        max_output_length: 65536,
+        input_modalities: ['text', 'image'],
+        supports_tools: true,
+      },
     });
 
     expect(out.ok).toBe(true);
@@ -907,6 +925,12 @@ describe('provider route client', () => {
       pricing: {
         prompt: '0.14',
         completion: '0.28',
+      },
+      capabilities: {
+        context_length: 131072,
+        max_output_length: 65536,
+        input_modalities: ['text', 'image'],
+        supports_tools: true,
       },
     });
   });

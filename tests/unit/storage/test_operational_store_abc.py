@@ -92,6 +92,7 @@ def test_provider_route_candidate_signatures():
         "concurrency_limit",
         "weight",
         "pricing",
+        "capabilities",
         "updated_by",
         "deployment_type",
     ]

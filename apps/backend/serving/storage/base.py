@@ -1316,10 +1316,17 @@ class OperationalStore(ABC):
         concurrency_limit: int | None,
         weight: float,
         pricing: dict[str, str] | None,
+        capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
     ) -> None:
-        """Upsert a DB-backed runtime provider route candidate."""
+        """Upsert a DB-backed runtime provider route candidate.
+
+        ``capabilities`` holds a runtime model's declared context window, output
+        cap, input modalities and tool support. None declares nothing: a new
+        row stores NULL and an existing row keeps what it has, so a stored
+        declaration is never cleared by a write that did not carry one.
+        """
 
     @abstractmethod
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:

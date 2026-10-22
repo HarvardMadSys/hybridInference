@@ -319,6 +319,7 @@ async def test_admin_model_candidate_and_update_paths_use_registered_factory(mon
         None,
         model_id="new-model",
         pricing={"prompt": "0", "completion": "0"},
+        capabilities=None,
         strategy="fixed",
         **candidate_args,
     )

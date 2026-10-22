@@ -46,6 +46,7 @@ async def test_route_deployment_type_round_trip_and_legacy_defaults():
             1.0,
             None,
             None,
+            None,
             deployment_type="provider_api",
         )
         # A new store instance reads persisted declarations through both list APIs.
@@ -96,6 +97,7 @@ async def test_route_deployment_type_round_trip_and_legacy_defaults():
             None,
             None,
             1.0,
+            None,
             None,
             None,
         )

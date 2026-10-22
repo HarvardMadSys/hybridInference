@@ -5,7 +5,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from serving.config.settings import ROUTE_TYPE_ORDER
 
@@ -1653,6 +1661,47 @@ class CreateProviderRouteRequest(BaseModel):
     weight: float = Field(1.0, gt=0)
 
 
+# Image is the only non-text input the console offers for a runtime model.
+RUNTIME_MODEL_INPUT_MODALITIES = ("text", "image")
+# The largest window a model ships with today (10M tokens). A larger value is a
+# typo, and an unbounded one could exceed what JSON clients read exactly.
+RUNTIME_MODEL_MAX_TOKENS = 10_000_000
+
+
+class RuntimeModelCapabilities(BaseModel):
+    """What a runtime model accepts, stated by the admin who creates it.
+
+    Each value changes what a request does: tool definitions reach the upstream
+    only when ``supports_tools`` is set, ``max_tokens`` is clamped to
+    ``max_output_length``, image blocks reach the upstream only on a route
+    that lists ``image``, and Auto and the context-overflow fallback both read
+    ``context_length``. ``ModelConfig``'s defaults for them (an 8,192-token
+    window, 4,096 output tokens, text only, no tools) are not facts about any
+    upstream, so none of them may stand in for a value nobody declared.
+    """
+
+    # Strict, so ``true`` or ``"131072"`` is rejected instead of read as 1 or a number.
+    context_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
+    max_output_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
+    input_modalities: list[Literal["text", "image"]] = Field(..., min_length=1)
+    supports_tools: StrictBool
+
+    @field_validator("input_modalities")
+    @classmethod
+    def validate_input_modalities(cls, value: list[str]) -> list[str]:
+        """Require text and store each modality once, in a fixed order."""
+        if "text" not in value:
+            raise ValueError("input_modalities must include text")
+        return [modality for modality in RUNTIME_MODEL_INPUT_MODALITIES if modality in value]
+
+    @model_validator(mode="after")
+    def validate_output_fits_context(self) -> "RuntimeModelCapabilities":
+        """Reject an output cap the context window could never hold."""
+        if self.max_output_length > self.context_length:
+            raise ValueError("max_output_length must not exceed context_length")
+        return self
+
+
 class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     """Request payload for creating a runtime model with its first provider route."""
 
@@ -1660,6 +1709,7 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     strategy: Literal["fixed", "routewise"] = "fixed"
     required_role: Literal["free", "pro", "internal", "admin"] = "admin"
     pricing: dict[str, str] = Field(..., min_length=1)
+    capabilities: RuntimeModelCapabilities
 
     @field_validator("model_id")
     @classmethod

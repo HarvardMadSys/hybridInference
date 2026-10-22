@@ -1019,6 +1019,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 concurrency_limit INTEGER,
                 weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
                 pricing JSONB,
+                capabilities JSONB,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT,
@@ -1040,6 +1041,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 (
                     "pricing",
                     "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB",
+                ),
+                (
+                    "capabilities",
+                    "ALTER TABLE provider_route_candidates "
+                    "ADD COLUMN IF NOT EXISTS capabilities JSONB",
                 ),
                 (
                     "deployment_type",
@@ -3710,8 +3716,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
-                "updated_at, updated_by, deployment_type "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
+                "created_at, updated_at, updated_by, deployment_type "
                 "FROM provider_route_candidates WHERE model_id = $1 ORDER BY route_id",
                 model_id,
             )
@@ -3722,8 +3728,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
-                "updated_at, updated_by, deployment_type "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
+                "created_at, updated_at, updated_by, deployment_type "
                 "FROM provider_route_candidates ORDER BY model_id, route_id"
             )
         return [dict(r) for r in rows]
@@ -3742,6 +3748,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         concurrency_limit: int | None,
         weight: float,
         pricing: dict[str, str] | None,
+        capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
     ) -> None:
@@ -3750,9 +3757,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await conn.execute(
                 "INSERT INTO provider_route_candidates "
                 "(model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
-                "updated_at, updated_by, deployment_type) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW(), NOW(), $13, $14) "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
+                "created_at, updated_at, updated_by, deployment_type) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, "
+                "NOW(), NOW(), $14, $15) "
                 "ON CONFLICT (model_id, route_id) DO UPDATE SET "
                 "route_type = EXCLUDED.route_type, "
                 "provider = EXCLUDED.provider, "
@@ -3764,6 +3772,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "concurrency_limit = EXCLUDED.concurrency_limit, "
                 "weight = EXCLUDED.weight, "
                 "pricing = EXCLUDED.pricing, "
+                # A write without a declaration (a route that restored without
+                # one, or a concurrency edit on it) keeps whatever is stored, so
+                # a declaration is never replaced by NULL and then by defaults.
+                "capabilities = COALESCE(EXCLUDED.capabilities, "
+                "provider_route_candidates.capabilities), "
                 "updated_at = NOW(), "
                 "updated_by = EXCLUDED.updated_by, "
                 "deployment_type = EXCLUDED.deployment_type",
@@ -3779,6 +3792,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 concurrency_limit,
                 weight,
                 json.dumps(pricing) if pricing is not None else None,
+                json.dumps(capabilities) if capabilities is not None else None,
                 updated_by,
                 deployment_type,
             )

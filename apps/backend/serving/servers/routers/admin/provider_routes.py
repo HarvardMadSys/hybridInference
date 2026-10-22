@@ -43,6 +43,7 @@ from serving.schemas_admin import (
     ProviderRouteApiKeyRef,
     ProviderRouteItem,
     ProviderRouteOption,
+    RuntimeModelCapabilities,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
     UpdateProviderRouteStrategyRequest,
@@ -1871,6 +1872,69 @@ def _normalize_runtime_model_pricing(raw: Any) -> dict[str, str]:
     return pricing
 
 
+# route_metadata flag on a runtime route whose context window, output cap, input
+# modalities and tool support were declared when its model was created. A
+# runtime model created before they could be declared has no flag: it keeps
+# ModelConfig's defaults and its rows keep NULL, so a default is never written
+# back as if somebody had declared it.
+_DECLARED_CAPABILITIES = "declared_capabilities"
+
+
+def _normalize_runtime_model_capabilities(raw: Any) -> dict[str, Any] | None:
+    """Return a runtime model's declared capabilities, or None if none were declared."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("runtime model capabilities must be a JSON object") from exc
+    return RuntimeModelCapabilities.model_validate(raw).model_dump()
+
+
+def _declared_capabilities(adapter) -> dict[str, Any] | None:
+    """Return the capabilities a runtime route persists, or None if it declared none."""
+    config = adapter.config
+    route_metadata = getattr(config, "route_metadata", None)
+    if (
+        not isinstance(route_metadata, dict)
+        or route_metadata.get(_DECLARED_CAPABILITIES) is not True
+    ):
+        return None
+    return {
+        "context_length": int(config.context_length),
+        "max_output_length": int(config.max_output_length),
+        "input_modalities": list(config.input_modalities),
+        "supports_tools": bool(config.supports_tools),
+    }
+
+
+def _stored_capabilities(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the capabilities a stored runtime route declared, or None to restore without.
+
+    A stored value that no longer validates (edited by hand, or written by a
+    build that allowed more) restores the route as undeclared rather than
+    dropping it, and is left in place: the store never overwrites a stored
+    declaration with NULL, so nobody's value is replaced by a default.
+    """
+    try:
+        return _normalize_runtime_model_capabilities(row.get("capabilities"))
+    except ValueError as exc:
+        logger.warning(
+            "Ignoring invalid stored capabilities for model=%s route_id=%s; "
+            "restoring the route without them: %s",
+            row.get("model_id"),
+            row.get("route_id"),
+            exc,
+        )
+        return None
+
+
+def _jsonb_value(raw: Any) -> Any:
+    """Decode a JSONB column read back without a codec, which asyncpg returns as text."""
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
 def _candidate_restore_sort_key(row: dict[str, Any]) -> tuple[str, bool, str]:
     try:
         _normalize_runtime_model_pricing(row.get("pricing"))
@@ -1981,6 +2045,8 @@ async def _prepare_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     route_id: str | None = None,
+    stored_capabilities: dict[str, Any] | None = None,
+    restoring: bool = False,
     deployment_type: str = "auto",
 ) -> PreparedRouteCandidate:
     route = _validate_canonical_route(services, model_id)
@@ -2064,6 +2130,27 @@ async def _prepare_route_candidate(
             },
         }
     )
+    if restoring:
+        # A restored route is what its own row says. Each route keeps its own
+        # values because routes of one model can differ (a narrower mirror, a
+        # smaller hosted window), so a row that declared them gets them back
+        # whatever the first route holds. A row that declared none keeps the
+        # first route's values, as before capabilities were stored, but not the
+        # flag: nothing was declared for it, so nothing is written for it.
+        if stored_capabilities is not None:
+            cfg.update(stored_capabilities)
+            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
+    else:
+        # A route added through the API copies the first route's capability
+        # values along with the rest of its config, so it also carries the flag
+        # saying they were declared. Without it the route's row would store
+        # NULL and restore without them.
+        template_metadata = getattr(template_adapter.config, "route_metadata", None)
+        if (
+            isinstance(template_metadata, dict)
+            and template_metadata.get(_DECLARED_CAPABILITIES) is True
+        ):
+            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
     _apply_target_adapter_defaults(cfg, target)
     await _apply_openrouter_endpoint_pricing(
         cfg,
@@ -2119,6 +2206,7 @@ async def _prepare_model_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     pricing: dict[str, str] | str | None,
+    capabilities: dict[str, Any] | str | None,
     strategy: str,
     route_id: str | None = None,
     deployment_type: str = "auto",
@@ -2156,6 +2244,7 @@ async def _prepare_model_route_candidate(
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
     raw_weight = _validate_positive_weight(weight)
     normalized_pricing = _normalize_runtime_model_pricing(pricing)
+    declared_capabilities = _normalize_runtime_model_capabilities(capabilities)
 
     provider_for_cfg = _model_config_provider_for_target(target)
     candidate_route_id = _runtime_route_id_for_target(
@@ -2198,6 +2287,9 @@ async def _prepare_model_route_candidate(
             "runtime_candidate": True,
         },
     }
+    if declared_capabilities is not None:
+        cfg.update(declared_capabilities)
+        cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
     _apply_target_adapter_defaults(cfg, target)
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
@@ -2767,6 +2859,7 @@ async def _prepare_model_candidate_from_payload(
         weight=payload.weight,
         deployment_type=payload.deployment_type,
         pricing=payload.pricing,
+        capabilities=payload.capabilities.model_dump(),
         strategy=payload.strategy,
         route_id=route_id,
     )
@@ -3243,6 +3336,8 @@ async def _restore_provider_route_candidate_snapshot(
     snapshot: dict[str, Any],
 ) -> None:
     """Restore the semantic contents of one runtime candidate row."""
+    # The snapshot is a row as read back, so its JSONB columns are JSON text;
+    # passed through as-is, the store would encode them a second time.
     await op_store.upsert_provider_route_candidate(
         model_id,
         route_id,
@@ -3255,7 +3350,8 @@ async def _restore_provider_route_candidate_snapshot(
         snapshot.get("quota_limit"),
         snapshot.get("concurrency_limit"),
         float(snapshot["weight"]),
-        snapshot.get("pricing"),
+        _jsonb_value(snapshot.get("pricing")),
+        _jsonb_value(snapshot.get("capabilities")),
         snapshot.get("updated_by"),
         deployment_type=snapshot.get("deployment_type") or "auto",
     )
@@ -3475,6 +3571,7 @@ async def create_provider_route_model(
             candidate.concurrency_limit,
             candidate.weight,
             candidate.adapter.config.pricing,
+            _declared_capabilities(candidate.adapter),
             admin_id,
             deployment_type=candidate.adapter.config.deployment_type,
         )
@@ -3528,6 +3625,7 @@ async def create_provider_route_model(
                 "quota_limit": candidate.quota_limit,
                 "concurrency_limit": candidate.concurrency_limit,
                 "weight": candidate.weight,
+                "capabilities": _declared_capabilities(candidate.adapter),
                 "deployment_type": candidate.adapter.config.deployment_type,
             },
         )
@@ -3723,6 +3821,7 @@ async def create_provider_route_candidate(
                         if _is_runtime_created_route(candidate.route)
                         else None
                     ),
+                    _declared_capabilities(candidate.adapter),
                     admin_id,
                     deployment_type=candidate.adapter.config.deployment_type,
                 )
@@ -3849,6 +3948,7 @@ async def update_provider_route_candidate(
                 limit,
                 float(raw_weight),
                 adapter.config.pricing if _is_runtime_created_route(route) else None,
+                _declared_capabilities(adapter),
                 admin_id,
                 deployment_type=adapter.config.deployment_type,
             )
@@ -4445,6 +4545,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     weight=float(row["weight"]),
                     deployment_type=row.get("deployment_type") or "auto",
                     pricing=row.get("pricing"),
+                    capabilities=_stored_capabilities(row),
                     strategy=strategy_overrides.get(model_id, "fixed"),
                 )
                 _install_provider_route_model(
@@ -4492,6 +4593,8 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
+                    stored_capabilities=_stored_capabilities(row),
+                    restoring=True,
                     deployment_type=row.get("deployment_type") or "auto",
                 )
                 _install_route_candidate(services, candidate)

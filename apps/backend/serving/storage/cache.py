@@ -1188,6 +1188,7 @@ class CachedOperationalStore(OperationalStore):
         concurrency_limit: int | None,
         weight: float,
         pricing: dict[str, str] | None,
+        capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
     ) -> None:
@@ -1205,6 +1206,7 @@ class CachedOperationalStore(OperationalStore):
             concurrency_limit,
             weight,
             pricing,
+            capabilities,
             updated_by,
             deployment_type=deployment_type,
         )
