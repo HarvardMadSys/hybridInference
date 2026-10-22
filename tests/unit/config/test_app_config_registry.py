@@ -102,7 +102,9 @@ def test_flags_the_spec_names() -> None:
     for key in (
         "ENABLE_ROUTEWISE",
         "ALERTS_ENABLED",
+        "SLACK_ALERTS_WEBHOOK_URL",
         "SLACK_WEBHOOK_URL",
+        "WECOM_ALERTS_WEBHOOK_URL",
         "FAILED_REQUEST_ALERT_THRESHOLD",
         "DB_STORE_FULL_CONTENT",
         "ERASURE_FENCE_SECRET",
@@ -174,6 +176,7 @@ def test_settings_init_names_follow_each_field_declaration() -> None:
     # alias= takes only the alias; AliasChoices takes its canonical spelling.
     assert registry.settings_init_name("alerts_enabled") == "ALERTS_ENABLED"
     assert registry.settings_init_name("slack_alerts_webhook_url") == "SLACK_ALERTS_WEBHOOK_URL"
+    assert registry.settings_init_name("wecom_alerts_webhook_url") == "WECOM_ALERTS_WEBHOOK_URL"
     assert registry.settings_init_name("trust_proxy_headers") == "TRUST_PROXY_HEADERS"
     assert registry.settings_init_name("smtp_port") == "smtp_port"
     # Settings ignores an unknown keyword, so each name must demonstrably land.
@@ -187,6 +190,19 @@ def test_settings_init_names_follow_each_field_declaration() -> None:
         kwargs[registry.settings_init_name(entry.field)] = _distinct_value(entry)
         default = Settings.model_fields[entry.field].get_default(call_default_factory=True)
         assert getattr(Settings(**kwargs), entry.field) != default, entry.key
+
+
+def test_wecom_alerts_webhook_is_a_secret_alert_setting() -> None:
+    entry = registry.static_entry("WECOM_ALERTS_WEBHOOK_URL")
+
+    assert entry is not None
+    assert entry.field == "wecom_alerts_webhook_url"
+    assert entry.category == "alerts"
+    assert entry.type == "str"
+    assert entry.secret is True
+    # The DB failed-request detector is registered once at startup, so a live
+    # change would look configured while no detector used it.
+    assert entry.restart_required is True
 
 
 def test_runtime_and_environment_only_names() -> None:

@@ -940,16 +940,20 @@ async def initialize() -> AppServices:
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
 
-                            # Failed-request Slack alerter (no-op if
-                            # SLACK_WEBHOOK_URL is unset).
+                            # Failed-request alerter (no-op unless
+                            # SLACK_WEBHOOK_URL or WECOM_ALERTS_WEBHOOK_URL
+                            # is set).
                             from serving.admin.failed_request_alerter import (
                                 register_alerter_job,
                             )
 
                             register_alerter_job(db_logger.pool, settings)
-                        elif settings.slack_webhook_url.strip():
+                        elif (
+                            settings.slack_webhook_url.strip()
+                            or settings.wecom_alerts_webhook_url.strip()
+                        ):
                             logger.warning(
-                                "Slack alerter not registered: APScheduler did not start"
+                                "Failed-request alerter not registered: APScheduler did not start"
                             )
 
                         # Roll up the hours of the last 30 days that

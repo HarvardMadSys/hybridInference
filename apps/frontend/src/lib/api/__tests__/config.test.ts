@@ -8,6 +8,7 @@ import {
   patchConfig,
   resetConfigKey,
   restartBackend,
+  testAlertNotification,
   waitForBackendRestart,
   type ConfigEntry,
   type ConfigResponse,
@@ -54,6 +55,37 @@ afterEach(() => {
 });
 
 describe('configuration client', () => {
+  it('tests the selected saved alert channel with an authenticated POST and no secret', async () => {
+    const result = { channel: 'wecom', sent: true, test_id: 'test-123' };
+    fetchMock.mockResolvedValueOnce(json(result));
+
+    await expect(testAlertNotification({ channel: 'wecom' })).resolves.toEqual(result);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/admin\/alerts\/test$/);
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({ channel: 'wecom' });
+  });
+
+  it('tests an explicit draft webhook without writing configuration', async () => {
+    fetchMock.mockResolvedValueOnce(json({ channel: 'slack', sent: true, test_id: 'test-456' }));
+    const request = {
+      channel: 'slack' as const,
+      webhook_url: 'https://hooks.slack.com/services/test/example/token',
+    };
+    await testAlertNotification(request);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual(request);
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/admin\/alerts\/test$/);
+  });
+
+  it('rejects test delivery failures', async () => {
+    fetchMock.mockResolvedValueOnce(json({ detail: 'Test notification delivery failed.' }, 502));
+    await expect(testAlertNotification({ channel: 'slack' })).rejects.toThrow(
+      'Test notification delivery failed.',
+    );
+  });
+
   it('reads GET /admin/config with the session', async () => {
     fetchMock.mockResolvedValueOnce(json(EMPTY));
 

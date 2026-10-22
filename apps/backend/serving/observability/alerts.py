@@ -1,7 +1,10 @@
-"""Single-sink Slack alerting helper used by all alert paths.
+"""Alert delivery to the configured Slack or WeCom webhook.
 
-Reuses the post-to-webhook pattern previously embedded in
-serving/admin/failed_request_alerter.py.
+Every backend alert passes through :func:`alert_slack`, which keeps the dedupe,
+cooldown, snooze and recovery-ordering logic in one place. The channels
+themselves sit behind :class:`AlertSink`: the configured webhook selects the
+sink, and the message is rendered for its markup so Slack keeps its existing
+mrkdwn and WeCom gets its own.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
@@ -27,12 +30,13 @@ if TYPE_CHECKING:
 
 
 from serving.config.app_config import config_value
+from serving.config.settings import get_settings
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import posting_to, scrub
+from serving.utils.secret_urls import UrlRedaction, posting_to
 
 log = logging.getLogger(__name__)
 
@@ -61,10 +65,13 @@ _ANNOUNCED: set[str] = set()
 _MUTED_UNANNOUNCED: set[str] = set()
 
 #: Failed webhook deliveries since process start, keyed by HTTP status as a
-#: string (or ``"exception"`` for a transport error). Delivery health cannot be
-#: alerted on over the transport that is failing, so this is deliberately just a
-#: counter: the independent control-plane path can read it, and nothing here
-#: turns it into a Slack alert that would have to survive the same broken sink.
+#: string (or ``"exception"`` for a transport error). WeCom also reports its
+#: application failures over a 2xx, keyed ``"errcode:<n>"``, with
+#: ``"invalid-errcode"`` and ``"invalid-response"`` for a body that cannot
+#: confirm delivery. Delivery health cannot be alerted on over the transport
+#: that is failing, so this is deliberately just a counter: the independent
+#: control-plane path can read it, and nothing here turns it into a Slack alert
+#: that would have to survive the same broken sink.
 _DELIVERY_FAILURES_TOTAL: dict[str, int] = defaultdict(int)
 
 #: How long a resolution waits for an in-flight send of the same key, and how
@@ -216,7 +223,11 @@ def reset_dedupe_state() -> None:
 
 
 def alert_delivery_failures_total() -> dict[str, int]:
-    """Failed webhook deliveries since process start, keyed by HTTP status.
+    """Failed webhook deliveries since process start, keyed by failure kind.
+
+    HTTP refusals use their status as the key and transport errors use
+    ``"exception"``. WeCom's 2xx application failures use ``"errcode:<n>"``,
+    ``"invalid-errcode"`` or ``"invalid-response"``.
 
     A revoked webhook is invisible from inside the alert path — every post is
     answered, just not with a 2xx — so the only honest signal of a dead sink is
@@ -253,6 +264,43 @@ def escape_slack_text(text: str) -> str:
     ``&`` is escaped first to avoid double-encoding the others.
     """
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def escape_wecom_text(text: str) -> str:
+    """Neutralise mention and link syntax in WeCom markdown.
+
+    WeCom renders ``<@userid>`` as a mention and ``[label](url)`` as a link,
+    so caller-controlled text must not retain either syntax. Full-width
+    variants are used rather than HTML entities because WeCom's markdown does
+    not promise entity decoding; they display as the same characters while
+    carrying no mention or link syntax.
+    """
+    return (
+        text.replace("<", "\uff1c")
+        .replace(">", "\uff1e")
+        .replace("[", "\uff3b")
+        .replace("]", "\uff3d")
+    )
+
+
+def _slack_bold(text: str) -> str:
+    """Wrap ``text`` in Slack mrkdwn bold."""
+    return f"*{text}*"
+
+
+def _slack_italic(text: str) -> str:
+    """Wrap ``text`` in Slack mrkdwn italics."""
+    return f"_{text}_"
+
+
+def _wecom_bold(text: str) -> str:
+    """Wrap ``text`` in WeCom markdown bold."""
+    return f"**{text}**"
+
+
+def _plain_text(text: str) -> str:
+    """Return ``text`` unchanged — WeCom has no italic marker here."""
+    return text
 
 
 #: Longest request id rendered into an alert. The value is whatever the client
@@ -299,20 +347,32 @@ def _format_message(
     title: str,
     context: dict[str, Any],
     status: Literal["firing", "resolved"] = "firing",
+    *,
+    bold: Callable[[str], str] = _slack_bold,
+    italic: Callable[[str], str] = _slack_italic,
+    escape: Callable[[str], str] = escape_slack_text,
 ) -> str:
+    """Render an alert as channel markdown.
+
+    The content and line order are shared by both sinks; only the markup and
+    escaping differ. Slack is the default so existing callers keep the exact
+    mrkdwn they produced before. ``bold`` wraps emphasis, ``italic`` styles the
+    timestamp line (identity for a channel without italics), and ``escape``
+    neutralises caller-controlled context values.
+    """
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()
     # Titles are written as breach statements ("Provider circuit opened"), so a
     # resolution rendered with the breach's own severity emoji is indis-
     # tinguishable from the outage. The webhook carries only this text, so the
     # recovery has to be said in it.
-    safe_title = escape_slack_text(title)
+    safe_title = escape(title)
     heading = (
-        f"{_EMOJI[severity]} *{safe_title}*"
+        f"{_EMOJI[severity]} {bold(safe_title)}"
         if status == "firing"
-        else f"✅ *Recovered:* {safe_title}"
+        else f"✅ {bold('Recovered:')} {safe_title}"
     )
-    lines = [heading, f"_{ts} · {info['environment']}_"]
+    lines = [heading, italic(f"{ts} · {info['environment']}")]
     if context:
         lines.append("")
         for k, v in context.items():
@@ -324,66 +384,289 @@ def _format_message(
             # escape is all it takes to let a scanner post ``<!channel>`` into the
             # alert channel. Doing it in the single place every alert passes
             # through means a new rule cannot reintroduce that.
-            lines.append(f"• *{label}:* {escape_slack_text(str(v))}")
+            lines.append(f"• {bold(f'{label}:')} {escape(str(v))}")
     lines.append("")
-    lines.append("*Server*")
+    lines.append(bold("Server"))
     host_line = f"{info['hostname']} ({info['ip']})" if info["ip"] else info["hostname"]
-    lines.append(f"• *Host:* {host_line}")
+    lines.append(f"• {bold('Host:')} {host_line}")
     if info["fqdn"] and info["fqdn"] != info["hostname"]:
-        lines.append(f"• *FQDN:* {info['fqdn']}")
+        lines.append(f"• {bold('FQDN:')} {info['fqdn']}")
     if info["platform"]:
-        lines.append(f"• *Platform:* {info['platform']}")
+        lines.append(f"• {bold('Platform:')} {info['platform']}")
     if info["base_url"]:
-        lines.append(f"• *Base URL:* {info['base_url']}")
+        lines.append(f"• {bold('Base URL:')} {info['base_url']}")
     return "\n".join(lines)
 
 
-async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
-    """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx.
+async def _post_json(
+    webhook_url: str,
+    payload: dict[str, Any],
+    *,
+    channel: str,
+    dedupe_key: str = "",
+    record_failure: bool = True,
+) -> tuple[httpx.Response | None, str, UrlRedaction]:
+    """POST ``payload`` to ``webhook_url`` and return ``(response, failure_key, redaction)``.
 
-    A non-2xx raises nothing, so this used to log only from the ``except``
-    branch and a webhook that had been revoked failed in complete silence: it
-    answered every post with 404, the caller saw a bare ``False``, and the sole
-    trace was httpx's INFO line for the request, which nobody greps. Two weeks
-    of alerts went that way. Any answer that is not a 2xx is therefore logged at
-    WARNING with the status and the alert it was carrying.
+    The shared half of the two senders: the request, the non-2xx check, the
+    transport-failure line and the failure counter. ``failure_key`` is ``""``
+    when the post got a 2xx, the status string for a refusal, and ``"exception"``
+    for a transport error — the same keys :data:`_DELIVERY_FAILURES_TOTAL` uses.
+    The response is returned so a channel that reports application failures over
+    a 2xx (WeCom's ``errcode``) can finish the decision itself, and the
+    ``redaction`` so it can name the sink without re-deriving the hash.
 
     ``webhook_url`` is deliberately never logged. It is a bearer credential —
     whoever holds it can post to the channel — and this line exists to be read
-    by people who do not need it. The same holds for the lines this function
-    does not write: ``httpx`` logs the full request URL at INFO for every call,
-    which put the credential into the container log a few hundred times a day,
-    so the post runs inside ``posting_to`` and every line about it — httpx's
-    own included — names the sink as ``scheme://host/#<fingerprint>`` instead.
+    by people who do not need it. The post runs inside :func:`posting_to` and
+    every line about it — httpx's own included — names the sink as
+    ``scheme://host/#<fingerprint>`` instead.
     """
-    with posting_to(webhook_url) as sink:
+    with posting_to(webhook_url) as redaction:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(webhook_url, json={"text": message})
-            if 200 <= resp.status_code < 300:
-                return True
-            _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
-            log.warning(
-                "slack webhook post rejected: status=%s alert=%s sink=%s",
-                resp.status_code,
-                dedupe_key or "-",
-                sink,
-            )
-            return False
+                resp = await client.post(webhook_url, json=payload)
         except Exception:
-            _DELIVERY_FAILURES_TOTAL["exception"] += 1
+            if record_failure:
+                _DELIVERY_FAILURES_TOTAL["exception"] += 1
             # Rendered and scrubbed here rather than handed to ``log.exception``:
             # a transport that words its error in terms of the request puts the
             # URL in the traceback, and the traceback is formatted inside the
             # handler, long after the last point at which the whole string is in
             # our hands.
             log.error(
-                "slack webhook post failed: alert=%s sink=%s\n%s",
+                "%s webhook post failed: alert=%s sink=%s\n%s",
+                channel,
                 dedupe_key or "-",
-                sink,
-                scrub(traceback.format_exc(), webhook_url),
+                redaction.display,
+                redaction.scrub(traceback.format_exc()),
             )
-            return False
+            return None, "exception", redaction
+        if 200 <= resp.status_code < 300:
+            return resp, "", redaction
+        failure_key = str(resp.status_code)
+        if record_failure:
+            _DELIVERY_FAILURES_TOTAL[failure_key] += 1
+        # A refusal raises nothing, so without this line a webhook that had been
+        # revoked failed in complete silence: it answered every post with 404,
+        # the caller saw a bare ``False``, and the sole trace was httpx's INFO
+        # line for the request, which nobody greps. Two weeks of alerts went
+        # that way.
+        log.warning(
+            "%s webhook post rejected: status=%s alert=%s sink=%s",
+            channel,
+            resp.status_code,
+            dedupe_key or "-",
+            redaction.display,
+        )
+        return resp, failure_key, redaction
+
+
+async def _post_to_slack(
+    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
+) -> bool:
+    """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx."""
+    _, failure_key, _ = await _post_json(
+        webhook_url,
+        {"text": message},
+        channel="slack",
+        dedupe_key=dedupe_key,
+        record_failure=record_failure,
+    )
+    return not failure_key
+
+
+#: WeCom caps ``markdown.content`` at 4096 bytes. A longer body is rejected
+#: outright, so the message is cut rather than the alert being lost.
+_WECOM_CONTENT_LIMIT_BYTES = 4096
+_WECOM_ELLIPSIS = "…"
+
+
+def _truncate_utf8(text: str, limit: int = _WECOM_CONTENT_LIMIT_BYTES) -> str:
+    """Return ``text`` cut to at most ``limit`` UTF-8 bytes.
+
+    An overlong value is cut on a character boundary and gets an ellipsis,
+    which is counted inside the limit so the result is still sendable. Decoding
+    with ``errors="ignore"`` drops only the partial character at the cut.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    budget = max(0, limit - len(_WECOM_ELLIPSIS.encode("utf-8")))
+    return encoded[:budget].decode("utf-8", errors="ignore") + _WECOM_ELLIPSIS
+
+
+async def _post_to_wecom(
+    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
+) -> bool:
+    """Post a WeCom group-bot markdown message. Returns True only on success.
+
+    WeCom answers transport failures and application failures differently: a
+    refused request is a non-2xx, while a rejected bot/key or a throttled robot
+    is a 2xx whose JSON ``errcode`` is non-zero. The request half is shared with
+    the Slack sender; only the body check below is WeCom's own.
+    """
+    payload = {"msgtype": "markdown", "markdown": {"content": _truncate_utf8(message)}}
+    resp, failure_key, redaction = await _post_json(
+        webhook_url,
+        payload,
+        channel="wecom",
+        dedupe_key=dedupe_key,
+        record_failure=record_failure,
+    )
+    if failure_key or resp is None:
+        return False
+    sink = redaction.display
+    try:
+        body = resp.json()
+    except Exception:
+        if record_failure:
+            _DELIVERY_FAILURES_TOTAL["invalid-response"] += 1
+        log.warning(
+            "wecom webhook post rejected: non-JSON response alert=%s sink=%s",
+            dedupe_key or "-",
+            sink,
+        )
+        return False
+    errcode = body.get("errcode") if isinstance(body, dict) else None
+    if isinstance(errcode, int) and not isinstance(errcode, bool):
+        if errcode == 0:
+            return True
+        failure_key = f"errcode:{errcode}"
+    else:
+        # Missing, null or non-integer: the response cannot confirm
+        # delivery, so it is a failure rather than a success.
+        failure_key = "invalid-errcode"
+    if record_failure:
+        _DELIVERY_FAILURES_TOTAL[failure_key] += 1
+    log.warning(
+        "wecom webhook post rejected: errcode=%s alert=%s sink=%s",
+        errcode,
+        dedupe_key or "-",
+        sink,
+    )
+    return False
+
+
+@runtime_checkable
+class AlertSink(Protocol):
+    """One outbound alert channel."""
+
+    name: str
+
+    def render(
+        self,
+        severity: AlertSeverity,
+        title: str,
+        context: dict[str, Any],
+        status: Literal["firing", "resolved"] = "firing",
+    ) -> str:
+        """Render one alert in the channel's markup."""
+        ...
+
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+        """Deliver a message; admin tests opt out of runtime failure counters."""
+        ...
+
+
+@dataclass(frozen=True)
+class SlackSink:
+    """Slack incoming-webhook channel."""
+
+    webhook_url: str
+    name: str = field(default="slack", init=False)
+
+    def render(
+        self,
+        severity: AlertSeverity,
+        title: str,
+        context: dict[str, Any],
+        status: Literal["firing", "resolved"] = "firing",
+    ) -> str:
+        """Render the alert as Slack mrkdwn, exactly as before this abstraction."""
+        return _format_message(
+            severity,
+            title,
+            context,
+            status,
+            bold=_slack_bold,
+            italic=_slack_italic,
+            escape=escape_slack_text,
+        )
+
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+        """Post ``{"text": message}`` to this webhook."""
+        return await _post_to_slack(
+            self.webhook_url,
+            message,
+            dedupe_key=dedupe_key,
+            record_failure=record_failure,
+        )
+
+
+@dataclass(frozen=True)
+class WeComSink:
+    """WeCom group-bot webhook channel."""
+
+    webhook_url: str
+    name: str = field(default="wecom", init=False)
+
+    def render(
+        self,
+        severity: AlertSeverity,
+        title: str,
+        context: dict[str, Any],
+        status: Literal["firing", "resolved"] = "firing",
+    ) -> str:
+        """Render the alert as WeCom markdown: bold, no italics, brackets neutralised."""
+        return _format_message(
+            severity,
+            title,
+            context,
+            status,
+            bold=_wecom_bold,
+            italic=_plain_text,
+            escape=escape_wecom_text,
+        )
+
+    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+        """Post a markdown card to this webhook."""
+        return await _post_to_wecom(
+            self.webhook_url,
+            message,
+            dedupe_key=dedupe_key,
+            record_failure=record_failure,
+        )
+
+
+def configured_sink() -> AlertSink | None:
+    """Return the one channel selected by the configured webhooks, or ``None``.
+
+    A deployment alerts through exactly one channel. Slack keeps its existing
+    ``SLACK_ALERTS_WEBHOOK_URL`` then ``SLACK_WEBHOOK_URL`` resolution; WeCom
+    is selected by ``WECOM_ALERTS_WEBHOOK_URL``. Configuring both is invalid
+    (:meth:`serving.config.settings.Settings.broken_rules` rejects it), so this
+    raises instead of fanning out. A blank value — whitespace only — is no
+    channel, the same rule the failed-request alerter and bootstrap use, so a
+    ``" "`` webhook cannot select a channel that can never deliver.
+    """
+    # The overlay may reject a stored value or set aside a conflicting
+    # environment value. Raw config_value() still exposes those candidates;
+    # Settings contains the validated runtime values, including Slack fallback.
+    settings = get_settings()
+    slack_url = settings.slack_alerts_webhook_url.strip()
+    wecom_url = settings.wecom_alerts_webhook_url.strip()
+    if slack_url and wecom_url:
+        raise ValueError(
+            "SLACK_ALERTS_WEBHOOK_URL / SLACK_WEBHOOK_URL and "
+            "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive; "
+            "configure one alert channel"
+        )
+    if slack_url:
+        return SlackSink(slack_url)
+    if wecom_url:
+        return WeComSink(wecom_url)
+    return None
 
 
 async def _type_muted(key: str) -> bool:
@@ -411,14 +694,16 @@ async def alert_slack(
     cooldown_sec: int = 300,
     status: Literal["firing", "resolved"] = "firing",
 ) -> bool:
-    """Send an alert to the Slack incoming webhook.
+    """Send an alert to the one configured channel.
 
-    Returns True if a message was actually sent, False otherwise.
+    Returns True if the channel accepted the message, False otherwise.
     """
-    webhook_url = config_value("SLACK_ALERTS_WEBHOOK_URL", "") or config_value(
-        "SLACK_WEBHOOK_URL", ""
-    )
-    if not webhook_url:
+    try:
+        sink = configured_sink()
+    except ValueError:
+        log.exception("alert channel configuration is invalid; suppressing")
+        return False
+    if sink is None:
         return False
 
     # Both suppressions below exist to stop a *breach* from repeating, and
@@ -522,9 +807,11 @@ async def alert_slack(
             request_id = _current_request_id()
             if request_id:
                 detail = {**context, "request_id": request_id}
-        message = _format_message(severity, title, detail, status)
+        # Render before attempting delivery: a rendering failure then behaves
+        # like it always did (no cooldown armed).
+        message = sink.render(severity, title, detail, status)
         attempted = True
-        sent = await _post_to_slack(webhook_url, message, dedupe_key=key)
+        sent = await sink.post(message, dedupe_key=key)
         return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")

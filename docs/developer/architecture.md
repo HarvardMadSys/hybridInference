@@ -459,8 +459,9 @@ The gateway reports through these; it has no Prometheus exporter:
   `/health/deep` adds per-endpoint availability and circuit state, and reports
   `degraded` when any endpoint is.
 - **Alerting.** `alert_slack()` and `alert_on_transition()` in
-  `apps/backend/serving/observability/alerts.py` post to a Slack webhook
-  (`SLACK_ALERTS_WEBHOOK_URL`). Thresholds come
+  `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to
+  one Slack or WeCom webhook, selected in Admin Configuration. Channel changes
+  take effect after a restart. Thresholds come
   from the alert config resolved by the same `resolve_config_path()` chain; with
   no alert file present the built-in thresholds apply. The circuit breaker pages
   on `circuit_open` transitions and on upstream-credential rejections, with
