@@ -7,14 +7,15 @@ of failure, and that it never follows a redirect -- a validated public host
 must not be able to 302 the probe to an internal address, past
 ``_validate_base_url``'s IP checks.
 
-The base-URL validator refuses loopback, so it is replaced here by one that
-accepts this test's local server only.
+The base-URL validator is replaced here by one that accepts this test's local
+server only, except where a test is about the validator and the probe together.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -23,7 +24,7 @@ import pytest_asyncio
 from aiohttp import web
 from fastapi import HTTPException
 
-from serving.servers.routers.admin import provider_definitions
+from serving.servers.routers.admin import provider_definitions, provider_routes
 
 pytestmark = pytest.mark.asyncio
 
@@ -246,3 +247,33 @@ async def test_a_base_url_that_already_names_the_endpoint_is_refused(upstream):
 
     assert refused.status_code == 422
     assert upstream.requests == []
+
+
+async def test_a_name_that_rebinds_to_cloud_metadata_after_validation_is_refused(monkeypatch):
+    """Validated while it answers 10.1.2.3, connected after it answers 169.254.169.254.
+
+    The real validator runs here. It resolves the name once and accepts it; the
+    probe's connection resolves it again, and the connect-time guard refuses the
+    new answer before a socket is opened.
+    """
+    lookups: list[str] = []
+
+    def rebinding_getaddrinfo(host, port, *args, **kwargs):
+        lookups.append(host)
+        address = "10.1.2.3" if len(lookups) == 1 else "169.254.169.254"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 80))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", rebinding_getaddrinfo)
+    # Were the guard missing, fail on a timeout rather than wait out the default.
+    monkeypatch.setattr(provider_definitions, "PROBE_TIMEOUT_SEC", 2.0)
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions._probe_openai_compat(
+            default_base_url="http://rebind.example/v1",
+            api_key="sk-test-key",
+            probe_model_id="probe-model",
+        )
+
+    assert caught.value.status_code == 400
+    assert "connection to cloud metadata address 169.254.169.254 refused" in caught.value.detail
+    assert lookups == ["rebind.example", "rebind.example"]

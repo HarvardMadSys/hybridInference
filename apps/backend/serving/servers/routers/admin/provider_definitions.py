@@ -35,6 +35,7 @@ from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
     _validate_base_url,
 )
+from serving.utils.metadata_addresses import refuse_metadata_socket
 
 router = APIRouter(prefix="/admin")
 
@@ -614,7 +615,12 @@ async def _probe_openai_compat(
     timeout = aiohttp.ClientTimeout(total=PROBE_TIMEOUT_SEC)
     try:
         async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
+            aiohttp.ClientSession(
+                timeout=timeout,
+                # The host is resolved again here; refuse it if it now answers
+                # with a cloud metadata address that _validate_base_url never saw.
+                connector=aiohttp.TCPConnector(socket_factory=refuse_metadata_socket),
+            ) as session,
             session.post(
                 _chat_completions_url(cleaned_base_url),
                 headers={

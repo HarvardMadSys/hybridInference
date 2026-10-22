@@ -24,6 +24,7 @@ from aiohttp.helpers import sentinel as _aiohttp_sentinel
 from serving.servers.sse import SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
+from serving.utils.metadata_addresses import refuse_metadata_socket
 
 logger = get_logger(__name__)
 
@@ -94,7 +95,12 @@ class AsyncHTTPClient:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
             timeout = aiohttp.ClientTimeout(total=60)
-            connector = aiohttp.TCPConnector(limit=200, limit_per_host=50)
+            # Every adapter's upstream request goes through this connector, so
+            # it is where a Base URL whose name now resolves to a cloud metadata
+            # endpoint is refused -- whatever it resolved to when it was saved.
+            connector = aiohttp.TCPConnector(
+                limit=200, limit_per_host=50, socket_factory=refuse_metadata_socket
+            )
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector,
