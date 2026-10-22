@@ -276,6 +276,70 @@ def test_registrations_count_every_active_and_pending_account():
     assert sql.endswith("FROM users")
 
 
+def test_retained_day_bounds_keep_a_partial_last_day():
+    assert ps.retained_day_bounds(START, END) == (date(2026, 7, 31), date(2026, 8, 13))
+    midnight = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    assert ps.retained_day_bounds(START, midnight) == (date(2026, 7, 31), date(2026, 8, 12))
+
+
+@pytest.mark.asyncio
+async def test_pruned_rows_still_count_in_request_and_token_totals():
+    conn = _fake_conn(
+        first_retained=date(2026, 7, 20),
+        retained_rows=[
+            {
+                "day": date(2026, 7, 20),
+                "model": "glm-4.6",
+                "input_tokens": 80,
+                "output_tokens": 20,
+                "requests": 10,
+                "cached_tokens": 8,
+            }
+        ],
+    )
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
+    )
+    assert payload["window"]["start"] == "2026-07-20T00:00:00+00:00"
+    assert payload["totals"]["requests"] == 12
+    assert payload["totals"]["tokens"] == 155
+    assert payload["totals"]["cached_input_share"] == round(8 / 130, 6)
+    retained_call = next(
+        c for c in conn.fetch.await_args_list if c.args[0] is ps.RETAINED_DAILY_SQL
+    )
+    assert retained_call.args[1:] == (date(2026, 7, 20), date(2026, 8, 13))
+
+
+@pytest.mark.asyncio
+async def test_retained_blank_model_and_datetime_day_still_count():
+    conn = _fake_conn(
+        first_retained=datetime(2026, 7, 20, 15, tzinfo=timezone.utc),
+        retained_rows=[
+            {
+                "day": datetime(2026, 7, 20, tzinfo=timezone.utc),
+                "model": "",
+                "input_tokens": 4,
+                "output_tokens": 1,
+                "requests": 1,
+                "cached_tokens": 0,
+            }
+        ],
+    )
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
+    )
+    assert payload["window"]["start"] == "2026-07-20T00:00:00+00:00"
+    # Live fixture is 2 requests / 55 tokens; the blank model still adds.
+    assert payload["totals"]["requests"] == 3
+    assert payload["totals"]["tokens"] == 60
+    assert payload["daily"][0] == {
+        "date": "2026-07-20",
+        "input_tokens": 4,
+        "output_tokens": 1,
+        "requests": 1,
+    }
+
+
 def test_payload_without_registrations_publishes_null():
     payload = ps.build_payload(
         generated_at=END,
@@ -297,14 +361,21 @@ async def test_schema_is_idempotent_ddl_without_identifying_columns():
     await ps.ensure_public_stats_schema(conn)
     await ps.ensure_public_stats_schema(conn)
     statements = [call.args[0] for call in conn.execute.await_args_list]
-    assert len(statements) == 4
+    assert len(statements) == 6
     assert all("IF NOT EXISTS" in s for s in statements)
     joined = " ".join(statements).lower()
     for identifier in ("user_id", " ip ", "metadata", "prompt"):
         assert identifier not in joined
 
 
-def _fake_conn(*, server_version="160004", sample_texts=None, overrides_table=True):
+def _fake_conn(
+    *,
+    server_version="160004",
+    sample_texts=None,
+    overrides_table=True,
+    retained_rows=None,
+    first_retained=None,
+):
     sample_texts = sample_texts or []
 
     async def fetch(sql, *args):
@@ -319,6 +390,8 @@ def _fake_conn(*, server_version="160004", sample_texts=None, overrides_table=Tr
                     "cached_tokens": 0,
                 }
             ]
+        if sql is ps.RETAINED_DAILY_SQL:
+            return retained_rows or []
         if sql is ps.CLIENTS_SQL:
             return [
                 {
@@ -342,6 +415,8 @@ def _fake_conn(*, server_version="160004", sample_texts=None, overrides_table=Tr
             return server_version
         if sql is ps.VISIBILITY_OVERRIDES_TABLE_SQL:
             return overrides_table
+        if sql is ps.RETAINED_FIRST_DAY_SQL:
+            return first_retained
         assert sql is ps.FIRST_LOG_SQL
         return START
 
@@ -350,6 +425,7 @@ def _fake_conn(*, server_version="160004", sample_texts=None, overrides_table=Tr
         return {"approved": 40, "waiting": 9}
 
     conn = MagicMock()
+    conn.execute = AsyncMock()
     conn.fetch = AsyncMock(side_effect=fetch)
     conn.fetchval = AsyncMock(side_effect=fetchval)
     conn.fetchrow = AsyncMock(side_effect=fetchrow)
