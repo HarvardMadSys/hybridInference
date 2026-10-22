@@ -75,6 +75,7 @@ class ClaudeAdapter(BaseAdapter):
             _key_pool_provider_label(self.config),
             self.config.api_key,
             base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
         )
 
     def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
@@ -83,6 +84,7 @@ class ClaudeAdapter(BaseAdapter):
             _key_pool_provider_label(self.config),
             self.config.api_key,
             base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
         )
 
     def _convert_content_block(self, block: dict[str, Any] | str) -> dict[str, Any]:

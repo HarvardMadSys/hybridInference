@@ -782,8 +782,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         Buckets are per (provider label, key), so a pooled adapter must pass the
         key it just leased rather than the route's configured one — sibling keys
-        are usually separate accounts with separate allowances. Local inference
-        servers get an inert slot (see ``upstream_limiter.is_local_endpoint``).
+        are usually separate accounts with separate allowances. Self-hosted
+        engines instead use engine admission when a router requests a hold
+        (see ``upstream_limiter.is_local_endpoint``).
 
         Raises:
             UpstreamSaturated: no slot came free within the acquire timeout.
@@ -792,6 +793,7 @@ class OpenAICompatAdapter(BaseAdapter):
             self._key_pool_provider_label,
             api_key,
             base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
         )
 
     async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:

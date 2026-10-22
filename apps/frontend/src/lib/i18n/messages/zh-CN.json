@@ -63,6 +63,26 @@
     "source": "sign it out on every device, the Agent included.",
     "text": "它会在所有设备上退出登录，包括 Agent。"
   },
+  "admin.routing.deployment_auto": {
+    "source": "Auto (use endpoint hostname)",
+    "text": "自动（根据端点主机名）"
+  },
+  "admin.routing.deployment_help": {
+    "source": "Choose Self-hosted engine for your own inference server, including a LAN or cluster address, to use the engine queue limit. Provider API uses provider/key concurrency limits. Auto recognizes localhost addresses. This does not change the URL.",
+    "text": "自己的推理服务（包括内网或集群地址）请选择“自部署引擎”，以使用引擎队列限制。“供应商 API”使用供应商和密钥的并发限制。“自动”识别本机地址。此设置不会改变 URL。"
+  },
+  "admin.routing.deployment_provider_api": {
+    "source": "Provider API",
+    "text": "供应商 API"
+  },
+  "admin.routing.deployment_self_hosted": {
+    "source": "Self-hosted engine",
+    "text": "自部署引擎"
+  },
+  "admin.routing.deployment_type": {
+    "source": "Deployment type",
+    "text": "部署类型"
+  },
   "auth.accounts.add_title": {
     "source": "Add another account",
     "text": "添加其他账户"

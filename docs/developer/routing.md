@@ -298,13 +298,22 @@ drops by one each time the provider answers `429`, and rises by one after every
 route, and is not counted against the endpoint's circuit breaker: the provider
 never saw it.
 
-Servers addressed as `localhost`, `127.0.0.1`, `0.0.0.0` or
-`host.docker.internal` are never limited, because they schedule their own work.
-A server you run on another machine is limited like a hosted provider.
+Self-hosted engines bypass the provider-key limit because they schedule their
+own work. Set `deployment_type: self_hosted` on a route to an engine you operate,
+including one reached over a LAN or cluster DNS. With `deployment_type: auto`
+(the default), only `localhost`, `127.0.0.1`, `0.0.0.0` and
+`host.docker.internal` count as self-hosted. Set `deployment_type: provider_api`
+to use provider-key concurrency even through a loopback proxy.
+
+Declare `deployment_type` inside `route:`, not at the model level; the Admin
+Routing tab exposes the same choice when adding or editing a route. It changes
+outbound admission and the experimental hybrid composition's default local/cloud
+scope. It does not change the URL, adapter protocol, provider label, endpoint ID,
+credentials or RouteWise resource type (`on_demand`, `quota`, `concurrency`).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `UPSTREAM_CONCURRENCY_ENABLED` | `true` | `false` sends every request immediately |
+| `UPSTREAM_CONCURRENCY_ENABLED` | `true` | `false` disables the provider-key limit; a configured engine queue limit still applies |
 | `UPSTREAM_CONCURRENCY_INITIAL_LIMIT` | `8` | Starting limit per provider key |
 | `UPSTREAM_CONCURRENCY_MAX_LIMIT` | `64` | Highest the limit can rise |
 | `UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` | `100` | Successful responses between increases |
@@ -411,10 +420,9 @@ were and how many failed anyway (client disconnects aside). It follows the tab's
 What does not offload:
 
 - **A non-streaming request the gateway does not queue.** Only the limiter
-  queues, and it exempts local inference servers (a host in
-  `registry._LOCAL_HOSTS`), which schedule their own work, except for the
-  streaming requests an [engine queue limit](#engine-queue-limit) holds. Nothing
-  queues for a remote route while `UPSTREAM_CONCURRENCY_ENABLED=false`. A
+  queues, and it exempts self-hosted engines, except for the streaming requests
+  an [engine queue limit](#engine-queue-limit) holds. Nothing queues for a
+  provider API route while `UPSTREAM_CONCURRENCY_ENABLED=false`. A
   streaming request there is still offloaded when its engine sends no first
   token in time, and the offload route still serves as the last resort.
 - **A pinned request.** `X-Route-Pin` names one endpoint and never falls back,
@@ -455,7 +463,7 @@ An engine wait tells the gateway a request has waited only once it is already
 in the engine's queue, and leaving then means aborting it there. The policy can
 keep that queue in the gateway instead. With an **engine queue limit** of N
 (**Engine queue limit** in the console, `engine_queue_limit` in the API), each
-local inference server the model routes to is sent at most N streaming requests
+self-hosted engine the model routes to is sent at most N streaming requests
 that have not returned a first token yet. Further streaming requests wait in the
 gateway, in arrival order, one line per engine (`EngineHold` in
 `apps/backend/serving/adapters/upstream_limiter.py`):
@@ -476,19 +484,27 @@ gateway, in arrival order, one line per engine (`EngineHold` in
   (`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC`), and is then sent to the engine
   anyway, past the limit. The hold decides where a request waits, and never
   fails one.
-- **Only streaming requests to a local server are held.** A non-streaming
+- **Only streaming requests to a self-hosted engine are held.** A non-streaming
   request has no first token to give its place up on and goes straight to the
-  engine, and a remote route has the limiter's own queue. The hold applies
+  engine, and a provider API route has the limiter's own queue. The hold applies
   whether `UPSTREAM_CONCURRENCY_ENABLED` is on or not.
+
+Use `deployment_type: self_hosted` for an engine on another machine; its private
+IP or DNS name can stay as the route's `base_url`. This declaration alone does
+not enable a queue limit or reserve an offload route: set those separately under
+**Queue offload**. Reserving a route excludes it from ordinary weighted traffic;
+use route weights without an offload reservation when both routes should serve
+ordinary traffic.
 
 Leave the limit empty to send every request straight to its engine. A limit of
 `1` sends an engine a new request only once the one before it has started
 answering; a higher one lets the engine prefill several prompts at once, so one
 long prompt does not hold up the requests behind it. A new limit applies from the
 next request on, to the requests already waiting as well; an engine two models
-share follows the limit of the latest request sent its way. The count covers the
-requests this gateway process sends, so an engine that other clients also use
-can still queue theirs.
+share follows the limit of the latest request sent its way. The count covers
+only requests this gateway process sends. Other workers, gateways and direct
+clients keep their own counts or none, so this is not a shared engine capacity
+limit and the engine can still queue their requests.
 
 ### Max offload input
 

@@ -731,3 +731,16 @@ msgstr "[路由](routing.md)——权重、健康检查与策略"
 #~ "`ROUTING_CONFIG_PATH`，再 manifest 的 "
 #~ "`paths.routing`，最后 "
 #~ "`config/examples/routing.minimal.yaml`。没有这个文件时，网关使用模型注册表里写的权重。见[路由](routing.md)。"
+
+
+#: ../developer/add-local-model.md
+msgid "`deployment_type: self_hosted` tells the gateway this route reaches an engine you operate, even though its address is on another machine. It bypasses the provider-key concurrency limit and makes streaming requests eligible for a configured [engine queue limit](routing.md#engine-queue-limit). It does not enable queue offload by itself. Keep the reachable private address: `localhost` inside a gateway container refers to that container, not the model server."
+msgstr "`deployment_type: self_hosted` 告诉网关，这条路由连接的是你运维的引擎，即使地址位于另一台机器上。它绕过 provider key 并发上限，让流式请求受已配置的[引擎队列上限](routing.md#engine-queue-limit)约束。它本身不会启用队列卸载。保留可访问的私有地址即可：网关容器里的 `localhost` 指的是容器自身，不是模型服务器。"
+
+#: ../developer/add-local-model.md
+msgid "The Admin Routing tab can change the deployment type of an existing route while keeping its provider and target URL, or set it when you create or repoint a route. Choosing **Self-hosted engine** does not waive the Base URL checks for a new or changed target."
+msgstr "管理后台的 Routing 页可以在保持 provider 和目标 URL 不变的情况下修改已有路由的部署类型，也可以在创建路由或修改目标地址时一并设置。选择 **Self-hosted engine** 不会绕过新目标或修改后目标的 Base URL 检查。"
+
+#: ../developer/add-local-model.md
+msgid "A choice made in Admin belongs to that endpoint. Changing the Base URL or provider resets the deployment type to **Auto** unless you choose again, and editing other fields leaves an undeclared route following the model registry. If a saved Admin override cannot be applied at startup, for example because its saved target no longer passes the Base URL checks, the route is marked **Override not applied** and the list shows the registry endpoint that is serving. Edit the route or reset its config to clear it."
+msgstr "在管理后台做的选择只属于当前端点。修改 Base URL 或 provider 时，部署类型会重置为 **Auto**，除非重新选择；只修改其他字段时，没有声明过的路由继续沿用模型注册表。如果保存的管理后台 override 在启动时无法应用，例如保存的目标地址已不再通过 Base URL 检查，该路由会标记为 **Override not applied**，列表显示实际在服务的注册表端点。编辑该路由或重置其配置即可清除。"
