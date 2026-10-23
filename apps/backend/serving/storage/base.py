@@ -1265,6 +1265,32 @@ class OperationalStore(ABC):
         """Delete a provider weight override row. Returns True if removed."""
 
     @abstractmethod
+    async def list_route_capability_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return admin capability overrides for one model's routes, ordered by route_id."""
+
+    @abstractmethod
+    async def list_all_route_capability_overrides(self) -> list[Row]:
+        """Return all admin capability override rows ordered by model_id and route_id."""
+
+    @abstractmethod
+    async def upsert_route_capability_override(
+        self,
+        model_id: str,
+        route_id: str,
+        capabilities: dict[str, Any],
+        updated_by: str | None,
+    ) -> None:
+        """Upsert the capabilities an admin set for one route.
+
+        The row overrides what the route was given by ``models.yaml`` or declared
+        with when it was created; deleting it returns the route to that value.
+        """
+
+    @abstractmethod
+    async def delete_route_capability_override(self, model_id: str, route_id: str) -> bool:
+        """Delete one route's capability override. Returns True if removed."""
+
+    @abstractmethod
     async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
         """Return provider route override rows for one model ordered by route_id."""
 

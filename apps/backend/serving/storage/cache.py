@@ -1125,6 +1125,30 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_weight_override(model_id, endpoint_id)
 
+    async def list_route_capability_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_route_capability_overrides_for_model(model_id)
+
+    async def list_all_route_capability_overrides(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_route_capability_overrides()
+
+    async def upsert_route_capability_override(
+        self,
+        model_id: str,
+        route_id: str,
+        capabilities: dict[str, Any],
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.upsert_route_capability_override(
+            model_id, route_id, capabilities, updated_by
+        )
+
+    async def delete_route_capability_override(self, model_id: str, route_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_route_capability_override(model_id, route_id)
+
     async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_provider_route_configs_for_model(model_id)

@@ -43,6 +43,7 @@ from serving.schemas_admin import (
     ProviderRouteApiKeyRef,
     ProviderRouteItem,
     ProviderRouteOption,
+    RouteCapabilitiesItem,
     RuntimeModelCapabilities,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
@@ -84,6 +85,10 @@ OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC = 8.0
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC = 300.0
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
+# Route attribute holding its model's admin capability overrides by route id, as
+# last read from the store. It lives on the route so every path that installs
+# an adapter (_set_route_entries) applies them without reading the store.
+CAPABILITY_OVERRIDES_ATTR = "_provider_route_capability_overrides"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
@@ -1892,8 +1897,36 @@ def _normalize_runtime_model_capabilities(raw: Any) -> dict[str, Any] | None:
     return RuntimeModelCapabilities.model_validate(raw).model_dump()
 
 
+# route_metadata key holding what a route had before an admin capability
+# override: its models.yaml values or the ones it was created with. It travels
+# with the config, so a route rebuilt from an overridden config (a target edit)
+# still knows what resetting the override returns it to.
+_CAPABILITY_BASELINE = "capability_baseline"
+
+
+def _config_capabilities(config) -> dict[str, Any]:
+    """Return the four capability values a route config serves with."""
+    return {
+        "context_length": int(config.context_length),
+        "max_output_length": int(config.max_output_length),
+        "input_modalities": list(config.input_modalities or ["text"]),
+        "supports_tools": bool(config.supports_tools),
+    }
+
+
+def _baseline_capabilities(config) -> dict[str, Any]:
+    """Return a route's capabilities without any admin override."""
+    route_metadata = getattr(config, "route_metadata", None) or {}
+    baseline = route_metadata.get(_CAPABILITY_BASELINE)
+    return dict(baseline) if isinstance(baseline, dict) else _config_capabilities(config)
+
+
 def _declared_capabilities(adapter) -> dict[str, Any] | None:
-    """Return the capabilities a runtime route persists, or None if it declared none."""
+    """Return the capabilities a runtime route persists, or None if it declared none.
+
+    This is the route's own declaration, never an admin override on top of it:
+    the override has its own row, and resetting it returns to this value.
+    """
     config = adapter.config
     route_metadata = getattr(config, "route_metadata", None)
     if (
@@ -1901,12 +1934,81 @@ def _declared_capabilities(adapter) -> dict[str, Any] | None:
         or route_metadata.get(_DECLARED_CAPABILITIES) is not True
     ):
         return None
-    return {
-        "context_length": int(config.context_length),
-        "max_output_length": int(config.max_output_length),
-        "input_modalities": list(config.input_modalities),
-        "supports_tools": bool(config.supports_tools),
-    }
+    return _baseline_capabilities(config)
+
+
+def _apply_capability_overrides(route, entries: list[tuple[object, float, str]]) -> None:
+    """Give each entry its admin capability override, or its baseline when it has none.
+
+    Idempotent, and run on every adapter a route installs, so an override
+    survives whatever rebuilds the route (a target edit, a reset, an added
+    route) and a cleared one leaves no trace. The config is changed in place:
+    adapters and routers read these four fields on each request, so the next
+    request is served with them, and an adapter's identity, endpoint id and
+    RouteWise state stay as they were.
+    """
+    overrides = getattr(route, CAPABILITY_OVERRIDES_ATTR, None) or {}
+    for adapter, _weight, endpoint_id in entries:
+        config = adapter.config
+        route_metadata = dict(getattr(config, "route_metadata", None) or {})
+        baseline = route_metadata.get(_CAPABILITY_BASELINE)
+        override = overrides.get(_route_id_for_entry(adapter, endpoint_id))
+        if override is not None:
+            if not isinstance(baseline, dict):
+                route_metadata[_CAPABILITY_BASELINE] = _config_capabilities(config)
+            target = override
+        elif isinstance(baseline, dict):
+            del route_metadata[_CAPABILITY_BASELINE]
+            target = baseline
+        else:
+            continue
+        config.context_length = int(target["context_length"])
+        config.max_output_length = int(target["max_output_length"])
+        config.input_modalities = list(target["input_modalities"])
+        config.supports_tools = bool(target["supports_tools"])
+        config.route_metadata = route_metadata
+
+
+async def sync_route_capability_overrides(
+    services,
+    op_store,
+    model_id: str | None = None,
+) -> None:
+    """Load admin capability overrides from the store and apply them to live routes.
+
+    The one path from stored overrides to the routes this process serves: boot
+    runs it for every model, an admin edit for the model it changed. A periodic
+    run would bring other processes along; with one process it is not needed.
+    A row that no longer validates is skipped with a warning, so its route
+    keeps its baseline.
+    """
+    rows = (
+        await op_store.list_all_route_capability_overrides()
+        if model_id is None
+        else await op_store.list_route_capability_overrides_for_model(model_id)
+    )
+    by_model: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            capabilities = _normalize_runtime_model_capabilities(row["capabilities"])
+        except ValueError as exc:
+            logger.warning(
+                "Ignoring invalid capability override for model=%s route_id=%s: %s",
+                row.get("model_id"),
+                row.get("route_id"),
+                exc,
+            )
+            continue
+        if capabilities is not None:
+            by_model.setdefault(str(row["model_id"]), {})[str(row["route_id"])] = capabilities
+
+    model_ids = list(services.router.routes) if model_id is None else [model_id]
+    for target_model_id in model_ids:
+        route = services.router.routes.get(target_model_id)
+        if route is None or not _is_canonical_model(target_model_id, route):
+            continue
+        setattr(route, CAPABILITY_OVERRIDES_ATTR, by_model.get(target_model_id, {}))
+        _apply_capability_overrides(route, _raw_route_entries(route))
 
 
 def _stored_capabilities(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -2045,8 +2147,7 @@ async def _prepare_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     route_id: str | None = None,
-    stored_capabilities: dict[str, Any] | None = None,
-    restoring: bool = False,
+    capabilities: dict[str, Any] | None = None,
     deployment_type: str = "auto",
 ) -> PreparedRouteCandidate:
     route = _validate_canonical_route(services, model_id)
@@ -2130,27 +2231,17 @@ async def _prepare_route_candidate(
             },
         }
     )
-    if restoring:
-        # A restored route is what its own row says. Each route keeps its own
-        # values because routes of one model can differ (a narrower mirror, a
-        # smaller hosted window), so a row that declared them gets them back
-        # whatever the first route holds. A row that declared none keeps the
-        # first route's values, as before capabilities were stored, but not the
-        # flag: nothing was declared for it, so nothing is written for it.
-        if stored_capabilities is not None:
-            cfg.update(stored_capabilities)
-            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
+    # A route's capabilities are its own: declared by the admin adding it, or
+    # restored from its row. Routes of one model can differ (a narrower mirror,
+    # a smaller hosted window), so the first route's values never stand in for
+    # a declaration. A stored row from before routes declared them keeps the
+    # first route's baseline values, as it always did, but no flag: nothing was
+    # declared for it, so nothing is written for it.
+    if capabilities is not None:
+        cfg.update(capabilities)
+        cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
     else:
-        # A route added through the API copies the first route's capability
-        # values along with the rest of its config, so it also carries the flag
-        # saying they were declared. Without it the route's row would store
-        # NULL and restore without them.
-        template_metadata = getattr(template_adapter.config, "route_metadata", None)
-        if (
-            isinstance(template_metadata, dict)
-            and template_metadata.get(_DECLARED_CAPABILITIES) is True
-        ):
-            cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
+        cfg.update(_baseline_capabilities(template_adapter.config))
     _apply_target_adapter_defaults(cfg, target)
     await _apply_openrouter_endpoint_pricing(
         cfg,
@@ -2483,6 +2574,7 @@ def _set_route_entries(services, route, entries: list[tuple[object, float, str]]
     total_weight = sum(float(weight) for _adapter, weight, _endpoint_id in entries)
     if total_weight <= 0:
         raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+    _apply_capability_overrides(route, entries)
 
     def mutate() -> None:
         route.raw_adapters = list(entries)
@@ -2815,6 +2907,7 @@ async def _prepare_candidate_from_payload(
         quota_limit=payload.quota_limit,
         concurrency_limit=payload.concurrency_limit,
         weight=payload.weight,
+        capabilities=payload.capabilities.model_dump(),
         deployment_type=payload.deployment_type,
     )
 
@@ -2970,6 +3063,35 @@ async def _delete_weight_override_for_route(
             "model=%s endpoint_id=%s: %s",
             model_id,
             endpoint_id,
+            exc,
+        )
+
+
+async def _clear_capability_override_for_route(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route_id: str,
+) -> None:
+    """Drop a route id's capability override, so a route added later under it starts clean.
+
+    Called once a runtime route has left the route table, and before a new
+    route takes an id: the new route declares its own capabilities, and a row
+    left behind by an earlier route (or one a failed cleanup kept) must not
+    replace them.
+    """
+    route = services.router.routes.get(model_id)
+    overrides = getattr(route, CAPABILITY_OVERRIDES_ATTR, None) if route is not None else None
+    if overrides:
+        overrides.pop(route_id, None)
+    try:
+        await op_store.delete_route_capability_override(model_id, route_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete capability override model=%s route_id=%s: %s",
+            model_id,
+            route_id,
             exc,
         )
 
@@ -3267,6 +3389,9 @@ async def _route_row(
         override_applied=override_applied,
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
+        capabilities=RouteCapabilitiesItem(**_config_capabilities(adapter.config)),
+        capabilities_baseline=RouteCapabilitiesItem(**_baseline_capabilities(adapter.config)),
+        capabilities_overridden=isinstance(route_metadata.get(_CAPABILITY_BASELINE), dict),
     )
 
 
@@ -3557,6 +3682,10 @@ async def create_provider_route_model(
 
     async def persist_model() -> None:
         nonlocal persisted_candidate
+        # A model of this name deleted by a build that kept no capability
+        # overrides can leave rows behind; the new model declares its own.
+        for row in await op_store.list_route_capability_overrides_for_model(model_id):
+            await op_store.delete_route_capability_override(model_id, str(row["route_id"]))
         persisted_candidate = True
         await op_store.upsert_provider_route_candidate(
             model_id,
@@ -3802,6 +3931,12 @@ async def create_provider_route_candidate(
 
         async def persist_and_install() -> None:
             persistence_attempted = False
+            await _clear_capability_override_for_route(
+                services,
+                op_store,
+                model_id=canonical_model_id,
+                route_id=candidate.route_id,
+            )
             try:
                 persistence_attempted = True
                 await op_store.upsert_provider_route_candidate(
@@ -3860,6 +3995,7 @@ async def create_provider_route_candidate(
                     "concurrency_limit": candidate.concurrency_limit,
                     "weight": candidate.weight,
                     "deployment_type": candidate.adapter.config.deployment_type,
+                    "capabilities": _declared_capabilities(candidate.adapter),
                 },
             )
 
@@ -4000,6 +4136,115 @@ async def update_provider_route_candidate(
         yaml_weight=float(raw_weight),
         endpoint_id=endpoint_id,
         override_row=None,
+    )
+
+
+async def _change_route_capabilities(
+    services,
+    op_store,
+    *,
+    model_route_path: str,
+    capabilities: dict[str, Any] | None,
+    admin_id: str,
+) -> ProviderRouteItem:
+    """Store or clear one route's capability override and serve the route with it."""
+    model_id, route_id, _route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        entries = _raw_route_entries(route)
+        adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+        old_capabilities = _config_capabilities(adapter.config)
+
+        async def persist_and_apply() -> None:
+            if capabilities is None:
+                await op_store.delete_route_capability_override(model_id, route_id)
+            else:
+                await op_store.upsert_route_capability_override(
+                    model_id, route_id, capabilities, admin_id
+                )
+            await sync_route_capability_overrides(services, op_store, model_id)
+            await log_admin_action(
+                op_store,
+                admin_id,
+                (
+                    "routing.provider_routes.capabilities.reset"
+                    if capabilities is None
+                    else "routing.provider_routes.capabilities.update"
+                ),
+                None,
+                {
+                    "model_id": model_id,
+                    "route_id": route_id,
+                    "old_capabilities": old_capabilities,
+                    "capabilities": _config_capabilities(adapter.config),
+                },
+            )
+
+        await _finish_router_transition_on_cancellation(persist_and_apply())
+        overrides = _rows_by_route_id(
+            await op_store.list_provider_route_configs_for_model(model_id)
+        )
+
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=adapter,
+        yaml_weight=float(raw_weight),
+        endpoint_id=endpoint_id,
+        override_row=overrides.get(route_id),
+    )
+
+
+@router.put(
+    "/routing/provider-route-capabilities/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def update_provider_route_capabilities(
+    model_route_path: str,
+    payload: RuntimeModelCapabilities,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Set one route's context window, output cap, input modalities and tool support.
+
+    Applies to models.yaml routes and runtime routes alike, takes effect on the
+    next request, and survives restarts. The route's own values stay as the
+    baseline that resetting returns to.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    return await _change_route_capabilities(
+        services,
+        op_store,
+        model_route_path=model_route_path,
+        capabilities=payload.model_dump(),
+        admin_id=admin_id,
+    )
+
+
+@router.delete(
+    "/routing/provider-route-capabilities/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def reset_provider_route_capabilities(
+    model_route_path: str,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Clear one route's capability override, returning it to its baseline values."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    return await _change_route_capabilities(
+        services,
+        op_store,
+        model_route_path=model_route_path,
+        capabilities=None,
+        admin_id=admin_id,
     )
 
 
@@ -4378,6 +4623,12 @@ async def delete_provider_route_candidate(
                         model_id=model_id,
                         endpoint_id=removed[2],
                     )
+                    await _clear_capability_override_for_route(
+                        services,
+                        op_store,
+                        model_id=model_id,
+                        route_id=route_id,
+                    )
                 live_removed = True
             except BaseException:
                 live_removed = live_removed or services.router.routes.get(model_id) is not route
@@ -4593,8 +4844,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
-                    stored_capabilities=_stored_capabilities(row),
-                    restoring=True,
+                    capabilities=_stored_capabilities(row),
                     deployment_type=row.get("deployment_type") or "auto",
                 )
                 _install_route_candidate(services, candidate)

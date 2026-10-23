@@ -1587,6 +1587,15 @@ class ListOpenRouterProviderOptionsResponse(BaseModel):
     providers: list[OpenRouterProviderOption]
 
 
+class RouteCapabilitiesItem(BaseModel):
+    """A route's context window, output cap, input modalities and tool support, as served."""
+
+    context_length: int
+    max_output_length: int
+    input_modalities: list[str]
+    supports_tools: bool
+
+
 class ProviderRouteItem(BaseModel):
     """Runtime provider target for one model route candidate."""
 
@@ -1619,6 +1628,11 @@ class ProviderRouteItem(BaseModel):
     override_applied: bool = True
     updated_at: datetime | None = None
     updated_by: str | None = None
+    # What the route serves with now, and what it had from models.yaml or its
+    # creation; they differ only while an admin capability override is set.
+    capabilities: RouteCapabilitiesItem
+    capabilities_baseline: RouteCapabilitiesItem
+    capabilities_overridden: bool = False
 
 
 class ListProviderRoutesResponse(BaseModel):
@@ -1645,22 +1659,6 @@ class UpdateProviderRouteStrategyRequest(BaseModel):
     strategy: Literal["fixed", "routewise"]
 
 
-class CreateProviderRouteRequest(BaseModel):
-    """Request payload for adding one runtime provider route candidate."""
-
-    route_type: Literal["quota", "concurrency", "on_demand"]
-    upstream_provider: str = Field(..., min_length=1, max_length=64)
-    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
-    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
-    base_url: str = Field(..., min_length=1, max_length=2048)
-    deployment_type: Literal["auto", "self_hosted", "provider_api"] = "auto"
-    api_key_id: str | None = Field(None, min_length=1, max_length=128)
-    provider_model_id: str = Field(..., min_length=1, max_length=512)
-    quota_limit: int | None = Field(None, ge=1)
-    concurrency_limit: int | None = Field(None, ge=1)
-    weight: float = Field(1.0, gt=0)
-
-
 # Image is the only non-text input the console offers for a runtime model.
 RUNTIME_MODEL_INPUT_MODALITIES = ("text", "image")
 # The largest window a model ships with today (10M tokens). A larger value is a
@@ -1669,7 +1667,7 @@ RUNTIME_MODEL_MAX_TOKENS = 10_000_000
 
 
 class RuntimeModelCapabilities(BaseModel):
-    """What a runtime model accepts, stated by the admin who creates it.
+    """What a route accepts, stated by the admin who creates or edits it.
 
     Each value changes what a request does: tool definitions reach the upstream
     only when ``supports_tools`` is set, ``max_tokens`` is clamped to
@@ -1702,6 +1700,25 @@ class RuntimeModelCapabilities(BaseModel):
         return self
 
 
+class CreateProviderRouteRequest(BaseModel):
+    """Request payload for adding one runtime provider route candidate."""
+
+    route_type: Literal["quota", "concurrency", "on_demand"]
+    upstream_provider: str = Field(..., min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    deployment_type: Literal["auto", "self_hosted", "provider_api"] = "auto"
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str = Field(..., min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
+    weight: float = Field(1.0, gt=0)
+    # Each route declares its own: routes of one model can differ, so a new
+    # route never takes the first route's values without the admin saying so.
+    capabilities: RuntimeModelCapabilities
+
+
 class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     """Request payload for creating a runtime model with its first provider route."""
 
@@ -1709,7 +1726,6 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     strategy: Literal["fixed", "routewise"] = "fixed"
     required_role: Literal["free", "pro", "internal", "admin"] = "admin"
     pricing: dict[str, str] = Field(..., min_length=1)
-    capabilities: RuntimeModelCapabilities
 
     @field_validator("model_id")
     @classmethod

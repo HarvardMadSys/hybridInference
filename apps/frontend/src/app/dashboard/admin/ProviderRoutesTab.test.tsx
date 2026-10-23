@@ -48,6 +48,8 @@ vi.mock('@/lib/api/admin', () => ({
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
   updateProviderRouteCandidate: vi.fn(),
+  updateProviderRouteCapabilities: vi.fn(),
+  resetProviderRouteCapabilities: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
   verifyProviderRouteModel: vi.fn(),
@@ -79,6 +81,8 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteCapabilities,
+  resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
@@ -161,6 +165,14 @@ function fillRuntimeModelCapabilities() {
   fireEvent.change(screen.getByLabelText('Tool calling'), { target: { value: 'yes' } });
 }
 
+// What the fixture route serves with; an added route starts from it.
+const ROUTE_CAPABILITIES = {
+  context_length: 196608,
+  max_output_length: 8192,
+  input_modalities: ['text'] as Array<'text' | 'image'>,
+  supports_tools: true,
+};
+
 const route = {
   model_id: 'minimax-fast',
   strategy: 'routewise',
@@ -188,6 +200,9 @@ const route = {
   source: 'yaml' as const,
   updated_at: null,
   updated_by: null,
+  capabilities: ROUTE_CAPABILITIES,
+  capabilities_baseline: ROUTE_CAPABILITIES,
+  capabilities_overridden: false,
 };
 
 const quotaRoute = {
@@ -1163,6 +1178,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1286,6 +1302,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1375,6 +1392,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -1833,7 +1851,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
   });
 
-  it('does not ask for capabilities when adding a route to an existing model', async () => {
+  it("asks for an added route's own capabilities, starting from the first route's", async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -1845,8 +1863,18 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
     await screen.findByRole('dialog', { name: 'Add provider route' });
-    expect(screen.queryByLabelText('Context length (tokens)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Tool calling')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Context length (tokens)')).toHaveValue(196608);
+    expect(screen.getByLabelText('Max output (tokens)')).toHaveValue(8192);
+    expect(screen.getByLabelText('Image input')).toHaveValue('no');
+    expect(screen.getByLabelText('Tool calling')).toHaveValue('yes');
+
+    fireEvent.change(screen.getByLabelText('Context length (tokens)'), {
+      target: { value: '0' },
+    });
+    expect(
+      screen.getByText('Enter a whole number of tokens from 1 to 10,000,000.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
   });
 
   it('does not filter create-model providers by the selected model routes', async () => {
@@ -1923,6 +1951,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
@@ -2010,6 +2039,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2063,6 +2093,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2414,5 +2445,100 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Override not applied')).toBeInTheDocument();
     expect(screen.queryByText('Override active')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reset config' })).toBeInTheDocument();
+  });
+
+  describe('route capabilities', () => {
+    const WIDE = {
+      context_length: 1048576,
+      max_output_length: 65536,
+      input_modalities: ['text', 'image'] as Array<'text' | 'image'>,
+      supports_tools: true,
+    };
+
+    const renderWithRoute = async (shown = route) => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [shown],
+      });
+      render(<ProviderRoutesTab />);
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Edit minimax-fast:featherless-api capabilities',
+        }),
+      );
+      return screen.findByRole('dialog', { name: 'Route capabilities' });
+    };
+
+    it('edits a route from what it serves now', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute();
+
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(196608);
+      expect(within(dialog).getByLabelText('Tool calling')).toHaveValue('yes');
+      expect(
+        within(dialog).getByText('From config: 196,608 context · 8,192 output · text only · tools'),
+      ).toBeInTheDocument();
+      expect(within(dialog).queryByRole('button', { name: 'Reset to config' })).toBeNull();
+
+      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
+        target: { value: '1048576' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Image input'), {
+        target: { value: 'yes' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          WIDE,
+        );
+      });
+      expect(await screen.findByText('Capabilities edited')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Route capabilities' })).toBeNull();
+    });
+
+    it('resets an edited route to its config values', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      expect(screen.getByText('Capabilities edited')).toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
+
+      await waitFor(() => {
+        expect(resetProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+        );
+      });
+      await waitFor(() => expect(screen.queryByText('Capabilities edited')).toBeNull());
+    });
+
+    it('says which value blocks saving', async () => {
+      const dialog = await renderWithRoute();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '262144' },
+      });
+
+      expect(
+        within(dialog).getByText('Max output cannot exceed the context length.'),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
   });
 });
