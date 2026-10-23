@@ -56,7 +56,9 @@ export function ConfirmDialog({
       if (event.key !== 'Tab') return;
       const container = containerRef.current;
       if (!container) return;
-      const focusables = container.querySelectorAll<HTMLElement>('button:not([disabled])');
+      const focusables = container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [tabindex="0"]',
+      );
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
@@ -80,7 +82,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={() => {
         if (!busy) onCancel();
       }}
@@ -91,21 +93,31 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl bg-white p-5 shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 id={titleId} className="text-[15px] font-semibold text-gray-900">
+        <h3 id={titleId} className="shrink-0 break-words text-[15px] font-semibold text-gray-900">
           {title}
         </h3>
-        <div id={bodyId} className="mt-2 space-y-2 text-[13px] text-gray-600">
-          {children}
+        <div
+          role="region"
+          aria-label="Confirmation details"
+          tabIndex={0}
+          className="min-h-0 overflow-y-auto overscroll-contain"
+        >
+          <div id={bodyId} className="mt-2 space-y-2 break-words text-[13px] text-gray-600">
+            {children}
+          </div>
+          {error ? (
+            <p
+              className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700"
+              role="alert"
+            >
+              {error}
+            </p>
+          ) : null}
         </div>
-        {error ? (
-          <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-4 flex shrink-0 justify-end gap-2">
           <button
             ref={cancelRef}
             type="button"
