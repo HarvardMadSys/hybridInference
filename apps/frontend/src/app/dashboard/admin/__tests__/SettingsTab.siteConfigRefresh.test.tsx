@@ -72,6 +72,11 @@ function renderSettings() {
   );
 }
 
+/** Press the confirm button of the dialog a change opens. */
+function confirm(label: string) {
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: label }));
+}
+
 beforeEach(() => {
   // No answer queued by an earlier test.
   vi.mocked(updateRuntimeSetting).mockReset();
@@ -98,6 +103,7 @@ describe('SettingsTab and the site configuration', () => {
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
+    confirm('Turn off');
 
     await waitFor(() =>
       expect(updateRuntimeSetting).toHaveBeenCalledWith('signup_require_email_verification', false),
@@ -122,11 +128,37 @@ describe('SettingsTab and the site configuration', () => {
     fireEvent.click(
       within(input.parentElement as HTMLElement).getByRole('button', { name: 'Save' }),
     );
+    expect(screen.getByRole('dialog')).toHaveTextContent('3 → 5');
+    confirm('Save');
 
     await waitFor(() =>
       expect(updateRuntimeSetting).toHaveBeenCalledWith('max_concurrent_requests_per_user', 5),
     );
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('changes nothing until the change is confirmed', async () => {
+    renderSettings();
+
+    fireEvent.click(
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
+    );
+    const dialog = screen.getByRole('dialog', {
+      name: 'Turn off Signup Require Email Verification?',
+    });
+    expect(dialog).toHaveTextContent('Require email verification for new signups');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    const input = screen.getByLabelText('max_concurrent_requests_per_user value');
+    fireEvent.change(input, { target: { value: '5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(updateRuntimeSetting).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
+    ).toHaveAttribute('aria-checked', 'true');
   });
 
   it('leaves it alone when the change is refused', async () => {
@@ -136,6 +168,7 @@ describe('SettingsTab and the site configuration', () => {
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
+    confirm('Turn off');
 
     expect(
       await screen.findByText(/Failed to update signup_require_email_verification/),

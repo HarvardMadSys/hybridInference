@@ -197,6 +197,11 @@ function alertConfig(setKeys: string[] = ['SLACK_ALERTS_WEBHOOK_URL']): ConfigRe
   };
 }
 
+/** Confirm the "Save N changes?" dialog a category's Save opens. */
+function confirmSave() {
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+}
+
 function chooseAlertChannel(label: 'None' | 'Slack' | 'WeCom') {
   fireEvent.click(screen.getByRole('combobox', { name: 'Notification channel' }));
   fireEvent.click(screen.getByRole('option', { name: label }));
@@ -225,6 +230,7 @@ describe('alert notification channel', () => {
     });
     vi.mocked(patchConfig).mockResolvedValueOnce(alertConfig(['WECOM_ALERTS_WEBHOOK_URL']));
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -245,6 +251,7 @@ describe('alert notification channel', () => {
     await renderTab(alertConfig());
     chooseAlertChannel('WeCom');
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(patchConfig).not.toHaveBeenCalled();
     expect(screen.getByText('Enter a webhook URL before saving this channel.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send test notification' })).toBeDisabled();
@@ -293,6 +300,7 @@ describe('alert notification channel', () => {
       target: { value: SLACK_WEBHOOK },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -311,6 +319,7 @@ describe('alert notification channel', () => {
       screen.queryByRole('button', { name: 'Send test notification' }),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -330,6 +339,7 @@ describe('alert notification channel', () => {
       target: { value: SLACK_WEBHOOK },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -366,6 +376,7 @@ describe('alert notification channel', () => {
     fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'webhook' } });
     expect(screen.queryByRole('switch', { name: 'ALERTS_ENABLED' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -404,6 +415,7 @@ describe('alert notification channel', () => {
     });
     vi.mocked(patchConfig).mockResolvedValueOnce(alertConfig(['SLACK_WEBHOOK_URL']));
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -499,6 +511,7 @@ describe('alert notification channel', () => {
       webhook_url: SLACK_WEBHOOK,
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save Alerts' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: {
@@ -659,6 +672,7 @@ describe('secrets', () => {
     expect(input).toHaveValue('');
     fireEvent.change(input, { target: { value: 'new-smtp-secret' } });
     fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+    confirmSave();
 
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PASSWORD: 'new-smtp-secret' } }),
@@ -676,6 +690,7 @@ describe('secrets', () => {
     fireEvent.click(within(email).getByRole('button', { name: 'Clear SMTP_PASSWORD' }));
     expect(within(email).getByText('Cleared when you save')).toBeInTheDocument();
     fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+    confirmSave();
 
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PASSWORD: '' } }),
@@ -948,7 +963,29 @@ describe('forms', () => {
     expect(value).toHaveAttribute('data-1p-ignore', 'true');
   });
 
-  it('saves a category on Enter', async () => {
+  it('asks for confirmation, listing each change, before anything is saved', async () => {
+    await renderTab();
+    const email = section('Email (SMTP)');
+    fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+    fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Save 1 change to Email (SMTP)?' });
+    expect(within(dialog).getByText('SMTP_PORT')).toBeInTheDocument();
+    expect(within(dialog).getByText(/→ 587$/)).toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+
+    // Cancel writes nothing and keeps the edit, so it can still be saved.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(within(email).getByLabelText('SMTP_PORT')).toHaveValue(587);
+
+    fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+    confirmSave();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } }));
+  });
+
+  it('saves a category on Enter, after confirmation', async () => {
     await renderTab();
     const email = section('Email (SMTP)');
     const port = within(email).getByLabelText('SMTP_PORT');
@@ -959,6 +996,7 @@ describe('forms', () => {
     expect(save).toHaveAttribute('type', 'submit');
     expect(save.closest('form')).toBe(port.closest('form'));
     fireEvent.submit(port.closest('form') as HTMLFormElement);
+    confirmSave();
 
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } }));
   });
@@ -992,6 +1030,7 @@ describe('editors', () => {
       target: { value: 'smtp.example.test' },
     });
     fireEvent.click(within(section('Email (SMTP)')).getByRole('button', { name: /^Save/ }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
         values: { SMTP_PORT: 587, SMTP_HOST: 'smtp.example.test' },
@@ -1005,6 +1044,7 @@ describe('editors', () => {
       target: { value: 'https://a.test,https://b.test' },
     });
     fireEvent.click(within(section('Network')).getByRole('button', { name: 'Save Network' }));
+    confirmSave();
     await waitFor(() =>
       expect(patchConfig).toHaveBeenLastCalledWith({
         values: {
@@ -1024,6 +1064,7 @@ describe('editors', () => {
 
     expect(within(email).getByText('Enter a whole number.')).toBeInTheDocument();
     fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(patchConfig).not.toHaveBeenCalled();
   });
 
@@ -1036,6 +1077,7 @@ describe('editors', () => {
 
     fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '70000' } });
     fireEvent.click(within(email).getByRole('button', { name: 'Save Email (SMTP)' }));
+    confirmSave();
 
     expect(await within(email).findByText('SMTP_PORT: must be between 1 and 65535')).toBeVisible();
     expect(within(email).getByText('must be between 1 and 65535')).toBeVisible();

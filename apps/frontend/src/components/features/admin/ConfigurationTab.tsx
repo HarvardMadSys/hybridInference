@@ -52,12 +52,24 @@ import {
   testAlertNotification,
   type ConfigEntry,
   type ConfigResponse,
+  type ConfigScalar,
 } from '@/lib/api/config';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
 
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+/** A category's validated changes, waiting for the administrator to confirm them. */
+interface PendingSave {
+  group: ConfigGroup;
+  values: Record<string, ConfigScalar>;
+}
+
+function shownValue(value: ConfigScalar | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '(empty)';
+  return String(value);
 }
 
 /**
@@ -94,6 +106,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
+  const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -223,9 +236,15 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       }));
       return;
     }
-    const keys = Object.keys(values);
-    if (keys.length === 0) return;
+    if (Object.keys(values).length === 0) return;
+    // Nothing is written until the administrator confirms the list of changes.
+    setPendingSave({ group, values });
+  };
 
+  const commitSave = async ({ group, values }: PendingSave) => {
+    setPendingSave(null);
+    const channelEntries = alertWebhookEntries(group.entries);
+    const keys = Object.keys(values);
     setSavingGroup(group.id);
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
     try {
@@ -540,6 +559,37 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           </section>
         );
       })}
+
+      {pendingSave ? (
+        <ConfirmDialog
+          title={`Save ${plural(Object.keys(pendingSave.values).length, 'change')} to ${pendingSave.group.label}?`}
+          confirmLabel="Save"
+          onConfirm={() => void commitSave(pendingSave)}
+          onCancel={() => setPendingSave(null)}
+        >
+          <ul className="space-y-1.5">
+            {Object.entries(pendingSave.values).map(([key, value]) => {
+              const entry = pendingSave.group.entries.find((candidate) => candidate.key === key);
+              let change: string;
+              if (entry?.secret) change = value === '' ? 'cleared' : 'new value';
+              else change = `${shownValue(entry?.value)} → ${shownValue(value)}`;
+              return (
+                <li key={key} className="break-all">
+                  <span className="font-mono font-medium text-gray-900">{key}</span>
+                  <span className="block font-mono text-[12px]">{change}</span>
+                </li>
+              );
+            })}
+          </ul>
+          {Object.keys(pendingSave.values).some(
+            (key) =>
+              pendingSave.group.entries.find((candidate) => candidate.key === key)
+                ?.restart_required,
+          ) ? (
+            <p>Some of these apply only after the backend restarts.</p>
+          ) : null}
+        </ConfirmDialog>
+      ) : null}
 
       {markSecretTarget ? (
         <ConfirmDialog

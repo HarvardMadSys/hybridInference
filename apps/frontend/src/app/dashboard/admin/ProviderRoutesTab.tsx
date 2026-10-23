@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   OffloadRoute,
@@ -33,6 +33,7 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
+import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
@@ -462,6 +463,31 @@ function routePrimaryUpstreamProvider(route: ProviderRoute) {
   return route.upstream_provider;
 }
 
+/** A route change waiting for the administrator to confirm it. */
+interface PendingRouteAction {
+  title: string;
+  body: ReactNode;
+  confirmLabel: string;
+  tone?: 'default' | 'danger';
+  run: () => Promise<void>;
+}
+
+const ROUTE_EDIT_FIELD_LABELS: Record<string, string> = {
+  upstream_provider: 'Provider',
+  openrouter_provider: 'OpenRouter provider',
+  openrouter_sort: 'OpenRouter sort',
+  base_url: 'Base URL',
+  deployment_type: 'Deployment',
+  api_key_id: 'API key',
+  provider_model_id: 'Provider model ID',
+  quota_limit: 'Quota limit',
+  concurrency_limit: 'Concurrency limit',
+};
+
+function shownRouteValue(value: unknown): string {
+  return value === null || value === undefined || value === '' ? '(default)' : String(value);
+}
+
 function routeOpenRouterProvider(route: ProviderRoute) {
   if (route.openrouter_provider) return route.openrouter_provider;
   if (route.upstream_provider !== 'openrouter' && route.key_provider === 'openrouter') {
@@ -688,6 +714,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [verifiedCreateSignature, setVerifiedCreateSignature] = useState<string | null>(null);
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingRouteAction | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
   const [offloadRoutes, setOffloadRoutes] = useState<OffloadRoute[]>([]);
   const [offloadQueue, setOffloadQueue] = useState<OffloadQueueInfo | null>(null);
@@ -1404,9 +1431,50 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }));
   };
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingRoute || !editRoutePayload || !editFormValid) return;
+    const current: Record<string, unknown> = {
+      ...editingRoute,
+      upstream_provider: routePrimaryUpstreamProvider(editingRoute),
+    };
+    const keyLabel = (id: unknown) => {
+      const option = keyOptions.find((candidate) => candidate.id === id);
+      return option ? (option.label ?? option.key_prefix) : id;
+    };
+    const changes = Object.entries(editRoutePayload)
+      .filter(([field, value]) => shownRouteValue(current[field]) !== shownRouteValue(value))
+      .map(([field, value]) =>
+        field === 'api_key_id'
+          ? [field, keyLabel(current[field]), keyLabel(value)]
+          : [field, current[field], value],
+      );
+    setPendingAction({
+      title: `Apply changes to ${editingRoute.model_id} / ${editingRoute.provider}?`,
+      confirmLabel: 'Apply',
+      body:
+        changes.length === 0 ? (
+          <p>No field changed. The route is saved again as it is.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {changes.map(([field, before, after]) => (
+              <li key={String(field)} className="break-all">
+                <span className="font-medium text-gray-900">
+                  {ROUTE_EDIT_FIELD_LABELS[String(field)] ?? String(field)}
+                </span>
+                <span className="block font-mono text-[12px]">
+                  {shownRouteValue(before)} → {shownRouteValue(after)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ),
+      run: applyRouteEdit,
+    });
+  };
+
+  const applyRouteEdit = async () => {
+    if (!editingRoute || !editRoutePayload) return;
     const key = routeKey(editingRoute);
     setSavingKey(key);
     try {
@@ -2026,7 +2094,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     {route.source === 'override' && (
                       <button
                         type="button"
-                        onClick={() => void onResetYaml(route)}
+                        onClick={() =>
+                          setPendingAction({
+                            title: `Reset ${route.model_id} / ${route.provider}?`,
+                            body: (
+                              <p>
+                                The changes made in the console are removed, and the route goes back
+                                to the values in the configuration file.
+                              </p>
+                            ),
+                            confirmLabel: 'Reset',
+                            tone: 'danger',
+                            run: () => onResetYaml(route),
+                          })
+                        }
                         disabled={resettingKey === key}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                       >
@@ -2036,7 +2117,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     {canDisableRoute && (
                       <button
                         type="button"
-                        onClick={() => void onDisableRoute(route)}
+                        onClick={() =>
+                          setPendingAction({
+                            title: `Disable ${route.model_id} / ${route.provider}?`,
+                            body: <p>Its weight is set to 0, so it receives no new requests.</p>,
+                            confirmLabel: 'Disable',
+                            tone: 'danger',
+                            run: () => onDisableRoute(route),
+                          })
+                        }
                         disabled={isSavingWeight}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                       >
@@ -2046,7 +2135,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     {canEnableRoute && (
                       <button
                         type="button"
-                        onClick={() => void onEnableRoute(route)}
+                        onClick={() =>
+                          setPendingAction({
+                            title: `Enable ${route.model_id} / ${route.provider}?`,
+                            body: (
+                              <p>
+                                Its weight goes back to the configured value, so it receives
+                                requests again.
+                              </p>
+                            ),
+                            confirmLabel: 'Enable',
+                            run: () => onEnableRoute(route),
+                          })
+                        }
                         disabled={isSavingWeight}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                       >
@@ -2056,7 +2157,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     {route.source === 'runtime' ? (
                       <button
                         type="button"
-                        onClick={() => void onDeleteRuntimeRoute(route)}
+                        onClick={() =>
+                          setPendingAction({
+                            title: `Delete ${route.model_id} / ${route.provider}?`,
+                            body: <p>The route is removed and receives no more requests.</p>,
+                            confirmLabel: 'Delete',
+                            tone: 'danger',
+                            run: () => onDeleteRuntimeRoute(route),
+                          })
+                        }
                         disabled={deletingKey === key}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                       >
@@ -2978,6 +3087,22 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           </div>
         </div>
       )}
+
+      {pendingAction ? (
+        <ConfirmDialog
+          title={pendingAction.title}
+          confirmLabel={pendingAction.confirmLabel}
+          tone={pendingAction.tone}
+          onConfirm={() => {
+            const action = pendingAction;
+            setPendingAction(null);
+            void action.run();
+          }}
+          onCancel={() => setPendingAction(null)}
+        >
+          {pendingAction.body}
+        </ConfirmDialog>
+      ) : null}
     </div>
   );
 }

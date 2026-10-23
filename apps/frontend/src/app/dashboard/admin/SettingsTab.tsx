@@ -15,6 +15,7 @@ import {
   Role,
   RoleQuotaPreview,
 } from '@/lib/api/admin';
+import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
@@ -42,6 +43,15 @@ function relTime(iso: string | null): string {
   });
 }
 
+function settingLabel(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** A change waiting for the administrator to confirm it. */
+type PendingSettingChange =
+  | { kind: 'flag'; setting: RuntimeSettingItem }
+  | { kind: 'numeric'; setting: RuntimeSettingItem; value: number };
+
 export function SettingsTab() {
   const router = useRouter();
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
@@ -62,6 +72,7 @@ export function SettingsTab() {
   const [flagsLoading, setFlagsLoading] = useState(true);
   const [flagsError, setFlagsError] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+  const [pendingChange, setPendingChange] = useState<PendingSettingChange | null>(null);
 
   const QUOTA_KEY_PREFIX = 'user_daily_quota_';
   const [quotaConfirm, setQuotaConfirm] = useState<RoleQuotaPreview | null>(null);
@@ -148,7 +159,8 @@ export function SettingsTab() {
     }
   };
 
-  const onSaveNumeric = async (setting: RuntimeSettingItem) => {
+  /** Validate the draft, then ask for confirmation before anything is saved. */
+  const onSaveNumeric = (setting: RuntimeSettingItem) => {
     const draft = numericDrafts[setting.key] ?? '';
     const validated = validateNumericSettingInput(draft, {
       min: setting.min,
@@ -159,9 +171,13 @@ export function SettingsTab() {
       flashToast(`${setting.key}: ${validated.error}`);
       return;
     }
+    setPendingChange({ kind: 'numeric', setting, value: validated.value });
+  };
+
+  const saveNumeric = async (setting: RuntimeSettingItem, value: number) => {
     setSavingKey(setting.key);
     try {
-      const updated = await updateRuntimeSetting(setting.key, validated.value);
+      const updated = await updateRuntimeSetting(setting.key, value);
       flashToast(`${updated.key} set to ${updated.value}`);
       setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
       setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
@@ -171,6 +187,14 @@ export function SettingsTab() {
     } finally {
       setSavingKey(null);
     }
+  };
+
+  const onConfirmChange = () => {
+    if (!pendingChange) return;
+    const change = pendingChange;
+    setPendingChange(null);
+    if (change.kind === 'flag') void onToggleFlag(change.setting);
+    else void saveNumeric(change.setting, change.value);
   };
 
   const onAdd = async () => {
@@ -279,7 +303,7 @@ export function SettingsTab() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[13px] font-medium text-gray-900">
-                        {flag.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                        {settingLabel(flag.key)}
                       </span>
                       {!isDefault && (
                         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
@@ -295,7 +319,7 @@ export function SettingsTab() {
                     aria-checked={isOn}
                     aria-label={`Toggle ${flag.key.replace(/_/g, ' ')}`}
                     disabled={isToggling}
-                    onClick={() => onToggleFlag(flag)}
+                    onClick={() => setPendingChange({ kind: 'flag', setting: flag })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
                       isOn ? 'bg-gray-900' : 'bg-gray-200'
                     }`}
@@ -357,7 +381,7 @@ export function SettingsTab() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[13px] font-medium text-gray-900">
-                        {setting.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                        {settingLabel(setting.key)}
                       </span>
                       {!isDefault && (
                         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
@@ -557,6 +581,34 @@ export function SettingsTab() {
           </div>
         )}
       </div>
+
+      {pendingChange ? (
+        <ConfirmDialog
+          title={
+            pendingChange.kind === 'flag'
+              ? `${pendingChange.setting.value ? 'Turn off' : 'Turn on'} ${settingLabel(pendingChange.setting.key)}?`
+              : `Change ${settingLabel(pendingChange.setting.key)}?`
+          }
+          confirmLabel={
+            pendingChange.kind === 'flag'
+              ? pendingChange.setting.value
+                ? 'Turn off'
+                : 'Turn on'
+              : 'Save'
+          }
+          onConfirm={onConfirmChange}
+          onCancel={() => setPendingChange(null)}
+        >
+          {pendingChange.setting.description ? <p>{pendingChange.setting.description}</p> : null}
+          {pendingChange.kind === 'numeric' ? (
+            <p>
+              <span className="font-mono">{String(pendingChange.setting.value)}</span> →{' '}
+              <span className="font-mono font-medium text-gray-900">{pendingChange.value}</span>
+            </p>
+          ) : null}
+          <p>This takes effect immediately.</p>
+        </ConfirmDialog>
+      ) : null}
 
       {/* Quota apply confirm dialog */}
       {quotaConfirm && (
