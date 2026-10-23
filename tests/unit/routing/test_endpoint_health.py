@@ -1,12 +1,14 @@
 """Unit contracts for the composed endpoint health registry."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
+from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 
 
 async def test_registry_circuit_lifecycle(monkeypatch):
@@ -127,3 +129,91 @@ async def test_registry_instances_are_isolated(monkeypatch):
     assert first.allow_request(endpoint_id) is False
     assert second.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
     assert second.allow_request(endpoint_id) is True
+
+
+class _StatusError(Exception):
+    """Adapter exception carrying an upstream HTTP status (aiohttp uses .status)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+async def test_key_pool_exhaustion_does_not_trip_the_breaker(monkeypatch, caplog):
+    # Issue #1440: "no usable API key" is raised by KeyPool.acquire before
+    # anything is sent, so it is a local precondition refusal, not evidence
+    # against the endpoint. Counting it let one muted key pool open the circuit
+    # on every route sharing the provider's keys (AllCircuitsOpenError mid-stream).
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+    endpoint_id = "glm-5.3-flash:zai-api"
+    registry = EndpointHealthRegistry()
+    registry.ensure(endpoint_id)
+
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        for _ in range(3):
+            registry.record_failure(
+                endpoint_id,
+                reason="stream_exception",
+                detail="No usable API key for provider zai (role=pro, 2 configured)",
+                exc=KeyPoolExhausted("No usable API key for provider zai"),
+            )
+
+    snapshot = registry.snapshot()[endpoint_id]
+    assert snapshot["circuit_state"] == _CircuitState.CLOSED
+    assert snapshot["availability"] == 1.0
+    assert registry.allow_request(endpoint_id) is True
+    assert [r for r in caplog.records if r.getMessage() == "key_pool_exhausted_skip_breaker"]
+
+
+async def test_key_pool_exhaustion_does_not_mask_a_real_outage(monkeypatch):
+    # The exemption must not swallow a genuine upstream fault: real failures
+    # (here 429s, which are counted) still trip the breaker even when the
+    # exhaustion echo interleaves with them.
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+    endpoint_id = "glm-4.6:zai-api"
+    registry = EndpointHealthRegistry()
+    registry.ensure(endpoint_id)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
+        registry.record_failure(endpoint_id, reason="upstream_429", exc=_StatusError(429))
+        registry.record_failure(
+            endpoint_id,
+            reason="stream_exception",
+            exc=KeyPoolExhausted("No usable API key for provider zai"),
+        )
+        assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
+
+        registry.record_failure(endpoint_id, reason="upstream_429", exc=_StatusError(429))
+        await asyncio.sleep(0)
+
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+    assert registry.allow_request(endpoint_id) is False
+
+
+async def test_role_restricted_exhaustion_keeps_its_own_skip_event(monkeypatch, caplog):
+    # The reserved-above-tier subtype keeps its distinct event (added in #1238);
+    # only the log label distinguishes it from plain exhaustion now.
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+    endpoint_id = "glm-4.6:zai-api"
+    registry = EndpointHealthRegistry()
+    registry.ensure(endpoint_id)
+
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        for _ in range(3):
+            registry.record_failure(
+                endpoint_id,
+                reason="stream_exception",
+                exc=KeyPoolRoleRestricted("keys reserved for a higher tier"),
+            )
+
+    snapshot = registry.snapshot()[endpoint_id]
+    assert snapshot["circuit_state"] == _CircuitState.CLOSED
+    assert registry.allow_request(endpoint_id) is True
+    assert [r for r in caplog.records if r.getMessage() == "role_restricted_skip_breaker"]
+    assert not [r for r in caplog.records if r.getMessage() == "key_pool_exhausted_skip_breaker"]

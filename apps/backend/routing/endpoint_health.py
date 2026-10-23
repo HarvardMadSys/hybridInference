@@ -12,7 +12,7 @@ from typing import Any
 
 from routing.engine_wait import EngineWaitExpired
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
-from serving.adapters.key_pool import KeyPoolRoleRestricted
+from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
 from serving.exceptions import operator_safe_error
@@ -93,11 +93,13 @@ _CALLERS_IN_ALERT = 10
 # Deriving ownership from the endpoint's base_url instead would mean threading it
 # (or an explicit ownership flag) through ``record_failure`` at every router,
 # RouteWise, and hedging call site — new plumbing on the failure path to widen an
-# escalation that is already covered indirectly: 403 is key-specific for
-# ``KeyPool``, so an endpoint answering 403 to everything mutes its keys and then
-# fails with ``KeyPoolExhausted``, which carries no HTTP status, is not exempt,
-# and trips the breaker into its own ``circuit_open`` page. So 403 keeps the
-# pre-existing exemption, and only the unambiguous statuses escalate.
+# escalation whose absence is tolerated: 403 is key-specific for ``KeyPool``, so
+# an endpoint answering 403 to everything mutes its keys and then fails with
+# ``KeyPoolExhausted`` — a local precondition refusal (nothing was sent) that
+# endpoint health never counts (see ``record_failure``). The mutes themselves
+# keep the account quiet while they last and every 403 lands in ``api_logs``.
+# So 403 keeps the pre-existing exemption, and only the unambiguous statuses
+# escalate.
 _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
 
 # Cooldown for the upstream-auth page. Matches the circuit-open alert so a
@@ -1015,6 +1017,29 @@ class EndpointHealthRegistry:
                 "role_restricted_skip_breaker",
                 extra={
                     "event": "role_restricted_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "detail": _detail_str(detail or operator_safe_error(exc)),
+                },
+            )
+            return
+        if exc is not None and isinstance(exc, KeyPoolExhausted):
+            # Every key this endpoint could use is muted (the tail of a provider
+            # 429/auth storm), removed, or already tried by this request, so
+            # ``acquire()`` refused before anything was sent. The pool's own
+            # mutes are what keep traffic off a struggling provider while they
+            # last, and the failures that did the muting were counted when they
+            # happened, so a real outage still opens the circuit from its own
+            # evidence. Charging the echo instead let one muted key pool open
+            # the circuit on every route sharing the provider's keys — streams
+            # died in ``AllCircuitsOpenError`` and every half-open probe
+            # re-tripped while the mutes outlived the cooldown (issue #1440:
+            # 462 dead streams in a 59h prod window). Filtered here rather than
+            # per-router so the FixedRouter, RouteWise and hedging paths all
+            # inherit it, mirroring the role-restricted case above.
+            logger.info(
+                "key_pool_exhausted_skip_breaker",
+                extra={
+                    "event": "key_pool_exhausted_skip_breaker",
                     "endpoint_id": endpoint_id,
                     "detail": _detail_str(detail or operator_safe_error(exc)),
                 },
