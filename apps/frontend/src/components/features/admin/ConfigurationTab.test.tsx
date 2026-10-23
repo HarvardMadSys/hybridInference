@@ -879,6 +879,159 @@ describe('editing a category', () => {
   });
 });
 
+describe('edit flow edge cases', () => {
+  /** Email with three stored rows that Reset can remove. */
+  function resettableEmail(): ConfigResponse {
+    return makeConfig({
+      entries: [
+        entry({ key: 'SMTP_HOST', category: 'email', value: 'smtp.example.test' }),
+        entry({ key: 'SMTP_PORT', category: 'email', type: 'int', value: 25, default: 587 }),
+        entry({ key: 'SMTP_FROM_NAME', category: 'email', value: 'Ops' }),
+        entry({ key: 'SMTP_FROM_EMAIL', category: 'email', value: 'ops@example.test' }),
+      ],
+      missing: [],
+      pending_restart: [],
+    });
+  }
+
+  it('keeps only the unwritten steps after a reset fails, and retries just those', async () => {
+    const config = resettableEmail();
+    await renderTab(config);
+    editCategory('Email (SMTP)');
+    fireEvent.change(screen.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_FROM_NAME' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_FROM_EMAIL' }));
+    const written = {
+      ...config,
+      entries: config.entries.map((item) =>
+        item.key === 'SMTP_HOST' ? { ...item, value: 'smtp.new.test' } : item,
+      ),
+    };
+    vi.mocked(patchConfig).mockResolvedValueOnce(written);
+    vi.mocked(resetConfigKey)
+      .mockResolvedValueOnce(written)
+      .mockRejectedValueOnce(new APIError('HTTP_503', 'The database is unavailable.', 503));
+    saveAndConfirm('Email (SMTP)');
+
+    const email = within(section('Email (SMTP)'));
+    expect(await email.findByRole('alert')).toHaveTextContent(
+      'SMTP_FROM_NAME could not be reset: The database is unavailable.',
+    );
+    expect(email.getByRole('alert')).toHaveTextContent('2 changes were saved');
+    // Still editing, with what was not written still staged.
+    expect(email.getByText('2 unsaved changes')).toBeVisible();
+    expect(email.getByLabelText('SMTP_FROM_NAME')).toHaveTextContent('Reset when you save');
+    expect(email.getByLabelText('SMTP_FROM_EMAIL')).toHaveTextContent('Reset when you save');
+
+    // The retry lists, and sends, only what is left.
+    vi.mocked(resetConfigKey).mockResolvedValue(written);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
+    const dialog = screen.getByRole('dialog', { name: 'Save 2 changes to Email (SMTP)?' });
+    expect(dialog).not.toHaveTextContent('SMTP_HOST');
+    expect(dialog).not.toHaveTextContent('SMTP_PORT');
+    confirmSave();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(resetConfigKey).mock.calls.map(([key]) => key)).toEqual([
+      'SMTP_PORT',
+      'SMTP_FROM_NAME',
+      'SMTP_FROM_NAME',
+      'SMTP_FROM_EMAIL',
+    ]);
+    expect(screen.getByRole('button', { name: 'Edit Email (SMTP)' })).toBeEnabled();
+  });
+
+  it('does not resend a channel switch that was written before a reset failed', async () => {
+    const config = alertConfig(['SLACK_ALERTS_WEBHOOK_URL']);
+    await renderTab(config);
+    editCategory('Alerts');
+    chooseAlertChannel('WeCom');
+    fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
+      target: { value: WECOM_WEBHOOK },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset ALERTS_ENABLED' }));
+    vi.mocked(patchConfig).mockResolvedValueOnce(alertConfig(['WECOM_ALERTS_WEBHOOK_URL']));
+    vi.mocked(resetConfigKey).mockRejectedValueOnce(
+      new APIError('HTTP_503', 'The database is unavailable.', 503),
+    );
+    saveAndConfirm('Alerts');
+    await within(section('Alerts')).findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Alerts' }));
+    const dialog = screen.getByRole('dialog', { name: 'Save 1 change to Alerts?' });
+    expect(dialog).toHaveTextContent('ALERTS_ENABLED');
+    expect(dialog).not.toHaveTextContent('SLACK_ALERTS_WEBHOOK_URL');
+  });
+
+  it('drops a staged webhook reset when the channel changes, so the new URL is saved', async () => {
+    // None is saved, and SLACK_WEBHOOK_URL keeps the empty row an earlier None wrote.
+    const config = alertConfig([]);
+    config.entries = config.entries.map((item) =>
+      item.key === 'SLACK_WEBHOOK_URL'
+        ? { ...item, is_set: false, value: null, updated_at: STORED_AT }
+        : item,
+    );
+    await renderTab(config);
+    editCategory('Alerts');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' }));
+    chooseAlertChannel('Slack');
+
+    const field = screen.getByLabelText('Slack webhook URL');
+    expect(field.tagName).toBe('INPUT');
+    fireEvent.change(field, { target: { value: SLACK_WEBHOOK } });
+    saveAndConfirm('Alerts');
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: { SLACK_WEBHOOK_URL: SLACK_WEBHOOK, WECOM_ALERTS_WEBHOOK_URL: '' },
+      }),
+    );
+    expect(resetConfigKey).not.toHaveBeenCalled();
+  });
+
+  it('keeps the edited category, and its Cancel and Save, visible under any filter', async () => {
+    await renderTab();
+    editCategory('Email (SMTP)');
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
+    expect(screen.getByRole('button', { name: 'Cancel editing Email (SMTP)' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
+    expect(within(section('Email (SMTP)')).getByText(/hidden by the current filter/)).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: '' } });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Missing only' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
+    confirmSave();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } }));
+  });
+
+  it('counts a variable that is both edited and marked secret once', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({ key: 'SMTP_HOST', category: 'email', value: 'smtp.example.test' }),
+          entry({
+            key: 'ROUTE_REGION',
+            category: 'providers',
+            origin: 'discovered',
+            value: 'eu-west',
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+    editCategory('Providers');
+    fireEvent.change(screen.getByLabelText('ROUTE_REGION'), { target: { value: 'us-east' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark ROUTE_REGION as secret' }));
+
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Providers' }));
+    expect(screen.getByRole('dialog', { name: 'Save 1 change to Providers?' })).toBeVisible();
+  });
+});
+
 describe('secrets', () => {
   it('never renders a secret value, even one the backend sent by mistake', async () => {
     await renderTab();

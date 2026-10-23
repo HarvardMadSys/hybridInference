@@ -33,7 +33,6 @@ import {
 import {
   CUSTOM_KEY_PATTERN,
   buildPatch,
-  countDirty,
   errorForKey,
   groupEntries,
   isDirty,
@@ -195,6 +194,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setAlertChannelDraft(channel === savedAlertChannel(webhookEntries) ? null : channel);
     setDrafts((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
+    // A reset staged under the old channel would delete the row the new one writes.
+    setPendingResets((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     setGroupErrors((prev) => withoutKeys(prev, [webhookEntries.slack.category]));
     setAlertTestResult(null);
   };
@@ -239,8 +240,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                   'notification channel'.includes(query.trim().toLowerCase()))),
           ),
         }))
-        .filter((group) => group.entries.length > 0),
-    [groups, missingOnly, query],
+        // The edited category stays, so its Cancel and Save stay reachable.
+        .filter((group) => group.entries.length > 0 || group.id === editingGroup),
+    [groups, missingOnly, query, editingGroup],
   );
 
   const saveGroup = (group: ConfigGroup) => {
@@ -287,6 +289,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setSavingGroup(group.id);
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
     let attempted = keys;
+    // What was written before a failure, so the message can say so.
+    let written = 0;
+    let failedReset: string | null = null;
     try {
       if (keys.length > 0 || secrets.length > 0) {
         attempted = [...new Set([...keys, ...secrets])];
@@ -306,10 +311,16 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           throw new Error(`The backend answered, but ${unmarked} is still not secret.`);
         }
         applyResponse(next, attempted);
+        written += attempted.length;
+        // The channel is written now; a retry after a failed reset must not send it again.
+        if (channelEntries) setAlertChannelDraft(null);
       }
       for (const key of resets) {
         attempted = [key];
+        failedReset = key;
         applyResponse(await resetConfigKey(key), [key]);
+        failedReset = null;
+        written += 1;
       }
       if (channelEntries) {
         setAlertChannelDraft(null);
@@ -323,9 +334,13 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       );
     } catch (e) {
       // What was not written stays as a draft, with the reason beside the save.
-      const message = getErrorMessage(e);
-      const keyed = errorForKey(message, attempted);
+      const reason = getErrorMessage(e);
+      const keyed = errorForKey(reason, attempted);
       if (keyed) setEntryErrors((prev) => ({ ...prev, [keyed.key]: keyed.reason }));
+      let message = failedReset ? `${failedReset} could not be reset: ${reason}` : reason;
+      if (written > 0) {
+        message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved; the rest are still unsaved.`;
+      }
       setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
       setPendingSave(null);
     } finally {
@@ -496,21 +511,25 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         const selectedEntry = channelEntries
           ? selectedWebhookEntry(channelEntries, alertChannel)
           : null;
-        const fieldDirty = channelEntries
-          ? countDirty(
-              group.entries.filter((entry) => !isAlertWebhook(entry.key)),
-              drafts,
-            ) +
-            Number(
-              alertChannelDraft !== null ||
-                (selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])),
+        // Each variable counts once, however many things the save does to it,
+        // as the confirmation counts them; the channel choice counts as one.
+        const changedKeys = new Set([
+          ...group.entries
+            .filter(
+              (entry) =>
+                (!channelEntries || !isAlertWebhook(entry.key)) &&
+                isDirty(entry, drafts[entry.key]),
             )
-          : countDirty(group.entries, drafts);
-        const staged = new Set([
+            .map((entry) => entry.key),
           ...groupKeys(group, pendingResets),
           ...groupKeys(group, pendingSecrets),
         ]);
-        const dirty = fieldDirty + staged.size;
+        const channelDirty =
+          channelEntries !== null &&
+          (alertChannelDraft !== null ||
+            Boolean(selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])));
+        const dirty = changedKeys.size + Number(channelDirty);
+        const hidden = group.entries.length - visible.entries.length;
         const saving = savingGroup === group.id;
         const busy = saving || Boolean(channelEntries && testingAlert);
         const headingId = `${searchId}-${group.id}`;
@@ -565,6 +584,14 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                 if (editing && !busy && dirty > 0) saveGroup(group);
               }}
             >
+              {editing && hidden > 0 ? (
+                <p className="mt-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
+                  {hidden === group.entries.length
+                    ? 'Every setting in this category is hidden by the current filter.'
+                    : `${plural(hidden, 'setting')} in this category ${hidden === 1 ? 'is' : 'are'} hidden by the current filter.`}{' '}
+                  Unsaved changes to them are kept and saved with the rest.
+                </p>
+              ) : null}
               <div className="mt-1 divide-y divide-gray-100">
                 {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
                   <AlertNotificationFields
