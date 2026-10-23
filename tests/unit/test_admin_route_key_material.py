@@ -123,7 +123,7 @@ async def test_a_single_key_adapter_without_a_pool_supplies_its_key(keys):
     keys["static"] = [ENV_A]
 
     assert await _resolve(Store()) == (None, [ENV_A])
-    assert await _resolve(Store(), provider_routes._env_key_id(ENV_A)) == (None, [ENV_A])
+    assert await _resolve(Store(), dynamic_keys.env_key_id(ENV_A)) == (None, [ENV_A])
 
 
 async def test_pool_less_static_keys_come_after_the_pool_and_settings_keys(keys):
@@ -172,14 +172,14 @@ async def test_an_unreadable_store_is_a_503_not_a_smaller_key_set(keys, fail, de
 async def test_a_settings_key_is_chosen_by_its_id(keys):
     keys["settings"] = [ENV_A, ENV_B]
 
-    assert await _resolve(Store(), provider_routes._env_key_id(ENV_B)) == (None, [ENV_B])
+    assert await _resolve(Store(), dynamic_keys.env_key_id(ENV_B)) == (None, [ENV_B])
     assert keys["marked"] == []  # a settings key is not DB-sourced
 
 
 async def test_a_disabled_settings_key_cannot_be_chosen_by_id(keys):
     keys["settings"] = [ENV_A]
 
-    status = await _status(Store(disabled=[ENV_A]), provider_routes._env_key_id(ENV_A))
+    status = await _status(Store(disabled=[ENV_A]), dynamic_keys.env_key_id(ENV_A))
 
     assert status == (404, "Env provider key not found")
 
