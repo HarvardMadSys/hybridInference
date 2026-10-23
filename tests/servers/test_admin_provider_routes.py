@@ -2520,6 +2520,128 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     fake_routewise.refresh_route_table.assert_called_once_with()
 
 
+@pytest.fixture
+def single_static_key_route(admin_client):
+    _client, op_store, executor, _router, _verify = admin_client
+    provider = "static-service"
+    key = "static-service-test-key-1234567890"
+    provider_registry.register_provider_definition(
+        RuntimeProviderDefinition(
+            provider=provider,
+            display_name="Static service",
+            adapter_kind="openai_compat",
+            default_base_url="https://static.example.test/v1",
+        )
+    )
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="static-model",
+            name="Static model",
+            provider=provider,
+            endpoint_id="static-model:static-api",
+            base_url="https://static.example.test/v1",
+            api_key=key,
+        )
+    )
+    assert adapter._key_pool is None
+    executor.register_route("static-model", [(adapter, 1.0)])
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    op_store.list_provider_env_key_min_roles = AsyncMock(return_value={})
+    op_store.list_provider_key_min_roles = AsyncMock(return_value={})
+    op_store.list_provider_key_values = AsyncMock(return_value={})
+    op_store.list_provider_env_key_reservations = AsyncMock(return_value=[])
+    op_store.list_disabled_provider_env_keys = AsyncMock(return_value=[])
+    try:
+        yield provider, key
+    finally:
+        dynamic_keys.unregister_adapter_for_provider(provider, adapter)
+        provider_registry.unregister_provider_definition(provider)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_key", [False, True], ids=["default", "explicit"])
+async def test_route_edit_resolves_listed_single_static_key(
+    admin_client, single_static_key_route, explicit_key
+):
+    client, op_store, executor, _router, verify_mock = admin_client
+    provider, key = single_static_key_route
+    listed = await client.get("/admin/provider-keys", params={"provider": provider}, headers=AUTH)
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()["keys"]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "active"
+    assert key not in listed.text
+    key_id = rows[0]["id"] if explicit_key else None
+    payload = {
+        "upstream_provider": provider,
+        "base_url": "https://replacement.example.test/v1",
+        "api_key_id": key_id,
+        "provider_model_id": "static-model",
+    }
+    verified = await client.post(
+        "/admin/routing/provider-route-verifications/static-model/static-model:static-api",
+        json=payload,
+        headers=AUTH,
+    )
+    assert verified.status_code == 200, verified.text
+    assert verify_mock.await_args.args[0].adapter.config.api_keys == [key]
+    op_store.upsert_provider_route_config.assert_not_awaited()
+
+    async def save_route(*args, **kwargs):
+        op_store.list_provider_route_configs_for_model.return_value = [
+            {
+                "model_id": args[0],
+                "route_id": args[1],
+                "provider": args[2],
+                "base_url": args[4],
+                "api_key_id": args[5],
+                "provider_model_id": args[6],
+                **kwargs,
+            }
+        ]
+
+    op_store.upsert_provider_route_config.side_effect = save_route
+    updated = await client.put(
+        "/admin/routing/provider-routes/static-model/static-model:static-api",
+        json=payload,
+        headers=AUTH,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["api_key"]["source"] == ("env" if explicit_key else "default")
+    assert updated.json()["api_key"]["id"] == key_id
+    assert key not in updated.text
+    assert executor.routes["static-model"].raw_adapters[0][0].config.api_keys == [key]
+    op_store.upsert_provider_route_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_key", [False, True], ids=["default", "explicit"])
+@pytest.mark.parametrize("disabled_source", ["database", "memory"])
+async def test_route_edit_rejects_disabled_single_static_key(
+    admin_client, single_static_key_route, explicit_key, disabled_source
+):
+    client, op_store, _executor, _router, verify_mock = admin_client
+    provider, key = single_static_key_route
+    key_hash = dynamic_keys.env_key_hash(key)
+    if disabled_source == "database":
+        op_store.list_disabled_provider_env_key_hashes.return_value = {key_hash}
+    else:
+        dynamic_keys.disable_env_key_for_provider(provider, key, key_hash)
+    response = await client.put(
+        "/admin/routing/provider-routes/static-model/static-model:static-api",
+        json={
+            "upstream_provider": provider,
+            "base_url": "https://replacement.example.test/v1",
+            "api_key_id": provider_routes._env_key_id(key) if explicit_key else None,
+            "provider_model_id": "static-model",
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == (404 if explicit_key else 400), response.text
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_post_provider_route_model_creates_runtime_model(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client

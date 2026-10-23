@@ -53,14 +53,11 @@ class Store:
 
 @pytest.fixture
 def keys(monkeypatch):
-    """The provider's live pools and settings keys, and what gets marked as DB-sourced."""
-    state: dict[str, Any] = {"pool": [], "settings": [], "marked": [], "declared": []}
-
-    class Pool:
-        def snapshot_keys(self):
-            return list(state["pool"])
-
-    monkeypatch.setattr(dynamic_keys, "get_pools_for_provider", lambda provider: [Pool()])
+    """The provider's live candidate and settings keys, and DB-source bookkeeping."""
+    state: dict[str, Any] = {"candidates": [], "settings": [], "marked": [], "declared": []}
+    monkeypatch.setattr(
+        dynamic_keys, "list_candidate_env_keys", lambda provider: list(state["candidates"])
+    )
     monkeypatch.setattr(
         dynamic_keys, "configured_env_keys_for_provider", lambda provider: list(state["settings"])
     )
@@ -94,7 +91,7 @@ async def _status(store, api_key_id=None) -> tuple[int, str]:
 
 
 async def test_without_a_key_id_every_active_key_is_used_once(keys):
-    keys["pool"] = [POOL_P, ENV_A, " "]
+    keys["candidates"] = [POOL_P, ENV_A, " "]
     keys["settings"] = [ENV_A, ENV_B]
     store = Store(disabled=[ENV_B], db_keys=[DB_C, ENV_A, ""])
 
