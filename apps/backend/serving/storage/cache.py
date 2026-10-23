@@ -1191,6 +1191,7 @@ class CachedOperationalStore(OperationalStore):
         capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
+        endpoint_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         await self._store.upsert_provider_route_candidate(
@@ -1209,6 +1210,45 @@ class CachedOperationalStore(OperationalStore):
             capabilities,
             updated_by,
             deployment_type=deployment_type,
+            endpoint_id=endpoint_id,
+        )
+
+    async def update_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        expected_updated_at: datetime,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        pricing: dict[str, str] | None,
+        deployment_type: str,
+        endpoint_id: str | None,
+        previous_endpoint_id: str,
+        updated_by: str | None,
+    ) -> datetime | None:
+        """Delegate to wrapped store."""
+        return await self._store.update_provider_route_candidate(
+            model_id,
+            route_id,
+            expected_updated_at=expected_updated_at,
+            provider=provider,
+            openrouter_sort=openrouter_sort,
+            base_url=base_url,
+            api_key_id=api_key_id,
+            provider_model_id=provider_model_id,
+            quota_limit=quota_limit,
+            concurrency_limit=concurrency_limit,
+            pricing=pricing,
+            deployment_type=deployment_type,
+            endpoint_id=endpoint_id,
+            previous_endpoint_id=previous_endpoint_id,
+            updated_by=updated_by,
         )
 
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:

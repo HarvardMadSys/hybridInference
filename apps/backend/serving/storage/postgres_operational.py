@@ -1020,6 +1020,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
                 pricing JSONB,
                 capabilities JSONB,
+                endpoint_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT,
@@ -1051,6 +1052,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "deployment_type",
                     "ALTER TABLE provider_route_candidates "
                     "ADD COLUMN IF NOT EXISTS deployment_type TEXT NOT NULL DEFAULT 'auto'",
+                ),
+                # Set only after an edit moved the route to another endpoint;
+                # NULL means the endpoint id is the route id.
+                (
+                    "endpoint_id",
+                    "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS endpoint_id TEXT",
                 ),
             ],
         )
@@ -3717,7 +3724,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
-                "created_at, updated_at, updated_by, deployment_type "
+                "created_at, updated_at, updated_by, deployment_type, endpoint_id "
                 "FROM provider_route_candidates WHERE model_id = $1 ORDER BY route_id",
                 model_id,
             )
@@ -3729,7 +3736,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
-                "created_at, updated_at, updated_by, deployment_type "
+                "created_at, updated_at, updated_by, deployment_type, endpoint_id "
                 "FROM provider_route_candidates ORDER BY model_id, route_id"
             )
         return [dict(r) for r in rows]
@@ -3751,6 +3758,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
+        endpoint_id: str | None = None,
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate row."""
         async with self._pool.acquire() as conn:
@@ -3758,9 +3766,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "INSERT INTO provider_route_candidates "
                 "(model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, pricing, capabilities, "
-                "created_at, updated_at, updated_by, deployment_type) "
+                "created_at, updated_at, updated_by, deployment_type, endpoint_id) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, "
-                "NOW(), NOW(), $14, $15) "
+                "NOW(), NOW(), $14, $15, $16) "
                 "ON CONFLICT (model_id, route_id) DO UPDATE SET "
                 "route_type = EXCLUDED.route_type, "
                 "provider = EXCLUDED.provider, "
@@ -3779,7 +3787,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "provider_route_candidates.capabilities), "
                 "updated_at = NOW(), "
                 "updated_by = EXCLUDED.updated_by, "
-                "deployment_type = EXCLUDED.deployment_type",
+                "deployment_type = EXCLUDED.deployment_type, "
+                "endpoint_id = EXCLUDED.endpoint_id",
                 model_id,
                 route_id,
                 route_type,
@@ -3795,7 +3804,74 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 json.dumps(capabilities) if capabilities is not None else None,
                 updated_by,
                 deployment_type,
+                endpoint_id,
             )
+
+    async def update_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        expected_updated_at: datetime,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        pricing: dict[str, str] | None,
+        deployment_type: str,
+        endpoint_id: str | None,
+        previous_endpoint_id: str,
+        updated_by: str | None,
+    ) -> datetime | None:
+        """Edit one runtime provider route candidate in place, moving its weight override."""
+        new_endpoint_id = endpoint_id or route_id
+        async with self._pool.acquire() as conn, conn.transaction():
+            updated_at = await conn.fetchval(
+                "UPDATE provider_route_candidates SET "
+                "provider = $4, openrouter_sort = $5, base_url = $6, api_key_id = $7, "
+                "provider_model_id = $8, quota_limit = $9, concurrency_limit = $10, "
+                "pricing = $11::jsonb, deployment_type = $12, endpoint_id = $13, "
+                "updated_at = clock_timestamp(), updated_by = $14 "
+                "WHERE model_id = $1 AND route_id = $2 AND updated_at = $3 "
+                "RETURNING updated_at",
+                model_id,
+                route_id,
+                expected_updated_at,
+                provider,
+                openrouter_sort,
+                base_url,
+                api_key_id,
+                provider_model_id,
+                quota_limit,
+                concurrency_limit,
+                json.dumps(pricing) if pricing is not None else None,
+                deployment_type,
+                endpoint_id,
+                updated_by,
+            )
+            if updated_at is None:
+                return None
+            if new_endpoint_id != previous_endpoint_id:
+                # A row already at the new id belongs to no live route (the
+                # caller refuses a move onto one), so it must not start
+                # weighting this route.
+                await conn.execute(
+                    "DELETE FROM provider_weight_overrides "
+                    "WHERE model_id = $1 AND endpoint_id = $2",
+                    model_id,
+                    new_endpoint_id,
+                )
+                await conn.execute(
+                    "UPDATE provider_weight_overrides SET endpoint_id = $3 "
+                    "WHERE model_id = $1 AND endpoint_id = $2",
+                    model_id,
+                    previous_endpoint_id,
+                    new_endpoint_id,
+                )
+        return updated_at
 
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True when removed."""

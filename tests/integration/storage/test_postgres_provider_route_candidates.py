@@ -38,6 +38,9 @@ async def postgres_op_store():
             await conn.execute(
                 "DELETE FROM provider_route_candidates WHERE model_id LIKE 'itest-%'"
             )
+            await conn.execute(
+                "DELETE FROM provider_weight_overrides WHERE model_id LIKE 'itest-%'"
+            )
 
     await _wipe()
     try:
@@ -143,3 +146,234 @@ async def test_a_write_without_a_declaration_keeps_the_stored_one(
 
     row = await _row(postgres_op_store, "itest-keep")
     assert _normalize_runtime_model_capabilities(row["capabilities"]) == CAPABILITIES
+
+
+async def _edit(
+    store: PostgresOperationalStore,
+    model_id: str,
+    *,
+    expected_updated_at,
+    endpoint_id: str | None,
+    previous_endpoint_id: str,
+    provider: str = "openrouter[parasail]",
+):
+    return await store.update_provider_route_candidate(
+        model_id,
+        f"{model_id}:openrouter-api",
+        expected_updated_at=expected_updated_at,
+        provider=provider,
+        openrouter_sort=None,
+        base_url="https://openrouter.ai/api/v1",
+        api_key_id="db-openrouter",
+        provider_model_id="deepseek/deepseek-v4-pro",
+        quota_limit=None,
+        concurrency_limit=None,
+        pricing=PRICING,
+        deployment_type="provider_api",
+        endpoint_id=endpoint_id,
+        previous_endpoint_id=previous_endpoint_id,
+        updated_by="itest-editor",
+    )
+
+
+async def test_edit_updates_the_row_in_place(postgres_op_store: PostgresOperationalStore):
+    """An edit rewrites the target fields and keeps identity, weight and declaration."""
+    await _upsert(postgres_op_store, "itest-edit", CAPABILITIES)
+    before = await _row(postgres_op_store, "itest-edit")
+
+    updated_at = await _edit(
+        postgres_op_store,
+        "itest-edit",
+        expected_updated_at=before["updated_at"],
+        endpoint_id="itest-edit:openrouter[parasail]-api",
+        previous_endpoint_id="itest-edit:openrouter-api",
+    )
+
+    after = await _row(postgres_op_store, "itest-edit")
+    assert updated_at == after["updated_at"]
+    assert after["updated_at"] > before["updated_at"]
+    assert after["created_at"] == before["created_at"]
+    assert after["route_id"] == "itest-edit:openrouter-api"
+    assert after["endpoint_id"] == "itest-edit:openrouter[parasail]-api"
+    assert after["provider"] == "openrouter[parasail]"
+    assert after["provider_model_id"] == "deepseek/deepseek-v4-pro"
+    assert after["api_key_id"] == "db-openrouter"
+    assert after["deployment_type"] == "provider_api"
+    assert after["updated_by"] == "itest-editor"
+    assert after["route_type"] == "on_demand"
+    assert after["weight"] == 1.0
+    assert _normalize_runtime_model_capabilities(after["capabilities"]) == CAPABILITIES
+
+
+async def test_edit_from_stale_state_matches_nothing(postgres_op_store: PostgresOperationalStore):
+    """A second edit that read the row before the first one landed changes nothing."""
+    await _upsert(postgres_op_store, "itest-stale", None)
+    before = await _row(postgres_op_store, "itest-stale")
+    assert await _edit(
+        postgres_op_store,
+        "itest-stale",
+        expected_updated_at=before["updated_at"],
+        endpoint_id=None,
+        previous_endpoint_id="itest-stale:openrouter-api",
+    )
+    first = await _row(postgres_op_store, "itest-stale")
+
+    stale = await _edit(
+        postgres_op_store,
+        "itest-stale",
+        expected_updated_at=before["updated_at"],
+        endpoint_id=None,
+        previous_endpoint_id="itest-stale:openrouter-api",
+        provider="openrouter",
+    )
+
+    assert stale is None
+    assert await _row(postgres_op_store, "itest-stale") == first
+
+
+async def test_edit_of_a_missing_row_matches_nothing(postgres_op_store: PostgresOperationalStore):
+    await _upsert(postgres_op_store, "itest-gone", None)
+    before = await _row(postgres_op_store, "itest-gone")
+    await postgres_op_store.delete_provider_route_candidate(
+        "itest-gone", "itest-gone:openrouter-api"
+    )
+
+    assert (
+        await _edit(
+            postgres_op_store,
+            "itest-gone",
+            expected_updated_at=before["updated_at"],
+            endpoint_id=None,
+            previous_endpoint_id="itest-gone:openrouter-api",
+        )
+        is None
+    )
+    assert await postgres_op_store.list_provider_route_candidates_for_model("itest-gone") == []
+
+
+async def _weights(store: PostgresOperationalStore, model_id: str) -> dict[str, float]:
+    rows = await store.list_weight_overrides_for_model(model_id)
+    return {row["endpoint_id"]: row["weight"] for row in rows}
+
+
+async def test_moving_the_endpoint_carries_its_weight_override(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """The override follows the route; a leftover row at the new id is replaced, not kept."""
+    await _upsert(postgres_op_store, "itest-move", None)
+    before = await _row(postgres_op_store, "itest-move")
+    await postgres_op_store.upsert_weight_override(
+        "itest-move", "itest-move:openrouter-api", 3.0, "itest"
+    )
+    await postgres_op_store.upsert_weight_override(
+        "itest-move", "itest-move:openrouter[parasail]-api", 9.0, "itest"
+    )
+    await postgres_op_store.upsert_weight_override("itest-move", "itest-move:other", 2.0, "itest")
+
+    await _edit(
+        postgres_op_store,
+        "itest-move",
+        expected_updated_at=before["updated_at"],
+        endpoint_id="itest-move:openrouter[parasail]-api",
+        previous_endpoint_id="itest-move:openrouter-api",
+    )
+
+    assert await _weights(postgres_op_store, "itest-move") == {
+        "itest-move:openrouter[parasail]-api": 3.0,
+        "itest-move:other": 2.0,
+    }
+
+    # Moving back (endpoint id = route id again) stores NULL and carries it back.
+    moved = await _row(postgres_op_store, "itest-move")
+    await _edit(
+        postgres_op_store,
+        "itest-move",
+        expected_updated_at=moved["updated_at"],
+        endpoint_id=None,
+        previous_endpoint_id="itest-move:openrouter[parasail]-api",
+        provider="openrouter",
+    )
+
+    assert (await _row(postgres_op_store, "itest-move"))["endpoint_id"] is None
+    assert await _weights(postgres_op_store, "itest-move") == {
+        "itest-move:openrouter-api": 3.0,
+        "itest-move:other": 2.0,
+    }
+
+
+async def test_a_refused_edit_moves_no_weight(postgres_op_store: PostgresOperationalStore):
+    await _upsert(postgres_op_store, "itest-keepweight", None)
+    await postgres_op_store.upsert_weight_override(
+        "itest-keepweight", "itest-keepweight:openrouter-api", 3.0, "itest"
+    )
+    before = await _row(postgres_op_store, "itest-keepweight")
+    stale = before["updated_at"].replace(year=2001)
+
+    assert (
+        await _edit(
+            postgres_op_store,
+            "itest-keepweight",
+            expected_updated_at=stale,
+            endpoint_id="itest-keepweight:openrouter[parasail]-api",
+            previous_endpoint_id="itest-keepweight:openrouter-api",
+        )
+        is None
+    )
+    assert await _weights(postgres_op_store, "itest-keepweight") == {
+        "itest-keepweight:openrouter-api": 3.0
+    }
+
+
+async def test_upsert_round_trips_a_moved_endpoint_id(postgres_op_store: PostgresOperationalStore):
+    """Restoring a deleted row (the delete rollback) puts its moved endpoint id back."""
+    await postgres_op_store.upsert_provider_route_candidate(
+        "itest-restore",
+        "itest-restore:openrouter-api",
+        "on_demand",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        None,
+        "deepseek/deepseek-v4-flash",
+        None,
+        None,
+        1.0,
+        PRICING,
+        None,
+        "itest",
+        endpoint_id="itest-restore:openrouter[parasail]-api",
+    )
+
+    row = await _row(postgres_op_store, "itest-restore")
+    assert row["endpoint_id"] == "itest-restore:openrouter[parasail]-api"
+    (listed,) = [
+        candidate
+        for candidate in await postgres_op_store.list_all_provider_route_candidates()
+        if candidate["model_id"] == "itest-restore"
+    ]
+    assert listed["endpoint_id"] == "itest-restore:openrouter[parasail]-api"
+
+
+async def test_initialize_adds_the_endpoint_id_column(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """A database from before edits gains the column, and its rows read as unmoved."""
+    pool = postgres_op_store._pool
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("ALTER TABLE provider_route_candidates DROP COLUMN endpoint_id")
+            await conn.execute(
+                "INSERT INTO provider_route_candidates "
+                "(model_id, route_id, route_type, provider, base_url, provider_model_id) "
+                "VALUES ('itest-oldep', 'itest-oldep:openrouter-api', 'on_demand', "
+                "'openrouter', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash')"
+            )
+
+        await postgres_op_store.initialize()
+
+        assert (await _row(postgres_op_store, "itest-oldep"))["endpoint_id"] is None
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS endpoint_id TEXT"
+            )

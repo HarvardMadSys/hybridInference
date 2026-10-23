@@ -809,9 +809,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const showCreateWeight = !createIsRoutewise;
   const showCreateLimits =
     createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
+  const editingRuntimeRoute = editingRoute?.source === 'runtime';
+  // A runtime quota route owns its local quota; a config route gets one only
+  // while an override provider serves it.
   const editsLocalQuota =
     editingRoute?.route_type === 'quota' &&
-    (form.upstreamProvider !== routePrimaryProvider(editingRoute) ||
+    (editingRuntimeRoute ||
+      form.upstreamProvider !== routePrimaryProvider(editingRoute) ||
       (form.upstreamProvider === 'openrouter' &&
         (selectedOpenRouterProvider ?? OPENROUTER_PROVIDER_AUTO) !==
           routeOpenRouterProvider(editingRoute)));
@@ -1107,11 +1111,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   ]);
 
   const providerSelectOptions = useMemo(() => {
-    if (!form.upstreamProvider || optionFor(providerSelectBaseOptions, form.upstreamProvider)) {
-      return providerSelectBaseOptions;
+    // A runtime route keeps its type, so it may only move to a provider the
+    // deployment allows that type for.
+    const baseOptions =
+      editingRoute?.source === 'runtime'
+        ? providerSelectBaseOptions.filter((option) =>
+            optionSupportsRouteType(option, editingRoute.route_type as ProviderRouteType),
+          )
+        : providerSelectBaseOptions;
+    if (!form.upstreamProvider || optionFor(baseOptions, form.upstreamProvider)) {
+      return baseOptions;
     }
     return [
-      ...providerSelectBaseOptions,
+      ...baseOptions,
       {
         provider: form.upstreamProvider,
         label: form.upstreamProvider,
@@ -1120,7 +1132,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         default_base_url: form.baseUrl,
       },
     ];
-  }, [form.baseUrl, form.upstreamProvider, providerSelectBaseOptions]);
+  }, [editingRoute, form.baseUrl, form.upstreamProvider, providerSelectBaseOptions]);
 
   const loadKeys = useCallback(
     async (provider: string) => {
@@ -1410,12 +1422,25 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const key = routeKey(editingRoute);
     setSavingKey(key);
     try {
-      const updated = await updateProviderRoute(
-        editingRoute.model_id,
-        editingRoute.route_id,
-        editRoutePayload,
-      );
+      const updated =
+        editingRoute.source === 'runtime'
+          ? await updateProviderRouteCandidate(
+              editingRoute.model_id,
+              editingRoute.route_id,
+              editRoutePayload,
+            )
+          : await updateProviderRoute(
+              editingRoute.model_id,
+              editingRoute.route_id,
+              editRoutePayload,
+            );
       replaceRoute(updated);
+      if (updated.endpoint_id !== editingRoute.endpoint_id) {
+        // Weights are keyed by endpoint; the gateway moved this route's with it.
+        void listRouteWeights()
+          .then(setRouteWeights)
+          .catch(() => undefined);
+      }
       toast.success('Provider route updated');
     } catch (err) {
       toast.error(`Update failed: ${getErrorMessage(err)}`);
@@ -2053,7 +2078,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {isSavingWeight ? 'Enabling...' : 'Enable'}
                       </button>
                     )}
-                    {route.source === 'runtime' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingRoute(route);
+                        setAddingRoute(false);
+                        setCreatingModel(false);
+                      }}
+                      className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                    >
+                      Edit
+                    </button>
+                    {route.source === 'runtime' && (
                       <button
                         type="button"
                         onClick={() => void onDeleteRuntimeRoute(route)}
@@ -2061,18 +2097,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                       >
                         {deletingKey === key ? 'Deleting…' : 'Delete'}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingRoute(route);
-                          setAddingRoute(false);
-                          setCreatingModel(false);
-                        }}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
-                      >
-                        Edit
                       </button>
                     )}
                   </div>
@@ -2743,7 +2767,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div>
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
-                    Override provider
+                    {editingRuntimeRoute ? 'Provider' : 'Override provider'}
                   </label>
                   <select
                     id="route-provider"

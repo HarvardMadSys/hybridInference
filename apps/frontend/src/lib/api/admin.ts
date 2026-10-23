@@ -2465,8 +2465,22 @@ export interface CreateProviderRoutePayload {
   weight: number;
 }
 
+/**
+ * Edit of a runtime-added route, applied in place. A field left out keeps the
+ * route's value; sending the target (provider, base URL, key, provider model
+ * ID) replaces it whole, and the gateway checks a changed target upstream
+ * before saving it.
+ */
 export interface UpdateProviderRouteCandidatePayload {
-  concurrency_limit: number;
+  upstream_provider?: string;
+  openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
+  base_url?: string;
+  deployment_type?: RouteDeploymentType;
+  api_key_id?: string | null;
+  provider_model_id?: string;
+  quota_limit?: number | null;
+  concurrency_limit?: number | null;
 }
 
 /** What a runtime model accepts; every field is required when it is created. */

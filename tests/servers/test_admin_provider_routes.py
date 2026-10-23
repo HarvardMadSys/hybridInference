@@ -2287,85 +2287,802 @@ async def test_post_provider_route_candidate_rejects_unpinned_openrouter_concurr
     verify_mock.assert_not_awaited()
 
 
+class _CandidateTable:
+    """Stateful stand-in for the candidate and weight-override tables.
+
+    The fixture's store is a bare mock, but an edit reads the row it replaces
+    and writes it back by compare-and-swap, so these tests need rows that
+    persist between calls and answer the way PostgresOperationalStore does.
+    """
+
+    def __init__(self, op_store) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+        self.weights: dict[tuple[str, str], float] = {}
+        self._tick = 0
+        op_store.upsert_provider_route_candidate = AsyncMock(side_effect=self.upsert)
+        op_store.update_provider_route_candidate = AsyncMock(side_effect=self.update)
+        op_store.list_provider_route_candidates_for_model = AsyncMock(
+            side_effect=self.list_for_model
+        )
+        op_store.list_all_provider_route_candidates = AsyncMock(side_effect=self.list_all)
+        op_store.delete_provider_route_candidate_with_config = AsyncMock(side_effect=self.delete)
+
+    def _now(self) -> datetime:
+        self._tick += 1
+        return NOW.replace(microsecond=self._tick)
+
+    async def upsert(
+        self,
+        model_id,
+        route_id,
+        route_type,
+        provider,
+        openrouter_sort,
+        base_url,
+        api_key_id,
+        provider_model_id,
+        quota_limit,
+        concurrency_limit,
+        weight,
+        pricing,
+        capabilities,
+        updated_by,
+        deployment_type="auto",
+        endpoint_id=None,
+    ) -> None:
+        stored = self.rows.get((model_id, route_id), {})
+        self.rows[(model_id, route_id)] = {
+            "model_id": model_id,
+            "route_id": route_id,
+            "route_type": route_type,
+            "provider": provider,
+            "openrouter_sort": openrouter_sort,
+            "base_url": base_url,
+            "api_key_id": api_key_id,
+            "provider_model_id": provider_model_id,
+            "quota_limit": quota_limit,
+            "concurrency_limit": concurrency_limit,
+            "weight": weight,
+            "pricing": json.dumps(pricing) if pricing is not None else None,
+            "capabilities": (
+                json.dumps(capabilities) if capabilities is not None else stored.get("capabilities")
+            ),
+            "deployment_type": deployment_type,
+            "endpoint_id": endpoint_id,
+            "created_at": stored.get("created_at", NOW),
+            "updated_at": self._now(),
+            "updated_by": updated_by,
+        }
+
+    async def update(
+        self,
+        model_id,
+        route_id,
+        *,
+        expected_updated_at,
+        provider,
+        openrouter_sort,
+        base_url,
+        api_key_id,
+        provider_model_id,
+        quota_limit,
+        concurrency_limit,
+        pricing,
+        deployment_type,
+        endpoint_id,
+        previous_endpoint_id,
+        updated_by,
+    ):
+        row = self.rows.get((model_id, route_id))
+        if row is None or row["updated_at"] != expected_updated_at:
+            return None
+        row.update(
+            provider=provider,
+            openrouter_sort=openrouter_sort,
+            base_url=base_url,
+            api_key_id=api_key_id,
+            provider_model_id=provider_model_id,
+            quota_limit=quota_limit,
+            concurrency_limit=concurrency_limit,
+            pricing=json.dumps(pricing) if pricing is not None else None,
+            deployment_type=deployment_type,
+            endpoint_id=endpoint_id,
+            updated_at=self._now(),
+            updated_by=updated_by,
+        )
+        new_endpoint_id = endpoint_id or route_id
+        if new_endpoint_id != previous_endpoint_id:
+            self.weights.pop((model_id, new_endpoint_id), None)
+            weight = self.weights.pop((model_id, previous_endpoint_id), None)
+            if weight is not None:
+                self.weights[(model_id, new_endpoint_id)] = weight
+        return row["updated_at"]
+
+    async def list_for_model(self, model_id):
+        return [dict(row) for key, row in sorted(self.rows.items()) if key[0] == model_id]
+
+    async def list_all(self):
+        return [dict(row) for _key, row in sorted(self.rows.items())]
+
+    async def delete(self, model_id, route_id):
+        return self.rows.pop((model_id, route_id), None) is not None
+
+    def row(self, model_id: str, route_id: str) -> dict[str, Any]:
+        return dict(self.rows[(model_id, route_id)])
+
+
+MINIMAX_ROUTE_ID = "minimax-fast:minimax-api"
+PARASAIL_ENDPOINT_ID = "minimax-fast:openrouter[parasail]-api"
+OPENROUTER_PARASAIL_TARGET = {
+    "upstream_provider": "openrouter",
+    "openrouter_provider": "parasail",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_id": "db-openrouter",
+    "provider_model_id": "minimax/minimax-m2.5",
+}
+
+
+def _attach_weight_resolver(client, route_executor, table: _CandidateTable):
+    """Give the app a real weight-override resolver whose store is ``table``."""
+    from serving.config.weight_overrides import WeightOverrideResolver
+
+    store = SimpleNamespace(
+        list_all_weight_overrides=AsyncMock(
+            side_effect=lambda: [
+                {"model_id": model_id, "endpoint_id": endpoint_id, "weight": weight}
+                for (model_id, endpoint_id), weight in table.weights.items()
+            ]
+        )
+    )
+    resolver = WeightOverrideResolver(store)
+    client.app.state.services.weight_override_resolver = resolver
+    route_executor.weight_override_resolver = resolver
+    return resolver
+
+
+async def _add_minimax_runtime_route(client, op_store, **overrides) -> dict[str, Any]:
+    op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    body = {
+        "route_type": "on_demand",
+        "upstream_provider": "minimax",
+        "base_url": "https://api.minimax.io/v1",
+        "provider_model_id": "MiniMax-M2.5",
+        "weight": 2.0,
+    }
+    body.update(overrides)
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json=body,
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _live_entry(route_executor, route_id: str, model_id: str = "minimax-fast"):
+    entries = route_executor.routes[model_id].raw_adapters
+    for index, (adapter, weight, endpoint_id) in enumerate(entries):
+        if adapter.config.route_metadata.get("route_id") == route_id:
+            return index, adapter, weight, endpoint_id
+    raise AssertionError(f"route {route_id} is not live")
+
+
+async def _patch_candidate(client, route_id: str, body: dict, model_id: str = "minimax-fast"):
+    return await client.patch(
+        f"/admin/routing/provider-route-candidates/{model_id}/{route_id}",
+        json=body,
+        headers=AUTH,
+    )
+
+
 @pytest.mark.asyncio
 async def test_patch_provider_route_candidate_updates_openrouter_concurrency_limit(
     admin_client,
 ):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     create_response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
             "route_type": "concurrency",
-            "upstream_provider": "openrouter",
-            "openrouter_provider": "parasail",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            **OPENROUTER_PARASAIL_TARGET,
             "concurrency_limit": 2,
             "weight": 1.0,
         },
         headers=AUTH,
     )
     assert create_response.status_code == 200, create_response.text
-    op_store.upsert_provider_route_candidate.reset_mock()
     fake_routewise.refresh_route_table.reset_mock()
     verify_mock.reset_mock()
+    created_at = table.row("minimax-fast", PARASAIL_ENDPOINT_ID)["updated_at"]
 
-    response = await client.patch(
-        "/admin/routing/provider-route-candidates/minimax-fast/"
-        "minimax-fast:openrouter[parasail]-api",
-        json={"concurrency_limit": 4},
-        headers=AUTH,
-    )
+    # The inline limit editor still sends the limit alone.
+    response = await _patch_candidate(client, PARASAIL_ENDPOINT_ID, {"concurrency_limit": 4})
 
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["route_type"] == "concurrency"
     assert payload["openrouter_provider"] == "parasail"
     assert payload["concurrency_limit"] == 4
-    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
-        "concurrency",
-        "openrouter[parasail]",
-        None,
-        "https://openrouter.ai/api/v1",
-        "db-openrouter",
-        "minimax/minimax-m2.5",
-        None,
-        4,
-        1.0,
-        None,
-        None,
-        "admin-token",
-        deployment_type="auto",
-    )
+    assert payload["endpoint_id"] == PARASAIL_ENDPOINT_ID
+    # In place: one UPDATE of the existing row, no delete and re-create.
+    op_store.update_provider_route_candidate.assert_awaited_once()
+    op_store.delete_provider_route_candidate_with_config.assert_not_awaited()
+    row = table.row("minimax-fast", PARASAIL_ENDPOINT_ID)
+    assert row["concurrency_limit"] == 4
+    assert row["updated_at"] > created_at
+    assert row["provider"] == "openrouter[parasail]"
+    assert row["api_key_id"] == "db-openrouter"
+    # A limit does not change where requests go, so nothing is sent upstream.
     verify_mock.assert_not_awaited()
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    _index, runtime_adapter, _weight, _endpoint = _live_entry(route_executor, PARASAIL_ENDPOINT_ID)
     assert runtime_adapter.config.concurrency == {"limit": 4}
+    assert runtime_adapter.config.concurrency_pool == (
+        f"{PARASAIL_ENDPOINT_ID}:runtime-concurrency"
+    )
     fake_routewise.refresh_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
-async def test_patch_provider_route_candidate_rejects_config_concurrency_limit(
-    admin_client,
-):
-    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+async def test_patch_provider_route_candidate_rejects_config_route(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    _CandidateTable(op_store)
 
-    response = await client.patch(
-        "/admin/routing/provider-route-candidates/minimax-fast/minimax-fast:featherless-api",
-        json={"concurrency_limit": 4},
-        headers=AUTH,
+    response = await _patch_candidate(
+        client, "minimax-fast:featherless-api", {"concurrency_limit": 4}
     )
 
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == (
-        "Only runtime OpenRouter concurrency routes can update concurrency_limit"
+        "Only runtime-added provider routes can be edited as candidates"
     )
-    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
     featherless_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
     assert featherless_adapter.config.concurrency == {"limit": 1}
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_retargets_in_place_and_keeps_identity_and_weight(
+    admin_client,
+):
+    """Moving a runtime route keeps its route id, position and weight, and survives a restart."""
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, table)
+    await _add_minimax_runtime_route(client, op_store)
+    index, old_adapter, _weight, old_endpoint_id = _live_entry(route_executor, MINIMAX_ROUTE_ID)
+    assert old_endpoint_id == MINIMAX_ROUTE_ID
+    # An admin-set runtime weight for the route, keyed by its endpoint id.
+    table.weights[("minimax-fast", MINIMAX_ROUTE_ID)] = 5.0
+    resolver.set_override("minimax-fast", MINIMAX_ROUTE_ID, 5.0)
+    verify_mock.reset_mock()
+    fake_routewise.refresh_route_table.reset_mock()
+    openrouter_pools = len(dynamic_keys.get_pools_for_provider("openrouter"))
+
+    response = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {**OPENROUTER_PARASAIL_TARGET, "deployment_type": "provider_api"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["route_id"] == MINIMAX_ROUTE_ID
+    assert payload["endpoint_id"] == PARASAIL_ENDPOINT_ID
+    assert payload["source"] == "runtime"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["key_provider"] == "openrouter"
+    assert payload["api_key_id"] == "db-openrouter"
+    assert payload["yaml_weight"] == 2.0
+    assert payload["effective_weight"] == 5.0
+    assert payload["deployment_type"] == "provider_api"
+    verify_mock.assert_awaited_once()
+
+    new_index, new_adapter, raw_weight, endpoint_id = _live_entry(route_executor, MINIMAX_ROUTE_ID)
+    assert new_index == index
+    assert new_adapter is not old_adapter
+    assert raw_weight == 2.0
+    assert endpoint_id == PARASAIL_ENDPOINT_ID
+    assert new_adapter.config.endpoint_id == PARASAIL_ENDPOINT_ID
+    assert new_adapter.config.openrouter_pinned_provider == "parasail"
+    assert new_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert new_adapter.config.route_metadata["runtime_candidate"] is True
+    assert new_adapter.config.route_metadata["api_key_id"] == "db-openrouter"
+    assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pools + 1
+    fake_routewise.refresh_route_table.assert_called_once_with()
+
+    row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    assert row["provider"] == "openrouter[parasail]"
+    assert row["endpoint_id"] == PARASAIL_ENDPOINT_ID
+    assert row["api_key_id"] == "db-openrouter"
+    assert row["deployment_type"] == "provider_api"
+    assert row["weight"] == 2.0
+    assert table.weights == {("minimax-fast", PARASAIL_ENDPOINT_ID): 5.0}
+    assert resolver.get_snapshot_for_model("minimax-fast") == {PARASAIL_ENDPOINT_ID: 5.0}
+
+    provider_routes.log_admin_action.assert_awaited()
+    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    assert action == "routing.provider_routes.candidate.update"
+    assert details["old_endpoint_id"] == MINIMAX_ROUTE_ID
+    assert details["endpoint_id"] == PARASAIL_ENDPOINT_ID
+    assert details["old_upstream_provider"] == "minimax"
+    assert details["upstream_provider"] == "openrouter[parasail]"
+
+    # Restart: drop the live route and rebuild it from the stored row.
+    services = client.app.state.services
+    provider_routes._install_route_candidate_delete(
+        services, route_executor.routes["minimax-fast"], MINIMAX_ROUTE_ID
+    )
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    _index, restored, restored_weight, restored_endpoint = _live_entry(
+        route_executor, MINIMAX_ROUTE_ID
+    )
+    assert restored is not new_adapter
+    assert restored_endpoint == PARASAIL_ENDPOINT_ID
+    assert restored_weight == 2.0
+    for field in (
+        "provider",
+        "base_url",
+        "provider_model_id",
+        "endpoint_id",
+        "deployment_type",
+        "pricing",
+        "openrouter_pinned_provider",
+    ):
+        assert getattr(restored.config, field) == getattr(new_adapter.config, field), field
+    assert restored.config.route_metadata["route_id"] == MINIMAX_ROUTE_ID
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_back_to_its_first_target_restores_the_route_id_endpoint(
+    admin_client,
+):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    moved = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    assert moved.status_code == 200, moved.text
+
+    back = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+        },
+    )
+
+    assert back.status_code == 200, back.text
+    assert back.json()["endpoint_id"] == MINIMAX_ROUTE_ID
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["endpoint_id"] is None
+    assert _live_entry(route_executor, MINIMAX_ROUTE_ID)[3] == MINIMAX_ROUTE_ID
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_without_a_new_target_keeps_its_endpoint(admin_client):
+    """A key change keeps the endpoint id; a deployment-type change alone is not verified."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    op_store.get_provider_key_full.return_value = ("minimax", "minimax-db-key-0987654321")
+    verify_mock.reset_mock()
+
+    key_edit = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1/",
+            "api_key_id": "db-minimax",
+            "provider_model_id": "MiniMax-M2.5",
+        },
+    )
+    assert key_edit.status_code == 200, key_edit.text
+    assert key_edit.json()["endpoint_id"] == MINIMAX_ROUTE_ID
+    verify_mock.assert_awaited_once()
+    row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    assert row["api_key_id"] == "db-minimax"
+    # The same endpoint keeps its registered URL verbatim.
+    assert row["base_url"] == "https://api.minimax.io/v1"
+    assert row["endpoint_id"] is None
+
+    verify_mock.reset_mock()
+    deployment_edit = await _patch_candidate(
+        client, MINIMAX_ROUTE_ID, {"deployment_type": "self_hosted"}
+    )
+    assert deployment_edit.status_code == 200, deployment_edit.text
+    assert deployment_edit.json()["deployment_type"] == "self_hosted"
+    verify_mock.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["api_key_id"] == "db-minimax"
+    assert _live_entry(route_executor, MINIMAX_ROUTE_ID)[1].config.deployment_type == "self_hosted"
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_resets_deployment_type_when_it_moves(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store, deployment_type="self_hosted")
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deployment_type"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_verify_failure_changes_nothing(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    fake_routewise.refresh_route_table.reset_mock()
+    openrouter_pools = len(dynamic_keys.get_pools_for_provider("openrouter"))
+    verify_mock.side_effect = HTTPException(
+        status_code=400, detail="Provider verification failed with HTTP 401"
+    )
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Provider verification failed with HTTP 401"
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pools
+    fake_routewise.refresh_route_table.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_save_failure_leaves_the_live_route(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    fake_routewise.refresh_route_table.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+    op_store.update_provider_route_candidate.side_effect = RuntimeError("database unavailable")
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    fake_routewise.refresh_route_table.assert_not_called()
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_live_failure_restores_the_row_and_weight(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, table)
+    await _add_minimax_runtime_route(client, op_store)
+    table.weights[("minimax-fast", MINIMAX_ROUTE_ID)] = 5.0
+    resolver.set_override("minimax-fast", MINIMAX_ROUTE_ID, 5.0)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    openrouter_pools = len(dynamic_keys.get_pools_for_provider("openrouter"))
+    fake_routewise.refresh_route_table.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    restored_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    for field in (
+        "provider",
+        "base_url",
+        "api_key_id",
+        "provider_model_id",
+        "deployment_type",
+        "endpoint_id",
+        "pricing",
+    ):
+        assert restored_row[field] == before_row[field], field
+    assert table.weights == {("minimax-fast", MINIMAX_ROUTE_ID): 5.0}
+    assert resolver.get_snapshot_for_model("minimax-fast") == {MINIMAX_ROUTE_ID: 5.0}
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pools
+    assert op_store.update_provider_route_candidate.await_count == 2
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_refuses_another_routes_endpoint(admin_client):
+    """Moving onto an endpoint another route of the model uses would merge their state."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    verify_mock.reset_mock()
+
+    response = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {
+            "upstream_provider": "featherless",
+            "base_url": "https://api.featherless.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        "another route of this model already uses endpoint id 'minimax-fast:featherless-api'"
+    )
+    verify_mock.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+
+
+@pytest.mark.asyncio
+async def test_new_route_cannot_take_an_edited_routes_endpoint(admin_client):
+    """A route added later is refused the endpoint id an edited route moved onto."""
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    moved = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    assert moved.status_code == 200, moved.text
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={"route_type": "on_demand", **OPENROUTER_PARASAIL_TARGET, "weight": 1.0},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "provider route already exists"
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_refuses_a_row_changed_by_another_process(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    # Another gateway process moved the route; this one still serves the old copy.
+    table.rows[("minimax-fast", MINIMAX_ROUTE_ID)]["provider_model_id"] = "MiniMax-M2.7"
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, {"deployment_type": "self_hosted"})
+
+    assert response.status_code == 409, response.text
+    assert "changed from another gateway process" in response.json()["detail"]
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["provider_model_id"] == "MiniMax-M2.7"
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_loses_a_compare_and_swap_race(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    fake_routewise.refresh_route_table.reset_mock()
+
+    async def concurrent_write(*_args, **_kwargs):
+        # Another writer landed between this edit's read and its write.
+        return None
+
+    op_store.update_provider_route_candidate.side_effect = concurrent_write
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        "provider route candidate changed concurrently; reload and retry"
+    )
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    fake_routewise.refresh_route_table.assert_not_called()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["provider"] == "minimax"
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_refuses_a_route_changed_during_verification(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    route = route_executor.routes["minimax-fast"]
+
+    async def concurrent_edit(_candidate):
+        # A second edit finishes while this one is talking to the upstream.
+        index, adapter, weight, endpoint_id = _live_entry(route_executor, MINIMAX_ROUTE_ID)
+        entries = list(route.raw_adapters)
+        entries[index] = (
+            provider_routes._make_adapter(
+                "minimax", {**provider_routes._config_to_dict(adapter.config)}
+            ),
+            weight,
+            endpoint_id,
+        )
+        route.raw_adapters = entries
+
+    verify_mock.side_effect = concurrent_edit
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "provider route changed during verification"
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "status", "detail"),
+    [
+        (
+            {**OPENROUTER_PARASAIL_TARGET, "base_url": "http://169.254.169.254/v1"},
+            422,
+            "base_url host is not allowed",
+        ),
+        (
+            {
+                "upstream_provider": "minimax",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider_model_id": "MiniMax-M2.5",
+            },
+            422,
+            "base_url host belongs to provider 'openrouter', not 'minimax'",
+        ),
+        (
+            {
+                "upstream_provider": "minimax",
+                "base_url": "https://api.minimax.io/v1",
+                "api_key_id": "db-openrouter",
+                "provider_model_id": "MiniMax-M2.5",
+            },
+            400,
+            "Provider key belongs to 'openrouter', expected 'minimax'",
+        ),
+        ({"quota_limit": 10}, 422, "quota_limit is only valid for quota routes"),
+        (
+            {"base_url": "https://api.minimax.io/v2"},
+            422,
+            "upstream_provider is required to change a route's target",
+        ),
+        (
+            {"upstream_provider": "minimax", "base_url": "https://api.minimax.io/v1"},
+            422,
+            "base_url and provider_model_id are required with upstream_provider",
+        ),
+    ],
+    ids=[
+        "metadata-host",
+        "other-providers-host",
+        "other-providers-key",
+        "limit-type",
+        "partial",
+        "incomplete-target",
+    ],
+)
+async def test_runtime_route_edit_validates_on_the_server(admin_client, body, status, detail):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    verify_mock.reset_mock()
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, body)
+
+    assert response.status_code == status, response.text
+    assert response.json()["detail"] == detail
+    verify_mock.assert_not_awaited()
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_requires_admin(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+
+    response = await client.patch(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{MINIMAX_ROUTE_ID}",
+        json={"deployment_type": "self_hosted"},
+        headers={"Authorization": "Bearer not-the-admin-token"},
+    )
+
+    assert response.status_code in {401, 403}
+    op_store.update_provider_route_candidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_quota_route_edit_changes_its_own_limit(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store, route_type="quota", quota_limit=100)
+    verify_mock.reset_mock()
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, {"quota_limit": 250})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["quota_limit"] == 250
+    verify_mock.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["quota_limit"] == 250
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    assert adapter.config.quota == {"limit": 250}
+    # The local quota pool is the route's, so it keeps its id (and its usage).
+    assert adapter.config.quota_pool == f"{MINIMAX_ROUTE_ID}:runtime-quota"
+
+
+@pytest.mark.asyncio
+async def test_verify_runtime_route_edit_does_not_apply(admin_client):
+    """The edit form's Verify builds a runtime route's edit as Apply would, and saves nothing."""
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    verify_mock.reset_mock()
+    fake_routewise.refresh_route_table.reset_mock()
+
+    response = await client.post(
+        f"/admin/routing/provider-route-verifications/minimax-fast/{MINIMAX_ROUTE_ID}",
+        json=OPENROUTER_PARASAIL_TARGET,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True}
+    verify_mock.assert_awaited_once()
+    (candidate,) = verify_mock.await_args.args
+    assert candidate.adapter.config.openrouter_pinned_provider == "parasail"
+    assert candidate.endpoint_id == PARASAIL_ENDPOINT_ID
+    assert candidate.route_id == MINIMAX_ROUTE_ID
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    fake_routewise.refresh_route_table.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_first_route_edit_keeps_its_declared_pricing(admin_client):
+    """The route a runtime model was created from is rebuilt from its own row, as at boot."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    create = await client.post(
+        "/admin/routing/provider-route-models",
+        json=_runtime_model_payload(),
+        headers=AUTH,
+    )
+    assert create.status_code == 200, create.text
+    route_id = create.json()["route_id"]
+
+    response = await _patch_candidate(
+        client,
+        route_id,
+        {
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-pro",
+        },
+        model_id="deepseek-v4-flash",
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["route_id"] == route_id
+    adapter = _live_entry(route_executor, route_id, model_id="deepseek-v4-flash")[1]
+    assert adapter.config.provider_model_id == "deepseek/deepseek-v4-pro"
+    assert adapter.config.openrouter_pinned_provider == "parasail"
+    assert adapter.config.pricing == RUNTIME_PRICING
+    _assert_capabilities(adapter, RUNTIME_CAPABILITIES, declared=True)
+    row = table.row("deepseek-v4-flash", route_id)
+    assert json.loads(row["pricing"]) == RUNTIME_PRICING
+    assert json.loads(row["capabilities"]) == RUNTIME_CAPABILITIES
 
 
 @pytest.mark.asyncio
@@ -2857,6 +3574,7 @@ async def test_runtime_model_requests_hold_to_a_narrow_declaration(admin_client,
 @pytest.mark.asyncio
 async def test_runtime_route_added_to_a_declared_model_keeps_its_capabilities(admin_client):
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     create = await client.post(
         "/admin/routing/provider-route-models",
@@ -2879,9 +3597,8 @@ async def test_runtime_route_added_to_a_declared_model_keeps_its_capabilities(ad
         headers=AUTH,
     )
     assert added.status_code == 200, added.text
-    op_store.upsert_provider_route_candidate.reset_mock()
 
-    # Rewriting the added route's row, as a concurrency edit does, must keep the
+    # Editing the added route, as a concurrency edit does, must keep the
     # declaration the route was created with.
     response = await client.patch(
         "/admin/routing/provider-route-candidates/deepseek-v4-flash/"
@@ -2891,7 +3608,9 @@ async def test_runtime_route_added_to_a_declared_model_keeps_its_capabilities(ad
     )
 
     assert response.status_code == 200, response.text
-    assert op_store.upsert_provider_route_candidate.await_args.args[12] == RUNTIME_CAPABILITIES
+    row = table.row("deepseek-v4-flash", "deepseek-v4-flash:openrouter[parasail]-api")
+    assert json.loads(row["capabilities"]) == RUNTIME_CAPABILITIES
+    assert row["concurrency_limit"] == 4
     added_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
     assert added_adapter.config.route_metadata["declared_capabilities"] is True
     assert added_adapter.config.context_length == 131072
@@ -5312,6 +6031,7 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
         None,
         "seed-admin",
         deployment_type="auto",
+        endpoint_id=None,
     )
     op_store.upsert_provider_route_config.assert_awaited_once_with(
         "minimax-fast",
