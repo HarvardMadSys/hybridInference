@@ -194,3 +194,67 @@ async def test_get_usage_propagates_is_admin_to_helper(monkeypatch):
     )
     assert resp.quota.max_concurrency == 50
     assert helper_calls == [("free", True)]
+
+
+@pytest.mark.asyncio
+async def test_effective_limit_prefers_account_override(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    role_helper = AsyncMock(return_value=3)
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", role_helper)
+
+    cap = await user_routes.get_effective_user_concurrency(
+        {"user_id": "u1", "role": "free", "max_concurrent_requests": 9}, None
+    )
+
+    assert cap == 9
+    role_helper.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_effective_limit_zero_override_means_unlimited(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", AsyncMock(return_value=3))
+
+    cap = await user_routes.get_effective_user_concurrency(
+        {"user_id": "u1", "role": "free", "max_concurrent_requests": 0}, None
+    )
+
+    assert cap == 0
+
+
+@pytest.mark.asyncio
+async def test_effective_limit_falls_back_to_role(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    role_helper = AsyncMock(return_value=5)
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", role_helper)
+
+    cap = await user_routes.get_effective_user_concurrency(
+        {"user_id": "u1", "role": "pro", "is_admin": False}, None
+    )
+
+    assert cap == 5
+    role_helper.assert_awaited_once_with("pro", None, is_admin=False)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_uses_account_override(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    op_store = AsyncMock()
+    op_store.get_active_key_by_account.return_value = None
+    monkeypatch.setattr(user_routes, "get_runtime_settings_instance", lambda: None)
+
+    current_user = {"user_id": "u1", "role": "free", "max_concurrent_requests": 12}
+
+    resp = await user_routes.get_usage(
+        period="today",
+        timezone_name="UTC",
+        current_user=current_user,
+        op_store=op_store,
+        log_store=None,
+    )
+
+    assert resp.quota.max_concurrency == 12

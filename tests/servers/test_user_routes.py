@@ -482,6 +482,44 @@ class TestUsageStatistics:
         assert data["usage"]["prompt_tokens"] >= 300
         assert data["usage"]["completion_tokens"] >= 130
 
+    @pytest.mark.asyncio
+    async def test_get_usage_accepts_api_key(
+        self, auth_app_client: AsyncClient, test_user_with_key
+    ):
+        """SDKs read usage and limits with the same key they call models with."""
+        response = await auth_app_client.get(
+            "/user/usage",
+            headers={"Authorization": f"Bearer {test_user_with_key['api_key']}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["quota"]["max_concurrency"] is not None
+
+    @pytest.mark.asyncio
+    async def test_get_usage_api_key_reflects_account_override(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_backend
+    ):
+        """An admin-set per-account cap wins over the role cap."""
+        operational_store, _, _, _ = auth_backend
+        await operational_store.update_user_fields(
+            test_user_with_key["id"], max_concurrent_requests=7
+        )
+
+        response = await auth_app_client.get(
+            "/user/usage", headers={"X-API-Key": test_user_with_key["api_key"]}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["quota"]["max_concurrency"] == 7
+
+    @pytest.mark.asyncio
+    async def test_get_usage_rejects_invalid_api_key(self, auth_app_client: AsyncClient):
+        response = await auth_app_client.get(
+            "/user/usage", headers={"Authorization": "Bearer hyi-not-a-real-key"}
+        )
+
+        assert response.status_code == 401
+
 
 class TestRecentRequests:
     """Test recent request listing endpoint."""

@@ -363,6 +363,7 @@ async def get_current_user(
         "is_admin": user_role == "admin",
         "email_verified": user_row["email_verified"],
         "status": user_row["status"],
+        "max_concurrent_requests": user_row.get("max_concurrent_requests"),
     }
 
 

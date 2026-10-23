@@ -48,6 +48,7 @@ from serving.servers.auth import (
     generate_api_key,
     hash_api_key,
     log_admin_action,
+    verify_user_or_api_key,
 )
 from serving.servers.deps import (
     get_current_user,
@@ -250,6 +251,25 @@ async def get_user_concurrency_for_role(
             role,
         )
     return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
+
+
+async def get_effective_user_concurrency(
+    user: dict[str, Any],
+    runtime_settings: "RuntimeSettings | None",
+) -> int:
+    """Return the cap the limiter enforces for this account.
+
+    An admin-set ``max_concurrent_requests`` override wins over the role cap,
+    matching ``UserConcurrencyLimiter.try_acquire``. ``0`` means unlimited.
+    """
+    override = user.get("max_concurrent_requests")
+    if override is not None:
+        return int(override)
+    return await get_user_concurrency_for_role(
+        user.get("role") or "free",
+        runtime_settings,
+        is_admin=bool(user.get("is_admin", False)),
+    )
 
 
 def mask_key_prefix(key_prefix: str) -> str:
@@ -677,13 +697,15 @@ async def regenerate_api_key(
 async def get_usage(
     period: str = "today",
     timezone_name: str = Query("UTC", alias="timezone"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(verify_user_or_api_key),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> UsageResponse:
     """Get user's usage statistics and quota information.
 
-    Supports periods: today, week, month, all
+    Accepts either a dashboard JWT or an inference API key, so SDKs can read
+    the effective concurrency cap with the same credential they call models
+    with. Supports periods: today, week, month, all
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -693,11 +715,7 @@ async def get_usage(
         rt = get_runtime_settings_instance()
     except RuntimeError:
         rt = None
-    max_concurrency = await get_user_concurrency_for_role(
-        current_user.get("role") or "free",
-        rt,
-        is_admin=bool(current_user.get("is_admin", False)),
-    )
+    max_concurrency = await get_effective_user_concurrency(current_user, rt)
 
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])

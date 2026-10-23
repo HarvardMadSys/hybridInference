@@ -31,6 +31,7 @@ from serving.observability.rejection_log import (
 )
 from serving.servers.deps import (
     auth_database_detail,
+    get_current_user,
     get_db_logger,
     get_log_store,
     get_operational_store,
@@ -828,6 +829,28 @@ async def optional_verify_api_key(
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
     }
+
+
+async def verify_user_or_api_key(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    op_store=Depends(get_operational_store),
+) -> dict[str, Any]:
+    """Authenticate a dashboard JWT or an inference API key.
+
+    API keys take the read-only lookup path: no quota gate and no
+    ``last_used_at`` write, so a client can ask for its limits while at quota
+    or rate limited. A ``hyi-`` prefix identifies a key; anything else in the
+    Bearer slot is verified as a JWT.
+    """
+    api_key = _extract_api_key(authorization, x_api_key)
+    if api_key and api_key.startswith("hyi-"):
+        user = await optional_verify_api_key(request, authorization, x_api_key, op_store)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid API key.")
+        return user
+    return await get_current_user(authorization=authorization, op_store=op_store)
 
 
 def _seconds_until_utc_midnight() -> int:
