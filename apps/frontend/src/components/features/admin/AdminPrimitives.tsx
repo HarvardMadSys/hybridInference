@@ -1,13 +1,11 @@
 'use client';
 
-import { useId, type ReactNode } from 'react';
-
-import { CARD } from './adminStyles';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 
 /**
- * Building blocks shared by the admin tabs, so a card title, a sub-tab bar or
- * a loading, empty or error state reads the same on every tab. The look
- * follows the Users, Providers and Recent Requests tabs.
+ * Building blocks shared by the admin tabs, so a section title, a sub-tab bar,
+ * a section index or a loading, empty or error state reads the same on every
+ * tab. The look follows the Users, Providers and Recent Requests tabs.
  */
 
 export interface AdminSubTab<K extends string> {
@@ -63,48 +61,133 @@ export function AdminSubTabs<K extends string>({
 }
 
 /**
- * A titled card: the heading names the region for assistive technology, the
- * description sits under it, and `actions` (refresh, counts) align right.
+ * A titled section of a tab. It draws no box of its own: the title, its
+ * description and `actions` (a primary button, a count) sit on the page, and
+ * the content brings a panel only where a list or table needs one. The
+ * heading names the region for assistive technology.
  */
 export function AdminSection({
+  id,
   title,
   description,
   badge,
   actions,
   className = '',
-  bodyClassName = 'p-5',
   children,
 }: {
+  /** Anchor for a section index. */
+  id?: string;
   title: ReactNode;
   description?: ReactNode;
   /** Shown beside the title, e.g. a count of muted items. */
   badge?: ReactNode;
   actions?: ReactNode;
   className?: string;
-  bodyClassName?: string;
   children: ReactNode;
 }) {
   const headingId = `${useId()}-title`;
   return (
-    <section aria-labelledby={headingId} className={`${CARD} ${className}`}>
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-gray-100 px-5 py-4">
+    <section id={id} aria-labelledby={headingId} className={`scroll-mt-4 ${className}`}>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 id={headingId} className="text-[15px] font-semibold text-gray-900">
+            <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
               {title}
             </h2>
             {badge}
           </div>
           {description ? (
-            <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-gray-500">
+            <p className="mt-0.5 max-w-3xl text-[12px] leading-relaxed text-gray-500">
               {description}
             </p>
           ) : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
-      <div className={bodyClassName}>{children}</div>
+      {children}
     </section>
+  );
+}
+
+export interface AdminSectionNavItem {
+  /** Id of the section element the item links to. */
+  id: string;
+  label: string;
+  /** Small trailing note, e.g. how many settings in it are missing. */
+  meta?: ReactNode;
+}
+
+/**
+ * An index of a long tab's sections. On wide screens it is a column that stays
+ * in view while the sections scroll past and marks the one being read; on
+ * narrow ones it is a row of links that scrolls sideways above them. Each
+ * item is an ordinary in-page link, so nothing is hidden from search or keys.
+ */
+export function AdminSectionNav({
+  label,
+  items,
+}: {
+  label: string;
+  items: readonly AdminSectionNavItem[];
+}) {
+  const [marked, setMarked] = useState<string | null>(null);
+  const idKey = items.map((item) => item.id).join('\n');
+  // A filter can remove the marked section: fall back to the first one still
+  // listed, so some item is always marked.
+  const active = items.some((item) => item.id === marked) ? marked : (items[0]?.id ?? null);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined' || !idKey) return;
+    const elements = idKey
+      .split('\n')
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    const inView = new Set<string>();
+    // A section counts as being read while it crosses the top third of the
+    // window; the first such section in page order is the current one.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) inView.add(entry.target.id);
+          else inView.delete(entry.target.id);
+        }
+        const current = elements.find((el) => inView.has(el.id));
+        if (current) setMarked(current.id);
+      },
+      { rootMargin: '0px 0px -66% 0px' },
+    );
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [idKey]);
+
+  return (
+    <nav
+      aria-label={label}
+      className="mb-6 lg:sticky lg:top-4 lg:mb-0 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto"
+    >
+      <ul className="-mx-1 flex gap-1 overflow-x-auto px-1 py-1 [scrollbar-width:thin] lg:flex-col lg:gap-0.5 lg:overflow-visible">
+        {items.map((item) => {
+          const isActive = item.id === active;
+          return (
+            <li key={item.id} className="shrink-0">
+              <a
+                href={`#${item.id}`}
+                aria-current={isActive ? 'location' : undefined}
+                onClick={() => setMarked(item.id)}
+                className={`flex items-center justify-between gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 ${
+                  isActive
+                    ? 'bg-gray-100 font-medium text-gray-900'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                <span className="truncate">{item.label}</span>
+                {item.meta}
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -126,7 +209,7 @@ export function AdminLoading({
   size = 'md',
 }: {
   label?: string;
-  /** `sm` inside a card section, `md` where a whole list or tab loads. */
+  /** `sm` inside a section, `md` where a whole list or tab loads. */
   size?: 'sm' | 'md';
 }) {
   return (
@@ -141,8 +224,8 @@ export function AdminLoading({
 }
 
 /**
- * Nothing to show. `inset` draws the dashed outline for use inside a card
- * section; `plain` is for a card whose body is the list itself.
+ * Nothing to show. `inset` draws the dashed outline where the list would be;
+ * `plain` is for a panel whose body is the list itself.
  */
 export function AdminEmptyState({
   title,
@@ -174,7 +257,7 @@ const NOTICE_TONES = {
 } as const;
 
 /**
- * An inline message in a card: a failed load or save, with an optional action
+ * An inline message in a section: a failed load or save, with an optional action
  * (Retry) and an optional dismiss button.
  */
 export function AdminNotice({

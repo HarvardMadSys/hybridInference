@@ -13,16 +13,18 @@ import {
   AdminEmptyState,
   AdminLoading,
   AdminNotice,
+  AdminSectionNav,
 } from '@/components/features/admin/AdminPrimitives';
 import {
   BUTTON_GHOST,
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
-  CARD,
   CHECKBOX,
   CONTROL,
   FORM_LABEL,
+  INDEXED_LAYOUT,
   NOTICE_ACTION,
+  PANEL,
   TEXT_FIELD,
 } from '@/components/features/admin/adminStyles';
 import {
@@ -356,12 +358,59 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     ? config.entries.find((entry) => entry.key === markSecretKey)
     : undefined;
 
+  /** Unsaved changes in a whole category, including entries a filter hides. */
+  const dirtyCount = (group: ConfigGroup) => {
+    const channelEntries = alertWebhookEntries(group.entries);
+    if (!channelEntries) return countDirty(group.entries, drafts);
+    const selectedEntry = selectedWebhookEntry(channelEntries, alertChannel);
+    return (
+      countDirty(
+        group.entries.filter((entry) => !isAlertWebhook(entry.key)),
+        drafts,
+      ) +
+      Number(
+        alertChannelDraft !== null ||
+          (selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])),
+      )
+    );
+  };
+  const fullGroup = (visible: ConfigGroup) =>
+    groups.find((candidate) => candidate.id === visible.id) ?? visible;
+  const sectionAnchor = (group: ConfigGroup) => `config-${group.id.replace(/[^\w-]/g, '-')}`;
+
+  // The index lists the categories the filters leave, and flags those with a
+  // missing required setting or unsaved changes.
+  const navItems = visibleGroups.map((visible) => {
+    const group = fullGroup(visible);
+    const missing = group.entries.filter((entry) => entry.missing).length;
+    const dirty = dirtyCount(group);
+    return {
+      id: sectionAnchor(group),
+      label: group.label,
+      meta:
+        missing > 0 || dirty > 0 ? (
+          <span className="flex shrink-0 items-center gap-1.5">
+            {dirty > 0 ? (
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+            ) : null}
+            {dirty > 0 ? <span className="sr-only">, unsaved changes</span> : null}
+            {missing > 0 ? (
+              <span className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700">
+                {missing}
+                <span className="sr-only"> missing</span>
+              </span>
+            ) : null}
+          </span>
+        ) : undefined,
+    };
+  });
+
   return (
     <div className="mt-6 space-y-4">
       {config.pending_restart.length > 0 ? (
         <section
           aria-label="Restart pending"
-          className="rounded-xl border border-amber-200 bg-amber-50 p-4"
+          className="rounded-lg border border-amber-200 bg-amber-50 p-4"
         >
           <h2 className="text-[13px] font-semibold text-amber-900">Restart pending</h2>
           <p className="mt-1 text-[12px] text-amber-800">
@@ -380,7 +429,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
       {config.missing.length > 0 ? (
         <div
-          className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-800"
+          className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-800"
           role="status"
         >
           <span className="font-semibold">
@@ -400,7 +449,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         </div>
       ) : null}
 
-      <div className={`${CARD} flex flex-wrap items-center gap-2 p-3`}>
+      <div className="flex flex-wrap items-center gap-2">
         <label htmlFor={searchId} className="sr-only">
           Search settings
         </label>
@@ -467,119 +516,125 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         />
       ) : null}
 
-      {visibleGroups.map((visible) => {
-        const group = groups.find((candidate) => candidate.id === visible.id) ?? visible;
-        const channelEntries = alertWebhookEntries(group.entries);
-        const selectedEntry = channelEntries
-          ? selectedWebhookEntry(channelEntries, alertChannel)
-          : null;
-        const dirty = channelEntries
-          ? countDirty(
-              group.entries.filter((entry) => !isAlertWebhook(entry.key)),
-              drafts,
-            ) +
-            Number(
-              alertChannelDraft !== null ||
-                (selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])),
-            )
-          : countDirty(group.entries, drafts);
-        const saving = savingGroup === group.id;
-        const busy = saving || Boolean(channelEntries && testingAlert);
-        const headingId = `${searchId}-${group.id}`;
-        return (
-          <section key={group.id} aria-labelledby={headingId} className={CARD}>
-            <div className="border-b border-gray-100 px-5 py-4">
-              <h2 id={headingId} className="text-[15px] font-semibold text-gray-900">
-                {group.label}
-              </h2>
-              {group.description ? (
-                <p className="mt-1 max-w-3xl text-[12px] text-gray-500">{group.description}</p>
-              ) : null}
-            </div>
+      {navItems.length > 0 ? (
+        // A category index beside full-width categories, one after another.
+        <div className={INDEXED_LAYOUT}>
+          <AdminSectionNav label="Configuration categories" items={navItems} />
+          <div className="min-w-0 space-y-8">
+            {visibleGroups.map((visible) => {
+              const group = fullGroup(visible);
+              const channelEntries = alertWebhookEntries(group.entries);
+              const dirty = dirtyCount(group);
+              const saving = savingGroup === group.id;
+              const busy = saving || Boolean(channelEntries && testingAlert);
+              const headingId = `${searchId}-${group.id}`;
+              return (
+                <section
+                  key={group.id}
+                  id={sectionAnchor(group)}
+                  aria-labelledby={headingId}
+                  className="scroll-mt-4"
+                >
+                  <div className="mb-3">
+                    <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
+                      {group.label}
+                    </h2>
+                    {group.description ? (
+                      <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
+                        {group.description}
+                      </p>
+                    ) : null}
+                  </div>
 
-            {groupErrors[group.id] ? (
-              <div className="px-5 pt-4">
-                <AdminNotice role="alert">{groupErrors[group.id]}</AdminNotice>
-              </div>
-            ) : null}
+                  {groupErrors[group.id] ? (
+                    <div className="mb-3">
+                      <AdminNotice role="alert">{groupErrors[group.id]}</AdminNotice>
+                    </div>
+                  ) : null}
 
-            {/* A form, so Enter saves the category, and one browsers do not
+                  {/* A form, so Enter saves the category, and one browsers do not
                 offer to remember: a secret typed here is not a login. The
                 console checks the values itself, so the browser does not. */}
-            <form
-              autoComplete="off"
-              noValidate
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!busy) void saveGroup(group);
-              }}
-            >
-              <div className="divide-y divide-gray-100 px-5">
-                {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
-                  <AlertNotificationFields
-                    entries={channelEntries}
-                    channel={alertChannel}
-                    onChannelChange={changeAlertChannel}
-                    drafts={drafts}
-                    onDraftChange={onDraftChange}
-                    errors={entryErrors}
-                    disabled={busy}
-                    testing={testingAlert}
-                    testResult={alertTestResult}
-                    onTest={() => void sendAlertTest()}
-                    onReset={requestReset}
-                  />
-                ) : null}
-                {visible.entries
-                  .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
-                  .map((entry) => (
-                    <ConfigEntryField
-                      key={entry.key}
-                      entry={entry}
-                      draft={drafts[entry.key]}
-                      onChange={onDraftChange}
-                      serverError={entryErrors[entry.key]}
-                      onReset={requestReset}
-                      layout="split"
-                      onMarkSecret={(target) => {
-                        setMarkSecretError(null);
-                        setMarkSecretKey(target.key);
-                      }}
-                      disabled={busy}
-                    />
-                  ))}
-              </div>
+                  <form
+                    autoComplete="off"
+                    noValidate
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!busy) void saveGroup(group);
+                    }}
+                  >
+                    <div className={PANEL}>
+                      <div className="divide-y divide-gray-100 px-4">
+                        {channelEntries &&
+                        visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
+                          <AlertNotificationFields
+                            entries={channelEntries}
+                            channel={alertChannel}
+                            onChannelChange={changeAlertChannel}
+                            drafts={drafts}
+                            onDraftChange={onDraftChange}
+                            errors={entryErrors}
+                            disabled={busy}
+                            testing={testingAlert}
+                            testResult={alertTestResult}
+                            onTest={() => void sendAlertTest()}
+                            onReset={requestReset}
+                          />
+                        ) : null}
+                        {visible.entries
+                          .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
+                          .map((entry) => (
+                            <ConfigEntryField
+                              key={entry.key}
+                              entry={entry}
+                              draft={drafts[entry.key]}
+                              onChange={onDraftChange}
+                              serverError={entryErrors[entry.key]}
+                              onReset={requestReset}
+                              layout="split"
+                              onMarkSecret={(target) => {
+                                setMarkSecretError(null);
+                                setMarkSecretKey(target.key);
+                              }}
+                              disabled={busy}
+                            />
+                          ))}
+                      </div>
 
-              {/* Stays in view at the bottom of the window while the
+                      {/* Stays in view at the bottom of the window while the
                   category with the changes is on screen. */}
-              {dirty > 0 ? (
-                <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-xl border-t border-gray-200 bg-white/95 px-5 py-3 backdrop-blur">
-                  <span className="mr-auto text-[12px] font-medium text-amber-700">
-                    {plural(dirty, 'unsaved change')}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => discardGroup(group)}
-                    disabled={busy}
-                    className={BUTTON_GHOST}
-                  >
-                    Discard
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    aria-busy={saving || undefined}
-                    aria-label={`Save ${group.label}`}
-                    className={BUTTON_PRIMARY}
-                  >
-                    {saving ? 'Saving…' : 'Save'}
-                  </button>
-                </div>
-              ) : null}
-            </form>
-          </section>
-        );
-      })}
+                      {dirty > 0 ? (
+                        <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+                          <span className="mr-auto text-[12px] font-medium text-amber-700">
+                            {plural(dirty, 'unsaved change')}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => discardGroup(group)}
+                            disabled={busy}
+                            className={BUTTON_GHOST}
+                          >
+                            Discard
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={busy}
+                            aria-busy={saving || undefined}
+                            aria-label={`Save ${group.label}`}
+                            className={BUTTON_PRIMARY}
+                          >
+                            {saving ? 'Saving…' : 'Save'}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </form>
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {markSecretTarget ? (
         <ConfirmDialog
@@ -687,9 +742,9 @@ function AddVariableForm({
       onSubmit={(event) => void submit(event)}
       autoComplete="off"
       aria-labelledby={`${baseId}-title`}
-      className={`${CARD} p-5`}
+      className={`${PANEL} p-4`}
     >
-      <h2 id={`${baseId}-title`} className="text-[15px] font-semibold text-gray-900">
+      <h2 id={`${baseId}-title`} className="text-[14px] font-semibold text-gray-900">
         Add variable
       </h2>
       <p className="mt-1 text-[12px] text-gray-500">

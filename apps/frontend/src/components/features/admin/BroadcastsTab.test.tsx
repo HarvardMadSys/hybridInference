@@ -45,9 +45,35 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BroadcastsTab', () => {
+  it('shows the history first and opens the composer on request', async () => {
+    render(<BroadcastsTab />);
+    await screen.findByText('Maintenance tonight');
+
+    expect(screen.queryByLabelText('Template')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
+    expect(screen.getByRole('group', { name: 'New broadcast' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Subject')).toHaveFocus();
+  });
+
+  it('keeps what was typed while the composer is hidden', async () => {
+    render(<BroadcastsTab />);
+    await screen.findByText('Maintenance tonight');
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Heads up' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.queryByLabelText('Subject')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Resume draft' })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume draft' }));
+    expect(screen.getByLabelText('Subject')).toHaveValue('Heads up');
+    expect(screen.getByLabelText('Subject')).toHaveFocus();
+  });
+
   it('labels the composer fields', async () => {
     render(<BroadcastsTab />);
     await screen.findByText('Maintenance tonight');
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
 
     expect(screen.getByLabelText('Template')).toHaveValue('custom');
     expect(screen.getByLabelText('Subject')).toBeInTheDocument();
@@ -61,6 +87,7 @@ describe('BroadcastsTab', () => {
   it('blocks sending while the spend threshold is not a number', async () => {
     render(<BroadcastsTab />);
     await screen.findByText('Maintenance tonight');
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
 
     const spend = screen.getByLabelText('Minimum spend today (USD)');
     fireEvent.change(spend, { target: { value: '-1' } });
@@ -73,7 +100,7 @@ describe('BroadcastsTab', () => {
 
   it('opens a broadcast’s recipients from a button, not only a row click', async () => {
     render(<BroadcastsTab />);
-    const history = await screen.findByRole('region', { name: 'Send History' });
+    const history = await screen.findByRole('region', { name: 'Email broadcasts' });
     const toggle = within(history).getByRole('button', { name: 'Maintenance tonight' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 

@@ -64,8 +64,9 @@ describe('AuditTab', () => {
     expect(screen.getByLabelText('Filter by user ID')).toHaveValue('');
     expect(screen.getByText('2 entries')).toBeInTheDocument();
     expect(screen.getByText('FAILED')).toBeInTheDocument();
-    expect(screen.getByText('from 10.0.0.1')).toBeInTheDocument();
-    expect(screen.getByText('from 10.0.0.2')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.1')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.2')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Audit log' })).toBeInTheDocument();
   });
 
   it('filters by the target user and by action through the URL', async () => {

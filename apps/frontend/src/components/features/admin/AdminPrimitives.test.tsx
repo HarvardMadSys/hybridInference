@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AdminNotice, AdminSection, AdminSubTabs } from './AdminPrimitives';
+import { AdminNotice, AdminSection, AdminSectionNav, AdminSubTabs } from './AdminPrimitives';
 
 afterEach(cleanup);
 
@@ -37,6 +37,7 @@ describe('AdminSection', () => {
   it('is a region named by its title, with its description and actions', () => {
     render(
       <AdminSection
+        id="history"
         title="Send History"
         description="Every broadcast."
         actions={<button>Go</button>}
@@ -46,6 +47,7 @@ describe('AdminSection', () => {
     );
 
     const region = screen.getByRole('region', { name: 'Send History' });
+    expect(region).toHaveAttribute('id', 'history');
     expect(region).toHaveTextContent('Every broadcast.');
     expect(region).toHaveTextContent('Body');
     expect(screen.getByRole('button', { name: 'Go' })).toBeInTheDocument();
@@ -64,5 +66,41 @@ describe('AdminNotice', () => {
     rerender(<AdminNotice role="alert">Could not load.</AdminNotice>);
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load.');
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
+  });
+});
+
+describe('AdminSectionNav', () => {
+  const items = [
+    { id: 'general', label: 'General' },
+    { id: 'email', label: 'Email' },
+    { id: 'network', label: 'Network' },
+  ];
+
+  it('links to each section and marks the chosen one', () => {
+    render(<AdminSectionNav label="Categories" items={items} />);
+
+    const nav = screen.getByRole('navigation', { name: 'Categories' });
+    expect(nav).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Email' })).toHaveAttribute('href', '#email');
+    expect(screen.getByRole('link', { name: 'General' })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: 'Network' }));
+    expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+    expect(screen.getByRole('link', { name: 'General' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('marks the first listed section when a filter removes the marked one', () => {
+    const { rerender } = render(<AdminSectionNav label="Categories" items={items} />);
+    fireEvent.click(screen.getByRole('link', { name: 'Network' }));
+
+    rerender(<AdminSectionNav label="Categories" items={[items[1]]} />);
+
+    expect(screen.getByRole('link', { name: 'Email' })).toHaveAttribute('aria-current', 'location');
   });
 });

@@ -14,6 +14,7 @@ import {
   BUTTON_PRIMARY,
   CONTROL,
   NOTICE_ACTION,
+  PANEL,
   PILL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
@@ -187,12 +188,12 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
       ) : types.length === 0 ? (
         !error && <AdminEmptyState title="No alert types available." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-          <table className="min-w-full text-[13px]">
+        <div className={`${PANEL} overflow-x-auto`}>
+          <table className="w-full min-w-[40rem] text-[13px]">
             <thead className="bg-gray-50/80">
               <tr className="border-b border-gray-200">
                 <th className={TABLE_HEAD_CELL}>Alert</th>
-                <th className={TABLE_HEAD_CELL}>Status</th>
+                <th className={`${TABLE_HEAD_CELL} w-56`}>Status</th>
                 <th className={`${TABLE_HEAD_CELL} text-right`}>Mute</th>
               </tr>
             </thead>

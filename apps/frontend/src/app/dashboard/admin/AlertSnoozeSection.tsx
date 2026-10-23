@@ -9,7 +9,7 @@ import {
   AdminNotice,
   AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
-import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '@/components/features/admin/adminStyles';
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, PANEL } from '@/components/features/admin/adminStyles';
 
 const DURATIONS: { label: string; seconds: number }[] = [
   { label: '30m', seconds: 30 * 60 },
@@ -132,7 +132,7 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
       {loading ? (
         <AdminLoading size="sm" />
       ) : (
-        <div className="space-y-4">
+        <div className={`${PANEL} space-y-3 px-4 py-3`}>
           <div className="flex items-center gap-2">
             <span
               className={`inline-block h-2.5 w-2.5 rounded-full ${

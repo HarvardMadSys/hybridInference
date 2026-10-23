@@ -12,7 +12,12 @@ import {
   AdminNotice,
   AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
-import { CONTROL, NOTICE_ACTION, TABLE_HEAD_CELL } from '@/components/features/admin/adminStyles';
+import {
+  CONTROL,
+  NOTICE_ACTION,
+  PANEL,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
 
 const DEFAULT_VALUE = '__default__';
 
@@ -104,8 +109,8 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
       ) : models.length === 0 ? (
         <AdminEmptyState title="No models available." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-          <table className="min-w-full text-[13px]">
+        <div className={`${PANEL} overflow-x-auto`}>
+          <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
               <tr className="border-b border-gray-200">
                 <th className={TABLE_HEAD_CELL}>Model</th>

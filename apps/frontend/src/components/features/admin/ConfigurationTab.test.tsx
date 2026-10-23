@@ -1268,6 +1268,42 @@ describe('filters', () => {
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
   });
 
+  it('indexes the categories the filters leave, and keeps one marked', async () => {
+    await renderTab();
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    const names = () =>
+      within(index)
+        .getAllByRole('link')
+        .map((link) => link.textContent);
+    expect(names()).toEqual(['Email (SMTP)1 missing', 'Network', 'Providers1 missing', 'Security']);
+    expect(within(index).getByRole('link', { name: 'Network' })).toHaveAttribute(
+      'href',
+      '#config-network',
+    );
+    expect(document.getElementById('config-network')).toBe(
+      screen.getByRole('region', { name: 'Network' }),
+    );
+
+    fireEvent.click(within(index).getByRole('link', { name: 'Network' }));
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
+
+    expect(names()).toEqual(['Providers1 missing']);
+    expect(within(index).getByRole('link', { name: /Providers/ })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+  });
+
+  it('flags a category with unsaved changes in the index', async () => {
+    await renderTab();
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
+      'unsaved changes',
+    );
+  });
+
   it('opens filtered to missing settings when linked that way', async () => {
     await renderTab(makeConfig(), { initialMissingOnly: true });
 

@@ -169,3 +169,17 @@ describe('SettingsTab feedback', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
+
+describe('SettingsTab section index', () => {
+  it('links to every section on the page', async () => {
+    renderSettings();
+    await screen.findByRole('switch', { name: 'Toggle signup require email verification' });
+
+    const index = screen.getByRole('navigation', { name: 'Settings sections' });
+    for (const link of within(index).getAllByRole('link')) {
+      const id = link.getAttribute('href')!.slice(1);
+      expect(document.getElementById(id), id).not.toBeNull();
+    }
+    expect(within(index).getAllByRole('link')).toHaveLength(8);
+  });
+});

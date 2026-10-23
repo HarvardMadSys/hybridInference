@@ -33,12 +33,14 @@ export const CHECKBOX = 'h-4 w-4 shrink-0 rounded border-gray-300 disabled:opaci
 /** A white card section inside an expanded panel. */
 export const SECTION = 'rounded-lg border border-gray-200 bg-white p-4';
 
-/** A top-level card on an admin tab: tables, forms and feeds sit in one. */
-export const CARD = 'rounded-xl border border-gray-200 bg-white shadow-sm';
+/**
+ * The one box a list or table sits in: a hairline border and no shadow, like
+ * the Users table. Section titles and toolbars stay outside it.
+ */
+export const PANEL = 'rounded-lg border border-gray-200 bg-white';
 
-/** The header strip of a card that holds a toolbar (search, filters). */
-export const CARD_TOOLBAR =
-  'flex flex-wrap items-center gap-2 rounded-t-xl border-b border-gray-200 bg-gray-50/50 p-3';
+/** Two columns on wide screens: a section index, then the sections. */
+export const INDEXED_LAYOUT = 'lg:grid lg:grid-cols-[11rem_minmax(0,1fr)] lg:gap-8';
 
 /** Table header cell and body cell, for the admin's data tables. */
 export const TABLE_HEAD_CELL =
@@ -54,6 +56,15 @@ export const BUTTON_DANGER =
   'inline-flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-[12px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50';
 export const BUTTON_GHOST =
   'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50';
+
+/**
+ * Quiet text actions for a row (Edit, Publish) and their destructive
+ * counterpart: visible, but lighter than the page's one primary button.
+ */
+const ROW_ACTION_BASE =
+  'inline-flex items-center rounded-md px-2 py-1 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-50';
+export const ROW_ACTION = `${ROW_ACTION_BASE} text-gray-600 hover:bg-gray-100 hover:text-gray-900`;
+export const ROW_ACTION_DANGER = `${ROW_ACTION_BASE} text-red-600 hover:bg-red-50 hover:text-red-700`;
 
 /** A text-style action inside an inline notice, e.g. Retry. */
 export const NOTICE_ACTION = 'shrink-0 font-medium underline underline-offset-2';

@@ -5,8 +5,8 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { AuditLogEntry, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { AdminEmptyState, AdminLoading, AdminSpinner } from './AdminPrimitives';
-import { BUTTON_SECONDARY, CARD, CARD_TOOLBAR, CONTROL } from './adminStyles';
+import { AdminEmptyState, AdminLoading, AdminSection, AdminSpinner } from './AdminPrimitives';
+import { BUTTON_SECONDARY, CONTROL, PANEL, TABLE_HEAD_CELL } from './adminStyles';
 
 const AUDIT_PAGE_SIZE = 50;
 
@@ -97,7 +97,7 @@ function RawJsonDetails({ data }: { data: unknown }) {
         Raw JSON
       </summary>
       {open && (
-        <pre className="mt-1.5 max-h-80 overflow-auto rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-[11px] text-gray-600">
+        <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-[11px] text-gray-600">
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
@@ -163,9 +163,18 @@ export function AuditTab() {
   const hasPages = auditTotal > AUDIT_PAGE_SIZE;
 
   return (
-    <div className={CARD}>
+    <AdminSection
+      title="Audit log"
+      description="Administrator actions on users and API keys."
+      actions={
+        <span className="inline-flex items-center gap-2 text-[12px] tabular-nums text-gray-500">
+          {auditLoading && <AdminSpinner size="sm" />}
+          {auditTotal} entries
+        </span>
+      }
+    >
       {/* Filters */}
-      <div className={CARD_TOOLBAR}>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <label htmlFor={actionFilterId} className="sr-only">
           Filter by action
         </label>
@@ -195,136 +204,146 @@ export function AuditTab() {
             setQueryParams({ user_id: e.target.value || null, offset: null });
           }}
           placeholder="Filter by user ID…"
-          className={`${CONTROL} min-w-[12rem] flex-1 font-mono sm:max-w-sm`}
+          className={`${CONTROL} w-full min-w-0 font-mono sm:w-72`}
         />
-        <span className="ml-auto inline-flex items-center gap-2 text-[12px] tabular-nums text-gray-500">
-          {auditLoading && <AdminSpinner size="sm" />}
-          {auditTotal} entries
-        </span>
       </div>
 
-      {/* Entries */}
-      {auditLoading ? (
-        <AdminLoading />
-      ) : auditEntries.length === 0 ? (
-        <AdminEmptyState variant="plain" title="No audit log entries." />
-      ) : (
-        <ul className="divide-y divide-gray-100">
-          {auditEntries.map((entry) => {
-            const cat = actionCategory(entry.action);
-            const badgeClass = entry.success ? AUDIT_CATEGORY_CLASS[cat] : 'bg-red-50 text-red-700';
-            const absoluteTs = new Date(entry.timestamp).toLocaleString();
-            const tid = entry.target_user_id;
-            const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
-            const detailEntries =
-              entry.details && typeof entry.details === 'object'
-                ? Object.entries(entry.details)
-                : [];
-            return (
-              <li
-                key={entry.id}
-                className={`px-4 py-3 ${entry.success ? '' : 'border-l-2 border-l-rose-300 pl-3.5'}`}
-              >
-                {/* One line per column on wide screens: what happened, its
-                    details, then when and from where. Stacked when narrow. */}
-                <div className="flex flex-col gap-1.5 lg:grid lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)_auto] lg:items-start lg:gap-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {!entry.success && (
-                      <span className="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
-                        FAILED
-                      </span>
-                    )}
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${badgeClass}`}
-                    >
-                      {actionLabel(entry.action)}
-                    </span>
-                    {tid && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQueryParams({ user_id: tid, offset: null });
-                        }}
-                        title={tid}
-                        aria-label={`Filter by user ${tid}`}
-                        className="rounded font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
-                      >
-                        <span aria-hidden="true">{tidDisplay}</span>
-                        <span className="sr-only">{tid}</span>
-                      </button>
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    {detailEntries.length > 0 && (
-                      <>
-                        <div className="flex flex-wrap gap-1.5">
-                          {detailEntries.map(([k, v]) => {
-                            const { display, full } = formatAuditDetailValue(v);
-                            return (
-                              <span
-                                key={k}
-                                title={full}
-                                className="inline-flex max-w-full items-center gap-1 rounded border border-gray-100 bg-gray-50 px-1.5 py-0.5 text-[11px] text-gray-700"
-                              >
-                                <span className="shrink-0 text-gray-400">{k}:</span>
-                                <span className="min-w-0 break-all">{display}</span>
-                              </span>
-                            );
-                          })}
+      <div className={PANEL}>
+        {auditLoading ? (
+          <AdminLoading />
+        ) : auditEntries.length === 0 ? (
+          <AdminEmptyState variant="plain" title="No audit log entries." />
+        ) : (
+          // Wide enough for one line per entry on a desktop; on a phone the
+          // table scrolls inside its box instead of widening the page.
+          <div className="overflow-x-auto rounded-lg">
+            <table className="w-full min-w-[46rem] text-[13px]">
+              <thead className="bg-gray-50/80">
+                <tr className="border-b border-gray-200">
+                  <th className={`${TABLE_HEAD_CELL} w-28`}>Time</th>
+                  <th className={`${TABLE_HEAD_CELL} w-48`}>Action</th>
+                  <th className={`${TABLE_HEAD_CELL} w-36`}>User</th>
+                  <th className={TABLE_HEAD_CELL}>Details</th>
+                  <th className={`${TABLE_HEAD_CELL} w-32 text-right`}>Source</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {auditEntries.map((entry) => {
+                  const cat = actionCategory(entry.action);
+                  const badgeClass = entry.success
+                    ? AUDIT_CATEGORY_CLASS[cat]
+                    : 'bg-red-50 text-red-700';
+                  const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                  const tid = entry.target_user_id;
+                  const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                  const detailEntries =
+                    entry.details && typeof entry.details === 'object'
+                      ? Object.entries(entry.details)
+                      : [];
+                  return (
+                    <tr key={entry.id} className={entry.success ? undefined : 'bg-red-50/50'}>
+                      <td className="whitespace-nowrap px-4 py-2.5 align-top text-[12px] tabular-nums text-gray-500">
+                        <time dateTime={entry.timestamp} title={absoluteTs} aria-label={absoluteTs}>
+                          {formatRelative(entry.timestamp)}
+                        </time>
+                      </td>
+                      <td className="px-4 py-2 align-top">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {!entry.success && (
+                            <span className="text-[10px] font-bold uppercase tracking-wide text-red-700">
+                              FAILED
+                            </span>
+                          )}
+                          <span
+                            className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[12px] font-medium ${badgeClass}`}
+                          >
+                            {actionLabel(entry.action)}
+                          </span>
                         </div>
-                        <RawJsonDetails data={entry.details} />
-                      </>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-gray-400 lg:flex-col lg:items-end lg:text-right">
-                    <time
-                      dateTime={entry.timestamp}
-                      title={absoluteTs}
-                      aria-label={absoluteTs}
-                      className="whitespace-nowrap text-[12px] text-gray-500"
-                    >
-                      {formatRelative(entry.timestamp)}
-                    </time>
-                    <span className="whitespace-nowrap font-mono">from {entry.admin_ip}</span>
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {/* Pagination */}
-      {hasPages && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-4 py-2.5">
-          <span className="text-[12px] tabular-nums text-gray-500">
-            {auditOffset + 1}&ndash;{Math.min(auditOffset + AUDIT_PAGE_SIZE, auditTotal)} of{' '}
-            {auditTotal}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                setQueryParams({
-                  offset: String(Math.max(0, auditOffset - AUDIT_PAGE_SIZE)),
-                })
-              }
-              disabled={auditOffset === 0}
-              className={BUTTON_SECONDARY}
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => setQueryParams({ offset: String(auditOffset + AUDIT_PAGE_SIZE) })}
-              disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
-              className={BUTTON_SECONDARY}
-            >
-              Next
-            </button>
+                      </td>
+                      <td className="px-4 py-2.5 align-top">
+                        {tid ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQueryParams({ user_id: tid, offset: null });
+                            }}
+                            title={tid}
+                            aria-label={`Filter by user ${tid}`}
+                            className="rounded font-mono text-[12px] text-gray-700 hover:text-gray-900 hover:underline"
+                          >
+                            <span aria-hidden="true">{tidDisplay}</span>
+                            <span className="sr-only">{tid}</span>
+                          </button>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="min-w-0 px-4 py-2.5 align-top">
+                        {detailEntries.length > 0 ? (
+                          <>
+                            <dl className="flex flex-wrap gap-x-4 gap-y-0.5 text-[12px]">
+                              {detailEntries.map(([k, v]) => {
+                                const { display, full } = formatAuditDetailValue(v);
+                                return (
+                                  <div key={k} className="flex min-w-0 max-w-full gap-1">
+                                    <dt className="shrink-0 text-gray-400">{k}</dt>
+                                    <dd title={full} className="min-w-0 break-all text-gray-700">
+                                      {display}
+                                    </dd>
+                                  </div>
+                                );
+                              })}
+                            </dl>
+                            <RawJsonDetails data={entry.details} />
+                          </>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right align-top font-mono text-[12px] text-gray-500">
+                        {entry.admin_ip}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* Pagination */}
+        {hasPages && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-4 py-2.5">
+            <span className="text-[12px] tabular-nums text-gray-500">
+              {auditOffset + 1}&ndash;{Math.min(auditOffset + AUDIT_PAGE_SIZE, auditTotal)} of{' '}
+              {auditTotal}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setQueryParams({
+                    offset: String(Math.max(0, auditOffset - AUDIT_PAGE_SIZE)),
+                  })
+                }
+                disabled={auditOffset === 0}
+                className={BUTTON_SECONDARY}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                onClick={() => setQueryParams({ offset: String(auditOffset + AUDIT_PAGE_SIZE) })}
+                disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
+                className={BUTTON_SECONDARY}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </AdminSection>
   );
 }

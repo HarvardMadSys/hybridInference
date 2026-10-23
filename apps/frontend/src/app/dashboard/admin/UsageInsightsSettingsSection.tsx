@@ -17,6 +17,7 @@ import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
   FORM_LABEL,
+  PANEL,
   TEXT_FIELD,
 } from '@/components/features/admin/adminStyles';
 
@@ -135,7 +136,7 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
       {loading ? (
         <AdminLoading size="sm" />
       ) : (
-        <div className="space-y-4">
+        <div className={`${PANEL} max-w-3xl space-y-4 p-4`}>
           <div className="flex items-center gap-2">
             <span
               className={`inline-block h-2.5 w-2.5 rounded-full ${
