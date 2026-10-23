@@ -20,6 +20,8 @@ from routing.engine_wait import EngineWaitExpired
 from routing.offload import (
     OFFLOAD_ENGINE_WAIT,
     OFFLOAD_LAST_RESORT,
+    OFFLOAD_MAX_WAIT_SECONDS,
+    OFFLOAD_PREFILL_CREDIT_TOKENS,
     OFFLOAD_QUEUE_WAIT,
     FallbackOrder,
     OffloadPolicy,
@@ -186,6 +188,64 @@ def test_policy_normalizes_an_integer_wait_to_float():
     policy = OffloadPolicy(route_id="r", wait_seconds=3)
     assert policy.wait_seconds == 3.0
     assert isinstance(policy.wait_seconds, float)
+
+
+def test_engine_wait_keeps_the_base_for_a_warm_prompt():
+    """A prefix already resident prefills ~nothing and waits the base, unchanged."""
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(0) == 0.05
+    assert policy.engine_wait_seconds(-1) == 0.05
+
+
+def test_engine_wait_offsets_the_base_it_does_not_multiply_it():
+    """One credit of prefill buys one *extra* base wait, not merely the base.
+
+    The offset is the whole correction. The old proportional form gave a
+    4.1k-token cold prefill exactly the 0.8 s floor a warm continuation gets, and
+    the measured distribution shows why that fails: twelve cold 2.6k requests
+    completed in 0.49-0.97 s, so two of them crossed a 0.80 s deadline, and at
+    9.1k the 1.78 s budget sat under a measured 1.79 s. Replaying both rules over
+    27 measured successful prefills, the old one cancels three and this one none.
+    """
+    policy = _policy(wait_seconds=0.8)
+    assert policy.engine_wait_seconds(OFFLOAD_PREFILL_CREDIT_TOKENS) == pytest.approx(1.6)
+    assert policy.engine_wait_seconds(2_659) == pytest.approx(1.32, abs=0.01)
+    assert policy.engine_wait_seconds(4_519) == pytest.approx(1.68, abs=0.01)
+    assert policy.engine_wait_seconds(9_119) == pytest.approx(2.58, abs=0.01)
+    assert policy.engine_wait_seconds(18_319) == pytest.approx(4.38, abs=0.01)
+    # Every measured sample -- including the 2.6k tail and the 9.1k edge the old
+    # rule would have cut -- finishes inside the new budget.
+    for tokens, measured in (
+        (1_819, 0.56),
+        (2_659, 0.97),
+        (4_519, 0.86),
+        (9_119, 1.79),
+        (18_319, 1.79),
+    ):
+        assert measured < policy.engine_wait_seconds(tokens)
+
+
+def test_engine_wait_extends_with_the_uncached_prefill():
+    """A cold prefill of a long prompt gets time proportional to the work."""
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(OFFLOAD_PREFILL_CREDIT_TOKENS) == pytest.approx(0.1)
+    assert policy.engine_wait_seconds(2 * OFFLOAD_PREFILL_CREDIT_TOKENS) == pytest.approx(0.15)
+    assert policy.engine_wait_seconds(4 * OFFLOAD_PREFILL_CREDIT_TOKENS) == pytest.approx(0.25)
+
+
+def test_engine_wait_is_capped_so_a_wedged_engine_still_fails_over():
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+    # Monotone up to the ceiling, never past it.
+    huge = policy.engine_wait_seconds(OFFLOAD_PREFILL_CREDIT_TOKENS * 10_000)
+    assert huge == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+
+
+def test_engine_wait_never_shortens_a_base_wait_longer_than_the_ceiling():
+    """A deployment that set a wait above the ceiling keeps its own wait."""
+    policy = _policy(wait_seconds=OFFLOAD_MAX_WAIT_SECONDS * 2)
+    assert policy.engine_wait_seconds(0) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)
+    assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)
 
 
 def test_only_gateway_queue_refusals_count_as_a_queue_wait():

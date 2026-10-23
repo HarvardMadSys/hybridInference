@@ -84,6 +84,8 @@ if TYPE_CHECKING:
 __all__ = [
     "OFFLOAD_ENGINE_WAIT",
     "OFFLOAD_LAST_RESORT",
+    "OFFLOAD_MAX_WAIT_SECONDS",
+    "OFFLOAD_PREFILL_CREDIT_TOKENS",
     "OFFLOAD_QUEUE_WAIT",
     "FallbackOrder",
     "OffloadPolicy",
@@ -99,6 +101,52 @@ OFFLOAD_QUEUE_WAIT = "queue_wait"
 OFFLOAD_ENGINE_WAIT = "engine_wait"
 #: ``_routing["offload"]`` when no other route could serve the request.
 OFFLOAD_LAST_RESORT = "last_resort"
+
+#: Estimated un-cached prefill tokens one ``wait_seconds`` of engine time is
+#: credited with. The budget is ``wait_seconds * (1 + uncached / credit)``: the
+#: configured wait is a *fixed* allowance (queueing, scheduling, the first
+#: decode step) plus one credit's worth of prefill, and every further credit
+#: buys another base wait of prefill. Offsetting rather than scaling is what
+#: makes the floor mean something -- a purely proportional
+#: ``wait_seconds * uncached / credit`` gives a prompt of exactly one credit the
+#: same 0.8 s a warm continuation gets, which is precisely the cold prefill that
+#: was being cancelled.
+#:
+#: The credit is calibrated against measured staging prefills (pinned vLLM,
+#: small ``max_tokens``), and the number that matters is the *tail*: twelve cold
+#: 2.6k-token requests finished in 0.49-0.97 s, and at 9.1k the old proportional
+#: budget of 1.78 s sat ten milliseconds under a measured 1.79 s. Replaying both
+#: rules over 27 measured successful prefills, the old one would have cancelled
+#: three; this one none. Its tightest headroom is the 2.6k tail (0.97 s measured
+#: against 1.32 s) rather than the 18.3k case (1.79 s against 4.38 s), because
+#: the measured cost is not a straight line in tokens -- 9.1k and 18.3k both land
+#: at ~1.5-1.8 s, which looks like a scheduling quantum. The constant therefore
+#: encodes a conservative bound, not a measured rate.
+#:
+#: The engine wait bounds ``prefill + time-to-first-token``, and only the engine
+#: knows where prefill ends -- the first token is the first evidence the gateway
+#: gets, and it arrives *after* the prefill. A flat deadline therefore fires
+#: hardest exactly when the engine is doing the most legitimate work: a cold
+#: prefill of a long prompt. On expiry the attempt is cancelled, which aborts the
+#: request at the engine, discards the prefill it had already done, and re-sends
+#: the prompt cold to the offload route -- duplicated work and a guaranteed cache
+#: miss on a route that shares no KV with the engine that was about to answer.
+#: A warm continuation prefills only its delta and stays inside the base wait, so
+#: extending for the un-cached estimate costs the offload nothing where it was
+#: already correct.
+OFFLOAD_PREFILL_CREDIT_TOKENS: int = 4_096
+
+#: Ceiling on the extended engine wait, so an engine that is genuinely wedged
+#: still fails over. Bounds the extra latency a cold prompt may add before the
+#: fallback the policy already had.
+#:
+#: Sizing against the same measurements: 8 s is about the extrapolated cold
+#: prefill of a 100k-token prompt on the measured rate, so the cap does not fire
+#: before a legitimate prefill of any prompt the route can accept. It also stays
+#: below the remote TTFT the offload route was observed serving under contention
+#: (30-49 s at the tail), so waiting out the engine is still the cheaper choice
+#: at the cap.
+OFFLOAD_MAX_WAIT_SECONDS: float = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +199,30 @@ class OffloadPolicy:
         True up to and including the max input, and always when there is none.
         """
         return self.max_input_tokens is None or prompt_tokens <= self.max_input_tokens
+
+    def engine_wait_seconds(self, uncached_tokens: int) -> float:
+        """Return the first-token budget for a request needing ``uncached_tokens`` prefill.
+
+        The budget this attempt's engine wait runs under: the configured
+        ``wait_seconds`` covers queueing, scheduling and the first decode step,
+        and each :data:`OFFLOAD_PREFILL_CREDIT_TOKENS` of un-cached prefill buys
+        another ``wait_seconds`` of it. A warm continuation -- which prefills
+        only the growth since the caller's last turn -- stays at or just above
+        the floor, and a short cold prompt finishes inside the fixed allowance;
+        a long cold prompt gets time proportional to the work it actually has to
+        do.
+
+        Bounded by construction: the ceiling is a fixed constant, not a function
+        of load, so a wedged engine still fails over within a known time, and the
+        result never drops below ``wait_seconds``. Nothing here reads or writes
+        endpoint health -- a busy engine stays healthy, exactly as before.
+        """
+        base = self.wait_seconds
+        if uncached_tokens <= 0:
+            return base
+        credit = max(OFFLOAD_PREFILL_CREDIT_TOKENS, 1)
+        scaled = base * (1.0 + uncached_tokens / credit)
+        return float(min(scaled, max(OFFLOAD_MAX_WAIT_SECONDS, base)))
 
 
 @runtime_checkable
