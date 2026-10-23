@@ -6,6 +6,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { AdminModelVisibilityItem, Role } from '@/lib/api/admin';
 import { listModelVisibility, updateModelVisibility } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+} from '@/components/features/admin/AdminPrimitives';
+import { CONTROL, NOTICE_ACTION, TABLE_HEAD_CELL } from '@/components/features/admin/adminStyles';
 
 const DEFAULT_VALUE = '__default__';
 
@@ -74,39 +81,38 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
   );
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5">
-      <div className="mb-3">
-        <h2 className="text-[14px] font-semibold text-gray-900">Model Visibility</h2>
-        <p className="mt-1 text-[12px] text-gray-500">
-          Override each model&apos;s runtime required role without changing the YAML baseline.
-        </p>
-      </div>
-
+    <AdminSection
+      title="Model Visibility"
+      description="Override each model's runtime required role without changing the YAML baseline."
+    >
       {error && (
-        <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-          {error}
-          <button type="button" onClick={() => void load()} className="ml-2 font-medium underline">
-            Retry
-          </button>
+        <div className="mb-3">
+          <AdminNotice
+            action={
+              <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
+                Retry
+              </button>
+            }
+          >
+            {error}
+          </AdminNotice>
         </div>
       )}
 
       {loading ? (
-        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        <AdminLoading size="sm" />
       ) : models.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-          No models available.
-        </div>
+        <AdminEmptyState title="No models available." />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-gray-200">
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
           <table className="min-w-full text-[13px]">
-            <thead className="bg-gray-50 text-gray-500">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Model</th>
-                <th className="px-3 py-2 text-left font-medium">Baseline</th>
-                <th className="px-3 py-2 text-left font-medium">Override</th>
-                <th className="px-3 py-2 text-left font-medium">Effective</th>
-                <th className="px-3 py-2 text-right font-medium">Runtime Override</th>
+            <thead className="bg-gray-50/80">
+              <tr className="border-b border-gray-200">
+                <th className={TABLE_HEAD_CELL}>Model</th>
+                <th className={TABLE_HEAD_CELL}>Baseline</th>
+                <th className={TABLE_HEAD_CELL}>Override</th>
+                <th className={TABLE_HEAD_CELL}>Effective</th>
+                <th className={`${TABLE_HEAD_CELL} text-right`}>Runtime Override</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -117,16 +123,18 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
 
                 return (
                   <tr key={model.model_id} className="bg-white">
-                    <td className="px-3 py-2 text-gray-900">{model.model_id}</td>
-                    <td className="px-3 py-2 text-gray-500">{model.baseline_required_role}</td>
-                    <td className="px-3 py-2 text-gray-500">
+                    <td className="px-4 py-2 font-mono text-[12px] text-gray-900">
+                      {model.model_id}
+                    </td>
+                    <td className="px-4 py-2 text-gray-500">{model.baseline_required_role}</td>
+                    <td className="px-4 py-2 text-gray-500">
                       {model.override_required_role ?? 'Use default'}
                     </td>
-                    <td className="px-3 py-2 text-gray-900">{model.effective_required_role}</td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-4 py-2 text-gray-900">{model.effective_required_role}</td>
+                    <td className="px-4 py-2 text-right">
                       <select
                         aria-label={`Runtime override for ${model.model_id}`}
-                        className="rounded-md border border-gray-300 px-2 py-1 text-[13px] text-gray-900"
+                        className={CONTROL}
                         disabled={isSaving}
                         value={selectedOverride}
                         onChange={(e) => void handleChangeRole(model.model_id, e.target.value)}
@@ -146,6 +154,6 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
           </table>
         </div>
       )}
-    </div>
+    </AdminSection>
   );
 }

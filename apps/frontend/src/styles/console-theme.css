@@ -123,6 +123,16 @@
   --tw-ring-color: var(--console-border);
 }
 
+/* Loading spinners draw their moving head in near-black. */
+:root[data-console-theme='dark'] .console-theme .border-t-gray-900 {
+  border-top-color: var(--console-text);
+}
+
+/* The selected sub-tab's underline (Providers, Log, Announcements). */
+:root[data-console-theme='dark'] .console-theme .border-b-2.border-gray-900 {
+  border-color: var(--console-text);
+}
+
 :root[data-console-theme='dark'] .console-theme .focus\:ring-offset-2:focus,
 :root[data-console-theme='dark'] .console-theme .focus-visible\:ring-offset-2:focus-visible {
   --tw-ring-offset-color: var(--console-canvas);

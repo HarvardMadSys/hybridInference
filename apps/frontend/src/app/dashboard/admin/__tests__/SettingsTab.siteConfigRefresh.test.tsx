@@ -143,3 +143,29 @@ describe('SettingsTab and the site configuration', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 });
+
+describe('SettingsTab feedback', () => {
+  it('shows a change’s result above the cards, not inside one of them', async () => {
+    vi.mocked(updateRuntimeSetting).mockResolvedValueOnce({
+      key: 'signup_require_email_verification',
+      value: false,
+      value_type: 'bool',
+      default_value: true,
+      description: 'Require email verification for new signups',
+    });
+    renderSettings();
+
+    fireEvent.click(
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
+    );
+
+    const feedback = await screen.findByText('signup_require_email_verification disabled');
+    expect(feedback).toHaveAttribute('role', 'status');
+    expect(feedback.closest('section')).toBeNull();
+    const signupPolicy = screen.getByRole('region', { name: 'Signup Policy' });
+    expect(feedback.compareDocumentPosition(signupPolicy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      feedback.compareDocumentPosition(screen.getByRole('region', { name: 'Feature Flags' })),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});

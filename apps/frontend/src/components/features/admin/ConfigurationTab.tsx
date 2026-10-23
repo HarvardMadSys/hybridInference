@@ -10,6 +10,22 @@ import {
 } from '@/components/features/configuration/ConfigEntryField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  BUTTON_GHOST,
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CARD,
+  CHECKBOX,
+  CONTROL,
+  FORM_LABEL,
+  NOTICE_ACTION,
+  TEXT_FIELD,
+} from '@/components/features/admin/adminStyles';
+import {
   AlertNotificationFields,
   type AlertTestResult,
 } from '@/components/features/configuration/AlertNotificationFields';
@@ -311,16 +327,26 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   };
 
   if (loading && !config) {
-    return <div className="mt-5 py-8 text-center text-[13px] text-gray-400">Loading...</div>;
+    return (
+      <div className="mt-6">
+        <AdminLoading />
+      </div>
+    );
   }
 
   if (!config) {
     return (
-      <div className="mt-5 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600" role="alert">
-        {loadError ?? 'Configuration could not be loaded.'}{' '}
-        <button type="button" onClick={() => void load()} className="ml-2 font-semibold underline">
-          Retry
-        </button>
+      <div className="mt-6">
+        <AdminNotice
+          role="alert"
+          action={
+            <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
+              Retry
+            </button>
+          }
+        >
+          {loadError ?? 'Configuration could not be loaded.'}
+        </AdminNotice>
       </div>
     );
   }
@@ -331,7 +357,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     : undefined;
 
   return (
-    <div className="mt-5 space-y-6">
+    <div className="mt-6 space-y-4">
       {config.pending_restart.length > 0 ? (
         <section
           aria-label="Restart pending"
@@ -374,24 +400,38 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className={`${CARD} flex flex-wrap items-center gap-2 p-3`}>
         <label htmlFor={searchId} className="sr-only">
           Search settings
         </label>
-        <input
-          id={searchId}
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search by name, description or model"
-          className="min-w-[14rem] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-        />
-        <label className="flex items-center gap-1.5 text-[13px] text-gray-700">
+        <div className="relative min-w-[14rem] flex-1">
+          <svg
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <input
+            id={searchId}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by name, description or model"
+            className={`${CONTROL} w-full pl-8`}
+          />
+        </div>
+        <label className="flex h-8 items-center gap-1.5 px-1 text-[13px] text-gray-700">
           <input
             type="checkbox"
             checked={missingOnly}
             onChange={(event) => setMissingOnly(event.target.checked)}
-            className="h-4 w-4 rounded border-gray-300"
+            className={CHECKBOX}
           />
           Missing only
         </label>
@@ -399,7 +439,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           type="button"
           onClick={() => setAdding(true)}
           disabled={adding}
-          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+          className={BUTTON_SECONDARY}
         >
           Add variable
         </button>
@@ -418,11 +458,13 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       ) : null}
 
       {visibleGroups.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-          {missingOnly && config.missing.length === 0 && !query.trim()
-            ? 'No required settings are missing.'
-            : 'No settings match.'}
-        </div>
+        <AdminEmptyState
+          title={
+            missingOnly && config.missing.length === 0 && !query.trim()
+              ? 'No required settings are missing.'
+              : 'No settings match.'
+          }
+        />
       ) : null}
 
       {visibleGroups.map((visible) => {
@@ -445,24 +487,19 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         const busy = saving || Boolean(channelEntries && testingAlert);
         const headingId = `${searchId}-${group.id}`;
         return (
-          <section
-            key={group.id}
-            aria-labelledby={headingId}
-            className="rounded-xl border border-gray-200 bg-white p-5"
-          >
-            <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
-              {group.label}
-            </h2>
-            {group.description ? (
-              <p className="mt-1 text-[12px] text-gray-500">{group.description}</p>
-            ) : null}
+          <section key={group.id} aria-labelledby={headingId} className={CARD}>
+            <div className="border-b border-gray-100 px-5 py-4">
+              <h2 id={headingId} className="text-[15px] font-semibold text-gray-900">
+                {group.label}
+              </h2>
+              {group.description ? (
+                <p className="mt-1 max-w-3xl text-[12px] text-gray-500">{group.description}</p>
+              ) : null}
+            </div>
 
             {groupErrors[group.id] ? (
-              <div
-                className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600"
-                role="alert"
-              >
-                {groupErrors[group.id]}
+              <div className="px-5 pt-4">
+                <AdminNotice role="alert">{groupErrors[group.id]}</AdminNotice>
               </div>
             ) : null}
 
@@ -477,7 +514,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                 if (!busy) void saveGroup(group);
               }}
             >
-              <div className="mt-1 divide-y divide-gray-100">
+              <div className="divide-y divide-gray-100 px-5">
                 {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
                   <AlertNotificationFields
                     entries={channelEntries}
@@ -503,6 +540,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                       onChange={onDraftChange}
                       serverError={entryErrors[entry.key]}
                       onReset={requestReset}
+                      layout="split"
                       onMarkSecret={(target) => {
                         setMarkSecretError(null);
                         setMarkSecretKey(target.key);
@@ -512,16 +550,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                   ))}
               </div>
 
+              {/* Stays in view at the bottom of the window while the
+                  category with the changes is on screen. */}
               {dirty > 0 ? (
-                <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
-                  <span className="mr-auto text-[12px] text-gray-500">
+                <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-xl border-t border-gray-200 bg-white/95 px-5 py-3 backdrop-blur">
+                  <span className="mr-auto text-[12px] font-medium text-amber-700">
                     {plural(dirty, 'unsaved change')}
                   </span>
                   <button
                     type="button"
                     onClick={() => discardGroup(group)}
                     disabled={busy}
-                    className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+                    className={BUTTON_GHOST}
                   >
                     Discard
                   </button>
@@ -530,7 +570,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     disabled={busy}
                     aria-busy={saving || undefined}
                     aria-label={`Save ${group.label}`}
-                    className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                    className={BUTTON_PRIMARY}
                   >
                     {saving ? 'Saving…' : 'Save'}
                   </button>
@@ -647,18 +687,18 @@ function AddVariableForm({
       onSubmit={(event) => void submit(event)}
       autoComplete="off"
       aria-labelledby={`${baseId}-title`}
-      className="rounded-xl border border-gray-200 bg-white p-5"
+      className={`${CARD} p-5`}
     >
-      <h2 id={`${baseId}-title`} className="text-[14px] font-semibold text-gray-900">
+      <h2 id={`${baseId}-title`} className="text-[15px] font-semibold text-gray-900">
         Add variable
       </h2>
       <p className="mt-1 text-[12px] text-gray-500">
         For a <code className="rounded bg-gray-100 px-1">{'${VAR}'}</code> reference in a
         configuration file that is not listed here.
       </p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <div className="mt-4 grid max-w-3xl gap-3 sm:grid-cols-2">
         <div>
-          <label htmlFor={`${baseId}-name`} className="text-[12px] font-medium text-gray-700">
+          <label htmlFor={`${baseId}-name`} className={FORM_LABEL}>
             Name
           </label>
           <input
@@ -670,11 +710,11 @@ function AddVariableForm({
             autoComplete="off"
             {...NOT_A_LOGIN_FIELD}
             autoFocus
-            className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 font-mono text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+            className={`${TEXT_FIELD} font-mono`}
           />
         </div>
         <div>
-          <label htmlFor={`${baseId}-value`} className="text-[12px] font-medium text-gray-700">
+          <label htmlFor={`${baseId}-value`} className={FORM_LABEL}>
             Value
           </label>
           <input
@@ -685,7 +725,7 @@ function AddVariableForm({
             spellCheck={false}
             autoComplete={secret ? 'new-password' : 'off'}
             {...NOT_A_LOGIN_FIELD}
-            className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+            className={TEXT_FIELD}
           />
         </div>
       </div>
@@ -696,7 +736,7 @@ function AddVariableForm({
           disabled={secretByName}
           aria-describedby={secretByName ? `${baseId}-secret-note` : undefined}
           onChange={(event) => setSecretChoice(event.target.checked)}
-          className="h-4 w-4 rounded border-gray-300 disabled:opacity-60"
+          className={CHECKBOX}
         />
         Secret (write-only; never shown again)
       </label>
@@ -710,20 +750,15 @@ function AddVariableForm({
           {error}
         </p>
       ) : null}
-      <div className="mt-3 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={saving}
-          className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
-        >
+      <div className="mt-4 flex justify-end gap-2 border-t border-gray-100 pt-4">
+        <button type="button" onClick={onCancel} disabled={saving} className={BUTTON_GHOST}>
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
           aria-busy={saving || undefined}
-          className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+          className={BUTTON_PRIMARY}
         >
           {saving ? 'Adding…' : 'Add'}
         </button>

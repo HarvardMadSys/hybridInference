@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -14,6 +14,17 @@ import {
   updateSiteUpdate,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { AdminEmptyState, AdminLoading, AdminSection, AdminSpinner } from './AdminPrimitives';
+import {
+  BUTTON_DANGER,
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CHECKBOX,
+  FIELD_HINT,
+  FORM_LABEL,
+  PILL,
+  TEXT_FIELD,
+} from './adminStyles';
 
 const EMPTY_FORM: SiteUpdateInput = {
   title: '',
@@ -37,6 +48,7 @@ const MD_CLASSES =
 
 export function SiteUpdatesTab() {
   const toast = useAccountToast();
+  const baseId = useId();
   const [updates, setUpdates] = useState<SiteUpdateItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -121,140 +133,153 @@ export function SiteUpdatesTab() {
     }
   }
 
+  const fieldId = (name: string) => `${baseId}-${name}`;
+
   return (
-    <div className="mt-8 space-y-6">
+    // Composer and list side by side where there is room, so an edit and the
+    // list it changes stay in view together.
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] xl:items-start">
       {/* Composer */}
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="mb-4 text-[15px] font-semibold text-gray-900">
-          {editingId ? 'Edit Update' : 'New Update'}
-        </h2>
-
-        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-gray-600">Title</label>
-            <input
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-              placeholder="e.g. New model: Llama 4 available"
-              value={form.title}
-              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-gray-600">Placement</label>
-            <select
-              value={form.placement}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, placement: e.target.value as SiteUpdatePlacement }))
-              }
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-            >
-              <option value="feed">Feed (Updates section)</option>
-              <option value="banner">Banner (top notice)</option>
-            </select>
-            <p className="mt-1 text-[11px] text-gray-400">
-              {form.placement === 'banner'
-                ? 'Only the most recent published banner is shown.'
-                : 'Listed in the homepage Updates section, newest first.'}
-            </p>
-          </div>
-        </div>
-
-        <div className="mb-4">
-          <label className="mb-1 block text-[12px] font-medium text-gray-600">
-            Body (Markdown)
-          </label>
-          <textarea
-            rows={5}
-            className="w-full rounded-md border border-gray-200 px-3 py-2 font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-            placeholder={
-              'Describe the update. **Markdown** and [links](https://...) are supported.'
-            }
-            value={form.body}
-            onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
-          />
-          {form.body && (
-            <div className="mt-2">
-              <label className="mb-1 block text-[12px] font-medium text-gray-600">Preview</label>
-              <div className={`rounded-md border border-gray-200 px-3 py-2 ${MD_CLASSES}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{form.body}</ReactMarkdown>
-              </div>
+      <AdminSection title={editingId ? 'Edit Update' : 'New Update'}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor={fieldId('title')} className={FORM_LABEL}>
+                Title
+              </label>
+              <input
+                id={fieldId('title')}
+                className={TEXT_FIELD}
+                placeholder="e.g. New model: Llama 4 available"
+                value={form.title}
+                onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              />
             </div>
-          )}
-        </div>
-
-        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-gray-600">
-              Link URL (optional)
-            </label>
-            <input
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-              placeholder="https://docs.example.com/..."
-              value={form.link_url ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, link_url: e.target.value || null }))}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-[12px] font-medium text-gray-600">
-              Link Label (optional)
-            </label>
-            <input
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-              placeholder="e.g. Read more"
-              value={form.link_label ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, link_label: e.target.value || null }))}
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 text-[13px] text-gray-700">
-            <input
-              type="checkbox"
-              checked={form.published}
-              onChange={(e) => setForm((f) => ({ ...f, published: e.target.checked }))}
-            />
-            Published (visible on homepage)
-          </label>
-          <div className="ml-auto flex items-center gap-3">
-            {editingId && (
-              <button
-                onClick={resetForm}
-                className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+            <div>
+              <label htmlFor={fieldId('placement')} className={FORM_LABEL}>
+                Placement
+              </label>
+              <select
+                id={fieldId('placement')}
+                value={form.placement}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, placement: e.target.value as SiteUpdatePlacement }))
+                }
+                aria-describedby={fieldId('placement-hint')}
+                className={TEXT_FIELD}
               >
-                Cancel
-              </button>
+                <option value="feed">Feed (Updates section)</option>
+                <option value="banner">Banner (top notice)</option>
+              </select>
+              <p id={fieldId('placement-hint')} className={FIELD_HINT}>
+                {form.placement === 'banner'
+                  ? 'Only the most recent published banner is shown.'
+                  : 'Listed in the homepage Updates section, newest first.'}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor={fieldId('body')} className={FORM_LABEL}>
+              Body (Markdown)
+            </label>
+            <textarea
+              id={fieldId('body')}
+              rows={5}
+              className={`${TEXT_FIELD} font-mono`}
+              placeholder={
+                'Describe the update. **Markdown** and [links](https://...) are supported.'
+              }
+              value={form.body}
+              onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
+            />
+            {form.body && (
+              <div className="mt-2">
+                <div className={FORM_LABEL}>Preview</div>
+                <div
+                  className={`rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 ${MD_CLASSES}`}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{form.body}</ReactMarkdown>
+                </div>
+              </div>
             )}
-            <button
-              onClick={save}
-              disabled={saving}
-              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
-            >
-              {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Create Update'}
-            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor={fieldId('link-url')} className={FORM_LABEL}>
+                Link URL (optional)
+              </label>
+              <input
+                id={fieldId('link-url')}
+                className={TEXT_FIELD}
+                placeholder="https://docs.example.com/..."
+                value={form.link_url ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, link_url: e.target.value || null }))}
+              />
+            </div>
+            <div>
+              <label htmlFor={fieldId('link-label')} className={FORM_LABEL}>
+                Link Label (optional)
+              </label>
+              <input
+                id={fieldId('link-label')}
+                className={TEXT_FIELD}
+                placeholder="e.g. Read more"
+                value={form.link_label ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, link_label: e.target.value || null }))}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-4">
+            <label className="flex items-center gap-2 text-[13px] text-gray-700">
+              <input
+                type="checkbox"
+                checked={form.published}
+                onChange={(e) => setForm((f) => ({ ...f, published: e.target.checked }))}
+                className={CHECKBOX}
+              />
+              Published (visible on homepage)
+            </label>
+            <div className="ml-auto flex items-center gap-2">
+              {editingId && (
+                <button type="button" onClick={resetForm} className={BUTTON_SECONDARY}>
+                  Cancel
+                </button>
+              )}
+              <button type="button" onClick={save} disabled={saving} className={BUTTON_PRIMARY}>
+                {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Create Update'}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </AdminSection>
 
       {/* List */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 px-6 py-4">
-          <h2 className="text-[15px] font-semibold text-gray-900">All Updates</h2>
-        </div>
-        {loading ? (
-          <div className="px-6 py-8 text-[13px] text-gray-400">Loading…</div>
+      <AdminSection
+        title="All Updates"
+        actions={loading && updates.length > 0 ? <AdminSpinner size="sm" /> : null}
+        bodyClassName=""
+      >
+        {loading && updates.length === 0 ? (
+          <AdminLoading size="sm" />
         ) : updates.length === 0 ? (
-          <div className="px-6 py-8 text-[13px] text-gray-400">No updates yet.</div>
+          <AdminEmptyState variant="plain" title="No updates yet." />
         ) : (
-          <ul className="divide-y divide-gray-50">
+          <ul className="divide-y divide-gray-100">
             {updates.map((u) => (
-              <li key={u.id} className="px-6 py-4">
-                <div className="flex items-start justify-between gap-4">
+              <li
+                key={u.id}
+                className={`px-5 py-4 ${editingId === u.id ? 'bg-gray-50' : ''}`}
+                aria-current={editingId === u.id ? 'true' : undefined}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[14px] font-medium text-gray-900">{u.title}</span>
                       <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        className={`${PILL} ${
                           u.placement === 'banner'
                             ? 'bg-purple-50 text-purple-700'
                             : 'bg-gray-100 text-gray-600'
@@ -263,7 +288,7 @@ export function SiteUpdatesTab() {
                         {u.placement}
                       </span>
                       <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        className={`${PILL} ${
                           u.published
                             ? 'bg-green-50 text-green-700'
                             : 'bg-yellow-50 text-yellow-700'
@@ -271,6 +296,9 @@ export function SiteUpdatesTab() {
                       >
                         {u.published ? 'published' : 'draft'}
                       </span>
+                      {editingId === u.id && (
+                        <span className={`${PILL} bg-gray-900 text-white`}>editing</span>
+                      )}
                     </div>
                     {u.body && (
                       <div className={`mt-1 line-clamp-2 ${MD_CLASSES}`}>
@@ -279,17 +307,18 @@ export function SiteUpdatesTab() {
                     )}
                     <div className="mt-1 text-[11px] text-gray-400">{fmtDate(u.created_at)}</div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3 text-[12px]">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
+                      type="button"
                       onClick={() => togglePublished(u)}
-                      className="text-gray-500 hover:underline"
+                      className={BUTTON_SECONDARY}
                     >
                       {u.published ? 'Unpublish' : 'Publish'}
                     </button>
-                    <button onClick={() => startEdit(u)} className="text-blue-600 hover:underline">
+                    <button type="button" onClick={() => startEdit(u)} className={BUTTON_SECONDARY}>
                       Edit
                     </button>
-                    <button onClick={() => remove(u)} className="text-red-500 hover:underline">
+                    <button type="button" onClick={() => remove(u)} className={BUTTON_DANGER}>
                       Delete
                     </button>
                   </div>
@@ -298,7 +327,7 @@ export function SiteUpdatesTab() {
             ))}
           </ul>
         )}
-      </div>
+      </AdminSection>
     </div>
   );
 }

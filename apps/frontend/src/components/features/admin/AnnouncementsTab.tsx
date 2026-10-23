@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 
+import { AdminSubTabs } from '@/components/features/admin/AdminPrimitives';
 import { BroadcastsTab } from '@/components/features/admin/BroadcastsTab';
 import { SiteUpdatesTab } from '@/components/features/admin/SiteUpdatesTab';
 
@@ -12,6 +13,11 @@ const UPDATES_TAB_ID = 'admin-announcements-updates-tab';
 const UPDATES_PANEL_ID = 'admin-announcements-updates-panel';
 const EMAIL_TAB_ID = 'admin-announcements-email-tab';
 const EMAIL_PANEL_ID = 'admin-announcements-email-panel';
+
+const SUBTABS = [
+  { key: 'updates', label: 'Updates', tabId: UPDATES_TAB_ID, panelId: UPDATES_PANEL_ID },
+  { key: 'email', label: 'Email', tabId: EMAIL_TAB_ID, panelId: EMAIL_PANEL_ID },
+] as const;
 
 interface AnnouncementsTabProps {
   initialSubtab?: AnnouncementsSubtab;
@@ -33,40 +39,14 @@ export function AnnouncementsTab({ initialSubtab }: AnnouncementsTabProps = {}) 
     });
   };
 
-  const subtabClass = (active: boolean) =>
-    `rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
-      active ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
-    }`;
-
   return (
-    <div className="mt-5 space-y-6">
-      <div
-        className="flex flex-wrap items-center gap-1 border-b border-gray-200 pb-2"
-        role="tablist"
-      >
-        <button
-          type="button"
-          id={UPDATES_TAB_ID}
-          role="tab"
-          aria-selected={activeSubtab === 'updates'}
-          aria-controls={UPDATES_PANEL_ID}
-          onClick={() => onSelectSubtab('updates')}
-          className={subtabClass(activeSubtab === 'updates')}
-        >
-          Updates
-        </button>
-        <button
-          type="button"
-          id={EMAIL_TAB_ID}
-          role="tab"
-          aria-selected={activeSubtab === 'email'}
-          aria-controls={EMAIL_PANEL_ID}
-          onClick={() => onSelectSubtab('email')}
-          className={subtabClass(activeSubtab === 'email')}
-        >
-          Email
-        </button>
-      </div>
+    <div className="mt-6 space-y-4">
+      <AdminSubTabs
+        label="Announcement channels"
+        tabs={SUBTABS}
+        active={activeSubtab}
+        onSelect={onSelectSubtab}
+      />
 
       {activeSubtab === 'email' ? (
         <div id={EMAIL_PANEL_ID} role="tabpanel" aria-labelledby={EMAIL_TAB_ID}>
