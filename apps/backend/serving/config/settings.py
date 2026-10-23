@@ -166,6 +166,9 @@ class Settings(BaseSettings):
     login_rate_limit_per_15min: int = 5
     login_account_rate_limit_per_15min: int = Field(default=50, ge=1)
     login_rate_limit_per_hour_per_ip: int = 20
+    # Unresolved login provenance gets a coarse process-local budget, never a
+    # synthetic per-client bucket shared with the transport proxy.
+    unresolved_login_rate_limit_per_hour: int = 20
     # Auto-block a source IP at the API-key auth layer after repeated auth
     # failures. Once an IP (IPv6 bucketed to /64) reaches
     # auth_failure_block_threshold failures within auth_failure_block_window_sec,

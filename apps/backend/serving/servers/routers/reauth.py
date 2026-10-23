@@ -18,7 +18,7 @@ from serving.servers.routers.phone_auth_routes import verify_phone_code
 from serving.utils import password as password_utils
 from serving.utils.device_cookie import recognized_device
 from serving.utils.login_rate_limit import check_and_record_login
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.sms import is_sms_enabled
 
 
@@ -53,14 +53,14 @@ async def confirm_account_owner(
         # someone else's guesses at this name must not block its owner here.
         allowed, reason = await check_and_record_login(
             identifier,
-            get_client_ip(request),
+            get_client_ip_info(request),
             device=recognized_device(request, identifier),
         )
         if not allowed:
             raise HTTPException(
                 status_code=429,
                 detail="Too many attempts. Please try again later.",
-                headers={"Retry-After": "3600" if reason == "ip" else "900"},
+                headers={"Retry-After": "3600" if reason in {"ip", "unresolved"} else "900"},
             )
         if not password or not password_utils.verify_password(password, user_row["password_hash"]):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
