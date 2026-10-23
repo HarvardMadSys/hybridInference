@@ -1179,6 +1179,10 @@ async def chat_completions(
                 completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
                 success=True,
                 cached_tokens=cached_tokens,
+                # Pass the real response body so a warmup notice is classified
+                # TRANSIENT_NO_PROGRESS instead of PROGRESS; without it a
+                # text-bearing warmup still warms the prefix cache.
+                response_body=response if isinstance(response, dict) else None,
             )
 
         if is_synthetic_probe and provider != "router":

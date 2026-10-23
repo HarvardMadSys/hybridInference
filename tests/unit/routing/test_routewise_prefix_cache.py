@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
@@ -322,6 +323,7 @@ def _obs(
         total_latency_ms=1.0,
         token_count=1,
         success=success,
+        outcome=(CompletionOutcome.PROGRESS if success else CompletionOutcome.PROVIDER_ERROR),
         request_id=request_id,
         terminal=terminal,
         strategy_metadata={"routewise": {"quota_committed": 0.0}},
