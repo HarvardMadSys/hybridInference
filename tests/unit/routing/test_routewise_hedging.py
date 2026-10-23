@@ -137,6 +137,7 @@ def _make_model_config(
     cfg.endpoint_id = endpoint_id
     cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": "3.0", "completion": "15.0"}
+    cfg.pricing_currency = "USD"
     cfg.provider_type = "on_demand"
     return cfg
 

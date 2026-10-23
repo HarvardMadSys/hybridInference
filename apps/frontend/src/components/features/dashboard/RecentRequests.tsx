@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
 import { DragScrollArea } from '@/components/ui/DragScrollArea';
@@ -59,13 +60,6 @@ function formatTokens(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-function formatCost(cost: number | null | undefined): string {
-  if (cost == null) return '—';
-  if (cost < 0.0001) return '<$0.0001';
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
-}
-
 function formatLatency(latencyMs: number | null | undefined): string {
   if (latencyMs == null) return '—';
   if (latencyMs >= 1000) return `${(latencyMs / 1000).toFixed(1)}s`;
@@ -84,6 +78,7 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
 }
 
 function RequestRow({ req }: { req: RecentRequestItem }) {
+  const money = useMoney();
   const t = useT();
   const fmt = useFormatter();
   const [expanded, setExpanded] = useState(false);
@@ -173,7 +168,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
           </div>
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">
-          {formatCost(req.cost_usd)}
+          {money.requestCost(req, true)}
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-gray-500">
           <span title={fmt.dateTime(req.timestamp)}>{formatTimestamp(req.timestamp, t, fmt)}</span>

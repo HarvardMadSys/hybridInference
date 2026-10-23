@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import increment_native_cost
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
@@ -275,14 +277,17 @@ class CostTracker:
         # the increment, so the log payload sees a consistent value.
         import dataclasses as _dc
 
-        enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=cost)
+        upstream_usd = routing.upstream_cost_usd
+        if upstream_usd is None and cost is not None:
+            upstream_usd = float(get_accounting_policy().to_usd(cost))
+        enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=upstream_usd)
 
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched
 
         async def _increment() -> None:
             try:
-                await self._op_store.increment_user_cost(user_id, cost)
+                await increment_native_cost(self._op_store, user_id, cost)
             except Exception as exc:
                 logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
                 raise  # let tracked_task record the failure

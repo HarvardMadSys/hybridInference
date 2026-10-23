@@ -13,7 +13,9 @@ from typing import Any
 
 import asyncpg
 
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.config.settings import get_settings
+from serving.storage.accounting_schema import initialize_accounting_schema
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
     ErasureFenceUnavailable,
@@ -872,6 +874,7 @@ class DatabaseLogger:
             from serving.analytics.public_stats import ensure_public_stats_schema
 
             await ensure_public_stats_schema(conn)
+            await initialize_accounting_schema(conn)
 
     async def log_request(
         self,
@@ -979,7 +982,10 @@ class DatabaseLogger:
             request_payload_str = None
 
         # Calculate cost based on usage and pricing
-        cost_usd = calculate_cost(usage, pricing)
+        calculated_cost = calculate_cost(usage, pricing)
+        policy = get_accounting_policy()
+        cost_amount = money_decimal(calculated_cost) if calculated_cost is not None else None
+        cost_usd = policy.to_usd(cost_amount) if cost_amount is not None else None
         # Conversation shape is derived metadata (like token counts), so it is
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
@@ -1039,7 +1045,8 @@ class DatabaseLogger:
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
                     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id
+                    served_model_id, served_endpoint_id, agent_job_id,
+                    cost_amount, accounting_currency
                 )
                 VALUES (
                     $1, $2, $3,
@@ -1052,7 +1059,7 @@ class DatabaseLogger:
                     $26::jsonb, $27,
                     $28, $29, $30,
                     $31, $32, $33,
-                    $34, $35, $36
+                    $34, $35, $36, $37, $38
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -1102,6 +1109,8 @@ class DatabaseLogger:
                 served_endpoint,
                 # Cloud agent sandbox job attribution (issue #1041)
                 (sanitized_metadata or {}).get("agent_job_id"),
+                cost_amount,
+                policy.currency,
             )
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:

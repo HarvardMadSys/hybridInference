@@ -187,7 +187,8 @@ itself and are read only at the model level.
 | `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
 | `priority_scheduling` | bool | No | The endpoint runs an sglang server started with `--enable-priority-scheduling`; see [Prioritizing decode on an sglang route](add-local-model.md#prioritizing-decode-on-an-sglang-route). Normally set per route, not per model |
 | `route_metadata` | dict | No | Free-form per-route metadata consumed by routing strategies |
-| `pricing` | dict | No | Base cost information. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are USD per 1M tokens; `request` is USD per request and `image` USD per image |
+| `pricing` | dict | No | Base cost information in `pricing_currency`. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are per 1M tokens; `request` is per request and `image` per image |
+| `pricing_currency` | string | No | `USD` (default) or `CNY`; applies to configured `pricing` and `pricing_schedule`. See [Accounting Currency](accounting.md) for normalization into the deployment ledger |
 | `pricing_schedule` | dict | No | UTC-only activation time plus recurring price windows: `pricing` stays active before `effective_at`; afterwards `default` applies outside each half-open `[start, end)` window, and a window's own `pricing` overrides the base fields. Optional `weekdays` (ISO integers 1=Monday through 7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC dates can use windows |
 | `pricing_source` | dict | No | Automatically follow a supported provider: `{provider: deepseek, model: deepseek-flash}` or `deepseek-v4-pro`. Requires PostgreSQL; cannot be combined with `pricing_schedule`. Set to `null` on a route to use its own prices |
 
@@ -206,7 +207,7 @@ pricing_source:
   model: deepseek-flash
 ```
 
-The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) every five minutes for USD input, output and cache-hit prices and UTC peak windows. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays.
+The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) for USD accounting or the [official Chinese price page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) for CNY accounting every five minutes. It reads input, output and cache-hit prices directly in that currency and resolves peak windows in UTC. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays.
 
 Validated snapshots replace the stored tariff atomically. Workers reload it every ten seconds; each request keeps the snapshot and time captured at its start, including streaming requests. Peak/off-peak switching happens locally at the configured boundaries, without waiting for a network poll. This is periodic synchronization, not a real-time guarantee that all workers observe an official price change simultaneously.
 

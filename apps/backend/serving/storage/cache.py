@@ -537,6 +537,8 @@ class CachedOperationalStore(OperationalStore):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -551,6 +553,8 @@ class CachedOperationalStore(OperationalStore):
             user_name=user_name,
             quota_daily_cost_usd=quota_daily_cost_usd,
             quota_monthly_cost_usd=quota_monthly_cost_usd,
+            quota_daily_cost_amount=quota_daily_cost_amount,
+            quota_monthly_cost_amount=quota_monthly_cost_amount,
             expires_at=expires_at,
             notes=notes,
             api_key_encrypted=api_key_encrypted,
@@ -1289,6 +1293,20 @@ class CachedOperationalStore(OperationalStore):
 
     # -- cost counters (pass-through) ----------------------------------------
 
+    async def increment_user_cost_amount(
+        self, user_id: str, cost: Decimal | float, *, day: str | None = None
+    ) -> None:
+        """Delegate the atomic native counter increment to the wrapped store."""
+        return await self._store.increment_user_cost_amount(user_id, cost, day=day)
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's native ledger amount from the wrapped store."""
+        return await self._store.get_user_cost_today_amount(user_id)
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this month's native ledger amount from the wrapped store."""
+        return await self._store.get_user_cost_month_amount(user_id)
+
     async def increment_user_cost(
         self, user_id: str, cost_usd: float, *, day: str | None = None
     ) -> None:
@@ -1315,6 +1333,12 @@ class CachedOperationalStore(OperationalStore):
         cached answer would date the alert by the TTL.
         """
         return await self._store.query_users_at_daily_quota(limit=limit)
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Read native batch totals from the wrapped store."""
+        return await self._store.get_batch_usage_amount(user_ids, period)
 
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]

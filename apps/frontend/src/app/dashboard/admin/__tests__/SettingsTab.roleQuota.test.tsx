@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
+afterEach(cleanup);
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
@@ -85,6 +88,54 @@ describe('SettingsTab role quota', () => {
     expect(dialog).toHaveTextContent(/pro/i);
 
     fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
-    await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro'));
+    await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro', 'USD'));
   });
+});
+
+it('edits a native CNY role quota and sends the draft currency', async () => {
+  const api = await import('@/lib/api/admin');
+  vi.mocked(api.listRuntimeSettings).mockResolvedValueOnce({
+    settings: [
+      {
+        key: 'user_daily_quota_pro',
+        currency: 'CNY',
+        value: 15,
+        amount: 100,
+        value_type: 'float',
+        default_value: 10,
+        default_amount: 70,
+        description: 'quota',
+        min: 0,
+        min_amount: 0,
+        max: null,
+        max_amount: null,
+      },
+    ],
+  });
+  vi.mocked(api.updateRuntimeSetting).mockResolvedValueOnce({
+    key: 'user_daily_quota_pro',
+    currency: 'CNY',
+    value: 18,
+    amount: 120,
+    value_type: 'float',
+    default_value: 10,
+    default_amount: 70,
+    description: 'quota',
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <SiteConfigProvider initialConfig={{ ...buildTimeSiteConfig, accounting: { currency: 'CNY' } }}>
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>
+    </SiteConfigProvider>,
+  );
+  const field = await screen.findByLabelText('user_daily_quota_pro value');
+  expect(field).toHaveValue(100);
+  expect(screen.getByText('Daily quota (CNY)')).toBeInTheDocument();
+  fireEvent.change(field, { target: { value: '120' } });
+  fireEvent.click(within(field.parentElement!).getByRole('button', { name: 'Save' }));
+  await waitFor(() =>
+    expect(api.updateRuntimeSetting).toHaveBeenCalledWith('user_daily_quota_pro', 120, 'CNY'),
+  );
 });

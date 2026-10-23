@@ -25,7 +25,7 @@ export interface Formatter {
  *
  * A page whose words are Chinese should not print an English month beside
  * them, nor the reverse; this binds every `toLocale*` call to the language the
- * reader chose. Currency stays in US dollars whatever the language.
+ * reader chose. Currency formatting follows the accounting policy in useMoney.
  */
 export function useFormatter(): Formatter {
   const intl = INTL_LOCALE[useLocale()];

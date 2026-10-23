@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import toast from 'react-hot-toast';
 import { useModels } from '@/lib/hooks';
 import type { ModelCatalogItem } from '@/lib/api/user';
@@ -13,7 +14,10 @@ function formatTokenLimit(value: number): string {
   return value.toLocaleString();
 }
 
-function ModelPricing({ pricing }: Pick<ModelCatalogItem, 'pricing'>): JSX.Element {
+function ModelPricing({ model }: { model: ModelCatalogItem }): JSX.Element {
+  const money = useMoney();
+  const pricing = model.prices ?? (model.currency !== 'CNY' ? model.pricing : {});
+  const currency = money.sourceCurrency(model);
   const t = useT();
   const rates = [
     [t('dashboard.models.price_input', 'Input'), pricing.prompt],
@@ -35,7 +39,21 @@ function ModelPricing({ pricing }: Pick<ModelCatalogItem, 'pricing'>): JSX.Eleme
         return (
           <div key={label} className="flex justify-end gap-2">
             <dt className="text-gray-500">{label}</dt>
-            <dd>{hasPrice(effectiveValue) ? `$${effectiveValue}` : '—'}</dd>
+            <dd>
+              {hasPrice(effectiveValue)
+                ? money.format(
+                    Number(effectiveValue),
+                    {
+                      minimumFractionDigits: Math.min(
+                        effectiveValue.split('.')[1]?.length ?? 0,
+                        20,
+                      ),
+                      maximumFractionDigits: 20,
+                    },
+                    currency,
+                  )
+                : '—'}
+            </dd>
           </div>
         );
       })}
@@ -48,6 +66,7 @@ export function isDashboardModelVisible(_model: ModelCatalogItem): boolean {
 }
 
 export function ModelsSection(): JSX.Element {
+  const money = useMoney();
   const { data, isLoading, error } = useModels();
   const models = (data?.data ?? []).filter(isDashboardModelVisible);
   const t = useT();
@@ -109,7 +128,9 @@ export function ModelsSection(): JSX.Element {
                   {t('dashboard.models.col_limits', 'Ctx / out')}
                 </th>
                 <th className="py-1.5 text-right whitespace-nowrap">
-                  {t('dashboard.models.col_price', 'USD / 1M tokens')}
+                  {fill(t('dashboard.models.col_price', '{currency} / 1M tokens'), {
+                    currency: money.currency,
+                  })}
                 </th>
               </tr>
             </thead>
@@ -132,7 +153,7 @@ export function ModelsSection(): JSX.Element {
                     {formatTokenLimit(model.max_output_length)}
                   </td>
                   <td className="py-1 align-top text-right text-[11px] text-gray-600">
-                    <ModelPricing pricing={model.pricing} />
+                    <ModelPricing model={model} />
                   </td>
                 </tr>
               ))}

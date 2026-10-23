@@ -1,0 +1,87 @@
+# Chinese translations for HybridInference accounting documentation.
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "Accounting Currency"
+msgstr "记账币种"
+
+msgid "The gateway uses USD by default. A deployment can use CNY for model prices, usage charges and user quotas by migrating its PostgreSQL ledger and activating a matching distribution manifest. Changing the currency is an offline accounting operation, not a display preference."
+msgstr "网关默认使用 USD。部署方可以迁移 PostgreSQL 账本并启用匹配的发行版 manifest，让模型价格、用量费用和用户额度都使用 CNY。切换币种是一项离线记账操作，不是显示偏好设置。"
+
+msgid "Currency and amount contracts"
+msgstr "币种与金额约定"
+
+msgid "Primary database amounts use columns such as `cost_amount`, `quota_daily_cost_amount` and `total_cost_amount`, alongside `accounting_currency`. Existing `*_usd` columns remain USD equivalents. The migration preserves their historical values; subsequent writes maintain both representations using the persisted accounting policy."
+msgstr "数据库以 `cost_amount`、`quota_daily_cost_amount` 和 `total_cost_amount` 等列作为主要金额，并通过 `accounting_currency` 记录币种。现有 `*_usd` 列仍表示美元等值金额。迁移保留这些列的历史值；后续写入按照持久化的记账策略同时维护两种表示。"
+
+msgid "Monetary APIs expose native fields such as `cost`, `daily_limit`, `quota_daily_cost` and `usage_today`, with `currency`. Model catalog responses expose native `prices` with `currency`; their legacy `pricing` dictionary remains USD. Role-quota settings expose `amount` with `currency`, while `value` remains USD. New clients should read these native fields directly and submit native monetary writes with the matching currency. Sending a different currency, or both a native amount and its USD alias, is rejected. Legacy `*_usd` inputs and outputs retain their USD meaning."
+msgstr "金额 API 提供 `cost`、`daily_limit`、`quota_daily_cost` 和 `usage_today` 等本币字段，并携带 `currency`。模型目录响应通过 `prices` 和 `currency` 提供本币价格；旧的 `pricing` 字典仍为 USD。角色额度设置通过 `amount` 和 `currency` 提供本币金额，`value` 仍为 USD。新客户端应直接读取这些本币字段，并在写入本币金额时携带匹配的币种。发送不同的币种，或同时提交本币金额及其美元别名，都会被拒绝。旧的 `*_usd` 输入和输出始终保留美元含义。"
+
+msgid "`GET /site-config` exposes `accounting.currency` for the console. The console formats the amounts supplied by the API without applying another exchange rate. A CNY response missing its native amount must not be displayed by relabelling its legacy USD value."
+msgstr "`GET /site-config` 向控制台提供 `accounting.currency`。控制台直接格式化 API 提供的金额，不会再次换汇。CNY 响应缺少本币金额时，不得把旧的美元值改标为人民币来显示。"
+
+msgid "Provider balances and resource quotas retain the units reported by their provider. Provider-reported `upstream_cost_usd` and RouteWise USD budgets, candidate costs and diagnostics remain USD. Changing the deployment ledger does not change these contracts."
+msgstr "Provider 余额和资源额度保留 provider 返回的单位。Provider 返回的 `upstream_cost_usd` 以及 RouteWise 的美元预算、候选成本和诊断数据仍为 USD。切换部署账本不改变这些约定。"
+
+msgid "Model price currency"
+msgstr "模型价格的币种"
+
+msgid "In model configuration, `pricing_currency` declares the unit of `pricing` and `pricing_schedule`; it defaults to `USD`. Token prices are per million tokens, while `request` and `image` are per request and per image. A CNY deployment converts configured USD tariffs using its fixed accounting rate. Set `pricing_currency: CNY` only when the configured tariff is already in CNY; it is then used directly. A USD deployment rejects CNY tariffs."
+msgstr "模型配置中的 `pricing_currency` 声明 `pricing` 和 `pricing_schedule` 的单位，默认值为 `USD`。Token 价格以每百万 token 为单位，`request` 和 `image` 则分别以每次请求和每张图片为单位。CNY 部署使用固定记账汇率转换配置中的美元价格。只有配置的价格已经是人民币时才设置 `pricing_currency: CNY`，此时直接使用该价格。USD 部署会拒绝人民币价格。"
+
+msgid "Automatic DeepSeek pricing follows the accounting currency: USD uses the [official English pricing page](https://api-docs.deepseek.com/quick_start/pricing/), and CNY uses the [official Chinese pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/). CNY source prices are read directly, not converted from the English page. Snapshots are stored separately by currency and a mismatched snapshot is rejected. See [Automatic DeepSeek prices](adding-models.md#automatic-deepseek-prices) for source configuration and refresh behavior."
+msgstr "DeepSeek 自动价格跟随记账币种：USD 使用[官方英文价格页面](https://api-docs.deepseek.com/quick_start/pricing/)，CNY 使用[官方中文价格页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。人民币源价格直接读取，不从英文页面换算。快照按币种分别存储，币种不匹配的快照会被拒绝。源配置和刷新行为见[DeepSeek 自动价格](adding-models.md#automatic-deepseek-prices)。"
+
+msgid "Prepare an offline migration"
+msgstr "准备离线迁移"
+
+msgid "Use `ops/accounting_currency.py` from the source checkout with the gateway's database connection configuration. Omitting `--apply` performs a read-only preview. CNY requires a positive `--usd-to-currency-rate`, an ISO `--rate-date` in `YYYY-MM-DD` form, and a nonempty `--rate-source` identifying the operator's rate source. The rate means CNY per USD. The command does not fetch an exchange rate."
+msgstr "在源码检出目录中运行 `ops/accounting_currency.py`，使用网关现有的数据库连接配置。不加 `--apply` 时只进行只读预览。CNY 要求 `--usd-to-currency-rate` 为正数，`--rate-date` 为 `YYYY-MM-DD` 格式的 ISO 日期，`--rate-source` 非空并标明部署方使用的汇率来源。汇率表示每美元对应的人民币数。命令不会自动获取汇率。"
+
+msgid "Choose and record the rate as an accounting policy before the maintenance window. It converts existing usage and quotas and remains the fixed rate for USD compatibility values and USD-denominated model tariffs after migration. It is not a live FX feed and cannot be edited or applied again with a different rate after CNY activation."
+msgstr "在维护窗口前选定汇率，并将其作为记账策略记录。该汇率用于转换已有用量和额度，迁移后也固定用于美元兼容值和以美元配置的模型价格。它不是实时外汇数据源；CNY 启用后不能修改汇率，也不能再用其他汇率重复迁移。"
+
+msgid "Start with an initialized USD database, including for a new deployment with no usage. Prepare the compatible application version and a recoverable database backup, and retain the previous deployment configuration. Test the restore procedure before applying the migration. Do not expose traffic while preparing the CNY ledger."
+msgstr "从已经初始化的 USD 数据库开始，即使是尚无用量的新部署也一样。准备兼容的应用版本和可恢复的数据库备份，并保留原部署配置。执行迁移前先验证恢复流程。准备人民币账本期间不要开放流量。"
+
+msgid "Stop incoming traffic, drain in-flight requests, and stop every gateway worker, rollup, scheduled job and maintenance process that connects to the database. Disable automatic restarts and close database consoles, backup connections and other database clients. Keep them stopped until migration and configuration checks finish. The command refuses `--apply` when another client is connected; it does not terminate those clients, and its check does not prevent a scheduler from starting a new one."
+msgstr "停止新流量，等待进行中的请求结束，并停止所有连接数据库的网关 worker、汇总任务、定时任务和维护进程。禁用自动重启，关闭数据库控制台、备份连接和其他数据库客户端。在迁移和配置检查完成之前保持停止状态。有其他客户端连接时，命令会拒绝 `--apply`；它不会终止那些客户端，这项检查也无法阻止调度器启动新的客户端。"
+
+msgid "Set `ACCOUNTING_RATE`, `ACCOUNTING_RATE_DATE` and `ACCOUNTING_RATE_SOURCE` to the approved values in your shell, then preview from the repository root:"
+msgstr "在 shell 中将 `ACCOUNTING_RATE`、`ACCOUNTING_RATE_DATE` 和 `ACCOUNTING_RATE_SOURCE` 设为已批准的值，然后从仓库根目录预览："
+
+msgid "Review and retain the JSON output: previous and target policies, row counts, priced-row counts, original USD totals and proposed native totals for each monetary column. Reconcile each table separately; logs and their rollups describe overlapping usage and must not be added together as independent charges. The preview does not change the schema, amounts or policy."
+msgstr "检查并保留 JSON 输出：原策略和目标策略，以及每个金额列的行数、已计价行数、原美元总额和拟转换的本币总额。逐表核对；日志及其汇总记录包含重叠用量，不能当作独立费用相加。预览不会更改 schema、金额或策略。"
+
+msgid "Apply and activate"
+msgstr "执行并启用"
+
+msgid "With the backup available and all other database clients still stopped, run the same command with `--apply`:"
+msgstr "确认备份可用，其他数据库客户端仍全部停止后，使用同一条命令并加上 `--apply`："
+
+msgid "The command locks the affected tables and applies the conversion in one serializable transaction. It fills native amounts for request logs, API-key quotas, user daily costs, provider hourly statistics and RouteWise probe samples, where those tables exist. It records the policy and completion marker in `site_settings` and an audit record in `accounting_currency_migrations`. Retain the JSON result and confirm `applied` and `migration_complete` are true. Repeating the exact completed policy returns `already_applied` without converting again."
+msgstr "命令锁定受影响的表，并在一个可串行化事务中完成转换。它为已存在的请求日志、API-key 额度、用户每日费用、provider 每小时统计和 RouteWise 探测样本表填充本币金额。策略和完成标记记录在 `site_settings`，审计记录保存在 `accounting_currency_migrations`。保留 JSON 结果，并确认 `applied` 和 `migration_complete` 均为 true。再次提交完全相同且已完成的策略会返回 `already_applied`，不会重复转换。"
+
+msgid "After a successful migration, add this top-level section to the deployment's active manifest:"
+msgstr "迁移成功后，在部署的 active manifest 中加入以下顶层配置："
+
+msgid "The manifest selects the expected currency only; the rate, date and source belong to the persisted migration policy. Activate the manifest using the existing [distribution configuration](distribution-customization.md#activating-a-manifest) and start the compatible gateway. Startup rejects a manifest/database currency mismatch, an invalid policy or a CNY policy without a matching completed migration. Setting `accounting.currency: CNY` alone does not migrate a database."
+msgstr "Manifest 只选择预期币种；汇率、日期和来源属于持久化的迁移策略。按照现有的[发行版配置](distribution-customization.md#activating-a-manifest)启用 manifest，并启动兼容的网关。Manifest 与数据库币种不匹配、策略无效或 CNY 策略没有匹配的迁移完成记录，都会导致启动被拒绝。仅设置 `accounting.currency: CNY` 不会迁移数据库。"
+
+msgid "Before reopening traffic, verify that `/site-config` reports CNY, model catalog `prices` and usage/quota fields carry CNY, and the console displays those native values. Check a controlled request and quota update against the ledger and its USD equivalents. Then resume the remaining workers and scheduled jobs. Keep the pre-migration backup and the migration evidence according to the deployment's retention policy."
+msgstr "重新开放流量前，确认 `/site-config` 返回 CNY，模型目录的 `prices` 和用量、额度字段携带 CNY，控制台显示这些本币值。用一次受控请求和额度更新核对账本及其美元等值金额。随后恢复其余 worker 和定时任务。按照部署的数据保留策略保存迁移前备份和迁移证据。"
+
+msgid "Rollback"
+msgstr "回滚"
+
+msgid "A failed apply rolls back its database transaction. Keep services stopped, inspect the error and persisted policy, then correct the problem before retrying with the same approved inputs."
+msgstr "执行失败会回滚数据库事务。保持服务停止，检查错误和已持久化的策略，修复问题后再使用同一组已批准的输入重试。"
+
+msgid "An applied CNY policy cannot be converted back to USD in place or replaced with a different rate. Rollback requires stopping all clients, restoring the pre-migration database backup and restoring the matching previous deployment configuration before restarting. Plan how to preserve or reconcile any writes accepted after the backup; restoring it does not retain those writes. Do not simulate rollback by changing the manifest, editing the policy rows or applying an inverse rate."
+msgstr "已启用的 CNY 策略不支持原地转回 USD，也不支持更换汇率。回滚需要停止所有客户端，恢复迁移前的数据库备份及其匹配的原部署配置，然后才能重启。提前规划如何保留或核对备份之后接受的写入；恢复备份不会保留这些写入。不要通过修改 manifest、编辑策略行或使用倒数汇率来模拟回滚。"

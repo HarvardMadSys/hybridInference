@@ -181,6 +181,7 @@ def mock_router():
     mock_adapter.config.input_modalities = ["text"]
     mock_adapter.config.output_modalities = ["text"]
     mock_adapter.config.pricing = {"prompt": "0", "completion": "0"}
+    mock_adapter.config.pricing_currency = "USD"
 
     # Register test route
     router.register_route("test-model", [(mock_adapter, 1.0)])

@@ -498,3 +498,16 @@ describe('first-run setup and configuration health', () => {
     );
   });
 });
+
+it('reads the accounting currency while preserving older USD deployments', () => {
+  expect(resolveRuntimeSiteConfig(runtimeDocument).accounting).toEqual({ currency: 'USD' });
+  expect(
+    resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      accounting: { currency: 'CNY', usd_to_currency_rate: '6.8' },
+    }).accounting,
+  ).toEqual({ currency: 'CNY', usd_to_currency_rate: '6.8' });
+  expect(() =>
+    resolveRuntimeSiteConfig({ ...runtimeDocument, accounting: { currency: 'RMB' } }),
+  ).toThrow(SiteConfigLoadError);
+});

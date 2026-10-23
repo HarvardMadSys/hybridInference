@@ -1,20 +1,12 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useState } from 'react';
 import { useUsageStats } from '@/lib/hooks';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
-
-function formatUsd(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(amount);
-}
 
 const RESET_AT_FORMAT: Intl.DateTimeFormatOptions = {
   year: 'numeric',
@@ -51,6 +43,7 @@ function InfoTip({ children }: { children: React.ReactNode }): JSX.Element {
 }
 
 export function UsageStats(): JSX.Element {
+  const money = useMoney();
   const branding = useBranding();
   const [period, setPeriod] = useState<'today' | 'month' | 'all'>('today');
   const { data: stats, isLoading, error } = useUsageStats(period);
@@ -107,11 +100,11 @@ export function UsageStats(): JSX.Element {
                     {t('dashboard.usage.quota_remaining', 'Daily quota remaining')}
                   </div>
                   <div className="mt-1 text-2xl font-semibold tabular-nums text-blue-950">
-                    {formatUsd(quota.remaining_today_usd ?? 0)}
-                    {quota.daily_limit_usd != null && (
+                    {money.value(quota, 'remaining_today')}
+                    {money.amount(quota, 'daily_limit') != null && (
                       <span className="ml-2 text-sm font-normal text-blue-700">
                         {fill(t('dashboard.usage.quota_of', 'of {limit}'), {
-                          limit: formatUsd(quota.daily_limit_usd),
+                          limit: money.value(quota, 'daily_limit'),
                         })}
                       </span>
                     )}
@@ -163,7 +156,7 @@ export function UsageStats(): JSX.Element {
                 </InfoTip>
               </div>
               <div className="text-2xl font-semibold tabular-nums text-gray-900">
-                {formatUsd(stats.usage.cost_usd ?? 0)}
+                {money.value(stats.usage, 'cost')}
               </div>
             </div>
 
@@ -219,7 +212,7 @@ export function UsageStats(): JSX.Element {
           <div className="text-center text-sm text-gray-500">
             {t(
               'dashboard.usage.footnote',
-              'All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.',
+              'All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; amounts are attribution from logs, not invoices.',
             )}
           </div>
         </div>

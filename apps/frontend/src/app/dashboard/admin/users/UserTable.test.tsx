@@ -479,7 +479,8 @@ describe('UserTable admin note', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
       await waitFor(() => {
         expect(apiUpdateUser).toHaveBeenCalledWith('user-1', {
-          quota_daily_cost_usd: Number(value),
+          quota_daily_cost: Number(value),
+          currency: 'USD',
         });
       });
     }

@@ -177,6 +177,8 @@ async def test_token_usage_hides_router_placeholder_rows():
         "reasoning_tokens": 5,
         "cost_usd": 0.0123,
         "request_count": 2,
+        "cost": 0.0123,
+        "currency": "USD",
     }
     assert "provider NOT IN ('', 'router')" in fake_db_logger.pool.conn.query
 
@@ -370,6 +372,8 @@ async def test_token_usage_empty_window_returns_zero_totals(db_logger):
         "reasoning_tokens": 0,
         "cost_usd": 0,
         "request_count": 0,
+        "cost": 0,
+        "currency": "USD",
     }
 
 

@@ -26,6 +26,7 @@ import pytest_asyncio
 from serving.exceptions import AccountSchemaPending
 from serving.servers import bootstrap
 from serving.storage import account_schema, log_schema
+from serving.storage.accounting_schema import initialize_accounting_schema
 from serving.storage.log_schema import (
     SchemaLockUnavailable,
     ensure_api_logs_schema,
@@ -148,6 +149,9 @@ async def pool(monkeypatch):
         async with pool.acquire() as conn:
             await ensure_api_logs_schema(conn)  # the admin user list reads it
             await conn.execute(_BOOT_TIME_API_KEYS)
+            # Currency columns are mandatory; this fixture isolates the separately
+            # deferrable account migration after the currency upgrade has landed.
+            await initialize_accounting_schema(conn, tables=("api_keys",))
             await conn.execute(_PRE_UPGRADE_USERS)
             await conn.execute(_PRE_UPGRADE_LOGIN_EVENTS)
             await conn.execute(

@@ -2088,8 +2088,10 @@ async def test_user_balance_reflects_spend(anthropic_test_client):
 
 
 @pytest.mark.asyncio
-async def test_user_balance_tiny_remainder_rounds_to_unavailable(anthropic_test_client):
-    """A sub-rounding-precision remainder must not claim is_available while balance_usd shows 0.0."""
+async def test_user_balance_tiny_native_remainder_survives_usd_display_rounding(
+    anthropic_test_client,
+):
+    """The primary amount remains available when its legacy display rounds to zero."""
     from serving.servers.auth import verify_api_key_for_balance
 
     app = anthropic_test_client._transport.app
@@ -2104,7 +2106,8 @@ async def test_user_balance_tiny_remainder_rounds_to_unavailable(anthropic_test_
     assert r.status_code == 200
     body = r.json()
     assert body["balance_usd"] == 0.0
-    assert body["is_available"] is False
+    assert body["balance"] == "0.00001"
+    assert body["is_available"] is True
 
 
 @pytest.mark.asyncio

@@ -618,7 +618,7 @@ def calculate_cost(
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,
 ) -> float | None:
-    """Compute request cost in USD based on usage and pricing tables.
+    """Compute request cost in the supplied pricing table's currency.
 
     Uses OpenAI semantics: ``prompt_tokens`` is the *total* input including
     any cached portion. The cached subset is reported separately in

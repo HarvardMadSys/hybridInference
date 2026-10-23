@@ -1,3 +1,4 @@
+import type { Currency } from '@/lib/utils/money';
 import type { FilterState, QuotaStateFilter, SortBy, UserStatus } from '../types';
 
 export const DEFAULT_FILTER_STATE: FilterState = {
@@ -39,7 +40,11 @@ function parseNumber(s: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function filterStateFromUrl(params: URLSearchParams): FilterState {
+export function filterStateFromUrl(
+  params: URLSearchParams,
+  currency: Currency = 'USD',
+): FilterState {
+  const matchesCurrency = (params.get('currency') ?? 'USD') === currency;
   const status = params.get('status');
   const sortBy = params.get('sort_by');
   const quotaState = params.get('quota_state');
@@ -49,8 +54,8 @@ export function filterStateFromUrl(params: URLSearchParams): FilterState {
     status: VALID_STATUS.includes(status as UserStatus) ? (status as UserStatus) : null,
     search: params.get('q') ?? '',
     sortBy: VALID_SORT.includes(sortBy as SortBy) ? (sortBy as SortBy) : 'created',
-    minCostToday: parseNumber(params.get('min_cost_today')),
-    minCostMonth: parseNumber(params.get('min_cost_month')),
+    minCostToday: matchesCurrency ? parseNumber(params.get('min_cost_today')) : null,
+    minCostMonth: matchesCurrency ? parseNumber(params.get('min_cost_month')) : null,
     quotaState: VALID_QUOTA.includes(quotaState as QuotaStateFilter)
       ? (quotaState as QuotaStateFilter)
       : null,
@@ -61,8 +66,9 @@ export function filterStateFromUrl(params: URLSearchParams): FilterState {
   };
 }
 
-export function filterStateToUrl(state: FilterState): string {
+export function filterStateToUrl(state: FilterState, currency: Currency = 'USD'): string {
   const out = new URLSearchParams();
+  if (state.minCostToday !== null || state.minCostMonth !== null) out.set('currency', currency);
   if (state.status) out.set('status', state.status);
   if (state.search) out.set('q', state.search);
   if (state.sortBy !== 'created') out.set('sort_by', state.sortBy);

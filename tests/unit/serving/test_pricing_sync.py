@@ -6,12 +6,14 @@ import asyncio
 import copy
 import datetime as dt
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from serving import pricing
+from serving.accounting import AccountingPolicy
 from serving.pricing_sources import sync
 from serving.servers.middleware.request_id import RequestIdMiddleware
 from serving.servers.routers.completions_cost import PricingLookup
@@ -23,15 +25,15 @@ NOW = dt.datetime(2026, 10, 19, 2, tzinfo=dt.timezone.utc)
 SOURCE = {"provider": "deepseek", "model": "deepseek-flash"}
 
 
-def _payload(*, revision="first", prompt="0.30", year=2026):
+def _payload(*, revision="first", prompt="0.30", year=2026, currency="USD"):
     return {
         "version": 1,
         "provider": "deepseek",
-        "currency": "USD",
+        "currency": currency,
         "unit": "per_million_tokens",
         "revision": revision,
         "fetched_at": NOW.isoformat(),
-        "price_url": sync.PRICE_URL,
+        "price_url": sync.PRICE_URLS[currency],
         "calendar_urls": {str(year): sync.CALENDAR_URL.format(year=year)},
         "source_sha256": "a" * 64,
         "calendars": {str(year): [f"{year}-10-01"]},
@@ -58,23 +60,24 @@ def _payload(*, revision="first", prompt="0.30", year=2026):
 
 
 class MemoryStore:
-    def __init__(self, payload=None):
+    def __init__(self, payload=None, *, currency="USD"):
         self.value = json.dumps(payload) if payload is not None else None
+        self.key = sync.SETTING_KEY if currency == "USD" else f"{sync.SETTING_KEY}:{currency}"
 
     async def get_setting(self, key):
-        assert key == sync.SETTING_KEY
+        assert key == self.key
         return {"value": self.value} if self.value is not None else None
 
     async def compare_and_set_setting(self, key, expected, value, value_type, updated_by):
-        assert (key, value_type, updated_by) == (sync.SETTING_KEY, "json", "pricing-sync:deepseek")
+        assert (key, value_type, updated_by) == (self.key, "json", "pricing-sync:deepseek")
         if self.value != expected:
             return False
         self.value = value
         return True
 
 
-def _service(store):
-    return sync.PricingSyncService(store, {"deepseek-flash"}, clock=lambda: NOW)
+def _service(store, *, currency="USD"):
+    return sync.PricingSyncService(store, {"deepseek-flash"}, clock=lambda: NOW, currency=currency)
 
 
 @pytest.fixture(autouse=True)
@@ -298,7 +301,9 @@ async def test_unpublished_next_year_is_optional_but_current_year_is_required(
 ):
     service = _service(MemoryStore())
     tariff = _payload()["models"]["deepseek-flash"]
-    monkeypatch.setattr(sync, "parse_deepseek_page", lambda html, model: copy.deepcopy(tariff))
+    monkeypatch.setattr(
+        sync, "parse_deepseek_page", lambda html, model, *, currency="USD": copy.deepcopy(tariff)
+    )
     monkeypatch.setattr(sync, "parse_holiday_calendar", lambda raw, year: [f"{year}-10-01"])
 
     async def fetch(url, *, optional_calendar=False):
@@ -328,7 +333,7 @@ async def test_retired_unconfigured_model_does_not_stop_flash_sync(monkeypatch):
     service = _service(MemoryStore())
     tariff = _payload()["models"]["deepseek-flash"]
 
-    def parse(html, model):
+    def parse(html, model, *, currency="USD"):
         if model == "deepseek-v4-pro":
             raise sync.MissingModelError("not present")
         return tariff
@@ -338,6 +343,94 @@ async def test_retired_unconfigured_model_does_not_stop_flash_sync(monkeypatch):
     monkeypatch.setattr(sync, "fetch_public_text", AsyncMock(return_value="{}"))
     payload = await service._download()
     assert set(sync.decode_snapshot(json.dumps(payload)).tariffs) == {"deepseek-flash"}
+
+
+def test_snapshot_currency_and_source_url_must_both_match() -> None:
+    payload = _payload(currency="CNY")
+    assert sync.decode_snapshot(json.dumps(payload), currency="CNY").currency == "CNY"
+    with pytest.raises(ValueError, match="currency"):
+        sync.decode_snapshot(json.dumps(payload))
+    payload["price_url"] = sync.PRICE_URL
+    with pytest.raises(ValueError, match="URL"):
+        sync.decode_snapshot(json.dumps(payload), currency="CNY")
+
+
+@pytest.mark.asyncio
+async def test_cny_restart_uses_only_its_own_valid_snapshot(monkeypatch) -> None:
+    service = _service(MemoryStore(_payload(currency="CNY"), currency="CNY"), currency="CNY")
+    download = AsyncMock(side_effect=OSError("offline"))
+    monkeypatch.setattr(service, "_download", download)
+    await service.initialize()
+    assert service.snapshot().currency == "CNY"
+    assert service.status()["currency"] == "CNY"
+    download.assert_not_awaited()
+
+    wrong = _service(MemoryStore(_payload(), currency="CNY"), currency="CNY")
+    monkeypatch.setattr(wrong, "_download", download)
+    with pytest.raises(RuntimeError, match="no valid current-year snapshot"):
+        await wrong.initialize()
+    assert wrong.snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_cny_download_uses_chinese_page_and_keeps_published_prices(monkeypatch) -> None:
+    service = _service(MemoryStore(currency="CNY"), currency="CNY")
+    tariff = _payload()["models"]["deepseek-flash"]
+    tariff["default"] = {"prompt": "1", "completion": "4", "input_cache_reads": "0.02"}
+    tariff["windows"][0]["pricing"] = {
+        "prompt": "2",
+        "completion": "8",
+        "input_cache_reads": "0.04",
+    }
+    called_urls = []
+
+    async def fetch(url, **kwargs):
+        called_urls.append(url)
+        return "HTML" if url == sync.PRICE_URLS["CNY"] else "{}"
+
+    def parse(html, model, *, currency="USD"):
+        assert html == "HTML" and currency == "CNY"
+        return copy.deepcopy(tariff)
+
+    monkeypatch.setattr(sync, "fetch_public_text", fetch)
+    monkeypatch.setattr(sync, "parse_deepseek_page", parse)
+    monkeypatch.setattr(sync, "parse_holiday_calendar", lambda raw, year: [f"{year}-10-01"])
+    payload = await service._download()
+    assert sync.PRICE_URLS["CNY"] in called_urls
+    assert sync.PRICE_URL not in called_urls
+    snapshot = sync.decode_snapshot(json.dumps(payload), currency="CNY")
+    assert snapshot.resolve("deepseek-flash", at=NOW)["prompt"] == "2"
+
+
+def test_request_rejects_snapshot_in_another_currency(monkeypatch) -> None:
+    snapshot = sync.decode_snapshot(json.dumps(_payload()))
+    monkeypatch.setattr(pricing, "get_accounting_policy", lambda: SimpleNamespace(currency="CNY"))
+    config = SimpleNamespace(pricing_source=SOURCE, pricing={})
+    with (
+        req_ctx.push(pricing_time=NOW, pricing_snapshot=snapshot),
+        pytest.raises(pricing.PricingUnavailableError),
+    ):
+        pricing.effective_pricing(config)
+
+
+def test_official_cny_bill_is_distinct_from_usd_route_compatibility(monkeypatch) -> None:
+    policy = AccountingPolicy(
+        currency="CNY",
+        usd_to_currency_rate=Decimal("6.7180"),
+        rate_date="2026-10-23",
+        rate_source="https://example.com/published-rate",
+    )
+    monkeypatch.setattr(pricing, "get_accounting_policy", lambda: policy)
+    payload = _payload(currency="CNY", prompt="2")
+    payload["models"]["deepseek-flash"]["default"]["prompt"] = "1"
+    snapshot = sync.decode_snapshot(json.dumps(payload), currency="CNY")
+    config = SimpleNamespace(pricing_source=SOURCE, pricing={})
+    with req_ctx.push(pricing_time=NOW, pricing_snapshot=snapshot):
+        assert pricing.effective_pricing(config)["prompt"] == "2"
+        usd = pricing.effective_pricing_usd(config)["prompt"]
+    assert Decimal(usd) == Decimal("2") / Decimal("6.7180")
+    static_usd = SimpleNamespace(pricing={"prompt": "0.30"}, pricing_currency="USD")
+    assert Decimal(pricing.effective_pricing(static_usd)["prompt"]) == Decimal("2.0154")
 
 
 @pytest.mark.asyncio

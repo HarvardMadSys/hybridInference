@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useEffect, useRef, useState } from 'react';
 import { COLUMN_GROUPS, type ColumnId } from './lib/columns';
 
@@ -10,6 +11,7 @@ interface ColumnPickerProps {
 
 /** "Columns" menu: checkboxes for the optional metric columns, by group. */
 export function ColumnPicker({ hidden, onChange }: ColumnPickerProps) {
+  const money = useMoney();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -62,9 +64,12 @@ export function ColumnPicker({ hidden, onChange }: ColumnPickerProps) {
           className="absolute right-0 z-30 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-2 shadow-lg"
         >
           {COLUMN_GROUPS.map((group) => (
-            <div key={group.label} className="py-1">
+            <div
+              key={group.label === 'Spend (USD)' ? `Spend (${money.currency})` : group.label}
+              className="py-1"
+            >
               <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                {group.label}
+                {group.label === 'Spend (USD)' ? `Spend (${money.currency})` : group.label}
               </div>
               {group.columns.map((col) => (
                 <label

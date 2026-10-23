@@ -40,6 +40,8 @@ def _provider_stats_startup(*, scheduler, backfill_missing, backfill_token_colum
     """
     db_logger = AsyncMock()
     db_logger.pool = object()
+    cached_store = MagicMock()
+    cached_store.get_setting = AsyncMock(return_value=None)
     with (
         patch("serving.servers.bootstrap._init_db_logger", return_value=db_logger),
         patch(
@@ -48,7 +50,7 @@ def _provider_stats_startup(*, scheduler, backfill_missing, backfill_token_colum
         ),
         patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
         patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=AsyncMock()),
-        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=MagicMock()),
+        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
         patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
         patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
         patch(
@@ -78,6 +80,21 @@ async def _until_awaited(mock: AsyncMock) -> None:
 
 class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
+
+    @pytest.mark.asyncio
+    async def test_missing_accounting_schema_aborts_before_serving(self, mock_env):
+        from serving.storage.accounting_schema import AccountingSchemaUnavailable
+
+        logger = AsyncMock()
+        logger.initialize.side_effect = AccountingSchemaUnavailable("native columns locked")
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=logger),
+            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()) as models,
+            pytest.raises(AccountingSchemaUnavailable, match="native columns locked"),
+        ):
+            await bootstrap.initialize()
+        logger.initialize.assert_awaited_once()
+        models.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_routewise_settings_apply_continues_after_one_router_fails(
@@ -230,6 +247,7 @@ class TestBootstrapInitialization:
             MockDBLogger.return_value = mock_logger
 
             mock_pg_op = AsyncMock()
+            mock_pg_op.get_setting.return_value = None
             MockPGOp.return_value = mock_pg_op
 
             services = await bootstrap.initialize()
@@ -261,6 +279,7 @@ class TestBootstrapInitialization:
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
             cached_store = MagicMock()
+            cached_store.get_setting = AsyncMock(return_value=None)
             MockCachedStore.return_value = cached_store
 
             services = await bootstrap.initialize()
@@ -295,7 +314,9 @@ class TestBootstrapInitialization:
         ):
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
-            MockCachedStore.return_value = MagicMock()
+            cached_store = MagicMock()
+            cached_store.get_setting = AsyncMock(return_value=None)
+            MockCachedStore.return_value = cached_store
 
             services = await bootstrap.initialize()
 

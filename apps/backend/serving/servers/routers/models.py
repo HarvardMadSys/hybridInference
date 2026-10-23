@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
 from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
-from serving.pricing import PricingUnavailableError, effective_pricing
+from serving.pricing import PricingUnavailableError, effective_pricing, effective_pricing_usd
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import (
@@ -45,9 +45,9 @@ from serving.servers.deps import (
 router = APIRouter()
 
 
-def _catalog_pricing(config: Any) -> dict[str, str]:
+def _catalog_pricing(config: Any, *, usd: bool = False) -> dict[str, str]:
     try:
-        return effective_pricing(config) or {}
+        return (effective_pricing_usd(config) if usd else effective_pricing(config)) or {}
     except PricingUnavailableError:
         # A missing official quote is unknown, never a free rate. Keep the
         # model discoverable while inference fails before creating usage.
@@ -329,7 +329,8 @@ async def _build_model_list_async(
             quantization=primary_cfg.quantization,
             context_length=context_length,
             max_output_length=max_output_length,
-            pricing=_catalog_pricing(primary_cfg),
+            pricing=_catalog_pricing(primary_cfg, usd=True),
+            prices=_catalog_pricing(primary_cfg),
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
             # Any adapter marking the model on-demand makes the whole model
@@ -367,7 +368,8 @@ async def _build_model_list_async(
                 quantization=cfg.quantization,
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
-                pricing=_catalog_pricing(cfg),
+                pricing=_catalog_pricing(cfg, usd=True),
+                prices=_catalog_pricing(cfg),
                 # The catalog lists embedding models beside chat models with
                 # the same modality defaults; this is the one signal a client
                 # has that the model answers /v1/embeddings, not chat.

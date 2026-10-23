@@ -665,6 +665,10 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
         )
     """)
 
+    from serving.storage.accounting_schema import initialize_accounting_schema
+
+    await initialize_accounting_schema(conn, tables=("api_logs",))
+
 
 # ---------------------------------------------------------------------------
 # Erasure fence (issue #1421)

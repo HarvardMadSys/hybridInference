@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import primary_amounts
 from serving.config.runtime_settings import get_runtime_settings_instance
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
@@ -799,6 +801,7 @@ async def get_usage(
 
     # Fetch usage from log store (for period breakdown) and op store (for today's quota counter)
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    all_usage = {}
     try:
         if log_store:
             all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
@@ -829,6 +832,23 @@ async def get_usage(
         spent_today = 0.0
 
     remaining_today = max(0, daily_limit - spent_today)
+    native_quota = {}
+    policy = get_accounting_policy()
+    if policy.currency == "CNY":
+        native_daily = key_row.get("quota_daily_cost_amount")
+        if native_daily is None:
+            native_daily = policy.from_usd(daily_limit)
+        native_spent = await op_store.get_user_cost_today_amount(current_user["user_id"])
+        native_quota = {
+            "daily_limit": native_daily,
+            "spent_today": native_spent,
+            "remaining_today": max(0, native_daily - native_spent),
+            "spent_month": (
+                all_usage.get("month", {}).get("cost_amount")
+                if log_store
+                else policy.from_usd(spent_month)
+            ),
+        }
 
     return UsageResponse(
         period=period,
@@ -839,6 +859,7 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            **native_quota,
             max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
@@ -849,6 +870,7 @@ async def get_usage(
             prompt_tokens=int(period_data.get("prompt_tokens") or 0),
             completion_tokens=int(period_data.get("completion_tokens") or 0),
             cost_usd=float(period_data.get("cost_usd") or 0),
+            **primary_amounts(period_data),
         ),
     )
 
@@ -1051,6 +1073,7 @@ async def get_recent_requests(
             ),
             routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
+            **primary_amounts(row),
         )
         for row in rows
     ]

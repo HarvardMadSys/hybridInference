@@ -13,6 +13,7 @@ const API_BASE = config.apiBase;
 // ========================================
 
 export interface AdminUser {
+  currency?: 'USD' | 'CNY';
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -32,8 +33,11 @@ export interface AdminUser {
   has_key: boolean;
   key_prefix: string | null;
   key_status: string | null;
+  usage_today?: number;
   usage_today_usd: number;
+  usage_month?: number;
   usage_month_usd: number;
+  usage_alltime?: number;
   usage_alltime_usd: number;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
@@ -58,6 +62,7 @@ export interface StatusCounts {
 }
 
 export interface ListUsersResponse {
+  currency?: 'USD' | 'CNY';
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
@@ -72,6 +77,7 @@ export interface ApproveRejectResponse {
 }
 
 export interface ListUsersOptions {
+  currency?: 'USD' | 'CNY';
   status?: string;
   search?: string;
   sortBy?: UserSortBy;
@@ -93,6 +99,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
   if (opts.sortBy) params.set('sort_by', opts.sortBy);
   params.set('limit', String(opts.limit ?? 100));
   params.set('offset', String(opts.offset ?? 0));
+  if (opts.currency) params.set('currency', opts.currency);
   if (opts.minCostToday !== undefined) params.set('min_cost_today', String(opts.minCostToday));
   if (opts.minCostMonth !== undefined) params.set('min_cost_month', String(opts.minCostMonth));
   if (opts.quotaState) params.set('quota_state', opts.quotaState);
@@ -113,12 +120,14 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
 // ========================================
 
 export interface UserCostHistoryResponse {
+  currency?: 'USD' | 'CNY';
   user_id: string;
   days: number;
   points: CostHistoryPoint[];
 }
 
 export interface BulkCostHistoryResponse {
+  currency?: 'USD' | 'CNY';
   days: number;
   histories: Record<string, CostHistoryPoint[]>;
 }
@@ -194,6 +203,7 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 // ========================================
 
 export interface UserDetail {
+  currency?: 'USD' | 'CNY';
   id: string;
   email: string | null;
   login_name?: string | null;
@@ -206,10 +216,14 @@ export interface UserDetail {
   last_login_at: string | null;
   has_key: boolean;
   key_prefix: string | null;
+  quota_daily?: number | null;
   quota_daily_usd: number | null;
+  quota_monthly?: number | null;
   quota_monthly_usd: number | null;
+  usage_today?: number;
   usage_today_usd: number;
   usage_today_requests: number;
+  usage_month?: number;
   usage_month_usd: number;
   usage_month_requests: number;
   models_used: string[];
@@ -342,9 +356,12 @@ export async function getBulkAutomationScores(
 }
 
 export interface UpdateUserData {
+  currency?: 'USD' | 'CNY';
   role?: string;
   status?: string;
+  quota_daily_cost?: number;
   quota_daily_cost_usd?: number;
+  quota_monthly_cost?: number;
   quota_monthly_cost_usd?: number;
   disabled_models?: string[];
   max_concurrent_requests?: number | null;
@@ -578,6 +595,7 @@ export async function getTtftScatter({
 }
 
 export interface AdminRecentRequestItem {
+  currency?: 'USD' | 'CNY';
   request_id: string;
   user_id: string | null;
   user_name?: string | null;
@@ -618,6 +636,7 @@ export interface AdminRecentRequestItem {
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
+  cost?: number | null;
   cost_usd?: number | null;
   error?: string | null;
   routewise?: AdminRouteWiseDecision | null;
@@ -657,6 +676,7 @@ export interface AdminRecentRequestItem {
 // lib/utils/routewise.ts); the second group mirrors the real persisted keys used
 // by the RouteWise decisions panel.
 export interface AdminRouteWiseDecision {
+  currency?: 'USD' | 'CNY';
   // --- legacy / compatibility fields (do not remove) ---
   selected_provider_type?: string | null;
   selected_provider?: string | null;
@@ -666,6 +686,7 @@ export interface AdminRouteWiseDecision {
   hedge_backup_endpoint_id?: string | null;
   backup_won?: boolean | null;
   // --- raw persisted metadata fields ---
+  candidate_costs?: Record<string, number>;
   candidate_costs_usd?: Record<string, number>;
   candidate_mean_ttft_sec?: Record<string, number>;
   candidate_provider_types?: Record<string, string>;
@@ -673,6 +694,7 @@ export interface AdminRouteWiseDecision {
   candidate_quota_remaining?: Record<string, number>;
   lp_weights?: Record<string, number>;
   lp_status?: string | null;
+  budget?: number | null;
   budget_usd?: number | null;
   selected_endpoint?: string | null;
   final_endpoint?: string | null;
@@ -684,6 +706,7 @@ export interface AdminRouteWiseDecision {
 }
 
 export interface AdminRecentRequestsResponse {
+  currency?: 'USD' | 'CNY';
   requests: AdminRecentRequestItem[];
   // Every matching row when `total_exact`. Otherwise counting them took longer
   // than the backend allows, and this is the rows through this page: a lower
@@ -1297,6 +1320,7 @@ export async function updateUsageInsightsSettings(
 // ========================================
 
 export interface BroadcastPreviewRequest {
+  currency?: 'USD' | 'CNY';
   template_key?: string | null;
   template_vars?: Record<string, string>;
   subject?: string;
@@ -1307,6 +1331,7 @@ export interface BroadcastPreviewRequest {
   target_statuses: string[];
   // When set, restrict recipients to users who have spent more than this many
   // USD today (UTC). Omit/null for no spend filter.
+  min_spend_today?: number | null;
   min_spend_today_usd?: number | null;
 }
 
@@ -1737,6 +1762,7 @@ export async function getProviderObservability(params: {
 export type TokenUsageRange = '1h' | '24h' | '7d' | '30d';
 
 export interface ProviderTokenUsageRow {
+  currency?: 'USD' | 'CNY';
   provider: string;
   provider_display_name?: string | null;
   model_id: string;
@@ -1744,20 +1770,24 @@ export interface ProviderTokenUsageRow {
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost?: number;
   cost_usd: number;
   request_count: number;
 }
 
 export interface ProviderTokenUsageTotals {
+  currency?: 'USD' | 'CNY';
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost?: number;
   cost_usd: number;
   request_count: number;
 }
 
 export interface ProviderTokenUsageResponse {
+  currency?: 'USD' | 'CNY';
   range: TokenUsageRange;
   window: { from: string; to: string };
   refreshed_at: string;
@@ -1826,8 +1856,13 @@ export async function removeSignupAllowedDomain(
 // ========================================
 
 export interface RuntimeSettingItem {
+  currency?: 'USD' | 'CNY';
   key: string;
   value: unknown;
+  amount?: number;
+  default_amount?: number;
+  min_amount?: number | null;
+  max_amount?: number | null;
   value_type: string;
   default_value: unknown;
   description: string;
@@ -1836,6 +1871,7 @@ export interface RuntimeSettingItem {
 }
 
 export interface ListSettingsResponse {
+  currency?: 'USD' | 'CNY';
   settings: RuntimeSettingItem[];
 }
 
@@ -1847,11 +1883,12 @@ export async function listRuntimeSettings(): Promise<ListSettingsResponse> {
 export async function updateRuntimeSetting(
   key: string,
   value: unknown,
+  currency?: 'USD' | 'CNY',
 ): Promise<RuntimeSettingItem> {
   const resp = await fetchWithAuth(API_BASE, `/admin/settings/${encodeURIComponent(key)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
+    body: JSON.stringify({ value, ...(currency ? { currency } : {}) }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
 }
@@ -1956,15 +1993,19 @@ export interface ListAdminModelVisibilityResponse {
 }
 
 export interface RoleQuotaPreview {
+  currency?: 'USD' | 'CNY';
   role: Role;
   quota: number;
+  amount?: number;
   keys_affected: number;
   users_affected: number;
 }
 
 export interface RoleQuotaApplyResult {
+  currency?: 'USD' | 'CNY';
   role: Role;
   quota: number;
+  amount?: number;
   keys_updated: number;
 }
 
@@ -1976,11 +2017,14 @@ export async function previewRoleQuotaApply(role: Role): Promise<RoleQuotaPrevie
   return jsonOrThrow<RoleQuotaPreview>(resp);
 }
 
-export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> {
+export async function applyRoleQuota(
+  role: Role,
+  currency?: 'USD' | 'CNY',
+): Promise<RoleQuotaApplyResult> {
   const resp = await fetchWithAuth(API_BASE, '/admin/quota/role-apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ role, ...(currency ? { currency } : {}) }),
   });
   return jsonOrThrow<RoleQuotaApplyResult>(resp);
 }
@@ -2394,6 +2438,7 @@ export interface OpenRouterProviderOption {
 export type OpenRouterSortPolicy = 'price' | 'throughput' | 'latency';
 
 export interface ProviderRoute {
+  currency?: 'USD' | 'CNY';
   model_id: string;
   strategy: string;
   route_id: string;
@@ -2424,6 +2469,7 @@ export interface ProviderRoute {
 }
 
 export interface ListProviderRoutesResponse {
+  currency?: 'USD' | 'CNY';
   model_id?: string;
   strategy?: string;
   provider_options: ProviderRouteOption[];
@@ -2478,10 +2524,12 @@ export interface RuntimeModelCapabilities {
 }
 
 export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+  currency?: 'USD' | 'CNY';
   model_id: string;
   strategy: ProviderRouteStrategy;
   required_role?: Role;
-  pricing: Record<string, string>;
+  pricing?: Record<string, string>;
+  prices?: Record<string, string>;
   capabilities: RuntimeModelCapabilities;
 }
 

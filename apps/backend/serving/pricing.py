@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from serving.accounting import get_accounting_policy
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
@@ -156,6 +157,7 @@ class PricingSnapshot:
     calendar_years: frozenset[int]
     tariffs: Mapping[str, PricingSchedule]
     model_versions: Mapping[str, str]
+    currency: str = "USD"
 
     def resolve(self, model: str, *, at: dt.datetime) -> dict[str, str]:
         """Refuse unknown years instead of treating missing holidays as weekdays."""
@@ -197,7 +199,9 @@ def freeze_schedule(schedule: PricingSchedule) -> PricingSchedule:
 
 def require_source_pricing(config: Any) -> None:
     """Check a source-backed endpoint before upstream work can create usage."""
-    if isinstance(getattr(config, "pricing_source", None), Mapping):
+    if isinstance(getattr(config, "pricing_source", None), Mapping) or (
+        getattr(config, "pricing_currency", "USD") != get_accounting_policy().currency
+    ):
         effective_pricing(config)
 
 
@@ -239,8 +243,10 @@ def effective_pricing(
 ) -> dict[str, str] | None:
     """Resolve a model config's static or scheduled pricing.
 
-    For configs without a schedule the original dictionary is returned, which
-    preserves existing identity/caching behavior for static pricing consumers.
+    All route comparison and billing consumes deployment-native prices. Static
+    USD tariffs are converted using the immutable accounting policy; official
+    tariffs must already match the deployment currency. Same-currency static
+    dictionaries retain their existing identity/caching behavior.
     """
     source = getattr(config, "pricing_source", None)
     if isinstance(source, Mapping):
@@ -250,7 +256,11 @@ def effective_pricing(
             if req_ctx.PRICING_SNAPSHOT in context
             else get_pricing_snapshot()
         )
-        if not isinstance(snapshot, PricingSnapshot) or source.get("provider") != "deepseek":
+        if (
+            not isinstance(snapshot, PricingSnapshot)
+            or source.get("provider") != "deepseek"
+            or snapshot.currency != get_accounting_policy().currency
+        ):
             raise PricingUnavailableError()
         return snapshot.resolve(str(source.get("model", "")), at=pricing_time(at))
     base = getattr(config, "pricing", None)
@@ -258,10 +268,33 @@ def effective_pricing(
         return None
     schedule = getattr(config, "pricing_schedule", None)
     if not isinstance(schedule, (PricingSchedule, Mapping)):
-        return base
+        return normalize_pricing_currency(base, getattr(config, "pricing_currency", "USD"))
     if isinstance(schedule, Mapping):
         schedule = PricingSchedule.from_raw(schedule)
-    return schedule.resolve(base, at=at)
+    return normalize_pricing_currency(
+        schedule.resolve(base, at=at), getattr(config, "pricing_currency", "USD")
+    )
+
+
+def normalize_pricing_currency(prices: dict[str, str], currency: str) -> dict[str, str]:
+    """Normalize declared prices once; never infer a missing CNY exchange rate."""
+    policy = get_accounting_policy()
+    if currency == policy.currency:
+        return prices
+    if currency != "USD" or policy.currency != "CNY":
+        raise ValueError("model pricing currency is incompatible with accounting currency")
+    return {key: str(policy.from_usd(value)) for key, value in prices.items()}
+
+
+def effective_pricing_usd(
+    config: ModelConfig | Any, *, at: dt.datetime | None = None
+) -> dict[str, str] | None:
+    """Return true USD equivalents for existing routing and public contracts."""
+    prices = effective_pricing(config, at=at)
+    policy = get_accounting_policy()
+    if prices is None or policy.currency == "USD":
+        return prices
+    return {key: str(policy.to_usd(value)) for key, value in prices.items()}
 
 
 def has_scheduled_pricing(config: ModelConfig | Any) -> bool:

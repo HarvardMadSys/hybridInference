@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type {
   AdminModelVisibilityItem,
@@ -59,6 +60,7 @@ function median(nums: number[]): number {
 }
 
 export function UserTable(props: UserTableProps) {
+  const money = useMoney();
   const {
     users,
     costHistories,
@@ -89,8 +91,8 @@ export function UserTable(props: UserTableProps) {
   const [busy, setBusy] = useState<string | null>(null);
 
   const pageMedianToday = useMemo(
-    () => median(users.map((u) => Number(u.usage_today_usd)).filter((n) => n > 0)),
-    [users],
+    () => median(users.map((u) => money.amount(u, 'usage_today') ?? 0).filter((n) => n > 0)),
+    [users, money],
   );
 
   const showSparkline = density === 'comfortable';
@@ -98,7 +100,7 @@ export function UserTable(props: UserTableProps) {
   // needs the comfortable density (compact rows don't fetch the history).
   const hidden = new Set(hiddenColumns);
   const visibleGroups = COLUMN_GROUPS.map((g) => ({
-    label: g.label,
+    label: g.label === 'Spend (USD)' ? `Spend (${money.currency})` : g.label,
     ids: g.columns
       .map((c) => c.id)
       .filter((id) => !hidden.has(id) && (id !== 'trend' || showSparkline)),
@@ -166,7 +168,7 @@ export function UserTable(props: UserTableProps) {
       const [d, visibility] = await Promise.all([getUserDetail(userId), listModelVisibility()]);
       setDetail(d);
       setEditRole(d.role || 'free');
-      setEditQuota(d.quota_daily_usd?.toString() ?? '100');
+      setEditQuota(money.amount(d, 'quota_daily')?.toString() ?? '');
       setEditDisabledModels(d.disabled_models ?? []);
       setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
       setEditNote(d.admin_note ?? '');
@@ -185,8 +187,9 @@ export function UserTable(props: UserTableProps) {
     try {
       const patch: Record<string, unknown> = {};
       if (editRole !== (detail.role || 'free')) patch.role = editRole;
-      if (editQuota !== (detail.quota_daily_usd?.toString() ?? '100')) {
-        patch.quota_daily_cost_usd = Number(editQuota);
+      if (editQuota !== (money.amount(detail, 'quota_daily')?.toString() ?? '')) {
+        patch.quota_daily_cost = Number(editQuota);
+        patch.currency = money.sourceCurrency(detail);
       }
       const currentDisabledModels = [...(detail.disabled_models ?? [])].sort();
       const nextDisabledModels = [...editDisabledModels].sort();
@@ -478,6 +481,10 @@ export function UserTable(props: UserTableProps) {
             )}
             {users.map((u) => {
               const asAdminUser: AdminUser = {
+                currency: u.currency,
+                usage_today: money.amount(u, 'usage_today') ?? undefined,
+                usage_month: money.amount(u, 'usage_month') ?? undefined,
+                usage_alltime: money.amount(u, 'usage_alltime') ?? undefined,
                 id: u.id,
                 email: u.email,
                 login_name: u.login_name ?? null,

@@ -121,6 +121,13 @@ class DistributionDeployment(_ManifestModel):
     target: str = ""
 
 
+class DistributionAccounting(_ManifestModel):
+    """Expected ledger currency; existing databases require an explicit migration."""
+
+    model_config = ConfigDict(extra="forbid")
+    currency: Literal["USD", "CNY"] = "USD"
+
+
 class DistributionConfig(_ManifestModel):
     """Validated distribution manifest."""
 
@@ -135,6 +142,7 @@ class DistributionConfig(_ManifestModel):
     features: DistributionFeatures = Field(default_factory=DistributionFeatures)
     paths: DistributionPaths = Field(default_factory=DistributionPaths)
     deployment: DistributionDeployment = Field(default_factory=DistributionDeployment)
+    accounting: DistributionAccounting = Field(default_factory=DistributionAccounting)
 
     @property
     def branding_config(self) -> BrandingConfig | None:

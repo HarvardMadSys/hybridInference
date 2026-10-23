@@ -117,6 +117,12 @@ deployment:
 `deployment.target` records an operator label such as `local` or `staging`;
 it does not select a host, build an image or deploy a service.
 
+`accounting.currency` defaults to `USD`. Selecting `CNY` requires an offline
+ledger migration before activating the matching manifest; changing this field
+alone does not convert prices, usage or quotas. Follow
+[Accounting Currency](accounting.md) for the migration, fixed-rate policy and
+backup-based rollback procedure.
+
 `paths.models`, `paths.routing` and `paths.alerts` select gateway configuration
 files. Relative paths are resolved from the manifest directory; explicit gateway
 environment overrides still take precedence. `paths.mcp` and the legal-document

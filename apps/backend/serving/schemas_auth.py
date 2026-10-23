@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from pydantic.networks import validate_email
 
+from serving.accounting_api import MoneyResponse
 from serving.config.site_identity import get_site_identity
 from serving.utils.password import validate_password_strength
 from serving.utils.phone_auth import normalize_phone
@@ -417,7 +418,7 @@ class APIKeyRegenerateResponse(BaseModel):
 
 
 # Usage statistics schemas
-class QuotaInfo(BaseModel):
+class QuotaInfo(MoneyResponse):
     """User quota information."""
 
     has_key: bool
@@ -431,6 +432,12 @@ class QuotaInfo(BaseModel):
     reset_timezone: str = "UTC"
     contact_email: str = Field(default_factory=lambda: get_site_identity().support_email)
     increase_request_message: str = Field(default_factory=lambda: _quota_message())
+
+    daily_limit: float | None = None
+    monthly_limit: float | None = None
+    spent_today: float | None = None
+    spent_month: float | None = None
+    remaining_today: float | None = None
 
 
 def _quota_message() -> str:
@@ -448,13 +455,15 @@ def _quota_message() -> str:
     return "Need more quota? Contact the operator of this deployment and explain your use case."
 
 
-class UsageStats(BaseModel):
+class UsageStats(MoneyResponse):
     """User usage statistics."""
 
     requests: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
+
+    cost: float | None = None
 
 
 class UsageResponse(BaseModel):
@@ -536,7 +545,7 @@ class DeleteAccountResponse(BaseModel):
 
 
 # Recent requests schemas
-class RecentRequestItem(BaseModel):
+class RecentRequestItem(MoneyResponse):
     """A single API request log entry (user-facing)."""
 
     request_id: str
@@ -559,6 +568,8 @@ class RecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+
+    cost: float | None = None
 
 
 class RecentRequestsResponse(BaseModel):

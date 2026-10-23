@@ -24,7 +24,6 @@ export const BUILTIN_VIEWS: SavedView[] = [
     builtin: true,
     filterState: {
       ...DEFAULT_FILTER_STATE,
-      minCostToday: 1.0,
       anomaly: true,
       view: 'anomalies',
     },

@@ -14,6 +14,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
+from serving.accounting_api import primary_amounts
 from serving.schemas_admin import (
     AdminClearErrorRequestsResponse,
     AdminMetricDistribution,
@@ -1007,7 +1008,7 @@ async def admin_list_recent_requests(
                 l.status_code, l.latency_ms, l.ttft_ms, l.stream,
                 l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
                 l.cache_read_tokens, l.cache_write_tokens,
-                l.total_tokens, l.cost_usd, l.error,
+                l.total_tokens, l.cost_usd, l.cost_amount, l.error,
                 l.metadata->>'ip' AS user_ip,
                 l.metadata->>'peer_ip' AS peer_ip,
                 l.metadata->>'ip_source' AS ip_source,
@@ -1095,6 +1096,7 @@ async def admin_list_recent_requests(
             cache_write_tokens=row["cache_write_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            **primary_amounts(row),
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),

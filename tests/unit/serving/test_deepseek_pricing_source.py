@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 
 import pytest
 
@@ -53,6 +54,70 @@ def _page(*, flash_first: bool = True) -> str:
         )
         rows.append("<tr><td>PEAK</td>" + columns(f"${high}", f"${pro_high}") + "</tr>")
     return '<html lang="en"><body><table>' + "".join(rows) + f"</table><p>{_RULE}</p></body></html>"
+
+
+def _cny_page() -> str:
+    html = _page()
+    replacements = {
+        'lang="en"': 'lang="zh-cn"',
+        "MODEL VERSION": "模型版本",
+        "MODEL": "模型",
+        "PRICING": "价格",
+        "1M INPUT TOKENS<br>(CACHE HIT)": "百万tokens输入<br>\uff08缓存命中\uff09",
+        "1M INPUT TOKENS<br>(CACHE MISS)": "百万tokens输入<br>\uff08缓存未命中\uff09",
+        "1M OUTPUT TOKENS": "百万tokens输出",
+        "OFF-PEAK": "空闲时段",
+        "PEAK": "高峰时段",
+        _RULE: "(2) 空闲时段价格为高峰时段价格的一半。北京时间周一至周五\uff08不含中国法定节假日\uff09"
+        "10:00 - 11:00、15:00 - 17:00 为高峰时段\uff1b其余时段\uff0c包括周末及中国法定节假日全天均为空闲时段。",
+    }
+    for before, after in replacements.items():
+        html = html.replace(before, after)
+    return re.sub(r"\$([0-9.]+)", r"\1元", html)
+
+
+def test_cny_uses_published_amounts_and_converts_beijing_windows_to_utc() -> None:
+    result = parse_deepseek_page(_cny_page(), "deepseek-flash", currency="CNY")
+    assert result["default"] == {
+        "prompt": "0.20",
+        "completion": "0.80",
+        "input_cache_reads": "0.004",
+    }
+    assert [(window["start"], window["end"]) for window in result["windows"]] == [
+        ("02:00", "03:00"),
+        ("07:00", "09:00"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ('lang="zh-cn"', 'lang="en"'),
+        ("0.20元", "$0.20"),
+        ("0.20元", "¥0.20"),
+        ("百万tokens输入", "千tokens输入"),
+        ("缓存命中", "缓存写入"),
+        ("北京时间", "UTC时间"),
+        ("周一至周五", "周一至周六"),
+        ("不含中国法定节假日", "含中国法定节假日"),
+        ("一半", "三分之一"),
+        ("0.40元", "0.30元"),
+        ("10:00 - 11:00", "7:00 - 8:00"),
+        ("15:00 - 17:00", "10:00 - 12:00"),
+    ],
+)
+def test_cny_rejects_wrong_currency_units_and_calendar_semantics(before: str, after: str) -> None:
+    with pytest.raises(ValueError):
+        parse_deepseek_page(_cny_page().replace(before, after), "deepseek-flash", currency="CNY")
+
+
+def test_currencies_cannot_use_each_others_price_pages() -> None:
+    with pytest.raises(ValueError):
+        parse_deepseek_page(_cny_page(), "deepseek-flash")
+    with pytest.raises(ValueError):
+        parse_deepseek_page(_page(), "deepseek-flash", currency="CNY")
+    with pytest.raises(ValueError):
+        parse_deepseek_page(_page(), "deepseek-flash", currency="EUR")
 
 
 @pytest.mark.parametrize("flash_first", [True, False])

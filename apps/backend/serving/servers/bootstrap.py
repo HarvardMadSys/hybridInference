@@ -42,6 +42,7 @@ from serving.servers.routewise_compat import (
     apply_routewise_settings_to_router,
 )
 from serving.setup_state import init_setup_state
+from serving.storage.accounting_schema import AccountingSchemaUnavailable
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
@@ -1063,10 +1064,9 @@ async def initialize() -> AppServices:
                                 f"{stop_exc}"
                             )
                 break
-            except ErasureFenceUnavailable:
-                # A pinned secret mismatch is a privacy-boundary violation,
-                # not a transient migration failure. Propagate it instead
-                # of retrying and eventually starting without a logger.
+            except (ErasureFenceUnavailable, AccountingSchemaUnavailable):
+                # Required privacy and monetary schema failures must never
+                # degrade to serving requests without a usable ledger.
                 raise
             except Exception as exc:
                 if attempt < max_retries - 1:
@@ -1218,6 +1218,19 @@ async def initialize() -> AppServices:
         )
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
+
+    from serving.accounting import bind_accounting_policy, load_accounting_policy
+    from serving.config.distribution import get_active_distribution_config
+
+    accounting_policy = await load_accounting_policy(operational_store)
+    distribution = get_active_distribution_config()
+    expected_currency = distribution.accounting.currency if distribution is not None else "USD"
+    if accounting_policy.currency != expected_currency:
+        raise RuntimeError(
+            "Accounting currency differs from the database; run the offline currency migration "
+            "and deploy the matching distribution configuration"
+        )
+    bind_accounting_policy(accounting_policy)
 
     # Wire the operational store into the global Slack-alert snooze and the
     # per-type mutes so admins can silence alerting from the dashboard. Safe
@@ -1626,7 +1639,9 @@ async def initialize() -> AppServices:
     source_models = configured_source_models(router, embedding_adapters)
     bind_pricing_snapshot_provider(None)
     if source_models:
-        pricing_sync = PricingSyncService(operational_store, source_models)
+        pricing_sync = PricingSyncService(
+            operational_store, source_models, currency=accounting_policy.currency
+        )
         await pricing_sync.initialize()
         bind_pricing_snapshot_provider(pricing_sync.snapshot)
 

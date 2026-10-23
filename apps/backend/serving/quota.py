@@ -27,7 +27,16 @@ rather than a policy question about which key's limit wins.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
+
+from fastapi.encoders import jsonable_encoder
+
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import monetary_payload
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 #: What an old row with no configured quota means. Matches ``verify_api_key``
 #: exactly; diverging would make the two doors disagree about the same account.
@@ -78,8 +87,33 @@ def check(*, quota_usd: float, spent_usd: float) -> None:
     Raises:
         QuotaExceeded: When the estimated charge does not fit under the limit.
     """
-    if spent_usd + ESTIMATED_REQUEST_COST_USD > quota_usd:
-        raise QuotaExceeded(quota_usd=quota_usd, spent_usd=spent_usd)
+    policy = get_accounting_policy()
+    check_amount(quota_amount=policy.from_usd(quota_usd), spent_amount=policy.from_usd(spent_usd))
+
+
+def check_amount(*, quota_amount: Any, spent_amount: Any) -> None:
+    """Apply the quota in the ledger currency; retain true USD error aliases."""
+    policy = get_accounting_policy()
+    if spent_amount + policy.from_usd(ESTIMATED_REQUEST_COST_USD) > quota_amount:
+        raise QuotaExceeded(
+            quota_usd=float(policy.to_usd(quota_amount)),
+            spent_usd=float(policy.to_usd(spent_amount)),
+        )
+
+
+async def daily_amounts(store: Any, user_id: str, key: Mapping[str, Any]) -> tuple[Any, Any]:
+    """Read the primary native counter on CNY deployments."""
+    policy = get_accounting_policy()
+    quota_amount = key.get("quota_daily_cost_amount")
+    if quota_amount is None:
+        quota_amount = policy.from_usd(resolve_quota(key.get("quota_daily_cost_usd")))
+    else:
+        quota_amount = Decimal(str(quota_amount))
+    if policy.currency == "USD":
+        spent = policy.from_usd(await store.get_user_cost_today(user_id) or 0)
+    else:
+        spent = await store.get_user_cost_today_amount(user_id)
+    return quota_amount, Decimal(str(spent))
 
 
 def exceeded_payload(
@@ -118,4 +152,6 @@ def exceeded_payload(
         "X-RateLimit-Remaining-Cost": str(remaining),
         "X-RateLimit-Reset": str(int(reset_at.timestamp())),
     }
-    return body, headers
+    headers["X-Accounting-Currency"] = get_accounting_policy().currency
+    headers["X-RateLimit-Cost-Currency"] = "USD"
+    return jsonable_encoder(monetary_payload(body)), headers

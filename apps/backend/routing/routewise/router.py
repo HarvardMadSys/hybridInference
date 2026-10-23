@@ -66,7 +66,7 @@ from routing.routers import (
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
-from serving.pricing import effective_pricing
+from serving.pricing import effective_pricing_usd
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -1135,7 +1135,7 @@ class RouteWiseRouter:
 
     @staticmethod
     def _pricing(adapter: BaseAdapter) -> tuple[float, float]:
-        pricing = effective_pricing(adapter.config) or {}
+        pricing = effective_pricing_usd(adapter.config) or {}
         return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:

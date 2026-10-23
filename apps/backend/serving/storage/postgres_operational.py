@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
     AccountSchemaPending,
@@ -28,6 +29,7 @@ from serving.storage.account_schema import (
     migrate_users_account_schema,
     read_account_schema,
 )
+from serving.storage.accounting_schema import initialize_accounting_schema
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
@@ -1169,6 +1171,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         """)
 
+        await initialize_accounting_schema(conn)
+
         if deferred is not None:
             raise SchemaLockUnavailable(
                 "the account migrations (login names, phone numbers, accounts without an "
@@ -1801,7 +1805,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         from decimal import Decimal as _Decimal
 
         anomaly_multiplier = _Decimal("5.0")
-        anomaly_min_today = _Decimal("1.00")
+        policy = get_accounting_policy()
+        anomaly_min_today = policy.from_usd("1.00")
         anomaly_min_history_days = 3
         today_str = datetime.now(timezone.utc).date().isoformat()
         prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
@@ -1886,20 +1891,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # filters apply before LIMIT/OFFSET.
         if min_cost_today is not None:
             where_clauses.append(
-                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
                 f"    AND l.timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
-            filter_params.append(min_cost_today)
+            filter_params.append(policy.from_usd(min_cost_today))
         if min_cost_month is not None:
             where_clauses.append(
-                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
                 f"    AND l.timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
-            filter_params.append(min_cost_month)
+            filter_params.append(policy.from_usd(min_cost_month))
         if quota_state in ("near", "over"):
             # threshold: 0.80 for near, 1.00 for over.
             threshold = "0.80" if quota_state == "near" else "1.00"
@@ -1908,13 +1913,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"  SELECT 1 FROM api_keys kq "
                 f"  WHERE kq.account_id = u.id "
                 f"    AND kq.status = 'active' "
-                f"    AND kq.quota_daily_cost_usd IS NOT NULL "
-                f"    AND kq.quota_daily_cost_usd > 0 "
-                f"    AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"    AND COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd) IS NOT NULL "
+                f"    AND COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd) > 0 "
+                f"    AND COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"                  WHERE l.user_id = u.id "
                 f"                    AND l.timestamp >= (date_trunc('day', "
                 f"                        NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
-                f"                 ), 0) >= {threshold} * kq.quota_daily_cost_usd"
+                f"                 ), 0) >= {threshold} * COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd)"
                 f")"
             )
         if anomaly:
@@ -1931,11 +1936,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             where_clauses.append(
                 f"u.status = 'active' AND EXISTS ("
                 f"  WITH t AS ("
-                f"    SELECT COALESCE(SUM(cost_usd), 0) AS today_cost "
+                f"    SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS today_cost "
                 f"    FROM user_daily_cost "
                 f"    WHERE user_id = u.id AND day = ${today_idx} "
                 f"  ), p AS ("
-                f"    SELECT COALESCE(SUM(cost_usd), 0) AS total_prior, "
+                f"    SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS total_prior, "
                 f"           COUNT(DISTINCT day) AS days_history "
                 f"    FROM user_daily_cost "
                 f"    WHERE user_id = u.id "
@@ -1964,9 +1969,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # Sort clause map (uses fu.* aliases defined in the CTE below).
         _sort_clauses = {
             "created": "fu.created_at DESC, fu.id",
-            "cost_today": "COALESCE(ut.cost, 0) DESC, fu.created_at DESC, fu.id",
-            "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
-            "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_today": "COALESCE(ut.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_month": "COALESCE(um.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_alltime": "COALESCE(ua.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
             "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
             "requests": "COALESCE(ux.request_count, 0) DESC, fu.created_at DESC, fu.id",
             "tokens": "COALESCE(ux.total_tokens, 0) DESC, fu.created_at DESC, fu.id",
@@ -2023,7 +2028,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if needs_today:
                 cte_parts.append(
                     "usage_today AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "    AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
@@ -2032,11 +2038,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
                 join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
                 select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
+                select_extras.append("COALESCE(ut.cost_amount, 0) AS usage_today_amount")
 
             if needs_month:
                 cte_parts.append(
                     "usage_month AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "    AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
@@ -2045,11 +2053,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
                 join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
                 select_extras.append("COALESCE(um.cost, 0) AS usage_month")
+                select_extras.append("COALESCE(um.cost_amount, 0) AS usage_month_amount")
 
             if needs_alltime:
                 cte_parts.append(
                     "usage_alltime AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "  GROUP BY user_id"
@@ -2057,6 +2067,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
                 join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
+                select_extras.append("COALESCE(ua.cost_amount, 0) AS usage_alltime_amount")
 
             stored_usage = needs_usage_sort and await user_usage_rollup.stored_ready(conn)
             if needs_usage_sort:
@@ -2092,7 +2103,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
             if user_ids and not needs_today:
                 today_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
                     "  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
@@ -2100,12 +2112,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     user_ids,
                 )
                 today_map = {r["user_id"]: r["cost"] for r in today_rows}
+                today_amount_map = {r["user_id"]: r.get("cost_amount") for r in today_rows}
             else:
                 today_map = {}
+                today_amount_map = {}
 
             if user_ids and not needs_month:
                 month_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
                     "  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
@@ -2113,20 +2128,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     user_ids,
                 )
                 month_map = {r["user_id"]: r["cost"] for r in month_rows}
+                month_amount_map = {r["user_id"]: r.get("cost_amount") for r in month_rows}
             else:
                 month_map = {}
+                month_amount_map = {}
 
             if user_ids and not needs_alltime:
                 alltime_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM user_daily_cost "
                     "WHERE user_id = ANY($1::text[]) "
                     "GROUP BY user_id",
                     user_ids,
                 )
                 alltime_map = {r["user_id"]: r["cost"] for r in alltime_rows}
+                alltime_amount_map = {r["user_id"]: r.get("cost_amount") for r in alltime_rows}
             else:
                 alltime_map = {}
+                alltime_amount_map = {}
 
             # Callers that load lifetime statistics separately skip them here.
             # Sorting by either metric already returned both above.
@@ -2141,8 +2161,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         for row in rows:
             r = dict(row)
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
+            r["usage_today_amount"] = r.get("usage_today_amount") or today_amount_map.get(
+                r["id"], 0
+            )
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
+            r["usage_month_amount"] = r.get("usage_month_amount") or month_amount_map.get(
+                r["id"], 0
+            )
             r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
+            r["usage_alltime_amount"] = r.get("usage_alltime_amount") or alltime_amount_map.get(
+                r["id"], 0
+            )
             for field, metric in (
                 ("usage_alltime_requests", "requests"),
                 ("usage_alltime_tokens", "tokens"),
@@ -2224,6 +2253,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                "k.quota_daily_cost_amount, k.accounting_currency, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -2298,6 +2328,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -2313,6 +2345,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # would otherwise persist NULL and hide the key from the user. This
         # stops the ongoing NULL-producing path at its single source (#630).
         effective_account_id = account_id if account_id is not None else user_id
+        policy = get_accounting_policy()
+        if quota_daily_cost_amount is None:
+            quota_daily_cost_amount = policy.from_usd(quota_daily_cost_usd)
+        if quota_monthly_cost_amount is None and quota_monthly_cost_usd is not None:
+            quota_monthly_cost_amount = policy.from_usd(quota_monthly_cost_usd)
 
         # asyncpg has no jsonb codec registered on this pool, so jsonb
         # parameters must be JSON strings; admin routes pass dicts through.
@@ -2325,8 +2362,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "INSERT INTO api_keys "
                     "(key_hash, key_prefix, user_id, user_name, "
                     "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                    "expires_at, notes, metadata, account_id, api_key_encrypted) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
+                    "expires_at, notes, metadata, account_id, api_key_encrypted, "
+                    "quota_daily_cost_amount, quota_monthly_cost_amount, accounting_currency) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14) "
                     "RETURNING id, created_at",
                     key_hash,
                     key_prefix,
@@ -2339,6 +2377,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     metadata,
                     effective_account_id,
                     api_key_encrypted,
+                    quota_daily_cost_amount,
+                    quota_monthly_cost_amount,
+                    get_accounting_policy().currency,
                 )
             except _asyncpg.UniqueViolationError as exc:
                 # Active-key uniqueness is enforced per user_id
@@ -2393,6 +2434,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 f"SELECT user_id, user_name, key_prefix, status, "
                 f"quota_daily_cost_usd, quota_monthly_cost_usd, "
+                "quota_daily_cost_amount, quota_monthly_cost_amount, accounting_currency, "
                 f"created_at, last_used_at, expires_at, notes "
                 f"FROM api_keys {where_sql} "
                 f"ORDER BY created_at DESC "
@@ -2413,6 +2455,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             row = await conn.fetchrow(
                 "SELECT user_id, user_name, key_prefix, status, "
                 "quota_daily_cost_usd, quota_monthly_cost_usd, "
+                "quota_daily_cost_amount, quota_monthly_cost_amount, accounting_currency, "
                 "created_at, last_used_at, expires_at, notes, metadata "
                 "FROM api_keys WHERE user_id = $1 "
                 "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 ELSE 2 END, "
@@ -2449,6 +2492,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         invalid = set(fields) - API_KEYS_MUTABLE_COLUMNS.keys()
         if invalid:
             raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
+        policy = get_accounting_policy()
+        for legacy, native in (
+            ("quota_daily_cost_usd", "quota_daily_cost_amount"),
+            ("quota_monthly_cost_usd", "quota_monthly_cost_amount"),
+        ):
+            if legacy in fields and native not in fields:
+                fields[native] = (
+                    policy.from_usd(fields[legacy]) if fields[legacy] is not None else None
+                )
         set_parts = []
         params: list[Any] = [user_id]
         for idx, (key, val) in enumerate(fields.items(), start=2):
@@ -2515,7 +2567,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
+                "quota_daily_cost_usd, quota_daily_cost_amount, accounting_currency "
                 "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
                 "LIMIT 1",
@@ -2528,7 +2580,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
+                "quota_daily_cost_usd, quota_daily_cost_amount, accounting_currency "
                 "FROM api_keys WHERE account_id = $1 AND status = 'active'",
                 account_id,
             )
@@ -3002,7 +3054,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             # LIMIT 2, not 1: the caller must be able to *detect* a duplicate
             # rather than silently take the first of an impossible set.
             rows = await conn.fetch(
-                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
+                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_daily_cost_amount, "
+                "k.accounting_currency, u.role "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.user_id = $1 "
@@ -3954,6 +4007,60 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     # -- cost counters -------------------------------------------------------
 
+    async def increment_user_cost_amount(
+        self, user_id: str, cost: Decimal | float, *, day: str | None = None
+    ) -> None:
+        """Atomically add native money and its legacy USD equivalent."""
+        from datetime import datetime, timezone
+
+        policy = get_accounting_policy()
+        amount = money_decimal(cost)
+        if day is None:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO user_daily_cost "
+                "(user_id, day, cost_usd, cost_amount, accounting_currency, requests, last_request_at) "
+                "VALUES ($1, $2, $3, $4, $5, 1, NOW()) "
+                "ON CONFLICT (user_id, day) DO UPDATE SET "
+                "cost_amount = COALESCE(user_daily_cost.cost_amount, "
+                "user_daily_cost.cost_usd * $6) + $4, "
+                "cost_usd = (COALESCE(user_daily_cost.cost_amount, user_daily_cost.cost_usd * $6) + $4) / $6, "
+                "accounting_currency = $5, "
+                "requests = user_daily_cost.requests + 1, last_request_at = NOW()",
+                user_id,
+                day,
+                policy.to_usd(amount),
+                amount,
+                policy.currency,
+                policy.usd_to_currency_rate,
+            )
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's primary native counter, retaining pre-migration USD fallback."""
+        return await self._get_user_cost_period_amount(user_id, "today")
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this UTC month's primary native counters."""
+        return await self._get_user_cost_period_amount(user_id, "month")
+
+    async def _get_user_cost_period_amount(
+        self, user_id: str, period: Literal["today", "month"]
+    ) -> Decimal:
+        predicate = (
+            "day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+            if period == "today"
+            else "day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+        )
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd * $2)), 0) "
+                f"FROM user_daily_cost WHERE user_id = $1 AND {predicate}",
+                user_id,
+                get_accounting_policy().usd_to_currency_rate,
+            )
+        return money_decimal(value)
+
     async def increment_user_cost(
         self,
         user_id: str,
@@ -3961,23 +4068,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         day: str | None = None,
     ) -> None:
-        """Atomically increment the daily cost counter via upsert."""
-        from datetime import datetime, timezone
-
-        if day is None:
-            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
-                "VALUES ($1, $2, $3, 1, NOW()) "
-                "ON CONFLICT (user_id, day) DO UPDATE SET "
-                "cost_usd = user_daily_cost.cost_usd + $3, "
-                "requests = user_daily_cost.requests + 1, "
-                "last_request_at = NOW()",
-                user_id,
-                day,
-                cost_usd,
-            )
+        """Legacy USD increment, atomically mirrored into the native counter."""
+        await self.increment_user_cost_amount(
+            user_id, get_accounting_policy().from_usd(cost_usd), day=day
+        )
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""
@@ -4037,9 +4131,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         pre-charge, and the gate has already started refusing them. Exactly
         19.99 does not appear: 19.99 + 0.01 equals the cap, and both the gate
         and this query refuse only when the sum exceeds it. The
-        comparison is done in float8 rather than ``numeric`` for a related
+        USD compatibility comparison is done in float8 rather than ``numeric`` for a related
         reason — both doors compare Python floats, and matching that arithmetic
-        exactly is worth more here than numeric's extra precision.
+        exactly is worth more here than numeric's extra precision. CNY compares
+        and orders the primary native amounts with decimal arithmetic; the
+        returned tuple keeps its historical USD meaning.
 
         **The scan drives off today's counter rows.** ``user_daily_cost`` is
         keyed ``(user_id, day)`` with an index on ``day``, so today's slice is
@@ -4068,7 +4164,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # dollars past its own, and on a truncated list the free account — the
         # one whose behaviour actually changed — would be the row that fell
         # off. Overage is what a truncated list must keep.
-        sql = """
+        policy = get_accounting_policy()
+        comparison = "udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)"
+        overage = "udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)"
+        capped = max(1, limit)
+        params: list[Any] = [
+            capped + 1,
+            quota.DEFAULT_DAILY_QUOTA_USD,
+            quota.ESTIMATED_REQUEST_COST_USD,
+        ]
+        if policy.currency != "USD":
+            spend = "COALESCE(udc.cost_amount, udc.cost_usd * $4::numeric)"
+            cap = "COALESCE(k.quota_daily_cost_amount, k.quota_daily_cost_usd * $4::numeric, $2::numeric * $4::numeric)"
+            comparison = f"{spend} + $3::numeric * $4::numeric > {cap}"
+            overage = f"{spend} - {cap}"
+            params[2] = money_decimal(quota.ESTIMATED_REQUEST_COST_USD)
+            params.append(policy.usd_to_currency_rate)
+        sql = f"""
             SELECT u.id AS user_id,
                    u.role AS role,
                    udc.cost_usd::float8 AS spend_usd,
@@ -4082,20 +4194,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
              AND k.status = 'active'
              AND (k.expires_at IS NULL OR k.expires_at > NOW())
             WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
-              AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
-            ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
+              AND {comparison}
+            ORDER BY ({overage}) DESC
             LIMIT $1
         """
         # Fetch one more row than asked for, so truncation is a fact rather
         # than an inference from "len == limit".
-        capped = max(1, limit)
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                sql,
-                capped + 1,
-                quota.DEFAULT_DAILY_QUOTA_USD,
-                quota.ESTIMATED_REQUEST_COST_USD,
-            )
+            rows = await conn.fetch(sql, *params)
         if len(rows) > capped:
             logger.warning(
                 "query_users_at_daily_quota truncated at %d rows; more users are at "
@@ -4145,7 +4251,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT day, cost_usd, requests "
+                "SELECT day, cost_usd, COALESCE(cost_amount, cost_usd) AS cost_amount, requests "
                 "FROM user_daily_cost "
                 "WHERE user_id = $1 "
                 "  AND day >= $2 "
@@ -4157,6 +4263,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             {
                 "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
                 "cost_usd": r["cost_usd"],
+                "cost_amount": r.get("cost_amount"),
                 "requests": r["requests"],
             }
             for r in rows
@@ -4175,7 +4282,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT user_id, day, cost_usd, requests "
+                "SELECT user_id, day, cost_usd, COALESCE(cost_amount, cost_usd) AS cost_amount, requests "
                 "FROM user_daily_cost "
                 "WHERE user_id = ANY($1::text[]) "
                 "  AND day >= $2 "
@@ -4189,6 +4296,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 {
                     "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
                     "cost_usd": r["cost_usd"],
+                    "cost_amount": r.get("cost_amount"),
                     "requests": r["requests"],
                 }
             )
@@ -4221,6 +4329,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if anomaly_min_today is None:
             anomaly_min_today = _Decimal("1.00")
 
+        policy = get_accounting_policy()
+        anomaly_min_amount = policy.from_usd(anomaly_min_today)
+
         today_str = datetime.now(timezone.utc).date().isoformat()
         prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
@@ -4244,7 +4355,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             usage_rows = await conn.fetch(
                 f"""
                 WITH today_costs AS (
-                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
+                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost,
+                           COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS today_cost_amount
                     FROM user_daily_cost
                     WHERE day = $1
                     GROUP BY user_id
@@ -4252,6 +4364,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 prior_7d AS (
                     SELECT user_id,
                            COALESCE(SUM(cost_usd), 0) AS total,
+                           COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS total_amount,
                            COUNT(DISTINCT day) AS days_with_history
                     FROM user_daily_cost
                     WHERE day BETWEEN $2 AND $3
@@ -4259,9 +4372,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
                 SELECT {schema.select(identity, "u")},
                        COALESCE(t.today_cost, 0) AS today_cost,
+                       COALESCE(t.today_cost_amount, 0) AS today_cost_amount,
+                       COALESCE(p.total_amount, 0) AS prior_7d_total_amount,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
-                       k.quota_daily_cost_usd
+                       k.quota_daily_cost_usd, k.quota_daily_cost_amount
                 FROM users u
                 LEFT JOIN today_costs t ON t.user_id = u.id
                 LEFT JOIN prior_7d p ON p.user_id = u.id
@@ -4283,6 +4398,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 days = int(r["days_with_history"] or 0)
                 avg_7d = (prior / days) if days > 0 else _Decimal("0")
                 quota = r["quota_daily_cost_usd"]
+                today_amount = r.get("today_cost_amount")
+                if today_amount is None:
+                    today_amount = policy.from_usd(today)
+                prior_amount = r.get("prior_7d_total_amount")
+                if prior_amount is None:
+                    prior_amount = policy.from_usd(prior)
+                avg_amount = prior_amount / days if days > 0 else _Decimal("0")
+                quota_amount = r.get("quota_daily_cost_amount")
+                if quota_amount is None and quota is not None:
+                    quota_amount = policy.from_usd(quota)
 
                 base_item = {
                     "id": r["id"],
@@ -4292,38 +4417,43 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     "user_name": r["user_name"],
                     "role": r["role"] or "free",
                     "today_cost_usd": today,
+                    "today_cost_amount": today_amount,
+                    "avg_prior_7d_amount": avg_amount,
+                    "quota_daily_amount": quota_amount,
                     "avg_prior_7d_usd": avg_7d,
                     "quota_daily_usd": float(quota) if quota else None,
                     "multiplier": None,
                 }
 
                 # Top spenders today
-                if today > 0:
+                if today_amount > 0:
                     top_spenders.append(dict(base_item))
 
                 # Anomaly
                 if (
                     days >= anomaly_min_history_days
-                    and today >= anomaly_min_today
-                    and avg_7d > 0
-                    and today >= _Decimal(str(anomaly_multiplier)) * avg_7d
+                    and today_amount >= anomaly_min_amount
+                    and avg_amount > 0
+                    and today_amount >= _Decimal(str(anomaly_multiplier)) * avg_amount
                 ):
-                    multiplier = float(today / avg_7d) if avg_7d > 0 else None
+                    multiplier = float(today_amount / avg_amount) if avg_amount > 0 else None
                     anomaly_item = dict(base_item)
                     anomaly_item["multiplier"] = multiplier
                     anomalies.append(anomaly_item)
 
                 # Near / over quota
-                if quota and float(quota) > 0:
-                    pct = float(today) / float(quota)
-                    if pct >= near_quota_pct:
+                if quota_amount is not None and quota_amount > 0:
+                    pct = today_amount / quota_amount
+                    if pct >= _Decimal(str(near_quota_pct)):
                         near_quota.append(dict(base_item))
 
-            top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
+            top_spenders.sort(key=lambda x: x["today_cost_amount"], reverse=True)
             anomalies.sort(key=lambda x: x["multiplier"] or 0, reverse=True)
             near_quota.sort(
                 key=lambda x: (
-                    float(x["today_cost_usd"]) / x["quota_daily_usd"] if x["quota_daily_usd"] else 0
+                    x["today_cost_amount"] / x["quota_daily_amount"]
+                    if x["quota_daily_amount"]
+                    else 0
                 ),
                 reverse=True,
             )
@@ -4348,7 +4478,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 ],
             },
             "top_spenders_today": {
-                "count": len([s for s in top_spenders if s["today_cost_usd"] > 0]),
+                "count": len(top_spenders),
                 "top": top_spenders[:top_n],
             },
             "anomalies": {
@@ -4385,6 +4515,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return {r["user_id"]: float(r["cost"]) for r in rows}
 
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return exact native counters without converting rounded USD totals."""
+        if not user_ids:
+            return {}
+        if period == "today":
+            date_filter = "day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+        else:
+            date_filter = "day >= to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') || '-01'"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost "
+                f"FROM user_daily_cost WHERE {date_filter} "
+                "AND user_id = ANY($1::text[]) GROUP BY user_id",
+                user_ids,
+            )
+        return {row["user_id"]: row["cost"] for row in rows}
+
     # -- role quota ----------------------------------------------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
@@ -4413,12 +4562,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             tag = await conn.execute(
                 """
                     UPDATE api_keys
-                    SET quota_daily_cost_usd = $1
+                    SET quota_daily_cost_usd = $1, quota_daily_cost_amount = $3
                     WHERE status = 'active'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
                     """,
                 quota,
                 role,
+                get_accounting_policy().from_usd(quota),
             )
         return _parse_command_tag_count(tag)
 

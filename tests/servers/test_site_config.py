@@ -70,7 +70,9 @@ async def test_neutral_fallback_without_manifest(client):
         "branding",
         "setup",
         "configuration",
+        "accounting",
     }
+    assert body["accounting"] == {"currency": "USD"}
 
 
 @pytest.mark.asyncio

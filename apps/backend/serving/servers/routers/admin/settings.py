@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.accounting import get_accounting_policy
 from serving.auth.signup_policy import (
     distribution_allows_public_signup,
     invalidate_signup_policy_cache,
@@ -95,6 +96,14 @@ async def update_runtime_setting_endpoint(
 
     expected_type = entry["type"]
     value = payload.value
+    if key.startswith("user_daily_quota_") and payload.currency is not None:
+        policy = get_accounting_policy()
+        if payload.currency != policy.currency:
+            raise HTTPException(409, "Accounting currency changed; reload before saving")
+        try:
+            value = float(policy.to_usd(value))
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            raise HTTPException(400, "Quota must be a finite non-negative amount") from exc
     if expected_type == "bool" and not isinstance(value, bool):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
     # ``bool`` is a subclass of ``int`` in Python; without the explicit check, a

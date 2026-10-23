@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from serving.accounting import get_accounting_policy
 from serving.auth.signup_policy import is_public_signup_enabled
 from serving.config.app_config import get_config_health
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
@@ -43,6 +44,7 @@ async def _deployment_state() -> dict[str, Any]:
     return {
         "setup": {"required": await refresh_setup_state()},
         "configuration": {"incomplete": get_config_health().incomplete},
+        "accounting": {"currency": get_accounting_policy().currency},
     }
 
 

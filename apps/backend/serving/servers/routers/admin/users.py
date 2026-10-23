@@ -9,6 +9,8 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import native_quota_updates, primary_amounts
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import get_settings
 from serving.exceptions import HardDeleteStateChanged
@@ -104,6 +106,7 @@ async def list_users(
     # Phase 1 admin Users redesign — new filters
     min_cost_today: Decimal | None = Query(None, ge=0),
     min_cost_month: Decimal | None = Query(None, ge=0),
+    currency: Literal["USD", "CNY"] | None = None,
     quota_state: Literal["near", "over", "custom", "default"] | None = None,
     provider: str | None = None,
     active_within_hours: int | None = Query(None, ge=1),
@@ -141,6 +144,13 @@ async def list_users(
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
+
+    if currency is not None:
+        policy = get_accounting_policy()
+        if currency != policy.currency:
+            raise HTTPException(409, "Accounting currency changed; reload the filters")
+        min_cost_today = None if min_cost_today is None else policy.to_usd(min_cost_today)
+        min_cost_month = None if min_cost_month is None else policy.to_usd(min_cost_month)
 
     total, rows, sc = await op_store.list_users(
         status=status,
@@ -197,6 +207,7 @@ async def list_users(
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
                 usage_alltime_requests=row.get("usage_alltime_requests", 0),
                 usage_alltime_tokens=row.get("usage_alltime_tokens", 0),
+                **primary_amounts(row),
             )
         )
 
@@ -277,6 +288,7 @@ async def admin_get_bulk_user_cost_history(
                 day=p["day"],
                 cost_usd=Decimal(str(p["cost_usd"])),
                 requests=p["requests"],
+                **primary_amounts(p),
             )
             for p in points
         ]
@@ -457,6 +469,7 @@ async def admin_get_users_summary(
                     avg_prior_7d_usd=Decimal(str(u.get("avg_prior_7d_usd", 0))),
                     quota_daily_usd=u.get("quota_daily_usd"),
                     multiplier=u.get("multiplier"),
+                    **primary_amounts(u),
                 )
                 for u in card_raw["top"]
             ],
@@ -492,6 +505,7 @@ async def admin_get_user_cost_history(
                 day=p["day"],
                 cost_usd=Decimal(str(p["cost_usd"])),
                 requests=p["requests"],
+                **primary_amounts(p),
             )
             for p in raw
         ],
@@ -676,6 +690,7 @@ async def get_user_detail(
     key_row = await op_store.get_active_key_by_account(user_id)
     has_key = key_row is not None
 
+    native_detail = {}
     usage_today_usd = 0.0
     usage_today_req = 0
     usage_month_usd = 0.0
@@ -699,12 +714,19 @@ async def get_user_detail(
         avg_user_turns = detail.get("avg_user_turns")
         ask_question_fraction = detail.get("ask_question_fraction")
         if has_key:
+            native_detail.update(primary_amounts(detail))
             usage_today_usd = detail.get("usage_today_usd", 0.0)
             usage_today_req = detail.get("usage_today_requests", 0)
             usage_month_usd = detail.get("usage_month_usd", 0.0)
             usage_month_req = detail.get("usage_month_requests", 0)
             models_used = detail.get("models_used", [])
             last_request_at = detail.get("last_request_at")
+
+    if key_row:
+        for field in ("daily", "monthly"):
+            value = key_row.get(f"quota_{field}_cost_amount")
+            if value is not None:
+                native_detail[f"quota_{field}"] = value
 
     return UserDetailResponse(
         id=user_row["id"],
@@ -739,6 +761,7 @@ async def get_user_detail(
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,
+        **native_detail,
     )
 
 
@@ -842,6 +865,7 @@ async def update_user(
         for k, v in payload_dict.items()
         if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
     }
+    key_fields.update(native_quota_updates(payload))
     if key_fields:
         has_key = await op_store.get_active_key_by_account(user_id)
         if not has_key:

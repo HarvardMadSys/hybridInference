@@ -45,6 +45,7 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from decimal import Decimal
 
 logger = get_logger(__name__)
 
@@ -125,7 +126,7 @@ async def _resolve_grant(
     return row
 
 
-async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
+async def _quota_context(op_store: Any, user_id: str) -> tuple[Decimal, Decimal]:
     """Return ``(limit, spent)`` for the account behind a grant.
 
     The limit lives on the user's API key and the spend on the user, so this
@@ -174,7 +175,7 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
         )
 
     try:
-        spent = await op_store.get_user_cost_today(user_id)
+        limit_amount, spent_amount = await quota.daily_amounts(op_store, user_id, keys[0])
     except Exception as exc:
         logger.warning(
             "agent_grant_spend_lookup_failed",
@@ -185,7 +186,7 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             "Spending cannot be measured right now.", status_code=503
         ) from exc
 
-    return quota.resolve_quota(keys[0].get("quota_daily_cost_usd")), float(spent or 0.0)
+    return limit_amount, spent_amount
 
 
 async def authenticate_grant_model_call(
@@ -207,9 +208,9 @@ async def authenticate_grant_model_call(
     row = await _resolve_grant(api_key, op_store=op_store)
 
     user = await _active_subject(op_store, row["user_id"])
-    quota_usd, spent_usd = await _quota_context(op_store, row["user_id"])
+    quota_amount, spent_amount = await _quota_context(op_store, row["user_id"])
     try:
-        quota.check(quota_usd=quota_usd, spent_usd=spent_usd)
+        quota.check_amount(quota_amount=quota_amount, spent_amount=spent_amount)
     except quota.QuotaExceeded as exc:
         raise AgentQuotaExceeded(quota_usd=exc.quota_usd, spent_usd=exc.spent_usd) from exc
 

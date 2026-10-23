@@ -85,6 +85,8 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
     "status": "status",
     "quota_daily_cost_usd": "quota_daily_cost_usd",
     "quota_monthly_cost_usd": "quota_monthly_cost_usd",
+    "quota_daily_cost_amount": "quota_daily_cost_amount",
+    "quota_monthly_cost_amount": "quota_monthly_cost_amount",
     "expires_at": "expires_at",
     "last_used_at": "last_used_at",
     "notes": "notes",
@@ -558,6 +560,8 @@ class OperationalStore(ABC):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -954,6 +958,20 @@ class OperationalStore(ABC):
 
     # -- cost counters (user_daily_cost table) ---------------------------------
 
+    async def increment_user_cost_amount(
+        self, user_id: str, cost: Decimal | float, *, day: str | None = None
+    ) -> None:
+        """Write native accounting money; implementations must persist it atomically."""
+        raise NotImplementedError
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's primary native accounting amount."""
+        raise NotImplementedError
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this UTC month's primary native accounting amount."""
+        raise NotImplementedError
+
     @abstractmethod
     async def increment_user_cost(
         self,
@@ -1038,6 +1056,12 @@ class OperationalStore(ABC):
                 truncated, so a day that overflows it is visible rather than
                 silently cut off.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(
@@ -1695,6 +1719,12 @@ class LogStore(ABC):
         Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
         each containing ``cost_usd`` and ``requests``.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(

@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
@@ -21,11 +22,6 @@ function formatLatency(ms?: number | null): string {
   return `${Math.round(ms)}ms`;
 }
 
-function formatCost(cost?: number | null): string {
-  if (cost == null) return '—';
-  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
-}
-
 interface RequestContentState {
   prompt: string | null;
   response: string | null;
@@ -41,6 +37,7 @@ interface RequestContentState {
  * the admin expand a row to inspect the prompt/response payload on demand.
  */
 export function UserRecentRequests({ userId }: { userId: string }) {
+  const money = useMoney();
   const toast = useAccountToast();
   const [entries, setEntries] = useState<AdminRecentRequestItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -257,7 +254,7 @@ export function UserRecentRequests({ userId }: { userId: string }) {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-2 py-2 text-[12px] tabular-nums text-gray-600">
-                          {formatCost(req.cost_usd)}
+                          {money.requestCost(req)}
                         </td>
                         <td className="whitespace-nowrap px-2 py-2 pr-3 text-right text-[12px] text-gray-400">
                           <span title={new Date(req.timestamp).toLocaleString()}>

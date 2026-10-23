@@ -1520,7 +1520,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },
@@ -1620,7 +1621,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },
@@ -1671,7 +1673,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },

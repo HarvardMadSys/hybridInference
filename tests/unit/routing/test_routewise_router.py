@@ -103,6 +103,7 @@ def _make_model_config(
     # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
     cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": prompt_price, "completion": completion_price}
+    cfg.pricing_currency = "USD"
     if quota_source is not None:
         cfg.quota_source = quota_source
     elif provider_type == "quota":

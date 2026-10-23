@@ -2965,3 +2965,6 @@ msgstr "只上线测试过的那组镜像和配置，并保留上一组，以便
 #~ msgstr ""
 #~ "上游维护标准实现、读取配置的代码和已公布的 Site UI "
 #~ "接口契约。各发行版维护自己的配置、模块、部署和源码分支修改。上游合并变更本身不会决定发行版何时升级；升级时机由发行版的发布流水线负责。"
+
+msgid "`accounting.currency` defaults to `USD`. Selecting `CNY` requires an offline ledger migration before activating the matching manifest; changing this field alone does not convert prices, usage or quotas. Follow [Accounting Currency](accounting.md) for the migration, fixed-rate policy and backup-based rollback procedure."
+msgstr "`accounting.currency` 默认为 `USD`。选择 `CNY` 时，必须先完成账本离线迁移，再启用匹配的 manifest；仅修改此字段不会转换价格、用量或额度。迁移、固定汇率策略和基于备份的回滚流程见[记账币种](accounting.md)。"

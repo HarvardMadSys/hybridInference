@@ -50,13 +50,20 @@ export interface ApiKeyDeleteResponse {
 }
 
 export interface UsageStats {
+  currency?: 'USD' | 'CNY';
   period: 'today' | 'month' | 'all';
   quota: {
+    currency?: 'USD' | 'CNY';
     has_key: boolean;
+    daily_limit?: number;
     daily_limit_usd?: number;
+    monthly_limit?: number;
     monthly_limit_usd?: number;
+    spent_today?: number;
     spent_today_usd?: number;
+    spent_month?: number;
     spent_month_usd?: number;
+    remaining_today?: number;
     remaining_today_usd?: number;
     max_concurrency?: number;
     reset_at?: string | null;
@@ -65,14 +72,17 @@ export interface UsageStats {
     increase_request_message?: string;
   };
   usage: {
+    currency?: 'USD' | 'CNY';
     requests: number;
     prompt_tokens: number;
     completion_tokens: number;
+    cost?: number;
     cost_usd: number;
   };
 }
 
 export interface ModelCatalogItem {
+  currency?: 'USD' | 'CNY';
   id: string;
   name: string;
   object: 'model';
@@ -84,12 +94,14 @@ export interface ModelCatalogItem {
   context_length: number;
   max_output_length: number;
   pricing: Record<string, string>;
+  prices?: Record<string, string>;
   supported_sampling_parameters: string[];
   supported_features: string[];
   openrouter?: Record<string, unknown> | null;
 }
 
 export interface ModelCatalogResponse {
+  currency?: 'USD' | 'CNY';
   object: 'list';
   data: ModelCatalogItem[];
 }
@@ -193,6 +205,7 @@ export async function updatePassword(
 
 // Recent requests types and API
 export interface RecentRequestItem {
+  currency?: 'USD' | 'CNY';
   request_id: string;
   model_id: string;
   provider: string;
@@ -207,6 +220,7 @@ export interface RecentRequestItem {
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
+  cost?: number | null;
   cost_usd?: number | null;
   error?: string | null;
   routewise?: RouteWiseDecision | null;
@@ -227,6 +241,7 @@ export interface RouteWiseDecision {
 }
 
 export interface RecentRequestsResponse {
+  currency?: 'USD' | 'CNY';
   requests: RecentRequestItem[];
   total: number;
   limit: number;

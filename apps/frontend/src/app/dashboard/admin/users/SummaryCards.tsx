@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useUsersSummary } from './hooks/useUsersSummary';
 import type { SummaryCard as SummaryCardData } from './types';
 import { userAccountLabel } from '@/lib/utils/userLabel';
@@ -82,6 +83,7 @@ const ACCENT = {
 } as const;
 
 function Card({ title, accent, card, loading, showCost, active, onClick }: CardProps) {
+  const money = useMoney();
   const a = ACCENT[accent];
   const count = card?.count ?? 0;
   const top = (card?.top ?? []).slice(0, 3);
@@ -112,7 +114,7 @@ function Card({ title, accent, card, loading, showCost, active, onClick }: CardP
               <span className="truncate">{userAccountLabel(u)}</span>
               {showCost && (
                 <span className="shrink-0 tabular-nums text-gray-900">
-                  ${Number(u.today_cost_usd).toFixed(2)}
+                  {money.value(u, 'today_cost', { maximumFractionDigits: 2 })}
                 </span>
               )}
             </li>

@@ -1299,6 +1299,7 @@ async def _apply_openrouter_endpoint_pricing(
             cfg["route_metadata"] = route_metadata
         return
     cfg["pricing"] = endpoint_pricing.pricing
+    cfg["pricing_currency"] = "USD"
     # OpenRouter's endpoint-specific price is authoritative for this route; a
     # model-level provider schedule must not overwrite it later.
     cfg["pricing_schedule"] = None

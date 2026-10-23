@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useState } from 'react';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { getUserDetail } from '@/lib/api/admin';
@@ -178,6 +179,7 @@ export interface UserDetailPanelProps {
 }
 
 export function UserDetailPanel(props: UserDetailPanelProps) {
+  const money = useMoney();
   const {
     user: u,
     detail,
@@ -258,18 +260,22 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         <div className="grid grid-cols-2 divide-x divide-gray-100 sm:grid-cols-4">
           <Stat
             label="Today"
-            value={`$${Number(detail.usage_today_usd).toFixed(2)}`}
+            value={money.value(detail, 'usage_today', { maximumFractionDigits: 2 })}
             sub={`${detail.usage_today_requests} req`}
           />
           <Stat
             label="This month"
-            value={`$${Number(detail.usage_month_usd).toFixed(2)}`}
+            value={money.value(detail, 'usage_month', { maximumFractionDigits: 2 })}
             sub={`${detail.usage_month_requests} req`}
           />
           <Stat label="Last active" value={relTime(detail.last_request_at)} />
           <Stat
             label="Quota"
-            value={detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
+            value={
+              money.amount(detail, 'quota_daily') != null
+                ? `${money.value(detail, 'quota_daily')}/d`
+                : '—'
+            }
           />
         </div>
         {/* All-time activity stats (avg turns, ask-question share) require
@@ -315,7 +321,7 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
                 {detail.has_key && (
                   <label className="block">
                     <div className="mb-1 text-[11px] font-medium text-gray-500">
-                      Daily quota (USD)
+                      Daily quota ({money.sourceCurrency(detail)})
                     </div>
                     <input
                       type="number"

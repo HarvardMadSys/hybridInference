@@ -22,6 +22,7 @@ import contextlib
 import copy
 import json
 import time
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -35,6 +36,8 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import increment_native_cost
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
@@ -972,7 +975,7 @@ def _schedule_messages_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await increment_native_cost(op_store, user_id, cost)
         except Exception as exc:
             logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure
@@ -2567,7 +2570,7 @@ async def anthropic_user_balance(
     """Return the caller's remaining daily quota as an Anthropic-surface balance check.
 
     This gateway has no persistent prepaid balance -- quota is a per-user
-    daily USD allowance that resets at UTC midnight. This endpoint exists for
+    daily allowance in the ledger currency that resets at UTC midnight. This endpoint exists for
     Anthropic-compatible clients that, when pointed at a custom
     ``ANTHROPIC_BASE_URL``, probe a conventional ``/user/balance`` path (as
     popularized by DeepSeek's API) for a status display. Deliberately uses
@@ -2575,12 +2578,16 @@ async def anthropic_user_balance(
     that checking a near-zero balance never itself fails with a quota-exceeded
     error.
     """
+    policy = get_accounting_policy()
     if not user_ctx.get("authenticated"):
         # Auth disabled -- no per-user quota is tracked or enforced.
         return JSONResponse(
             content={
                 "is_available": True,
-                "currency": "USD",
+                "currency": policy.currency,
+                "balance": None,
+                "daily_limit": None,
+                "spent_today": None,
                 "balance_usd": None,
                 "daily_limit_usd": None,
                 "spent_today_usd": None,
@@ -2588,18 +2595,31 @@ async def anthropic_user_balance(
             }
         )
 
-    daily_limit = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
-    spent_today = float(user_ctx.get("spent_today_usd") or 0.0)
-    # Round before comparing so is_available can't say True while balance_usd
-    # displays as 0.0 (e.g. a remainder of 0.00001 rounds down to 0.0).
-    remaining = round(max(0.0, daily_limit - spent_today), 4)
+    raw_limit = user_ctx.get("quota_daily_cost")
+    daily_limit = (
+        Decimal(str(raw_limit))
+        if raw_limit is not None
+        else policy.from_usd(user_ctx.get("quota_daily_cost_usd") or 0)
+    )
+    raw_spent = user_ctx.get("spent_today")
+    spent_today = (
+        Decimal(str(raw_spent))
+        if raw_spent is not None
+        else policy.from_usd(user_ctx.get("spent_today_usd") or 0)
+    )
+    remaining = max(Decimal(0), daily_limit - spent_today)
     return JSONResponse(
         content={
             "is_available": remaining > 0,
-            "currency": "USD",
-            "balance_usd": remaining,
-            "daily_limit_usd": round(daily_limit, 4),
-            "spent_today_usd": round(spent_today, 4),
+            "currency": policy.currency,
+            # Native decimal strings preserve sub-cent ledger amounts. USD
+            # aliases keep their historical display precision independently.
+            "balance": str(remaining),
+            "daily_limit": str(daily_limit),
+            "spent_today": str(spent_today),
+            "balance_usd": round(float(policy.to_usd(remaining)), 4),
+            "daily_limit_usd": round(float(policy.to_usd(daily_limit)), 4),
+            "spent_today_usd": round(float(policy.to_usd(spent_today)), 4),
             "reset_at": _next_utc_midnight().isoformat(),
         }
     )

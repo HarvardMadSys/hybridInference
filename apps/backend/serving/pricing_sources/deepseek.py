@@ -1,7 +1,8 @@
-"""Parse the official English DeepSeek price table without guessing changed rules.
+"""Parse official DeepSeek price tables without guessing changed rules.
 
-The caller must fetch the fixed official English pricing URL: that page denotes
-USD with ``$``. This parser requires that marker and explicit per-million-token
+The caller must fetch the fixed URL for the requested currency. The English
+page denotes USD with ``$`` and the Chinese page denotes CNY with ``元``. This
+parser requires the matching language, currency marker and per-million-token
 row labels, and never follows links or fetches data itself. Calendar data comes
 from holiday-cn's annual JSON; its government citations are validated here, not
 independently fetched or authenticated.
@@ -26,7 +27,9 @@ _MAX_COLUMNS = 64
 _MODEL_ID = re.compile(r"deepseek-[a-z0-9][a-z0-9.-]*")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _PRICE = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
+_CNY_PRICE = re.compile(r"([0-9]+(?:\.[0-9]+)?)元")
 _TIME_RANGE = r"[0-9]{2}:[0-9]{2}\s*-\s*[0-9]{2}:[0-9]{2}"
+_CNY_TIME_RANGE = r"[0-9]{1,2}:[0-9]{2}\s*-\s*[0-9]{1,2}:[0-9]{2}"
 _PEAK_RULE = re.compile(
     r"(?:\([0-9]+\)\s*)?"
     r"(?P<half>Off-peak rates are half of the peak rates\.\s*)?"
@@ -43,6 +46,25 @@ _RATE_LABELS = {
     "1M INPUT TOKENS (CACHE MISS)": "prompt",
     "1M OUTPUT TOKENS": "completion",
 }
+_CNY_RATE_LABELS = {
+    "百万TOKENS输入 \uff08缓存命中\uff09": "input_cache_reads",
+    "百万TOKENS输入 \uff08缓存未命中\uff09": "prompt",
+    "百万TOKENS输出": "completion",
+}
+_CNY_PEAK_RULE = re.compile(
+    r"(?:\([0-9]+\)\s*)?"
+    r"(?P<half>空闲时段价格为高峰时段价格的一半。)"
+    r"北京时间周一至周五\uff08不含中国法定节假日\uff09(?P<windows>"
+    + _CNY_TIME_RANGE
+    + r"(?:、"
+    + _CNY_TIME_RANGE
+    + r")*)\s*为高峰时段\uff1b其余时段\uff0c包括周末及中国法定节假日全天均为空闲时段。"
+)
+
+
+def _validate_currency(currency: str) -> None:
+    if currency not in ("USD", "CNY"):
+        raise ValueError("DeepSeek pricing currency must be USD or CNY")
 
 
 class MissingModelError(ValueError):
@@ -146,12 +168,13 @@ class _PriceDocument(HTMLParser):
         if self._paragraph is not None:
             self._paragraph.append(data)
 
-    def finish(self) -> None:
+    def finish(self, currency: str = "USD") -> None:
         self.close()
         if self._table is not None or self._paragraph is not None or self._ignored:
             raise ValueError("DeepSeek pricing document is incomplete")
-        if self.languages != ["en"]:
-            raise ValueError("DeepSeek pricing requires the official English USD page")
+        language = "en" if currency == "USD" else "zh-cn"
+        if self.languages != [language]:
+            raise ValueError(f"DeepSeek pricing requires the official {language} {currency} page")
 
 
 def _expand_table(rows: list[list[_Cell]]) -> list[list[_Cell]]:
@@ -188,19 +211,27 @@ def _labels(cells: list[_Cell]) -> list[str]:
     return result
 
 
-def _parse_windows(paragraphs: list[str]) -> tuple[list[tuple[str, str]], bool]:
-    rules = [text for text in paragraphs if "peak hours" in text.lower()]
-    if len(rules) != 1 or (match := _PEAK_RULE.fullmatch(rules[0])) is None:
+def _parse_windows(paragraphs: list[str], currency: str) -> tuple[list[tuple[str, str]], bool]:
+    marker = "peak hours" if currency == "USD" else "为高峰时段"
+    rule = _PEAK_RULE if currency == "USD" else _CNY_PEAK_RULE
+    time_range = _TIME_RANGE if currency == "USD" else _CNY_TIME_RANGE
+    rules = [text for text in paragraphs if marker in text.lower()]
+    if len(rules) != 1 or (match := rule.fullmatch(rules[0])) is None:
         raise ValueError("DeepSeek peak rules are missing, duplicated, or unsupported")
     windows: list[tuple[str, str]] = []
     occupied: set[int] = set()
     china_offset_minutes = 8 * 60
-    for raw in re.findall(_TIME_RANGE, match["windows"]):
+    for raw in re.findall(time_range, match["windows"]):
         start, end = (part.strip() for part in raw.split("-"))
+        if currency == "CNY":
+            start, end = (value.zfill(5) for value in (start, end))
         start_time, end_time = (dt.time.fromisoformat(value) for value in (start, end))
         start_minute = start_time.hour * 60 + start_time.minute
         end_minute = end_time.hour * 60 + end_time.minute
-        if not start_minute < end_minute <= 24 * 60 - china_offset_minutes:
+        if currency == "CNY":
+            start_minute -= china_offset_minutes
+            end_minute -= china_offset_minutes
+        if not 0 <= start_minute < end_minute <= 24 * 60 - china_offset_minutes:
             raise ValueError(
                 "DeepSeek peak window crosses a China calendar date; "
                 "UTC-only holiday exclusions cannot represent this rule"
@@ -209,36 +240,44 @@ def _parse_windows(paragraphs: list[str]) -> tuple[list[tuple[str, str]], bool]:
         if occupied.intersection(minutes):
             raise ValueError("DeepSeek peak windows overlap or repeat")
         occupied.update(minutes)
-        windows.append((start, end))
+        windows.append(
+            (
+                f"{start_minute // 60:02}:{start_minute % 60:02}",
+                f"{end_minute // 60:02}:{end_minute % 60:02}",
+            )
+        )
     return sorted(windows), match["half"] is not None
 
 
-def _parse_price(text: str) -> str:
-    match = _PRICE.fullmatch(text)
+def _parse_price(text: str, currency: str) -> str:
+    pattern = _PRICE if currency == "USD" else _CNY_PRICE
+    match = pattern.fullmatch(text)
     if match is None or len(match[1]) > 64 or Decimal(match[1]) <= 0:
-        raise ValueError("DeepSeek price must be a positive USD amount per 1M tokens")
+        raise ValueError(f"DeepSeek price must be a positive {currency} amount per 1M tokens")
     return match[1]
 
 
-def parse_deepseek_page(html: str, model_id: str) -> dict[str, Any]:
+def parse_deepseek_page(html: str, model_id: str, *, currency: str = "USD") -> dict[str, Any]:
     """Return validated model version, default rates, windows, and ISO weekdays.
 
     ``model_id`` must exactly name an API model column; aliases and substrings
     are never inferred. Unknown markup, units, prices, or calendar prose raise
     ``ValueError`` so the caller can retain its last verified snapshot.
     """
+    _validate_currency(currency)
     if not isinstance(html, str) or not html or len(html) > 2_000_000:
         raise ValueError("DeepSeek pricing HTML is missing or exceeds the size limit")
     if not isinstance(model_id, str) or _MODEL_ID.fullmatch(model_id) is None:
         raise ValueError("DeepSeek pricing model_id must be an exact API model name")
     document = _PriceDocument()
     document.feed(html)
-    document.finish()
+    document.finish(currency)
+    model_label = "MODEL" if currency == "USD" else "模型"
     model_tables: list[tuple[list[list[_Cell]], int, list[str]]] = []
     for raw_table in document.tables:
         table = _expand_table(raw_table)
         for row in table:
-            if row[0].text.upper() != "MODEL":
+            if row[0].text.upper() != model_label:
                 continue
             label_count = 0
             while label_count < len(row) and row[label_count] is row[0]:
@@ -256,48 +295,59 @@ def parse_deepseek_page(html: str, model_id: str) -> dict[str, Any]:
         # Absence is safe to distinguish only after verifying the rest of the
         # table. A truncated or changed page must reject the whole refresh.
         for index in range(len(names)):
-            _parse_model_column(table, label_count + index, label_count, document.paragraphs)
+            _parse_model_column(
+                table, label_count + index, label_count, document.paragraphs, currency
+            )
         raise MissingModelError(f"DeepSeek pricing has no matching model column for {model_id}")
     return _parse_model_column(
-        table, label_count + names.index(model_id), label_count, document.paragraphs
+        table, label_count + names.index(model_id), label_count, document.paragraphs, currency
     )
 
 
 def _parse_model_column(
-    table: list[list[_Cell]], model_column: int, label_count: int, paragraphs: list[str]
+    table: list[list[_Cell]],
+    model_column: int,
+    label_count: int,
+    paragraphs: list[str],
+    currency: str,
 ) -> dict[str, Any]:
     versions: list[str] = []
-    rates: dict[str, dict[str, str]] = {"OFF-PEAK": {}, "PEAK": {}}
+    version_label = "MODEL VERSION" if currency == "USD" else "模型版本"
+    price_label = "PRICING" if currency == "USD" else "价格"
+    low_label, high_label = ("OFF-PEAK", "PEAK") if currency == "USD" else ("空闲时段", "高峰时段")
+    rate_labels = _RATE_LABELS if currency == "USD" else _CNY_RATE_LABELS
+    rates: dict[str, dict[str, str]] = {low_label: {}, high_label: {}}
     for row in table:
         labels = _labels(row[:label_count])
-        if labels == ["MODEL VERSION"]:
+        if labels == [version_label]:
             versions.append(row[model_column].text)
-        elif labels and labels[0] == "PRICING":
-            if len(labels) != 3 or labels[1] not in _RATE_LABELS or labels[2] not in rates:
+        elif labels and labels[0] == price_label:
+            if len(labels) != 3 or labels[1] not in rate_labels or labels[2] not in rates:
                 raise ValueError("DeepSeek pricing row has unsupported units or rate labels")
-            key = _RATE_LABELS[labels[1]]
+            key = rate_labels[labels[1]]
             bucket = rates[labels[2]]
             if key in bucket:
                 raise ValueError("DeepSeek pricing contains a duplicate rate")
-            bucket[key] = _parse_price(row[model_column].text)
+            bucket[key] = _parse_price(row[model_column].text, currency)
     if (
         len(versions) != 1
         or re.fullmatch(r"DeepSeek-[A-Za-z0-9][A-Za-z0-9.-]*", versions[0]) is None
     ):
         raise ValueError("DeepSeek model version is missing, duplicated, or unsupported")
-    expected_keys = set(_RATE_LABELS.values())
+    expected_keys = set(rate_labels.values())
     if any(set(bucket) != expected_keys for bucket in rates.values()):
         raise ValueError("DeepSeek pricing is incomplete")
-    windows, half_rate = _parse_windows(paragraphs)
-    for key, low in rates["OFF-PEAK"].items():
-        high = Decimal(rates["PEAK"][key])
+    windows, half_rate = _parse_windows(paragraphs, currency)
+    for key, low in rates[low_label].items():
+        high = Decimal(rates[high_label][key])
         if high <= Decimal(low) or (half_rate and high != 2 * Decimal(low)):
             raise ValueError("DeepSeek peak and off-peak amounts contradict the published rule")
     return {
         "model_version": versions[0],
-        "default": rates["OFF-PEAK"],
+        "default": rates[low_label],
         "windows": [
-            {"start": start, "end": end, "pricing": dict(rates["PEAK"])} for start, end in windows
+            {"start": start, "end": end, "pricing": dict(rates[high_label])}
+            for start, end in windows
         ],
         "weekdays": [1, 2, 3, 4, 5],
     }

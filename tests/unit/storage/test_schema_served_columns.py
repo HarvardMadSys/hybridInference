@@ -31,6 +31,16 @@ from serving.storage.log_schema import (
 from serving.storage.postgres_log import PostgresLogStore
 
 
+@pytest.fixture(autouse=True)
+def isolate_native_accounting_schema(monkeypatch):
+    # These fixtures model the log/fence catalog. Native accounting's separate
+    # mandatory DDL and lock-failure behavior is exercised against PostgreSQL in
+    # test_accounting_currency_postgres, not inferred from this catalog double.
+    monkeypatch.setattr(
+        "serving.storage.accounting_schema.initialize_accounting_schema", AsyncMock()
+    )
+
+
 def _capturing_conn() -> tuple[MagicMock, list[str]]:
     """Return ``(conn, statements)`` recording every SQL string executed.
 

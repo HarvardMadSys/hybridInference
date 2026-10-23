@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -25,6 +26,24 @@ import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 
+function settingValue(setting: RuntimeSettingItem): unknown {
+  if (!setting.key.startsWith('user_daily_quota_')) return setting.value;
+  return setting.amount ?? (setting.currency !== 'CNY' ? setting.value : null);
+}
+
+function settingDefault(setting: RuntimeSettingItem): unknown {
+  if (!setting.key.startsWith('user_daily_quota_')) return setting.default_value;
+  return setting.default_amount ?? (setting.currency !== 'CNY' ? setting.default_value : null);
+}
+
+function settingBound(
+  setting: RuntimeSettingItem,
+  bound: 'min' | 'max',
+): number | null | undefined {
+  if (!setting.key.startsWith('user_daily_quota_')) return setting[bound];
+  return setting[`${bound}_amount`] ?? (setting.currency !== 'CNY' ? setting[bound] : undefined);
+}
+
 function relTime(iso: string | null): string {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
@@ -43,6 +62,7 @@ function relTime(iso: string | null): string {
 }
 
 export function SettingsTab() {
+  const money = useMoney();
   const router = useRouter();
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,7 +111,9 @@ export function SettingsTab() {
         (s) => s.value_type === 'int' || s.value_type === 'float',
       );
       setNumericSettings(numerics);
-      setNumericDrafts(Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])));
+      setNumericDrafts(
+        Object.fromEntries(numerics.map((s) => [s.key, String(settingValue(s) ?? '')])),
+      );
     } catch (e) {
       setFlagsError(getErrorMessage(e));
     } finally {
@@ -151,8 +173,8 @@ export function SettingsTab() {
   const onSaveNumeric = async (setting: RuntimeSettingItem) => {
     const draft = numericDrafts[setting.key] ?? '';
     const validated = validateNumericSettingInput(draft, {
-      min: setting.min,
-      max: setting.max,
+      min: settingBound(setting, 'min'),
+      max: settingBound(setting, 'max'),
       integer: setting.value_type === 'int',
     });
     if (!validated.ok) {
@@ -161,10 +183,12 @@ export function SettingsTab() {
     }
     setSavingKey(setting.key);
     try {
-      const updated = await updateRuntimeSetting(setting.key, validated.value);
-      flashToast(`${updated.key} set to ${updated.value}`);
+      const updated = setting.key.startsWith(QUOTA_KEY_PREFIX)
+        ? await updateRuntimeSetting(setting.key, validated.value, money.sourceCurrency(setting))
+        : await updateRuntimeSetting(setting.key, validated.value);
+      flashToast(`${updated.key} set to ${settingValue(updated)}`);
       setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
-      setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
+      setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(settingValue(updated) ?? '') }));
       refreshSiteConfig();
     } catch (e) {
       flashToast(`Failed to update ${setting.key}: ${getErrorMessage(e)}`);
@@ -229,8 +253,10 @@ export function SettingsTab() {
     const role = quotaConfirm.role;
     setQuotaApplyingRole(role);
     try {
-      const res = await applyRoleQuota(role);
-      flashToast(`Updated ${res.keys_updated} keys for role ${role} to $${res.quota}`);
+      const res = await applyRoleQuota(role, money.sourceCurrency(quotaConfirm));
+      flashToast(
+        `Updated ${res.keys_updated} keys for role ${role} to ${money.format(res.amount ?? (res.currency !== 'CNY' ? res.quota : null), undefined, money.sourceCurrency(res))}`,
+      );
       setQuotaConfirm(null);
     } catch (e) {
       flashToast(`Apply failed: ${getErrorMessage(e)}`);
@@ -335,15 +361,15 @@ export function SettingsTab() {
               const isSaving = savingKey === setting.key;
               const draft = numericDrafts[setting.key] ?? '';
               const validated = validateNumericSettingInput(draft, {
-                min: setting.min,
-                max: setting.max,
+                min: settingBound(setting, 'min'),
+                max: settingBound(setting, 'max'),
                 integer: setting.value_type === 'int',
               });
-              const isDirty = validated.ok && validated.value !== setting.value;
-              const isDefault = setting.value === setting.default_value;
+              const isDirty = validated.ok && validated.value !== settingValue(setting);
+              const isDefault = settingValue(setting) === settingDefault(setting);
               const rangeHint = (() => {
-                const lo = setting.min;
-                const hi = setting.max;
+                const lo = settingBound(setting, 'min');
+                const hi = settingBound(setting, 'max');
                 if (lo != null && hi != null) return `${lo}–${hi}`;
                 if (lo != null) return `≥ ${lo}`;
                 if (hi != null) return `≤ ${hi}`;
@@ -366,12 +392,14 @@ export function SettingsTab() {
                       )}
                     </div>
                     <p className="mt-0.5 text-[11px] text-gray-500">
-                      {setting.description}
+                      {setting.key.startsWith(QUOTA_KEY_PREFIX)
+                        ? `Daily quota (${money.sourceCurrency(setting)})`
+                        : setting.description}
                       {rangeHint && (
                         <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
                       )}
                       <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
+                        Default: {String(settingDefault(setting) ?? '—')}
                       </span>
                     </p>
                     {!validated.ok && draft !== '' && (
@@ -384,8 +412,8 @@ export function SettingsTab() {
                     <input
                       type="number"
                       step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
+                      min={settingBound(setting, 'min') ?? undefined}
+                      max={settingBound(setting, 'max') ?? undefined}
                       value={draft}
                       disabled={isSaving}
                       onChange={(e) =>
@@ -574,8 +602,16 @@ export function SettingsTab() {
               Apply quota to role <code>{quotaConfirm.role}</code>
             </h3>
             <p className="mt-2 text-[13px] text-gray-600">
-              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code> on{' '}
-              <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
+              This sets the daily quota to{' '}
+              <strong>
+                {money.format(
+                  quotaConfirm.amount ??
+                    (quotaConfirm.currency !== 'CNY' ? quotaConfirm.quota : null),
+                  undefined,
+                  money.sourceCurrency(quotaConfirm),
+                )}
+              </strong>{' '}
+              on <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
               <strong>{quotaConfirm.users_affected}</strong> users with role{' '}
               <code>{quotaConfirm.role}</code>. Custom per-key overrides will be lost.
             </p>

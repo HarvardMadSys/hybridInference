@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
+from serving.accounting_api import increment_native_cost
 from serving.config.runtime_settings import get_runtime_settings
 from serving.grant_auth import ledger_attribution
 from serving.observability.tracked_tasks import tracked_task
@@ -65,7 +66,7 @@ def _schedule_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await increment_native_cost(op_store, user_id, cost)
         except Exception as exc:
             logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure

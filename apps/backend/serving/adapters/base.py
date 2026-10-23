@@ -133,6 +133,7 @@ class ModelConfig:
     )
     pricing_schedule: PricingSchedule | dict[str, Any] | None = None
     pricing_source: dict[str, str] | None = None
+    pricing_currency: Literal["USD", "CNY"] = "USD"
     # Output processor override for OpenAICompatAdapter.
     # When set, bypasses auto-detection based on model ID.
     # Values: "default", "glm", "qwen_coder", "think_block".
@@ -219,6 +220,8 @@ class ModelConfig:
         request/transport fields back to ``{}`` here as a last line of defense.
         """
         self.deployment_type = validate_deployment_type(self.deployment_type)
+        if self.pricing_currency not in ("USD", "CNY"):
+            raise ValueError("pricing_currency must be USD or CNY")
         for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):
             if getattr(self, _name) is None:
                 setattr(self, _name, {})

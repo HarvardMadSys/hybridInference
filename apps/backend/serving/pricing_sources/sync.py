@@ -28,6 +28,10 @@ logger = get_logger(__name__)
 
 SETTING_KEY = "provider_pricing:deepseek"
 PRICE_URL = "https://api-docs.deepseek.com/quick_start/pricing/"
+PRICE_URLS = {
+    "USD": PRICE_URL,
+    "CNY": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+}
 CALENDAR_URL = "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json"
 SUPPORTED_MODELS = frozenset({"deepseek-flash", "deepseek-v4-pro"})
 SYNC_INTERVAL = 300.0
@@ -58,8 +62,10 @@ def configured_source_models(router: Any, embeddings: Mapping[str, Any] | None) 
     return models
 
 
-def decode_snapshot(raw: str) -> PricingSnapshot:
+def decode_snapshot(raw: str, *, currency: str = "USD") -> PricingSnapshot:
     """Validate persisted data just as strictly as a newly downloaded tariff."""
+    if currency not in PRICE_URLS:
+        raise ValueError("unsupported provider pricing currency")
     payload = json.loads(raw)
     if not isinstance(payload, dict) or payload.get("version") != 1:
         raise ValueError("unsupported provider pricing snapshot")
@@ -80,9 +86,9 @@ def decode_snapshot(raw: str) -> PricingSnapshot:
         raise ValueError("unexpected provider pricing snapshot fields")
     if payload.get("provider") != "deepseek":
         raise ValueError("unexpected provider pricing source")
-    if payload.get("currency") != "USD" or payload.get("unit") != "per_million_tokens":
+    if payload.get("currency") != currency or payload.get("unit") != "per_million_tokens":
         raise ValueError("unexpected provider pricing currency or unit")
-    if payload.get("price_url") != PRICE_URL:
+    if payload.get("price_url") != PRICE_URLS[currency]:
         raise ValueError("unexpected official pricing URL")
     digest = payload.get("source_sha256")
     if (
@@ -188,12 +194,13 @@ def decode_snapshot(raw: str) -> PricingSnapshot:
         calendar_years=frozenset(years),
         tariffs=MappingProxyType(tariffs),
         model_versions=MappingProxyType(versions),
+        currency=currency,
     )
 
 
 async def fetch_public_text(url: str, *, optional_calendar: bool = False) -> str:
     """Fetch only the fixed public sources; never inherit credentials or redirects."""
-    if url != PRICE_URL and not any(
+    if url not in PRICE_URLS.values() and not any(
         url == CALENDAR_URL.format(year=year) for year in range(2000, 2200)
     ):
         raise ValueError("unsupported public pricing URL")
@@ -232,9 +239,15 @@ class PricingSyncService:
         models: set[str],
         *,
         clock: Callable[[], dt.datetime] | None = None,
+        currency: str = "USD",
     ) -> None:
         if not models or not models <= SUPPORTED_MODELS:
             raise ValueError("unsupported automatic pricing models")
+        if currency not in PRICE_URLS:
+            raise ValueError("unsupported automatic pricing currency")
+        self._currency = currency
+        self._setting_key = SETTING_KEY if currency == "USD" else f"{SETTING_KEY}:{currency}"
+        self._price_url = PRICE_URLS[currency]
         self._store = store
         self._models = frozenset(models)
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
@@ -253,6 +266,7 @@ class PricingSyncService:
     def _usable(self) -> bool:
         return bool(
             self._snapshot
+            and self._snapshot.currency == self._currency
             and self._clock().year in self._snapshot.calendar_years
             and self._models <= self._snapshot.tariffs.keys()
         )
@@ -262,6 +276,7 @@ class PricingSyncService:
         snapshot = self._snapshot
         return {
             "provider": "deepseek",
+            "currency": self._currency,
             "revision": snapshot.revision if snapshot else None,
             "fetched_at": snapshot.fetched_at.isoformat() if snapshot else None,
             "calendar_years": sorted(snapshot.calendar_years) if snapshot else [],
@@ -294,10 +309,10 @@ class PricingSyncService:
         """Load the shared revision while fencing overlapping or outdated reads."""
         self._generation += 1
         generation = self._generation
-        row = await self._store.get_setting(SETTING_KEY)
+        row = await self._store.get_setting(self._setting_key)
         if row is None:
             return  # Never discard the last valid revision after an accidental deletion.
-        snapshot = decode_snapshot(row["value"])
+        snapshot = decode_snapshot(row["value"], currency=self._currency)
         if generation != self._generation:
             return
         previous = self._snapshot
@@ -307,7 +322,7 @@ class PricingSyncService:
 
     async def _download(self) -> dict[str, Any]:
         now = self._clock().astimezone(dt.timezone.utc)
-        html = await fetch_public_text(PRICE_URL)
+        html = await fetch_public_text(self._price_url)
         exclusions: dict[str, set[str]] = {}
         coverage: list[int] = []
         for year in (now.year, now.year + 1):
@@ -331,18 +346,18 @@ class PricingSyncService:
         models = {}
         for model in sorted(SUPPORTED_MODELS):
             try:
-                models[model] = parse_deepseek_page(html, model)
+                models[model] = parse_deepseek_page(html, model, currency=self._currency)
             except MissingModelError:
                 if model in self._models:
                     raise
         return {
             "version": 1,
             "provider": "deepseek",
-            "currency": "USD",
+            "currency": self._currency,
             "unit": "per_million_tokens",
             "revision": str(uuid.uuid4()),
             "fetched_at": now.isoformat(),
-            "price_url": PRICE_URL,
+            "price_url": self._price_url,
             "calendar_urls": {str(year): CALENDAR_URL.format(year=year) for year in coverage},
             "source_sha256": hashlib.sha256(html.encode()).hexdigest(),
             "models": models,
@@ -355,13 +370,13 @@ class PricingSyncService:
         self._last_attempt = time.monotonic()
         self._last_attempt_at = self._clock()
         try:
-            row = await self._store.get_setting(SETTING_KEY)
+            row = await self._store.get_setting(self._setting_key)
             expected = row["value"] if row is not None else None
             payload = await asyncio.wait_for(self._download(), timeout=30)
             raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-            decode_snapshot(raw)
+            decode_snapshot(raw, currency=self._currency)
             changed = await self._store.compare_and_set_setting(
-                SETTING_KEY, expected, raw, "json", "pricing-sync:deepseek"
+                self._setting_key, expected, raw, "json", "pricing-sync:deepseek"
             )
             await self.refresh()
             self._last_error = None

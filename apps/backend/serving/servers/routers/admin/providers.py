@@ -615,6 +615,7 @@ async def admin_provider_token_usage(
                 COALESCE(SUM(total_cache_read_tokens), 0)::BIGINT  AS cached_tokens,
                 COALESCE(SUM(total_reasoning_tokens), 0)::BIGINT   AS reasoning_tokens,
                 COALESCE(SUM(total_cost_usd), 0)                   AS cost_usd,
+                COALESCE(SUM(COALESCE(total_cost_amount, total_cost_usd)), 0)                AS cost_amount,
                 COALESCE(SUM(request_count), 0)::BIGINT            AS request_count
             FROM provider_hourly_stats
             WHERE hour_bucket >= $1 AND hour_bucket < $2
@@ -645,6 +646,7 @@ async def admin_provider_token_usage(
         cached_tokens=sum(r.cached_tokens for r in out_rows),
         reasoning_tokens=sum(r.reasoning_tokens for r in out_rows),
         cost_usd=sum(r.cost_usd for r in out_rows),
+        cost=sum(r.cost or 0 for r in out_rows),
         request_count=sum(r.request_count for r in out_rows),
     )
 

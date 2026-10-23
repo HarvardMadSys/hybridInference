@@ -15,10 +15,17 @@ from pydantic import (
     model_validator,
 )
 
+from serving.accounting_api import (
+    Currency,
+    MoneyInput,
+    MoneyResponse,
+    accounting_currency,
+    native_amount,
+)
 from serving.config.settings import ROUTE_TYPE_ORDER
 
 
-class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
     """Request payload for creating a new API key."""
 
     user_id: str = Field(..., min_length=1, max_length=255, description="Unique user identifier")
@@ -48,8 +55,11 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
             raise ValueError("user_id must contain only alphanumeric, dash, underscore, or dot")
         return v
 
+    quota_daily_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
+    quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
 
-class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+
+class CreateAPIKeyResponse(MoneyResponse):  # type: ignore[no-any-unimported]
     """Response payload for successful API key creation."""
 
     api_key: str = Field(..., description="Plaintext API key (shown only once)")
@@ -64,8 +74,11 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
         description="Security warning",
     )
 
+    quota_daily_cost: Decimal | None = None
+    quota_monthly_cost: Decimal | None = None
 
-class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
+
+class APIKeyListItem(MoneyResponse):  # type: ignore[no-any-unimported]
     """Single API key item in list view."""
 
     user_id: str
@@ -81,6 +94,11 @@ class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
     usage_month_usd: Decimal = Field(default=Decimal("0"), description="Cost spent this month")
     notes: str | None
 
+    quota_daily_cost: Decimal | None = None
+    quota_monthly_cost: Decimal | None = None
+    usage_today: Decimal | None = None
+    usage_month: Decimal | None = None
+
 
 class ListAPIKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response payload for listing API keys."""
@@ -89,7 +107,7 @@ class ListAPIKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
     keys: list[APIKeyListItem]
 
 
-class APIKeyDetailUsage(BaseModel):  # type: ignore[no-any-unimported]
+class APIKeyDetailUsage(MoneyResponse):  # type: ignore[no-any-unimported]
     """Detailed usage statistics for a user."""
 
     today: dict[str, Any] = Field(
@@ -104,7 +122,7 @@ class APIKeyDetailUsage(BaseModel):  # type: ignore[no-any-unimported]
     last_request_at: datetime | None = Field(None, description="Timestamp of last request")
 
 
-class APIKeyDetailResponse(BaseModel):  # type: ignore[no-any-unimported]
+class APIKeyDetailResponse(MoneyResponse):  # type: ignore[no-any-unimported]
     """Response payload for detailed API key view."""
 
     user_id: str
@@ -120,8 +138,11 @@ class APIKeyDetailResponse(BaseModel):  # type: ignore[no-any-unimported]
     metadata: dict[str, Any] | None
     usage: APIKeyDetailUsage
 
+    quota_daily_cost: Decimal | None = None
+    quota_monthly_cost: Decimal | None = None
 
-class UpdateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+
+class UpdateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
     """Request payload for updating an API key."""
 
     user_name: str | None = Field(None, max_length=255)
@@ -132,8 +153,11 @@ class UpdateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     notes: str | None = None
     metadata: dict[str, Any] | None = None
 
+    quota_daily_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
+    quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
 
-class UpdateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+
+class UpdateAPIKeyResponse(MoneyResponse):  # type: ignore[no-any-unimported]
     """Response payload for successful update."""
 
     user_id: str
@@ -154,7 +178,7 @@ class RevokeAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 # ========================================
 
 
-class UserListItem(BaseModel):
+class UserListItem(MoneyResponse):
     """Single user item in admin user list.
 
     Includes API key status and usage data via LEFT JOIN. ``email`` is None
@@ -190,6 +214,10 @@ class UserListItem(BaseModel):
     usage_alltime_requests: int | None = 0
     usage_alltime_tokens: int | None = 0
 
+    usage_today: Decimal | None = None
+    usage_month: Decimal | None = None
+    usage_alltime: Decimal | None = None
+
 
 class StatusCounts(BaseModel):
     """Per-status user counts (always unfiltered)."""
@@ -215,12 +243,14 @@ class ListUsersResponse(BaseModel):
 # ========================================
 
 
-class UserCostHistoryPoint(BaseModel):
+class UserCostHistoryPoint(MoneyResponse):
     """One day of per-user cost data."""
 
     day: str  # "YYYY-MM-DD" UTC
     cost_usd: Decimal = Field(default=Decimal("0"))
     requests: int = 0
+
+    cost: Decimal | None = None
 
 
 class UserCostHistoryResponse(BaseModel):
@@ -331,7 +361,7 @@ class BulkUserAutomationScoresResponse(BaseModel):
     scores: dict[str, UserAutomationScore]  # keyed by user_id
 
 
-class SummaryUserItem(BaseModel):
+class SummaryUserItem(MoneyResponse):
     """User entry inside a summary card (sub-set of UserListItem)."""
 
     id: str
@@ -344,6 +374,10 @@ class SummaryUserItem(BaseModel):
     avg_prior_7d_usd: Decimal = Field(default=Decimal("0"))
     quota_daily_usd: float | None = None
     multiplier: float | None = None  # today / avg, anomaly card only
+
+    today_cost: Decimal | None = None
+    avg_prior_7d: Decimal | None = None
+    quota_daily: float | None = None
 
 
 class SummaryCard(BaseModel):
@@ -396,7 +430,7 @@ class RejectUserResponse(BaseModel):
     message: str
 
 
-class UserDetailResponse(BaseModel):
+class UserDetailResponse(MoneyResponse):
     """Detailed user info including usage analytics.
 
     ``email`` is None for the account created by first-run setup, which has a
@@ -446,8 +480,13 @@ class UserDetailResponse(BaseModel):
     # ``avg_turns`` above).
     ask_question_fraction: float | None = None
 
+    quota_daily: float | None = None
+    quota_monthly: float | None = None
+    usage_today: float | None = None
+    usage_month: float | None = None
 
-class UpdateUserRequest(BaseModel):
+
+class UpdateUserRequest(MoneyInput):
     """Request payload for updating user/key settings."""
 
     role: str | None = Field(
@@ -466,8 +505,11 @@ class UpdateUserRequest(BaseModel):
     # Send "" or null to clear it.
     suspension_message: str | None = Field(None, max_length=2000)
 
+    quota_daily_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
+    quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
 
-class UpdateUserResponse(BaseModel):
+
+class UpdateUserResponse(MoneyResponse):
     """Response payload for successful user update."""
 
     user_id: str
@@ -833,7 +875,7 @@ class AdminRequestPerfTrendResponse(BaseModel):
     truncated: bool = False
 
 
-class AdminRecentRequestItem(BaseModel):
+class AdminRecentRequestItem(MoneyResponse):
     """A single API request log entry (admin view, includes user identity)."""
 
     request_id: str
@@ -906,6 +948,8 @@ class AdminRecentRequestItem(BaseModel):
     num_turns: int | None = None
     num_user_turns: int | None = None
     num_tool_calls: int | None = None
+
+    cost: float | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
@@ -1251,6 +1295,28 @@ class RuntimeSettingItem(BaseModel):
     min: float | None = None
     max: float | None = None
 
+    currency: Currency | None = None
+    amount: float | None = None
+    default_amount: float | None = None
+    min_amount: float | None = None
+    max_amount: float | None = None
+
+    @model_validator(mode="after")
+    def native_quota_setting(self) -> "RuntimeSettingItem":
+        """Expose role quotas and bounds in the deployment accounting unit."""
+        if self.key.startswith("user_daily_quota_"):
+            self.currency = accounting_currency()
+            for source, target in (
+                ("value", "amount"),
+                ("default_value", "default_amount"),
+                ("min", "min_amount"),
+                ("max", "max_amount"),
+            ):
+                converted = native_amount(getattr(self, source))
+                setattr(self, target, None if converted is None else float(converted))
+            self.description = self.description.replace("USD", self.currency)
+        return self
+
 
 class ListSettingsResponse(BaseModel):
     """Response payload for listing runtime settings."""
@@ -1262,6 +1328,7 @@ class UpdateSettingRequest(BaseModel):
     """Request payload for updating a runtime setting."""
 
     value: Any
+    currency: Currency | None = None
 
 
 class TestAlertRequest(BaseModel):
@@ -1645,7 +1712,7 @@ class UpdateProviderRouteStrategyRequest(BaseModel):
     strategy: Literal["fixed", "routewise"]
 
 
-class CreateProviderRouteRequest(BaseModel):
+class CreateProviderRouteRequest(MoneyInput):
     """Request payload for adding one runtime provider route candidate."""
 
     route_type: Literal["quota", "concurrency", "on_demand"]
@@ -1709,6 +1776,7 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     strategy: Literal["fixed", "routewise"] = "fixed"
     required_role: Literal["free", "pro", "internal", "admin"] = "admin"
     pricing: dict[str, str] = Field(..., min_length=1)
+    prices: dict[str, str] | None = Field(default=None, exclude=True)
     capabilities: RuntimeModelCapabilities
 
     @field_validator("model_id")
@@ -2013,7 +2081,7 @@ __all__ = [
 # ── Broadcast Email Schemas ────────────────────────────────────────────────
 
 
-class BroadcastPreviewRequest(BaseModel):
+class BroadcastPreviewRequest(MoneyInput):
     template_key: str | None = None
     template_vars: dict = Field(default_factory=dict)
     subject: str = Field("", description="Required when template_key is None")
@@ -2039,6 +2107,8 @@ class BroadcastPreviewRequest(BaseModel):
         ge=0,
         description="Only include users who have spent more than this many USD today (UTC).",
     )
+
+    min_spend_today: Decimal | None = Field(default=None, ge=0, exclude=True)
 
 
 class BroadcastPreviewResponse(BaseModel):
@@ -2208,7 +2278,7 @@ class ProviderObservabilityResponse(BaseModel):
 # ============================================================
 
 
-class ProviderTokenUsageRow(BaseModel):  # type: ignore[no-any-unimported]
+class ProviderTokenUsageRow(MoneyResponse):  # type: ignore[no-any-unimported]
     provider: str
     provider_display_name: str | None = None
     model_id: str
@@ -2219,14 +2289,18 @@ class ProviderTokenUsageRow(BaseModel):  # type: ignore[no-any-unimported]
     cost_usd: float
     request_count: int
 
+    cost: float | None = None
 
-class ProviderTokenUsageTotals(BaseModel):  # type: ignore[no-any-unimported]
+
+class ProviderTokenUsageTotals(MoneyResponse):  # type: ignore[no-any-unimported]
     input_tokens: int
     output_tokens: int
     cached_tokens: int
     reasoning_tokens: int
     cost_usd: float
     request_count: int
+
+    cost: float | None = None
 
 
 class ProviderTokenUsageWindow(BaseModel):  # type: ignore[no-any-unimported]

@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyAmount } from '@/lib/utils/money';
 import { Line, LineChart, ResponsiveContainer, YAxis } from 'recharts';
 import type { CostHistoryPoint } from './types';
 
@@ -20,7 +21,7 @@ export function Sparkline({
     return <span className="text-xs text-gray-300">—</span>;
   }
   // Normalize to numbers
-  const data = points.map((p) => ({ day: p.day, cost: Number(p.cost_usd) }));
+  const data = points.map((p) => ({ day: p.day, cost: moneyAmount(p, 'cost') }));
   return (
     <div style={{ width, height }} aria-label="7-day cost trend" role="img">
       <ResponsiveContainer width="100%" height="100%">

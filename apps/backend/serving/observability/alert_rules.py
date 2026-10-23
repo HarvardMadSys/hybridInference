@@ -1075,16 +1075,23 @@ def _quota_card(
     # "over_by: $-0.01" on a card titled "quota consumed" reads as a
     # contradiction rather than as the boundary case it is. At or below the cap
     # the honest word is "at cap".
-    over = spend - quota_usd
+    from serving.accounting import get_accounting_policy
+
+    policy = get_accounting_policy()
+    spend_amount = policy.from_usd(spend)
+    quota_amount = policy.from_usd(quota_usd)
+    over = spend_amount - quota_amount
+    symbol = "¥" if policy.currency == "CNY" else "$"
     card = {
         "user_id": user_id,
         "role": role,
-        "spend": f"${spend:.2f}",
+        "spend": f"{symbol}{spend_amount:.2f}",
         # The account's own cap, not a role threshold — two users with the same
         # role routinely have different ones, so the card has to carry the
         # number that was actually enforced on this one.
-        "quota": f"${quota_usd:.2f}",
-        "over_by": f"${over:.2f}" if over > 0 else "$0.00 (at cap)",
+        "quota": f"{symbol}{quota_amount:.2f}",
+        "over_by": f"{symbol}{over:.2f}" if over > 0 else f"{symbol}0.00 (at cap)",
+        "currency": policy.currency,
     }
     if note:
         card["note"] = note

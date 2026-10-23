@@ -154,6 +154,16 @@ class _FingerprintInitConn:
         return False
 
 
+@pytest.fixture(autouse=True)
+def isolate_native_accounting_schema(monkeypatch):
+    # These fixtures model the log/fence catalog. Native accounting's separate
+    # mandatory DDL and lock-failure behavior is exercised against PostgreSQL in
+    # test_accounting_currency_postgres, not inferred from this catalog double.
+    monkeypatch.setattr(
+        "serving.storage.accounting_schema.initialize_accounting_schema", AsyncMock()
+    )
+
+
 def _conn(execute_side_effect=None) -> tuple[MagicMock, list[str]]:
     """Return ``(conn, statements)``; empty catalogs so every migration runs."""
     statements: list[str] = []

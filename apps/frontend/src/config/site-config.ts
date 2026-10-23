@@ -163,6 +163,11 @@ const featuresSchema = z
 // that predates them has no setup flow and no configuration registry, which is
 // "not required" and "complete". The inner objects are not strict, so a later
 // field (a count, say) does not take this console down either.
+const accountingSchema = z.object({
+  currency: z.enum(['USD', 'CNY']),
+  usd_to_currency_rate: z.string().optional(),
+});
+
 const setupStateSchema = z.object({ required: z.boolean() });
 const configurationStateSchema = z.object({ incomplete: z.boolean() });
 const phoneAuthPolicySchema = z.object({
@@ -183,6 +188,7 @@ const versionedSiteConfigDocumentSchema = z
     configuration: configurationStateSchema.nullish(),
     // Public number-input policy; transport credentials remain server-only.
     phone_auth_policy: phoneAuthPolicySchema.nullish(),
+    accounting: accountingSchema.optional(),
   })
   // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
   // with the branding object below is deliberate. This envelope is what a
@@ -208,6 +214,7 @@ const siteConfigDocumentSchema = z.union([
 ]);
 
 export interface RuntimeSiteConfig {
+  accounting?: { currency: 'USD' | 'CNY'; usd_to_currency_rate?: string };
   branding: Branding;
   agentsUrl: string;
   distribution: {
@@ -237,6 +244,7 @@ export interface RuntimeSiteConfig {
 
 export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
+  accounting: { currency: 'USD' },
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
   features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
@@ -355,6 +363,10 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
 
   return {
     branding,
+    accounting:
+      'schema_version' in document
+        ? (document.accounting ?? { currency: 'USD' })
+        : { currency: 'USD' },
     agentsUrl: '',
     distribution: {
       id: document.distribution.id,

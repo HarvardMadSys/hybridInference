@@ -130,6 +130,7 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
     monkeypatch.setattr(bootstrap, "PostgresOperationalStore", MagicMock(return_value=AsyncMock()))
     operational_store = MagicMock()
     operational_store.list_settings = AsyncMock(return_value=[])
+    operational_store.get_setting = AsyncMock(return_value=None)
     monkeypatch.setattr(
         bootstrap, "CachedOperationalStore", MagicMock(return_value=operational_store)
     )

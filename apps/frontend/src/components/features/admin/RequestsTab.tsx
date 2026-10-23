@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import {
   Fragment,
   type MouseEvent,
@@ -466,6 +467,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
 }
 
 export function RequestsTab() {
+  const money = useMoney();
   const toast = useAccountToast();
   // Requests state
   const [reqEntries, setReqEntries] = useState<AdminRecentRequestItem[]>([]);
@@ -1224,11 +1226,7 @@ export function RequestsTab() {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
-                          {req.cost_usd != null
-                            ? req.cost_usd < 0.01
-                              ? `$${req.cost_usd.toFixed(4)}`
-                              : `$${req.cost_usd.toFixed(2)}`
-                            : '—'}
+                          {money.requestCost(req)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-right text-[12px] text-gray-400 pr-4">
                           <span title={new Date(req.timestamp).toLocaleString()}>

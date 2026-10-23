@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from serving.accounting_api import Currency, accounting_currency
 from serving.utils.messages import merge_leading_system_messages
 
 
@@ -192,6 +193,8 @@ class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
     context_length: int
     max_output_length: int
     pricing: dict[str, str]
+    prices: dict[str, str] = Field(default_factory=dict)
+    currency: Currency = Field(default_factory=accounting_currency)
     supported_sampling_parameters: list[str] = []
     supported_features: list[str] = []
     # True for models served lazily on shared GPUs (loaded on first request,

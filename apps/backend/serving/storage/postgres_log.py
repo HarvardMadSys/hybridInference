@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.analytics.automation_score import score_users_from_logs
 from serving.storage import admin_view_results, daily_activity_rollup, user_usage_rollup
 from serving.storage.base import LogStore, Row
@@ -31,6 +32,7 @@ from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from decimal import Decimal
 
     import asyncpg
 
@@ -76,6 +78,7 @@ _GRANT_METRIC_COLUMNS = {
     "cache_write": "cache_write_tokens",
     "reasoning": "reasoning_tokens",
     "spent_usd": "cost_usd",
+    "spent_amount": "COALESCE(cost_amount, cost_usd)",
 }
 
 
@@ -248,7 +251,10 @@ class PostgresLogStore(LogStore):
             response_str = None
             request_payload_str = None
 
-        cost_usd = calculate_cost(usage, pricing)
+        calculated_cost = calculate_cost(usage, pricing)
+        policy = get_accounting_policy()
+        cost_amount = money_decimal(calculated_cost) if calculated_cost is not None else None
+        cost_usd = policy.to_usd(cost_amount) if cost_amount is not None else None
         # Conversation shape is derived metadata (like token counts), so it is
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
@@ -322,7 +328,8 @@ class PostgresLogStore(LogStore):
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
                     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id
+                    served_model_id, served_endpoint_id, agent_job_id,
+                    cost_amount, accounting_currency
                 )
                 VALUES (
                     $1, $2, $3,
@@ -335,7 +342,7 @@ class PostgresLogStore(LogStore):
                     $26::jsonb, $27,
                     $28, $29, $30,
                     $31, $32, $33,
-                    $34, $35, $36
+                    $34, $35, $36, $37, $38
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -375,6 +382,8 @@ class PostgresLogStore(LogStore):
                 served_model,
                 served_endpoint,
                 (sanitized_metadata or {}).get("agent_job_id"),
+                cost_amount,
+                policy.currency,
             )
 
     # -- usage / cost queries ------------------------------------------------
@@ -392,6 +401,16 @@ class PostgresLogStore(LogStore):
                 agent_job_id,
             )
         return float(row["spent"]) if row and row["spent"] is not None else 0.0
+
+    async def get_agent_job_cost_amount(self, agent_job_id: str) -> Decimal:
+        """Return the primary native ledger amount for one agent job."""
+        async with self.pool.acquire() as conn:
+            amount = await conn.fetchval(
+                "SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) "
+                "FROM api_logs WHERE agent_job_id = $1",
+                agent_job_id,
+            )
+        return money_decimal(amount)
 
     async def get_agent_job_usage(self, agent_job_id: str) -> dict[str, float]:
         """Return token and call totals charged to one agent job.
@@ -504,7 +523,7 @@ class PostgresLogStore(LogStore):
                        cache_read_tokens,
                        cache_write_tokens,
                        reasoning_tokens,
-                       cost_usd,
+                       cost_usd, cost_amount, accounting_currency,
                        ttft_ms,
                        latency_ms,
                        status_code,
@@ -570,6 +589,7 @@ class PostgresLogStore(LogStore):
             today = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount,
                        COUNT(*) AS reqs,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
@@ -582,6 +602,7 @@ class PostgresLogStore(LogStore):
             week = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount,
                        COUNT(*) AS reqs,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
@@ -594,6 +615,7 @@ class PostgresLogStore(LogStore):
             month = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount,
                        COUNT(*) AS reqs,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
@@ -606,6 +628,7 @@ class PostgresLogStore(LogStore):
             alltime = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount,
                        COUNT(*) AS reqs,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens
@@ -619,12 +642,14 @@ class PostgresLogStore(LogStore):
             if not row:
                 return {
                     "cost_usd": 0.0,
+                    "cost_amount": 0.0,
                     "requests": 0,
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                 }
             return {
                 "cost_usd": float(row["cost"]),
+                "cost_amount": row.get("cost_amount"),
                 "requests": int(row["reqs"]),
                 "prompt_tokens": int(row["prompt_tokens"]),
                 "completion_tokens": int(row["completion_tokens"]),
@@ -659,6 +684,23 @@ class PostgresLogStore(LogStore):
             )
         return {row["user_id"]: float(row["cost"]) for row in rows}
 
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return exact native request totals, including sub-USD-precision costs."""
+        if not user_ids:
+            return {}
+        trunc = "day" if period == "today" else "month"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost "
+                "FROM api_logs WHERE user_id = ANY($1::text[]) "
+                f"AND timestamp >= (date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
+                "GROUP BY user_id",
+                user_ids,
+            )
+        return {row["user_id"]: row["cost"] for row in rows}
+
     async def get_user_detail_usage(
         self, user_id: str, *, include_activity_stats: bool = False
     ) -> dict[str, Any]:
@@ -679,7 +721,8 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             today = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
@@ -688,7 +731,8 @@ class PostgresLogStore(LogStore):
             )
             month = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
@@ -720,8 +764,10 @@ class PostgresLogStore(LogStore):
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
+            "usage_today_amount": today.get("cost_amount") if today else 0.0,
             "usage_today_requests": int(today["reqs"]) if today else 0,
             "usage_month_usd": float(month["cost"]) if month else 0.0,
+            "usage_month_amount": month.get("cost_amount") if month else 0.0,
             "usage_month_requests": int(month["reqs"]) if month else 0,
             "models_used": [r["model_id"] for r in models_rows],
             "last_request_at": last_req["ts"] if last_req and last_req["ts"] else None,
@@ -807,7 +853,8 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             today = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
@@ -816,7 +863,8 @@ class PostgresLogStore(LogStore):
             )
             month = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount, COUNT(*) AS reqs
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
@@ -839,10 +887,12 @@ class PostgresLogStore(LogStore):
         return {
             "today": {
                 "cost_usd": float(today["cost"]) if today else 0.0,
+                "cost_amount": today.get("cost_amount") if today else 0.0,
                 "requests": int(today["reqs"]) if today else 0,
             },
             "this_month": {
                 "cost_usd": float(month["cost"]) if month else 0.0,
+                "cost_amount": month.get("cost_amount") if month else 0.0,
                 "requests": int(month["reqs"]) if month else 0,
             },
             "models_used": [r["model_id"] for r in models_rows],

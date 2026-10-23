@@ -1428,8 +1428,8 @@
     "text": "模型"
   },
   "dashboard.models.col_price": {
-    "source": "USD / 1M tokens",
-    "text": "美元 / 百万 token"
+    "source": "{currency} / 1M tokens",
+    "text": "{currency} / 百万 token"
   },
   "dashboard.models.copied_toast": {
     "source": "Model ID copied to clipboard",
@@ -1644,7 +1644,7 @@
     "text": "根据请求日志估算出的内部成本。“今天”和“本月”都从 UTC 时间 00:00 开始算，也就是每日额度重置的时刻。这不是账单，只是让你心里有数。"
   },
   "dashboard.usage.footnote": {
-    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
+    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
   },
   "dashboard.usage.input_tokens": {

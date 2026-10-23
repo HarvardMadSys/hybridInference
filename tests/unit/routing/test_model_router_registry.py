@@ -689,6 +689,7 @@ class TestModelRouterRegistry:
             adapter.config.provider_type = "on_demand"
             adapter.config.on_demand = False
             adapter.config.pricing = {"prompt": "1.0", "completion": "2.0"}
+            adapter.config.pricing_currency = "USD"
             return adapter
 
         shared_fixed = FixedRouter()

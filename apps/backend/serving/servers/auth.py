@@ -11,7 +11,8 @@ from typing import Any
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
-from serving import grants, quota
+from serving import grants, quota, quota as cost_quota
+from serving.accounting import get_accounting_policy
 from serving.config.app_config import config_value
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
@@ -651,60 +652,32 @@ async def verify_api_key(
     identity = await _resolve_effective_identity(caller, key_hash, x_on_behalf_of, op_store)
     effective_user_id = identity["user_id"]
 
-    # Pre-check daily cost quota via operational store counter table
-    cost_spent = 0.0
-    if op_store:
-        cost_spent = await op_store.get_user_cost_today(effective_user_id)
-
-    # Estimate cost for this request
-    estimated_cost = 0.01
-
-    # Get quota with fallback for NULL (old rows from migration)
-    quota_daily_cost_usd = identity.get("quota_daily_cost_usd")
-    quota_daily_cost_usd = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
-
-    # Check cost quota
-    if cost_spent + estimated_cost > quota_daily_cost_usd:
-        seconds_until_midnight_utc = _seconds_until_utc_midnight()
-        quota_reset_at = _next_utc_midnight()
+    limit_amount, spent_amount = await cost_quota.daily_amounts(
+        op_store, effective_user_id, identity
+    )
+    policy = get_accounting_policy()
+    quota_daily_cost_usd = float(policy.to_usd(limit_amount))
+    cost_spent = float(policy.to_usd(spent_amount))
+    try:
+        cost_quota.check_amount(quota_amount=limit_amount, spent_amount=spent_amount)
+    except cost_quota.QuotaExceeded:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
                 status_code=429,
                 error_code="quota_exceeded",
-                reason=(f"quota_usd={quota_daily_cost_usd:.4f} spent_usd={cost_spent:.4f}"),
+                reason=f"quota={limit_amount} spent={spent_amount} currency={policy.currency}",
                 user={
                     "user_id": effective_user_id,
                     "role": identity.get("role") or "free",
-                    # The caller passed key auth to reach the quota gate, so
-                    # the rejection log's probe-trust check sees a real key.
                     "authenticated": True,
                 },
             )
         )
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "Daily cost quota exceeded",
-                "quota_usd": quota_daily_cost_usd,
-                "spent_usd": cost_spent,
-                "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
-                "reset_at": quota_reset_at.isoformat(),
-                "contact_email": _quota_contact(),
-                "message": (
-                    f"Need more quota? Email {_quota_contact()} and explain your use case."
-                    if _quota_contact()
-                    else "Daily quota exhausted. Contact the operator of this deployment."
-                ),
-                "retry_after": seconds_until_midnight_utc,
-            },
-            headers={
-                "Retry-After": str(seconds_until_midnight_utc),
-                "X-RateLimit-Limit-Cost": str(quota_daily_cost_usd),
-                "X-RateLimit-Remaining-Cost": str(max(0, quota_daily_cost_usd - cost_spent)),
-                "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
-            },
+        body, headers = cost_quota.exceeded_payload(
+            quota_usd=quota_daily_cost_usd, spent_usd=cost_spent, contact_email=_quota_contact()
         )
+        raise HTTPException(status_code=429, detail=body, headers=headers) from None
 
     # Update last_used timestamp (fire and forget) on the presented key.
     await op_store.update_key_last_used(caller_key_id)
@@ -748,18 +721,17 @@ async def verify_api_key_for_balance(
 
     user, _key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
 
-    cost_spent = 0.0
-    if op_store:
-        cost_spent = await op_store.get_user_cost_today(user["user_id"])
-
-    quota_daily_cost_usd = user.get("quota_daily_cost_usd")
-    quota_daily_cost_usd = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
+    limit_amount, spent_amount = await cost_quota.daily_amounts(op_store, user["user_id"], user)
+    policy = get_accounting_policy()
 
     return {
         "user_id": user["user_id"],
         "authenticated": True,
-        "quota_daily_cost_usd": quota_daily_cost_usd,
-        "spent_today_usd": cost_spent,
+        "currency": policy.currency,
+        "quota_daily_cost": limit_amount,
+        "spent_today": spent_amount,
+        "quota_daily_cost_usd": float(policy.to_usd(limit_amount)),
+        "spent_today_usd": float(policy.to_usd(spent_amount)),
     }
 
 

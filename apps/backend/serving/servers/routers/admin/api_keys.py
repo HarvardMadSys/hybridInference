@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import native_amount, native_quota_updates, primary_amounts
 from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
@@ -78,6 +80,7 @@ async def create_api_key(
         expires_at=payload.expires_at,
         notes=payload.notes,
         metadata=payload.metadata,
+        **native_quota_updates(payload),
     )
 
     await log_admin_action(
@@ -99,6 +102,10 @@ async def create_api_key(
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
         created_at=row["created_at"],
+        **{
+            key.removesuffix("_amount"): value
+            for key, value in native_quota_updates(payload).items()
+        },
     )
 
 
@@ -133,13 +140,24 @@ async def list_api_keys(
     user_ids = [row["user_id"] for row in rows]
     usage_today_map: dict[str, Any] = {}
     usage_month_map: dict[str, Any] = {}
+    usage_today_amounts: dict[str, Decimal] = {}
+    usage_month_amounts: dict[str, Decimal] = {}
     if op_store and user_ids:
         usage_today_map = await op_store.get_batch_usage(user_ids, period="today")
         usage_month_map = await op_store.get_batch_usage(user_ids, period="month")
+        if get_accounting_policy().currency != "USD":
+            usage_today_amounts = await op_store.get_batch_usage_amount(user_ids, period="today")
+            usage_month_amounts = await op_store.get_batch_usage_amount(user_ids, period="month")
 
     keys = []
     for row in rows:
         uid = row["user_id"]
+        amounts = primary_amounts(row)
+        if get_accounting_policy().currency != "USD":
+            amounts.update(
+                usage_today=usage_today_amounts.get(uid, Decimal(0)),
+                usage_month=usage_month_amounts.get(uid, Decimal(0)),
+            )
         keys.append(
             APIKeyListItem(
                 user_id=uid,
@@ -154,6 +172,7 @@ async def list_api_keys(
                 usage_today_usd=Decimal(str(usage_today_map.get(uid, 0))),
                 usage_month_usd=Decimal(str(usage_month_map.get(uid, 0))),
                 notes=row["notes"],
+                **amounts,
             )
         )
 
@@ -182,6 +201,7 @@ async def get_api_key_detail(
     # Fetch usage from log store
     cost_today = 0.0
     cost_month = 0.0
+    key_usage: dict[str, Any] = {}
     requests_today = 0
     requests_month = 0
     models_used: list[str] = []
@@ -196,19 +216,45 @@ async def get_api_key_detail(
         models_used = key_usage.get("models_used", [])
         last_request_at = key_usage.get("last_request_at")
 
-    quota_daily = float(row["quota_daily_cost_usd"]) if row["quota_daily_cost_usd"] else 1000.0
-    quota_monthly = float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] else None
+    quota_daily = (
+        float(row["quota_daily_cost_usd"]) if row["quota_daily_cost_usd"] is not None else 1000.0
+    )
+    quota_monthly = (
+        float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] is not None else None
+    )
+    daily_amount = row.get("quota_daily_cost_amount")
+    if daily_amount is None:
+        daily_amount = native_amount(quota_daily)
+    monthly_amount = row.get("quota_monthly_cost_amount")
+    if monthly_amount is None:
+        monthly_amount = native_amount(quota_monthly)
+    today_amount = key_usage.get("today", {}).get("cost_amount")
+    if today_amount is None:
+        today_amount = native_amount(cost_today)
+    month_amount = key_usage.get("this_month", {}).get("cost_amount")
+    if month_amount is None:
+        month_amount = native_amount(cost_month)
 
     usage = APIKeyDetailUsage(
         today={
             "cost_usd": cost_today,
+            "cost": today_amount,
             "requests": requests_today,
             "quota_remaining_usd": max(0, quota_daily - cost_today),
+            "quota_remaining": max(Decimal(0), daily_amount - today_amount),
         },
         this_month={
             "cost_usd": cost_month,
+            "cost": month_amount,
             "requests": requests_month,
-            "quota_remaining_usd": (max(0, quota_monthly - cost_month) if quota_monthly else None),
+            "quota_remaining_usd": (
+                max(0, quota_monthly - cost_month) if quota_monthly is not None else None
+            ),
+            "quota_remaining": (
+                max(Decimal(0), monthly_amount - month_amount)
+                if monthly_amount is not None
+                else None
+            ),
         },
         models_used=models_used,
         last_request_at=last_request_at,
@@ -227,6 +273,7 @@ async def get_api_key_detail(
         notes=row["notes"],
         metadata=row["metadata"],
         usage=usage,
+        **primary_amounts(row),
     )
 
 
@@ -248,6 +295,7 @@ async def update_api_key(
         raise HTTPException(500, "Database not configured")
 
     payload_dict = payload.model_dump(exclude_unset=True)
+    payload_dict.update(native_quota_updates(payload))
     if not payload_dict:
         raise HTTPException(422, "No fields to update")
 

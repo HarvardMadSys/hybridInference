@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import ReactMarkdown from 'react-markdown';
@@ -31,6 +32,7 @@ function relTime(s: string | null): string {
 }
 
 export function BroadcastsTab() {
+  const money = useMoney();
   const toast = useAccountToast();
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
@@ -55,7 +57,7 @@ export function BroadcastsTab() {
   const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
-  // USD today (UTC). Empty string means no spend filter.
+  // accounting currency today (UTC). Empty string means no spend filter.
   const [bcMinSpendToday, setBcMinSpendToday] = useState('');
 
   // Parsed spend threshold sent to the API: null when blank/invalid (no filter).
@@ -173,7 +175,7 @@ export function BroadcastsTab() {
               <label className="block text-[12px] font-medium text-gray-600 mb-1">New Quota</label>
               <input
                 className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-                placeholder="e.g. $50/day"
+                placeholder={`e.g. ${money.symbol}50/day`}
                 value={bcTemplateVars['new_quota'] ?? ''}
                 onChange={(e) => setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))}
               />
@@ -262,7 +264,7 @@ export function BroadcastsTab() {
           {/* Spend filter */}
           <div className="mb-4">
             <label className="block text-[12px] font-medium text-gray-600 mb-1">
-              Minimum spend today (USD)
+              Minimum spend today ({money.currency})
             </label>
             <input
               type="number"
@@ -273,7 +275,7 @@ export function BroadcastsTab() {
                   ? 'border-red-300 focus:ring-red-500'
                   : 'border-gray-200 focus:ring-gray-900'
               }`}
-              placeholder="e.g. 5 — only users who spent more than $5 today"
+              placeholder={`e.g. 5 — only users who spent more than ${money.symbol}5 today`}
               value={bcMinSpendToday}
               onChange={(e) => {
                 setBcMinSpendToday(e.target.value);
@@ -337,7 +339,8 @@ export function BroadcastsTab() {
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
-                    min_spend_today_usd: parsedMinSpend,
+                    min_spend_today: parsedMinSpend,
+                    currency: money.currency,
                   });
                   setBcPreview(res);
                 } catch (err) {
@@ -364,7 +367,8 @@ export function BroadcastsTab() {
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
-                    min_spend_today_usd: parsedMinSpend,
+                    min_spend_today: parsedMinSpend,
+                    currency: money.currency,
                   });
                   toast.success('Test email sent to your address');
                 } catch (err) {
@@ -435,7 +439,8 @@ export function BroadcastsTab() {
                         body_text: '',
                         target_roles: bcTargetRoles,
                         target_statuses: bcTargetStatuses,
-                        min_spend_today_usd: parsedMinSpend,
+                        min_spend_today: parsedMinSpend,
+                        currency: money.currency,
                         scheduled_at:
                           bcScheduleMode === 'later' && bcScheduledAt
                             ? new Date(bcScheduledAt).toISOString()

@@ -1569,3 +1569,15 @@ msgstr ""
 #: ../developer/adding-models.md
 msgid "Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency)"
 msgstr "只可用于路由的准入分类：`auto`（默认值，识别回环/宿主机端点）、`self_hosted`（自己运维的引擎，包括局域网中的引擎）或 `provider_api`（按 provider key 限制并发，即使通过回环代理访问）。与 `provider_type` 独立；参见[出站并发](routing.md#outbound-concurrency)。"
+
+msgid "Base cost information in `pricing_currency`. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are per 1M tokens; `request` is per request and `image` per image"
+msgstr "以 `pricing_currency` 为单位的基础成本信息。`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` 按每百万 token 计；`request` 按每次请求计，`image` 按每张图片计"
+
+msgid "`pricing_currency`"
+msgstr ""
+
+msgid "`USD` (default) or `CNY`; applies to configured `pricing` and `pricing_schedule`. See [Accounting Currency](accounting.md) for normalization into the deployment ledger"
+msgstr "`USD`（默认）或 `CNY`，适用于配置中的 `pricing` 和 `pricing_schedule`。转换为部署记账币种的规则见[记账币种](accounting.md)"
+
+msgid "The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) for USD accounting or the [official Chinese price page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) for CNY accounting every five minutes. It reads input, output and cache-hit prices directly in that currency and resolves peak windows in UTC. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays."
+msgstr "网关每五分钟检查价格页面：USD 记账使用[官方英文价格页面](https://api-docs.deepseek.com/quick_start/pricing/)，CNY 记账使用[官方中文价格页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。它直接读取对应币种的输入、输出和缓存命中价格，并按 UTC 解析高峰时段。当前及下一年的日历来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，这是根据国务院通知生成的第三方数据集，并非 DeepSeek API。后续年份的已发布日期会自动同步；空的占位文件不会被当作没有节假日的一年。"

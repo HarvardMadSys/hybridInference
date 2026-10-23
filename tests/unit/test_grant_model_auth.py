@@ -13,6 +13,7 @@ test that passes on the default would pass with no gate at all.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -188,7 +189,7 @@ async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monk
     store.spend = CUSTOM_QUOTA
 
     async def _no_gate(_op_store, _user_id):
-        return (float("inf"), 0.0)
+        return (Decimal("Infinity"), Decimal("0"))
 
     monkeypatch.setattr(model_auth, "_quota_context", _no_gate)
     context = await authenticate_grant_model_call(token, op_store=store)
@@ -220,7 +221,11 @@ async def test_the_429_body_and_headers_match_the_direct_path(store, token) -> N
         "X-RateLimit-Limit-Cost",
         "X-RateLimit-Remaining-Cost",
         "X-RateLimit-Reset",
+        "X-Accounting-Currency",
+        "X-RateLimit-Cost-Currency",
     }
+    assert headers["X-Accounting-Currency"] == "USD"
+    assert headers["X-RateLimit-Cost-Currency"] == "USD"
 
 
 async def test_a_null_quota_still_means_the_documented_default(store, token) -> None:
