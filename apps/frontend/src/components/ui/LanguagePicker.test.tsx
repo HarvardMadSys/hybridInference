@@ -24,7 +24,7 @@ vi.mock('@/lib/api/user', () => ({
 }));
 
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
-import { LanguagePicker, LanguageSwitcher } from './LanguageSwitcher';
+import { LanguagePicker } from './LanguagePicker';
 
 const NOW = Date.parse('2026-10-17T08:00:00Z');
 
@@ -54,23 +54,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('LanguageSwitcher', () => {
-  it("offers the other language by that language's own name", () => {
-    renderIn('en', <LanguageSwitcher />);
-    const button = screen.getByRole('button', { name: '中文' });
-    expect(button).toHaveAttribute('lang', 'zh-CN');
-    expect(screen.queryByRole('button', { name: 'English' })).not.toBeInTheDocument();
-
-    cleanup();
-    renderIn('zh-CN', <LanguageSwitcher />);
-    expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('lang', 'en');
+describe('LanguagePicker', () => {
+  it("names every language in that language's own name and marks the current one", () => {
+    renderIn('zh-CN', <LanguagePicker />);
+    expect(screen.getByRole('radio', { name: '中文' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'English' })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: 'English' }).closest('label')).toHaveAttribute(
+      'lang',
+      'en',
+    );
+    expect(screen.getByRole('radio', { name: '中文' }).closest('label')).toHaveAttribute(
+      'lang',
+      'zh-CN',
+    );
   });
 
   it('keeps a signed-out choice in the browser, owned by nobody, and re-renders the route', () => {
-    renderIn('en', <LanguageSwitcher />);
-    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    renderIn('zh-CN', <LanguagePicker />);
+    fireEvent.click(screen.getByRole('radio', { name: 'English' }));
 
-    expect(cookie()).toBe(`zh-CN|${NOW}|a`);
+    expect(cookie()).toBe(`en|${NOW}|a`);
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(updateLocalePreference).not.toHaveBeenCalled();
   });
@@ -82,8 +85,8 @@ describe('LanguageSwitcher', () => {
       chosen_at: '2026-10-17T08:00:01.000Z',
     });
 
-    renderIn('en', <LanguageSwitcher />);
-    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    renderIn('en', <LanguagePicker />);
+    fireEvent.click(screen.getByRole('radio', { name: '中文' }));
 
     expect(updateLocalePreference).toHaveBeenCalledWith('zh-CN');
     expect(cookie()).toBe(`zh-CN|${NOW}|p|a`);
@@ -96,8 +99,8 @@ describe('LanguageSwitcher', () => {
     updateLocalePreference.mockRejectedValue(new Error('offline'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    renderIn('en', <LanguageSwitcher />);
-    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    renderIn('en', <LanguagePicker />);
+    fireEvent.click(screen.getByRole('radio', { name: '中文' }));
 
     await waitFor(() => expect(warn).toHaveBeenCalled());
     expect(cookie()).toBe(`zh-CN|${NOW}|p|a`);
@@ -109,15 +112,15 @@ describe('LanguageSwitcher', () => {
     let answer!: (value: unknown) => void;
     updateLocalePreference.mockReturnValue(new Promise((resolve) => (answer = resolve)));
 
-    const { rerender } = renderIn('en', <LanguageSwitcher />);
-    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    const { rerender } = renderIn('en', <LanguagePicker />);
+    fireEvent.click(screen.getByRole('radio', { name: '中文' }));
 
     // The reader switches to B, which adopts its own English.
     signedInAs = 'b';
     document.cookie = `hi_locale=${encodeURIComponent(`en|${NOW - 1}|s|b`)}; Path=/`;
     rerender(
       <LocaleProvider locale="en" catalog={undefined} moduleLocale="">
-        <LanguageSwitcher />
+        <LanguagePicker />
       </LocaleProvider>,
     );
 
@@ -134,9 +137,9 @@ describe('LanguageSwitcher', () => {
     let answer!: (value: unknown) => void;
     updateLocalePreference.mockReturnValue(new Promise((resolve) => (answer = resolve)));
 
-    renderIn('en', <LanguageSwitcher />);
-    fireEvent.click(screen.getByRole('button', { name: '中文' }));
-    // Meanwhile the reader chose English — in Settings, or in another tab.
+    renderIn('en', <LanguagePicker />);
+    fireEvent.click(screen.getByRole('radio', { name: '中文' }));
+    // Meanwhile the reader chose English — from the account menu, or in another tab.
     document.cookie = `hi_locale=${encodeURIComponent(`en|${NOW + 5_000}|p|a`)}; Path=/`;
 
     await act(async () => {
@@ -145,16 +148,5 @@ describe('LanguageSwitcher', () => {
 
     expect(cookie()).toBe(`en|${NOW + 5_000}|p|a`);
     expect(refreshUser).not.toHaveBeenCalled();
-  });
-});
-
-describe('LanguagePicker', () => {
-  it('marks the current language and switches on another', () => {
-    renderIn('zh-CN', <LanguagePicker />);
-    expect(screen.getByRole('radio', { name: '中文' })).toBeChecked();
-
-    fireEvent.click(screen.getByRole('radio', { name: 'English' }));
-    expect(cookie()).toBe(`en|${NOW}|a`);
-    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

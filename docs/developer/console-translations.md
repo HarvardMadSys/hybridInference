@@ -2,10 +2,11 @@
 
 The console can be read in English or Chinese. A reader who never chose a
 language gets the one their browser asks for. Signed-in readers choose Language
-from the account menu; signed-out readers use the header switcher. The language
-setting also remains available under Account Settings. The console keeps the
-most recent choice in this browser and, once they sign in, in their account,
-so it follows them to other browsers. The design record is
+from the account menu or under Account Settings. The header has no language
+control, so signed-out readers see the language their browser asks for, or the
+one last chosen in this browser. The console keeps the most recent choice in
+this browser and, once they sign in, in their account, so it follows them to
+other browsers. The design record is
 [2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md).
 
 This page is for anyone who adds console text or translates it. Translating
