@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
     from serving.config.offload_routes import OffloadRouteResolver
+    from serving.config.route_states import RouteStateResolver
     from serving.config.routewise_model_settings import RouteWiseSettingsResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
@@ -103,6 +104,7 @@ class AppServices:
     weight_override_resolver: WeightOverrideResolver | None = None
     routewise_settings_resolver: RouteWiseSettingsResolver | None = None
     disabled_provider_resolver: DisabledProviderResolver | None = None
+    route_state_resolver: RouteStateResolver | None = None
     offload_route_resolver: OffloadRouteResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
@@ -118,6 +120,7 @@ class AppServices:
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
+    route_state_refresh_task: Any | None = None
     offload_route_refresh_task: Any | None = None
 
 

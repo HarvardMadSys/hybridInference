@@ -2016,6 +2016,28 @@ msgstr "把注册表里的路由改指向别处；`DELETE` 恢复 YAML 路由。
 
 #: ../developer/routing.md:661
 #, python-brace-format
+msgid "`PATCH /admin/routing/provider-route-states/{model_id}/{route_id}`"
+msgstr ""
+
+#: ../developer/routing.md:661
+msgid ""
+"Disable or enable a route of either source; a disabled route keeps its "
+"weights but takes no request, retry, fallback or offload."
+msgstr "停用或启用一条路由（两种来源都可以）；停用的路由保留权重，但不接收任何请求、重试、fallback 或 offload。"
+
+#: ../developer/routing.md:661
+#, python-brace-format
+msgid "`POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}`"
+msgstr ""
+
+#: ../developer/routing.md:661
+msgid ""
+"Delete a registry route from this deployment, or restore it; models.yaml "
+"is not changed."
+msgstr "从当前部署中删除注册表里的一条路由，或恢复它；models.yaml 不会被修改。"
+
+#: ../developer/routing.md:661
+#, python-brace-format
 msgid "`PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`"
 msgstr ""
 

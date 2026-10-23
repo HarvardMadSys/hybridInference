@@ -25,15 +25,18 @@ import {
   listProviderKeys,
   listOpenRouterProviderOptions,
   listProviderRoutes,
+  removeProviderRoute,
+  restoreProviderRoute,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteState,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
@@ -138,6 +141,13 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'pro', label: 'Pro, internal, and admins' },
   { value: 'free', label: 'All users' },
 ];
+
+// The gateway's own reason. The shared mapping reads any 409 as a signup
+// conflict ("This email is already registered"), which would hide why a route
+// edit, disable or delete was refused.
+function routeErrorMessage(err: unknown) {
+  return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
@@ -262,7 +272,7 @@ function overrideNotApplied(route: ProviderRoute) {
 }
 
 function sourceLabel(route: ProviderRoute) {
-  if (overrideNotApplied(route)) return 'Override not applied';
+  if (overrideNotApplied(route) && !route.removed) return 'Override not applied';
   if (route.source === 'override') return 'Override active';
   if (route.source === 'runtime') return 'Runtime added';
   return 'Config default';
@@ -688,6 +698,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [verifiedCreateSignature, setVerifiedCreateSignature] = useState<string | null>(null);
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
   const [offloadRoutes, setOffloadRoutes] = useState<OffloadRoute[]>([]);
   const [offloadQueue, setOffloadQueue] = useState<OffloadQueueInfo | null>(null);
@@ -703,7 +714,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setOffloadQueue({ enabled: resp.queue_enabled, maxWaitSeconds: resp.max_wait_seconds });
       setOffloadLoadError(null);
     } catch (err) {
-      setOffloadLoadError(getErrorMessage(err));
+      setOffloadLoadError(routeErrorMessage(err));
     }
   }, []);
 
@@ -725,7 +736,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       const models = Array.from(new Set(resp.routes.map((route) => route.model_id))).sort();
       setSelectedModel((current) => current || models[0] || '');
     } catch (err) {
-      toast.error(`Failed to load provider routes: ${getErrorMessage(err)}`);
+      toast.error(`Failed to load provider routes: ${routeErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -809,9 +820,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const showCreateWeight = !createIsRoutewise;
   const showCreateLimits =
     createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
+  const editingRuntimeRoute = editingRoute?.source === 'runtime';
+  // A runtime quota route owns its local quota; a config route gets one only
+  // while an override provider serves it.
   const editsLocalQuota =
     editingRoute?.route_type === 'quota' &&
-    (form.upstreamProvider !== routePrimaryProvider(editingRoute) ||
+    (editingRuntimeRoute ||
+      form.upstreamProvider !== routePrimaryProvider(editingRoute) ||
       (form.upstreamProvider === 'openrouter' &&
         (selectedOpenRouterProvider ?? OPENROUTER_PROVIDER_AUTO) !==
           routeOpenRouterProvider(editingRoute)));
@@ -1107,11 +1122,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   ]);
 
   const providerSelectOptions = useMemo(() => {
-    if (!form.upstreamProvider || optionFor(providerSelectBaseOptions, form.upstreamProvider)) {
-      return providerSelectBaseOptions;
+    // A runtime route keeps its type, so it may only move to a provider the
+    // deployment allows that type for.
+    const baseOptions =
+      editingRoute?.source === 'runtime'
+        ? providerSelectBaseOptions.filter((option) =>
+            optionSupportsRouteType(option, editingRoute.route_type as ProviderRouteType),
+          )
+        : providerSelectBaseOptions;
+    if (!form.upstreamProvider || optionFor(baseOptions, form.upstreamProvider)) {
+      return baseOptions;
     }
     return [
-      ...providerSelectBaseOptions,
+      ...baseOptions,
       {
         provider: form.upstreamProvider,
         label: form.upstreamProvider,
@@ -1120,7 +1143,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         default_base_url: form.baseUrl,
       },
     ];
-  }, [form.baseUrl, form.upstreamProvider, providerSelectBaseOptions]);
+  }, [editingRoute, form.baseUrl, form.upstreamProvider, providerSelectBaseOptions]);
 
   const loadKeys = useCallback(
     async (provider: string) => {
@@ -1134,7 +1157,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         setKeyOptions(resp.keys.filter((key) => key.id));
       } catch (err) {
         setKeyOptions([]);
-        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+        toast.error(`Failed to load provider keys: ${routeErrorMessage(err)}`);
       } finally {
         setKeysLoading(false);
       }
@@ -1154,7 +1177,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         setCreateKeyOptions(resp.keys.filter((key) => key.id));
       } catch (err) {
         setCreateKeyOptions([]);
-        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+        toast.error(`Failed to load provider keys: ${routeErrorMessage(err)}`);
       } finally {
         setCreateKeysLoading(false);
       }
@@ -1410,15 +1433,28 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const key = routeKey(editingRoute);
     setSavingKey(key);
     try {
-      const updated = await updateProviderRoute(
-        editingRoute.model_id,
-        editingRoute.route_id,
-        editRoutePayload,
-      );
+      const updated =
+        editingRoute.source === 'runtime'
+          ? await updateProviderRouteCandidate(
+              editingRoute.model_id,
+              editingRoute.route_id,
+              editRoutePayload,
+            )
+          : await updateProviderRoute(
+              editingRoute.model_id,
+              editingRoute.route_id,
+              editRoutePayload,
+            );
       replaceRoute(updated);
+      if (updated.endpoint_id !== editingRoute.endpoint_id) {
+        // Weights are keyed by endpoint; the gateway moved this route's with it.
+        void listRouteWeights()
+          .then(setRouteWeights)
+          .catch(() => undefined);
+      }
       toast.success('Provider route updated');
     } catch (err) {
-      toast.error(`Update failed: ${getErrorMessage(err)}`);
+      toast.error(`Update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingKey(null);
     }
@@ -1434,7 +1470,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success('Provider route verified');
     } catch (err) {
       setVerifiedEditSignature(null);
-      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+      toast.error(`Verify failed: ${routeErrorMessage(err)}`);
     } finally {
       setVerifyingKey(null);
     }
@@ -1469,7 +1505,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setVerifiedCreateSignature(null);
       toast.success(creatingModel ? 'Model created' : 'Provider route added');
     } catch (err) {
-      toast.error(`${creatingModel ? 'Create' : 'Add'} failed: ${getErrorMessage(err)}`);
+      toast.error(`${creatingModel ? 'Create' : 'Add'} failed: ${routeErrorMessage(err)}`);
     } finally {
       setCreatingRoute(false);
     }
@@ -1497,7 +1533,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(creatingModel ? 'Model route verified' : 'Provider route verified');
     } catch (err) {
       setVerifiedCreateSignature(null);
-      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+      toast.error(`Verify failed: ${routeErrorMessage(err)}`);
     } finally {
       setVerifyingCreateRoute(false);
     }
@@ -1512,24 +1548,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
       toast.success('Reset route to config');
     } catch (err) {
-      toast.error(`Reset failed: ${getErrorMessage(err)}`);
+      toast.error(`Reset failed: ${routeErrorMessage(err)}`);
     } finally {
       setResettingKey(null);
-    }
-  };
-
-  const onDeleteRuntimeRoute = async (route: ProviderRoute) => {
-    const key = routeKey(route);
-    setDeletingKey(key);
-    try {
-      const updated = await deleteProviderRouteCandidate(route.model_id, route.route_id);
-      replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
-      setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
-      toast.success('Provider route deleted');
-    } catch (err) {
-      toast.error(`Delete failed: ${getErrorMessage(err)}`);
-    } finally {
-      setDeletingKey(null);
     }
   };
 
@@ -1543,7 +1564,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success('Routing policy updated');
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Policy update failed: ${getErrorMessage(err)}`);
+      toast.error(`Policy update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingStrategy(false);
     }
@@ -1572,7 +1593,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`Updated ${route.endpoint_id} weight.`);
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Weight update failed: ${getErrorMessage(err)}`);
+      toast.error(`Weight update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingWeightKey(null);
     }
@@ -1601,7 +1622,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       });
       toast.success('Concurrency limit updated');
     } catch (err) {
-      toast.error(`Concurrency update failed: ${getErrorMessage(err)}`);
+      toast.error(`Concurrency update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingConcurrencyKey(null);
     }
@@ -1621,49 +1642,82 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`Cleared ${route.endpoint_id} weight override.`);
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Weight reset failed: ${getErrorMessage(err)}`);
+      toast.error(`Weight reset failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingWeightKey(null);
     }
   };
 
-  const onDisableRoute = async (route: ProviderRoute) => {
-    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
-    setSavingWeightKey(key);
+  const refreshAfterRouteChange = () => {
+    void listRouteWeights()
+      .then(setRouteWeights)
+      .catch(() => undefined);
+    void loadOffloadRoutes();
+  };
+
+  const onSetRouteDisabled = async (route: ProviderRoute, disabled: boolean) => {
+    const key = routeKey(route);
+    setTogglingKey(key);
     try {
-      const updated = await setRouteWeight(route.model_id, route.endpoint_id, 0);
-      replaceRouteWeight(updated);
-      setDraftWeights((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
+      const updated = await updateProviderRouteState(route.model_id, route.route_id, {
+        disabled,
       });
-      toast.success(`Disabled ${route.endpoint_id}.`);
-      void loadOffloadRoutes();
+      updateRoute(updated);
+      toast.success(`${disabled ? 'Disabled' : 'Enabled'} ${route.route_id}.`);
+      refreshAfterRouteChange();
     } catch (err) {
-      toast.error(`Disable failed: ${getErrorMessage(err)}`);
+      toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${routeErrorMessage(err)}`);
     } finally {
-      setSavingWeightKey(null);
+      setTogglingKey(null);
     }
   };
 
-  const onEnableRoute = async (route: ProviderRoute) => {
-    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
-    setSavingWeightKey(key);
+  const onDeleteRoute = async (route: ProviderRoute) => {
+    if (selectedOffload?.route_id === route.route_id) {
+      toast.error(
+        `${route.route_id} is this model's offload route. Clear the offload route first, then delete it.`,
+      );
+      return;
+    }
+    const runtime = route.source === 'runtime';
+    const liveRoutes = selectedRoutes.filter((item) => !item.removed);
+    const message = runtime
+      ? liveRoutes.length === 1
+        ? `Delete runtime route ${route.route_id}?\n\nIt is the last route of ${route.model_id}, so the model is deleted too. This cannot be undone.`
+        : `Delete runtime route ${route.route_id}?\n\nIt stops serving now and its saved configuration is deleted from the database. This cannot be undone: add the route again to bring it back.`
+      : `Delete config route ${route.route_id} from this deployment?\n\nIt stops serving now and stays deleted after restarts; models.yaml is not changed. You can bring it back with Restore, together with its edits and weight. (Reset config is different: it only discards edits.)`;
+    if (!window.confirm(message)) return;
+    const key = routeKey(route);
+    setDeletingKey(key);
     try {
-      const updated = await clearRouteWeight(route.model_id, route.endpoint_id);
-      replaceRouteWeight(updated);
-      setDraftWeights((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-      toast.success(`Enabled ${route.endpoint_id}.`);
-      void loadOffloadRoutes();
+      const updated = runtime
+        ? await deleteProviderRouteCandidate(route.model_id, route.route_id)
+        : await removeProviderRoute(route.model_id, route.route_id);
+      replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
+      setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
+      toast.success(
+        runtime ? 'Provider route deleted' : 'Config route deleted; Restore brings it back',
+      );
+      refreshAfterRouteChange();
     } catch (err) {
-      toast.error(`Enable failed: ${getErrorMessage(err)}`);
+      toast.error(`Delete failed: ${routeErrorMessage(err)}`);
     } finally {
-      setSavingWeightKey(null);
+      setDeletingKey(null);
+    }
+  };
+
+  const onRestoreRoute = async (route: ProviderRoute) => {
+    const key = routeKey(route);
+    setDeletingKey(key);
+    try {
+      const updated = await restoreProviderRoute(route.model_id, route.route_id);
+      replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
+      toast.success(`Restored ${route.route_id}.`);
+      refreshAfterRouteChange();
+    } catch (err) {
+      toast.error(`Restore failed: ${routeErrorMessage(err)}`);
+    } finally {
+      setDeletingKey(null);
     }
   };
 
@@ -1809,10 +1863,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 parsedDraftWeight !== null && parsedDraftWeight !== effectiveWeight;
               const isSavingWeight = savingWeightKey === weightKey;
               const hasWeightOverride = routeWeight?.override_weight != null;
-              const routeDisabled = effectiveWeight <= 0;
-              const isRoutewiseConfigRoute = isRoutewise && route.source !== 'runtime';
-              const canDisableRoute = isRoutewiseConfigRoute && !routeDisabled;
-              const canEnableRoute = isRoutewiseConfigRoute && routeDisabled && hasWeightOverride;
+              const routeRemoved = route.removed === true;
+              // Disabled by its flag, or by a weight of 0 (how Disable worked
+              // before the flag): either way routing sends it nothing.
+              const routeDisabled = route.disabled === true || effectiveWeight <= 0;
+              const canDisableRoute = !routeRemoved && !routeDisabled;
+              // A weight of 0 from models.yaml is not something Enable can undo.
+              const canEnableRoute =
+                !routeRemoved && (route.disabled === true || routeWeight?.override_weight === 0);
+              const isToggling = togglingKey === key;
               const editableConcurrencyLimit = canEditConcurrencyLimit(route);
               const draftConcurrencyLimit =
                 draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
@@ -1887,7 +1946,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
                       {routeLimitHeading(isRoutewise)}
                     </div>
-                    {isRoutewise ? (
+                    {routeRemoved ? (
+                      <div>—</div>
+                    ) : isRoutewise ? (
                       editableConcurrencyLimit ? (
                         <div className="flex flex-wrap items-center gap-1.5">
                           <input
@@ -1983,25 +2044,41 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       Status
                     </div>
                     <div className="flex flex-wrap gap-1">
+                      {(routeRemoved || routeDisabled) && (
+                        <span
+                          className={
+                            routeRemoved
+                              ? 'inline-flex rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700'
+                              : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                          }
+                          title={
+                            routeRemoved
+                              ? 'Deleted from this deployment: it serves nothing and stays deleted after restarts. Restore brings it back with its edits and weight.'
+                              : route.disabled
+                                ? 'Disabled: kept with its weight, but no request, retry, fallback or offload goes to it.'
+                                : 'Its weight is 0, so routing sends it nothing.'
+                          }
+                        >
+                          {routeRemoved ? 'Deleted' : 'Disabled'}
+                        </span>
+                      )}
                       <span
                         className={
-                          routeDisabled
-                            ? 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                            : overrideNotApplied(route)
-                              ? 'inline-flex rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700'
-                              : route.source === 'override'
-                                ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                                : route.source === 'runtime'
-                                  ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
-                                  : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                          overrideNotApplied(route)
+                            ? 'inline-flex rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700'
+                            : route.source === 'override'
+                              ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                              : route.source === 'runtime'
+                                ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                                : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
                         }
                         title={
-                          !routeDisabled && overrideNotApplied(route)
+                          !routeRemoved && overrideNotApplied(route)
                             ? 'The saved override failed to apply at startup, so the config default shown here is serving. Edit the route or reset its config.'
                             : undefined
                         }
                       >
-                        {routeDisabled ? 'Disabled' : sourceLabel(route)}
+                        {sourceLabel(route)}
                       </span>
                       {isOffloadRoute && selectedOffload && (
                         <span
@@ -2023,57 +2100,67 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     </div>
                   </div>
                   <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
-                    {route.source === 'override' && (
+                    {routeRemoved ? (
                       <button
                         type="button"
-                        onClick={() => void onResetYaml(route)}
-                        disabled={resettingKey === key}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                      >
-                        {resettingKey === key ? 'Resetting...' : 'Reset config'}
-                      </button>
-                    )}
-                    {canDisableRoute && (
-                      <button
-                        type="button"
-                        onClick={() => void onDisableRoute(route)}
-                        disabled={isSavingWeight}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        {isSavingWeight ? 'Disabling...' : 'Disable'}
-                      </button>
-                    )}
-                    {canEnableRoute && (
-                      <button
-                        type="button"
-                        onClick={() => void onEnableRoute(route)}
-                        disabled={isSavingWeight}
+                        onClick={() => void onRestoreRoute(route)}
+                        disabled={deletingKey === key}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                       >
-                        {isSavingWeight ? 'Enabling...' : 'Enable'}
-                      </button>
-                    )}
-                    {route.source === 'runtime' ? (
-                      <button
-                        type="button"
-                        onClick={() => void onDeleteRuntimeRoute(route)}
-                        disabled={deletingKey === key}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        {deletingKey === key ? 'Deleting…' : 'Delete'}
+                        {deletingKey === key ? 'Restoring…' : 'Restore'}
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingRoute(route);
-                          setAddingRoute(false);
-                          setCreatingModel(false);
-                        }}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
-                      >
-                        Edit
-                      </button>
+                      <>
+                        {route.source === 'override' && (
+                          <button
+                            type="button"
+                            onClick={() => void onResetYaml(route)}
+                            disabled={resettingKey === key}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                          >
+                            {resettingKey === key ? 'Resetting...' : 'Reset config'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingRoute(route);
+                            setAddingRoute(false);
+                            setCreatingModel(false);
+                          }}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                        >
+                          Edit
+                        </button>
+                        {canDisableRoute && (
+                          <button
+                            type="button"
+                            onClick={() => void onSetRouteDisabled(route, true)}
+                            disabled={isToggling}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {isToggling ? 'Disabling...' : 'Disable'}
+                          </button>
+                        )}
+                        {canEnableRoute && (
+                          <button
+                            type="button"
+                            onClick={() => void onSetRouteDisabled(route, false)}
+                            disabled={isToggling}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                          >
+                            {isToggling ? 'Enabling...' : 'Enable'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteRoute(route)}
+                          disabled={deletingKey === key}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          {deletingKey === key ? 'Deleting…' : 'Delete'}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -2743,7 +2830,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div>
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
-                    Override provider
+                    {editingRuntimeRoute ? 'Provider' : 'Override provider'}
                   </label>
                   <select
                     id="route-provider"

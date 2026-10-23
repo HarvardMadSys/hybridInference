@@ -1617,6 +1617,10 @@ class ProviderRouteItem(BaseModel):
     # False when a saved override exists but its endpoint is not the one
     # serving (it failed to apply at boot); the other fields show the live route.
     override_applied: bool = True
+    # Disabled by an admin: configured and weighted as shown, selected by nothing.
+    disabled: bool = False
+    # A config route removed from this deployment; listed so it can be restored.
+    removed: bool = False
     updated_at: datetime | None = None
     updated_by: str | None = None
 
@@ -1747,9 +1751,34 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
 
 
 class UpdateProviderRouteCandidateRequest(BaseModel):
-    """Request payload for updating one runtime provider route candidate."""
+    """Request payload for editing one runtime provider route candidate in place.
 
-    concurrency_limit: int = Field(..., ge=1)
+    A field left out keeps the route's current value, so ``{"concurrency_limit":
+    4}`` changes only the limit. Sending any target field (provider, base URL,
+    key, provider model ID) replaces the whole target: ``upstream_provider``,
+    ``base_url`` and ``provider_model_id`` are then required, and an omitted
+    ``openrouter_provider``, ``openrouter_sort`` or ``api_key_id`` means none
+    (OpenRouter auto routing, the provider's default key). An omitted
+    ``deployment_type`` keeps the route's declaration while it stays on the
+    same endpoint, and resets to ``auto`` when it moves. The route type and
+    weight are not edited here.
+    """
+
+    upstream_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str | None = Field(None, min_length=1, max_length=2048)
+    deployment_type: Literal["auto", "self_hosted", "provider_api"] | None = None
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str | None = Field(None, min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
+
+
+class UpdateProviderRouteStateRequest(BaseModel):
+    """Request payload for disabling or enabling one provider route."""
+
+    disabled: bool
 
 
 class UpdateProviderRouteRequest(BaseModel):
