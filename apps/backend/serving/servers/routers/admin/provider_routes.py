@@ -18,7 +18,7 @@ from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from routing.endpoints import endpoint_id_for_adapter
+from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
 from routing.model_router_registry import StaleRouterStrategyChangeError
 from routing.model_selection import is_auto_model_id
 from routing.protocols import RouteTableRefreshable
@@ -27,6 +27,7 @@ from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
 from serving.config.app_config import config_value
 from serving.config.offload_routes import offload_route_setting_key
+from serving.config.route_states import ENABLED, RouteState
 from serving.config.settings import (
     ROUTE_TYPE_ORDER,
     VALID_ROLES,
@@ -46,6 +47,7 @@ from serving.schemas_admin import (
     RuntimeModelCapabilities,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
+    UpdateProviderRouteStateRequest,
     UpdateProviderRouteStrategyRequest,
     VerifyProviderRouteResponse,
 )
@@ -745,6 +747,70 @@ def _baseline_route_entries(route) -> list[tuple[object, float, str]]:
         baseline = list(_raw_route_entries(route))
         setattr(route, BASELINE_ENTRIES_ATTR, baseline)
     return list(baseline)
+
+
+def _removed_baseline_entries(route) -> list[tuple[object, float, str]]:
+    """Return the config routes an admin removed from this deployment.
+
+    Only a removal takes a models.yaml route out of the live table (edits and
+    resets replace it in place), so a baseline route missing from it is one.
+    """
+    baseline = getattr(route, BASELINE_ENTRIES_ATTR, None) or []
+    live_ids = {
+        _route_id_for_entry(adapter, endpoint_id)
+        for adapter, _weight, endpoint_id in _raw_route_entries(route)
+    }
+    return [entry for entry in baseline if _route_id_for_entry(entry[0], entry[2]) not in live_ids]
+
+
+def _identity_entries(route) -> list[tuple[object, float, str]]:
+    """Return the routes whose ids a new or edited route must not take.
+
+    A removed config route keeps its ids reserved so restoring it never
+    collides with a route added while it was gone.
+    """
+    return _raw_route_entries(route) + _removed_baseline_entries(route)
+
+
+def _route_state_resolver(services) -> Any | None:
+    return getattr(services, "route_state_resolver", None)
+
+
+def _route_state(services, model_id: str, route_id: str) -> RouteState:
+    resolver = _route_state_resolver(services)
+    return resolver.get(model_id, route_id) if resolver is not None else ENABLED
+
+
+def _usable_route_ids(services, model_id: str, route) -> set[str]:
+    """Return the routes selection can pick for a model: effective weight above 0."""
+    iter_routes = getattr(services.router, "iter_effective_routes", None)
+    if callable(iter_routes):
+        for effective in iter_routes():
+            if effective.canonical_model_id == model_id:
+                return {
+                    route_id_for_adapter(adapter)
+                    for adapter, weight in effective.adapters
+                    if float(weight) > 0
+                }
+        return set()
+    return {
+        _route_id_for_entry(adapter, endpoint_id)
+        for adapter, weight, endpoint_id in _raw_route_entries(route)
+        if float(weight) > 0
+    }
+
+
+def _ensure_not_last_usable_route(services, model_id: str, route, route_id: str, action: str):
+    """Refuse to leave a served model with no route selection can pick."""
+    usable = _usable_route_ids(services, model_id, route)
+    if route_id in usable and not usable - {route_id}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"route {route_id!r} is the last enabled route of {model_id}; enable or add "
+                f"another route before you {action} it"
+            ),
+        )
 
 
 def _route_index_for_id(entries: list[tuple[object, float, str]], route_id: str) -> int:
@@ -2210,7 +2276,7 @@ async def _prepare_route_candidate(
         endpoint_id=endpoint_id,
     )
     _ensure_route_id_available(
-        entries,
+        _identity_entries(route),
         candidate_route_id,
         candidate_endpoint_id,
         replacing_route_id=replacing_route_id,
@@ -2712,7 +2778,9 @@ def _install_route_restore(services, route, route_id: str) -> tuple[object, floa
 def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> None:
     _baseline_route_entries(candidate.route)
     entries = _raw_route_entries(candidate.route)
-    _ensure_route_id_available(entries, candidate.route_id, candidate.endpoint_id)
+    _ensure_route_id_available(
+        _identity_entries(candidate.route), candidate.route_id, candidate.endpoint_id
+    )
     entries.append((candidate.adapter, candidate.weight, candidate.endpoint_id))
 
     dynamic_keys.register_known_provider(candidate.key_provider)
@@ -2846,7 +2914,7 @@ async def _prepare_route_candidate_edit(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         candidate.route = route
         _ensure_route_id_available(
-            entries,
+            _identity_entries(route),
             candidate.route_id,
             candidate.endpoint_id,
             replacing_route_id=route_id,
@@ -2932,7 +3000,7 @@ def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) ->
     if old_adapter is not edit.old_adapter:
         raise HTTPException(status_code=409, detail="provider route changed during verification")
     _ensure_route_id_available(
-        entries,
+        _identity_entries(edit.route),
         candidate.route_id,
         candidate.endpoint_id,
         replacing_route_id=edit.route_id,
@@ -3426,8 +3494,11 @@ async def _teardown_runtime_model_locked(
         clear_routewise_settings(model_id)
 
     # Same reason as the weight snapshot: a future model created under this id
-    # must not inherit the old one's reserved route.
+    # must not inherit the old one's reserved route, nor its disabled routes.
     _clear_offload_route_snapshot(services, model_id)
+    route_states = _route_state_resolver(services)
+    if route_states is not None:
+        route_states.clear_model(model_id)
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -3497,6 +3568,7 @@ async def _route_row(
     yaml_weight: float,
     endpoint_id: str,
     override_row: dict[str, Any] | None,
+    removed: bool = False,
 ) -> ProviderRouteItem:
     is_runtime = _is_runtime_candidate(adapter)
     route_metadata = getattr(adapter.config, "route_metadata", None)
@@ -3573,6 +3645,8 @@ async def _route_row(
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),
         source=source,
         override_applied=override_applied,
+        disabled=_route_state(services, model_id, route_id).disabled,
+        removed=removed,
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
     )
@@ -3588,7 +3662,8 @@ async def _build_routes_for_model(
 ) -> list[ProviderRouteItem]:
     strategy = _strategy_for_model(services, model_id)
     rows: list[ProviderRouteItem] = []
-    for adapter, yaml_weight, endpoint_id in _raw_route_entries(route):
+    removed_entries = _removed_baseline_entries(route)
+    for adapter, yaml_weight, endpoint_id in [*_raw_route_entries(route), *removed_entries]:
         route_id = _route_id_for_entry(adapter, endpoint_id)
         rows.append(
             await _route_row(
@@ -3601,6 +3676,8 @@ async def _build_routes_for_model(
                 yaml_weight=float(yaml_weight),
                 endpoint_id=endpoint_id,
                 override_row=overrides.get(route_id),
+                # Listed so it can be restored; it shows its models.yaml target.
+                removed=any(entry[0] is adapter for entry in removed_entries),
             )
         )
     return rows
@@ -4100,7 +4177,7 @@ async def create_provider_route_candidate(
             _strategy_for_model(services, canonical_model_id),
         )
         _ensure_route_id_available(
-            _raw_route_entries(current_route),
+            _identity_entries(current_route),
             candidate.route_id,
             candidate.endpoint_id,
         )
@@ -4772,6 +4849,8 @@ async def delete_provider_route_candidate(
         # Decide last-route teardown only after acquiring the same lock used by
         # candidate creation and strategy changes.
         deleting_model = len(current_entries) == 1
+        if not deleting_model:
+            _ensure_not_last_usable_route(services, model_id, route, route_id, "delete")
         if not deleting_model and _offload_route_id(services, model_id) == route_id:
             # Refused rather than cleared as a side effect: the admin chose this
             # route to take the model's overflow, and deleting it would quietly
@@ -4865,6 +4944,9 @@ async def delete_provider_route_candidate(
                     )
                 else:
                     removed = _install_route_candidate_delete(services, route, route_id)
+                    route_states = _route_state_resolver(services)
+                    if route_states is not None:
+                        route_states.set_state(model_id, route_id, ENABLED)
                     await _delete_weight_override_for_route(
                         services,
                         op_store,
@@ -4945,6 +5027,441 @@ async def delete_provider_route_candidate(
             overrides=_rows_by_route_id(override_rows),
         ),
     )
+
+
+async def _list_model_routes_response(services, op_store, model_id: str, route):
+    override_rows = await op_store.list_provider_route_configs_for_model(model_id)
+    return ListProviderRoutesResponse(
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
+        routes=await _build_routes_for_model(
+            services,
+            op_store,
+            model_id=model_id,
+            route=route,
+            overrides=_rows_by_route_id(override_rows),
+        ),
+    )
+
+
+def _require_route_state_resolver(services):
+    resolver = _route_state_resolver(services)
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="Route state is not available")
+    return resolver
+
+
+def _refuse_removed_route(route, route_id: str) -> None:
+    if any(
+        _route_id_for_entry(adapter, endpoint_id) == route_id
+        for adapter, _weight, endpoint_id in _removed_baseline_entries(route)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"route {route_id!r} is deleted from this deployment; restore it first",
+        )
+
+
+@router.patch(
+    "/routing/provider-route-states/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def update_provider_route_state(
+    model_route_path: str,
+    payload: UpdateProviderRouteStateRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Disable or enable one route, of either source, keeping its config and weights.
+
+    A disabled route stays listed and editable but is selected by nothing: no new
+    request, retry, fallback or offload goes to it (requests already on it finish
+    as usual). Enabling it brings back the weights it had. Enabling also clears a
+    weight override of exactly 0, which is how routes were disabled before this
+    flag existed, so a route never reads enabled while routing still skips it.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    resolver = _require_route_state_resolver(services)
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        _refuse_removed_route(route, route_id)
+        entries = _raw_route_entries(route)
+        adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+        if payload.disabled:
+            _ensure_not_last_usable_route(services, model_id, route, route_id, "disable")
+        previous = resolver.get(model_id, route_id)
+        state = RouteState(disabled=payload.disabled, removed=previous.removed)
+        weight_overrides = getattr(services, "weight_override_resolver", None)
+        get_snapshot = getattr(weight_overrides, "get_snapshot_for_model", None)
+        legacy_zero = (
+            not payload.disabled
+            and callable(get_snapshot)
+            and get_snapshot(model_id).get(endpoint_id) == 0
+        )
+
+        async def persist_and_apply() -> None:
+            await op_store.set_provider_route_state(
+                model_id,
+                route_id,
+                disabled=state.disabled,
+                removed=state.removed,
+                updated_by=admin_id,
+            )
+            zero_cleared = False
+            try:
+                if legacy_zero:
+                    await op_store.delete_weight_override(model_id, endpoint_id)
+                    _clear_weight_override_snapshot(services, model_id, endpoint_id)
+                    zero_cleared = True
+                resolver.set_state(model_id, route_id, state)
+                _rebuild_routewise_routers(services)
+            except BaseException:
+                resolver.set_state(model_id, route_id, previous)
+                try:
+                    await op_store.set_provider_route_state(
+                        model_id,
+                        route_id,
+                        disabled=previous.disabled,
+                        removed=previous.removed,
+                        updated_by=admin_id,
+                    )
+                    if zero_cleared:
+                        await op_store.upsert_weight_override(model_id, endpoint_id, 0.0, admin_id)
+                        weight_overrides.set_override(model_id, endpoint_id, 0.0)
+                except Exception:
+                    logger.error(
+                        "Failed to restore route state after a failed update model=%s route_id=%s",
+                        model_id,
+                        route_id,
+                        exc_info=True,
+                    )
+                try:
+                    _rebuild_routewise_routers(services)
+                except Exception:
+                    logger.error("Failed to refresh RouteWise after restoring route state")
+                raise
+
+            await log_admin_action(
+                op_store,
+                admin_id,
+                (
+                    "routing.provider_routes.disable"
+                    if state.disabled
+                    else "routing.provider_routes.enable"
+                ),
+                None,
+                {
+                    "model_id": model_id,
+                    "route_id": route_id,
+                    "endpoint_id": endpoint_id,
+                    "source": "runtime" if _is_runtime_candidate(adapter) else "config",
+                    "cleared_zero_weight_override": legacy_zero,
+                },
+            )
+
+        await _finish_router_transition_on_cancellation(persist_and_apply())
+
+    override_row = (
+        None
+        if _is_runtime_candidate(adapter)
+        else _rows_by_route_id(await op_store.list_provider_route_configs_for_model(model_id)).get(
+            route_id
+        )
+    )
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=adapter,
+        yaml_weight=float(raw_weight),
+        endpoint_id=endpoint_id,
+        override_row=override_row,
+    )
+
+
+@router.post(
+    "/routing/provider-route-removals/{model_route_path:path}",
+    response_model=ListProviderRoutesResponse,
+)
+async def remove_config_provider_route(
+    model_route_path: str,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ListProviderRoutesResponse:
+    """Delete a config (models.yaml) route from this deployment, restorably.
+
+    models.yaml is not edited: a persisted removal mark takes the route out of
+    the live table now and again at every start. Its edit override and weight
+    override are kept, so restoring it brings back exactly the route that was
+    deleted. (Reset is different: it discards the edit override and keeps the
+    route.) Runtime-added routes are deleted as candidates instead.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    resolver = _require_route_state_resolver(services)
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        _refuse_removed_route(route, route_id)
+        entries = _raw_route_entries(route)
+        index = _route_index_for_id(entries, route_id)
+        adapter, _raw_weight, endpoint_id = entries[index]
+        if _is_runtime_candidate(adapter):
+            raise HTTPException(
+                status_code=400,
+                detail="Runtime-added provider routes must be deleted as candidates",
+            )
+        if len(entries) == 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"route {route_id!r} is the only route of {model_id}; a config model "
+                "keeps at least one",
+            )
+        if _offload_route_id(services, model_id) == route_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"route {route_id!r} is the model's offload route; clear the offload "
+                    "route before deleting it"
+                ),
+            )
+        _ensure_not_last_usable_route(services, model_id, route, route_id, "delete")
+        previous = resolver.get(model_id, route_id)
+        # The baseline must hold the route before it leaves the live table.
+        _baseline_route_entries(route)
+
+        async def persist_and_remove() -> None:
+            await op_store.set_provider_route_state(
+                model_id,
+                route_id,
+                disabled=previous.disabled,
+                removed=True,
+                updated_by=admin_id,
+            )
+            try:
+                resolver.set_state(
+                    model_id, route_id, RouteState(disabled=previous.disabled, removed=True)
+                )
+                _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+            except BaseException:
+                resolver.set_state(model_id, route_id, previous)
+                try:
+                    await op_store.set_provider_route_state(
+                        model_id,
+                        route_id,
+                        disabled=previous.disabled,
+                        removed=previous.removed,
+                        updated_by=admin_id,
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to restore route state after a failed removal model=%s route_id=%s",
+                        model_id,
+                        route_id,
+                        exc_info=True,
+                    )
+                raise
+            _unregister_replaced_dynamic_adapter(route, adapter)
+
+            await log_admin_action(
+                op_store,
+                admin_id,
+                "routing.provider_routes.remove",
+                None,
+                {
+                    "model_id": model_id,
+                    "route_id": route_id,
+                    "endpoint_id": endpoint_id,
+                    "upstream_provider": _upstream_provider(adapter),
+                },
+            )
+
+        await _finish_router_transition_on_cancellation(persist_and_remove())
+
+    return await _list_model_routes_response(services, op_store, model_id, route)
+
+
+def _entries_with_restored_route(route, restored_entry) -> list[tuple[object, float, str]]:
+    """Return the live entries with a restored config route back at its models.yaml place."""
+    restored_id = _route_id_for_entry(restored_entry[0], restored_entry[2])
+    live = {
+        _route_id_for_entry(adapter, endpoint_id): (adapter, weight, endpoint_id)
+        for adapter, weight, endpoint_id in _raw_route_entries(route)
+    }
+    ordered: list[tuple[object, float, str]] = []
+    for adapter, _weight, endpoint_id in _baseline_route_entries(route):
+        baseline_id = _route_id_for_entry(adapter, endpoint_id)
+        if baseline_id in live:
+            ordered.append(live.pop(baseline_id))
+        elif baseline_id == restored_id:
+            ordered.append(restored_entry)
+    # Runtime-added routes keep their order after the config routes.
+    ordered.extend(live.values())
+    return ordered
+
+
+@router.delete(
+    "/routing/provider-route-removals/{model_route_path:path}",
+    response_model=ListProviderRoutesResponse,
+)
+async def restore_config_provider_route(
+    model_route_path: str,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ListProviderRoutesResponse:
+    """Restore a deleted config route, with the edit override and weights it had.
+
+    A route that was disabled when it was deleted comes back disabled.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    resolver = _require_route_state_resolver(services)
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        removed = {
+            _route_id_for_entry(entry[0], entry[2]): entry
+            for entry in _removed_baseline_entries(route)
+        }
+        restored_entry = removed.get(route_id)
+        if restored_entry is None:
+            raise HTTPException(status_code=404, detail=f"route {route_id!r} is not deleted")
+        _ensure_route_id_available(_raw_route_entries(route), route_id, restored_entry[2])
+        previous = resolver.get(model_id, route_id)
+        restored_state = RouteState(disabled=previous.disabled)
+        override_row = _rows_by_route_id(
+            await op_store.list_provider_route_configs_for_model(model_id)
+        ).get(route_id)
+
+        async def persist_and_restore() -> None:
+            await op_store.set_provider_route_state(
+                model_id,
+                route_id,
+                disabled=restored_state.disabled,
+                removed=False,
+                updated_by=admin_id,
+            )
+            try:
+                _replace_route_entries(
+                    services, route, _entries_with_restored_route(route, restored_entry)
+                )
+                resolver.set_state(model_id, route_id, restored_state)
+            except BaseException:
+                try:
+                    await op_store.set_provider_route_state(
+                        model_id,
+                        route_id,
+                        disabled=previous.disabled,
+                        removed=previous.removed,
+                        updated_by=admin_id,
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to restore the removal mark after a failed restore "
+                        "model=%s route_id=%s",
+                        model_id,
+                        route_id,
+                        exc_info=True,
+                    )
+                raise
+
+            # Re-apply the route's edit override the way boot does: one that no
+            # longer applies leaves the models.yaml target serving, and the
+            # list reports the override as not applied.
+            override_applied = override_row is None
+            if override_row is not None:
+                try:
+                    update = await _prepare_route_update(
+                        services,
+                        op_store,
+                        model_id=model_id,
+                        route_id=route_id,
+                        upstream_provider=str(override_row["provider"]),
+                        openrouter_sort=override_row.get("openrouter_sort"),
+                        base_url=str(override_row["base_url"]),
+                        api_key_id=override_row.get("api_key_id"),
+                        provider_model_id_override=str(override_row["provider_model_id"]),
+                        quota_limit_override=override_row.get("quota_limit"),
+                        concurrency_limit_override=override_row.get("concurrency_limit"),
+                        deployment_type_override=override_row.get("deployment_type"),
+                    )
+                    _install_route_update(services, update)
+                    override_applied = True
+                except Exception as exc:
+                    logger.warning(
+                        "Restored route model=%s route_id=%s without its edit override: %s",
+                        model_id,
+                        route_id,
+                        exc,
+                    )
+
+            await log_admin_action(
+                op_store,
+                admin_id,
+                "routing.provider_routes.restore",
+                None,
+                {
+                    "model_id": model_id,
+                    "route_id": route_id,
+                    "endpoint_id": restored_entry[2],
+                    "disabled": restored_state.disabled,
+                    "override_applied": override_applied,
+                },
+            )
+
+        await _finish_router_transition_on_cancellation(persist_and_restore())
+
+    return await _list_model_routes_response(services, op_store, model_id, route)
+
+
+def apply_persisted_provider_route_removals(services) -> None:
+    """Take config routes an admin deleted out of the route table at boot.
+
+    Runs after the candidates and overrides are applied, so it sees the routes
+    as they would serve. A removal that cannot be applied leaves the route in
+    the table, where its removal mark still keeps routing from selecting it.
+    """
+    resolver = _route_state_resolver(services)
+    if resolver is None:
+        return
+    for model_id, route_id in resolver.removed_routes():
+        route = services.router.routes.get(model_id)
+        if route is None or not _is_canonical_model(model_id, route):
+            continue
+        try:
+            entries = _raw_route_entries(route)
+            matches = [
+                index
+                for index, (adapter, _weight, endpoint_id) in enumerate(entries)
+                if _route_id_for_entry(adapter, endpoint_id) == route_id
+                and not _is_runtime_candidate(adapter)
+            ]
+            if not matches:
+                continue
+            index = matches[0]
+            _baseline_route_entries(route)
+            adapter = entries[index][0]
+            _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+            _unregister_replaced_dynamic_adapter(route, adapter)
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove deleted config route model=%s route_id=%s: %s",
+                model_id,
+                route_id,
+                exc,
+            )
 
 
 async def apply_persisted_provider_route_candidates(services, op_store) -> set[str]:

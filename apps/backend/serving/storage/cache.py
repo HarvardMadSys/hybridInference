@@ -1251,6 +1251,28 @@ class CachedOperationalStore(OperationalStore):
             updated_by=updated_by,
         )
 
+    async def list_all_provider_route_states(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_states()
+
+    async def set_provider_route_state(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        disabled: bool,
+        removed: bool,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_route_state(
+            model_id,
+            route_id,
+            disabled=disabled,
+            removed=removed,
+            updated_by=updated_by,
+        )
+
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.delete_provider_route_candidate(model_id, route_id)

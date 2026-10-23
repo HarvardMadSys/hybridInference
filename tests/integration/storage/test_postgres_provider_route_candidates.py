@@ -41,6 +41,7 @@ async def postgres_op_store():
             await conn.execute(
                 "DELETE FROM provider_weight_overrides WHERE model_id LIKE 'itest-%'"
             )
+            await conn.execute("DELETE FROM provider_route_states WHERE model_id LIKE 'itest-%'")
 
     await _wipe()
     try:
@@ -377,3 +378,68 @@ async def test_initialize_adds_the_endpoint_id_column(
             await conn.execute(
                 "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS endpoint_id TEXT"
             )
+
+
+async def _states(store: PostgresOperationalStore, model_id: str) -> dict[str, tuple[bool, bool]]:
+    return {
+        row["route_id"]: (row["disabled"], row["removed"])
+        for row in await store.list_all_provider_route_states()
+        if row["model_id"] == model_id
+    }
+
+
+async def test_route_state_round_trip(postgres_op_store: PostgresOperationalStore):
+    """Disable, remove, restore and enable; a route with neither flag has no row."""
+    store = postgres_op_store
+    await store.set_provider_route_state(
+        "itest-state", "a", disabled=True, removed=False, updated_by="x"
+    )
+    await store.set_provider_route_state(
+        "itest-state", "b", disabled=False, removed=True, updated_by="x"
+    )
+    assert await _states(store, "itest-state") == {"a": (True, False), "b": (False, True)}
+
+    await store.set_provider_route_state(
+        "itest-state", "a", disabled=True, removed=True, updated_by="y"
+    )
+    assert (await _states(store, "itest-state"))["a"] == (True, True)
+
+    await store.set_provider_route_state(
+        "itest-state", "a", disabled=False, removed=False, updated_by="z"
+    )
+    await store.set_provider_route_state(
+        "itest-state", "b", disabled=False, removed=False, updated_by="z"
+    )
+    assert await _states(store, "itest-state") == {}
+
+
+async def test_deleting_a_runtime_route_drops_its_state(
+    postgres_op_store: PostgresOperationalStore,
+):
+    store = postgres_op_store
+    await _upsert(store, "itest-drop", None)
+    route_id = "itest-drop:openrouter-api"
+    await store.set_provider_route_state(
+        "itest-drop", route_id, disabled=True, removed=False, updated_by="x"
+    )
+    await store.set_provider_route_state(
+        "itest-drop", "other", disabled=True, removed=False, updated_by="x"
+    )
+
+    assert await store.delete_provider_route_candidate_with_config("itest-drop", route_id)
+
+    assert await _states(store, "itest-drop") == {"other": (True, False)}
+
+
+async def test_deleting_a_runtime_model_drops_every_route_state(
+    postgres_op_store: PostgresOperationalStore,
+):
+    store = postgres_op_store
+    await _upsert(store, "itest-model", None)
+    await store.set_provider_route_state(
+        "itest-model", "a", disabled=True, removed=False, updated_by="x"
+    )
+
+    await store.delete_runtime_model_state("itest-model", ())
+
+    assert await _states(store, "itest-model") == {}

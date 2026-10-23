@@ -923,11 +923,12 @@ msgid ""
 "`POST /admin/routing/provider-route-candidates/{model_id}`; "
 "`.../provider-route-candidate-verifications/{model_id}` to check first; "
 "`PATCH` / `DELETE /admin/routing/provider-route-"
-"candidates/{model_id}/{route_id}`"
+"candidates/{model_id}/{route_id}` edits it in place or deletes it"
 msgstr ""
 "`POST /admin/routing/provider-route-candidates/{model_id}`；先用 "
 "`.../provider-route-candidate-verifications/{model_id}` 检查；`PATCH` / "
-"`DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}`"
+"`DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` "
+"原地编辑或删除它"
 
 #: ../developer/configuration.md
 msgid "`provider_route_candidates`"
@@ -938,23 +939,65 @@ msgid "Point a registry route somewhere else"
 msgstr "把注册表里的一条路由指向别处"
 
 #: ../developer/configuration.md
-msgid "edit the route's **Target**"
-msgstr "编辑路由的 **Target**"
+msgid "**Edit**"
+msgstr ""
 
 #: ../developer/configuration.md
 #, python-brace-format
 msgid ""
 "`PUT /admin/routing/provider-routes/{model_id}/{route_id}`; "
-"`.../provider-route-verifications/{model_id}/{route_id}` to check first; "
-"`DELETE` removes the override and restores the YAML route"
+"`.../provider-route-verifications/{model_id}/{route_id}` to check first "
+"(it checks a runtime route's edit too); `DELETE` removes the override and "
+"restores the YAML route (**Reset config**)"
 msgstr ""
 "`PUT /admin/routing/provider-routes/{model_id}/{route_id}`；先用 "
-"`.../provider-route-verifications/{model_id}/{route_id}` 检查；`DELETE` "
-"删除覆盖项并恢复 YAML 路由"
+"`.../provider-route-verifications/{model_id}/{route_id}` 检查（运行时路由的编辑也用它检查）；"
+"`DELETE` 删除覆盖项并恢复 YAML 路由（**Reset config**）"
 
 #: ../developer/configuration.md
 msgid "`provider_route_configs`"
 msgstr ""
+
+#: ../developer/configuration.md
+msgid "Disable or enable a route of either source"
+msgstr "停用或启用一条路由（两种来源都可以）"
+
+#: ../developer/configuration.md
+msgid "**Disable** / **Enable**"
+msgstr ""
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` with "
+"`{\"disabled\": true}`; the route keeps its configuration and weights, "
+"and nothing (selection, retry, fallback, offload) picks it until it is "
+"enabled"
+msgstr ""
+"`PATCH /admin/routing/provider-route-states/{model_id}/{route_id}`，请求体 "
+"`{\"disabled\": true}`；路由保留配置和权重，在重新启用之前不会被任何环节（选路、重试、fallback、offload）选中"
+
+#: ../developer/configuration.md
+msgid "`provider_route_states`"
+msgstr ""
+
+#: ../developer/configuration.md
+msgid "Delete a registry route from this deployment"
+msgstr "从当前部署中删除注册表里的一条路由"
+
+#: ../developer/configuration.md
+msgid "**Delete**, then **Restore**"
+msgstr "**Delete**，之后可用 **Restore** 恢复"
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`POST /admin/routing/provider-route-removals/{model_id}/{route_id}`; "
+"`DELETE` on the same path restores it with its edits and weights. "
+"models.yaml is not changed"
+msgstr ""
+"`POST /admin/routing/provider-route-removals/{model_id}/{route_id}`；对同一路径做 "
+"`DELETE` 会恢复它，连同它的编辑和权重。models.yaml 不会被修改"
 
 #: ../developer/configuration.md
 msgid "Change a route's weight"

@@ -2419,6 +2419,10 @@ export interface ProviderRoute {
   effective_weight: number;
   source: ProviderRouteSource;
   override_applied?: boolean;
+  /** Disabled by an admin: kept with its weights, selected by nothing. */
+  disabled?: boolean;
+  /** A config route deleted from this deployment; listed so it can be restored. */
+  removed?: boolean;
   updated_at: string | null;
   updated_by: string | null;
 }
@@ -2672,6 +2676,54 @@ export async function deleteProviderRoute(
     },
   );
   return jsonOrThrow<ProviderRoute>(resp);
+}
+
+function providerRoutePath(prefix: string, modelId: string, routeId: string) {
+  return `/admin/routing/${prefix}/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`;
+}
+
+/** Disable or enable a route of either source; its config and weights are kept. */
+export async function updateProviderRouteState(
+  modelId: string,
+  routeId: string,
+  payload: { disabled: boolean },
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    providerRoutePath('provider-route-states', modelId, routeId),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+/** Delete a config (models.yaml) route from this deployment; it can be restored. */
+export async function removeProviderRoute(
+  modelId: string,
+  routeId: string,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    providerRoutePath('provider-route-removals', modelId, routeId),
+    { method: 'POST' },
+  );
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+/** Restore a deleted config route, with the edits and weight it had. */
+export async function restoreProviderRoute(
+  modelId: string,
+  routeId: string,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    providerRoutePath('provider-route-removals', modelId, routeId),
+    { method: 'DELETE' },
+  );
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
 }
 
 export async function deleteProviderRouteCandidate(

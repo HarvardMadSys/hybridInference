@@ -1617,6 +1617,10 @@ class ProviderRouteItem(BaseModel):
     # False when a saved override exists but its endpoint is not the one
     # serving (it failed to apply at boot); the other fields show the live route.
     override_applied: bool = True
+    # Disabled by an admin: configured and weighted as shown, selected by nothing.
+    disabled: bool = False
+    # A config route removed from this deployment; listed so it can be restored.
+    removed: bool = False
     updated_at: datetime | None = None
     updated_by: str | None = None
 
@@ -1769,6 +1773,12 @@ class UpdateProviderRouteCandidateRequest(BaseModel):
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)
     concurrency_limit: int | None = Field(None, ge=1)
+
+
+class UpdateProviderRouteStateRequest(BaseModel):
+    """Request payload for disabling or enabling one provider route."""
+
+    disabled: bool
 
 
 class UpdateProviderRouteRequest(BaseModel):

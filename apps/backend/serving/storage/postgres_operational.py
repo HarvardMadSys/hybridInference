@@ -1062,6 +1062,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             ],
         )
 
+        # Admin state of one route, by its stable route id: disabled (kept,
+        # selected by nothing) and/or removed (a config route taken out of this
+        # deployment). No row means enabled and present.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_route_states (
+                model_id TEXT NOT NULL,
+                route_id TEXT NOT NULL,
+                disabled BOOLEAN NOT NULL DEFAULT FALSE,
+                removed BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, route_id)
+            )
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS routewise_probe_samples (
                 id BIGSERIAL PRIMARY KEY,
@@ -3873,6 +3888,47 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
         return updated_at
 
+    async def list_all_provider_route_states(self) -> list[Row]:
+        """Return every stored route state ordered by model and route."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, disabled, removed, updated_at, updated_by "
+                "FROM provider_route_states ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def set_provider_route_state(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        disabled: bool,
+        removed: bool,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert one route's state, or delete its row when neither flag is set."""
+        async with self._pool.acquire() as conn:
+            if not disabled and not removed:
+                await conn.execute(
+                    "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
+                    model_id,
+                    route_id,
+                )
+                return
+            await conn.execute(
+                "INSERT INTO provider_route_states "
+                "(model_id, route_id, disabled, removed, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, $4, NOW(), $5) "
+                "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                "disabled = EXCLUDED.disabled, removed = EXCLUDED.removed, "
+                "updated_at = NOW(), updated_by = EXCLUDED.updated_by",
+                model_id,
+                route_id,
+                disabled,
+                removed,
+                updated_by,
+            )
+
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True when removed."""
         async with self._pool.acquire() as conn:
@@ -3888,10 +3944,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate and any matching override row."""
+        """Atomically delete a route candidate, its override row and its route state."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
                 model_id,
                 route_id,
             )
@@ -3915,6 +3976,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_configs WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_states WHERE model_id = $1",
                 model_id,
             )
             await conn.execute(

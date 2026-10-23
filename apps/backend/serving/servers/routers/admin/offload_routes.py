@@ -123,12 +123,18 @@ def _route_is_weighted(
 ) -> bool:
     """Return whether routing gives the route a weight above zero.
 
-    Mirrors the two runtime rules ``FixedRouter`` applies on top of the model
-    registry: a per-endpoint weight override, and the provider kill switch.
-    Either one at zero means routing sends the route nothing, offloads included.
+    Mirrors the runtime rules ``FixedRouter`` applies on top of the model
+    registry: a per-endpoint weight override, the provider kill switch, and a
+    disabled route. Any of them at zero means routing sends the route nothing,
+    offloads included.
     """
     disabled = getattr(services, "disabled_provider_resolver", None)
     if disabled is not None and disabled.is_disabled(adapter.config.provider):
+        return False
+    route_states = getattr(services, "route_state_resolver", None)
+    if route_states is not None and route_states.is_excluded(
+        model_id, route_id_for_adapter(adapter)
+    ):
         return False
     weight = float(raw_weight)
     overrides = getattr(services, "weight_override_resolver", None)
@@ -158,6 +164,13 @@ def _offload_item(services: Any, model_id: str, record: OffloadRouteRecord) -> O
             reason = reason or "The route no longer exists"
         else:
             adapter, raw_weight, endpoint_id = entries[0]
+            route_states = getattr(services, "route_state_resolver", None)
+            if (
+                reason is None
+                and route_states is not None
+                and route_states.is_excluded(model_id, policy.route_id)
+            ):
+                reason = "The route is disabled, so routing sends it nothing; enable it first"
             if reason is None and not _route_is_weighted(
                 services, model_id, adapter, raw_weight, endpoint_id
             ):

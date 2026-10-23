@@ -31,6 +31,7 @@ from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
+from serving.config.route_states import RouteStateResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
@@ -338,6 +339,29 @@ async def _refresh_disabled_provider_snapshots(
                 _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
+
+
+async def _refresh_route_state_snapshots(
+    resolver: RouteStateResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
+    *,
+    interval_seconds: float = 10.0,
+    router: Any | None = None,
+) -> None:
+    """Periodically reload disabled/removed routes so workers converge after admin edits."""
+    refresh_state = _EffectiveRouteRefreshState()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            changed = await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
+            if changed:
+                _report_route_weight_divergence(router)
+        except Exception:
+            logger.warning("Route state snapshot refresh failed", exc_info=True)
 
 
 async def _refresh_offload_route_snapshots(
@@ -1285,6 +1309,7 @@ async def initialize() -> AppServices:
     # adapter key pools registered during model loading. Best-effort —
     # a failure here should not prevent the server from starting.
     restored_routewise_model_ids: set[str] = set()
+    route_state_resolver: RouteStateResolver | None = None
     if operational_store is not None:
         try:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
@@ -1313,14 +1338,25 @@ async def initialize() -> AppServices:
                 apply_persisted_model_router_strategy_overrides,
                 apply_persisted_provider_route_candidates,
                 apply_persisted_provider_route_configs,
+                apply_persisted_provider_route_removals,
             )
 
+            # Loaded before any route is restored, so a disabled or removed
+            # route is never selectable, not even while boot is still running.
+            try:
+                route_state_resolver = RouteStateResolver(operational_store)
+                await route_state_resolver.load_all()
+                router.route_state_resolver = route_state_resolver
+            except Exception as exc:
+                route_state_resolver = None
+                logger.warning(f"Route state resolver initialization failed: {exc}")
             provider_route_services = AppServices(
                 router=router,
                 operational_store=operational_store,
                 model_router_registry=model_router_registry,
                 managed_routers=managed_routers,
                 model_router_transition_locks=model_router_transition_locks,
+                route_state_resolver=route_state_resolver,
             )
             await apply_persisted_model_router_strategy_overrides(
                 provider_route_services,
@@ -1351,6 +1387,7 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
+            apply_persisted_provider_route_removals(provider_route_services)
         except _RouteWiseRouterTypeError:
             raise
         except Exception as exc:
@@ -1449,6 +1486,7 @@ async def initialize() -> AppServices:
     weight_override_refresh_task = None
     disabled_provider_resolver = None
     disabled_provider_refresh_task = None
+    route_state_refresh_task = None
     offload_route_resolver = None
     offload_route_refresh_task = None
     if operational_store is not None:
@@ -1533,6 +1571,16 @@ async def initialize() -> AppServices:
             logger.info("Disabled provider resolver initialized")
         except Exception as exc:
             logger.warning(f"Disabled provider resolver initialization failed: {exc}")
+        if route_state_resolver is not None:
+            route_state_refresh_task = asyncio.create_task(
+                _refresh_route_state_snapshots(
+                    route_state_resolver,
+                    model_router_registry,
+                    router=router,
+                )
+            )
+            _BACKGROUND_TASKS.add(route_state_refresh_task)
+            route_state_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
         # Attached even when the first load fails: an empty snapshot routes
         # exactly as a gateway without offload routes does, and the refresh loop
         # picks the stored policies up on its next pass instead of leaving them
@@ -1693,6 +1741,7 @@ async def initialize() -> AppServices:
         routewise_settings_resolver=routewise_settings_resolver,
         weight_override_resolver=weight_override_resolver,
         disabled_provider_resolver=disabled_provider_resolver,
+        route_state_resolver=route_state_resolver,
         offload_route_resolver=offload_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
@@ -1706,6 +1755,7 @@ async def initialize() -> AppServices:
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
+        route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
 
@@ -1798,6 +1848,11 @@ async def shutdown(services: AppServices) -> None:
         services.disabled_provider_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.disabled_provider_refresh_task
+
+    if services.route_state_refresh_task is not None:
+        services.route_state_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.route_state_refresh_task
 
     if services.offload_route_refresh_task is not None:
         services.offload_route_refresh_task.cancel()

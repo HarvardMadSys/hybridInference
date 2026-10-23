@@ -39,6 +39,9 @@ vi.mock('@/lib/api/admin', () => ({
     Promise.resolve({ requests: [], total: 0, limit: 20, offset: 0 }),
   ),
   listRouteWeights: vi.fn(),
+  removeProviderRoute: vi.fn(),
+  restoreProviderRoute: vi.fn(),
+  updateProviderRouteState: vi.fn(),
   listRoutewiseProbeSamples: vi.fn(),
   listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
   resetRoutewiseSetting: vi.fn(),
@@ -74,6 +77,9 @@ import {
   listRouteWeights,
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
+  removeProviderRoute,
+  restoreProviderRoute,
+  updateProviderRouteState,
   runRoutewiseProbe,
   setOffloadRoute,
   setRouteWeight,
@@ -663,51 +669,207 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
-  it('disables and enables routewise config routes with weight overrides', async () => {
+  it('disables and enables routes of both sources the same way', async () => {
+    const runtimeRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, runtimeRoute],
+    });
+    vi.mocked(updateProviderRouteState).mockImplementation(async (_model, routeId, payload) => ({
+      ...(routeId === route.route_id ? route : runtimeRoute),
+      disabled: payload.disabled,
+    }));
+
+    render(<ProviderRoutesTab />);
+
+    for (const target of [route, runtimeRoute]) {
+      const row = (await screen.findAllByText(target.route_id, { selector: 'div' }))[0]
+        .parentElement!.parentElement as HTMLElement;
+      expect(within(row).getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+      expect(within(row).getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+      fireEvent.click(within(row).getByRole('button', { name: 'Disable' }));
+      await waitFor(() => {
+        expect(updateProviderRouteState).toHaveBeenCalledWith('minimax-fast', target.route_id, {
+          disabled: true,
+        });
+      });
+      // The source label stays next to the state.
+      expect(await within(row).findByText('Disabled')).toBeInTheDocument();
+      expect(
+        within(row).getByText(target.source === 'runtime' ? 'Runtime added' : 'Config default'),
+      ).toBeInTheDocument();
+
+      fireEvent.click(within(row).getByRole('button', { name: 'Enable' }));
+      await waitFor(() => {
+        expect(updateProviderRouteState).toHaveBeenCalledWith('minimax-fast', target.route_id, {
+          disabled: false,
+        });
+      });
+      await waitFor(() => {
+        expect(within(row).queryByText('Disabled')).not.toBeInTheDocument();
+      });
+    }
+    expect(setRouteWeight).not.toHaveBeenCalled();
+  });
+
+  it('treats a weight override of 0 as disabled and lets Enable clear it', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, effective_weight: 0 }],
+    });
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: route.model_id,
+        strategy: route.strategy,
+        endpoint_id: route.endpoint_id,
+        provider: route.provider,
+        base_url: route.base_url,
+        yaml_weight: 1,
+        override_weight: 0,
+        effective_weight: 0,
+      },
+    ]);
+    vi.mocked(updateProviderRouteState).mockResolvedValue({ ...route, disabled: false });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByText('Disabled')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disable' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+
+    await waitFor(() => {
+      expect(updateProviderRouteState).toHaveBeenCalledWith('minimax-fast', route.route_id, {
+        disabled: false,
+      });
+    });
+    expect(clearRouteWeight).not.toHaveBeenCalled();
+  });
+
+  it('deletes a config route restorably and restores it', async () => {
+    const otherRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      key_provider: 'openrouter',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, otherRoute],
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(removeProviderRoute).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'routewise',
+      provider_options: providerOptions,
+      routes: [{ ...route, removed: true }, otherRoute],
+    });
+    vi.mocked(restoreProviderRoute).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'routewise',
+      provider_options: providerOptions,
+      routes: [route, otherRoute],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    const row = (await screen.findAllByText(route.route_id, { selector: 'div' }))[0].parentElement!
+      .parentElement as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const message = confirm.mock.calls[0][0] as string;
+    expect(message).toContain('Delete config route minimax-fast:featherless-api');
+    expect(message).toContain('models.yaml is not changed');
+    expect(message).toContain('Restore');
+    expect(message).toContain('Reset config is different');
+    await waitFor(() => {
+      expect(removeProviderRoute).toHaveBeenCalledWith('minimax-fast', route.route_id);
+    });
+    expect(deleteProviderRouteCandidate).not.toHaveBeenCalled();
+
+    expect(await screen.findByText('Deleted')).toBeInTheDocument();
+    const deletedRow = (await screen.findAllByText(route.route_id, { selector: 'div' }))[0]
+      .parentElement!.parentElement as HTMLElement;
+    expect(within(deletedRow).queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    fireEvent.click(within(deletedRow).getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => {
+      expect(restoreProviderRoute).toHaveBeenCalledWith('minimax-fast', route.route_id);
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Deleted')).not.toBeInTheDocument();
+    });
+    confirm.mockRestore();
+  });
+
+  it('asks before deleting and does nothing when the admin cancels', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
-    vi.mocked(setRouteWeight).mockResolvedValue({
-      model_id: 'minimax-fast',
-      strategy: 'routewise',
-      endpoint_id: 'minimax-fast:featherless-api',
-      provider: 'featherless',
-      base_url: 'https://api.featherless.ai/v1',
-      yaml_weight: 1,
-      override_weight: 0,
-      effective_weight: 0,
-    });
-    vi.mocked(clearRouteWeight).mockResolvedValue({
-      model_id: 'minimax-fast',
-      strategy: 'routewise',
-      endpoint_id: 'minimax-fast:featherless-api',
-      provider: 'featherless',
-      base_url: 'https://api.featherless.ai/v1',
-      yaml_weight: 1,
-      override_weight: null,
-      effective_weight: 1,
-    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     render(<ProviderRoutesTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Disable' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
-    await waitFor(() => {
-      expect(setRouteWeight).toHaveBeenCalledWith(
-        'minimax-fast',
-        'minimax-fast:featherless-api',
-        0,
-      );
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(removeProviderRoute).not.toHaveBeenCalled();
+    expect(deleteProviderRouteCandidate).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('refuses to delete the offload route until it is cleared', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
     });
-    expect(await screen.findByText('Disabled')).toBeInTheDocument();
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
-
-    await waitFor(() => {
-      expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [
+        {
+          model_id: route.model_id,
+          route_id: route.route_id,
+          wait_seconds: 5,
+          engine_queue_limit: null,
+          max_input_tokens: null,
+          endpoint_id: route.endpoint_id,
+          active: true,
+          inactive_reason: null,
+          updated_at: null,
+          updated_by: null,
+        },
+      ],
     });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<ProviderRoutesTab />);
+
+    await screen.findByTestId(`offload-badge-${route.route_id}`);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(removeProviderRoute).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it('opens the provider route editor in a dialog', async () => {
@@ -2228,10 +2390,16 @@ describe('ProviderRoutesTab', () => {
       routes: [route],
     });
 
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<ProviderRoutesTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    const row = (
+      await screen.findAllByText('minimax-fast:openrouter[parasail]-api', { selector: 'div' })
+    )[0].parentElement!.parentElement as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
 
+    expect(confirm.mock.calls[0][0]).toContain('This cannot be undone');
+    confirm.mockRestore();
     await waitFor(() => {
       expect(deleteProviderRouteCandidate).toHaveBeenCalledWith(
         'minimax-fast',
@@ -2455,7 +2623,7 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     const row = await runtimeRow('minimax-fast:featherless-api');
-    expect(within(row).queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByLabelText('Override provider')).toHaveValue('featherless');

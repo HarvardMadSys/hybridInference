@@ -6941,3 +6941,459 @@ async def test_route_update_audit_records_deployment_type(admin_client):
     assert action == "routing.provider_routes.update"
     assert details["old_deployment_type"] == "auto"
     assert details["deployment_type"] == "self_hosted"
+
+
+# ---------------------------------------------------------------------------
+# Disable, enable, delete and restore -- one set of operations for both sources
+# ---------------------------------------------------------------------------
+
+
+class _RouteStateTable:
+    """Stateful stand-in for ``provider_route_states`` with a real resolver on top."""
+
+    def __init__(self, client, op_store, route_executor) -> None:
+        from serving.config.route_states import RouteStateResolver
+
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+        op_store.set_provider_route_state = AsyncMock(side_effect=self.set)
+        op_store.list_all_provider_route_states = AsyncMock(side_effect=self.list_all)
+        self.resolver = RouteStateResolver(op_store)
+        client.app.state.services.route_state_resolver = self.resolver
+        route_executor.route_state_resolver = self.resolver
+
+    async def set(self, model_id, route_id, *, disabled, removed, updated_by):
+        if not disabled and not removed:
+            self.rows.pop((model_id, route_id), None)
+            return
+        self.rows[(model_id, route_id)] = {
+            "model_id": model_id,
+            "route_id": route_id,
+            "disabled": disabled,
+            "removed": removed,
+            "updated_by": updated_by,
+        }
+
+    async def list_all(self):
+        return [dict(row) for _key, row in sorted(self.rows.items())]
+
+
+FEATHERLESS = "minimax-fast:featherless-api"
+CHUTES = "minimax-fast:chutes-api"
+DEEPINFRA = "minimax-fast:openrouter[deepinfra]-api"
+
+
+def _effective_weights(route_executor, model_id: str = "minimax-fast") -> dict[str, float]:
+    for effective in route_executor.iter_effective_routes():
+        if effective.canonical_model_id == model_id:
+            return {
+                adapter.config.route_metadata.get("route_id") or adapter.config.endpoint_id: weight
+                for adapter, weight in effective.adapters
+            }
+    raise AssertionError(f"{model_id} is not routed")
+
+
+async def _set_state(client, route_id: str, disabled: bool, model_id: str = "minimax-fast"):
+    return await client.patch(
+        f"/admin/routing/provider-route-states/{model_id}/{route_id}",
+        json={"disabled": disabled},
+        headers=AUTH,
+    )
+
+
+def _audited_actions() -> list[str]:
+    return [call.args[2] for call in provider_routes.log_admin_action.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_disable_and_enable_a_config_route_keeps_its_weight(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    weights = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, weights)
+    weights.weights[("minimax-fast", FEATHERLESS)] = 3.0
+    resolver.set_override("minimax-fast", FEATHERLESS, 3.0)
+    fake_routewise.refresh_route_table.reset_mock()
+
+    disabled = await _set_state(client, FEATHERLESS, True)
+
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["disabled"] is True
+    assert disabled.json()["source"] == "yaml"
+    # Still configured, still weighted: only selection skips it.
+    assert disabled.json()["effective_weight"] == 3.0
+    assert states.rows[("minimax-fast", FEATHERLESS)]["disabled"] is True
+    assert _effective_weights(route_executor)[FEATHERLESS] == 0.0
+    assert weights.weights == {("minimax-fast", FEATHERLESS): 3.0}
+    fake_routewise.refresh_route_table.assert_called_once_with()
+
+    enabled = await _set_state(client, FEATHERLESS, False)
+
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["disabled"] is False
+    assert states.rows == {}
+    assert _effective_weights(route_executor)[FEATHERLESS] == 3.0
+    assert _audited_actions()[-2:] == [
+        "routing.provider_routes.disable",
+        "routing.provider_routes.enable",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disable_and_enable_a_runtime_route(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+
+    disabled = await _set_state(client, MINIMAX_ROUTE_ID, True)
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["source"] == "runtime"
+    assert disabled.json()["disabled"] is True
+    assert _effective_weights(route_executor)[MINIMAX_ROUTE_ID] == 0.0
+
+    # An edit keeps the route disabled: the state follows the route id.
+    edited = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["disabled"] is True
+    assert _effective_weights(route_executor)[MINIMAX_ROUTE_ID] == 0.0
+
+    enabled = await _set_state(client, MINIMAX_ROUTE_ID, False)
+    assert enabled.status_code == 200, enabled.text
+    assert _effective_weights(route_executor)[MINIMAX_ROUTE_ID] > 0
+    assert states.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_enable_clears_a_zero_weight_override_left_by_the_old_disable(admin_client):
+    """Disable used to be a weight override of 0; Enable must not leave one behind."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    weights = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, weights)
+    resolver.set_override("minimax-fast", FEATHERLESS, 0.0)
+    assert _effective_weights(route_executor)[FEATHERLESS] == 0.0
+
+    response = await _set_state(client, FEATHERLESS, False)
+
+    assert response.status_code == 200, response.text
+    op_store.delete_weight_override.assert_awaited_once_with("minimax-fast", FEATHERLESS)
+    assert resolver.get_snapshot_for_model("minimax-fast") == {}
+    assert _effective_weights(route_executor)[FEATHERLESS] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_last_enabled_route_is_refused(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    assert (await _set_state(client, CHUTES, True)).status_code == 200
+    assert (await _set_state(client, FEATHERLESS, True)).status_code == 200
+
+    response = await _set_state(client, DEEPINFRA, True)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"route {DEEPINFRA!r} is the last enabled route of minimax-fast; enable or add "
+        "another route before you disable it"
+    )
+    assert ("minimax-fast", DEEPINFRA) not in states.rows
+    assert _effective_weights(route_executor)[DEEPINFRA] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_disable_leaves_the_route_enabled(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _set_state(client, FEATHERLESS, True)
+
+    assert states.rows == {}
+    assert not states.resolver.is_excluded("minimax-fast", FEATHERLESS)
+    assert _effective_weights(route_executor)[FEATHERLESS] > 0
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+async def _remove(client, route_id: str, model_id: str = "minimax-fast"):
+    return await client.post(
+        f"/admin/routing/provider-route-removals/{model_id}/{route_id}", headers=AUTH
+    )
+
+
+async def _restore(client, route_id: str, model_id: str = "minimax-fast"):
+    return await client.delete(
+        f"/admin/routing/provider-route-removals/{model_id}/{route_id}", headers=AUTH
+    )
+
+
+def _live_route_ids(route_executor, model_id: str = "minimax-fast") -> list[str]:
+    return [
+        provider_routes._route_id_for_entry(adapter, endpoint_id)
+        for adapter, _weight, endpoint_id in route_executor.routes[model_id].raw_adapters
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_and_restore_a_config_route_across_a_restart(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    weights = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, weights)
+    resolver.set_override("minimax-fast", FEATHERLESS, 3.0)
+    yaml_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+
+    removed = await _remove(client, FEATHERLESS)
+
+    assert removed.status_code == 200, removed.text
+    rows = {row["route_id"]: row for row in removed.json()["routes"]}
+    assert rows[FEATHERLESS]["removed"] is True
+    assert rows[CHUTES]["removed"] is False
+    assert _live_route_ids(route_executor) == [CHUTES, DEEPINFRA]
+    assert states.rows[("minimax-fast", FEATHERLESS)]["removed"] is True
+    # Its weight override is kept so a restore brings back what was there.
+    assert resolver.get_snapshot_for_model("minimax-fast") == {FEATHERLESS: 3.0}
+    assert _audited_actions()[-1] == "routing.provider_routes.remove"
+
+    # Restart with the same models.yaml: the route stays deleted.
+    restarted = RouteExecutor()
+    restarted.register_route("minimax-fast", yaml_entries_as_weights(yaml_entries))
+    from serving.config.route_states import RouteStateResolver
+
+    reloaded = RouteStateResolver(op_store)
+    await reloaded.load_all()
+    restarted.route_state_resolver = reloaded
+    services = AppServices(
+        router=restarted,
+        model_router_registry=MagicMock(),
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+        route_state_resolver=reloaded,
+    )
+    provider_routes.apply_persisted_provider_route_removals(services)
+    assert _live_route_ids(restarted) == [CHUTES, DEEPINFRA]
+
+    restored = await _restore(client, FEATHERLESS)
+
+    assert restored.status_code == 200, restored.text
+    rows = {row["route_id"]: row for row in restored.json()["routes"]}
+    assert rows[FEATHERLESS]["removed"] is False
+    assert rows[FEATHERLESS]["effective_weight"] == 3.0
+    # Back at its models.yaml position.
+    assert _live_route_ids(route_executor) == [CHUTES, FEATHERLESS, DEEPINFRA]
+    assert states.rows == {}
+    assert _effective_weights(route_executor)[FEATHERLESS] == 3.0
+    assert _audited_actions()[-1] == "routing.provider_routes.restore"
+    assert fake_routewise.refresh_route_table.call_count >= 2
+
+
+def yaml_entries_as_weights(entries):
+    return [(adapter, weight) for adapter, weight, _endpoint_id in entries]
+
+
+@pytest.mark.asyncio
+async def test_restore_brings_back_the_routes_edit_override(admin_client):
+    """Restoring undoes the delete only; Reset is what discards an edit."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    override = {
+        "model_id": "minimax-fast",
+        "route_id": CHUTES,
+        "provider": "openrouter[parasail]",
+        "openrouter_sort": None,
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "quota_limit": 5000,
+        "concurrency_limit": None,
+        "deployment_type": None,
+        "updated_at": NOW,
+        "updated_by": "seed-admin",
+    }
+    op_store.list_provider_route_configs_for_model.return_value = [override]
+    op_store.list_all_provider_route_configs.return_value = [override]
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    assert route_executor.routes["minimax-fast"].raw_adapters[0][0].config.provider == "openrouter"
+
+    assert (await _remove(client, CHUTES)).status_code == 200
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 200, restored.text
+    adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert adapter.config.route_metadata["route_id"] == CHUTES
+    assert adapter.config.openrouter_pinned_provider == "parasail"
+    op_store.delete_provider_route_config.assert_not_awaited()
+    row = {r["route_id"]: r for r in restored.json()["routes"]}[CHUTES]
+    assert row["source"] == "override"
+    assert row["override_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_config_route_comes_back_disabled(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    assert (await _set_state(client, FEATHERLESS, True)).status_code == 200
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+
+    # A deleted route is restored, not edited or toggled.
+    toggled = await _set_state(client, FEATHERLESS, False)
+    assert toggled.status_code == 409, toggled.text
+    assert toggled.json()["detail"] == (
+        f"route {FEATHERLESS!r} is deleted from this deployment; restore it first"
+    )
+
+    restored = await _restore(client, FEATHERLESS)
+    row = {r["route_id"]: r for r in restored.json()["routes"]}[FEATHERLESS]
+    assert row["disabled"] is True
+    assert _effective_weights(route_executor)[FEATHERLESS] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_config_offload_route_is_refused(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    client.app.state.services.offload_route_resolver = SimpleNamespace(
+        get_offload_policy=lambda model_id: SimpleNamespace(route_id=FEATHERLESS)
+    )
+
+    response = await _remove(client, FEATHERLESS)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"route {FEATHERLESS!r} is the model's offload route; clear the offload route "
+        "before deleting it"
+    )
+    assert states.rows == {}
+    assert FEATHERLESS in _live_route_ids(route_executor)
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_enabled_config_route_is_refused(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    assert (await _set_state(client, CHUTES, True)).status_code == 200
+    assert (await _set_state(client, FEATHERLESS, True)).status_code == 200
+
+    response = await _remove(client, DEEPINFRA)
+
+    assert response.status_code == 409, response.text
+    assert "is the last enabled route of minimax-fast" in response.json()["detail"]
+    assert DEEPINFRA in _live_route_ids(route_executor)
+    # A disabled route can still be deleted: it serves nothing either way.
+    assert (await _remove(client, CHUTES)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_failed_config_route_delete_keeps_the_route(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+    before = list(route_executor.routes["minimax-fast"].raw_adapters)
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _remove(client, FEATHERLESS)
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before
+    assert states.rows == {}
+    assert not states.resolver.is_excluded("minimax-fast", FEATHERLESS)
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_route_is_deleted_as_a_candidate_not_marked_removed(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+
+    marked = await _remove(client, MINIMAX_ROUTE_ID)
+    assert marked.status_code == 400, marked.text
+    assert marked.json()["detail"] == "Runtime-added provider routes must be deleted as candidates"
+
+    deleted = await client.delete(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{MINIMAX_ROUTE_ID}",
+        headers=AUTH,
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert ("minimax-fast", MINIMAX_ROUTE_ID) not in table.rows
+    assert MINIMAX_ROUTE_ID not in _live_route_ids(route_executor)
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_enabled_runtime_route_is_refused(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    for route_id in (CHUTES, FEATHERLESS, DEEPINFRA):
+        assert (await _set_state(client, route_id, True)).status_code == 200
+
+    response = await client.delete(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{MINIMAX_ROUTE_ID}",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409, response.text
+    assert "is the last enabled route of minimax-fast" in response.json()["detail"]
+    assert MINIMAX_ROUTE_ID in _live_route_ids(route_executor)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_config_routes_ids_stay_reserved(admin_client):
+    """A route added while a config route is deleted cannot take ids its restore needs."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    _CandidateTable(op_store)
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+    op_store.list_provider_keys_full.return_value = ["featherless-db-key-1234567890"]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "featherless",
+            "base_url": "https://api.featherless.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "concurrency_limit": 1,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "provider route already exists"
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_route_that_is_not_deleted_is_refused(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+
+    response = await _restore(client, FEATHERLESS)
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == f"route {FEATHERLESS!r} is not deleted"
+
+
+@pytest.mark.asyncio
+async def test_route_state_endpoints_require_admin(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    bad = {"Authorization": "Bearer not-the-admin-token"}
+
+    responses = [
+        await client.patch(
+            f"/admin/routing/provider-route-states/minimax-fast/{FEATHERLESS}",
+            json={"disabled": True},
+            headers=bad,
+        ),
+        await client.post(
+            f"/admin/routing/provider-route-removals/minimax-fast/{FEATHERLESS}", headers=bad
+        ),
+        await client.delete(
+            f"/admin/routing/provider-route-removals/minimax-fast/{FEATHERLESS}", headers=bad
+        ),
+    ]
+
+    assert all(response.status_code in {401, 403} for response in responses)
+    assert states.rows == {}

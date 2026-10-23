@@ -1365,6 +1365,28 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def list_all_provider_route_states(self) -> list[Row]:
+        """Return every route's admin state: disabled and/or removed, by (model, route id)."""
+
+    @abstractmethod
+    async def set_provider_route_state(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        disabled: bool,
+        removed: bool,
+        updated_by: str | None,
+    ) -> None:
+        """Store one route's admin state; neither flag set deletes its row.
+
+        ``disabled`` keeps the route configured but out of selection, retries,
+        fallback and offload. ``removed`` takes a config (models.yaml) route out
+        of this deployment without touching the file. Both are keyed by the
+        route id, which survives edits that move the route's endpoint.
+        """
+
+    @abstractmethod
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True if removed."""
 
@@ -1374,7 +1396,7 @@ class OperationalStore(ABC):
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate and any matching override row."""
+        """Atomically delete a route candidate, its override row and its route state."""
 
     @abstractmethod
     async def delete_runtime_model_state(
