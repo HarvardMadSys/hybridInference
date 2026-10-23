@@ -11,6 +11,7 @@ export function ConfirmDialog({
   title,
   children,
   confirmLabel,
+  cancelLabel = 'Cancel',
   busyLabel,
   tone = 'default',
   busy = false,
@@ -21,6 +22,8 @@ export function ConfirmDialog({
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** What the dismissing button says; it never writes anything. */
+  cancelLabel?: string;
   busyLabel?: string;
   tone?: 'default' | 'danger';
   busy?: boolean;
@@ -125,7 +128,7 @@ export function ConfirmDialog({
             disabled={busy}
             className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40"
           >
-            Cancel
+            {cancelLabel}
           </button>
           <button
             type="button"

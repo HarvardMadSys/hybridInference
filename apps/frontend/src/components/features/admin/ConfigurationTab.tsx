@@ -46,7 +46,6 @@ import {
 } from '@/components/features/configuration/configDrafts';
 import {
   getConfig,
-  markConfigSecret,
   patchConfig,
   resetConfigKey,
   testAlertNotification,
@@ -65,11 +64,45 @@ function plural(count: number, one: string, many = `${one}s`): string {
 interface PendingSave {
   group: ConfigGroup;
   values: Record<string, ConfigScalar>;
+  /** Keys the save marks secret, in the same PATCH as `values`. */
+  secrets: string[];
+  /** Keys whose stored row the save removes, one DELETE each after the PATCH. */
+  resets: string[];
 }
 
-function shownValue(value: ConfigScalar | null | undefined): string {
+function shownValue(
+  entry: ConfigEntry | undefined,
+  value: ConfigScalar | null | undefined,
+): string {
   if (value === null || value === undefined || value === '') return '(empty)';
+  if (entry?.type === 'bool') return value === true ? 'On' : 'Off';
   return String(value);
+}
+
+/** One line of the confirmation: what the save does to `key`. Never a secret's value. */
+function describeChange(
+  entry: ConfigEntry | undefined,
+  key: string,
+  { values, secrets, resets }: PendingSave,
+): string[] {
+  const lines: string[] = [];
+  if (resets.includes(key)) {
+    if (entry?.custom) lines.push('Delete the variable');
+    else if (entry?.secret) lines.push('Reset to the environment or default');
+    else lines.push(`${shownValue(entry, entry?.value)} → environment or default`);
+  }
+  if (key in values) {
+    const value = values[key];
+    if (entry?.secret) lines.push(value === '' ? 'Clear' : 'Replace');
+    else lines.push(`${shownValue(entry, entry?.value)} → ${shownValue(entry, value)}`);
+  }
+  if (secrets.includes(key)) lines.push('Mark as secret');
+  return lines;
+}
+
+/** Keys of `record` that belong to `group`. */
+function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>): string[] {
+  return group.entries.map((entry) => entry.key).filter((key) => key in record);
 }
 
 /**
@@ -94,19 +127,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [savingGroup, setSavingGroup] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [missingOnly, setMissingOnly] = useState(initialMissingOnly);
-  const [resetTarget, setResetTarget] = useState<ConfigEntry | null>(null);
-  const [resetting, setResetting] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
-  // The key alone: the entry still holds the value that is about to be hidden.
-  const [markSecretKey, setMarkSecretKey] = useState<string | null>(null);
-  const [markingSecret, setMarkingSecret] = useState(false);
-  const [markSecretError, setMarkSecretError] = useState<string | null>(null);
+  // One category is edited at a time; every other one shows its saved values.
+  const [editingGroup, setEditingGroup] = useState<string | null>(null);
+  // Staged like drafts: nothing is written until the category's save is confirmed.
+  const [pendingResets, setPendingResets] = useState<Record<string, true>>({});
+  const [pendingSecrets, setPendingSecrets] = useState<Record<string, true>>({});
   const [adding, setAdding] = useState(false);
   const [alertChannelDraft, setAlertChannelDraft] = useState<AlertChannelChoice | null>(null);
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+  const saveInFlight = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +166,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       setConfig(next);
       setDrafts((prev) => withoutKeys(prev, writtenKeys));
       setEntryErrors((prev) => withoutKeys(prev, writtenKeys));
+      setPendingResets((prev) => withoutKeys(prev, writtenKeys));
+      setPendingSecrets((prev) => withoutKeys(prev, writtenKeys));
       if (writtenKeys.some(isAlertWebhook)) setAlertTestResult(null);
       // Re-render the server components: the banner reads site-config there.
       router.refresh();
@@ -209,7 +243,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     [groups, missingOnly, query],
   );
 
-  const saveGroup = async (group: ConfigGroup) => {
+  const saveGroup = (group: ConfigGroup) => {
     // The whole category, including entries a filter is hiding: a change the
     // administrator made stays part of the save it was made for.
     const channelEntries = alertWebhookEntries(group.entries);
@@ -236,33 +270,79 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       }));
       return;
     }
-    if (Object.keys(values).length === 0) return;
+    const resets = groupKeys(group, pendingResets);
+    // A reset is the more specific request: the row goes, so nothing is written to it first.
+    for (const key of resets) delete values[key];
+    const secrets = groupKeys(group, pendingSecrets);
+    if (Object.keys(values).length + secrets.length + resets.length === 0) return;
     // Nothing is written until the administrator confirms the list of changes.
-    setPendingSave({ group, values });
+    setPendingSave({ group, values, secrets, resets });
   };
 
-  const commitSave = async ({ group, values }: PendingSave) => {
-    setPendingSave(null);
+  const commitSave = async ({ group, values, secrets, resets }: PendingSave) => {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
     const keys = Object.keys(values);
     setSavingGroup(group.id);
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    let attempted = keys;
     try {
-      const next = await patchConfig({ values });
-      applyResponse(next, keys);
-      if (channelEntries) setAlertChannelDraft(null);
-      toast.success(keys.length === 1 ? `Saved ${keys[0]}.` : `Saved ${keys.length} settings.`);
+      if (keys.length > 0 || secrets.length > 0) {
+        attempted = [...new Set([...keys, ...secrets])];
+        const next = await patchConfig(
+          secrets.length > 0
+            ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
+            : { values },
+        );
+        // Claim nothing the response does not show: a backend that ignored the
+        // flag would answer with the variable unchanged.
+        const unmarked = secrets.find(
+          (key) => !next.entries.some((candidate) => candidate.key === key && candidate.secret),
+        );
+        if (unmarked) {
+          // The values in the same PATCH were written; the flag was not.
+          if (keys.length > 0) applyResponse(next, keys);
+          throw new Error(`The backend answered, but ${unmarked} is still not secret.`);
+        }
+        applyResponse(next, attempted);
+      }
+      for (const key of resets) {
+        attempted = [key];
+        applyResponse(await resetConfigKey(key), [key]);
+      }
+      if (channelEntries) {
+        setAlertChannelDraft(null);
+        setAlertTestResult(null);
+      }
+      const count = new Set([...keys, ...secrets, ...resets]).size;
+      setPendingSave(null);
+      setEditingGroup(null);
+      toast.success(
+        count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
+      );
     } catch (e) {
+      // What was not written stays as a draft, with the reason beside the save.
       const message = getErrorMessage(e);
-      const keyed = errorForKey(message, keys);
+      const keyed = errorForKey(message, attempted);
       if (keyed) setEntryErrors((prev) => ({ ...prev, [keyed.key]: keyed.reason }));
       setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
+      setPendingSave(null);
     } finally {
+      saveInFlight.current = false;
       setSavingGroup(null);
     }
   };
 
-  const discardGroup = (group: ConfigGroup) => {
+  const startEditing = (group: ConfigGroup) => {
+    if (editingGroup !== null) return;
+    setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    setEditingGroup(group.id);
+  };
+
+  /** Cancel: every draft and staged action of the category goes, and it is read-only again. */
+  const cancelEditing = (group: ConfigGroup) => {
+    if (saveInFlight.current) return;
     if (alertWebhookEntries(group.entries)) {
       if (alertTestInFlight.current) return;
       setAlertChannelDraft(null);
@@ -271,62 +351,29 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     const keys = group.entries.map((entry) => entry.key);
     setDrafts((prev) => withoutKeys(prev, keys));
     setEntryErrors((prev) => withoutKeys(prev, keys));
+    setPendingResets((prev) => withoutKeys(prev, keys));
+    setPendingSecrets((prev) => withoutKeys(prev, keys));
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    setEditingGroup(null);
   };
 
-  const requestReset = (target: ConfigEntry) => {
-    setResetError(null);
-    setResetTarget(target);
-  };
-
-  const confirmReset = async () => {
-    if (!resetTarget) return;
-    const { key, custom } = resetTarget;
-    setResetting(true);
-    setResetError(null);
-    try {
-      const next = await resetConfigKey(key);
-      applyResponse(next, [key]);
-      if (isAlertWebhook(key)) {
-        // The channel is inferred from which webhooks are set, and a reset can
-        // change that: discard a pending choice rather than show it as saved.
-        setAlertChannelDraft(null);
-        setAlertTestResult(null);
-      }
-      setResetTarget(null);
-      toast.success(custom ? `Deleted ${key}.` : `Reset ${key}.`);
-    } catch (e) {
-      setResetError(getErrorMessage(e));
-    } finally {
-      setResetting(false);
+  const toggleReset = (target: ConfigEntry) => {
+    const { key } = target;
+    if (pendingResets[key]) {
+      setPendingResets((prev) => withoutKeys(prev, [key]));
+      return;
     }
+    // The row goes, so an edit to it or a flag on it would be lost: drop them now.
+    setPendingResets((prev) => ({ ...prev, [key]: true }));
+    setDrafts((prev) => withoutKeys(prev, [key]));
+    setEntryErrors((prev) => withoutKeys(prev, [key]));
+    setPendingSecrets((prev) => withoutKeys(prev, [key]));
+    if (isAlertWebhook(key)) setAlertTestResult(null);
   };
 
-  const confirmMarkSecret = async () => {
-    if (!markSecretKey) return;
-    const key = markSecretKey;
-    setMarkingSecret(true);
-    setMarkSecretError(null);
-    try {
-      const next = await markConfigSecret(key);
-      // Claim nothing the response does not show: a backend that ignored the
-      // flag would answer with the variable unchanged.
-      if (!next.entries.some((candidate) => candidate.key === key && candidate.secret)) {
-        setMarkSecretError(`The backend answered, but ${key} is still not secret.`);
-        return;
-      }
-      // Drops the key's draft and errors too: whatever the field held is the
-      // plaintext the console no longer shows.
-      applyResponse(next, [key]);
-      const category = next.entries.find((candidate) => candidate.key === key)?.category;
-      if (category !== undefined) setGroupErrors((prev) => withoutKeys(prev, [category]));
-      setMarkSecretKey(null);
-      toast.success(`${key} is now secret.`);
-    } catch (e) {
-      setMarkSecretError(getErrorMessage(e));
-    } finally {
-      setMarkingSecret(false);
-    }
+  const toggleMarkSecret = (target: ConfigEntry) => {
+    const { key } = target;
+    setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
   if (loading && !config) {
@@ -345,9 +392,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   }
 
   const existingKeys = new Set(config.entries.map((entry) => entry.key));
-  const markSecretTarget = markSecretKey
-    ? config.entries.find((entry) => entry.key === markSecretKey)
-    : undefined;
+  const resetKeys = new Set(Object.keys(pendingResets));
 
   return (
     <div className="mt-5 space-y-6">
@@ -446,11 +491,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
       {visibleGroups.map((visible) => {
         const group = groups.find((candidate) => candidate.id === visible.id) ?? visible;
+        const editing = editingGroup === group.id;
         const channelEntries = alertWebhookEntries(group.entries);
         const selectedEntry = channelEntries
           ? selectedWebhookEntry(channelEntries, alertChannel)
           : null;
-        const dirty = channelEntries
+        const fieldDirty = channelEntries
           ? countDirty(
               group.entries.filter((entry) => !isAlertWebhook(entry.key)),
               drafts,
@@ -460,6 +506,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                 (selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])),
             )
           : countDirty(group.entries, drafts);
+        const staged = new Set([
+          ...groupKeys(group, pendingResets),
+          ...groupKeys(group, pendingSecrets),
+        ]);
+        const dirty = fieldDirty + staged.size;
         const saving = savingGroup === group.id;
         const busy = saving || Boolean(channelEntries && testingAlert);
         const headingId = `${searchId}-${group.id}`;
@@ -467,23 +518,41 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           <section
             key={group.id}
             aria-labelledby={headingId}
-            className="rounded-xl border border-gray-200 bg-white p-5"
+            className={`rounded-xl border bg-white p-5 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
           >
-            <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
-              {group.label}
-            </h2>
-            {group.description ? (
-              <p className="mt-1 text-[12px] text-gray-500">{group.description}</p>
-            ) : null}
-
-            {groupErrors[group.id] ? (
-              <div
-                className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600"
-                role="alert"
-              >
-                {groupErrors[group.id]}
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
+                    {group.label}
+                  </h2>
+                  {editing ? (
+                    <span className="rounded bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                      Editing
+                    </span>
+                  ) : null}
+                </div>
+                {group.description ? (
+                  <p className="mt-1 text-[12px] text-gray-500">{group.description}</p>
+                ) : null}
               </div>
-            ) : null}
+              {editing ? null : (
+                <button
+                  type="button"
+                  onClick={() => startEditing(group)}
+                  disabled={editingGroup !== null}
+                  title={
+                    editingGroup !== null
+                      ? 'Save or cancel the category you are editing first.'
+                      : undefined
+                  }
+                  aria-label={`Edit ${group.label}`}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
 
             {/* A form, so Enter saves the category, and one browsers do not
                 offer to remember: a secret typed here is not a login. The
@@ -493,7 +562,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
               noValidate
               onSubmit={(event) => {
                 event.preventDefault();
-                if (!busy) void saveGroup(group);
+                if (editing && !busy && dirty > 0) saveGroup(group);
               }}
             >
               <div className="mt-1 divide-y divide-gray-100">
@@ -509,7 +578,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     testing={testingAlert}
                     testResult={alertTestResult}
                     onTest={() => void sendAlertTest()}
-                    onReset={requestReset}
+                    onReset={toggleReset}
+                    readOnly={!editing}
+                    pendingResets={resetKeys}
                   />
                 ) : null}
                 {visible.entries
@@ -521,38 +592,53 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                       draft={drafts[entry.key]}
                       onChange={onDraftChange}
                       serverError={entryErrors[entry.key]}
-                      onReset={requestReset}
-                      onMarkSecret={(target) => {
-                        setMarkSecretError(null);
-                        setMarkSecretKey(target.key);
-                      }}
+                      onReset={toggleReset}
+                      onMarkSecret={toggleMarkSecret}
+                      readOnly={!editing}
+                      resetPending={Boolean(pendingResets[entry.key])}
+                      markSecretPending={Boolean(pendingSecrets[entry.key])}
                       disabled={busy}
                     />
                   ))}
               </div>
 
-              {dirty > 0 ? (
-                <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
-                  <span className="mr-auto text-[12px] text-gray-500">
-                    {plural(dirty, 'unsaved change')}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => discardGroup(group)}
-                    disabled={busy}
-                    className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
-                  >
-                    Discard
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    aria-busy={saving || undefined}
-                    aria-label={`Save ${group.label}`}
-                    className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
-                  >
-                    {saving ? 'Saving…' : 'Save'}
-                  </button>
+              {editing ? (
+                // Sticky, so Cancel and Save stay in reach anywhere in a long category.
+                <div className="sticky bottom-0 z-10 -mx-5 -mb-5 mt-2 rounded-b-xl border-t border-gray-200 bg-white/95 px-5 py-3 backdrop-blur">
+                  {groupErrors[group.id] ? (
+                    <p
+                      className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600"
+                      role="alert"
+                    >
+                      {groupErrors[group.id]}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span
+                      className={`mr-auto text-[12px] ${dirty > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
+                      role="status"
+                    >
+                      {dirty > 0 ? `${plural(dirty, 'unsaved change')}` : 'No changes yet'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => cancelEditing(group)}
+                      disabled={busy}
+                      aria-label={`Cancel editing ${group.label}`}
+                      className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={busy || dirty === 0}
+                      aria-busy={saving || undefined}
+                      aria-label={`Save changes to ${group.label}`}
+                      className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                    >
+                      {saving ? 'Saving…' : 'Save changes'}
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </form>
@@ -562,80 +648,57 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
       {pendingSave ? (
         <ConfirmDialog
-          title={`Save ${plural(Object.keys(pendingSave.values).length, 'change')} to ${pendingSave.group.label}?`}
-          confirmLabel="Save"
+          title={`Save ${plural(
+            new Set([
+              ...Object.keys(pendingSave.values),
+              ...pendingSave.secrets,
+              ...pendingSave.resets,
+            ]).size,
+            'change',
+          )} to ${pendingSave.group.label}?`}
+          confirmLabel="Confirm save"
+          cancelLabel="Back to editing"
+          busyLabel="Saving…"
+          busy={savingGroup === pendingSave.group.id}
           onConfirm={() => void commitSave(pendingSave)}
           onCancel={() => setPendingSave(null)}
         >
           <ul className="space-y-1.5">
-            {Object.entries(pendingSave.values).map(([key, value]) => {
-              const entry = pendingSave.group.entries.find((candidate) => candidate.key === key);
-              let change: string;
-              if (entry?.secret) change = value === '' ? 'cleared' : 'new value';
-              else change = `${shownValue(entry?.value)} → ${shownValue(value)}`;
-              return (
-                <li key={key} className="break-all">
-                  <span className="font-mono font-medium text-gray-900">{key}</span>
-                  <span className="block font-mono text-[12px]">{change}</span>
+            {pendingSave.group.entries
+              .filter(
+                (entry) =>
+                  entry.key in pendingSave.values ||
+                  pendingSave.secrets.includes(entry.key) ||
+                  pendingSave.resets.includes(entry.key),
+              )
+              .map((entry) => (
+                <li key={entry.key} className="break-all">
+                  <span className="font-mono font-medium text-gray-900">{entry.key}</span>
+                  {describeChange(entry, entry.key, pendingSave).map((line) => (
+                    <span key={line} className="block font-mono text-[12px]">
+                      {line}
+                    </span>
+                  ))}
                 </li>
-              );
-            })}
+              ))}
           </ul>
-          {Object.keys(pendingSave.values).some(
+          {pendingSave.resets.length > 0 ? (
+            <p>
+              A reset removes the stored value: the setting falls back to the environment, then to
+              its default. A custom variable is deleted.
+            </p>
+          ) : null}
+          {pendingSave.secrets.length > 0 ? (
+            <p className="font-medium text-gray-800">
+              Marking a variable secret cannot be undone from the console.
+            </p>
+          ) : null}
+          {[...Object.keys(pendingSave.values), ...pendingSave.secrets, ...pendingSave.resets].some(
             (key) =>
               pendingSave.group.entries.find((candidate) => candidate.key === key)
                 ?.restart_required,
           ) ? (
             <p>Some of these apply only after the backend restarts.</p>
-          ) : null}
-        </ConfirmDialog>
-      ) : null}
-
-      {markSecretTarget ? (
-        <ConfirmDialog
-          title={`Mark ${markSecretTarget.key} as secret?`}
-          confirmLabel="Mark as secret"
-          busyLabel="Marking…"
-          busy={markingSecret}
-          error={markSecretError}
-          onConfirm={() => void confirmMarkSecret()}
-          onCancel={() => setMarkSecretKey(null)}
-        >
-          <p>
-            The value stays as it is, but the console stops showing it: like any secret, it can only
-            be replaced or cleared from then on.
-          </p>
-          <p className="font-medium text-gray-800">This cannot be undone from the console.</p>
-          {isDirty(markSecretTarget, drafts[markSecretTarget.key]) ? (
-            <p>Your unsaved change to it is discarded.</p>
-          ) : null}
-        </ConfirmDialog>
-      ) : null}
-
-      {resetTarget ? (
-        <ConfirmDialog
-          title={resetTarget.custom ? `Delete ${resetTarget.key}?` : `Reset ${resetTarget.key}?`}
-          confirmLabel={resetTarget.custom ? 'Delete' : 'Reset'}
-          busyLabel={resetTarget.custom ? 'Deleting…' : 'Resetting…'}
-          tone="danger"
-          busy={resetting}
-          error={resetError}
-          onConfirm={() => void confirmReset()}
-          onCancel={() => setResetTarget(null)}
-        >
-          {resetTarget.custom ? (
-            <p>
-              The variable is removed from the database. Anything in models.yaml that references it
-              resolves from the environment instead, if the environment sets it.
-            </p>
-          ) : (
-            <p>
-              The value stored in the database is removed, and the setting falls back to the
-              environment, then to its default.
-            </p>
-          )}
-          {resetTarget.restart_required ? (
-            <p>The change applies after the backend restarts.</p>
           ) : null}
         </ConfirmDialog>
       ) : null}
