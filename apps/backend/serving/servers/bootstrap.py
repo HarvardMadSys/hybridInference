@@ -1754,6 +1754,14 @@ async def shutdown(services: AppServices) -> None:
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
 
+    # CompletionsLogger — drain queued request-log rows while the log store
+    # can still write them (issue #133: billing rows must survive shutdown).
+    if services.completions_logger is not None:
+        try:
+            await services.completions_logger.stop()
+        except Exception as exc:
+            logger.error(f"Completions logger shutdown failed: {exc}")
+
     # Log store
     if services.log_store:
         try:

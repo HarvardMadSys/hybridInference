@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -64,9 +63,7 @@ async def test_schedule_log_forwards_log_data_to_log_store(cl_logger, log_store)
     }
 
     cl_logger.schedule_log("rid-1", log_data)
-    # Allow the background task to run.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await cl_logger.stop()
 
     log_store.log_request.assert_awaited_once()
     _, kwargs = log_store.log_request.call_args
@@ -77,9 +74,8 @@ async def test_schedule_log_forwards_log_data_to_log_store(cl_logger, log_store)
 async def test_schedule_log_ignores_log_store_exceptions(cl_logger, log_store):
     log_store.log_request.side_effect = RuntimeError("DB down")
     cl_logger.schedule_log("rid", {"request_id": "rid"})
-    # Wait for the background task to finish; should not raise.
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # Wait for the background worker to process the row; should not raise.
+    await cl_logger.stop()
     log_store.log_request.assert_awaited_once()
 
 
