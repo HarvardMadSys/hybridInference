@@ -438,6 +438,22 @@ def list_candidate_env_keys(provider: str) -> list[str]:
         return out
 
 
+def env_key_candidates(provider: str) -> list[str]:
+    """Return every env-sourced key of *provider*, in the order a default pool takes them.
+
+    Live pool keys first, then the base and numbered settings, then the static
+    keys of adapters not yet promoted to a pool — once each, blanks dropped.
+    This is the one definition of "the provider's env keys" that the admin key
+    list, the env-key actions and route key resolution all share, so a key that
+    is listed is a key that resolves. Callers apply their own DB-row and
+    disabled-key filters, which differ by purpose.
+    """
+    keys = [key for pool in get_pools_for_provider(provider) for key in pool.snapshot_keys()]
+    keys.extend(configured_env_keys_for_provider(provider))
+    keys.extend(list_candidate_env_keys(provider))
+    return [key for key in dict.fromkeys(keys) if key.strip()]
+
+
 def is_active_env_static_key(provider: str, key: str) -> bool:
     """Return True when *key* is an env-configured static key still in use.
 
@@ -456,6 +472,11 @@ def is_active_env_static_key(provider: str, key: str) -> bool:
 def env_key_hash(key: str) -> str:
     """Return the stable hash used to identify env-sourced provider keys."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def env_key_id(key: str) -> str:
+    """Return the ``env:{hash32}`` id the admin API uses for an env-sourced key."""
+    return f"env:{env_key_hash(key)[:32]}"
 
 
 def normalize_key_provider(provider: str) -> str:

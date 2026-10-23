@@ -2489,7 +2489,7 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     monkeypatch.setenv("OPENROUTER_API_KEY", base_key)
     monkeypatch.setenv("OPENROUTER_API_KEY2", numbered_key)
     monkeypatch.delenv("OPENROUTER_API_KEY3", raising=False)
-    env_key_id = provider_routes._env_key_id(numbered_key)
+    env_key_id = dynamic_keys.env_key_id(numbered_key)
 
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
@@ -2639,7 +2639,7 @@ async def test_route_edit_rejects_disabled_single_static_key(
         json={
             "upstream_provider": provider,
             "base_url": "https://replacement.example.test/v1",
-            "api_key_id": provider_routes._env_key_id(key) if explicit_key else None,
+            "api_key_id": dynamic_keys.env_key_id(key) if explicit_key else None,
             "provider_model_id": "static-model",
         },
         headers=AUTH,
@@ -3862,7 +3862,7 @@ async def test_provider_route_list_resolves_numbered_env_key_ref(admin_client, m
     monkeypatch.setenv("FEATHERLESS_API_KEY", base_key)
     monkeypatch.setenv("FEATHERLESS_API_KEY2", numbered_key)
     monkeypatch.delenv("FEATHERLESS_API_KEY3", raising=False)
-    env_key_id = provider_routes._env_key_id(numbered_key)
+    env_key_id = dynamic_keys.env_key_id(numbered_key)
     op_store.list_provider_route_configs_for_model.return_value = [
         {
             "model_id": "minimax-fast",

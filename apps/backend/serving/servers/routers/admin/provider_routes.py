@@ -292,10 +292,6 @@ def _mask(api_key: str) -> str:
     return "***configured***"
 
 
-def _env_key_id(api_key: str) -> str:
-    return f"env:{dynamic_keys.env_key_hash(api_key)[:32]}"
-
-
 def _strategy_for_model(services: AppServices, model_id: str) -> str:
     registry = services.model_router_registry
     if registry is None:
@@ -1584,16 +1580,8 @@ async def _active_env_keys_for_provider(op_store, key_provider: str) -> list[str
             detail=f"Failed to load disabled env keys for {key_provider}: {exc}",
         ) from exc
 
-    keys: list[str] = []
-    for pool in dynamic_keys.get_pools_for_provider(key_provider):
-        keys.extend(pool.snapshot_keys())
-    keys.extend(dynamic_keys.configured_env_keys_for_provider(key_provider))
-    # Then single-key adapters without a pool, as the admin key list includes them.
-    # They go last so the keys a default pool already started with keep their order.
-    keys.extend(dynamic_keys.list_candidate_env_keys(key_provider))
-
     active_keys: list[str] = []
-    for key in _unique([key for key in keys if key.strip()]):
+    for key in dynamic_keys.env_key_candidates(key_provider):
         key_hash = dynamic_keys.env_key_hash(key)
         if key_hash in disabled_hashes or dynamic_keys.is_env_key_disabled(
             key_provider,
@@ -1640,7 +1628,7 @@ async def _resolve_key_material(
 
     if api_key_id.startswith("env:"):
         for raw in await _active_env_keys_for_provider(op_store, key_provider):
-            if _env_key_id(raw) == api_key_id:
+            if dynamic_keys.env_key_id(raw) == api_key_id:
                 return None, [raw]
         raise HTTPException(status_code=404, detail="Env provider key not found")
 
@@ -1673,7 +1661,7 @@ async def _api_key_ref(
         )
     if api_key_id.startswith("env:"):
         for raw in await _active_env_keys_for_provider(op_store, key_provider):
-            if _env_key_id(raw) == api_key_id:
+            if dynamic_keys.env_key_id(raw) == api_key_id:
                 return ProviderRouteApiKeyRef(
                     id=api_key_id,
                     provider=key_provider,

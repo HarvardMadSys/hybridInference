@@ -507,19 +507,7 @@ async def _active_key_count(op_store, provider: str) -> int:
     disabled_env_hashes = set(await op_store.list_disabled_provider_env_key_hashes(provider))
     count = sum(1 for row in db_rows if row.status == "active")
 
-    env_keys: list[str] = []
-    for pool in dynamic_keys.get_pools_for_provider(provider):
-        for raw in pool.snapshot_keys():
-            if raw not in env_keys:
-                env_keys.append(raw)
-    for raw in dynamic_keys.configured_env_keys_for_provider(provider):
-        if raw not in env_keys:
-            env_keys.append(raw)
-    for raw in dynamic_keys.list_candidate_env_keys(provider):
-        if raw not in env_keys:
-            env_keys.append(raw)
-
-    for raw in env_keys:
+    for raw in dynamic_keys.env_key_candidates(provider):
         if raw in db_raw_keys:
             continue
         if dynamic_keys.env_key_hash(raw) in disabled_env_hashes:

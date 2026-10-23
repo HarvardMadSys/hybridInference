@@ -412,6 +412,31 @@ def test_configured_env_keys_strip_like_an_adapters_static_key(monkeypatch):
     assert dynamic_keys.configured_env_keys_for_provider("chutes") == ["chutes-key-base"]
 
 
+def test_env_key_candidates_are_pools_then_settings_then_pool_less_statics(monkeypatch):
+    class Pool:
+        def snapshot_keys(self):
+            return ["pool-key", "shared-key"]
+
+    monkeypatch.setattr(dynamic_keys, "get_pools_for_provider", lambda provider: [Pool()])
+    monkeypatch.setattr(
+        dynamic_keys,
+        "configured_env_keys_for_provider",
+        lambda provider: ["setting-key", "shared-key"],
+    )
+    monkeypatch.setattr(
+        dynamic_keys,
+        "list_candidate_env_keys",
+        lambda provider: ["pool-key", "shared-key", "static-key", " "],
+    )
+
+    assert dynamic_keys.env_key_candidates("zai") == [
+        "pool-key",
+        "shared-key",
+        "setting-key",
+        "static-key",
+    ]
+
+
 def test_configured_env_keys_include_provider_overview_builtin_names(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.setenv("STAGING_API_KEY", "staging-key")
