@@ -9,6 +9,7 @@ import { userAccountLabel } from '@/lib/utils/userLabel';
 import {
   approveUser,
   deleteUser,
+  HardDeleteRecoveryAvailableError,
   hardDeleteUser,
   rejectUser,
   resumeUser,
@@ -274,14 +275,17 @@ export default function UsersTab() {
         toast.error(getErrorMessage(e));
       }
     },
-    onResume: async (id: string) => {
+    onResume: async (id: string, recoverStaleClaim = false) => {
       try {
         const user = users.find((u) => u.id === id);
-        await resumeUser(id);
+        await resumeUser(id, undefined, recoverStaleClaim);
         toast.success(`Resumed ${userAccountLabel(user) || id}`);
         refreshUsers();
+        return 'resumed' as const;
       } catch (e) {
+        if (e instanceof HardDeleteRecoveryAvailableError) return 'recovery_available' as const;
         toast.error(getErrorMessage(e));
+        return 'failed' as const;
       }
     },
     onDelete: async (id: string, reason: string) => {
@@ -294,14 +298,17 @@ export default function UsersTab() {
         toast.error(getErrorMessage(e));
       }
     },
-    onHardDelete: async (id: string, reason: string) => {
+    onHardDelete: async (id: string, reason: string, recoverStaleClaim = false) => {
       try {
         const user = users.find((u) => u.id === id);
-        await hardDeleteUser(id, reason || undefined);
+        await hardDeleteUser(id, reason || undefined, recoverStaleClaim);
         toast.success(`Permanently deleted ${userAccountLabel(user) || id}`);
         refreshUsers();
+        return 'deleted' as const;
       } catch (e) {
+        if (e instanceof HardDeleteRecoveryAvailableError) return 'recovery_available' as const;
         toast.error(getErrorMessage(e));
+        return 'failed' as const;
       }
     },
   };

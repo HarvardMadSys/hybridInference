@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -53,6 +54,33 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+
+class HardDeleteClaimProvenance(str, Enum):
+    """How a hard-delete claim was obtained by the current operation."""
+
+    NEW = "new"
+    RECOVERED = "recovered"
+
+
+class HardDeleteRecoveryMode(str, Enum):
+    """Server-verified basis for taking over a stale hard-delete claim."""
+
+    PRE_FENCE_OPERATOR = "pre_fence_operator"
+    POST_FENCE = "post_fence"
+
+
+@dataclass(frozen=True)
+class HardDeleteClaim:
+    """Durable claim token plus its ownership provenance."""
+
+    token: str
+    provenance: HardDeleteClaimProvenance
+
+    @property
+    def newly_acquired(self) -> bool:
+        """Whether this request owns a fresh, releasable pre-fence claim."""
+        return self.provenance is HardDeleteClaimProvenance.NEW
 
 
 # ---------------------------------------------------------------------------
@@ -265,12 +293,16 @@ class OperationalStore(ABC):
     async def update_user_fields(
         self,
         user_id: str,
+        *,
+        expected_status: str | None = None,
         **fields: Any,
     ) -> None:
         """Update one or more columns on the users table for *user_id*.
 
         Accepted keyword arguments map directly to column names, e.g.
         ``update_user_fields(uid, role="admin", status="active")``.
+        When changing ``status``, callers pass the status they validated so
+        the mutation cannot overwrite a concurrent soft-delete or review.
         """
 
     @abstractmethod
@@ -311,16 +343,31 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def begin_hard_delete_user(self, user_id: str) -> str:
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
         """Atomically claim a soft-deleted user for hard deletion.
 
         The durable operational-store marker serializes hard-delete with
         resume even when the LogStore uses a different database. Repeating
-        the claim for an already-pending deleted user takes ownership with a
-        fresh opaque token so a retry after a process failure can finish the
-        purge without allowing an older attempt to release or complete it.
-        The returned token must be supplied to release or finish the claim.
+        the claim for an already-pending deleted user is rejected so a
+        concurrent attempt cannot take ownership from the active operation.
+        ``recovery_mode`` is set only after the server verifies either an
+        existing durable LogStore fence or an explicit operator request for a
+        pre-fence recovery. In either mode, takeover is allowed only after the
+        recovery grace period and replaces the token atomically. A live token
+        is never shared by concurrent destructive operations.
+        The returned claim token must be supplied to release or finish the
+        claim. Its provenance tells callers whether this request may release
+        it after a pre-fence failure.
         """
+
+    @abstractmethod
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew and validate ownership before the next destructive stage."""
 
     @abstractmethod
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
@@ -342,11 +389,15 @@ class OperationalStore(ABC):
         admin_id: str,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
     ) -> None:
         """Resume a soft-deleted user: set status='active' and audit.
 
         API keys remain ``revoked`` — the user must re-create one through
-        the normal flow.  All mutations and the audit-log insert are atomic.
+        the normal flow. All mutations and the audit-log insert are atomic.
+        ``recover_stale_claim`` is an explicit operator attestation; stores
+        must recheck the claim lease and clear it in the same transaction as
+        the status change.
         """
 
     @abstractmethod

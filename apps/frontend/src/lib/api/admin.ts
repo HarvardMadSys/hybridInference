@@ -373,12 +373,44 @@ export async function deleteUser(userId: string, reason: string): Promise<Approv
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
-export async function resumeUser(userId: string, reason?: string): Promise<ApproveRejectResponse> {
+async function throwIfRecoveryAvailable(
+  resp: Response,
+  code: 'hard_delete_pre_fence_recovery_available' | 'hard_delete_resume_recovery_available',
+): Promise<void> {
+  if (resp.ok) return;
+  const failure = (await resp
+    .clone()
+    .json()
+    .catch(() => null)) as { detail?: unknown } | null;
+  const detail = failure?.detail;
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    'code' in detail &&
+    detail.code === code &&
+    'recovery_available' in detail &&
+    detail.recovery_available === true
+  ) {
+    throw new HardDeleteRecoveryAvailableError(
+      'The previous hard-delete claim can be recovered after operator confirmation.',
+    );
+  }
+}
+
+export async function resumeUser(
+  userId: string,
+  reason?: string,
+  recoverStaleClaim = false,
+): Promise<ApproveRejectResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason: reason ?? null }),
+    body: JSON.stringify({
+      reason: reason ?? null,
+      ...(recoverStaleClaim ? { recover_stale_claim: true } : {}),
+    }),
   });
+  await throwIfRecoveryAvailable(resp, 'hard_delete_resume_recovery_available');
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
@@ -389,9 +421,17 @@ export interface HardDeleteUserResponse {
   message: string;
 }
 
+export class HardDeleteRecoveryAvailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HardDeleteRecoveryAvailableError';
+  }
+}
+
 export async function hardDeleteUser(
   userId: string,
   reason?: string,
+  recoverStaleClaim = false,
 ): Promise<HardDeleteUserResponse> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -399,9 +439,14 @@ export async function hardDeleteUser(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, reason: reason ?? null }),
+      body: JSON.stringify({
+        confirm: true,
+        reason: reason ?? null,
+        recover_stale_claim: recoverStaleClaim,
+      }),
     },
   );
+  await throwIfRecoveryAvailable(resp, 'hard_delete_pre_fence_recovery_available');
   return jsonOrThrow<HardDeleteUserResponse>(resp);
 }
 

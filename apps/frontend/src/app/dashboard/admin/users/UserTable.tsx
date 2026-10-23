@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   AdminModelVisibilityItem,
   AdminUser,
@@ -35,9 +35,16 @@ interface UserTableProps {
   onReject: (userId: string, reason: string) => Promise<void>;
   onUpdate: (userId: string, patch: Record<string, unknown>) => Promise<void>;
   onSuspend: (userId: string, suspensionMessage?: string | null) => Promise<void>;
-  onResume: (userId: string) => Promise<void>;
+  onResume: (
+    userId: string,
+    recoverStaleClaim?: boolean,
+  ) => Promise<'resumed' | 'recovery_available' | 'failed'>;
   onDelete: (userId: string, reason: string) => Promise<void>;
-  onHardDelete: (userId: string, reason: string) => Promise<void>;
+  onHardDelete: (
+    userId: string,
+    reason: string,
+    recoverStaleClaim: boolean,
+  ) => Promise<'deleted' | 'recovery_available' | 'failed'>;
 }
 
 interface ConfirmAction {
@@ -281,9 +288,18 @@ export function UserTable(props: UserTableProps) {
   const doResume = async (user: AdminUser) => {
     setBusy(user.id);
     try {
-      await props.onResume(user.id);
-      setExpandedId(null);
-      setDetail(null);
+      const result = await props.onResume(user.id);
+      if (result === 'recovery_available') {
+        setHardDeleteTarget(user);
+        setHardDeleteReason('');
+        setHardDeleteEmailConfirm('');
+        setHardDeleteRecoveryAction('resume');
+        setHardDeleteRecoveryAvailable(true);
+        setHardDeleteRecoveryConfirmed(false);
+      } else if (result === 'resumed') {
+        setExpandedId(null);
+        setDetail(null);
+      }
     } finally {
       setBusy(null);
     }
@@ -293,6 +309,11 @@ export function UserTable(props: UserTableProps) {
   const [deleteReason, setDeleteReason] = useState('');
   const [hardDeleteTarget, setHardDeleteTarget] = useState<AdminUser | null>(null);
   const [hardDeleteReason, setHardDeleteReason] = useState('');
+  const [hardDeleteRecoveryAction, setHardDeleteRecoveryAction] = useState<'delete' | 'resume'>(
+    'delete',
+  );
+  const [hardDeleteRecoveryAvailable, setHardDeleteRecoveryAvailable] = useState(false);
+  const [hardDeleteRecoveryConfirmed, setHardDeleteRecoveryConfirmed] = useState(false);
   // What the admin types to confirm a permanent delete: the account's email,
   // or its login name when it has none (the first-run administrator), or as a
   // last resort its id. The backend does not see it; it is a typo guard.
@@ -308,6 +329,15 @@ export function UserTable(props: UserTableProps) {
   // Value of the optional message textarea in the confirm modal (suspend flow).
   const [confirmMessage, setConfirmMessage] = useState('');
 
+  const closeHardDeleteModal = useCallback(() => {
+    setHardDeleteTarget(null);
+    setHardDeleteReason('');
+    setHardDeleteEmailConfirm('');
+    setHardDeleteRecoveryAction('delete');
+    setHardDeleteRecoveryAvailable(false);
+    setHardDeleteRecoveryConfirmed(false);
+  }, []);
+
   // Close delete/hard-delete/reject modals if their target row leaves the
   // visible list (filter change, pagination). Without this, the modal stays
   // open with a stale target and the user could submit an action against a
@@ -318,15 +348,13 @@ export function UserTable(props: UserTableProps) {
       setDeleteReason('');
     }
     if (hardDeleteTarget && !users.some((u) => u.id === hardDeleteTarget.id)) {
-      setHardDeleteTarget(null);
-      setHardDeleteReason('');
-      setHardDeleteEmailConfirm('');
+      closeHardDeleteModal();
     }
     if (rejectTarget && !users.some((u) => u.id === rejectTarget.id)) {
       setRejectTarget(null);
       setRejectReason('');
     }
-  }, [users, deleteTarget, hardDeleteTarget, rejectTarget]);
+  }, [users, deleteTarget, hardDeleteTarget, rejectTarget, closeHardDeleteModal]);
 
   const doDelete = async () => {
     if (!deleteTarget || !deleteReason.trim()) return;
@@ -357,12 +385,35 @@ export function UserTable(props: UserTableProps) {
   const doHardDelete = async () => {
     if (!hardDeleteTarget) return;
     if (!hardDeleteConfirmTarget || hardDeleteEmailConfirm !== hardDeleteConfirmTarget) return;
+    if (hardDeleteRecoveryAvailable && !hardDeleteRecoveryConfirmed) return;
     setBusy(hardDeleteTarget.id);
     try {
-      await props.onHardDelete(hardDeleteTarget.id, hardDeleteReason.trim());
-      setHardDeleteTarget(null);
-      setHardDeleteReason('');
-      setHardDeleteEmailConfirm('');
+      const result = await props.onHardDelete(
+        hardDeleteTarget.id,
+        hardDeleteReason.trim(),
+        hardDeleteRecoveryConfirmed,
+      );
+      if (result === 'recovery_available') {
+        setHardDeleteRecoveryAvailable(true);
+        setHardDeleteRecoveryConfirmed(false);
+        return;
+      }
+      if (result !== 'deleted') return;
+      closeHardDeleteModal();
+      setExpandedId(null);
+      setDetail(null);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doRecoverResume = async () => {
+    if (!hardDeleteTarget || !hardDeleteRecoveryConfirmed) return;
+    setBusy(hardDeleteTarget.id);
+    try {
+      const result = await props.onResume(hardDeleteTarget.id, true);
+      if (result !== 'resumed') return;
+      closeHardDeleteModal();
       setExpandedId(null);
       setDetail(null);
     } finally {
@@ -570,6 +621,9 @@ export function UserTable(props: UserTableProps) {
                                 setHardDeleteTarget(target);
                                 setHardDeleteReason('');
                                 setHardDeleteEmailConfirm('');
+                                setHardDeleteRecoveryAction('delete');
+                                setHardDeleteRecoveryAvailable(false);
+                                setHardDeleteRecoveryConfirmed(false);
                               }}
                             />
                           ) : null}
@@ -737,49 +791,84 @@ export function UserTable(props: UserTableProps) {
           <div
             className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
             onClick={() => {
-              setHardDeleteTarget(null);
-              setHardDeleteReason('');
-              setHardDeleteEmailConfirm('');
+              closeHardDeleteModal();
             }}
           />
           <div className="relative mx-4 w-full max-w-md rounded-xl border border-red-200 bg-white p-5 shadow-2xl">
             <h3 className="text-[15px] font-semibold text-red-700">
-              Permanently delete {hardDeleteConfirmTarget}
+              {hardDeleteRecoveryAction === 'resume'
+                ? `Recover and resume ${hardDeleteConfirmTarget}`
+                : `Permanently delete ${hardDeleteConfirmTarget}`}
             </h3>
             <p className="mt-2 text-[12px] text-gray-600">
-              This will <span className="font-semibold text-red-700">permanently wipe</span> the
-              user row, all API keys, all api_logs, and prior audit-log entries for this user. This
-              action <span className="font-semibold">cannot be undone</span>.
+              {hardDeleteRecoveryAction === 'resume' ? (
+                <>
+                  This restores the account to active. Its API keys remain revoked and must be
+                  recreated through the normal flow.
+                </>
+              ) : (
+                <>
+                  This will <span className="font-semibold text-red-700">permanently wipe</span> the
+                  user row, all API keys, all api_logs, and prior audit-log entries for this user.
+                  This action <span className="font-semibold">cannot be undone</span>.
+                </>
+              )}
             </p>
-            <p className="mt-3 text-[12px] text-gray-500">
-              Type the user&apos;s{' '}
-              {hardDeleteConfirmKind === 'email'
-                ? 'email address'
-                : hardDeleteConfirmKind === 'login_name'
-                  ? 'username'
-                  : hardDeleteConfirmKind === 'phone'
-                    ? 'phone number'
-                    : 'user ID'}{' '}
-              (<span className="font-mono text-gray-700">{hardDeleteConfirmTarget}</span>) to
-              confirm:
-            </p>
-            <input
-              type="text"
-              className="mt-2 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono placeholder:text-gray-300 focus:border-red-400 focus:outline-none"
-              aria-label="Confirmation"
-              placeholder={
-                hardDeleteConfirmKind === 'email'
-                  ? 'email@example.com'
+            {hardDeleteRecoveryAvailable && (
+              <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900">
+                <p>
+                  The server reports that the previous deletion claim is past its recovery grace
+                  period. Confirm that all previous deletion workers are stopped before taking over.
+                </p>
+                <label className="mt-2 flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={hardDeleteRecoveryConfirmed}
+                    onChange={(event) => setHardDeleteRecoveryConfirmed(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    I confirm all previous deletion workers are stopped and want to{' '}
+                    {hardDeleteRecoveryAction === 'resume'
+                      ? 'restore this account.'
+                      : 'continue permanently deleting this user.'}
+                  </span>
+                </label>
+              </div>
+            )}
+            {hardDeleteRecoveryAction === 'delete' && (
+              <p className="mt-3 text-[12px] text-gray-500">
+                Type the user&apos;s{' '}
+                {hardDeleteConfirmKind === 'email'
+                  ? 'email address'
                   : hardDeleteConfirmKind === 'login_name'
                     ? 'username'
                     : hardDeleteConfirmKind === 'phone'
                       ? 'phone number'
-                      : 'user ID'
-              }
-              value={hardDeleteEmailConfirm}
-              onChange={(e) => setHardDeleteEmailConfirm(e.target.value)}
-              autoFocus
-            />
+                      : 'user ID'}{' '}
+                (<span className="font-mono text-gray-700">{hardDeleteConfirmTarget}</span>) to
+                confirm:
+              </p>
+            )}
+            {hardDeleteRecoveryAction === 'delete' && (
+              <input
+                type="text"
+                className="mt-2 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono placeholder:text-gray-300 focus:border-red-400 focus:outline-none"
+                aria-label="Confirmation"
+                placeholder={
+                  hardDeleteConfirmKind === 'email'
+                    ? 'email@example.com'
+                    : hardDeleteConfirmKind === 'login_name'
+                      ? 'username'
+                      : hardDeleteConfirmKind === 'phone'
+                        ? 'phone number'
+                        : 'user ID'
+                }
+                value={hardDeleteEmailConfirm}
+                onChange={(e) => setHardDeleteEmailConfirm(e.target.value)}
+                autoFocus
+              />
+            )}
             <textarea
               className="mt-3 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] placeholder:text-gray-300 focus:border-gray-400 focus:outline-none"
               rows={2}
@@ -790,24 +879,33 @@ export function UserTable(props: UserTableProps) {
             <div className="mt-3 flex justify-end gap-2">
               <button
                 onClick={() => {
-                  setHardDeleteTarget(null);
-                  setHardDeleteReason('');
-                  setHardDeleteEmailConfirm('');
+                  closeHardDeleteModal();
                 }}
                 className="rounded-md px-3 py-1.5 text-[13px] text-gray-500 hover:text-gray-900 transition"
               >
                 Cancel
               </button>
               <button
-                onClick={doHardDelete}
+                onClick={hardDeleteRecoveryAction === 'resume' ? doRecoverResume : doHardDelete}
                 disabled={
-                  !hardDeleteConfirmTarget ||
-                  hardDeleteEmailConfirm !== hardDeleteConfirmTarget ||
+                  (hardDeleteRecoveryAction === 'delete' &&
+                    (!hardDeleteConfirmTarget ||
+                      hardDeleteEmailConfirm !== hardDeleteConfirmTarget)) ||
+                  (hardDeleteRecoveryAction === 'resume' && !hardDeleteRecoveryConfirmed) ||
+                  (hardDeleteRecoveryAction === 'delete' &&
+                    hardDeleteRecoveryAvailable &&
+                    !hardDeleteRecoveryConfirmed) ||
                   busy === hardDeleteTarget.id
                 }
                 className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
               >
-                {busy === hardDeleteTarget.id ? '...' : 'Permanently Delete'}
+                {busy === hardDeleteTarget.id
+                  ? '...'
+                  : hardDeleteRecoveryAction === 'resume'
+                    ? 'Recover and Resume'
+                    : hardDeleteRecoveryAvailable
+                      ? 'Recover and Delete'
+                      : 'Permanently Delete'}
               </button>
             </div>
           </div>

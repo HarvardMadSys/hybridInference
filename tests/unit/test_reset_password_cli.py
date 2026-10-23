@@ -50,6 +50,16 @@ class _Connection:
         self.sql.append((sql, args))
         return "UPDATE 1"
 
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        """Record SQL within a transaction and discard it if the body fails."""
+        first_statement = len(self.sql)
+        try:
+            yield
+        except BaseException:
+            del self.sql[first_statement:]
+            raise
+
 
 class _Pool:
     def __init__(self, conn: _Connection) -> None:
@@ -67,6 +77,17 @@ class _Pool:
 def _database(columns: tuple[str, ...], row: dict[str, Any] | None) -> tuple[_Pool, _Connection]:
     conn = _Connection(columns, row)
     return _Pool(conn), conn
+
+
+async def test_connection_transaction_discards_statements_after_failure():
+    pool, conn = _database(COLUMNS_BEFORE_LOGIN_NAMES, None)
+
+    with pytest.raises(RuntimeError, match="abort"):
+        async with pool.acquire() as acquired, acquired.transaction():
+            await acquired.execute("UPDATE users SET status = 'deleted'")
+            raise RuntimeError("abort")
+
+    assert conn.sql == []
 
 
 def _store(account: dict[str, Any] | None) -> MagicMock:

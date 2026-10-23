@@ -71,9 +71,9 @@ function renderTable(
       onReject={vi.fn(async () => undefined)}
       onUpdate={vi.fn(async () => undefined)}
       onSuspend={vi.fn(async () => undefined)}
-      onResume={vi.fn(async () => undefined)}
+      onResume={vi.fn(async () => 'resumed' as const)}
       onDelete={vi.fn(async () => undefined)}
-      onHardDelete={vi.fn(async () => undefined)}
+      onHardDelete={vi.fn(async () => 'deleted' as const)}
       {...overrides}
     />,
   );
@@ -356,7 +356,7 @@ describe('UserTable phone-only identity', () => {
   ])(
     'requires the displayed account identifier before hard-deleting a user with phone %s',
     async (phone, identifier) => {
-      const onHardDelete = vi.fn(async () => undefined);
+      const onHardDelete = vi.fn(async () => 'deleted' as const);
       vi.mocked(getUserDetail).mockResolvedValueOnce(
         detailFixture({ email: null, phone, status: 'deleted' }),
       );
@@ -372,9 +372,34 @@ describe('UserTable phone-only identity', () => {
       fireEvent.change(input, { target: { value: identifier } });
       expect(confirm).toBeEnabled();
       fireEvent.click(confirm);
-      await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', ''));
+      await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', '', false));
     },
   );
+
+  it('offers explicit recovery when resuming a stale hard-delete claim', async () => {
+    const onResume = vi
+      .fn<(...args: [string, boolean?]) => Promise<'resumed' | 'recovery_available' | 'failed'>>()
+      .mockResolvedValueOnce('recovery_available')
+      .mockResolvedValueOnce('resumed');
+    vi.mocked(getUserDetail).mockResolvedValueOnce(detailFixture({ status: 'deleted' }));
+    vi.mocked(listModelVisibility).mockResolvedValueOnce({ models: [] });
+
+    renderTable({ ...baseUser, status: 'deleted' }, { onResume });
+    fireEvent.click(screen.getByText('user@example.com'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+
+    expect(await screen.findByText('Recover and resume user@example.com')).toBeInTheDocument();
+    const recover = screen.getByRole('button', { name: 'Recover and Resume' });
+    expect(recover).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(recover).toBeEnabled();
+    fireEvent.click(recover);
+
+    await waitFor(() => expect(onResume).toHaveBeenLastCalledWith('user-1', true));
+    await waitFor(() =>
+      expect(screen.queryByText('Recover and resume user@example.com')).toBeNull(),
+    );
+  });
 });
 
 describe('UserTable admin note', () => {
@@ -611,7 +636,7 @@ describe('UserTable for an account without an email', () => {
   });
 
   it('names the row by login name and confirms a permanent delete with it', async () => {
-    const onHardDelete = vi.fn(async () => undefined);
+    const onHardDelete = vi.fn(async () => 'deleted' as const);
     renderTable(setupAdmin, { onHardDelete });
 
     // The identity column: the login name, with the display name under it.
@@ -632,7 +657,7 @@ describe('UserTable for an account without an email', () => {
     expect(dialogSubmit).toBeEnabled();
 
     fireEvent.click(dialogSubmit);
-    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', ''));
+    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', '', false));
   });
 });
 

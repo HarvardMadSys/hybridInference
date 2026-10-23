@@ -270,4 +270,3 @@ msgstr "保持英文"
 #~ "terms and the study, so the "
 #~ "catalog leaves them out on purpose."
 #~ msgstr "服务条款，以及注册时的研究知情同意声明。它们是有约束力的文本，翻译需要由条款和研究的负责方审核，因此字典有意不包含它们。"
-

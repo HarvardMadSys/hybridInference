@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
+  HardDeleteRecoveryAvailableError,
   applyRoleQuota,
   clearOffloadRoute,
   clearRouteWeight,
@@ -9,6 +10,7 @@ import {
   deleteProviderRouteCandidate,
   getGeoAnalytics,
   getRoutewiseDecisions,
+  hardDeleteUser,
   listProviderKeyProviders,
   listOpenRouterProviderOptions,
   listProviderRoutes,
@@ -19,6 +21,7 @@ import {
   listModelVisibility,
   listOffloadRoutes,
   previewRoleQuotaApply,
+  resumeUser,
   resetRoutewiseSetting,
   runRoutewiseProbe,
   setOffloadRoute,
@@ -87,6 +90,78 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('hard delete client', () => {
+  it('sends explicit stale-claim recovery only when requested', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ user_id: 'u1', email: 'a@example.com', message: 'done' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await hardDeleteUser('u1', 'requested', true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/users/u1/hard-delete');
+    expect(JSON.parse(init.body as string)).toEqual({
+      confirm: true,
+      reason: 'requested',
+      recover_stale_claim: true,
+    });
+  });
+
+  it('surfaces recovery as available only when the server marks it eligible', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: 'hard_delete_pre_fence_recovery_available',
+            recovery_available: true,
+            message: 'stale claim',
+          },
+        }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(hardDeleteUser('u1')).rejects.toBeInstanceOf(HardDeleteRecoveryAvailableError);
+  });
+});
+
+describe('resume user client', () => {
+  it('sends explicit stale-claim recovery only when requested', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ user_id: 'u1', status: 'active', message: 'resumed' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await resumeUser('u1', undefined, true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/users/u1/resume');
+    expect(JSON.parse(init.body as string)).toEqual({ reason: null, recover_stale_claim: true });
+  });
+
+  it('surfaces stale-claim recovery eligibility from the server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: 'hard_delete_resume_recovery_available',
+            recovery_available: true,
+            message: 'stale claim',
+          },
+        }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(resumeUser('u1')).rejects.toBeInstanceOf(HardDeleteRecoveryAvailableError);
   });
 });
 

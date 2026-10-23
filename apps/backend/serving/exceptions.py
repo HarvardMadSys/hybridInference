@@ -43,6 +43,23 @@ class HardDeleteStateChanged(Exception):
     pass
 
 
+class HardDeleteRecoveryAvailable(HardDeleteStateChanged):
+    """A pending hard-delete claim passed grace and needs the server recovery path."""
+
+
+class HardDeleteSchemaPending(Exception):
+    """Hard delete is unavailable while its feature-specific columns migrate."""
+
+    MESSAGE = "Hard delete is temporarily unavailable while its database upgrade completes."
+
+    def __init__(self, message: str = MESSAGE) -> None:
+        super().__init__(message)
+
+
+class UserStateChanged(Exception):
+    """A user transition no longer matches the state validated by its caller."""
+
+
 class AccountSchemaPending(Exception):
     """The database upgrade has not yet added the account columns a write needs.
 

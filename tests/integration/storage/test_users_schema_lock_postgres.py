@@ -9,7 +9,10 @@ the columns that exist, refuses the writes that need the new ones with
 free. Refusing to start instead crash-looped the backend until the backup ended.
 
 Each test builds the ``users`` and ``login_events`` tables of the release before
-#1515 (``git show e6eb9a17~1:apps/backend/serving/storage/postgres_operational.py``)
+#1515 as of the claim-state lease columns (#1463 adds
+``hard_delete_claimed_at``/``hard_delete_claim_recovered`` to the required-at-
+startup floor, so the pre-upgrade fixture carries them)
+(``git show e6eb9a17~1:apps/backend/serving/storage/postgres_operational.py``)
 in a schema of its own, so the shared test database's tables are not touched.
 """
 
@@ -72,6 +75,8 @@ _PRE_UPGRADE_USERS = """
                               'pending_approval', 'rejected')),
         hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE,
         hard_delete_claim_token TEXT,
+        hard_delete_claimed_at TIMESTAMPTZ,
+        hard_delete_claim_recovered BOOLEAN NOT NULL DEFAULT FALSE,
         approval_note TEXT,
         reviewed_at TIMESTAMPTZ,
         reviewed_by TEXT,
@@ -340,8 +345,16 @@ async def test_erasure_works_before_the_upgrade(pool) -> None:
         await _start_deferred(store)
         await store.delete_user("u-old", admin_ip="203.0.113.7", admin_id="admin")
         claim = await store.begin_hard_delete_user("u-old")
+        await store.renew_hard_delete_user_claim("u-old", claim.token)
+        await store.release_hard_delete_user_claim("u-old", claim.token)
+        async with pool.acquire() as conn:
+            assert not await conn.fetchval(
+                "SELECT hard_delete_pending FROM users WHERE id = 'u-old'"
+            )
+        claim = await store.begin_hard_delete_user("u-old")
+        await store.renew_hard_delete_user_claim("u-old", claim.token)
         counts = await store.hard_delete_user(
-            "u-old", claim_token=claim, admin_ip="203.0.113.7", admin_id="admin"
+            "u-old", claim_token=claim.token, admin_ip="203.0.113.7", admin_id="admin"
         )
 
     assert counts["users"] == 1
