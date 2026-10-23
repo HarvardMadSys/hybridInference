@@ -168,6 +168,12 @@ describe('Header', () => {
     expect(screen.getByRole('link', { name: 'Status' })).toBeInTheDocument();
   });
 
+  it('offers guests no language button in the header', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('shows a dashboard link in the header for authenticated users', () => {
     authState = {
       isAuthenticated: true,
