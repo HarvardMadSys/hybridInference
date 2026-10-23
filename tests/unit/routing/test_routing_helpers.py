@@ -144,6 +144,7 @@ def test_has_non_empty_content_rejects_protocol_only_chunks(chunk):
         {"reasoning": "thinking"},
         {"thinking": "thinking"},
         {"tool_calls": [{"id": "call-1"}]},
+        {"function_call": {"name": "lookup", "arguments": "{}"}},
     ],
 )
 def test_has_non_empty_content_accepts_supported_delta_fields(delta):

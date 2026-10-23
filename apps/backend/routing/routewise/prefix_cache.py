@@ -33,6 +33,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
@@ -334,6 +335,14 @@ class _CacheLocalityEstimator:
             self._evidence.move_to_end(scope)
             return estimated_tokens, ev.state, decayed
 
+    def state_for(self, scope: CacheScope) -> tuple[CacheLocalityEvidenceState, float]:
+        """Return the recorded evidence state and confidence for one scope."""
+        with self._lock:
+            evidence = self._evidence.get(scope)
+            if evidence is None:
+                return CacheLocalityEvidenceState.UNKNOWN, 0.0
+            return evidence.state, evidence.confidence
+
     def invalidate(self, scope: CacheScope) -> None:
         """Remove evidence for a scope when its remembered prefix is evicted."""
         with self._lock:
@@ -498,6 +507,7 @@ class _Entry:
 
     blocks: tuple[Block, ...]
     last_seen_at: float
+    generation: int = 0
 
 
 class SessionProviderPrefixMemory:
@@ -550,12 +560,69 @@ class SessionProviderPrefixMemory:
                 last_seen_at=entry.last_seen_at,
             )
 
+    def refresh_liveness_for_generation(
+        self,
+        scope: CacheScope,
+        *,
+        generation: int,
+        now: float | None = None,
+    ) -> bool:
+        """Refresh only when the entry already belongs to ``generation``."""
+        ts = self._time() if now is None else now
+        with self._lock:
+            return self._refresh_locked(scope, generation, ts)
+
+    def adopt_generation_and_refresh_liveness(
+        self,
+        scope: CacheScope,
+        *,
+        generation: int,
+        now: float | None = None,
+    ) -> bool:
+        """Adopt a current reservation and refresh its existing entry.
+
+        The coordinator calls this while holding its generation guard. Keeping
+        both entry mutation and TTL validation behind the memory lock prevents
+        callers from reaching into this store's private lock and entries.
+        A stale generation may not move an entry backwards.
+        """
+        ts = self._time() if now is None else now
+        with self._lock:
+            entry = self._entries.get(scope)
+            if entry is None or entry.generation > generation:
+                return False
+            if self._ttl_sec > 0 and (ts - entry.last_seen_at) > self._ttl_sec:
+                return False
+            entry.generation = generation
+            entry.last_seen_at = ts
+            self._entries.move_to_end(scope)
+            return True
+
+    def _refresh_locked(
+        self,
+        scope: CacheScope,
+        generation: int,
+        ts: float,
+    ) -> bool:
+        """Refresh under the memory lock only; generation must already be validated."""
+        entry = self._entries.get(scope)
+        if entry is None:
+            return False
+        if entry.generation != generation:
+            return False
+        if self._ttl_sec > 0 and (ts - entry.last_seen_at) > self._ttl_sec:
+            return False
+        entry.last_seen_at = ts
+        self._entries.move_to_end(scope)
+        return True
+
     def observe(
         self,
         scope: CacheScope,
         blocks: Sequence[Block],
         *,
         now: float | None = None,
+        generation: int = 0,
     ) -> None:
         """Store a selected-success request for future prefix matches."""
         ts = self._time() if now is None else now
@@ -568,6 +635,7 @@ class SessionProviderPrefixMemory:
             self._entries[scope] = _Entry(
                 blocks=new_blocks,
                 last_seen_at=ts,
+                generation=generation,
             )
             self._entries.move_to_end(scope)
             self._evict_locked()
@@ -913,7 +981,7 @@ class PrefixCacheCoordinator:
                 # Scope not in memory (evicted or brand-new): clear any stale
                 # evidence before reintroducing it.
                 self._evidence.invalidate(scope)
-            self._memory.observe(scope, new_blocks, now=now)
+            self._memory.observe(scope, new_blocks, now=now, generation=generation)
             return True
 
     def reserve_generations(self, scopes: Iterable[CacheScope]) -> dict[CacheScope, int]:
@@ -931,6 +999,111 @@ class PrefixCacheCoordinator:
             for scope in unique_scopes:
                 self._track_generation(scope, generation)
             return dict.fromkeys(unique_scopes, generation)
+
+    def record_outcome(
+        self,
+        *,
+        scope: CacheScope,
+        blocks: Sequence[Block],
+        outcome: Any,
+        observed_cached_tokens: int | None = None,
+        generation: int | None = None,
+    ) -> bool:
+        """Apply one completed request's result to remembered prefix state.
+
+        Defense in depth for the incident invariant: the gate is re-derived from
+        ``outcome`` here rather than trusting the caller, so the guarantee holds
+        even if the router-level check is bypassed.
+
+        * An outcome that admits real work replaces the remembered blocks and
+          records authoritative observed cache usage when the provider supplied
+          it.
+        * Any other outcome refreshes liveness only. The stored blocks are left
+          exactly as they are, so a warmup notice or an indeterminate result can
+          neither overwrite nor age out strong locality evidence.
+        """
+        # Resolve and validate the generation BEFORE touching memory, on both the
+        # positive and the negative path. _claim_generation returns None for a
+        # supplied generation whose guard was evicted or superseded.
+        with self._generation_lock:
+            generation = self._claim_generation(scope, generation)
+        if generation is None:
+            return False
+
+        # Warming requires positive evidence that work happened. Admitting on the
+        # absence of a negative -- admitting UNKNOWN because it is not on a
+        # blacklist -- would make a caller that forgot to classify silently
+        # restore the incident, so the test is admits_real_work and nothing else.
+        if not bool(getattr(outcome, "admits_real_work", False)):
+            if observed_cached_tokens is not None:
+                # Provider-reported cache usage is authoritative evidence even
+                # for a non-progress completion: a warmup 200 with
+                # cached_tokens=0 contradicts a warm entry and must degrade its
+                # evidence. Record it once without treating the request as a
+                # materialization candidate.
+                self.record_evidence(
+                    scope,
+                    observed_cached_tokens,
+                    generation=generation,
+                    blocks=tuple(blocks),
+                    materialization_candidate=False,
+                )
+            # The provider answered, so the scope is provably live and a
+            # transient hiccup must not age strong evidence out through the TTL.
+            # But the stored blocks are left exactly as they are: a short
+            # transient response must not overwrite what a warm conversation
+            # established.
+            #
+            # The entry stores the generation that created it; the reservation
+            # belongs to this completion. Reconciliation and refresh are both
+            # under the generation guard so a concurrent reservation cannot
+            # supersede this completion between validation and mutation.
+            with self._generation_lock:
+                if self._scope_generations.get(scope) != generation:
+                    return False
+                self._memory.adopt_generation_and_refresh_liveness(
+                    scope,
+                    generation=generation,
+                )
+            return False
+
+        if not self.remember(scope, tuple(blocks), generation=generation):
+            return False
+        if observed_cached_tokens is not None:
+            # A successful request gets one authoritative observation after the
+            # remembered prefix is current. Recording before ``remember`` too
+            # would count the same cache reading twice when blocks are unchanged.
+            self.record_evidence(
+                scope,
+                observed_cached_tokens,
+                generation=generation,
+                blocks=tuple(blocks),
+                materialization_candidate=True,
+            )
+        else:
+            self.record_dispatch(scope, generation=generation)
+        return True
+
+    def lookup_state(self, scope: CacheScope) -> Any:
+        """Return the remembered blocks plus their evidence state for ``scope``.
+
+        Lets tests and diagnostics assert on what is actually believed -- both
+        the blocks and whether they are backed by verified reuse evidence --
+        rather than inferring it from a cost estimate.
+        """
+        with self._generation_lock:
+            blocks = self._memory.current_blocks(scope)
+            state, confidence = self._evidence.state_for(scope)
+        return SimpleNamespace(
+            blocks=blocks,
+            # ``present`` is the honest question for "is anything remembered
+            # here at all": a scope with no entry must report False so callers
+            # never read ``None`` blocks as a remembered-but-empty prefix.
+            present=blocks is not None,
+            verified=state == CacheLocalityEvidenceState.VERIFIED_REUSABLE,
+            evidence=state,
+            confidence=confidence,
+        )
 
     def _claim_generation(self, scope: CacheScope, generation: int | None) -> int | None:
         if generation is None:

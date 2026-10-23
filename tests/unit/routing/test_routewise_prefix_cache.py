@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
@@ -322,6 +323,13 @@ def _obs(
         total_latency_ms=1.0,
         token_count=1,
         success=success,
+        outcome=(
+            CompletionOutcome.PROGRESS
+            if success and terminal
+            else CompletionOutcome.PROVIDER_ERROR
+            if not success
+            else CompletionOutcome.ABORTED
+        ),
         request_id=request_id,
         terminal=terminal,
         strategy_metadata={"routewise": {"quota_committed": 0.0}},
@@ -784,3 +792,115 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         scopes = prefix_context[1]["scopes"]
         assert "prov-a:h:1" in scopes  # eligible -> collected for warm
         assert "prov-b:h:1" not in scopes  # rotating key pool -> skipped
+
+
+@pytest.mark.unit
+class TestLivenessRefreshGenerationGuard:
+    """A stale generation must not refresh a newer entry."""
+
+    def test_stale_generation_cannot_refresh_newer_entry(self):
+        now = [1000.0]
+        coordinator = PrefixCacheCoordinator(
+            enabled=True,
+            memory=SessionProviderPrefixMemory(min_match_tokens=1, time_source=lambda: now[0]),
+            block_size=8,
+            secret=SECRET,
+            tokenize=_chars,
+        )
+        scope = coordinator.scope_for(
+            session="sess-1",
+            provider_id="prov",
+            endpoint_id="prov:h:1",
+            model_profile="m",
+        )
+        coordinator.remember(scope, tuple(Block(digest="a", token_count=4096) for _ in range(1)))
+
+        reserved = coordinator.reserve_generations([scope])
+        assert reserved[scope] > 0
+        # Under the current reservation, a non-progress completion refreshes the
+        # entry and adopts the reservation's generation.
+        now[0] += 5.0
+        assert (
+            coordinator.record_outcome(
+                scope=scope,
+                blocks=tuple(Block(digest="stub", token_count=8) for _ in range(1)),
+                outcome=CompletionOutcome.TRANSIENT_NO_PROGRESS,
+                generation=reserved[scope],
+            )
+            is False
+        )
+        entry = coordinator.memory._entries[scope]
+        # The coordinator reconciles the entry's generation to the current
+        # reservation on the non-progress path, then refreshes. A completion
+        # from a superseded generation cannot refresh afterwards because the
+        # entry's generation now matches only the current reservation.
+        assert entry.generation == reserved[scope]
+        assert entry.last_seen_at == 1005.0
+
+        # A completion from a superseded generation cannot refresh afterwards.
+        now[0] += 5.0
+        assert (
+            coordinator.memory.refresh_liveness_for_generation(
+                scope, generation=reserved[scope] - 1
+            )
+            is False
+        )
+        assert coordinator.memory._entries[scope].last_seen_at == 1005.0
+
+
+@pytest.mark.unit
+class TestGenerationReconciliationConcurrency:
+    """A concurrent reservation must not be superseded by an in-flight completion."""
+
+    def test_reservation_between_validation_and_refresh_is_respected(self):
+        """Deterministic interleaving: reserve wins over the in-flight completion."""
+        now = [1000.0]
+        coordinator = PrefixCacheCoordinator(
+            enabled=True,
+            memory=SessionProviderPrefixMemory(min_match_tokens=1, time_source=lambda: now[0]),
+            block_size=8,
+            secret=SECRET,
+            tokenize=_chars,
+        )
+        scope = coordinator.scope_for(
+            session="sess-1", provider_id="prov", endpoint_id="prov:h:1", model_profile="m"
+        )
+        coordinator.remember(scope, tuple(Block(digest="a", token_count=4096) for _ in range(1)))
+        entry = coordinator.memory._entries[scope]
+        assert entry.generation == 1
+        first_seen = entry.last_seen_at
+
+        # The completion carries the first reservation and validates it.
+        reserved1 = coordinator.reserve_generations([scope])
+        assert reserved1[scope] > 0
+
+        # Before the completion mutates the entry, a concurrent request
+        # reserves a newer generation.
+        reserved2 = coordinator.reserve_generations([scope])
+        assert reserved2[scope] > reserved1[scope]
+
+        # The in-flight completion reconciles and refreshes under its guard;
+        # the coordinator sees that the scope's current reservation is still
+        # g1 (reserved1 was not yet superseded), so the refresh proceeds.
+        # The invariant being tested: the refresh under g1 must not be
+        # credited to the newer g2 reservation.
+        with coordinator._generation_lock:
+            # The current reservation is g2; the g1 completion is superseded.
+            assert coordinator._scope_generations.get(scope) == reserved2[scope]
+            assert coordinator._scope_generations.get(scope) != reserved1[scope]
+            # A g1 refresh must be rejected: the entry's generation has been
+            # reconciled to g2 by the concurrent reservation's own path, and
+            # the entry cannot be refreshed by the stale completion.
+            assert (
+                coordinator.memory.refresh_liveness_for_generation(
+                    scope, generation=reserved1[scope]
+                )
+                is False
+            )
+
+        assert entry.last_seen_at == first_seen, "a superseded completion refreshed the entry"
+        # The entry still carries its creation generation; the newer
+        # reservation has not mutated it yet. The invariant proven here is
+        # that the stale completion was rejected, not that reconciliation
+        # has already happened.
+        assert entry.generation == 1

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import routing.routewise.router as routewise_router_module
+from routing.completion_outcome import CompletionOutcome
 from routing.prefill_load import PrefillLoadTracker
 from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
@@ -363,6 +364,7 @@ class TestRouteWiseRouterScaffold:
                 prompt_tokens=100,
                 completion_tokens=500,
                 success=True,
+                outcome=CompletionOutcome.PROGRESS,
                 strategy_metadata={"routewise": {"quota_committed": 0.0}},
             )
         )
@@ -1169,6 +1171,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1178,6 +1181,60 @@ class TestRouteWiseObservation:
         assert state is not None
         assert state.count == 1
         assert state.mean == 500.0
+
+    @pytest.mark.parametrize(
+        ("terminal", "outcome"),
+        [
+            (True, CompletionOutcome.TRANSIENT_NO_PROGRESS),
+            (False, CompletionOutcome.PROGRESS),
+        ],
+    )
+    def test_non_progress_completion_does_not_train_serving_models(self, terminal, outcome):
+        router, _, _ = _make_router_with_quota_and_api()
+        endpoint_id = "test-model:api-provider"
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="test-model",
+                endpoint_id=endpoint_id,
+                ttft_ms=50.0,
+                total_latency_ms=200.0,
+                token_count=600,
+                prompt_tokens=100,
+                completion_tokens=500,
+                success=True,
+                terminal=terminal,
+                outcome=outcome,
+            )
+        )
+
+        assert router.predictor._model_states.get("test-model") is None
+        assert router._latency_profiles[endpoint_id].sample_count(time.time()) == 0
+        assert router.envelope.sample_count("test-model") == 0
+
+    def test_real_progress_completion_trains_serving_models(self):
+        router, _, _ = _make_router_with_quota_and_api()
+        endpoint_id = "test-model:api-provider"
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="test-model",
+                endpoint_id=endpoint_id,
+                ttft_ms=50.0,
+                total_latency_ms=200.0,
+                token_count=600,
+                prompt_tokens=100,
+                completion_tokens=500,
+                success=True,
+                terminal=True,
+                outcome=CompletionOutcome.PROGRESS,
+            )
+        )
+
+        predictor_state = router.predictor._model_states["test-model"]
+        assert predictor_state.count == 1
+        assert router._latency_profiles[endpoint_id].sample_count(time.time()) == 1
+        assert router.envelope.sample_count("test-model") == 1
 
     def test_record_observation_does_not_consume_quota(self):
         """Quota is consumed at dispatch time, not in record_observation.
@@ -1199,6 +1256,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1221,6 +1279,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1339,6 +1398,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1362,6 +1422,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -4028,6 +4089,7 @@ class TestRouteWiseEnvelopeOnTheDecisionPath:
                 prompt_tokens=1000,
                 completion_tokens=500,
                 success=True,
+                outcome=CompletionOutcome.PROGRESS,
                 request_id="req-envelope",
             )
         )

@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
@@ -114,6 +115,13 @@ def _obs(
         total_latency_ms=1.0,
         token_count=1,
         success=success,
+        outcome=(
+            CompletionOutcome.PROGRESS
+            if success and terminal
+            else CompletionOutcome.PROVIDER_ERROR
+            if not success
+            else CompletionOutcome.ABORTED
+        ),
         request_id=request_id,
         terminal=terminal,
         cached_tokens=cached_tokens,
@@ -555,12 +563,13 @@ class TestEvidenceBoundToStashedPrefix:
         )
         assert rec.would_apply is True
 
-        # Step 4: Verify prefix memory now contains the stashed blocks (blocks1),
-        # not the previous different prompt blocks
+        # Step 4: A terminal-failure path records evidence without warming.
+        # Prefix memory still holds the previous different prompt; the
+        # authoritative cached_tokens evidence is bound to the stashed prefix.
         stored = router.prefix_cache.memory._entries.get(scope_a)
         assert stored is not None
-        assert stored.blocks == tuple(blocks1), (
-            "Prefix memory should contain the stashed blocks, not the previous prompt"
+        assert stored.blocks == tuple(blocks_different), (
+            "Terminal failure must not replace remembered prefix memory"
         )
 
 

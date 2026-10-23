@@ -65,11 +65,17 @@ class _FakeEventSink:
 
     def __init__(self) -> None:
         self.successes: list[str] = []
+        self.success_outcomes: list[Any] = []
+        self.liveness: list[str] = []
         self.failures: list[tuple[str, str]] = []
         self.failure_excs: list[BaseException | None] = []
 
-    def record_success(self, endpoint_id: str) -> None:
+    def record_liveness(self, endpoint_id: str) -> None:
+        self.liveness.append(endpoint_id)
+
+    def record_success(self, endpoint_id: str, *, outcome: Any) -> None:
         self.successes.append(endpoint_id)
+        self.success_outcomes.append(outcome)
 
     def record_failure(
         self,
@@ -2566,6 +2572,34 @@ class TestToolCallsWinnerDetection:
         assert "test:reasoning-primary" in sink.successes
 
     @pytest.mark.asyncio
+    async def test_thinking_delta_closes_the_endpoint_breaker(self, monkeypatch):
+        """A thinking-first stream records semantic progress in endpoint health."""
+        monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
+        sink = EndpointHealthRegistry()
+        thinking_chunk = 'data: {"choices":[{"delta":{"thinking":"reasoning first"}}]}\n\n'
+        primary = _make_fake_adapter(
+            provider="thinking-primary",
+            stream_chunks=[thinking_chunk, "data: [DONE]\n\n"],
+            stream_delay=0.0,
+        )
+        endpoint = primary.config.endpoint_id or primary.config.provider
+        for _ in range(3):
+            sink.record_failure(endpoint, reason="test")
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        async for _chunk in hedged.stream_chat_completion([{"role": "user", "content": "think"}]):
+            pass
+
+        assert sink.snapshot()[endpoint]["circuit_state"] == "closed"
+        assert sink._circuits[endpoint].consecutive_failures == 0
+
+    @pytest.mark.asyncio
     async def test_reasoning_content_resolves_race_before_visible_content(self):
         """The race should return on reasoning_content without waiting for visible content."""
         sink = _FakeEventSink()
@@ -2878,3 +2912,155 @@ class TestNonStreamingBackupPhaseTracking:
         assert elapsed < 0.6, f"Expected backup to continue, took {elapsed:.2f}s"
         assert ("test:fail-primary", "RuntimeError") in sink.failures
         assert "test:good-backup" in sink.successes
+
+
+@pytest.mark.unit
+class TestHedgedWinnerOutcomeClassification:
+    """A hedge winner must be classified from its actual content, not hard-coded."""
+
+    @pytest.mark.asyncio
+    async def test_nonstreaming_warmup_winner_records_transient_not_progress(self):
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(
+            provider="warmup-primary",
+            chat_result={"choices": [{"message": {"content": "The model is starting up..."}}]},
+        )
+        backup = _make_fake_adapter(
+            provider="warmup-backup",
+            chat_result={"choices": [{"message": {"content": "The model is starting up..."}}]},
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.0,
+            event_sink=sink,
+        )
+
+        result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
+
+        from routing.completion_outcome import CompletionOutcome
+
+        assert sink.success_outcomes[-1] is CompletionOutcome.TRANSIENT_NO_PROGRESS
+        assert result["choices"][0]["message"]["content"] == "The model is starting up..."
+
+    @pytest.mark.asyncio
+    async def test_nonstreaming_tool_call_winner_records_progress(self):
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(
+            provider="tool-primary",
+            chat_result={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "call-1", "type": "function", "function": {"name": "lookup"}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        backup = _make_fake_adapter(provider="tool-backup", chat_result={"choices": []})
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        await hedged.chat_completion([{"role": "user", "content": "look this up"}])
+
+        from routing.completion_outcome import CompletionOutcome
+
+        assert sink.success_outcomes == [CompletionOutcome.PROGRESS]
+
+    @pytest.mark.asyncio
+    async def test_streaming_buffer_cap_win_records_liveness_not_progress(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A cap-only buffer win with no content must not record serving success."""
+        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 120)
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(provider="cap-only-primary")
+
+        async def _keepalives_only(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            for _ in range(3):
+                yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            await asyncio.Event().wait()
+
+        primary.stream_chat_completion = _keepalives_only
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        try:
+            for _ in range(3):
+                await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        finally:
+            await stream.aclose()
+
+        from routing.completion_outcome import CompletionOutcome
+
+        assert sink.success_outcomes == [CompletionOutcome.EMPTY], (
+            "a cap-only win recorded something other than EMPTY"
+        )
+        assert "test:cap-only-primary" not in sink.liveness
+
+
+@pytest.mark.unit
+class TestFragmentedWarmupStreaming:
+    """A warmup notice split across SSE chunks must not close the breaker."""
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "Please wait while the model sta",
+            "Model is loading, please",
+            "The model is starting up - this takes about 12",
+        ],
+    )
+    def test_pattern_fragments_remain_possible_warmup_prefixes(self, prefix):
+        assert hedging_module._could_still_become_warmup(prefix)
+
+    @pytest.mark.asyncio
+    async def test_streaming_fragmented_warmup_records_transient_not_progress(self):
+        sink = _FakeEventSink()
+        warmup_chunks = [
+            'data: {"choices":[{"delta":{"content":"The model"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":" is starting up - this takes"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":" about 120 seconds. Please wait..."}}]}\n\n',
+        ]
+        primary = _make_fake_adapter(
+            provider="fragmented-warmup-primary", stream_chunks=warmup_chunks
+        )
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+            stream_race_deadline_sec=0.05,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        try:
+            # The race keeps pulling while the accumulated prefix could still
+            # be a warmup notice, so consume every chunk and let the stream
+            # finish before asserting.
+            while True:
+                try:
+                    await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    break
+        finally:
+            await stream.aclose()
+
+        assert sink.success_outcomes == [], "a fragmented warmup must not record a serving success"

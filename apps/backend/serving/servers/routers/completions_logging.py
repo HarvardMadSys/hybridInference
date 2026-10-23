@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+from routing.response_text import response_text
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
@@ -95,6 +97,57 @@ class CompletionsLogger:
 
     # -- Routing observation forwarding -------------------------------------
 
+    @staticmethod
+    def classify_outcome(
+        *,
+        success: bool,
+        response_body: Any,
+        usage: dict[str, Any] | None,
+    ) -> CompletionOutcome:
+        """Classify a completed response once, for every logging consumer.
+
+        This is the single authoritative classification point *for the logging
+        layer* (completion outcomes recorded with the request log). Both the
+        streaming and non-streaming completion paths funnel through
+        ``record_routing_observation``, so classifying here -- rather than at
+        each logging consumer -- gives the recorded outcome one shared authority
+        instead of letting each reconstruct a verdict from partial local
+        information.
+
+        Deliberately NOT the router's classification: routing already judged
+        this completion in its own success path
+        (``FixedRouter``/``RouteWiseRouter._on_success`` via
+        ``classify_completion_outcome``), at a different lifecycle boundary --
+        the router's verdict drives admission, breaker and locality state
+        inside the routing transaction, while this one stamps the durable log
+        row after the response is fully buffered. Sharing those two calls
+        would require threading an outcome carrier across the serving/routing
+        boundary; re-classifying here is the accepted cost (see the
+        classification benchmark in the PR notes: bounded regex work on text
+        already in memory, dwarfed by the DB write that follows). The two
+        share the same primitives -- ``response_text`` and
+        ``classify_completion_outcome`` -- so for a given body and usage they
+        agree; known divergence in tool-call extraction is tracked in review.
+
+        Transport success is not semantic success: a provider can answer HTTP 200
+        with a well-formed body whose only content is a warmup notice. On the
+        success path the upstream status is necessarily 2xx (a failure would have
+        raised), so the status is known without re-reading the response. The
+        failure path has no body worth trusting and reports as a provider error.
+
+        The shared ``response_text`` helper handles the tool-call sentinel, so
+        this method and the router success paths extract identically.
+        """
+        if not success:
+            return CompletionOutcome.PROVIDER_ERROR
+        content = response_body if isinstance(response_body, str) else response_text(response_body)
+        return classify_completion_outcome(
+            content=content,
+            usage=usage,
+            http_status=200,
+            terminal=True,
+        )
+
     def record_routing_observation(
         self,
         active_router: Any,
@@ -108,6 +161,7 @@ class CompletionsLogger:
         completion_tokens: int,
         success: bool,
         cached_tokens: int | None = None,
+        response_body: Any = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -146,12 +200,18 @@ class CompletionsLogger:
                     success=False,
                     request_id=request_id,
                     terminal=False,
+                    outcome=CompletionOutcome.PROVIDER_ERROR,
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
             )
 
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
+        outcome = self.classify_outcome(
+            success=success,
+            response_body=response_body,
+            usage={"completion_tokens": completion_tokens} if completion_tokens else None,
+        )
         obs = RoutingObservation(
             model_id=model_id,
             endpoint_id=endpoint_id or provider or "unknown",
@@ -163,6 +223,7 @@ class CompletionsLogger:
             success=success,
             request_id=request_id,
             terminal=True,
+            outcome=outcome,
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
         )

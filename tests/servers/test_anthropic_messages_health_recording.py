@@ -317,7 +317,11 @@ async def test_streaming_success_recorded_once_per_stream(
     """Many content deltas must not inflate the endpoint's success count."""
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
 
     async def _iter():
         yield _MESSAGE_START
@@ -350,7 +354,11 @@ async def test_streaming_without_content_records_no_success(
     registry = anthropic_compat_router.endpoint_health_registry
     success_calls: list[str] = []
     failure_calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
 
     empty_delta = (
@@ -500,7 +508,11 @@ async def test_streaming_client_disconnect_is_not_an_upstream_failure(
     failure_calls: list[str] = []
     success_calls: list[str] = []
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
 
     async def _iter():
         yield _MESSAGE_START + _TEXT_DELTA
@@ -689,3 +701,52 @@ async def test_a_client_error_probe_leaves_the_endpoint_probeable(
     # 400 again, not the 503 a held probe would produce.
     assert second.status_code == 400
     await asyncio.sleep(0)
+
+
+# --- thinking-first stream regression ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thinking_first_stream_records_success(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store
+):
+    """A thinking-first stream must record serving success after the stream ends."""
+    registry = anthropic_compat_router.endpoint_health_registry
+    success_outcomes = []
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, *, outcome: success_outcomes.append(outcome),
+    )
+
+    async def _iter():
+        yield _MESSAGE_START
+        yield (
+            b'event: content_block_start\ndata: {"type":"content_block_start",'
+            b'"index":0,"content_block":{"type":"thinking"}}\n\n'
+        )
+        yield (
+            b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            b'"index":0,"delta":{"type":"thinking_delta","thinking":"thinking..."}}\n\n'
+        )
+        yield (
+            b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            b'"index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n'
+        )
+        yield (b'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n')
+        yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+    ) as r:
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert success_outcomes, "thinking-first stream recorded no success"
+    from routing.completion_outcome import CompletionOutcome
+
+    assert success_outcomes[-1] == CompletionOutcome.PROGRESS

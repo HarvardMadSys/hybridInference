@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import (
     EndpointHealthRegistry,
     _CircuitState,
@@ -73,7 +74,7 @@ def test_client_errors_are_breaker_exempt(monkeypatch):
         assert _is_client_error(_StatusError(code)) is True, code
         registry = EndpointHealthRegistry()
         endpoint_id = f"client-error-{code}"
-        registry.record_success(endpoint_id)
+        registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
         baseline = registry.snapshot()[endpoint_id]["availability"]
 
         registry.record_failure(
@@ -96,7 +97,7 @@ def test_overload_and_server_errors_still_count(monkeypatch):
         assert _is_client_error(_StatusError(code)) is False, code
         registry = EndpointHealthRegistry()
         endpoint_id = f"upstream-error-{code}"
-        registry.record_success(endpoint_id)
+        registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
         baseline = registry.snapshot()[endpoint_id]["availability"]
 
         registry.record_failure(
@@ -121,7 +122,7 @@ def test_repeated_4xx_never_opens_circuit(monkeypatch):
     # Register the endpoint with a healthy baseline so we can prove the 4xx
     # failures leave its state (and availability) untouched, rather than the
     # endpoint simply never appearing.
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
     # Far more 400s than the failure threshold — the breaker must stay closed
@@ -245,7 +246,7 @@ def test_upstream_sse_error_frame_reaches_the_exemption(monkeypatch):
 
     registry = EndpointHealthRegistry()
     endpoint_id = "kimi-k2.7-code:staging-api"
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
     registry.record_failure(

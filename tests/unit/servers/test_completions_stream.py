@@ -1503,3 +1503,50 @@ async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
     assert log_data["status_code"] == 200
     message = log_data["response"]["choices"][0]["message"]
     assert message["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+@pytest.mark.anyio
+async def test_stream_finalizer_routes_semantic_outcomes_from_real_chunks():
+    """Warmup text stays transient; answer text and tool calls establish progress."""
+    from routing.completion_outcome import CompletionOutcome
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.observations = []
+
+        def record_observation(self, observation) -> None:
+            self.observations.append(observation)
+
+    async def observe(chunks: list[str]):
+        router = Recorder()
+        session = _make_session(completions_logger=CompletionsLogger(log_store=None))
+        session._active_router = router
+        session._log_store = None
+        session._suppress_synthetic_logging = True
+        await _consume(session.stream(_aiter(chunks)))
+        assert len(router.observations) == 1
+        return router.observations[0]
+
+    usage = _usage_chunk("gpt-4", {"prompt_tokens": 10, "completion_tokens": 20})
+    warmup = await observe(
+        [
+            _content_chunk(
+                "gpt-4",
+                "The model is starting up - this takes about 120 seconds. Please wait...",
+                finish="stop",
+            ),
+            usage,
+        ]
+    )
+    assert warmup.success is True
+    assert warmup.completion_tokens == 20
+    assert warmup.outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+    assert warmup.admits_real_work is False
+
+    answer = await observe([_content_chunk("gpt-4", "The answer is 42.", finish="stop"), usage])
+    assert answer.outcome is CompletionOutcome.PROGRESS
+    assert answer.admits_real_work is True
+
+    tool_call = await observe([*_tool_call_stream("{}"), usage])
+    assert tool_call.outcome is CompletionOutcome.PROGRESS
+    assert tool_call.admits_real_work is True
