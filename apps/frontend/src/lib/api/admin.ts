@@ -2421,6 +2421,19 @@ export interface ProviderRoute {
   override_applied?: boolean;
   updated_at: string | null;
   updated_by: string | null;
+  /** What the route serves with now. */
+  capabilities?: RouteCapabilities;
+  /** What it has from models.yaml or its creation; differs only while overridden. */
+  capabilities_baseline?: RouteCapabilities;
+  capabilities_overridden?: boolean;
+}
+
+/** A route's context window, output cap, input modalities and tool support, as served. */
+export interface RouteCapabilities {
+  context_length: number;
+  max_output_length: number;
+  input_modalities: string[];
+  supports_tools: boolean;
 }
 
 export interface ListProviderRoutesResponse {
@@ -2463,13 +2476,15 @@ export interface CreateProviderRoutePayload {
   quota_limit?: number | null;
   concurrency_limit?: number | null;
   weight: number;
+  /** Each route declares its own; a new route never takes the first route's. */
+  capabilities: RuntimeModelCapabilities;
 }
 
 export interface UpdateProviderRouteCandidatePayload {
   concurrency_limit: number;
 }
 
-/** What a runtime model accepts; every field is required when it is created. */
+/** What a route accepts; every field is required when it is declared or edited. */
 export interface RuntimeModelCapabilities {
   context_length: number;
   max_output_length: number;
@@ -2482,7 +2497,6 @@ export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayl
   strategy: ProviderRouteStrategy;
   required_role?: Role;
   pricing: Record<string, string>;
-  capabilities: RuntimeModelCapabilities;
 }
 
 export interface VerifyProviderRouteResponse {
@@ -2626,6 +2640,37 @@ export async function updateProviderRouteCandidate(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+/** Set one route's capabilities; they hold until reset and survive restarts. */
+export async function updateProviderRouteCapabilities(
+  modelId: string,
+  routeId: string,
+  capabilities: RuntimeModelCapabilities,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-capabilities/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(capabilities),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+/** Return one route to the capabilities it has from models.yaml or its creation. */
+export async function resetProviderRouteCapabilities(
+  modelId: string,
+  routeId: string,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-capabilities/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    { method: 'DELETE' },
   );
   return jsonOrThrow<ProviderRoute>(resp);
 }

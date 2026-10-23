@@ -945,6 +945,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
         )
 
+        # Admin-set capabilities for one route (context window, output cap, input
+        # modalities, tool support). A row overrides the route's models.yaml values
+        # or the values it was created with; no row means the route keeps those.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_route_capabilities (
+                model_id TEXT NOT NULL,
+                route_id TEXT NOT NULL,
+                capabilities JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, route_id)
+            )
+        """)
+
         # Admin-controlled kill switch: a row here means the provider label is
         # excluded from routing (all its endpoints treated as weight 0). Empty
         # table = every provider enabled, so the default state needs no seeding.
@@ -3632,6 +3646,58 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def list_route_capability_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return admin capability overrides for one model's routes, ordered by route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, capabilities, updated_at, updated_by "
+                "FROM provider_route_capabilities WHERE model_id = $1 ORDER BY route_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_route_capability_overrides(self) -> list[Row]:
+        """Return all admin capability override rows ordered by model_id and route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, capabilities, updated_at, updated_by "
+                "FROM provider_route_capabilities ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_route_capability_override(
+        self,
+        model_id: str,
+        route_id: str,
+        capabilities: dict[str, Any],
+        updated_by: str | None,
+    ) -> None:
+        """Upsert the capabilities an admin set for one route."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_route_capabilities "
+                "(model_id, route_id, capabilities, updated_at, updated_by) "
+                "VALUES ($1, $2, $3::jsonb, NOW(), $4) "
+                "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                "capabilities = EXCLUDED.capabilities, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                route_id,
+                json.dumps(capabilities),
+                updated_by,
+            )
+
+    async def delete_route_capability_override(self, model_id: str, route_id: str) -> bool:
+        """Delete one route's capability override. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_route_capabilities WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
     async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
         """Return provider route override rows for one model ordered by route_id."""
         async with self._pool.acquire() as conn:
@@ -3851,6 +3917,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_weight_overrides WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_capabilities WHERE model_id = $1",
                 model_id,
             )
             await conn.execute(
