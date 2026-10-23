@@ -271,6 +271,7 @@ Beyond the model fields above, a route entry accepts:
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
+| `include_usage_in_stream` | bool | Whether this upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only; a model-wide value is a config error. Defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. Set `false` on an endpoint that rejects unknown body fields |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
 
 A route reports its `kind` as the provider label — the value recorded in
