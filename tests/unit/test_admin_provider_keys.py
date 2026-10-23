@@ -402,14 +402,17 @@ def test_configured_env_keys_read_every_numbered_setting(monkeypatch):
     ]
 
 
-def test_configured_env_keys_strip_like_an_adapters_static_key(monkeypatch):
-    """A trailing newline must not make one credential two keys with two ids."""
+def test_configured_env_keys_keep_the_raw_setting_value(monkeypatch):
+    """Not stripped: env ids, tombstones and tier reservations hash the raw value.
+
+    Normalizing it would give an existing padded key a new identity, so routes
+    pinned to the old id, a disable and a reservation would all stop applying.
+    """
     for index in range(1, 21):
         monkeypatch.delenv(f"CHUTES_API_KEY{index}", raising=False)
     monkeypatch.setenv("CHUTES_API_KEY", "chutes-key-base\n")
-    monkeypatch.setenv("CHUTES_API_KEY1", " chutes-key-base")
 
-    assert dynamic_keys.configured_env_keys_for_provider("chutes") == ["chutes-key-base"]
+    assert dynamic_keys.configured_env_keys_for_provider("chutes") == ["chutes-key-base\n"]
 
 
 def test_env_key_candidates_are_pools_then_settings_then_pool_less_statics(monkeypatch):
