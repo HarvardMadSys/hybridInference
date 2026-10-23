@@ -157,8 +157,15 @@ class ClaudeAdapter(BaseAdapter):
             if converted_tools:
                 payload["tools"] = converted_tools
 
-                if params.get("tool_choice"):
-                    convert_tool_choice(params["tool_choice"], payload)
+                if params.get("tool_choice") or params.get("parallel_tool_calls") is False:
+                    convert_tool_choice(params.get("tool_choice"), payload)
+                    if params.get("parallel_tool_calls") is False:
+                        choice = payload.get("tool_choice")
+                        if choice is None:
+                            choice = {"type": "auto"}
+                            payload["tool_choice"] = choice
+                        if choice.get("type") in {"auto", "any", "tool"}:
+                            choice["disable_parallel_tool_use"] = True
 
         # Build endpoint URL (non-streaming)
         endpoint = f"{self.config.base_url.rstrip('/')}/v1:rawPredict"
@@ -250,8 +257,15 @@ class ClaudeAdapter(BaseAdapter):
             if converted_tools:
                 payload["tools"] = converted_tools
 
-                if params.get("tool_choice"):
-                    convert_tool_choice(params["tool_choice"], payload)
+                if params.get("tool_choice") or params.get("parallel_tool_calls") is False:
+                    convert_tool_choice(params.get("tool_choice"), payload)
+                    if params.get("parallel_tool_calls") is False:
+                        choice = payload.get("tool_choice")
+                        if choice is None:
+                            choice = {"type": "auto"}
+                            payload["tool_choice"] = choice
+                        if choice.get("type") in {"auto", "any", "tool"}:
+                            choice["disable_parallel_tool_use"] = True
 
         # Build endpoint URL (streaming)
         endpoint = f"{self.config.base_url.rstrip('/')}/v1:streamRawPredict"

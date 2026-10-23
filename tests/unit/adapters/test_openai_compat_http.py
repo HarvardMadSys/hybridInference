@@ -212,6 +212,50 @@ async def test_tools_and_tool_choice_reach_the_upstream(upstream, mode):
 
 
 @pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_parallel_tool_calls_reaches_the_upstream_only_when_supported(upstream, mode):
+    # The Anthropic surface's tool_choice.disable_parallel_tool_use arrives
+    # here as the top-level OpenAI switch (issue #876 P3). It is a
+    # declared-capability param like reasoning_effort: forwarded when the
+    # model's supported_params name it, dropped when they do not — a
+    # provider that rejects the field must not start seeing it.
+    adapter = _adapter(
+        upstream,
+        supported_params=["temperature", "max_tokens", "parallel_tool_calls"],
+    )
+    params = {"tools": TOOLS, "tool_choice": "auto", "parallel_tool_calls": False}
+    if mode == "chat":
+        await adapter.chat_completion(USER, **params)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(adapter, **params)
+    assert upstream.sent["parallel_tool_calls"] is False
+
+    undeclared = _adapter(upstream)  # supported_params without the switch
+    if mode == "chat":
+        await undeclared.chat_completion(USER, **params)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(undeclared, **params)
+    assert "parallel_tool_calls" not in upstream.sent
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_parallel_tool_calls_is_omitted_without_tools(upstream, mode):
+    adapter = _adapter(
+        upstream,
+        supported_params=["temperature", "max_tokens", "parallel_tool_calls"],
+    )
+    if mode == "chat":
+        await adapter.chat_completion(USER, parallel_tool_calls=False)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(adapter, parallel_tool_calls=False)
+
+    assert "tools" not in upstream.sent
+    assert "parallel_tool_calls" not in upstream.sent
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
 async def test_a_model_without_tool_support_is_sent_no_tools(upstream, mode):
     adapter = _adapter(upstream, supports_tools=False)
     params = {"tools": TOOLS, "tool_choice": "required"}

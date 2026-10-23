@@ -223,6 +223,54 @@ def test_request_tool_choice_named_tool():
     }
 
 
+def test_request_tool_choice_none_is_translated_not_dropped():
+    # Issue #876 P3: {"type":"none"} is a real instruction — "the caller
+    # attached tool definitions but this turn must not use them" — and the
+    # OpenAI dialect spells it "none". Dropping it silently degraded the
+    # request to the model's default tool behavior.
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "get_weather", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "none"},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["tool_choice"] == "none"
+
+
+def test_request_disable_parallel_tool_use_maps_to_parallel_tool_calls():
+    # Issue #876 P3 (same bullet): Anthropic expresses "one tool call per
+    # turn" as tool_choice.disable_parallel_tool_use; the OpenAI dialect's
+    # spelling is the top-level parallel_tool_calls flag.
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "get_weather", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["tool_choice"] == "auto"
+    assert params["parallel_tool_calls"] is False
+
+
+def test_request_parallel_tool_use_flag_only_set_when_true():
+    # Anthropic only ever sends the flag to disable; when it is absent or
+    # false the OpenAI request must not carry a parallel_tool_calls key at
+    # all — a provider default of True must not be second-guessed, and an
+    # explicit False would be indistinguishable from the disabled spelling.
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "get_weather", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "auto"},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert "parallel_tool_calls" not in params
+
+
 def test_request_metadata_user_id_to_user_field():
     body = {
         "model": "glm-4.7",
@@ -779,6 +827,171 @@ def test_stream_text_then_tool_then_text_emits_correct_block_ordering():
     ]
     assert "Let me check." in text_deltas
     assert "Done!" in text_deltas
+
+
+def test_stream_text_mid_tool_call_does_not_reopen_an_orphan_tool_block():
+    """Issue #876 P1: text interleaved with one tool call's argument fragments.
+
+    Some providers emit a content fragment between two argument-continuation
+    deltas of the SAME tool call (index 0). The text must open a new text
+    block and close the open tool block for the wire's one-open-block rule,
+    but it must NOT forget the tool call: the next argument fragment for the
+    same OpenAI index belongs to the block that was already started, so it
+    continues that block's partial_json. The old code cleared _tool_blocks on
+    text, so the continuation reopened an orphan tool_use block with an empty
+    id and name — an unparseable call on the client.
+    """
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    parts = [
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city"'},
+                    }
+                ]
+            }
+        ),
+        # Interleaved text mid-tool-call.
+        _openai_chunk({"content": "Checking the weather..."}),
+        # Continuation of the SAME tool call (same index 0).
+        _openai_chunk({"tool_calls": [{"index": 0, "function": {"arguments": ':"SF"}'}}]}),
+        _openai_chunk({}, finish_reason="tool_calls"),
+    ]
+    out = b""
+    for c in parts:
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+
+    tool_starts = [
+        e
+        for e in events
+        if e[0] == "content_block_start" and e[1]["content_block"]["type"] == "tool_use"
+    ]
+    # Exactly ONE tool block for the one upstream call — not a reopened orphan.
+    assert len(tool_starts) == 1
+    assert tool_starts[0][1]["content_block"]["id"] == "call_1"
+    assert tool_starts[0][1]["content_block"]["name"] == "get_weather"
+
+    # The two argument fragments join into one valid JSON object on the
+    # single tool block.
+    json_pieces = [
+        e[1]["delta"]["partial_json"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "input_json_delta"
+    ]
+    assert "".join(json_pieces) == '{"city":"SF"}'
+    assert all(
+        e[1]["index"] == tool_starts[0][1]["index"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "input_json_delta"
+    )
+
+    # The interleaved text still made it out as its own text block.
+    text_deltas = [
+        e[1]["delta"]["text"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "text_delta"
+    ]
+    assert text_deltas == ["Checking the weather..."]
+
+    # And the wire still respects one-open-block-at-a-time with ordered stops.
+    open_at = set()
+    for name, data in events:
+        if name == "content_block_start":
+            assert data["index"] not in open_at, f"block {data['index']} reopened"
+            open_at.add(data["index"])
+        elif name == "content_block_stop":
+            open_at.discard(data["index"])
+    assert not open_at, "a block never closed"
+
+
+def test_stream_thinking_mid_tool_call_does_not_reopen_an_orphan_tool_block():
+    """Issue #876 P1, thinking variant: reasoning interleaved mid-arguments.
+
+    DeepSeek-R1-style providers emit reasoning_content fragments between
+    argument-continuation deltas of the same tool call. Closing the tool
+    block there used to orphan it exactly like the text variant: the next
+    fragment reopened a tool_use with an empty id and name. The reasoning
+    buffers behind the open tool block and flushes (ahead of any buffered
+    text, which it chronologically preceded) once the tool block closes.
+    """
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    parts = [
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city"'},
+                    }
+                ]
+            }
+        ),
+        _openai_chunk({"reasoning_content": "Need the city name."}),
+        _openai_chunk({"content": "Checking..."}),
+        _openai_chunk({"tool_calls": [{"index": 0, "function": {"arguments": ':"SF"}'}}]}),
+        _openai_chunk({}, finish_reason="tool_calls"),
+    ]
+    out = b""
+    for c in parts:
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+
+    tool_starts = [
+        e
+        for e in events
+        if e[0] == "content_block_start" and e[1]["content_block"]["type"] == "tool_use"
+    ]
+    assert len(tool_starts) == 1
+    assert tool_starts[0][1]["content_block"]["id"] == "call_1"
+    json_pieces = [
+        e[1]["delta"]["partial_json"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "input_json_delta"
+    ]
+    assert "".join(json_pieces) == '{"city":"SF"}'
+
+    thinking_deltas = [
+        e[1]["delta"]["thinking"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "thinking_delta"
+    ]
+    assert thinking_deltas == ["Need the city name."]
+    text_deltas = [
+        e[1]["delta"]["text"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "text_delta"
+    ]
+    assert text_deltas == ["Checking..."]
+
+    # Ordering between the flushed blocks: thinking chronologically preceded
+    # the text, so its block must start before the text block's.
+    block_order = [
+        (e[1]["index"], e[1]["content_block"]["type"])
+        for e in events
+        if e[0] == "content_block_start"
+    ]
+    assert block_order == [(0, "tool_use"), (1, "thinking"), (2, "text")], block_order
+
+    # One start per index; every block that starts closes; nothing reopens.
+    open_at = set()
+    for name, data in events:
+        if name == "content_block_start":
+            assert data["index"] not in open_at, f"block {data['index']} reopened"
+            open_at.add(data["index"])
+        elif name == "content_block_stop":
+            open_at.discard(data["index"])
+    assert not open_at, "a block never closed"
 
 
 def test_extract_usage_from_anthropic_sse():
