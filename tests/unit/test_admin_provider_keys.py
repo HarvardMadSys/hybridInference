@@ -402,6 +402,16 @@ def test_configured_env_keys_read_every_numbered_setting(monkeypatch):
     ]
 
 
+def test_configured_env_keys_strip_like_an_adapters_static_key(monkeypatch):
+    """A trailing newline must not make one credential two keys with two ids."""
+    for index in range(1, 21):
+        monkeypatch.delenv(f"CHUTES_API_KEY{index}", raising=False)
+    monkeypatch.setenv("CHUTES_API_KEY", "chutes-key-base\n")
+    monkeypatch.setenv("CHUTES_API_KEY1", " chutes-key-base")
+
+    assert dynamic_keys.configured_env_keys_for_provider("chutes") == ["chutes-key-base"]
+
+
 def test_configured_env_keys_include_provider_overview_builtin_names(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.setenv("STAGING_API_KEY", "staging-key")

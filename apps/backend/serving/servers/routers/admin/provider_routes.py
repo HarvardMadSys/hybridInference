@@ -1584,9 +1584,13 @@ async def _active_env_keys_for_provider(op_store, key_provider: str) -> list[str
             detail=f"Failed to load disabled env keys for {key_provider}: {exc}",
         ) from exc
 
-    # Include single-key adapters without a pool, just as the admin key list does.
-    keys = dynamic_keys.list_candidate_env_keys(key_provider)
+    keys: list[str] = []
+    for pool in dynamic_keys.get_pools_for_provider(key_provider):
+        keys.extend(pool.snapshot_keys())
     keys.extend(dynamic_keys.configured_env_keys_for_provider(key_provider))
+    # Then single-key adapters without a pool, as the admin key list includes them.
+    # They go last so the keys a default pool already started with keep their order.
+    keys.extend(dynamic_keys.list_candidate_env_keys(key_provider))
 
     active_keys: list[str] = []
     for key in _unique([key for key in keys if key.strip()]):

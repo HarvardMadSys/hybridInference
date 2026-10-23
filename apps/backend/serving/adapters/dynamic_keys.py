@@ -483,7 +483,9 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
     :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Configuration tab accepts as
     pooled with the base. A blank one is skipped rather than ending the scan,
     so a key cleared from the middle does not drop the ones after it, and a
-    value already listed is not listed twice.
+    value already listed is not listed twice. Values are stripped, as
+    ``_gather_static_keys`` strips an adapter's, so one credential reached
+    through both a setting and an adapter's ``api_key`` is one key.
     """
     spec = _PROVIDER_ENV_KEY_VARS.get(provider)
     if spec is None:
@@ -495,8 +497,8 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
     ]
     keys: list[str] = []
     for name in names:
-        value = config_value(name, "") or ""
-        if value.strip() and value not in keys:
+        value = (config_value(name, "") or "").strip()
+        if value and value not in keys:
             keys.append(value)
     return keys
 

@@ -2618,7 +2618,7 @@ async def test_route_edit_resolves_listed_single_static_key(
 @pytest.mark.parametrize("explicit_key", [False, True], ids=["default", "explicit"])
 @pytest.mark.parametrize("disabled_source", ["database", "memory"])
 async def test_route_edit_rejects_disabled_single_static_key(
-    admin_client, single_static_key_route, explicit_key, disabled_source
+    admin_client, single_static_key_route, explicit_key, disabled_source, monkeypatch
 ):
     client, op_store, _executor, _router, verify_mock = admin_client
     provider, key = single_static_key_route
@@ -2627,6 +2627,13 @@ async def test_route_edit_rejects_disabled_single_static_key(
         op_store.list_disabled_provider_env_key_hashes.return_value = {key_hash}
     else:
         dynamic_keys.disable_env_key_for_provider(provider, key, key_hash)
+        # Disabling drops the key from the adapter's pool, but a setting still
+        # configures it, so only the in-memory tombstone can keep it out.
+        monkeypatch.setattr(
+            dynamic_keys,
+            "configured_env_keys_for_provider",
+            lambda name: [key] if name == provider else [],
+        )
     response = await client.put(
         "/admin/routing/provider-routes/static-model/static-model:static-api",
         json={
