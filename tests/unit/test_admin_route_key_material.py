@@ -53,14 +53,26 @@ class Store:
 
 @pytest.fixture
 def keys(monkeypatch):
-    """The provider's live pools and settings keys, and what gets marked as DB-sourced."""
-    state: dict[str, Any] = {"pool": [], "settings": [], "marked": [], "declared": []}
+    """The provider's pools, pool-less static and settings keys, and DB-source bookkeeping."""
+    state: dict[str, Any] = {
+        "pool": [],
+        "static": [],
+        "settings": [],
+        "marked": [],
+        "declared": [],
+    }
 
     class Pool:
         def snapshot_keys(self):
             return list(state["pool"])
 
     monkeypatch.setattr(dynamic_keys, "get_pools_for_provider", lambda provider: [Pool()])
+    # As in dynamic_keys: the pool keys, then statics of adapters that have no pool.
+    monkeypatch.setattr(
+        dynamic_keys,
+        "list_candidate_env_keys",
+        lambda provider: _unique(state["pool"] + state["static"]),
+    )
     monkeypatch.setattr(
         dynamic_keys, "configured_env_keys_for_provider", lambda provider: list(state["settings"])
     )
@@ -76,6 +88,10 @@ def keys(monkeypatch):
 
     monkeypatch.setattr(dynamic_keys, "load_min_role_declarations_for_provider", declare)
     return state
+
+
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
 async def _resolve(store, api_key_id=None, provider="zai"):
@@ -101,6 +117,21 @@ async def test_without_a_key_id_every_active_key_is_used_once(keys):
     assert await _resolve(store) == (None, [POOL_P, ENV_A, DB_C])
     assert keys["declared"] == ["zai"]  # tiers are known before the adapter registers
     assert ("zai", DB_C) in keys["marked"]
+
+
+async def test_a_single_key_adapter_without_a_pool_supplies_its_key(keys):
+    keys["static"] = [ENV_A]
+
+    assert await _resolve(Store()) == (None, [ENV_A])
+    assert await _resolve(Store(), provider_routes._env_key_id(ENV_A)) == (None, [ENV_A])
+
+
+async def test_pool_less_static_keys_come_after_the_pool_and_settings_keys(keys):
+    keys["pool"] = [POOL_P]
+    keys["static"] = [ENV_B, POOL_P]
+    keys["settings"] = [ENV_A]
+
+    assert await _resolve(Store()) == (None, [POOL_P, ENV_A, ENV_B])
 
 
 async def test_a_key_disabled_in_the_live_cache_is_left_out(keys, monkeypatch):
