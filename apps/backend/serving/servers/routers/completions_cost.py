@@ -240,8 +240,8 @@ class CostTracker:
         prompt_tokens: int,
         completion_tokens: int,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
@@ -256,6 +256,11 @@ class CostTracker:
         (matches the prior ``_schedule_cost_increment`` semantics — auth
         failures and 4xx error paths never reach this method, but freebie
         models with zero pricing legitimately produce zero cost).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` are used only for price
+        arithmetic here. Both ``None`` (unreported) and ``0`` (measured miss)
+        apply no cache discount; the distinct measurement state is preserved
+        on the normalized usage dict that the logging path persists.
         """
         pricing = routing.pricing or self._pricing.for_routing(routing)
         if pricing is None:
@@ -299,8 +304,8 @@ class CostTracker:
         completion_tokens: int,
         pricing: Pricing,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
     ) -> float | None:
         """Mirror :func:`serving.storage.utils.calculate_cost` byte-for-byte.
@@ -309,6 +314,12 @@ class CostTracker:
         prompt total only when the adapter configures a non-zero cache
         rate (otherwise they fall through to the regular prompt rate, the
         same behavior as the dict-based path).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` may be ``None`` when the
+        provider did not report cache usage. This function uses those values
+        only for billing arithmetic, where both ``None`` and measured ``0``
+        mean that no cache discount applies. The separate logging path carries
+        the measurement state into ``api_logs``.
         """
         try:
             prompt = float(prompt_tokens or 0)

@@ -59,7 +59,8 @@ def _schedule_cost_increment(
     """
     if op_store is None or not user_id:
         return
-    cost = calculate_cost(normalize_usage(usage) or usage, pricing)
+    normalized_usage = normalize_usage(usage)
+    cost = calculate_cost(normalized_usage if normalized_usage is not None else usage, pricing)
     if not cost or cost <= 0:
         return
 

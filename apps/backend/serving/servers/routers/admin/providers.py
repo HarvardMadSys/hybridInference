@@ -422,15 +422,21 @@ async def admin_provider_observability(
                 COUNT(*) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                       AND COALESCE(prompt_tokens, 0) > 0
+                      AND cache_read_tokens IS NOT NULL
                 )::BIGINT AS cache_eligible_count,
                 COUNT(*) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                       AND COALESCE(prompt_tokens, 0) > 0
-                      AND COALESCE(cache_read_tokens, 0) > 0
+                      AND cache_read_tokens > 0
                 )::BIGINT AS cache_hit_count,
                 COALESCE(SUM(prompt_tokens) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                 ), 0)::BIGINT AS input_tokens,
+                COALESCE(SUM(prompt_tokens) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                      AND COALESCE(prompt_tokens, 0) > 0
+                      AND cache_read_tokens IS NOT NULL
+                ), 0)::BIGINT AS cache_eligible_input_tokens,
                 COALESCE(SUM(cache_read_tokens) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                 ), 0)::BIGINT AS cache_read_tokens,
@@ -485,18 +491,24 @@ async def admin_provider_observability(
                     COUNT(*) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                           AND COALESCE(prompt_tokens, 0) > 0
+                          AND cache_read_tokens IS NOT NULL
                     )::BIGINT AS cache_eligible_count,
                     COUNT(*) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                           AND COALESCE(prompt_tokens, 0) > 0
-                          AND COALESCE(cache_read_tokens, 0) > 0
+                          AND cache_read_tokens > 0
                     )::BIGINT AS cache_hit_count,
                     COALESCE(SUM(cache_read_tokens) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                     ), 0)::BIGINT AS cache_read_tokens,
                     COALESCE(SUM(prompt_tokens) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
-                    ), 0)::BIGINT AS input_tokens
+                    ), 0)::BIGINT AS input_tokens,
+                    COALESCE(SUM(prompt_tokens) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                          AND COALESCE(prompt_tokens, 0) > 0
+                          AND cache_read_tokens IS NOT NULL
+                    ), 0)::BIGINT AS cache_eligible_input_tokens
                 FROM api_logs
                 WHERE provider = $1
                   AND timestamp >= $2 AND timestamp < $3
@@ -511,7 +523,8 @@ async def admin_provider_observability(
                 COALESCE(bucketed_logs.cache_eligible_count, 0) AS cache_eligible_count,
                 COALESCE(bucketed_logs.cache_hit_count, 0) AS cache_hit_count,
                 COALESCE(bucketed_logs.cache_read_tokens, 0) AS cache_read_tokens,
-                COALESCE(bucketed_logs.input_tokens, 0) AS input_tokens
+                COALESCE(bucketed_logs.input_tokens, 0) AS input_tokens,
+                COALESCE(bucketed_logs.cache_eligible_input_tokens, 0) AS cache_eligible_input_tokens
             FROM series
             LEFT JOIN bucketed_logs ON bucketed_logs.bucket_start = series.bucket_start
             WHERE series.bucket_start < $3

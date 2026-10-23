@@ -2166,6 +2166,7 @@ class ProviderObservabilityTotals(BaseModel):
     cache_eligible_count: int
     cache_hit_count: int
     input_tokens: int
+    cache_eligible_input_tokens: int = 0
     cache_read_tokens: int
     cache_write_tokens: int
 
@@ -2180,6 +2181,7 @@ class ProviderObservabilityBucket(BaseModel):
     cache_hit_count: int
     cache_read_tokens: int
     input_tokens: int
+    cache_eligible_input_tokens: int = 0
 
 
 class ProviderErrorTypeRow(BaseModel):

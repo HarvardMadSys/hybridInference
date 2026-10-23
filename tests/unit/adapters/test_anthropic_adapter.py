@@ -251,8 +251,6 @@ async def test_stream_messages_identity_passthrough_records_usage(monkeypatch):
     assert adapter.last_stream_usage == {
         "input_tokens": 7,
         "output_tokens": 4,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
     }
     # Forwarded body: model rewritten + stream=True.
     assert captured["json"]["model"] == "claude-opus-4-7"

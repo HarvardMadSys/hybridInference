@@ -527,7 +527,7 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
   const totals = data.totals;
   const errorRate = pctValue(totals.error_count, totals.request_count);
   const cacheHitRate = pctValue(totals.cache_hit_count, totals.cache_eligible_count);
-  const cacheTokenShare = pctValue(totals.cache_read_tokens, totals.input_tokens);
+  const cacheTokenShare = pctValue(totals.cache_read_tokens, totals.cache_eligible_input_tokens);
   const trendData = data.buckets.map((bucket) => ({
     t: fmtHour(bucket.start_time),
     error_rate: pctValue(bucket.error_count, bucket.request_count),

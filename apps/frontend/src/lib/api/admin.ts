@@ -1681,6 +1681,7 @@ export interface ProviderObservabilityTotals {
   cache_eligible_count: number;
   cache_hit_count: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
 }
@@ -1693,6 +1694,7 @@ export interface ProviderObservabilityBucket {
   cache_hit_count: number;
   cache_read_tokens: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
 }
 
 export interface ProviderErrorTypeRow {
