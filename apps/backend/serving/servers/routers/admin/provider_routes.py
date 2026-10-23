@@ -3284,6 +3284,17 @@ async def _prepare_update_context_from_payload(
         concurrency_limit_override=payload.concurrency_limit,
         deployment_type_override=payload.deployment_type,
     )
+    if update.endpoint_id != old_endpoint_id:
+        # A move mints the endpoint id of its new target, which another route
+        # of the model may already hold (a runtime route, say). Refused here
+        # rather than at boot, so an override saved before this check still
+        # loads.
+        _ensure_route_id_available(
+            _identity_entries(route),
+            route_id,
+            update.endpoint_id,
+            replacing_route_id=route_id,
+        )
     return PreparedRouteUpdateContext(
         model_id=model_id,
         route_id=route_id,

@@ -7397,3 +7397,31 @@ async def test_route_state_endpoints_require_admin(admin_client):
 
     assert all(response.status_code in {401, 403} for response in responses)
     assert states.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_refuses_an_endpoint_another_route_holds(admin_client):
+    """Moving a config route onto a runtime route's endpoint would merge their state."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    verify_mock.reset_mock()
+    before = list(route_executor.routes["minimax-fast"].raw_adapters)
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/minimax-fast/{CHUTES}",
+        json={
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"another route of this model already uses endpoint id {MINIMAX_ROUTE_ID!r}"
+    )
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    assert route_executor.routes["minimax-fast"].raw_adapters == before

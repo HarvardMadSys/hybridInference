@@ -92,6 +92,8 @@ import {
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
+import toast from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 
 // A deployment whose Featherless plan is concurrency-based and whose OpenRouter
 // account is used on demand or with a concurrency cap (PROVIDER_ROUTE_TYPES).
@@ -722,6 +724,28 @@ describe('ProviderRoutesTab', () => {
       });
     }
     expect(setRouteWeight).not.toHaveBeenCalled();
+  });
+
+  it("shows the gateway's reason when a route change is refused", async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    const reason =
+      "route 'minimax-fast:featherless-api' is the last enabled route of minimax-fast; " +
+      'enable or add another route before you disable it';
+    // The shared client reads a typed 409 as a signup conflict; the tab must not.
+    vi.mocked(updateProviderRouteState).mockRejectedValue(
+      new APIError('USER_ALREADY_EXISTS', reason, 409),
+    );
+
+    render(<ProviderRoutesTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disable' }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(`Disable failed: ${reason}`);
+    });
   });
 
   it('treats a weight override of 0 as disabled and lets Enable clear it', async () => {

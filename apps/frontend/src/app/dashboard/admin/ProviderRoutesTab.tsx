@@ -36,7 +36,7 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
@@ -141,6 +141,13 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'pro', label: 'Pro, internal, and admins' },
   { value: 'free', label: 'All users' },
 ];
+
+// The gateway's own reason. The shared mapping reads any 409 as a signup
+// conflict ("This email is already registered"), which would hide why a route
+// edit, disable or delete was refused.
+function routeErrorMessage(err: unknown) {
+  return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
@@ -707,7 +714,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setOffloadQueue({ enabled: resp.queue_enabled, maxWaitSeconds: resp.max_wait_seconds });
       setOffloadLoadError(null);
     } catch (err) {
-      setOffloadLoadError(getErrorMessage(err));
+      setOffloadLoadError(routeErrorMessage(err));
     }
   }, []);
 
@@ -729,7 +736,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       const models = Array.from(new Set(resp.routes.map((route) => route.model_id))).sort();
       setSelectedModel((current) => current || models[0] || '');
     } catch (err) {
-      toast.error(`Failed to load provider routes: ${getErrorMessage(err)}`);
+      toast.error(`Failed to load provider routes: ${routeErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -1150,7 +1157,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         setKeyOptions(resp.keys.filter((key) => key.id));
       } catch (err) {
         setKeyOptions([]);
-        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+        toast.error(`Failed to load provider keys: ${routeErrorMessage(err)}`);
       } finally {
         setKeysLoading(false);
       }
@@ -1170,7 +1177,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         setCreateKeyOptions(resp.keys.filter((key) => key.id));
       } catch (err) {
         setCreateKeyOptions([]);
-        toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+        toast.error(`Failed to load provider keys: ${routeErrorMessage(err)}`);
       } finally {
         setCreateKeysLoading(false);
       }
@@ -1447,7 +1454,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       }
       toast.success('Provider route updated');
     } catch (err) {
-      toast.error(`Update failed: ${getErrorMessage(err)}`);
+      toast.error(`Update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingKey(null);
     }
@@ -1463,7 +1470,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success('Provider route verified');
     } catch (err) {
       setVerifiedEditSignature(null);
-      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+      toast.error(`Verify failed: ${routeErrorMessage(err)}`);
     } finally {
       setVerifyingKey(null);
     }
@@ -1498,7 +1505,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setVerifiedCreateSignature(null);
       toast.success(creatingModel ? 'Model created' : 'Provider route added');
     } catch (err) {
-      toast.error(`${creatingModel ? 'Create' : 'Add'} failed: ${getErrorMessage(err)}`);
+      toast.error(`${creatingModel ? 'Create' : 'Add'} failed: ${routeErrorMessage(err)}`);
     } finally {
       setCreatingRoute(false);
     }
@@ -1526,7 +1533,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(creatingModel ? 'Model route verified' : 'Provider route verified');
     } catch (err) {
       setVerifiedCreateSignature(null);
-      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+      toast.error(`Verify failed: ${routeErrorMessage(err)}`);
     } finally {
       setVerifyingCreateRoute(false);
     }
@@ -1541,7 +1548,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
       toast.success('Reset route to config');
     } catch (err) {
-      toast.error(`Reset failed: ${getErrorMessage(err)}`);
+      toast.error(`Reset failed: ${routeErrorMessage(err)}`);
     } finally {
       setResettingKey(null);
     }
@@ -1557,7 +1564,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success('Routing policy updated');
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Policy update failed: ${getErrorMessage(err)}`);
+      toast.error(`Policy update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingStrategy(false);
     }
@@ -1586,7 +1593,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`Updated ${route.endpoint_id} weight.`);
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Weight update failed: ${getErrorMessage(err)}`);
+      toast.error(`Weight update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingWeightKey(null);
     }
@@ -1615,7 +1622,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       });
       toast.success('Concurrency limit updated');
     } catch (err) {
-      toast.error(`Concurrency update failed: ${getErrorMessage(err)}`);
+      toast.error(`Concurrency update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingConcurrencyKey(null);
     }
@@ -1635,7 +1642,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`Cleared ${route.endpoint_id} weight override.`);
       void loadOffloadRoutes();
     } catch (err) {
-      toast.error(`Weight reset failed: ${getErrorMessage(err)}`);
+      toast.error(`Weight reset failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingWeightKey(null);
     }
@@ -1659,7 +1666,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`${disabled ? 'Disabled' : 'Enabled'} ${route.route_id}.`);
       refreshAfterRouteChange();
     } catch (err) {
-      toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${getErrorMessage(err)}`);
+      toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${routeErrorMessage(err)}`);
     } finally {
       setTogglingKey(null);
     }
@@ -1693,7 +1700,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       );
       refreshAfterRouteChange();
     } catch (err) {
-      toast.error(`Delete failed: ${getErrorMessage(err)}`);
+      toast.error(`Delete failed: ${routeErrorMessage(err)}`);
     } finally {
       setDeletingKey(null);
     }
@@ -1708,7 +1715,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.success(`Restored ${route.route_id}.`);
       refreshAfterRouteChange();
     } catch (err) {
-      toast.error(`Restore failed: ${getErrorMessage(err)}`);
+      toast.error(`Restore failed: ${routeErrorMessage(err)}`);
     } finally {
       setDeletingKey(null);
     }
