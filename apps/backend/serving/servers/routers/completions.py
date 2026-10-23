@@ -49,7 +49,11 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
-from serving.servers.routers.completions_stream import StreamSession, ToolCallAccumulator
+from serving.servers.routers.completions_stream import (
+    _KEEPALIVE_QUEUE_MAXSIZE,
+    StreamSession,
+    ToolCallAccumulator,
+)
 from serving.servers.routers.routing_info import (
     RoutingInfo,
     _publish_error_provider,
@@ -190,6 +194,8 @@ async def _should_force_chat_completions_streaming(
 
 
 _FORCE_STREAMING_KEEPALIVE_S = 15
+# _KEEPALIVE_QUEUE_MAXSIZE (the shared chain-bound constant) is imported from
+# completions_stream.py, which owns the inner hop of the same chain.
 
 
 def _timeout_fired_probe(request: Request) -> Callable[[], bool]:
@@ -271,6 +277,28 @@ async def _streaming_response_with_keepalive(
     accumulating SSE chunks, then yields the final ``application/json`` body.
     The leading whitespace before the JSON object is harmless — all standard
     JSON parsers ignore it.
+
+    Both hand-off queues in the forced-streaming chain are bounded with
+    ``_KEEPALIVE_QUEUE_MAXSIZE`` (shared with ``StreamSession.stream``): the
+    upstream reader → this generator queue here, and the adapter reader →
+    stream-session queue one hop upstream. The chain is therefore bounded
+    end-to-end and a stalled or slow client applies real backpressure along
+    all of it: this generator suspends, the outer reader blocks on ``put``,
+    the stream-session consumer blocks on its own bounded ``put``, the
+    adapter reader blocks in turn, and the block propagates through the
+    aiohttp stream to the provider connection. No queue can buffer a second
+    full copy of the generation (plus whatever the provider sends next) in
+    memory for as long as the client stalls. Failure mode: a stalled client
+    blocks the adapter reader — no data loss, SSE semantics preserved.
+
+    What this bound guarantees: the APPLICATION-side buffering of the chain
+    is capped (both hops), and once those caps fill, the reader stops pulling
+    from the adapter, so the provider observes the stall through the socket.
+    It does not claim the provider socket holds nothing: the kernel socket
+    buffers and the HTTP client own read buffer remain, both small and
+    outside this chain.
+    Cancellation-safe: a reader blocked on ``put`` when the consumer
+    disappears is cancelled without blocking on the sentinel.
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -282,16 +310,21 @@ async def _streaming_response_with_keepalive(
 
     last_client_byte = time.monotonic()
     yielded_any = False
-    chunk_queue: Any = asyncio.Queue()
+    chunk_queue: Any = asyncio.Queue(maxsize=_KEEPALIVE_QUEUE_MAXSIZE)
 
     async def _reader() -> None:
         try:
-            async for item in stream_chunks:
-                await chunk_queue.put(item)
-        except Exception as exc:
-            await chunk_queue.put(exc)
-        finally:
+            try:
+                async for item in stream_chunks:
+                    await chunk_queue.put(item)
+            except Exception as exc:
+                await chunk_queue.put(exc)
             await chunk_queue.put(None)
+        except asyncio.CancelledError:
+            # The consumer is gone (generator closed/-cancelled). Skip the
+            # remaining puts: blocking on a full queue here would leak the
+            # reader task and the upstream connection forever.
+            pass
 
     reader_task = asyncio.create_task(_reader())
     try:

@@ -31,6 +31,8 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+import anyio
+
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
@@ -59,6 +61,20 @@ logger = get_logger(__name__)
 # drop the connection during long upstream pauses (e.g., reasoning).
 _KEEPALIVE_INTERVAL = 15
 _SENTINEL: Any = object()
+
+# Hand-off depth between the adapter reader and the generator that consumes it
+# in ``StreamSession.stream``: enough slack for a fast consumer to never
+# stall, small enough that a stalled consumer cannot buffer the whole
+# generation in the queue (issue: forced-stream buffer growth).
+#
+# ``_streaming_response_with_keepalive`` (``completions.py``) bounds its own
+# reader-to-generator queue with the same constant. Both hops are bounded so
+# the forced-streaming chain is bounded end-to-end: a stalled client's
+# backpressure reaches the provider connection instead of relocating the
+# buffering to whichever queue is still unbounded. The constant lives here
+# because ``completions.py`` already imports this module (the reverse import
+# would be a cycle).
+_KEEPALIVE_QUEUE_MAXSIZE = 256
 
 
 def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
@@ -423,7 +439,11 @@ class StreamSession:
 
         ``adapter_chunks`` is consumed via a queue + background task so
         idle pauses can be filled with keepalive comments without
-        cancelling the upstream read.
+        cancelling the upstream read. The queue is bounded
+        (``_KEEPALIVE_QUEUE_MAXSIZE``) so a stalled consumer blocks the
+        reader — part of the end-to-end chain bound shared with
+        ``_streaming_response_with_keepalive`` — rather than buffering a
+        second full copy of the generation in memory.
         """
         try:
             # Initial assistant role chunk — many OpenAI-compatible clients
@@ -467,17 +487,28 @@ class StreamSession:
             # queue.  The generator pulls with a short timeout; on timeout
             # it yields an SSE comment so intermediate proxies see activity
             # and don't drop the connection during long upstream pauses.
+            # The queue is bounded (_KEEPALIVE_QUEUE_MAXSIZE): with the
+            # consumer stalled the reader blocks on ``put`` instead of
+            # buffering the whole generation, and the backpressure chains
+            # through the adapter to the provider connection.
             last_client_yield = time.monotonic()
-            chunk_queue: asyncio.Queue = asyncio.Queue()
+            chunk_queue: asyncio.Queue = asyncio.Queue(maxsize=_KEEPALIVE_QUEUE_MAXSIZE)
 
             async def _adapter_reader() -> None:
                 try:
-                    async for item in adapter_chunks:
-                        await chunk_queue.put(item)
-                except Exception as exc:
-                    await chunk_queue.put(exc)
-                finally:
+                    try:
+                        async for item in adapter_chunks:
+                            await chunk_queue.put(item)
+                    except Exception as exc:
+                        await chunk_queue.put(exc)
                     await chunk_queue.put(_SENTINEL)
+                except asyncio.CancelledError:
+                    # The consumer is gone (generator closed/-cancelled).
+                    # Skip the remaining puts: blocking on a full queue here
+                    # would leak the reader task and the upstream connection
+                    # forever. (Mirrors the outer reader in
+                    # ``completions.py::_streaming_response_with_keepalive``.)
+                    pass
 
             reader_task = asyncio.create_task(_adapter_reader())
             try:
@@ -609,6 +640,19 @@ class StreamSession:
                 reader_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await reader_task
+                # Mirror the outer reader's teardown
+                # (``completions.py::_close_stream_quietly``): with the queue
+                # bounded, a cancelled reader is typically parked on ``put``
+                # -- not mid-iteration -- so the adapter generator is left
+                # suspended and nothing else would close it until GC. Close
+                # it here so the upstream connection is released promptly.
+                aclose = getattr(adapter_chunks, "aclose", None)
+                if callable(aclose):
+                    try:
+                        with anyio.CancelScope(shield=True):
+                            await aclose()
+                    except (Exception, asyncio.CancelledError):
+                        pass
 
             # An upstream that finished without one client-visible chunk still
             # answers with the role chunk, as it always has.
