@@ -56,7 +56,13 @@ from routing.backends import LeafBackend
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
-from routing.prefill_load import PrefillLoadTracker, estimate_prefill_tokens
+from routing.prefill_load import (
+    PrefillLoadTracker,
+    conversation_fingerprint,
+    estimate_prefill_tokens,
+    priority_for_prefill,
+    prompt_anchor,
+)
 from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import (
     AllCircuitsOpenError,
@@ -1512,6 +1518,21 @@ class RouteWiseRouter:
         return self._prefill_load.backlog_snapshot(entry.endpoint_id for entry in entries)
 
     @staticmethod
+    def _priority_scheduling_enabled(adapter: Any) -> bool:
+        """Whether this endpoint has explicitly opted into SGLang priority."""
+        config = getattr(adapter, "config", None)
+        return getattr(config, "priority_scheduling", False) is True
+
+    def _prefill_lease_needed(self, model_id: str) -> bool:
+        """Track work when LP load routing or endpoint priority consumes leases."""
+        if self.config.prefill_load_routing_enabled:
+            return True
+        return any(
+            self._priority_scheduling_enabled(candidate.adapter)
+            for candidate in self.route_candidates.get(self.canonical_model_id(model_id), ())
+        )
+
+    @staticmethod
     def _tracked_prefill_tokens(messages: Any, params: Mapping[str, Any] | None) -> int:
         """Estimate the complete request body charged to prefill accounting."""
         return estimate_prefill_tokens(
@@ -2226,7 +2247,7 @@ class RouteWiseRouter:
         with self._route_commit_lock:
             tracker_transaction = (
                 self._prefill_load.routing_transaction()
-                if self.config.prefill_load_routing_enabled
+                if self._prefill_lease_needed(model_id)
                 else contextlib.nullcontext()
             )
             with tracker_transaction:
@@ -2329,15 +2350,14 @@ class RouteWiseRouter:
         # with the hedge adapter so a cancelled loser cannot leave stale load
         # behind. The primary lease is owned by the execution wrapper.
         backup_lease = None
-        if self.config.prefill_load_routing_enabled:
+        if self.config.prefill_load_routing_enabled or self._priority_scheduling_enabled(
+            backup.adapter
+        ):
             request_params = context.get("params") if isinstance(context, dict) else None
-            tracked_tokens = self._tracked_prefill_tokens(
+            backup_lease = self._acquire_prefill_lease(
+                backup.endpoint_id,
                 context.get("messages") if isinstance(context, dict) else None,
                 request_params if isinstance(request_params, dict) else None,
-            )
-            backup_lease = self._prefill_load.acquire(
-                backup.endpoint_id,
-                tracked_tokens,
             )
 
         def _confirm_backup_prefill() -> None:
@@ -2365,6 +2385,12 @@ class RouteWiseRouter:
                 metadata={
                     "prefill_confirm": _confirm_backup_prefill,
                     "prefill_release": _release_backup_prefill,
+                    "upstream_priority": (
+                        self._dispatch_priority(backup_lease)
+                        if backup_lease is not None
+                        and self._priority_scheduling_enabled(backup.adapter)
+                        else None
+                    ),
                 },
             )
         except BaseException:
@@ -2606,11 +2632,11 @@ class RouteWiseRouter:
             trace.request_id = str(request_id)
 
         with self._route_commit_lock:
-            # Request-derived preprocessing stays outside the shared tracker
-            # transaction. Once a primary prefill lease is requested, however,
-            # the tracker must remain held from its backlog snapshot through
-            # selection and reservation. Otherwise two router instances that
-            # share one tracker can select from the same stale load view.
+            # The routing lock serializes load snapshot -> selection ->
+            # reservation across selectors so concurrent decisions cannot
+            # commit from the same stale load view. The tracker state lock
+            # remains independent, allowing release and cache/accounting
+            # updates while candidate construction and LP solving run.
             prompt_tokens = self._prompt_tokens_from_context(context)
             prediction = self._predict_output(model_id, prompt_tokens, context)
             pool = self._routewise_pool(model_id)
@@ -2618,6 +2644,7 @@ class RouteWiseRouter:
                 self.envelope.snapshot(pool) if model_id in self._quota_bearing_models else None
             )
             now = time.time()
+            reserve_prefill = reserve_prefill and self._prefill_lease_needed(model_id)
             tracker_transaction = (
                 self._prefill_load.routing_transaction()
                 if reserve_prefill
@@ -2726,9 +2753,16 @@ class RouteWiseRouter:
             if reservation is not None:
                 prefill_lease = None
                 try:
-                    if reserve_prefill:
-                        with self._prefill_load.routing_transaction():
-                            prefill_lease = self._acquire_prefill_lease(selected, context)
+                    if reserve_prefill and (
+                        self.config.prefill_load_routing_enabled
+                        or self._priority_scheduling_enabled(selected.adapter)
+                    ):
+                        params = context.get("params")
+                        prefill_lease = self._acquire_prefill_lease(
+                            selected.endpoint_id,
+                            context.get("messages"),
+                            params if isinstance(params, dict) else None,
+                        )
                     hedge_plan = self._select_hedge_plan(
                         selected=selected,
                         now=now,
@@ -2793,6 +2827,12 @@ class RouteWiseRouter:
                                     str(trace.request_id), endpoint_id_for_adapter(backup)
                                 )
                             ),
+                            primary_priority=(
+                                self._dispatch_priority(prefill_lease)
+                                if prefill_lease is not None
+                                and self._priority_scheduling_enabled(selected.adapter)
+                                else None
+                            ),
                         )
                     if self.prefix_cache.enabled:
                         self._stash_prefix_for_commit(
@@ -2827,27 +2867,43 @@ class RouteWiseRouter:
 
     def _acquire_prefill_lease(
         self,
-        selected: FeasibleProviderCandidate,
-        context: dict[str, Any],
+        endpoint_id: str,
+        messages: Any,
+        params: Mapping[str, Any] | None,
     ) -> Any:
-        """Reserve the selected primary's prefill work before returning it.
+        """Reserve one endpoint's prefill work with cache-locality evidence.
 
-        This is called only from the tracker routing transaction.  The lease
-        is attached to the returned decision, so the attempt owns its release
-        even if dispatch fails before the execution helper starts.
+        The same whole-request estimate, conversation identity, and prompt
+        anchor are used for primary, fallback, and hedge-backup leases. The
+        lease is attached to the returned decision or hedge dispatch, so the
+        attempt owns its release even if dispatch fails before execution.
         """
-        params = context.get("params")
         tracked_tokens = self._tracked_prefill_tokens(
-            context.get("messages"),
-            params if isinstance(params, dict) else None,
+            messages,
+            params,
         )
-        # RouteWise does not yet receive #1417's authoritative cache evidence
-        # on this branch. Do not consume FixedRouter's older caller-scoped
-        # warm hint as though it were verified locality.
+        affinity_key = req_ctx.get().get("affinity_key") or None
+        fingerprint = conversation_fingerprint(
+            messages,
+            tools=params.get("tools") if params is not None else None,
+            response_format=params.get("response_format") if params is not None else None,
+        )
+        anchor = prompt_anchor(messages)
         return self._prefill_load.acquire(
-            selected.endpoint_id,
+            endpoint_id,
             tracked_tokens,
+            affinity_key=affinity_key,
+            fingerprint=fingerprint,
+            anchor=anchor,
+            messages=messages,
         )
+
+    def _dispatch_priority(
+        self,
+        lease: Any,
+    ) -> int:
+        """Return scheduling priority for the lease's reserved prefill work."""
+        return priority_for_prefill(lease.tokens)
 
     def _stash_prefix_for_commit(
         self,
@@ -3254,19 +3310,25 @@ class RouteWiseRouter:
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
             self._reserve_prefix_generation_for_dispatch(decision.trace.request_id, endpoint_id)
-            # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
-            # _execute_stream_adapter.
-            if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
-                tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
-            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+            if lease is None and (
+                self.config.prefill_load_routing_enabled
+                or self._priority_scheduling_enabled(adapter)
+            ):
+                with self._prefill_load.routing_transaction():
+                    lease = self._acquire_prefill_lease(endpoint_id, messages, params)
+            dispatch_context: dict[str, Any] = {
+                "model": model_id,
+                "provider": adapter.config.provider,
+            }
+            # HedgedAdapter scopes each leg's own priority; never stamp the
+            # composite request with the primary lease's priority.
+            if (
+                lease is not None
+                and self._priority_scheduling_enabled(adapter)
+                and not isinstance(adapter, HedgedAdapter)
+            ):
+                dispatch_context[req_ctx.UPSTREAM_PRIORITY] = self._dispatch_priority(lease)
+            with req_ctx.push(**dispatch_context):
                 self._ensure_health(endpoint_id)
                 if isinstance(adapter, HedgedAdapter):
                     primary_prefill_release = (
@@ -3325,34 +3387,25 @@ class RouteWiseRouter:
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
             self._reserve_prefix_generation_for_dispatch(decision.trace.request_id, endpoint_id)
-            # Deliberately no req_ctx.UPSTREAM_PRIORITY, in either execution
-            # path. A priority ranks a request by the *un-cached* prefill it
-            # imposes, and that discount comes from the per-caller prompt-size
-            # memory in FixedRouter's PrefillLoadTracker -- which this router
-            # neither owns nor feeds, because #1267 wired prefill accounting
-            # into FixedRouter only. Publishing the raw prompt size instead
-            # would stamp every warm long-context continuation as an elephant
-            # and have the upstream schedule it last and preempt it: worse than
-            # publishing nothing, which simply leaves an sglang backend using
-            # its own default priority for these models, exactly as before.
-            #
-            # So `priority_scheduling: true` is inert for a model on
-            # `router: routewise`. Giving RouteWise its own prefill accounting
-            # is what would fix it, and that is a larger change than this.
-            # A caller that supplied the outer stream lease has already paid the
-            # whole-request estimation cost. Only the fallback path estimates and
-            # acquires here (for direct/internal callers without that lease).
-            if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
-                tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
-            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+            if lease is None and (
+                self.config.prefill_load_routing_enabled
+                or self._priority_scheduling_enabled(adapter)
+            ):
+                with self._prefill_load.routing_transaction():
+                    lease = self._acquire_prefill_lease(endpoint_id, messages, params)
+            dispatch_context: dict[str, Any] = {
+                "model": model_id,
+                "provider": adapter.config.provider,
+            }
+            # HedgedAdapter scopes each leg's own priority; never stamp the
+            # composite request with the primary lease's priority.
+            if (
+                lease is not None
+                and self._priority_scheduling_enabled(adapter)
+                and not isinstance(adapter, HedgedAdapter)
+            ):
+                dispatch_context[req_ctx.UPSTREAM_PRIORITY] = self._dispatch_priority(lease)
+            with req_ctx.push(**dispatch_context):
                 self._ensure_health(endpoint_id)
                 first = True
                 if isinstance(adapter, HedgedAdapter):

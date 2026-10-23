@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -66,6 +67,46 @@ class _FailAdapter(BaseAdapter):
         yield  # pragma: no cover
 
 
+class _TransactionRecordingPrefillLoad(PrefillLoadTracker):
+    """Record whether each lease reservation is serialized with selection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transaction_depth = 0
+        self.acquire_depths: list[int] = []
+
+    @contextlib.contextmanager
+    def routing_transaction(self):
+        with super().routing_transaction():
+            self.transaction_depth += 1
+            try:
+                yield
+            finally:
+                self.transaction_depth -= 1
+
+    def acquire(self, *args: Any, **kwargs: Any):
+        self.acquire_depths.append(self.transaction_depth)
+        return super().acquire(*args, **kwargs)
+
+
+class _TransactionCheckingEchoAdapter(_EchoAdapter):
+    def __init__(self, config: ModelConfig, tracker: _TransactionRecordingPrefillLoad) -> None:
+        super().__init__(config)
+        self._tracker = tracker
+        self.dispatch_depths: list[int] = []
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        self.dispatch_depths.append(self._tracker.transaction_depth)
+        return await super().chat_completion(messages, **params)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        self.dispatch_depths.append(self._tracker.transaction_depth)
+        async for chunk in super().stream_chat_completion(messages, **params):
+            yield chunk
+
+
 def _fixed_rand(*values: float):
     """Return a rand() callable yielding ``values`` in order, then repeating the last."""
     seq = list(values)
@@ -124,6 +165,16 @@ def test_estimate_multimodal_blocks_do_not_char_count_base64():
 @pytest.mark.unit
 def test_estimate_tolerates_malformed_messages():
     assert estimate_prefill_tokens([None, 5, {"role": "user"}]) == 0  # type: ignore[list-item]
+
+
+@pytest.mark.unit
+def test_surrogate_heavy_prompt_is_not_dropped_during_sizing():
+    messages = [{"role": "user", "content": "\ud800" * (4 * prefill_load.ELEPHANT_TOKENS)}]
+
+    estimated = estimate_prefill_tokens(messages)
+
+    assert estimated >= prefill_load.ELEPHANT_TOKENS
+    assert prefill_load.priority_for_prefill(estimated) == prefill_load.PRIORITY_ELEPHANT
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +809,36 @@ async def test_stream_fallback_releases_both_leases():
     assert r.prefill_load.backlog("GOOD") == 0
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_fixed_fallback_lease_is_acquired_inside_routing_transaction(stream: bool):
+    tracker = _TransactionRecordingPrefillLoad()
+    router = FixedRouter()
+    router._prefill_load = tracker
+    primary = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    fallback = _TransactionCheckingEchoAdapter(
+        _cfg("m", provider="GOOD", base_url="http://GOOD"), tracker
+    )
+    router.register_route("m", [(primary, 1.0), (fallback, 1.0)])
+    router._select_adapter = lambda *args, **kwargs: primary
+    messages = [{"role": "user", "content": "x" * 4000}]
+
+    if stream:
+        chunks = [chunk async for chunk in router.stream_chat_completion("m", messages)]
+        assert any("GOOD" in str(chunk) for chunk in chunks)
+    else:
+        response = await router.chat_completion("m", messages)
+        assert response["choices"][0]["message"]["content"] == "ok"
+
+    # The first reservation is the primary; the second is its fallback. Both
+    # serialize with selection, while upstream I/O remains outside the lock.
+    assert tracker.acquire_depths == [1, 1]
+    assert fallback.dispatch_depths == [0]
+    assert tracker.backlog("BAD") == 0
+    assert tracker.backlog("GOOD") == 0
+
+
 # ---------------------------------------------------------------------------
 # priority_for_prefill
 # ---------------------------------------------------------------------------
@@ -997,6 +1078,53 @@ def test_fingerprint_ignores_binary_blocks():
 
 
 @pytest.mark.unit
+def test_surrogate_identity_evidence_preserves_code_point_differences():
+    first = [{"role": "user", "content": "\ud800"}]
+    other = [{"role": "user", "content": "\ud801"}]
+
+    assert prefill_load.conversation_fingerprint(first) != prefill_load.conversation_fingerprint(
+        other
+    )
+    first_anchor = prefill_load.prompt_anchor(first)
+    other_anchor = prefill_load.prompt_anchor(other)
+    assert first_anchor is not None
+    assert other_anchor is not None
+    assert first_anchor != other_anchor
+    assert not prefill_load._anchor_holds(other, first_anchor)
+
+
+@pytest.mark.unit
+def test_surrogate_prompt_does_not_inherit_warm_prefix_evidence():
+    first = [{"role": "user", "content": "\ud800" * (4 * 300_000)}]
+    other = [{"role": "user", "content": "\ud801" * (4 * 300_000)}]
+    tracker = PrefillLoadTracker()
+    first_size = estimate_prefill_tokens(first)
+    first_fingerprint = prefill_load.conversation_fingerprint(first)
+    tracker.release(
+        tracker.acquire(
+            "ep",
+            first_size,
+            affinity_key="u1",
+            fingerprint=first_fingerprint,
+            anchor=prefill_load.prompt_anchor(first),
+        ),
+        prefill_confirmed=True,
+    )
+
+    other_size = estimate_prefill_tokens(other)
+    uncached = tracker.uncached_estimate(
+        "ep",
+        other_size,
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(other),
+        messages=other,
+    )
+
+    assert uncached == other_size
+    assert prefill_load.priority_for_prefill(uncached) == prefill_load.PRIORITY_ELEPHANT
+
+
+@pytest.mark.unit
 def test_routing_discount_is_unchanged_by_the_fingerprint_gate():
     """Selection keeps the caller-scoped discount #1267 shipped.
 
@@ -1056,10 +1184,10 @@ def test_elephant_gate_still_clears_a_real_continuation():
 
 @pytest.mark.unit
 def test_routing_load_estimate_keeps_the_loose_discount():
-    """Only admission pays for the strictness; the backlog charge is unchanged.
+    """Legacy callers without messages keep the affinity-only load estimate.
 
-    A mis-estimated load skews one routing draw and self-corrects, so the
-    caller-scoped discount #1267 shipped stays in place for it.
+    FixedRouter callers still use the caller-scoped discount #1267. RouteWise
+    passes the current messages and uses the strict estimate instead.
     """
     t = PrefillLoadTracker()
     t.release(

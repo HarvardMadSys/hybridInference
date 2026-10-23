@@ -106,6 +106,7 @@ class HedgedAdapter(BaseAdapter):
         backup_dispatch_hook: Callable[[BaseAdapter], None] | None = None,
         hedge_checkpoints_sec: Sequence[float] = (),
         stream_race_deadline_sec: float | None = _STREAM_RACE_DEADLINE_SECONDS,
+        primary_priority: int | None = None,
     ) -> None:
         if event_sink is None:
             raise TypeError("event_sink is required")
@@ -134,6 +135,7 @@ class HedgedAdapter(BaseAdapter):
         self.backup_release = backup_release
         self.checkpoint_backup_selector = checkpoint_backup_selector
         self.backup_dispatch_hook = backup_dispatch_hook
+        self.primary_priority = primary_priority
         self.hedge_checkpoints_sec = _normalize_checkpoints(
             hedge_checkpoints_sec
             if checkpoint_backup_selector is not None
@@ -197,6 +199,31 @@ class HedgedAdapter(BaseAdapter):
     ) -> None:
         if dispatch is not None and dispatch.release is not None:
             dispatch.release()
+
+    @staticmethod
+    def _leg_priority(adapter: BaseAdapter, priority: Any) -> int | None:
+        """Return a priority only for endpoints configured to accept it."""
+        if getattr(adapter.config, "priority_scheduling", False) is not True:
+            return None
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            return priority
+        return None
+
+    @contextlib.contextmanager
+    def _priority_scope(self, adapter: BaseAdapter, priority: Any):
+        """Set one leg's priority in a context that is reset after dispatch."""
+        with req_ctx.push(**{req_ctx.UPSTREAM_PRIORITY: self._leg_priority(adapter, priority)}):
+            yield
+
+    async def _next_leg_chunk(
+        self,
+        generator: AsyncGenerator[str, None],
+        adapter: BaseAdapter,
+        priority: Any,
+    ) -> str:
+        """Advance one stream under that endpoint's task-local priority."""
+        with self._priority_scope(adapter, priority):
+            return await generator.__anext__()
 
     async def _finish_stream_backup(
         self,
@@ -344,7 +371,8 @@ class HedgedAdapter(BaseAdapter):
                 callback()
 
         async def _run_primary() -> dict[str, Any]:
-            return await self.primary.chat_completion(messages, **params)
+            with self._priority_scope(self.primary, self.primary_priority):
+                return await self.primary.chat_completion(messages, **params)
 
         async def _run_backup_delayed() -> dict[str, Any]:
             nonlocal backup_dispatch, backup_past_sleep
@@ -360,7 +388,10 @@ class HedgedAdapter(BaseAdapter):
                 backup_dispatch = dispatch
                 backup_past_sleep = True
                 try:
-                    result = await dispatch.backup.chat_completion(messages, **params)
+                    with self._priority_scope(
+                        dispatch.backup, dispatch.metadata.get("upstream_priority")
+                    ):
+                        result = await dispatch.backup.chat_completion(messages, **params)
                     self._confirm_backup_prefill(dispatch)
                     return result
                 finally:
@@ -379,7 +410,10 @@ class HedgedAdapter(BaseAdapter):
             backup_dispatch = dispatch
             backup_past_sleep = True
             try:
-                result = await dispatch.backup.chat_completion(messages, **params)
+                with self._priority_scope(
+                    dispatch.backup, dispatch.metadata.get("upstream_priority")
+                ):
+                    result = await dispatch.backup.chat_completion(messages, **params)
                 self._confirm_backup_prefill(dispatch)
                 return result
             finally:
@@ -645,7 +679,13 @@ class HedgedAdapter(BaseAdapter):
             backup_gen = self._stream_backup_gen
             backup_provider = dispatch.backup.config.provider
             backup_endpoint = _endpoint_id_from_adapter(dispatch.backup)
-            backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+            backup_next_task = asyncio.ensure_future(
+                self._next_leg_chunk(
+                    backup_gen,
+                    dispatch.backup,
+                    dispatch.metadata.get("upstream_priority"),
+                )
+            )
             return True
 
         primary_next_task: asyncio.Task[str] | None = None
@@ -659,7 +699,9 @@ class HedgedAdapter(BaseAdapter):
 
         try:
             # Start pulling from primary immediately.
-            primary_next_task = asyncio.ensure_future(primary_gen.__anext__())
+            primary_next_task = asyncio.ensure_future(
+                self._next_leg_chunk(primary_gen, self.primary, self.primary_priority)
+            )
 
             while True:
                 wait_set: set[asyncio.Task[Any]] = set()
@@ -833,9 +875,17 @@ class HedgedAdapter(BaseAdapter):
 
                 # No content yet; continue pulling from active streams.
                 if primary_next_task in done and not primary_done:
-                    primary_next_task = asyncio.ensure_future(primary_gen.__anext__())
+                    primary_next_task = asyncio.ensure_future(
+                        self._next_leg_chunk(primary_gen, self.primary, self.primary_priority)
+                    )
                 if backup_started and backup_next_task is not None and backup_next_task in done:
-                    backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+                    dispatch = self._stream_backup_dispatch
+                    if dispatch is None or backup_gen is None:
+                        raise RuntimeError("started backup stream is missing its dispatch state")
+                    backup_priority = dispatch.metadata.get("upstream_priority")
+                    backup_next_task = asyncio.ensure_future(
+                        self._next_leg_chunk(backup_gen, dispatch.backup, backup_priority)
+                    )
 
             # Both streams exhausted without content.
             # If primary had an error, raise it.
