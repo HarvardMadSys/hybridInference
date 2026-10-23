@@ -392,6 +392,11 @@ class StreamSession:
         return self._error_provider
 
     @property
+    def routing_info(self) -> RoutingInfo:
+        """Return the best routing identity observed before stream commit."""
+        return self._routing
+
+    @property
     def yielded_first_chunk(self) -> bool:
         """Return ``True`` once the response has been committed.
 

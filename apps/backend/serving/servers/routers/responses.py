@@ -49,6 +49,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.completions import chat_completions
+from serving.servers.routers.served_identity import copy_served_identity_headers
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -273,7 +274,10 @@ async def create_response(
             model=model,
         )
 
-    return JSONResponse(content=responses_obj)
+    return JSONResponse(
+        content=responses_obj,
+        headers=copy_served_identity_headers(http_response.headers) or None,
+    )
 
 
 async def _stream_response(
@@ -399,7 +403,14 @@ async def _stream_response(
                         )
                     )
 
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            **_SSE_HEADERS,
+            **copy_served_identity_headers(getattr(delegate, "headers", {})),
+        },
+    )
 
 
 async def _persist(

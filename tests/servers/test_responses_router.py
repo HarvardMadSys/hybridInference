@@ -247,6 +247,28 @@ async def test_basic_text_response(responses_client):
     assert out["output"][0]["content"][0]["text"] == "Hello there"
     assert out["usage"]["input_tokens"] == 5
     assert out["usage"]["output_tokens"] == 2
+    assert not any(name.lower().startswith("x-fi-") for name in r.headers)
+
+
+@pytest.mark.asyncio
+async def test_responses_non_stream_copies_trusted_identity_headers(responses_client):
+    app = responses_client._transport.app
+    adapter = app.state.services.router.routes[TEXT_MODEL].adapters[0][0]
+    adapter.config.provider = "zai"
+    adapter.config.endpoint_id = f"{TEXT_MODEL}:zai-api"
+    adapter.config.endpoint_identity_publishable = True
+
+    response = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello"},
+        headers={**_auth(), "x-probe": "synthetic"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-fi-requested-model"] == TEXT_MODEL
+    assert response.headers["x-fi-served-model"] == TEXT_MODEL
+    assert response.headers["x-fi-served-endpoint"] == f"{TEXT_MODEL}:zai-api"
+    assert response.headers["x-fi-served-provider"] == "zai"
 
 
 @pytest.mark.asyncio
@@ -442,6 +464,29 @@ async def test_streaming_text_events(responses_client):
         if line.startswith("data: ") and '"response.output_text.delta"' in line
     ]
     assert "".join(deltas) == "Hello there"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_copies_trusted_identity_headers(responses_client):
+    app = responses_client._transport.app
+    adapter = app.state.services.router.routes[TEXT_MODEL].adapters[0][0]
+    adapter.config.provider = "zai"
+    adapter.config.endpoint_id = f"{TEXT_MODEL}:zai-api"
+    adapter.config.endpoint_identity_publishable = True
+
+    async with responses_client.stream(
+        "POST",
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "stream": True},
+        headers={**_auth(), "x-probe": "synthetic"},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["x-fi-requested-model"] == TEXT_MODEL
+        assert response.headers["x-fi-served-model"] == TEXT_MODEL
+        assert response.headers["x-fi-served-endpoint"] == f"{TEXT_MODEL}:zai-api"
+        assert response.headers["x-fi-served-provider"] == "zai"
+        async for _ in response.aiter_bytes():
+            pass
 
 
 @pytest.mark.asyncio

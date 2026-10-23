@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
@@ -26,6 +26,7 @@ from serving.servers.deps import (
     get_operational_store,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.routers.served_identity import served_identity_headers
 from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -127,6 +128,7 @@ def _response_summary(response: Any, model: str) -> dict[str, Any]:
 async def create_embeddings(
     request: EmbeddingRequest,
     http_request: Request,
+    http_response: Response,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
@@ -296,6 +298,7 @@ async def create_embeddings(
             provider = getattr(serving_cfg, "provider", None) or provider
             endpoint_id = endpoint_id_for_config(serving_cfg) or endpoint_id
             pricing = effective_pricing(serving_cfg)
+            adapter_config = serving_cfg
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
         # after the handler returns, so a malformed (but non-raising) upstream
@@ -323,6 +326,18 @@ async def create_embeddings(
         # the quota increment still succeeds — leaving a billed request missing
         # from the dashboards.
         usage = validated.usage.model_dump()
+        if is_synthetic_probe:
+            http_response.headers.update(
+                served_identity_headers(
+                    requested_model=model,
+                    served_model=model,
+                    endpoint_id=endpoint_id,
+                    provider=provider,
+                    endpoint_publishable=bool(
+                        getattr(adapter_config, "endpoint_identity_publishable", False)
+                    ),
+                )
+            )
         _schedule_log(
             provider=provider,
             endpoint_id=endpoint_id,

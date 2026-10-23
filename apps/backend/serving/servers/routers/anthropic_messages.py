@@ -75,11 +75,13 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.routers.served_identity import served_identity_headers
 from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.session_identity import consume_session_fields, session_identity
+from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import usage_count
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
@@ -1705,6 +1707,27 @@ async def anthropic_messages(
         # above gives, which this surface renders as overloaded_error.
         return _anthropic_error(503, f"No provider is currently available for model '{model_id}'")
 
+    # X-FI-* response headers: the caller-visible copy of the identity dispatch
+    # is about to use. Served fields are withheld for auto selection, which
+    # deliberately does not tell the caller which model serves it; the
+    # small-budget reroute is not concealed, and there the headers are the one
+    # place requested != served stays visible to the client (issue #1504).
+    # Auto rewrote ``model_id`` above, so the requested name comes from the
+    # selection.
+    identity_headers = (
+        served_identity_headers(
+            requested_model=(auto_selection.requested if auto_selection is not None else model_id),
+            served_model=None if auto_selection is not None else canonical,
+            endpoint_id=None if auto_selection is not None else dispatch_endpoint_id,
+            provider=None if auto_selection is not None else adapter.config.provider,
+            endpoint_publishable=bool(
+                getattr(adapter.config, "endpoint_identity_publishable", False)
+            ),
+        )
+        if is_trusted_probe(request, user_ctx)
+        else {}
+    )
+
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
     messages_for_log = copy.deepcopy(body.get("messages"))
@@ -1866,6 +1889,7 @@ async def anthropic_messages(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            **identity_headers,
         }
 
         async def _gen():
@@ -2490,7 +2514,7 @@ async def anthropic_messages(
             op_store=op_store,
             user_id=user_ctx.get("user_id"),
         )
-    return JSONResponse(content=resp)
+    return JSONResponse(content=resp, headers=identity_headers or None)
 
 
 @router.post("/v1/messages/count_tokens", response_model=None)
