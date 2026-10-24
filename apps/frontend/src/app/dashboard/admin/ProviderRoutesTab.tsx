@@ -14,7 +14,6 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
-  RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
   createProviderRouteCandidate,
@@ -28,14 +27,25 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteCapabilities,
+  resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
+import {
+  RouteCapabilityFields,
+  capabilityDraftFrom,
+  describeCapabilities,
+  emptyCapabilityDraft,
+  readCapabilityDraft,
+  type CapabilityDraft,
+  type DeclaredChoice,
+} from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
@@ -56,7 +66,6 @@ type RouteForm = {
 };
 
 // Starts unanswered: a choice the admin never made must not be sent as "no".
-type DeclaredChoice = '' | 'yes' | 'no';
 
 type CreateRouteForm = {
   routeType: ProviderRouteType;
@@ -79,6 +88,7 @@ type CreateRouteForm = {
   maxOutputLength: string;
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
+  otherInputModalities: string[];
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -98,10 +108,7 @@ const emptyCreateForm: CreateRouteForm = {
   pricingCompletion: '',
   pricingCacheReads: '',
   pricingCacheWrites: '',
-  contextLength: '',
-  maxOutputLength: '',
-  imageInput: '',
-  toolCalling: '',
+  ...emptyCapabilityDraft,
 };
 
 const OPENROUTER_PROVIDER_AUTO = '';
@@ -139,6 +146,13 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'free', label: 'All users' },
 ];
 
+// The gateway's own reason. The shared mapping reads any 409 as a signup
+// conflict ("This email is already registered"), which would hide why a route
+// edit, disable or delete was refused.
+function routeErrorMessage(err: unknown) {
+  return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
+
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
 }
@@ -168,52 +182,6 @@ function runtimePricingPayload(form: CreateRouteForm): Record<string, string> {
   if (cacheReads) pricing.input_cache_reads = cacheReads;
   if (cacheWrites) pricing.input_cache_writes = cacheWrites;
   return pricing;
-}
-
-// The backend's bound (RUNTIME_MODEL_MAX_TOKENS): the largest window a model ships with.
-const MAX_DECLARED_TOKENS = 10_000_000;
-const TOKEN_COUNT_ERROR = `Enter a whole number of tokens from 1 to ${MAX_DECLARED_TOKENS.toLocaleString('en-US')}.`;
-
-function tokenCountOrNull(value: string) {
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number.parseInt(trimmed, 10);
-  return parsed > 0 && parsed <= MAX_DECLARED_TOKENS ? parsed : null;
-}
-
-type RuntimeCapabilitiesDraft = {
-  payload: RuntimeModelCapabilities | null;
-  contextLengthError: string | null;
-  maxOutputLengthError: string | null;
-};
-
-// One reading of the four fields, used both for the inline messages and to
-// gate Create/Verify, so a field can never block the form without saying why.
-// An empty field has no message: it is visibly unanswered.
-function runtimeCapabilitiesDraft(form: CreateRouteForm): RuntimeCapabilitiesDraft {
-  const contextLength = tokenCountOrNull(form.contextLength);
-  const maxOutputLength = tokenCountOrNull(form.maxOutputLength);
-  const contextLengthError =
-    form.contextLength.trim() && contextLength === null ? TOKEN_COUNT_ERROR : null;
-  let maxOutputLengthError =
-    form.maxOutputLength.trim() && maxOutputLength === null ? TOKEN_COUNT_ERROR : null;
-  if (contextLength !== null && maxOutputLength !== null && maxOutputLength > contextLength) {
-    maxOutputLengthError = 'Max output cannot exceed the context length.';
-  }
-  const payload: RuntimeModelCapabilities | null =
-    contextLength !== null &&
-    maxOutputLength !== null &&
-    maxOutputLengthError === null &&
-    form.imageInput &&
-    form.toolCalling
-      ? {
-          context_length: contextLength,
-          max_output_length: maxOutputLength,
-          input_modalities: form.imageInput === 'yes' ? ['text', 'image'] : ['text'],
-          supports_tools: form.toolCalling === 'yes',
-        }
-      : null;
-  return { payload, contextLengthError, maxOutputLengthError };
 }
 
 function formatWeight(value: number) {
@@ -658,6 +626,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
+  // The route whose capabilities are being edited, and the fields as typed.
+  const [capabilityRoute, setCapabilityRoute] = useState<ProviderRoute | null>(null);
+  const [capabilityDraft, setCapabilityDraft] = useState<CapabilityDraft>(emptyCapabilityDraft);
+  const [savingCapabilities, setSavingCapabilities] = useState(false);
   const [addingRoute, setAddingRoute] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
@@ -841,12 +813,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       pricingValueValid(createForm.pricingCompletion) &&
       optionalPricingValueValid(createForm.pricingCacheReads) &&
       optionalPricingValueValid(createForm.pricingCacheWrites));
-  const {
-    payload: runtimeCapabilities,
-    contextLengthError: createContextLengthError,
-    maxOutputLengthError: createMaxOutputLengthError,
-  } = runtimeCapabilitiesDraft(createForm);
-  const createCapabilitiesValid = !creatingModel || runtimeCapabilities !== null;
+  const createCapabilityReading = readCapabilityDraft(createForm);
+  const runtimeCapabilities = createCapabilityReading.payload;
+  // A new model and an added route both declare their own.
+  const createCapabilitiesValid = runtimeCapabilities !== null;
   const createQuotaValid =
     createForm.routeType !== 'quota' ||
     (parsedCreateQuotaLimit !== null &&
@@ -985,7 +955,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     strategy: creatingModel ? newModelStrategy : strategy,
     required_role: creatingModel ? newModelRequiredRole : undefined,
     pricing: creatingModel ? runtimePricing : undefined,
-    capabilities: creatingModel ? runtimeCapabilities : undefined,
+    capabilities: runtimeCapabilities,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -1315,12 +1285,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       providerModelId: firstProvider
         ? defaultProviderModelIdFor(firstProvider.provider, selectedRoutes)
         : '',
+      // A starting point, not a copy: the admin confirms or changes each value
+      // for this provider, and the route stores what was submitted.
+      ...(selectedRoutes[0]?.capabilities
+        ? capabilityDraftFrom(selectedRoutes[0].capabilities)
+        : emptyCapabilityDraft),
     });
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
     setAddingRoute(true);
     setCreatingModel(false);
     setEditingRoute(null);
+    setCapabilityRoute(null);
   };
 
   const openCreateModelForm = () => {
@@ -1355,6 +1331,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setCreatingModel(true);
     setAddingRoute(false);
     setEditingRoute(null);
+    setCapabilityRoute(null);
   };
 
   const onCreateProviderChange = (upstreamProvider: string) => {
@@ -1442,13 +1419,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const onCreateSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!createFormValid) return;
+    // createFormValid already requires it; this check narrows the type.
+    if (!createFormValid || !runtimeCapabilities) return;
     setCreatingRoute(true);
     try {
       let created: ProviderRoute;
       if (creatingModel) {
-        // createFormValid already requires it; this check narrows the type.
-        if (!runtimeCapabilities) return;
         created = await createProviderRouteModel({
           ...createRoutePayload,
           model_id: newModelIdValue,
@@ -1458,7 +1434,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           capabilities: runtimeCapabilities,
         });
       } else {
-        created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
+        created = await createProviderRouteCandidate(selectedModel, {
+          ...createRoutePayload,
+          capabilities: runtimeCapabilities,
+        });
       }
       setRoutes((current) => [...current, created]);
       if (creatingModel) {
@@ -1477,11 +1456,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const onCreateVerify = async () => {
     if (!createFormValid) return;
+    // createFormValid already requires it; this check narrows the type.
+    if (!runtimeCapabilities) return;
     setVerifyingCreateRoute(true);
     try {
       if (creatingModel) {
-        // createFormValid already requires it; this check narrows the type.
-        if (!runtimeCapabilities) return;
         await verifyProviderRouteModel({
           ...createRoutePayload,
           model_id: newModelIdValue,
@@ -1491,7 +1470,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           capabilities: runtimeCapabilities,
         });
       } else {
-        await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
+        await verifyProviderRouteCandidate(selectedModel, {
+          ...createRoutePayload,
+          capabilities: runtimeCapabilities,
+        });
       }
       setVerifiedCreateSignature(createVerificationSignature);
       toast.success(creatingModel ? 'Model route verified' : 'Provider route verified');
@@ -1515,6 +1497,55 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       toast.error(`Reset failed: ${getErrorMessage(err)}`);
     } finally {
       setResettingKey(null);
+    }
+  };
+
+  const openCapabilityEditor = (route: ProviderRoute) => {
+    if (!route.capabilities) return;
+    setCapabilityRoute(route);
+    setCapabilityDraft(capabilityDraftFrom(route.capabilities));
+    setEditingRoute(null);
+    setAddingRoute(false);
+    setCreatingModel(false);
+  };
+
+  const capabilityReading = readCapabilityDraft(capabilityDraft);
+
+  const onSaveCapabilities = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!capabilityRoute || !capabilityReading.payload) return;
+    setSavingCapabilities(true);
+    try {
+      const updated = await updateProviderRouteCapabilities(
+        capabilityRoute.model_id,
+        capabilityRoute.route_id,
+        capabilityReading.payload,
+      );
+      updateRoute(updated);
+      setCapabilityRoute(null);
+      toast.success('Route capabilities updated');
+    } catch (err) {
+      toast.error(`Capability update failed: ${routeErrorMessage(err)}`);
+    } finally {
+      setSavingCapabilities(false);
+    }
+  };
+
+  const onResetCapabilities = async () => {
+    if (!capabilityRoute) return;
+    setSavingCapabilities(true);
+    try {
+      const updated = await resetProviderRouteCapabilities(
+        capabilityRoute.model_id,
+        capabilityRoute.route_id,
+      );
+      updateRoute(updated);
+      setCapabilityRoute(null);
+      toast.success('Route capabilities reset');
+    } catch (err) {
+      toast.error(`Capability reset failed: ${routeErrorMessage(err)}`);
+    } finally {
+      setSavingCapabilities(false);
     }
   };
 
@@ -2020,6 +2051,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           Offload
                         </span>
                       )}
+                      {route.capabilities_overridden && route.capabilities_baseline && (
+                        <span
+                          className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
+                          title={`Set in the console. From config: ${describeCapabilities(route.capabilities_baseline)}`}
+                        >
+                          Capabilities edited
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
@@ -2053,6 +2092,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {isSavingWeight ? 'Enabling...' : 'Enable'}
                       </button>
                     )}
+                    {route.capabilities && (
+                      <button
+                        type="button"
+                        aria-label={`Edit ${route.endpoint_id} capabilities`}
+                        title={describeCapabilities(route.capabilities)}
+                        onClick={() => openCapabilityEditor(route)}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                      >
+                        Capabilities
+                      </button>
+                    )}
                     {route.source === 'runtime' ? (
                       <button
                         type="button"
@@ -2069,6 +2119,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           setEditingRoute(route);
                           setAddingRoute(false);
                           setCreatingModel(false);
+                          setCapabilityRoute(null);
                         }}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
                       >
@@ -2285,125 +2336,22 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </div>
               )}
 
-              {creatingModel && (
-                <div className="mb-3">
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-context-length"
-                      >
-                        Context length (tokens)
-                      </label>
-                      <input
-                        id="new-model-context-length"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={createForm.contextLength}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            contextLength: event.target.value,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      />
-                      {createContextLengthError && (
-                        <p className="mt-1 text-[11px] leading-5 text-red-600">
-                          {createContextLengthError}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-max-output-length"
-                      >
-                        Max output (tokens)
-                      </label>
-                      <input
-                        id="new-model-max-output-length"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={createForm.maxOutputLength}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            maxOutputLength: event.target.value,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      />
-                      {createMaxOutputLengthError && (
-                        <p className="mt-1 text-[11px] leading-5 text-red-600">
-                          {createMaxOutputLengthError}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-image-input"
-                      >
-                        Image input
-                      </label>
-                      <select
-                        id="new-model-image-input"
-                        value={createForm.imageInput}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            imageInput: event.target.value as DeclaredChoice,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Text only</option>
-                        <option value="yes">Accepts images</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-tool-calling"
-                      >
-                        Tool calling
-                      </label>
-                      <select
-                        id="new-model-tool-calling"
-                        value={createForm.toolCalling}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            toolCalling: event.target.value as DeclaredChoice,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Not supported</option>
-                        <option value="yes">Supported</option>
-                      </select>
-                    </div>
-                  </div>
-                  <p className="mt-1 text-[11px] leading-5 text-gray-400">
-                    Take these from the provider&apos;s model page. Requests follow them: tool
-                    definitions are dropped without tool calling, max_tokens is capped at the max
-                    output, and images reach the model only if it accepts them.
-                  </p>
-                </div>
-              )}
+              <div className="mb-3">
+                <RouteCapabilityFields
+                  idPrefix="new-model"
+                  draft={createForm}
+                  reading={createCapabilityReading}
+                  onChange={(change) => {
+                    setCreateForm((current) => ({ ...current, ...change }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  help={
+                    creatingModel
+                      ? "Take these from the provider's model page. Requests follow them: tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach the model only if it accepts them."
+                      : "This route's own values, started from the model's first route. Providers can serve the same model with a smaller window or without images or tools; set what this one serves."
+                  }
+                />
+              </div>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div>
@@ -2703,6 +2651,72 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     : creatingModel
                       ? 'Create'
                       : 'Add'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {capabilityRoute && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="route-capabilities-title"
+            className="mx-auto w-full max-w-3xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
+          >
+            <form onSubmit={onSaveCapabilities}>
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3
+                    id="route-capabilities-title"
+                    className="text-[14px] font-semibold text-gray-900"
+                  >
+                    Route capabilities
+                  </h3>
+                  <p className="mt-1 font-mono text-[12px] text-gray-400">
+                    {capabilityRoute.model_id} / {capabilityRoute.endpoint_id}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCapabilityRoute(null)}
+                  className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
+                >
+                  Close
+                </button>
+              </div>
+              <RouteCapabilityFields
+                idPrefix="route-capabilities"
+                draft={capabilityDraft}
+                reading={capabilityReading}
+                onChange={(change) => setCapabilityDraft((current) => ({ ...current, ...change }))}
+                help="Requests through this route follow these values from the next request on, and they hold across restarts. Tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach this route only if it accepts them."
+              />
+              {capabilityRoute.capabilities_baseline && (
+                <p className="mt-3 text-[12px] text-gray-500">
+                  {capabilityRoute.capabilities_overridden ? 'Set in the console. ' : ''}
+                  From config: {describeCapabilities(capabilityRoute.capabilities_baseline)}
+                </p>
+              )}
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                {capabilityRoute.capabilities_overridden && (
+                  <button
+                    type="button"
+                    onClick={() => void onResetCapabilities()}
+                    disabled={savingCapabilities}
+                    className="h-9 rounded-lg px-3 text-[13px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                  >
+                    Reset to config
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={savingCapabilities || capabilityReading.payload === null}
+                  className="h-9 rounded-lg bg-gray-900 px-3 text-[13px] font-medium text-white disabled:opacity-50"
+                >
+                  {savingCapabilities ? 'Saving…' : 'Save capabilities'}
                 </button>
               </div>
             </form>

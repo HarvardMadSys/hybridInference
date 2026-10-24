@@ -177,6 +177,10 @@ _STRUCTURED_LOG_KEYS = (
     "waiting",
     "limit",
     "timeout_sec",
+    # A stored admin capability override that names no served route
+    # (``route_capability_override_orphaned``, servers/routers/admin/
+    # provider_routes.py). Next to ``model_id`` it says which row to look at.
+    "route_id",
 )
 
 

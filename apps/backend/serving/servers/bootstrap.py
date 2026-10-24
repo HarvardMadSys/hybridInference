@@ -1313,6 +1313,7 @@ async def initialize() -> AppServices:
                 apply_persisted_model_router_strategy_overrides,
                 apply_persisted_provider_route_candidates,
                 apply_persisted_provider_route_configs,
+                sync_route_capability_overrides,
             )
 
             provider_route_services = AppServices(
@@ -1348,6 +1349,12 @@ async def initialize() -> AppServices:
                 operational_store,
             )
             await apply_persisted_provider_route_configs(
+                provider_route_services,
+                operational_store,
+            )
+            # Last, so every route an override names is in place: models.yaml
+            # routes, restored runtime routes and their target overrides.
+            await sync_route_capability_overrides(
                 provider_route_services,
                 operational_store,
             )

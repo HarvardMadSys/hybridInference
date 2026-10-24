@@ -332,6 +332,7 @@ backend.
 | Create a model that is not in the registry | **Create model** | `POST /admin/routing/provider-route-models`; `POST /admin/routing/provider-route-model-verifications` tries the route without registering it | `provider_route_candidates`, plus a strategy and required-role marker in `site_settings` |
 | Add a route to an existing model | **Add provider route** | `POST /admin/routing/provider-route-candidates/{model_id}`; `.../provider-route-candidate-verifications/{model_id}` to check first; `PATCH` / `DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` | `provider_route_candidates` |
 | Point a registry route somewhere else | edit the route's **Target** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first; `DELETE` removes the override and restores the YAML route | `provider_route_configs` |
+| Change what a route accepts: context window, max output, image input, tool calling | **Capabilities** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
 | Change a route's weight | the weight field on each route | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`; `GET` shows the YAML, override and effective values | `provider_weight_overrides` |
 | Switch a model between `fixed` and `routewise` | the strategy selector | `PATCH /admin/routing/provider-route-strategies/{model_id}` | `site_settings` |
 | Reserve a route for requests left waiting in the outbound queue or for an engine's first token | **Queue offload** | `PUT` / `DELETE /admin/routing/offload-routes/{model_id}`; `GET /admin/routing/offload-routes` lists every model's, and whether routing applies it — see [Queue-wait offload](routing.md#queue-wait-offload) | `site_settings` |
@@ -354,19 +355,32 @@ carries an id, a first route, a pricing table, a router strategy and a
 `required_role` (default `admin`, so a new model stays invisible to ordinary
 users until you lower it), and is restored at every start. It also declares
 what it accepts, as `capabilities` in the request: `context_length`,
-`max_output_length`, `input_modalities` (`text`, optionally `image`) and
-`supports_tools`. All four are required, because each changes what a request
-does: a model without tool support has tool definitions dropped, `max_tokens`
-is clamped to `max_output_length`, an image reaches only a route that accepts
-images, and Auto and the context-overflow fallback read `context_length`. The
-two lengths are whole numbers of tokens, at most 10,000,000. A route added to
-the model later copies the four from its first route. Each route stores and
-restores its own four, since routes of one model can differ. A runtime model
-created before they could be declared keeps the defaults it was given:
-`context_length` 8192, `max_output_length` 4096, text only, no tool support.
-Supported parameters such as `reasoning_effort`, structured output and aliases
-still take `ModelConfig`'s defaults; when a model needs any of those, put it in
-the registry.
+`max_output_length`, `input_modalities` (`text`, optionally `image`, `audio`
+and `video`) and `supports_tools`. All four are required, because each changes
+what a request does: a model without tool support has tool definitions
+dropped, `max_tokens` is clamped to `max_output_length`, an image reaches only
+a route that accepts images, and Auto and the context-overflow fallback read
+`context_length`. The two lengths are whole numbers of tokens, at most
+10,000,000. A route added to any model, runtime or registry, declares its own
+four the same way; the console starts them from the model's first route, and the
+route stores what was submitted. Each route stores and restores its own four,
+since routes of one model can differ. A runtime model created before they could
+be declared keeps the defaults it was given: `context_length` 8192,
+`max_output_length` 4096, text only, no tool support. Supported parameters such
+as `reasoning_effort`, structured output and aliases still take `ModelConfig`'s
+defaults; when a model needs any of those, put it in the registry.
+
+Any route's four can be changed after the fact with **Capabilities**, registry
+and runtime routes alike, with the same validation. The console's form has a
+field for image input only: it keeps a route's `audio` and `video` input as they
+are, and an added route starts with the first route's. The values the route has
+from the registry or from its creation stay as its baseline: the change is
+stored as an override, the next request through the route follows it, a restart
+restores it, and retargeting the route keeps it. Resetting deletes the override
+and returns the route to its baseline. Route listings report `capabilities` (as
+served), `capabilities_baseline` and `capabilities_overridden`. A change applies
+in the gateway process that handles the admin request; a deployment running
+several gateway processes sees it in the others after their next restart.
 
 ### Settings tab
 
@@ -390,7 +404,9 @@ moment it is saved.
    warning, so removing a model from YAML does not bring it back through a
    leftover row.
 5. Route overrides, retargeting the registry routes they name.
-6. Key tier reservations, re-read now that every provider is known; then
+6. Route capability overrides, last of the route state, so they reach every
+   route the steps above installed.
+7. Key tier reservations, re-read now that every provider is known; then
    weight overrides, disabled providers, offload routes and model visibility,
    loaded into resolvers the router consults at request time.
 
