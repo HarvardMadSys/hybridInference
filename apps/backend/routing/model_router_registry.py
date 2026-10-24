@@ -33,10 +33,9 @@ logger = get_logger(__name__)
 def _attach_accepts_model_scope(attach: Any) -> bool:
     """Report whether a route-table binding hook takes ``model_scope``.
 
-    In-tree strategies always do. The check exists for the external strategies
-    the ``attach_fixed_router`` fallback below still supports: calling those
-    with the keyword would raise, and an unscoped bind is the pre-existing
-    behavior rather than a regression.
+    In-tree strategies always do. An external strategy may implement the
+    documented ``attach_route_table(route_table)`` without it; calling that with
+    the keyword would raise, so it gets the unscoped bind it was written for.
     """
     try:
         parameters = inspect.signature(attach).parameters
@@ -226,10 +225,6 @@ class ModelRouterRegistry:
             # Late-bind the read-only route-table port for RouteWise (and any
             # future late-bound strategy that exposes attach_route_table).
             attach = getattr(router, "attach_route_table", None)
-            if attach is None:
-                # One-release compatibility for external strategies that still
-                # expose the former binding hook.
-                attach = getattr(router, "attach_fixed_router", None)
             if attach is not None:
                 # The shared table carries every model; this router serves one.
                 # Without the scope a strategy that derives background work
@@ -467,22 +462,6 @@ class ModelRouterRegistry:
             seen_ids.add(id(router))
             if isinstance(router, RouteTableRefreshable):
                 router.refresh_route_table()
-                continue
-
-            # One-release compatibility for external strategies that still
-            # expose the former private hook. Keep this adapter inside the
-            # routing composition boundary so serving never owns router locks.
-            refresh = getattr(router, "_rebuild_from_route_table", None)
-            if not callable(refresh):
-                refresh = getattr(router, "_rebuild_from_fixed_router", None)
-            if not callable(refresh):
-                continue
-            commit_lock = getattr(router, "_route_commit_lock", None)
-            if commit_lock is None:
-                refresh()
-            else:
-                with commit_lock:
-                    refresh()
 
     def configured_model_ids(self) -> list[str]:
         """Return model ids known to the registry config."""

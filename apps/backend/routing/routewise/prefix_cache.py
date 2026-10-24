@@ -47,7 +47,6 @@ logger = get_logger(__name__)
 DEFAULT_BLOCK_SIZE_TOKENS: int = 128
 DEFAULT_TTL_SEC: float = 2 * 3600.0
 DEFAULT_MAX_ENTRIES: int = 50_000
-DEFAULT_HISTORY_DEPTH: int = 1
 DEFAULT_MIN_MATCH_TOKENS: int = 1024
 
 # Per-process secret so block digests are not reversible across deployments and
