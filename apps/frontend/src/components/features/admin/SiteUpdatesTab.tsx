@@ -247,14 +247,7 @@ export function SiteUpdatesTab() {
         <>
           {loading && updates.length > 0 ? <AdminSpinner size="sm" /> : null}
           {!composerOpen && (
-            <button
-              type="button"
-              ref={openerRef}
-              onClick={openComposer}
-              aria-controls={fieldId('composer')}
-              aria-expanded={false}
-              className={BUTTON_PRIMARY}
-            >
+            <button type="button" ref={openerRef} onClick={openComposer} className={BUTTON_PRIMARY}>
               {openLabel}
             </button>
           )}
@@ -265,7 +258,6 @@ export function SiteUpdatesTab() {
           form, and a title alone would publish a half-written update. */}
       {composerOpen && (
         <form
-          id={fieldId('composer')}
           aria-labelledby={fieldId('composer-title')}
           onSubmit={(e) => e.preventDefault()}
           className={`${PANEL} animate-admin-reveal mb-4 max-w-5xl`}

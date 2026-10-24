@@ -192,8 +192,6 @@ export function BroadcastsTab() {
                 type="button"
                 ref={openerRef}
                 onClick={() => toggleComposer(true)}
-                aria-controls={fieldId('composer')}
-                aria-expanded={false}
                 className={BUTTON_PRIMARY}
               >
                 {hasDraft ? 'Resume draft' : 'Compose email'}
@@ -205,7 +203,6 @@ export function BroadcastsTab() {
         {/* Composer: opened on purpose. Hiding it keeps everything typed. */}
         {composerOpen && (
           <div
-            id={fieldId('composer')}
             role="group"
             aria-labelledby={fieldId('composer-title')}
             className={`${PANEL} animate-admin-reveal mb-4`}
