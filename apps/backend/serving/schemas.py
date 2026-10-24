@@ -273,8 +273,3 @@ class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]
     data: list[EmbeddingData]
     model: str
     usage: EmbeddingUsage
-
-
-# Backward-compatibility aliases for older tests referring to Choice
-# New code should import ChatCompletionChoice explicitly.
-Choice = ChatCompletionChoice

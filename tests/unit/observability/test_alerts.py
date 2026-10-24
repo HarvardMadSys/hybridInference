@@ -42,7 +42,7 @@ from serving.observability.alerts import (
     sweep_stale_breaches,
 )
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import redact_url, scrub, url_fingerprint
+from serving.utils.secret_urls import scrub, url_fingerprint, url_redaction
 
 
 @pytest.fixture(autouse=True)
@@ -2020,7 +2020,7 @@ class TestTheRedactedFormNamesTheSinkOnly:
     WEBHOOK = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
 
     def test_it_keeps_the_host_and_drops_everything_after_it(self):
-        redacted = redact_url(self.WEBHOOK)
+        redacted = url_redaction(self.WEBHOOK).display
         assert redacted.startswith("https://hooks.slack.test/")
         assert "services" not in redacted
         assert "nOtArEaLtOkEn" not in redacted
@@ -2028,8 +2028,8 @@ class TestTheRedactedFormNamesTheSinkOnly:
     def test_two_webhooks_on_one_host_stay_distinguishable(self):
         """ "Which webhook did we post to" must survive the redaction."""
         other = self.WEBHOOK.replace("nOtArEaLtOkEn", "aLsOnOtReAl")
-        assert redact_url(self.WEBHOOK) != redact_url(other)
-        assert redact_url(self.WEBHOOK) == redact_url(self.WEBHOOK)
+        assert url_redaction(self.WEBHOOK).display != url_redaction(other).display
+        assert url_redaction(self.WEBHOOK).display == url_redaction(self.WEBHOOK).display
 
     def test_a_path_only_mention_is_scrubbed_too(self):
         """Some errors name the request target without the host in front."""

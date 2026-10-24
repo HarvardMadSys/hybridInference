@@ -659,9 +659,6 @@ jobs:
           matrix.shard != 'db' && github.event_name != 'push' &&
           steps.pytest-shard.outputs.has_tests == 'true'
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth and integration tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
@@ -695,9 +692,6 @@ jobs:
           matrix.shard != 'db' && github.event_name == 'push' &&
           steps.pytest-shard.outputs.has_tests == 'true'
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth and integration tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}

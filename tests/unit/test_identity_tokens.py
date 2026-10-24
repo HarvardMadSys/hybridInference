@@ -102,14 +102,17 @@ def test_allowed_redirects_empty_is_not_configured(monkeypatch) -> None:
         identity_tokens.allowed_redirects()
 
 
-def test_issuance_enabled_requires_key_issuer_and_redirects(monkeypatch, rsa_pem: str) -> None:
-    assert identity_tokens.issuance_enabled() is False
+def test_issuance_requires_key_issuer_and_redirects(monkeypatch, rsa_pem: str) -> None:
+    with pytest.raises(IdentityNotConfigured):
+        identity_tokens.assert_issuance_configured()
     monkeypatch.setenv(ENV_PRIVATE_KEY, rsa_pem)
-    assert identity_tokens.issuance_enabled() is False
+    with pytest.raises(IdentityNotConfigured):
+        identity_tokens.assert_issuance_configured()
     monkeypatch.setenv(ENV_ISSUER, ISSUER)
-    assert identity_tokens.issuance_enabled() is False
+    with pytest.raises(IdentityNotConfigured):
+        identity_tokens.assert_issuance_configured()
     monkeypatch.setenv(ENV_ALLOWED_REDIRECTS, REDIRECT)
-    assert identity_tokens.issuance_enabled() is True
+    identity_tokens.assert_issuance_configured()
 
 
 # ---------------------------------------------------------------------------

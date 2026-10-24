@@ -101,6 +101,7 @@ async def test_identity_passthrough_counts_an_unterminated_final_event(monkeypat
 
     adapter = AnthropicAdapter(_cfg())
     out = b""
+    usage: dict[str, int] = {}
     async for chunk in adapter.stream_messages(
         {
             "model": "claude-opus-4.7",
@@ -109,14 +110,15 @@ async def test_identity_passthrough_counts_an_unterminated_final_event(monkeypat
             "messages": [{"role": "user", "content": "hi"}],
         },
         request_id="req_eof",
+        usage_sink=usage,
     ):
         out += chunk
 
     # The client gets exactly what the upstream sent -- completing the frame is
     # our accounting's business, not something we synthesize onto the wire.
     assert out == body
-    assert adapter.last_stream_usage["output_tokens"] == 9
-    assert adapter.last_stream_usage["input_tokens"] == 11
+    assert usage["output_tokens"] == 9
+    assert usage["input_tokens"] == 11
 
 
 @pytest.mark.unit
@@ -126,6 +128,7 @@ async def test_properly_terminated_body_is_unaffected(monkeypatch):
     _serve(monkeypatch, _HEAD + _UNTERMINATED_TAIL + b"\n")
 
     adapter = AnthropicAdapter(_cfg())
+    usage: dict[str, int] = {}
     async for _ in adapter.stream_messages(
         {
             "model": "claude-opus-4.7",
@@ -134,7 +137,8 @@ async def test_properly_terminated_body_is_unaffected(monkeypatch):
             "messages": [{"role": "user", "content": "hi"}],
         },
         request_id="req_ok",
+        usage_sink=usage,
     ):
         pass
 
-    assert adapter.last_stream_usage["output_tokens"] == 9
+    assert usage["output_tokens"] == 9

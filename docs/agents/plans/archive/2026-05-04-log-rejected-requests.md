@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, Pydantic, asyncio, pytest / pytest-asyncio, asyncpg.
 
-**Spec:** `docs/superpowers/specs/2026-05-04-log-rejected-requests-design.md`
+**Spec:** `docs/agents/specs/archive/2026-05-04-log-rejected-requests-design.md`
 **Issue:** #426
 
 ---

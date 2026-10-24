@@ -26,13 +26,13 @@ apps/backend/serving/     # FastAPI app — HTTP layer, SSE streaming, middlewar
 apps/backend/routing/      # Routing engine — strategies, circuit breaker, EWMA health, provider registry
   routewise/               # Per-model routing config
 apps/frontend/             # Next.js frontend
-config/                    # YAML configs: models.yaml, routing.yaml, alerts.yaml
+config/examples/           # Reference models.yaml / routing.yaml; a deployment's own are in distributions/<name>/config/
 services/                  # sidecar workers, where a deployment ships them
 tests/
   unit/                    # Pure unit tests (mocked adapters, routing logic, auth, config)
-  api/                     # API-level tests per provider (test_openai_api, test_claude_api, etc.)
+  api/                     # API-surface tests (signup quota, admin routes)
+  servers/                 # FastAPI app, router and middleware tests
   integration/             # Tests hitting real DB or external services
-  e2e/                     # End-to-end Makefile-driven tests (direct local, gateway routing, hybrid)
   external/                # Live server tests
 ```
 

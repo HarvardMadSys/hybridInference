@@ -10,7 +10,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 type Phase = 'idle' | 'confirm' | 'requesting' | 'waiting' | 'back' | 'timeout';
 
 /** The command an operator runs when the backend cannot restart itself. */
-export const MANUAL_RESTART_COMMAND = 'docker restart hybridinference-backend';
+const MANUAL_RESTART_COMMAND = 'docker restart hybridinference-backend';
 
 /**
  * "Restart backend", with the confirmation and the wait.

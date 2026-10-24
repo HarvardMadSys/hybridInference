@@ -20,8 +20,7 @@ import { navigateTo } from '@/lib/utils/navigation';
 import { SETUP_INPUT_CLASS, SETUP_INPUT_ERROR_CLASS, SetupField } from './SetupField';
 
 /** The command that finds the code; the backend logs it at every boot until setup is done. */
-export const SETUP_CODE_LOG_COMMAND =
-  "docker logs hybridinference-backend 2>&1 | grep 'setup code'";
+const SETUP_CODE_LOG_COMMAND = "docker logs hybridinference-backend 2>&1 | grep 'setup code'";
 
 /**
  * Each field's rule, as an error. The form checks the same rules first, and

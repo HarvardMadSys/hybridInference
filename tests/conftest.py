@@ -170,7 +170,7 @@ def _reset_settings_cache():
     ``serving.config.settings.get_settings`` is ``lru_cache``-d at the
     module level, the cached instance won't see per-test overrides
     unless we explicitly invalidate it.  Clearing here ensures the next
-    call to ``get_settings()`` (e.g. inside ``verify_admin_token`` or
+    call to ``get_settings()`` (e.g. inside ``verify_admin_access`` or
     ``is_user_auth_enabled``) reflects the current process environment.
     """
     from serving.config.distribution import get_distribution_config

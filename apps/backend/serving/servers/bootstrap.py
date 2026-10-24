@@ -1603,10 +1603,7 @@ async def initialize() -> AppServices:
     # instance via ``deps.get_completions_logger``.
     from serving.servers.routers.completions_logging import CompletionsLogger
 
-    completions_logger = CompletionsLogger(
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-    )
+    completions_logger = CompletionsLogger(log_store=log_store)
 
     # PricingLookup + CostTracker — encapsulate the four pricing-lookup
     # blocks and the ``_schedule_cost_increment`` helper that previously

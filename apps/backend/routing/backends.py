@@ -287,11 +287,6 @@ class RoutingBackendBase:
         """Return whether this backend is the cloud execution domain."""
         return False
 
-    @property
-    def started_here(self) -> bool:
-        """Return whether this backend started the wrapped router itself."""
-        return self._started
-
     async def chat_completion(
         self,
         model_id: str,

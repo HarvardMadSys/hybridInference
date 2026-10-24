@@ -131,7 +131,6 @@ GUARDS: dict[str, str] = {
 # plus a clean --strict run is the criterion-② acceptance.**
 ALLOWLIST: dict[str, str] = {
     "docs/agents/": "historical design docs — review before direct publication",
-    "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
     "ops/": "operator scripts — step-2 classification per ownership inventory",
     "deploy/": "deployment defaults — neutral-defaults flip wave",
@@ -142,7 +141,6 @@ ALLOWLIST: dict[str, str] = {
         "the GHCR namespace, the internal doc-site host, and a runner-billing "
         "note — neutral-defaults flip wave"
     ),
-    ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "one commented overlay-manifest path, which is the example that works",
     "Makefile": "a comment naming the sibling cloud-agent repository",
 }

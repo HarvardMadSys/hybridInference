@@ -116,29 +116,3 @@ def agent_model_reasoning_efforts(router_exec: Any, models: Sequence[str]) -> di
         if declared:
             efforts[model_id] = declared
     return efforts
-
-
-async def agent_model_resolvable(
-    model: str,
-    router_exec: Any,
-    *,
-    visibility_resolver: Any | None = None,
-    user_ctx: dict[str, Any] | None = None,
-) -> bool:
-    """Whether one requested id (canonical or alias) would resolve for this user.
-
-    This is the create-time fail-fast: rejecting an unknown model here costs a
-    400; accepting it costs a claim, a clone, and an attempt before the first
-    model call dies.
-    """
-    route = getattr(router_exec, "routes", {}).get(model)
-    if route is None:
-        return False
-    configs = [adapter.config for adapter, _ in route.adapters]
-    if not configs:
-        return False
-    if getattr(configs[0], "model_type", _AGENT_MODEL_TYPE) != _AGENT_MODEL_TYPE:
-        return False
-    return await _route_allows(
-        route, configs[0].id, visibility_resolver=visibility_resolver, user_ctx=user_ctx
-    )

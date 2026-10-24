@@ -24,7 +24,6 @@ from serving.utils.request_ip import (
     _parse_forwarded_chain,
     _parse_ip,
     derive_affinity_key,
-    get_client_ip_bucket,
     get_client_ip_info,
     normalize_ip_bucket,
 )
@@ -1235,15 +1234,6 @@ def test_derive_affinity_key_falls_through():
 
     assert derive_affinity_key("keyhash", resolved_info) == "keyhash"
     assert derive_affinity_key(None, resolved_info, grant_id="g1") == "grant:g1"
-
-
-def test_get_client_ip_bucket_normalizes():
-    with _settings_env(proxy_headers=True, cf_headers=True, cf_nets=_networks("172.16.0.0/12")):
-        request = _request(
-            {"cf-connecting-ip": "2001:4860:4860:abcd::5"},
-            peer_ip="172.19.0.1",
-        )
-        assert get_client_ip_bucket(request) == "2001:4860:4860:abcd::/64"
 
 
 # ---------------------------------------------------------------------------

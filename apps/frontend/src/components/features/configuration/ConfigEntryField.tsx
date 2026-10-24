@@ -37,7 +37,7 @@ const BADGE_TONES: Record<BadgeTone, string> = {
   gray: 'bg-gray-100 text-gray-600',
 };
 
-export function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
+function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
   const badges: Array<{ label: string; tone: BadgeTone }> = [];
   if (entry.missing) badges.push({ label: 'Missing', tone: 'red' });
   if (entry.invalid) badges.push({ label: 'Invalid', tone: 'red' });

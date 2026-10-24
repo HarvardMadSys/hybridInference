@@ -258,11 +258,6 @@ class RuntimeSettings:
         val = await self._get(key)
         return float(val) if val is not None else 0.0
 
-    async def get_str(self, key: str) -> str:
-        """Return the setting value as a string."""
-        val = await self._get(key)
-        return str(val) if val is not None else ""
-
     async def _get(self, key: str) -> Any:
         entry = RUNTIME_SETTINGS_REGISTRY.get(key)
         if entry is None:

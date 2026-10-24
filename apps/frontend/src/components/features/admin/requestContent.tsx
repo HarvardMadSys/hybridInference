@@ -7,7 +7,7 @@
 
 import { Fragment, useState } from 'react';
 
-export function previewText(value: string, maxChars: number = 280): string {
+function previewText(value: string, maxChars: number = 280): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
 }
@@ -233,7 +233,7 @@ function messageReasoning(m: ChatMessage): string {
   return '';
 }
 
-export function MessageBlock({ message }: { message: ChatMessage }) {
+function MessageBlock({ message }: { message: ChatMessage }) {
   const text = flattenContent(message.content);
   const reasoning = messageReasoning(message);
   const refusal = messageRefusal(message);

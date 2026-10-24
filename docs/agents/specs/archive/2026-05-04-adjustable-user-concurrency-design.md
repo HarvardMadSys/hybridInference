@@ -14,7 +14,7 @@
 ## Context
 
 Per-user concurrency caps were configured in
-[`apps/backend/serving/config/settings.py`](../../../apps/backend/serving/config/settings.py)
+[`apps/backend/serving/config/settings.py`](../../../../apps/backend/serving/config/settings.py)
 as a static module-level dict (this constant has been removed by PR #423):
 
 ```python
@@ -27,7 +27,7 @@ USER_CONCURRENCY_LIMITS: dict[str, int] = {
 ```
 
 The dict was consumed once at boot by
-[`UserConcurrencyLimiter`](../../../apps/backend/serving/servers/concurrency.py)
+[`UserConcurrencyLimiter`](../../../../apps/backend/serving/servers/concurrency.py)
 in `bootstrap.py:388`. Capacity was captured per-user at first acquire and was
 sticky for the lifetime of the process. Changing any cap therefore required
 a code edit and a redeploy.
@@ -62,7 +62,7 @@ We want to:
 ### 1. Registry entries
 
 Add four entries to `RUNTIME_SETTINGS_REGISTRY` in
-[`apps/backend/serving/config/runtime_settings.py`](../../../apps/backend/serving/config/runtime_settings.py):
+[`apps/backend/serving/config/runtime_settings.py`](../../../../apps/backend/serving/config/runtime_settings.py):
 
 | Key | Type | Default | Min | Description |
 |---|---|---|---|---|
@@ -80,7 +80,7 @@ unaffected by these new fields.
 The default `free` cap rises from `1` to `3` via the new
 `user_concurrency_free` registry entry's `default: 3`. The static
 `USER_CONCURRENCY_LIMITS` dict in
-[`apps/backend/serving/config/settings.py`](../../../apps/backend/serving/config/settings.py)
+[`apps/backend/serving/config/settings.py`](../../../../apps/backend/serving/config/settings.py)
 is removed; the authoritative source is `RUNTIME_SETTINGS_REGISTRY`, and the
 limiter's error-time fallback (`_FALLBACK_LIMITS` in
 `serving/servers/concurrency.py`) is derived from those registry defaults at
@@ -89,7 +89,7 @@ import time so the two sources cannot drift.
 ### 3. Validation in PATCH endpoint
 
 In
-[`apps/backend/serving/servers/routers/admin/settings.py`](../../../apps/backend/serving/servers/routers/admin/settings.py),
+[`apps/backend/serving/servers/routers/admin/settings.py`](../../../../apps/backend/serving/servers/routers/admin/settings.py),
 extend the existing type-validation block in
 `update_runtime_setting_endpoint` so that for `int` and `float` settings,
 if the registry entry has a `min` and the value is below it, or has a
@@ -102,7 +102,7 @@ admin cap), not a hardcoded role-name check.
 ### 4. Limiter refactor
 
 In
-[`apps/backend/serving/servers/concurrency.py`](../../../apps/backend/serving/servers/concurrency.py):
+[`apps/backend/serving/servers/concurrency.py`](../../../../apps/backend/serving/servers/concurrency.py):
 
 - Replace `UserConcurrencyLimiter.__init__(limits: dict[str, int])` with
   `__init__(limits_provider: LimitsProvider)`, where
@@ -152,7 +152,7 @@ is dynamic.
 ### 6. Bootstrap wiring
 
 In
-[`apps/backend/serving/servers/bootstrap.py`](../../../apps/backend/serving/servers/bootstrap.py)
+[`apps/backend/serving/servers/bootstrap.py`](../../../../apps/backend/serving/servers/bootstrap.py)
 at the point where `user_concurrency_limiter` is constructed (currently
 line 388), build a closure that reads the four keys from
 `RuntimeSettings`:

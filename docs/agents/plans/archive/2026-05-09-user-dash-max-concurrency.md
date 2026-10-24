@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, Pydantic v2, pytest, Next.js (React + TypeScript), TailwindCSS, Vitest.
 
-**Spec:** [docs/superpowers/specs/2026-05-09-user-dash-max-concurrency-design.md](../specs/2026-05-09-user-dash-max-concurrency-design.md)
+**Spec:** [docs/agents/specs/archive/2026-05-09-user-dash-max-concurrency-design.md](../../specs/archive/2026-05-09-user-dash-max-concurrency-design.md)
 
 ---
 

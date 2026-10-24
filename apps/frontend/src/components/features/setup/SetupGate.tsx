@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
-export const SETUP_PATH = '/setup';
+const SETUP_PATH = '/setup';
 
 export function isSetupPath(pathname: string | null | undefined): boolean {
   return (pathname ?? '').replace(/\/+$/, '') === SETUP_PATH;

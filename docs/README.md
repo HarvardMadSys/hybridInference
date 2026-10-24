@@ -10,7 +10,7 @@ The other directories hold engineering records:
 
 | Directory | How to read it |
 | --- | --- |
-| `agents/specs/`, `agents/plans/`, `superpowers/` | Proposals and implementation records. A plan's commands and checkboxes describe that work, not the current installation procedure. |
+| `agents/specs/`, `agents/plans/` | Proposals and implementation records. A plan's commands and checkboxes describe that work, not the current installation procedure. |
 | `agents/specs/archive/`, `agents/plans/archive/` | Archived records retained for context. |
 | `reviews/` | Findings against the version reviewed on the stated date. They are not a current release assessment. |
 

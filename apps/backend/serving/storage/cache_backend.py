@@ -84,10 +84,6 @@ class CacheBackend(ABC):
         """Monotonic counter bumped by every invalidation event."""
         return 0
 
-    def bump_generation(self) -> int:
-        """Advance the generation counter and return the new value."""
-        return 0
-
     # -- observability (optional) -------------------------------------------
 
     def stats(self) -> dict[str, int]:
@@ -227,15 +223,6 @@ class InMemoryCache(CacheBackend):
 
     def current_generation(self) -> int:
         """Return the current invalidation generation counter."""
-        return self._generation
-
-    def bump_generation(self) -> int:
-        """Advance the generation counter and return the new value.
-
-        Used to force a fill to drop its snapshot when an invalidation overlaps
-        an in-flight read without deleting a key or pattern.
-        """
-        self._generation += 1
         return self._generation
 
     # -- observability -------------------------------------------------------

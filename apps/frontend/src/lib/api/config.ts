@@ -291,7 +291,7 @@ export interface WaitForRestartOptions {
   progress?: RestartProgress;
 }
 
-export const RESTART_TIMEOUT_MS = 120_000;
+const RESTART_TIMEOUT_MS = 120_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

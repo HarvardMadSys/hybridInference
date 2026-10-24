@@ -242,13 +242,14 @@ async def test_stream_messages_identity_passthrough_records_usage(monkeypatch):
     }
     adapter = AnthropicAdapter(_cfg())
     out = b""
-    async for c in adapter.stream_messages(body, request_id="req_s"):
+    usage: dict[str, int] = {}
+    async for c in adapter.stream_messages(body, request_id="req_s", usage_sink=usage):
         out += c
 
     # Bytes streamed verbatim from upstream.
     assert out == upstream_sse
-    # Adapter captures usage post-stream for DB logging.
-    assert adapter.last_stream_usage == {
+    # Adapter hands usage to the caller post-stream for DB logging.
+    assert usage == {
         "input_tokens": 7,
         "output_tokens": 4,
         "cache_creation_input_tokens": 0,

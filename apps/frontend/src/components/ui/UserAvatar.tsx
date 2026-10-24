@@ -15,7 +15,7 @@ const SIZE_CLASSES: Record<AvatarSize, string> = {
   xl: 'h-16 w-16 text-xl',
 };
 
-export function getUserInitials(name: string): string {
+function getUserInitials(name: string): string {
   const cleaned = name.trim();
   if (!cleaned) return 'U';
   const parts = cleaned.split(/[\s._-]+/).filter(Boolean);

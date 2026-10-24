@@ -1,7 +1,7 @@
 # Provider Performance Tab — Compact Layout
 
 **Date:** 2026-05-09
-**Scope:** [apps/frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx](../../../apps/frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx)
+**Scope:** [apps/frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx](../../../../apps/frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx)
 
 ## Problem
 
@@ -107,7 +107,7 @@ In `TtftScatterCard` (lines 52, 71):
 
 ## Testing
 
-- Existing test: [apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx](../../../apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx) — must continue to pass.
+- Existing test: [apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx](../../../../apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx) — must continue to pass.
 - Test references `data-testid="provider-performance-chart-row"`, `provider-performance-ttft-card`, `provider-performance-throughput-card` — all retained.
 - KPI cards do not have testids — switching from cards to inline spans does not break tests.
 - Manual verification on staging (a deployment-managed admin test account) at `/dashboard/admin/performance`.

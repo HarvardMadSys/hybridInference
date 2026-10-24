@@ -2,7 +2,7 @@ import type { GeoAnalyticsResponse, GeoBucketRow, GeoMetric } from '@/lib/api/ad
 
 export type { GeoMetric } from '@/lib/api/admin';
 
-export const UNKNOWN_CONTINENT = '?';
+const UNKNOWN_CONTINENT = '?';
 
 export const CONTINENT_NAMES: Readonly<Record<string, string>> = {
   AS: 'Asia',

@@ -68,11 +68,6 @@ class RoutingTarget:
                 f"got provider={self.provider!r}, endpoint_id={self.endpoint_id!r}"
             )
 
-    @property
-    def is_endpoint(self) -> bool:
-        """Return whether this target names one endpoint rather than a provider."""
-        return bool(self.endpoint_id)
-
     def describe(self) -> str:
         """Return a compact label for routing metadata and logs."""
         if self.endpoint_id:
