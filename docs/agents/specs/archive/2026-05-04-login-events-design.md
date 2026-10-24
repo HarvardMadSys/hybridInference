@@ -8,7 +8,7 @@
 ## Context
 
 Today's login endpoint — public path **`POST /auth/login`** — defined as `@router.post("/login")` on the `/auth`-prefixed router in
-[`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../apps/backend/serving/servers/routers/auth_routes.py#L255)
+[`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../../apps/backend/serving/servers/routers/auth_routes.py#L255)
 persists three things on success:
 
 - `users.last_login_at` (a single column, **overwritten** each login).
@@ -53,7 +53,7 @@ right now?" or "how often does user X fail their login?".
 ### 1. Storage
 
 A new table in the operational store
-([`apps/backend/serving/storage/postgres_operational.py`](../../../apps/backend/serving/storage/postgres_operational.py)),
+([`apps/backend/serving/storage/postgres_operational.py`](../../../../apps/backend/serving/storage/postgres_operational.py)),
 created in `_create_tables`:
 
 ```sql
@@ -138,7 +138,7 @@ Implementations:
 ### 3. Insertion sites in `POST /auth/login`
 
 Inside
-[`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../apps/backend/serving/servers/routers/auth_routes.py#L255),
+[`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../../apps/backend/serving/servers/routers/auth_routes.py#L255),
 each rejection branch and the success branch insert one row.
 
 A small local helper inside the `login` function keeps the call sites
@@ -189,7 +189,7 @@ Acceptable for an endpoint that's already doing bcrypt verification.
 ### 4. Admin purge endpoints
 
 New file
-[`apps/backend/serving/servers/routers/admin/login_events.py`](../../../apps/backend/serving/servers/routers/admin/login_events.py),
+[`apps/backend/serving/servers/routers/admin/login_events.py`](../../../../apps/backend/serving/servers/routers/admin/login_events.py),
 mounted under the existing `/admin` router, modeled on the existing
 `admin/settings.py` and `admin/users.py` patterns.
 
@@ -229,13 +229,13 @@ DELETE, two valid query shapes). Each call is recorded in the
 settings PATCH and the user-delete flows.
 
 The new router is registered in
-[`apps/backend/serving/servers/routers/admin/__init__.py`](../../../apps/backend/serving/servers/routers/admin/__init__.py)
+[`apps/backend/serving/servers/routers/admin/__init__.py`](../../../../apps/backend/serving/servers/routers/admin/__init__.py)
 the same way `admin/settings.py` is included today.
 
 ### 5. User-deletion sweep
 
 Extend `PostgresOperationalStore.hard_delete_user`
-([currently at L530](../../../apps/backend/serving/storage/postgres_operational.py#L530))
+([currently at L530](../../../../apps/backend/serving/storage/postgres_operational.py#L530))
 to delete the user's `login_events` rows in the same transaction:
 
 ```python
