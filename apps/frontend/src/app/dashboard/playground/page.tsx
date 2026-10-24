@@ -15,6 +15,7 @@ import { useAuth } from '@/components/providers';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Markdown } from '@/components/ui/Markdown';
+import { Select } from '@/components/ui/Select';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
@@ -887,25 +888,24 @@ export default function PlaygroundPage() {
                     >
                       Provider
                     </label>
-                    <select
+                    <Select
                       id="playground-provider"
+                      tone="dark"
+                      size="lg"
+                      className="w-full"
                       value={selectedProvider ?? ''}
-                      onChange={(e) =>
+                      onValueChange={(value) =>
                         patch((s) => ({
                           ...s,
-                          selectedProvider: e.target.value || null,
+                          selectedProvider: value || null,
                         }))
                       }
                       disabled={streaming}
-                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
-                    >
-                      <option value="">Auto</option>
-                      {modelProviders.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: '', label: 'Auto' },
+                        ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
+                      ]}
+                    />
                   </div>
                 )}
 

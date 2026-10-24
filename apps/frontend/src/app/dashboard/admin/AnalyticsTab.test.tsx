@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAnalytics, getGeoAnalytics, getGrowthAnalytics } from '@/lib/api/admin';
@@ -108,7 +108,8 @@ describe('AnalyticsTab top users by model', () => {
 
     // Selector lists every model and defaults to the highest-volume one.
     const select = screen.getByRole('combobox', { name: 'Select model' });
-    expect(select).toHaveValue('claude-sonnet-4-6');
+    expect(select).toHaveTextContent('claude-sonnet-4-6');
+    fireEvent.click(select);
     expect(screen.getByRole('option', { name: 'gpt-4o' })).toBeInTheDocument();
   });
 });

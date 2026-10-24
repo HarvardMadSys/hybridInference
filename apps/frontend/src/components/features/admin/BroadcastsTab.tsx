@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -238,23 +239,27 @@ export function BroadcastsTab() {
                   <label htmlFor={fieldId('template')} className={FORM_LABEL}>
                     Template
                   </label>
-                  <select
+                  {/* Switching template clears what was typed, so choosing
+                      the current template again must not count as a change
+                      (Select reports only a different value). */}
+                  <Select
                     id={fieldId('template')}
                     value={bcTemplateKey}
-                    onChange={(e) => {
-                      setBcTemplateKey(e.target.value);
+                    onValueChange={(next) => {
+                      setBcTemplateKey(next);
                       setBcTemplateVars({});
                       setBcSubject('');
                       setBcBodyMarkdown('');
                       setBcPreview(null);
                     }}
-                    className={TEXT_FIELD}
-                  >
-                    <option value="custom">Custom</option>
-                    <option value="maintenance">Maintenance Notice</option>
-                    <option value="announcement">Announcement</option>
-                    <option value="quota_change">Quota Change</option>
-                  </select>
+                    options={[
+                      { value: 'custom', label: 'Custom' },
+                      { value: 'maintenance', label: 'Maintenance Notice' },
+                      { value: 'announcement', label: 'Announcement' },
+                      { value: 'quota_change', label: 'Quota Change' },
+                    ]}
+                    className="w-full"
+                  />
                 </div>
 
                 {/* Template variable fields */}

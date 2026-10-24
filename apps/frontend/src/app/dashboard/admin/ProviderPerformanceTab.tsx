@@ -32,6 +32,7 @@ import {
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { Select } from '@/components/ui/Select';
 
 type RangeKey = '24h' | '7d' | '30d';
 
@@ -834,50 +835,44 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       <div className="flex flex-wrap gap-3 items-end">
         <label className="text-sm">
           <span className="block text-gray-500 mb-1">Provider</span>
-          <select
-            className="border rounded px-2 py-1"
+          <Select
             value={provider}
-            onChange={(e) => {
-              setProvider(e.target.value);
+            onValueChange={(next) => {
+              setProvider(next);
               // Model lists differ per provider; clear the filter on switch.
               setModel('__all__');
             }}
-          >
-            {allProviders.map((p) => (
-              <option key={p} value={p}>
-                {providerOptionLabel(p, providerDisplayNames[p])}
-              </option>
-            ))}
-          </select>
+            options={allProviders.map((p) => ({
+              value: p,
+              label: providerOptionLabel(p, providerDisplayNames[p]),
+            }))}
+            aria-label="Provider"
+            className="w-56"
+          />
         </label>
         <label className="text-sm">
           <span className="block text-gray-500 mb-1">Model</span>
-          <select
-            className="border rounded px-2 py-1"
+          <Select
             value={model}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            <option value="__all__">All models</option>
-            {providerModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+            onValueChange={setModel}
+            options={[
+              { value: '__all__', label: 'All models' },
+              ...providerModels.map((m) => ({ value: m, label: m })),
+            ]}
+            aria-label="Model"
+            searchPlaceholder="Search models…"
+            className="w-56"
+          />
         </label>
         <label className="text-sm">
           <span className="block text-gray-500 mb-1">Range</span>
-          <select
-            className="border rounded px-2 py-1"
+          <Select<RangeKey>
             value={range}
-            onChange={(e) => setRange(e.target.value as RangeKey)}
-          >
-            {RANGES.map((r) => (
-              <option key={r.key} value={r.key}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={setRange}
+            options={RANGES.map((r) => ({ value: r.key, label: r.label }))}
+            aria-label="Range"
+            className="w-40"
+          />
         </label>
       </div>
 

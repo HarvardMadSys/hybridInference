@@ -32,6 +32,8 @@ vi.mock('@/lib/api/client', () => ({
   },
 }));
 
+import { chooseOption } from '@/test-utils/select';
+
 import PlaygroundPage from './page';
 
 const MODELS = {
@@ -166,14 +168,12 @@ describe('PlaygroundPage', () => {
     });
     render(<PlaygroundPage />);
     const picker = await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    fireEvent.change(screen.getByRole('combobox'), {
-      target: { value: 'glm-4.6:chutes-api' },
-    });
+    chooseOption('Provider', 'Chutes');
 
     fireEvent.click(picker);
     fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
 
-    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Chutes');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(picker).toHaveFocus();
   });
@@ -207,9 +207,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     const firstSession = screen.getByRole('button', { name: /New session No messages -- glm-4.6/ });
-    fireEvent.change(screen.getByRole('combobox'), {
-      target: { value: 'glm-4.6:chutes-api' },
-    });
+    chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'First session draft' },
     });
@@ -220,20 +218,18 @@ describe('PlaygroundPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '+ New' }));
     fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
     fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
-    fireEvent.change(screen.getByRole('combobox'), {
-      target: { value: 'deepseek-v4:chutes-api' },
-    });
+    chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'Second session draft' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
     fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
 
-    expect(screen.getByRole('combobox')).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Auto');
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('Second session draft');
     expect(screen.getAllByRole('button', { name: /New session No messages/ })).toHaveLength(2);
     fireEvent.click(firstSession);
-    expect(screen.getByRole('combobox')).toHaveValue('glm-4.6:chutes-api');
+    expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Chutes');
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('First session draft');
     expect(screen.getByPlaceholderText('You are a research assistant...')).toHaveValue(
       'First session instructions',

@@ -39,6 +39,7 @@ import { RouteDeploymentField } from './RouteDeploymentField';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
+import { Select } from '@/components/ui/Select';
 
 type RouteForm = {
   upstreamProvider: string;
@@ -554,6 +555,24 @@ function openRouterRoutingOptions(
     { value: OPENROUTER_ROUTING_AUTO, label: 'Auto' },
     ...OPENROUTER_SORT_ROUTING_OPTIONS,
     ...providerOptions,
+  ];
+}
+
+/**
+ * The OpenRouter routing choices for the selector: OpenRouter's own routing
+ * (automatic, or sorted by price, throughput or latency) apart from pinning
+ * one provider. Same values; only the presentation is grouped.
+ */
+function groupOpenRouterRouting(options: ReadonlyArray<{ value: string; label: string }>) {
+  const pinned = options.filter((option) =>
+    option.value.startsWith(OPENROUTER_ROUTING_PROVIDER_PREFIX),
+  );
+  const routing = options.filter(
+    (option) => !option.value.startsWith(OPENROUTER_ROUTING_PROVIDER_PREFIX),
+  );
+  return [
+    ...(routing.length ? [{ label: 'Let OpenRouter choose', options: routing }] : []),
+    ...(pinned.length ? [{ label: 'Pin a provider', options: pinned }] : []),
   ];
 }
 
@@ -1674,24 +1693,23 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <label className="text-[12px] font-medium text-gray-500" htmlFor="provider-route-model">
             Selected model
           </label>
-          <select
+          <Select
             id="provider-route-model"
             value={selectedModel}
-            onChange={(event) => {
-              setSelectedModel(event.target.value);
+            onValueChange={(next) => {
+              setSelectedModel(next);
               setEditingRoute(null);
               setAddingRoute(false);
               setCreatingModel(false);
             }}
-            className="mt-1 w-full min-w-[240px] max-w-sm rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-          >
-            {models.length === 0 && <option value="">(no models loaded)</option>}
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
+            options={models.map((model) => ({ value: model, label: model }))}
+            placeholder={models.length === 0 ? '(no models loaded)' : 'Choose a model'}
+            searchable
+            searchPlaceholder="Search models…"
+            emptyText="No models match"
+            size="lg"
+            className="mt-1 w-full min-w-[240px] max-w-sm"
+          />
         </div>
         <div className="flex items-center gap-2">
           {loading && (
@@ -1700,16 +1718,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <label className="sr-only" htmlFor="provider-route-strategy">
             Routing policy
           </label>
-          <select
+          <Select
             id="provider-route-strategy"
             value={strategy}
-            onChange={(event) => void onStrategyChange(event.target.value as ProviderRouteStrategy)}
+            onValueChange={(next) => void onStrategyChange(next as ProviderRouteStrategy)}
             disabled={!selectedModel || loading || savingStrategy}
-            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 focus:border-gray-400 focus:outline-none disabled:opacity-50"
-          >
-            <option value="routewise">routewise</option>
-            <option value="fixed">fixed</option>
-          </select>
+            options={[
+              { value: 'routewise', label: 'routewise' },
+              { value: 'fixed', label: 'fixed' },
+            ]}
+            size="lg"
+            className="w-32 font-medium"
+          />
           {savingStrategy && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
@@ -2147,18 +2167,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     >
                       Initial routing policy
                     </label>
-                    <select
+                    <Select<ProviderRouteStrategy>
                       id="new-model-strategy"
                       value={newModelStrategy}
-                      onChange={(event) => {
-                        setNewModelStrategy(event.target.value as ProviderRouteStrategy);
+                      onValueChange={(next) => {
+                        setNewModelStrategy(next);
                         setVerifiedCreateSignature(null);
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      <option value="fixed">fixed</option>
-                      <option value="routewise">routewise</option>
-                    </select>
+                      options={[
+                        { value: 'fixed', label: 'fixed' },
+                        { value: 'routewise', label: 'routewise' },
+                      ]}
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   <div>
                     <label
@@ -2167,21 +2189,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     >
                       Visibility
                     </label>
-                    <select
+                    <Select<Role>
                       id="new-model-required-role"
                       value={newModelRequiredRole}
-                      onChange={(event) => {
-                        setNewModelRequiredRole(event.target.value as Role);
+                      onValueChange={(next) => {
+                        setNewModelRequiredRole(next);
                         setVerifiedCreateSignature(null);
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {MODEL_ROLE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={MODEL_ROLE_OPTIONS}
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                 </div>
               )}
@@ -2353,23 +2371,23 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       >
                         Image input
                       </label>
-                      <select
+                      <Select<DeclaredChoice>
                         id="new-model-image-input"
                         value={createForm.imageInput}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            imageInput: event.target.value as DeclaredChoice,
-                          }));
+                        onValueChange={(imageInput) => {
+                          setCreateForm((current) => ({ ...current, imageInput }));
                           setVerifiedCreateSignature(null);
                         }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Text only</option>
-                        <option value="yes">Accepts images</option>
-                      </select>
+                        // "" is unanswered, not "no": the form stays invalid until one is chosen.
+                        options={[
+                          { value: '', label: 'Choose…' },
+                          { value: 'no', label: 'Text only' },
+                          { value: 'yes', label: 'Accepts images' },
+                        ]}
+                        aria-required
+                        size="lg"
+                        className="mt-1 w-full"
+                      />
                     </div>
                     <div>
                       <label
@@ -2378,23 +2396,22 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       >
                         Tool calling
                       </label>
-                      <select
+                      <Select<DeclaredChoice>
                         id="new-model-tool-calling"
                         value={createForm.toolCalling}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            toolCalling: event.target.value as DeclaredChoice,
-                          }));
+                        onValueChange={(toolCalling) => {
+                          setCreateForm((current) => ({ ...current, toolCalling }));
                           setVerifiedCreateSignature(null);
                         }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Not supported</option>
-                        <option value="yes">Supported</option>
-                      </select>
+                        options={[
+                          { value: '', label: 'Choose…' },
+                          { value: 'no', label: 'Not supported' },
+                          { value: 'yes', label: 'Supported' },
+                        ]}
+                        aria-required
+                        size="lg"
+                        className="mt-1 w-full"
+                      />
                     </div>
                   </div>
                   <p className="mt-1 text-[11px] leading-5 text-gray-400">
@@ -2410,20 +2427,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
                     Route type
                   </label>
-                  <select
+                  <Select<ProviderRouteType>
                     id="new-route-type"
                     value={createForm.routeType}
-                    onChange={(event) =>
-                      onCreateRouteTypeChange(event.target.value as ProviderRouteType)
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  >
-                    {createRouteTypeOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onCreateRouteTypeChange}
+                    options={createRouteTypeOptions}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
                 <div>
                   <label
@@ -2432,22 +2443,24 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   >
                     Provider
                   </label>
-                  <select
+                  <Select
                     id="new-route-provider"
                     value={createForm.upstreamProvider}
-                    onChange={(event) => onCreateProviderChange(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  >
-                    {createProviderOptions.length === 0 && (
-                      <option value="">{noProviderOptionLabel(createForm.routeType)}</option>
-                    )}
-                    {createProviderOptions.map((option) => (
-                      <option key={option.provider} value={option.provider}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onCreateProviderChange}
+                    options={createProviderOptions.map((option) => ({
+                      value: option.provider,
+                      label: option.label,
+                    }))}
+                    placeholder={
+                      createProviderOptions.length === 0
+                        ? noProviderOptionLabel(createForm.routeType)
+                        : 'Choose a provider'
+                    }
+                    searchPlaceholder="Search providers…"
+                    aria-required
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                   {createProviderOptions.length === 0 && (
                     <p className="mt-1 text-[11px] leading-5 text-gray-400">
                       {noProviderHelpText(createForm.routeType)}
@@ -2461,23 +2474,23 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   >
                     API key
                   </label>
-                  <select
+                  <Select
                     id="new-route-api-key"
                     value={createForm.apiKeyId}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, apiKeyId: event.target.value }))
+                    onValueChange={(apiKeyId) =>
+                      setCreateForm((current) => ({ ...current, apiKeyId }))
                     }
                     disabled={createKeysLoading}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                  >
-                    <option value="">{defaultKeyOptionLabel(createKeyProvider)}</option>
-                    {createKeyOptions.map((key) => (
-                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                        {key.label ? `${key.label} · ` : ''}
-                        {key.key_prefix} ({key.source})
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: '', label: defaultKeyOptionLabel(createKeyProvider) },
+                      ...createKeyOptions.map((key) => ({
+                        value: key.id ?? '',
+                        label: `${key.label ? `${key.label} · ` : ''}${key.key_prefix} (${key.source})`,
+                      })),
+                    ]}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
               </div>
 
@@ -2542,14 +2555,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                       )}
                     </div>
-                    <select
+                    <Select
                       id="new-route-openrouter-routing"
                       value={openRouterRoutingValue(
                         createForm.openRouterProvider,
                         createForm.openRouterSort,
                       )}
-                      onChange={(event) => {
-                        const routingValue = event.target.value;
+                      onValueChange={(routingValue) => {
                         const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                         setCreateForm((current) => ({
                           ...current,
@@ -2561,14 +2573,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               : '',
                         }));
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {createOpenRouterRoutingOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={groupOpenRouterRouting(createOpenRouterRoutingOptions)}
+                      searchPlaceholder="Search OpenRouter providers…"
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   {createForm.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
                     <div>
@@ -2745,41 +2754,39 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
                     Override provider
                   </label>
-                  <select
+                  <Select
                     id="route-provider"
                     value={form.upstreamProvider}
-                    onChange={(event) => onUpstreamProviderChange(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  >
-                    {providerSelectOptions.map((option) => (
-                      <option key={option.provider} value={option.provider}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onUpstreamProviderChange}
+                    options={providerSelectOptions.map((option) => ({
+                      value: option.provider,
+                      label: option.label,
+                    }))}
+                    searchPlaceholder="Search providers…"
+                    aria-required
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
                 <div>
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-api-key">
                     API key
                   </label>
-                  <select
+                  <Select
                     id="route-api-key"
                     value={form.apiKeyId}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, apiKeyId: event.target.value }))
-                    }
+                    onValueChange={(apiKeyId) => setForm((current) => ({ ...current, apiKeyId }))}
                     disabled={keysLoading}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                  >
-                    <option value="">{defaultKeyOptionLabel(keyProvider)}</option>
-                    {keyOptions.map((key) => (
-                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                        {key.label ? `${key.label} · ` : ''}
-                        {key.key_prefix} ({key.source})
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: '', label: defaultKeyOptionLabel(keyProvider) },
+                      ...keyOptions.map((key) => ({
+                        value: key.id ?? '',
+                        label: `${key.label ? `${key.label} · ` : ''}${key.key_prefix} (${key.source})`,
+                      })),
+                    ]}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
               </div>
 
@@ -2844,11 +2851,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                       )}
                     </div>
-                    <select
+                    <Select
                       id="route-openrouter-routing"
                       value={openRouterRoutingValue(form.openRouterProvider, form.openRouterSort)}
-                      onChange={(event) => {
-                        const routingValue = event.target.value;
+                      onValueChange={(routingValue) => {
                         const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                         setForm((current) => ({
                           ...current,
@@ -2860,14 +2866,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               : '',
                         }));
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {editOpenRouterRoutingOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={groupOpenRouterRouting(editOpenRouterRoutingOptions)}
+                      searchPlaceholder="Search OpenRouter providers…"
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   {form.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
                     <div>

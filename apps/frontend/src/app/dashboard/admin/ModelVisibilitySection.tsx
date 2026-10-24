@@ -12,16 +12,13 @@ import {
   AdminNotice,
   AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
-import {
-  CONTROL,
-  NOTICE_ACTION,
-  PANEL,
-  TABLE_HEAD_CELL,
-} from '@/components/features/admin/adminStyles';
+import { NOTICE_ACTION, PANEL, TABLE_HEAD_CELL } from '@/components/features/admin/adminStyles';
+import { Select, type SelectOption } from '@/components/ui/Select';
 
 const DEFAULT_VALUE = '__default__';
 
-const ROLE_OPTIONS: Array<{ value: Role; label: Role }> = [
+const ROLE_OPTIONS: SelectOption[] = [
+  { value: DEFAULT_VALUE, label: 'Use default' },
   { value: 'free', label: 'free' },
   { value: 'pro', label: 'pro' },
   { value: 'internal', label: 'internal' },
@@ -137,20 +134,14 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
                     </td>
                     <td className="px-4 py-2 text-gray-900">{model.effective_required_role}</td>
                     <td className="px-4 py-2 text-right">
-                      <select
+                      <Select
                         aria-label={`Runtime override for ${model.model_id}`}
-                        className={CONTROL}
+                        className="w-32"
                         disabled={isSaving}
                         value={selectedOverride}
-                        onChange={(e) => void handleChangeRole(model.model_id, e.target.value)}
-                      >
-                        <option value={DEFAULT_VALUE}>Use default</option>
-                        {ROLE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        options={ROLE_OPTIONS}
+                        onValueChange={(value) => void handleChangeRole(model.model_id, value)}
+                      />
                     </td>
                   </tr>
                 );

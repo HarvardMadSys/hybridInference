@@ -7,6 +7,7 @@ import type { OffloadRoute, ProviderRoute } from '@/lib/api/admin';
 import { clearOffloadRoute, setOffloadRoute } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { validateNumericSettingInput } from './numericSettingValidation';
+import { Select } from '@/components/ui/Select';
 
 // Prefilled for a model that has no offload route yet: long enough that a brief
 // burst is absorbed by the queue, short enough to be well inside the default
@@ -205,25 +206,26 @@ export function OffloadRoutePanel({
           <>
             <label className="flex min-w-[240px] flex-col gap-1 text-[12px] font-medium text-gray-500">
               Offload route
-              <select
+              <Select
                 aria-label="Offload route"
                 value={draftRouteId}
-                onChange={(event) => setDraftRouteId(event.target.value)}
+                onValueChange={setDraftRouteId}
                 disabled={saving || !hasOtherRoute}
-                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-normal text-gray-900 focus:border-gray-400 focus:outline-none disabled:opacity-50"
-              >
-                <option value="" disabled>
-                  Choose a route…
-                </option>
-                {routes.map((route) => (
-                  <option key={route.route_id} value={route.route_id}>
-                    {routeLabel(route)}
-                  </option>
-                ))}
-                {storedRouteMissing && offload && (
-                  <option value={offload.route_id}>{offload.route_id} (no longer a route)</option>
-                )}
-              </select>
+                placeholder="Choose a route…"
+                options={[
+                  ...routes.map((route) => ({ value: route.route_id, label: routeLabel(route) })),
+                  ...(storedRouteMissing && offload
+                    ? [
+                        {
+                          value: offload.route_id,
+                          label: `${offload.route_id} (no longer a route)`,
+                        },
+                      ]
+                    : []),
+                ]}
+                size="lg"
+                className="w-full font-normal"
+              />
             </label>
             <label className="flex flex-col gap-1 text-[12px] font-medium text-gray-500">
               Wait before offloading (s)

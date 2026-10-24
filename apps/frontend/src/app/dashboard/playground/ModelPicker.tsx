@@ -8,10 +8,11 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type KeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+
+import { useAnchoredPopover } from '@/components/ui/anchoredPopover';
 
 export interface PlaygroundModel {
   id: string;
@@ -51,7 +52,6 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [position, setPosition] = useState<CSSProperties>({});
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -110,47 +110,29 @@ export function ModelPicker({
     if (unavailable) setOpen(false);
   }, [unavailable]);
 
+  // Placement (below or flipped above, clamped to the viewport, following
+  // scroll and resize) is the shared one every selection popup uses.
+  const position = useAnchoredPopover(isOpen, triggerRef, popoverRef, {
+    gap: 6,
+    width: 400,
+    maxHeight: 420,
+    preferredHeight: 280,
+  });
+
+  // Focus the search once per opening, after the popup is placed: a browser
+  // will not focus it while it is still hidden, and re-placing on scroll or
+  // resize must not pull focus back to it.
+  const placed = position.visibility !== 'hidden';
+  const searchFocused = useRef(false);
   useLayoutEffect(() => {
-    if (!isOpen) return;
-    const reposition = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const viewport = window.visualViewport;
-      const viewportLeft = viewport?.offsetLeft ?? 0;
-      const viewportTop = viewport?.offsetTop ?? 0;
-      const viewportWidth = viewport?.width ?? window.innerWidth;
-      const viewportHeight = viewport?.height ?? window.innerHeight;
-      const margin = 8;
-      const gap = 6;
-      const width = Math.min(400, viewportWidth - margin * 2);
-      const below = Math.max(0, viewportTop + viewportHeight - rect.bottom - gap - margin);
-      const above = Math.max(0, rect.top - viewportTop - gap - margin);
-      const placeBelow = below >= 280 || below >= above;
-      setPosition({
-        left: Math.max(
-          viewportLeft + margin,
-          Math.min(rect.left, viewportLeft + viewportWidth - width - margin),
-        ),
-        width,
-        maxHeight: Math.min(420, placeBelow ? below : above),
-        ...(placeBelow
-          ? { top: rect.bottom + gap }
-          : { bottom: window.innerHeight - rect.top + gap }),
-      });
-    };
-    reposition();
+    if (!isOpen) {
+      searchFocused.current = false;
+      return;
+    }
+    if (!placed || searchFocused.current) return;
+    searchFocused.current = true;
     searchRef.current?.focus({ preventScroll: true });
-    window.addEventListener('resize', reposition);
-    window.addEventListener('scroll', reposition, true);
-    window.visualViewport?.addEventListener('resize', reposition);
-    window.visualViewport?.addEventListener('scroll', reposition);
-    return () => {
-      window.removeEventListener('resize', reposition);
-      window.removeEventListener('scroll', reposition, true);
-      window.visualViewport?.removeEventListener('resize', reposition);
-      window.visualViewport?.removeEventListener('scroll', reposition);
-    };
-  }, [isOpen]);
+  }, [isOpen, placed]);
 
   useEffect(() => {
     if (!isOpen) return;

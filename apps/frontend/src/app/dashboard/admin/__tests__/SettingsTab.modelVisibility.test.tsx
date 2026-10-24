@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { chooseOption } from '@/test-utils/select';
 
 import { SettingsTab } from '../SettingsTab';
 
@@ -88,8 +90,8 @@ describe('SettingsTab model visibility', () => {
     renderSettings();
 
     expect(await screen.findByRole('heading', { name: 'Model Visibility' })).toBeInTheDocument();
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: 'internal' } });
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
 
     await waitFor(() => {
       expect(api.updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');

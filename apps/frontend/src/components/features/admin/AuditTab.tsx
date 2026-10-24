@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { Select } from '@/components/ui/Select';
 import { AuditLogEntry, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
@@ -180,44 +181,54 @@ function DetailSummary({ entry }: { entry: AuditLogEntry }) {
 /** The whole record, every field in full, then the stored JSON. */
 function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   const fields = detailEntries(entry);
-  const rows: [string, ReactNode][] = [
-    ['Action', <code key="a">{entry.action}</code>],
+  // The row already reads the local time, the action and the user. Here each
+  // stored field appears once, exactly as recorded.
+  const meta: [string, ReactNode, string?][] = [
+    ['Action', entry.action, 'font-mono'],
     [
-      'Time',
-      <span key="t">
-        {new Date(entry.timestamp).toLocaleString()}{' '}
-        <span className="text-gray-400">({entry.timestamp})</span>
+      'Timestamp',
+      <time key="t" dateTime={entry.timestamp}>
+        {entry.timestamp}
+      </time>,
+      'font-mono',
+    ],
+    [
+      'Outcome',
+      <span key="o" className={entry.success ? undefined : 'font-medium text-red-700'}>
+        {entry.success ? 'Succeeded' : 'Failed'}
       </span>,
     ],
-    ['Outcome', entry.success ? 'Succeeded' : 'Failed'],
-    ['Target user', entry.target_user_id ? <code key="u">{entry.target_user_id}</code> : '—'],
-    ['Source', <code key="s">{entry.admin_ip}</code>],
+    ['Target user', entry.target_user_id ?? '—', entry.target_user_id ? 'font-mono' : undefined],
+    ['Source', entry.admin_ip, 'font-mono'],
   ];
   return (
-    <div className="animate-admin-reveal space-y-3">
-      <dl className="grid grid-cols-[minmax(6rem,max-content)_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-[12px]">
-        {rows.map(([k, v]) => (
-          <Fragment key={k}>
-            <dt className="text-gray-500">{k}</dt>
-            <dd className="min-w-0 break-words text-gray-800">{v}</dd>
-          </Fragment>
-        ))}
-        {fields.length > 0 ? (
-          <dt className="col-span-2 mt-2 border-t border-gray-200 pt-2 text-[11px] font-medium uppercase tracking-wide text-gray-500">
-            Details
-          </dt>
-        ) : null}
-        {fields.map(([k, v]) => (
-          <Fragment key={`detail-${k}`}>
-            <dt className="font-mono text-gray-500">{k}</dt>
-            <dd className="min-w-0 whitespace-pre-wrap break-words font-mono text-gray-800">
-              {fullValue(v)}
+    <div className="animate-admin-reveal space-y-2.5">
+      <dl className="flex flex-wrap gap-x-6 gap-y-2">
+        {meta.map(([label, value, valueClass]) => (
+          <div key={label} className="min-w-0 max-w-full">
+            <dt className="text-[11px] leading-4 text-gray-400">{label}</dt>
+            <dd
+              className={`text-[12px] leading-5 text-gray-800 [overflow-wrap:anywhere] ${valueClass ?? ''}`}
+            >
+              {value}
             </dd>
-          </Fragment>
+          </div>
         ))}
       </dl>
+      {fields.length > 0 ? (
+        <dl className="grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-md border border-gray-200 bg-white px-3 py-2 font-mono text-[12px] leading-5">
+          {fields.map(([k, v]) => (
+            <Fragment key={k}>
+              <dt className="max-w-[16rem] text-gray-500 [overflow-wrap:anywhere]">{k}</dt>
+              <dd className="min-w-0 whitespace-pre-wrap text-gray-800 [overflow-wrap:anywhere]">
+                {fullValue(v)}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      ) : null}
       {entry.details != null ? (
-        <details className="group">
+        <details>
           <summary className="w-fit cursor-pointer rounded text-[11px] font-medium text-gray-500 transition-colors duration-150 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400">
             Raw JSON
           </summary>
@@ -344,30 +355,30 @@ export function AuditTab() {
         <label htmlFor={actionFilterId} className="sr-only">
           Filter by action
         </label>
-        <select
+        <Select
           id={actionFilterId}
           value={auditFilter}
-          onChange={(e) => {
-            setQueryParams({ action: e.target.value || null, offset: null });
-          }}
-          className={CONTROL}
-        >
-          <option value="">All actions</option>
-          <optgroup label="Users and API keys">
-            {AUDIT_ACTIONS.map((a) => (
-              <option key={a} value={a}>
-                {actionLabel(a)}
-              </option>
-            ))}
-          </optgroup>
-          {/* A filter from a link that is not in the list above: show it,
-              rather than claim "All actions" while it applies. */}
-          {auditFilter && !AUDIT_ACTIONS.includes(auditFilter) ? (
-            <optgroup label="Current filter">
-              <option value={auditFilter}>{actionLabel(auditFilter)}</option>
-            </optgroup>
-          ) : null}
-        </select>
+          onValueChange={(next) => setQueryParams({ action: next || null, offset: null })}
+          options={[
+            { value: '', label: 'All actions' },
+            {
+              label: 'Users and API keys',
+              options: AUDIT_ACTIONS.map((a) => ({ value: a, label: actionLabel(a) })),
+            },
+            // A filter from a link that is not in the list above: show it,
+            // rather than claim "All actions" while it applies.
+            ...(auditFilter && !AUDIT_ACTIONS.includes(auditFilter)
+              ? [
+                  {
+                    label: 'Current filter',
+                    options: [{ value: auditFilter, label: actionLabel(auditFilter) }],
+                  },
+                ]
+              : []),
+          ]}
+          searchable={false}
+          className="w-48"
+        />
         <label htmlFor={userFilterId} className="sr-only">
           Filter by user ID
         </label>

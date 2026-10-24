@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { chooseOption } from '@/test-utils/select';
+
 import { AlertMutesSection } from './AlertMutesSection';
 
 vi.mock('@/lib/api/admin', () => ({
@@ -79,9 +81,8 @@ describe('AlertMutesSection', () => {
     const onToast = vi.fn();
     render(<AlertMutesSection onToast={onToast} />);
 
-    fireEvent.change(await screen.findByLabelText(`Mute ${blocked.label}`), {
-      target: { value: '24h' },
-    });
+    await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
+    chooseOption(`Mute ${blocked.label}`, '24 hours');
 
     await waitFor(() => {
       expect(muteAlertType).toHaveBeenCalledWith('auth_ip_blocked', 24 * 60 * 60);
@@ -97,15 +98,32 @@ describe('AlertMutesSection', () => {
     const onToast = vi.fn();
     render(<AlertMutesSection onToast={onToast} />);
 
-    fireEvent.change(await screen.findByLabelText(`Mute ${blocked.label}`), {
-      target: { value: 'forever' },
-    });
+    await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
+    chooseOption(`Mute ${blocked.label}`, 'Until unmuted');
 
     await waitFor(() => {
       expect(muteAlertType).toHaveBeenCalledWith('auth_ip_blocked', null);
     });
     expect(await screen.findByText('Muted until unmuted')).toBeInTheDocument();
     expect(onToast).toHaveBeenCalledWith(`Muted "${blocked.label}" until unmuted`);
+  });
+
+  it('mutes again when the same duration is chosen twice', async () => {
+    vi.mocked(muteAlertType).mockImplementation(async () => ({ ...blocked, muted: true }));
+    const onToast = vi.fn();
+    render(<AlertMutesSection onToast={onToast} />);
+
+    const trigger = await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
+    expect(trigger).toHaveTextContent('Mute for…');
+    chooseOption(`Mute ${blocked.label}`, '1 hour');
+    await waitFor(() => expect(muteAlertType).toHaveBeenCalledTimes(1));
+    // The control stays a prompt rather than showing the duration last chosen.
+    await waitFor(() => expect(trigger).toHaveTextContent('Change…'));
+    await waitFor(() => expect(trigger).not.toBeDisabled());
+
+    chooseOption(`Mute ${blocked.label}`, '1 hour');
+    await waitFor(() => expect(muteAlertType).toHaveBeenCalledTimes(2));
+    expect(muteAlertType).toHaveBeenNthCalledWith(2, 'auth_ip_blocked', 60 * 60);
   });
 
   it('unmutes a muted type', async () => {
@@ -129,9 +147,8 @@ describe('AlertMutesSection', () => {
     const onToast = vi.fn();
     render(<AlertMutesSection onToast={onToast} />);
 
-    fireEvent.change(await screen.findByLabelText(`Mute ${blocked.label}`), {
-      target: { value: '1h' },
-    });
+    await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
+    chooseOption(`Mute ${blocked.label}`, '1 hour');
 
     await waitFor(() => {
       expect(onToast).toHaveBeenCalledWith(

@@ -22,6 +22,7 @@ vi.mock('@/lib/api/admin', () => ({
 
 import { listAuditLog } from '@/lib/api/admin';
 import { AuditTab } from './AuditTab';
+import { chooseOption } from '@/test-utils/select';
 import { escapingScreenReaderText } from './__tests__/layoutContainment';
 
 const USER_ID = '0123456789abcdef0123';
@@ -61,7 +62,9 @@ describe('AuditTab', () => {
     render(<AuditTab />);
 
     expect(await screen.findByText('Update user')).toBeInTheDocument();
-    expect(screen.getByLabelText('Filter by action')).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: 'Filter by action' })).toHaveTextContent(
+      'All actions',
+    );
     expect(screen.getByLabelText('Filter by user ID')).toHaveValue('');
     expect(screen.getByText('2 entries')).toBeInTheDocument();
     expect(screen.getByText('FAILED')).toBeInTheDocument();
@@ -81,9 +84,7 @@ describe('AuditTab', () => {
       scroll: false,
     });
 
-    fireEvent.change(screen.getByLabelText('Filter by action'), {
-      target: { value: 'delete_key' },
-    });
+    chooseOption('Filter by action', 'Delete key');
     expect(replace).toHaveBeenLastCalledWith('/dashboard/admin/log?action=delete_key', {
       scroll: false,
     });
@@ -137,10 +138,22 @@ describe('AuditTab', () => {
     await screen.findByText('Update user');
 
     expect(listAuditLog).toHaveBeenCalledWith('settings.update', undefined, 50, 0);
-    const select = screen.getByLabelText('Filter by action') as HTMLSelectElement;
-    expect(select).toHaveValue('settings.update');
-    expect(select.selectedOptions[0]).toHaveTextContent('Settings update');
+    const filter = screen.getByRole('combobox', { name: 'Filter by action' });
+    expect(filter).toHaveTextContent('Settings update');
     expect(screen.getByText('2 matching entries')).toBeInTheDocument();
+
+    // The list keeps its groups, and offers the link's filter as selected.
+    fireEvent.click(filter);
+    const known = screen.getByRole('group', { name: 'Users and API keys' });
+    expect(within(known).getAllByRole('option')).toHaveLength(13);
+    const current = screen.getByRole('group', { name: 'Current filter' });
+    expect(within(current).getByRole('option', { name: 'Settings update' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    // Choosing it again changes nothing.
+    fireEvent.click(within(current).getByRole('option', { name: 'Settings update' }));
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it('says when filters match nothing and clears them', async () => {

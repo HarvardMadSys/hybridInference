@@ -18,6 +18,7 @@ vi.mock('@/lib/api/admin', () => ({
 
 import { getBroadcastDetail, listBroadcasts } from '@/lib/api/admin';
 import { BroadcastsTab } from './BroadcastsTab';
+import { chooseOption } from '@/test-utils/select';
 import { escapingScreenReaderText, uncontainedGrids } from './__tests__/layoutContainment';
 
 const BROADCAST = {
@@ -76,7 +77,7 @@ describe('BroadcastsTab', () => {
     await screen.findByText('Maintenance tonight');
     fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
 
-    expect(screen.getByLabelText('Template')).toHaveValue('custom');
+    expect(screen.getByRole('combobox', { name: 'Template' })).toHaveTextContent('Custom');
     expect(screen.getByLabelText('Subject')).toBeInTheDocument();
     expect(screen.getByLabelText('Body (Markdown)')).toBeInTheDocument();
     expect(screen.getByLabelText('Minimum spend today (USD)')).toBeInTheDocument();
@@ -151,5 +152,25 @@ describe('BroadcastsTab', () => {
     const composer = screen.getByRole('group', { name: 'New broadcast' });
     const rendered = within(composer).getByRole('table');
     expect(uncontainedGrids(rendered, composer)).toEqual([]);
+  });
+
+  it('keeps the draft when the current template is chosen again', async () => {
+    render(<BroadcastsTab />);
+    await screen.findByText('Maintenance tonight');
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Heads up' } });
+    fireEvent.change(screen.getByLabelText('Body (Markdown)'), { target: { value: 'Draft body' } });
+
+    chooseOption('Template', 'Custom');
+    expect(screen.getByLabelText('Subject')).toHaveValue('Heads up');
+    expect(screen.getByLabelText('Body (Markdown)')).toHaveValue('Draft body');
+
+    // A different template still starts from a clean slate, as before.
+    chooseOption('Template', 'Maintenance Notice');
+    expect(screen.getByRole('combobox', { name: 'Template' })).toHaveTextContent(
+      'Maintenance Notice',
+    );
+    chooseOption('Template', 'Custom');
+    expect(screen.getByLabelText('Subject')).toHaveValue('');
   });
 });

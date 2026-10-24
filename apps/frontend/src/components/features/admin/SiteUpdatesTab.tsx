@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -303,18 +304,17 @@ export function SiteUpdatesTab() {
                   <label htmlFor={fieldId('placement')} className={FORM_LABEL}>
                     Placement
                   </label>
-                  <select
+                  <Select<SiteUpdatePlacement>
                     id={fieldId('placement')}
                     value={form.placement}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, placement: e.target.value as SiteUpdatePlacement }))
-                    }
+                    onValueChange={(placement) => setForm((f) => ({ ...f, placement }))}
+                    options={[
+                      { value: 'feed', label: 'Feed (Updates section)' },
+                      { value: 'banner', label: 'Banner (top notice)' },
+                    ]}
                     aria-describedby={fieldId('placement-hint')}
-                    className={TEXT_FIELD}
-                  >
-                    <option value="feed">Feed (Updates section)</option>
-                    <option value="banner">Banner (top notice)</option>
-                  </select>
+                    className="w-full"
+                  />
                   <p id={fieldId('placement-hint')} className={FIELD_HINT}>
                     {form.placement === 'banner'
                       ? 'Only the most recent published banner is shown.'

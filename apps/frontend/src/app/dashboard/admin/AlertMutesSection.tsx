@@ -12,12 +12,12 @@ import {
 } from '@/components/features/admin/AdminPrimitives';
 import {
   BUTTON_PRIMARY,
-  CONTROL,
   NOTICE_ACTION,
   PANEL,
   PILL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
+import { Select } from '@/components/ui/Select';
 
 /** `seconds: null` mutes the type until an admin lifts it. */
 const MUTE_OPTIONS: { value: string; label: string; seconds: number | null }[] = [
@@ -237,22 +237,17 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right">
                           <div className="inline-flex items-center gap-2">
-                            <select
+                            {/* A command, not a setting: the value stays empty, so the
+                                same duration can be chosen again to restart a mute. */}
+                            <Select
                               aria-label={`Mute ${type.label}`}
                               value=""
+                              placeholder={type.muted ? 'Change…' : 'Mute for…'}
+                              options={MUTE_OPTIONS}
                               disabled={isSaving}
-                              onChange={(e) => void onMute(type, e.target.value)}
-                              className={CONTROL}
-                            >
-                              <option value="" disabled>
-                                {type.muted ? 'Change…' : 'Mute for…'}
-                              </option>
-                              {MUTE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
+                              onValueChange={(value) => void onMute(type, value)}
+                              className="w-36"
+                            />
                             {type.muted && (
                               <button
                                 type="button"

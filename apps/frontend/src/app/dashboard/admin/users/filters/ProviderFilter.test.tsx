@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getUserFilterProviders } from '@/lib/api/admin';
+
+import { chooseOption, optionLabels } from '@/test-utils/select';
 
 import { ProviderFilter } from './ProviderFilter';
 
@@ -25,22 +27,53 @@ describe('ProviderFilter', () => {
 
     render(<ProviderFilter value={null} onChange={vi.fn()} />);
 
-    const select = screen.getByRole('combobox');
-    expect(await within(select).findByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
-    expect(within(select).getByRole('option', { name: 'Retired (no longer routed)' })).toHaveValue(
-      'retired-vendor',
+    const trigger = screen.getByRole('combobox', { name: 'Filter by provider' });
+    expect(trigger).toHaveTextContent('Any provider');
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(optionLabels()).toEqual([
+        'Any provider',
+        'OpenRouter',
+        'Retired (no longer routed)',
+        'vLLM',
+      ]),
     );
-    expect(within(select).getByRole('option', { name: 'vLLM' })).toBeInTheDocument();
-    expect(within(select).getByRole('option', { name: 'Any provider' })).toHaveValue('');
+  });
+
+  it('reports a chosen provider, and null for Any provider', async () => {
+    vi.mocked(getUserFilterProviders).mockResolvedValue({
+      providers: [
+        { provider: 'openrouter', display_name: 'OpenRouter', in_logs: true, routable: true },
+      ],
+    });
+    const onChange = vi.fn();
+
+    const { rerender } = render(<ProviderFilter value={null} onChange={onChange} />);
+    await act(async () => {});
+
+    chooseOption('Filter by provider', 'OpenRouter');
+    expect(onChange).toHaveBeenLastCalledWith('openrouter');
+
+    rerender(<ProviderFilter value="openrouter" onChange={onChange} />);
+    expect(screen.getByRole('combobox', { name: 'Filter by provider' })).toHaveTextContent(
+      'OpenRouter',
+    );
+    chooseOption('Filter by provider', 'Any provider');
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    expect(onChange).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the current selection selectable when the list cannot be loaded', async () => {
     vi.mocked(getUserFilterProviders).mockRejectedValue(new Error('offline'));
 
     render(<ProviderFilter value="chutes" onChange={vi.fn()} />);
+    await act(async () => {});
 
-    const select = screen.getByRole('combobox');
-    expect(select).toHaveValue('chutes');
-    expect(within(select).getByRole('option', { name: 'chutes' })).toBeInTheDocument();
+    const trigger = screen.getByRole('combobox', { name: 'Filter by provider' });
+    expect(trigger).toHaveTextContent('chutes');
+    fireEvent.click(trigger);
+    expect(
+      within(screen.getByRole('listbox')).getByRole('option', { name: 'chutes' }),
+    ).toHaveAttribute('aria-selected', 'true');
   });
 });
