@@ -79,7 +79,6 @@ from .candidates import (
     QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
-    endpoint_id_for_adapter as routewise_endpoint_id_for_adapter,
 )
 from .concurrency import ConcurrencyManager
 from .decisions import (
@@ -1096,7 +1095,7 @@ class RouteWiseRouter:
                 ok=result.ok,
                 error=result.error,
                 cost_usd=None,
-                checked_at=dt.datetime.now(dt.timezone.utc),
+                checked_at=dt.datetime.now(dt.UTC),
             )
         except Exception:
             logger.warning(
@@ -1121,10 +1120,6 @@ class RouteWiseRouter:
     # ------------------------------------------------------------------
     # Classification and helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _endpoint_id(adapter: BaseAdapter) -> str:
-        return routewise_endpoint_id_for_adapter(adapter)
 
     def _classify_all(self) -> None:
         route_table = self.route_table

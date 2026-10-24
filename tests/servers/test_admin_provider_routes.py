@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
@@ -68,9 +68,9 @@ def test_extension_target_overrides_keep_dynamic_base_url_settings(monkeypatch):
     assert targets["minimax"].default_base_url == "https://db.example/v1"
 
 
-NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 16, tzinfo=UTC)
 # Inside the scheduled peak window, after its activation timestamp.
-_PEAK_INSTANT = datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc)
+_PEAK_INSTANT = datetime(2026, 8, 17, 2, 0, tzinfo=UTC)
 RUNTIME_PRICING = {
     "prompt": "0.14",
     "completion": "0.28",
@@ -458,7 +458,7 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client, monk
     client, _op_store, _router, fake_routewise, _verify_mock = admin_client
     for var in ("CHUTES_API_KEY", "FEATHERLESS_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    quota_reset_at = datetime(2026, 6, 17, tzinfo=timezone.utc)
+    quota_reset_at = datetime(2026, 6, 17, tzinfo=UTC)
     fake_routewise.quota_pools = {
         "chutes-minimax-fast-daily": MagicMock(
             ready=True,
@@ -2181,9 +2181,9 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
         created_adapter.config, at=_PEAK_INSTANT
     )
     assert (
-        effective_pricing(
-            restored_adapter.config, at=datetime(2026, 8, 18, 2, tzinfo=timezone.utc)
-        )["prompt"]
+        effective_pricing(restored_adapter.config, at=datetime(2026, 8, 18, 2, tzinfo=UTC))[
+            "prompt"
+        ]
         == "0.22"
     )
 

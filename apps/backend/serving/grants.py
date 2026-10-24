@@ -202,9 +202,9 @@ def is_live(row: dict[str, Any], *, now: datetime | None = None) -> bool:
 
 #: DDL for the gateway-owned grants table.
 #:
-#: Deliberately not in ``agent_job_store``: that module is frozen and leaves
-#: with the cloud agent. This table stays, because minting and verifying a
-#: capability for *this* gateway's models is this gateway's job.
+#: It stayed behind when ``agent_job_store`` left with the cloud agent, because
+#: minting and verifying a capability for *this* gateway's models is this
+#: gateway's job.
 #:
 #: The unique constraint is what makes minting idempotent — a control plane that
 #: retries after a timeout gets its grant back rather than a second capability

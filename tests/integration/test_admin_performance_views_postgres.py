@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -264,7 +264,7 @@ async def test_a_value_an_operator_set_is_left_alone(db):
 
 @pytest.mark.asyncio
 async def test_a_stored_result_is_read_back_only_under_its_definition(db):
-    at = datetime.now(timezone.utc)
+    at = datetime.now(UTC)
     assert await admin_view_results.write(db, "v", "def-1", {"n": 1}, at, 0)
     assert await admin_view_results.read(db, "v", "def-1") == ({"n": 1}, 0)
     assert await admin_view_results.read(db, "v", "def-2") is None
@@ -273,7 +273,7 @@ async def test_a_stored_result_is_read_back_only_under_its_definition(db):
 
 @pytest.mark.asyncio
 async def test_an_older_result_never_replaces_a_newer_one(db):
-    at = datetime.now(timezone.utc)
+    at = datetime.now(UTC)
     await admin_view_results.write(db, "v", "def-1", {"n": 2}, at, 0)
     await admin_view_results.write(db, "v", "def-1", {"n": 1}, at - timedelta(minutes=1), 0)
     assert await admin_view_results.read(db, "v", "def-1") == ({"n": 2}, 0)
@@ -292,9 +292,7 @@ async def test_a_result_computed_before_a_delete_is_not_stored_after_it(db):
     await log_store.hard_delete_user_data("alice")
 
     assert await admin_view_results.generation(db) == before + 1
-    stored = await admin_view_results.write(
-        db, "v", "def-1", {"n": 1}, datetime.now(timezone.utc), before
-    )
+    stored = await admin_view_results.write(db, "v", "def-1", {"n": 1}, datetime.now(UTC), before)
     assert stored is False
     assert await admin_view_results.read(db, "v", "def-1") is None
 

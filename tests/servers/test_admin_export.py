@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -44,7 +44,7 @@ def _make_mock_row(
         "user_email": user_email,
         "model_id": model_id,
         "provider": provider,
-        "timestamp": timestamp or datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        "timestamp": timestamp or datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC),
         "status_code": status_code,
         "latency_ms": latency_ms,
         "ttft_ms": ttft_ms,

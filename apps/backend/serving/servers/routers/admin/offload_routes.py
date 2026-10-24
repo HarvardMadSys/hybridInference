@@ -19,7 +19,7 @@ the route to another host, so a retargeted route stays the offload route.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -299,7 +299,7 @@ async def set_offload_route(
             model_id,
             policy,
             updated_by=admin_id,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
         )
         await log_admin_action(
             op_store,

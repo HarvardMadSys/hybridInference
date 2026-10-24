@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import secrets
 from base64 import urlsafe_b64encode
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cryptography.fernet import Fernet
@@ -843,12 +843,12 @@ async def optional_verify_api_key(
 
 def _seconds_until_utc_midnight() -> int:
     """Calculate seconds until next UTC midnight."""
-    return int((_next_utc_midnight() - datetime.now(timezone.utc)).total_seconds())
+    return int((_next_utc_midnight() - datetime.now(UTC)).total_seconds())
 
 
 def _next_utc_midnight() -> datetime:
     """Return the next UTC midnight timestamp."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 

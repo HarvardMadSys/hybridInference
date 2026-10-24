@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -27,7 +26,7 @@ def _result(
             key_configured=False,
             key_masked="Local simulation (no credentials)",
             key_ref=None,
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=datetime.now(UTC),
             ok=error is None,
             error=error,
             usages=[usage] if usage is not None else [],
@@ -50,8 +49,8 @@ def _parse_usage(payload: Any) -> ProviderQuotaUsage:
     reset_at = datetime.fromisoformat(raw_reset.replace("Z", "+00:00"))
     if reset_at.tzinfo is None:
         raise ValueError("expected an aware timestamp")
-    reset_at = reset_at.astimezone(timezone.utc)
-    next_reset = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+    reset_at = reset_at.astimezone(UTC)
+    next_reset = (datetime.now(UTC) + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     if reset_at != next_reset:
@@ -99,7 +98,7 @@ async def fetch(operational_store: Any = None, services: Any = None) -> list[Pro
                 return _result(error=f"http_{response.status}")
             usage = _parse_usage(await response.json())
         return _result(usage=usage)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return _result(error="timeout")
     except (
         aiohttp.ContentTypeError,

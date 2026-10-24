@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
+from datetime import UTC
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -361,7 +363,7 @@ async def _complete_first_run_setup(app: FastAPI) -> None:
     pending, and ``/auth/signup`` answers 503 until it completes. These tests
     exercise accounts, not setup.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY, mark_setup_completed
 
@@ -369,7 +371,7 @@ async def _complete_first_run_setup(app: FastAPI) -> None:
     if op_store is not None:
         if await op_store.get_setting(SETUP_MARKER_KEY) is None:
             await op_store.set_setting(
-                SETUP_MARKER_KEY, datetime.now(timezone.utc).isoformat(), "str", "tests"
+                SETUP_MARKER_KEY, datetime.now(UTC).isoformat(), "str", "tests"
             )
         # Completing setup deletes the code; do the same here.
         await op_store.delete_setting(SETUP_CODE_KEY)

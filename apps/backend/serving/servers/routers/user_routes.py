@@ -3,7 +3,7 @@
 import json
 import time
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -154,7 +154,7 @@ async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str 
 
 def _get_daily_quota_reset_at() -> datetime:
     """Return the next daily quota reset timestamp."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
@@ -204,8 +204,8 @@ def _extract_locale_preference(preferences: dict[str, Any]) -> LocalePreference 
 def _as_utc(moment: datetime) -> datetime:
     """Return *moment* as an aware UTC datetime; a naive one is taken as UTC."""
     if moment.tzinfo is None:
-        return moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc)
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
 
 
 def _iso_utc(moment: datetime) -> str:
@@ -406,7 +406,7 @@ async def update_locale_preference(
         raise HTTPException(status_code=500, detail="Database not available")
 
     user_id = current_user["user_id"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     chosen_at = now if body.chosen_at is None else min(_as_utc(body.chosen_at), now)
     choice = LocalePreference(value=body.locale, chosen_at=chosen_at)
     value = {"value": choice.value, "chosen_at": _iso_utc(chosen_at)}
@@ -502,7 +502,7 @@ async def create_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         warning="Save this API key now. It will not be shown again.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

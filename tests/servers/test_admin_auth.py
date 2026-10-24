@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -56,7 +56,7 @@ async def test_verify_admin_token_missing_env(monkeypatch, mock_request):
 
 
 def test_serialize_for_audit_handles_decimal_and_datetime():
-    now = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    now = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
     data = {
         "quota": Decimal("123.45"),
         "expires": now,

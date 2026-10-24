@@ -7,7 +7,7 @@ import hmac
 import json
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -15,7 +15,7 @@ RESPONSE_TEXT = "RUNNABLE_EXAMPLE_OK"
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class QuotaState:
