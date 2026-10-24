@@ -1195,10 +1195,6 @@
     "source": "Interface language",
     "text": "界面语言"
   },
-  "chrome.language.switch_title": {
-    "source": "Change the interface language",
-    "text": "切换界面语言"
-  },
   "chrome.role.admin": {
     "source": "admin",
     "text": "管理员"

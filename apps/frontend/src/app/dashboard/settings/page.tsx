@@ -11,7 +11,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
-import { LanguagePicker } from '@/components/ui/LanguageSwitcher';
+import { LanguagePicker } from '@/components/ui/LanguagePicker';
 import { cropImageToDataUrl, UserAvatar } from '@/components/ui/UserAvatar';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';

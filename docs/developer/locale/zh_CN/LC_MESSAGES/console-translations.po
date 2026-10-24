@@ -25,8 +25,8 @@ msgid "Translating the Console"
 msgstr "翻译控制台"
 
 #: ../developer/console-translations.md:3
-msgid "The console can be read in English or Chinese. A reader who never chose a language gets the one their browser asks for. Signed-in readers choose Language from the account menu; signed-out readers use the header switcher. The language setting also remains available under Account Settings. The console keeps the most recent choice in this browser and, once they sign in, in their account, so it follows them to other browsers. The design record is [2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)."
-msgstr "控制台可以用英文或中文阅读。从未选择过语言的读者，看到的是浏览器请求的语言。已登录的读者从账户菜单中选择语言；未登录的读者使用顶栏的语言切换入口。账户设置中也保留语言设置。控制台会在当前浏览器中保留最近一次选择，登录后也保存到账户里，因此换一个浏览器也能沿用。设计记录见 [2026-10-17 控制台语言切换](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)。"
+msgid "The console can be read in English or Chinese. A reader who never chose a language gets the one their browser asks for. Signed-in readers choose Language from the account menu or under Account Settings. The header has no language control, so signed-out readers see the language their browser asks for, or the one last chosen in this browser. The console keeps the most recent choice in this browser and, once they sign in, in their account, so it follows them to other browsers. The design record is [2026-10-17 console language switching](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)."
+msgstr "控制台可以用英文或中文阅读。从未选择过语言的读者，看到的是浏览器请求的语言。已登录的读者可以从账户菜单或账户设置中选择语言。顶栏不提供语言切换入口，因此未登录的读者看到的是浏览器请求的语言，或在当前浏览器中最近一次选择的语言。控制台会在当前浏览器中保留最近一次选择，登录后也保存到账户里，因此换一个浏览器也能沿用。设计记录见 [2026-10-17 控制台语言切换](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-17-console-language-switching-design.zh.md)。"
 
 #: ../developer/console-translations.md:11
 msgid ""
@@ -270,4 +270,3 @@ msgstr "保持英文"
 #~ "terms and the study, so the "
 #~ "catalog leaves them out on purpose."
 #~ msgstr "服务条款，以及注册时的研究知情同意声明。它们是有约束力的文本，翻译需要由条款和研究的负责方审核，因此字典有意不包含它们。"
-
