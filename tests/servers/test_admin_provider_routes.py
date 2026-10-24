@@ -6788,6 +6788,65 @@ async def test_deleting_a_runtime_route_drops_its_capability_override(admin_clie
     assert route_id not in overrides
 
 
+OPENROUTER_ROUTE_PAYLOAD = {
+    "route_type": "on_demand",
+    "upstream_provider": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "provider_model_id": "minimax/minimax-m2.5",
+    "capabilities": NARROW_CAPABILITIES,
+}
+
+
+@pytest.mark.asyncio
+async def test_adding_a_route_is_refused_while_its_id_keeps_an_override(admin_client):
+    """Added past a row it could not clear, the route would serve with the row's values."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.delete_route_capability_override.side_effect = ConnectionError("database down")
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json=OPENROUTER_ROUTE_PAYLOAD,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 503, response.text
+    assert "the route was not added" in response.text
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_route_stands_when_its_override_cannot_be_dropped(admin_client, caplog):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json=OPENROUTER_ROUTE_PAYLOAD,
+        headers=AUTH,
+    )
+    route_id = added.json()["route_id"]
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/minimax-fast/{route_id}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+    op_store.delete_route_capability_override.side_effect = ConnectionError("database down")
+
+    with caplog.at_level(logging.ERROR):
+        deleted = await client.delete(
+            f"/admin/routing/provider-route-candidates/minimax-fast/{route_id}", headers=AUTH
+        )
+
+    # The route is gone; its leftover row is logged loudly, by id, for an operator.
+    assert deleted.status_code == 200, deleted.text
+    assert route_id not in [route["route_id"] for route in deleted.json()["routes"]]
+    assert ("minimax-fast", route_id) in op_store.capability_rows
+    assert [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR and route_id in record.getMessage()
+    ]
+
+
 @pytest.mark.asyncio
 async def test_creating_a_model_clears_capability_overrides_left_under_its_name(admin_client):
     client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client

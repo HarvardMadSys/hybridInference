@@ -3091,21 +3091,14 @@ async def _clear_capability_override_for_route(
     Called once a runtime route has left the route table, and before a new
     route takes an id: the new route declares its own capabilities, and a row
     left behind by an earlier route (or one a failed cleanup kept) must not
-    replace them.
+    replace them. A failed delete raises, so each caller decides whether it
+    can go on with the row still stored.
     """
     route = services.router.routes.get(model_id)
     overrides = getattr(route, CAPABILITY_OVERRIDES_ATTR, None) if route is not None else None
     if overrides:
         overrides.pop(route_id, None)
-    try:
-        await op_store.delete_route_capability_override(model_id, route_id)
-    except Exception as exc:
-        logger.warning(
-            "Failed to delete capability override model=%s route_id=%s: %s",
-            model_id,
-            route_id,
-            exc,
-        )
+    await op_store.delete_route_capability_override(model_id, route_id)
 
 
 async def _delete_weight_overrides_for_model(
@@ -3943,12 +3936,24 @@ async def create_provider_route_candidate(
 
         async def persist_and_install() -> None:
             persistence_attempted = False
-            await _clear_capability_override_for_route(
-                services,
-                op_store,
-                model_id=canonical_model_id,
-                route_id=candidate.route_id,
-            )
+            try:
+                await _clear_capability_override_for_route(
+                    services,
+                    op_store,
+                    model_id=canonical_model_id,
+                    route_id=candidate.route_id,
+                )
+            except Exception as exc:
+                # Nothing is stored or installed yet. Added past the row, the
+                # route would serve with its values instead of the ones it
+                # declares, from the next sync or restart on.
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "could not clear any capability override left under route id "
+                        f"{candidate.route_id!r}; the route was not added"
+                    ),
+                ) from exc
             try:
                 persistence_attempted = True
                 await op_store.upsert_provider_route_candidate(
@@ -4635,12 +4640,27 @@ async def delete_provider_route_candidate(
                         model_id=model_id,
                         endpoint_id=removed[2],
                     )
-                    await _clear_capability_override_for_route(
-                        services,
-                        op_store,
-                        model_id=model_id,
-                        route_id=route_id,
-                    )
+                    try:
+                        await _clear_capability_override_for_route(
+                            services,
+                            op_store,
+                            model_id=model_id,
+                            route_id=route_id,
+                        )
+                    except Exception:
+                        # The route is already out of the table and its
+                        # candidate row deleted, so the delete stands: failing
+                        # here would put that row back for a route this process
+                        # no longer serves. Adding a route under this id clears
+                        # the override first.
+                        logger.error(
+                            "Failed to delete capability override of removed runtime route "
+                            "model=%s route_id=%s; a row left behind is cleared before a "
+                            "route is added under this id",
+                            model_id,
+                            route_id,
+                            exc_info=True,
+                        )
                 live_removed = True
             except BaseException:
                 live_removed = live_removed or services.router.routes.get(model_id) is not route
