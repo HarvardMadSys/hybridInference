@@ -7,7 +7,7 @@ and admin auth is satisfied via the ADMIN_TOKEN env var.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -447,7 +447,7 @@ async def test_detail_returns_404_when_unknown(admin_client):
 @pytest.mark.asyncio
 async def test_detail_returns_broadcast_with_recipients(admin_client):
     client, conn, _log = admin_client
-    created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
     conn.fetchrow.side_effect = [
         {
             "id": "bc1",

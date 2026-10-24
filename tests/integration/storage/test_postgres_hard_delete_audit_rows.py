@@ -11,7 +11,7 @@ admin request view.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -73,7 +73,7 @@ async def _seed(pool, *, request_id: str, user_id: str | None, owner_id: str | N
             "status_code, user_id, metadata) "
             "VALUES ($1, 'm', 'p', $2, 429, $3, $4::jsonb)",
             request_id,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             user_id,
             json.dumps(metadata),
         )

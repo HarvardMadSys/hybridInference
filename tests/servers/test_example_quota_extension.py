@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -89,7 +89,7 @@ def _request(port, path="/v1/chat/completions", payload=_CHAT, *, headers=None):
 
 
 def _valid_payload():
-    reset_at = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+    reset_at = (datetime.now(UTC) + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     return {"used": 2, "limit": 10, "reset_at": reset_at.isoformat()}
@@ -419,7 +419,7 @@ def test_concurrent_requests_cannot_overspend_or_share_server_state(fake_provide
 def test_daily_boundary_resets_on_reads_and_chat_admission(
     fake_provider, start_server, monkeypatch
 ):
-    now = datetime(2026, 9, 10, 23, 59, 59, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 10, 23, 59, 59, tzinfo=UTC)
     monkeypatch.setattr(fake_provider, "_utc_now", lambda: now)
     state = fake_provider.QuotaState(limit=1, used=1)
     port = start_server(quota=state).server_port

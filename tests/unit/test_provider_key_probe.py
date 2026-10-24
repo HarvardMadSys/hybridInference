@@ -8,7 +8,6 @@ message is read out of an error body, and which route is picked to probe with.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 
@@ -55,7 +54,7 @@ def test_a_long_upstream_body_is_cut_to_a_bounded_detail():
 
 def test_each_failure_kind_reads_as_what_happened():
     assert (
-        probe.probe_error_detail(asyncio.TimeoutError(), timeout_seconds=20)
+        probe.probe_error_detail(TimeoutError(), timeout_seconds=20)
         == "Provider key verification timed out after 20s"
     )
     assert (
@@ -74,7 +73,7 @@ def test_each_failure_kind_reads_as_what_happened():
 @pytest.mark.parametrize(
     ("exc", "reason"),
     [
-        (asyncio.TimeoutError(), "timeout"),
+        (TimeoutError(), "timeout"),
         (_http_error(401), "auth_failed"),
         (_http_error(403), "auth_failed"),
         # A redirect is how some providers answer a bad key with their login page.

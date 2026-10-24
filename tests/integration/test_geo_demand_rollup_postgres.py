@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -90,7 +90,7 @@ async def _insert_log(
 async def test_rollup_schema_sql_and_atomic_replacement(db_logger: DatabaseLogger) -> None:
     assert db_logger.pool is not None
     pool = db_logger.pool
-    hour = datetime(2026, 7, 19, 10, tzinfo=timezone.utc)
+    hour = datetime(2026, 7, 19, 10, tzinfo=UTC)
 
     await _insert_log(
         pool,

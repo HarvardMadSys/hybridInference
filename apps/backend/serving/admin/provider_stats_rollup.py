@@ -16,7 +16,7 @@ the next run or start instead of reading as zero traffic for good.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
@@ -280,7 +280,7 @@ async def purge_old(pool: asyncpg.Pool, *, retention_days: int = RETENTION_DAYS)
     The cutoff is the hour the hourly job's window starts at, so no hour is
     purged that a repair would then find missing. Returns stats rows deleted.
     """
-    cutoff = _due_end(datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    cutoff = _due_end(datetime.now(UTC)) - timedelta(days=retention_days)
     async with pool.acquire() as conn:
         return await _purge(conn, cutoff=cutoff)
 
@@ -321,7 +321,7 @@ async def hourly_job(
     Used as the APScheduler entrypoint registered by ``register_rollup_job``.
     """
     started_at = time.monotonic()
-    end = _due_end(datetime.now(timezone.utc))
+    end = _due_end(datetime.now(UTC))
     start = end - timedelta(days=retention_days)
 
     hours_rolled = 0
@@ -371,7 +371,7 @@ async def backfill_missing(
 
     Returns the number of hours rolled up (0 when skipped).
     """
-    end = _due_end(datetime.now(timezone.utc))
+    end = _due_end(datetime.now(UTC))
     start = end - timedelta(days=days)
     async with pool.acquire() as conn:
         missing = await conn.fetch(MISSING_HOURS_SQL, start, end)
@@ -416,7 +416,7 @@ async def backfill_token_columns(
     Returns the number of chunks processed (0 when skipped). Idempotent:
     the same UPSERT runs as the hourly job, so calling repeatedly is safe.
     """
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(days=days)
     async with pool.acquire() as conn:
         any_null = await conn.fetchval(
@@ -478,7 +478,7 @@ def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=ROLLUP_MINUTE, timezone=timezone.utc),
+        trigger=CronTrigger(minute=ROLLUP_MINUTE, timezone=UTC),
         args=[pool],
         id="rollup_provider_stats",
         replace_existing=True,

@@ -29,30 +29,15 @@ it cannot see to the attempt's :class:`FirstTokenWatch`
 Only streaming attempts can be watched: a non-streaming response arrives whole,
 so there is no first token to wait for.
 
-The first-token wait needs Python 3.11+. Its deadline is ``asyncio.timeout``,
-the one primitive that can tell its own cancellation of a task from a client's
-that lands at the same moment; Python 3.10 has no way to (it merges the two),
-and turning a disconnect into an offload would send a request nobody reads. On
-3.10 attempts are never timed.
+The first-token wait's deadline is ``asyncio.timeout``, the one primitive that
+can tell its own cancellation of a task from a client's that lands at the same
+moment: turning a disconnect into an offload would send a request nobody reads.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any
-
-from serving.utils.logging import get_logger
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from contextlib import AbstractAsyncContextManager
-
-logger = get_logger(__name__)
-
-# ``asyncio.timeout`` (Python 3.11+); None on an interpreter without it.
-_asyncio_timeout: Callable[[float | None], Any] | None = getattr(asyncio, "timeout", None)
-_warned_untimed = False
 
 __all__ = [
     "EngineWaitExpired",
@@ -98,25 +83,20 @@ class FirstTokenWatch:
     def __init__(self, endpoint_id: str, *, wait_seconds: float) -> None:
         self.endpoint_id = endpoint_id
         self.wait_seconds = wait_seconds
-        self._deadline: Any = None
+        self._deadline: asyncio.Timeout | None = None
         self._stopped = False
         self._answered = False
 
-    def deadline(self) -> AbstractAsyncContextManager[Any]:
+    def deadline(self) -> asyncio.Timeout:
         """Return the context the wait for the first token runs in.
 
         ``asyncio.timeout``, not yet armed -- pass what it yields to
-        :meth:`arm`. On Python 3.10, a context that never times out.
+        :meth:`arm`.
         """
-        if _asyncio_timeout is None:
-            _warn_untimed()
-            return contextlib.nullcontext()
-        return _asyncio_timeout(None)
+        return asyncio.timeout(None)
 
-    def arm(self, deadline: Any) -> None:
-        """Start the wait on the entered ``deadline``; a no-op for an untimed one."""
-        if deadline is None:
-            return
+    def arm(self, deadline: asyncio.Timeout) -> None:
+        """Start the wait on the entered ``deadline``."""
         self._deadline = deadline
         self._restart()
 
@@ -144,7 +124,7 @@ class FirstTokenWatch:
 
     def expired(self) -> bool:
         """Return whether this attempt's deadline passed."""
-        return self._deadline is not None and bool(self._deadline.expired())
+        return self._deadline is not None and self._deadline.expired()
 
     def _restart(self) -> None:
         if not self._answered:
@@ -157,18 +137,3 @@ class FirstTokenWatch:
         # move, and has no attempt left to time.
         with contextlib.suppress(RuntimeError):
             self._deadline.reschedule(when)
-
-
-def _warn_untimed() -> None:
-    """Say once per process that first-token waits cannot be enforced here."""
-    global _warned_untimed
-    if _warned_untimed:
-        return
-    _warned_untimed = True
-    logger.warning(
-        "engine_wait_untimed",
-        extra={
-            "event": "engine_wait_untimed",
-            "reason": "asyncio.timeout needs Python 3.11+; streams are not timed",
-        },
-    )

@@ -6,7 +6,7 @@ Run with: make test-db
 import asyncio
 import json
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -14,7 +14,7 @@ pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
 
-T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+T0 = datetime(2026, 10, 1, tzinfo=UTC)
 
 
 def _choice(value: str, at: datetime) -> dict:

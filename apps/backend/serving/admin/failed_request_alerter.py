@@ -15,7 +15,7 @@ compatibility (existing call-sites and tests) and posts to Slack directly.
 from __future__ import annotations
 
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx  # retained for backward-compat import symbol used by tests
@@ -235,7 +235,7 @@ async def post_slack_alert(webhook_url: str, message: str) -> bool:
 
 def _utcnow() -> datetime:
     """Default time source — timezone-aware UTC ``datetime``."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class FailedRequestAlerter:

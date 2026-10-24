@@ -1129,7 +1129,7 @@ class UserCostOverrunJob:
         # midnight, and the requirement is one alert per user per UTC day. On a
         # host in any other zone the local date would split or merge days
         # against the data, dropping or doubling an alert at the seam.
-        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        today = dt.datetime.now(dt.UTC).date().isoformat()
         if self._latched_day != today:
             self._latched_day = today
             self._latched = {}
@@ -1248,7 +1248,7 @@ class ProviderHourlySpendJob:
         """Query per-provider hourly spend and emit alerts when budgets are exceeded."""
         if not self._cfg.enabled or self._log_store is None:
             return
-        now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
         hour_iso = now.isoformat()
         try:
             spends = await self._log_store.query_provider_hourly_spend(hour_iso)

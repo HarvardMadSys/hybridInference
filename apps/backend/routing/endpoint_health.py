@@ -7,7 +7,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from routing.engine_wait import EngineWaitExpired
@@ -164,7 +164,7 @@ def _reason_str(s: str) -> str:
 
 def _iso_utc(epoch: float) -> str:
     """Render an epoch-seconds instant as an ISO-8601 UTC string."""
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
 def _http_status_of(exc: BaseException) -> int | None:
@@ -682,7 +682,7 @@ class _CircuitBreaker:
             # hours. The deadline is committed only once the page is delivered
             # (see _send_circuit_alert) and cleared on recovery, so a dropped page
             # never mutes an outage that was never announced.
-            now_dt = datetime.now(timezone.utc)
+            now_dt = datetime.now(UTC)
             usage_limit = detect_usage_limit(detail, now=now_dt)
             # While the endpoint is inside a known usage-limit outage — a page for
             # the current generation is mid-delivery, or its mute deadline has not

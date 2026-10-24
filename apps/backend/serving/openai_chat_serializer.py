@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-class SerializerMode(str, Enum):
+class SerializerMode(str, Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
     """Public chat completions serializer modes."""
 
     STRICT_OPENAI = "strict_openai"

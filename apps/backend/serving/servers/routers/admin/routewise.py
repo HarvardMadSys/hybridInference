@@ -541,7 +541,7 @@ async def list_routewise_probe_samples_endpoint(
     """List recent persisted RouteWise active-probe samples."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=max(int(since_seconds), 1))
+    since = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=max(int(since_seconds), 1))
     rows = await op_store.list_routewise_probe_samples(
         model_id=model_id,
         endpoint_id=endpoint_id,

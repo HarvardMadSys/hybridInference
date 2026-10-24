@@ -8,7 +8,7 @@ live; ``test_daily_activity_rollup_postgres`` covers stored days.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -62,8 +62,8 @@ async def test_buckets_stay_on_utc_midnight_across_dst(conn, session_tz: str) ->
     """
     await conn.execute(f"SET TIME ZONE '{session_tz}'")
 
-    start_day = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    end_day = datetime(2026, 3, 14, tzinfo=timezone.utc)
+    start_day = datetime(2026, 3, 1, tzinfo=UTC)
+    end_day = datetime(2026, 3, 14, tzinfo=UTC)
     days = 14
 
     # One request per day, at noon UTC so no row sits near a boundary.
@@ -86,19 +86,19 @@ async def test_day_attribution_and_gap_fill(conn) -> None:
     """A non-UTC session must not pull rows into the neighbouring UTC day."""
     await conn.execute("SET TIME ZONE 'America/New_York'")
 
-    start_day = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    end_day = datetime(2026, 6, 5, tzinfo=timezone.utc)
+    start_day = datetime(2026, 6, 1, tzinfo=UTC)
+    end_day = datetime(2026, 6, 5, tzinfo=UTC)
 
     # 23:30 UTC on the 1st is still the 1st in UTC but already the 2nd in
     # New York, so a session-timezone bucket would misfile it.
-    await _insert(conn, datetime(2026, 6, 1, 23, 30, tzinfo=timezone.utc), "late", "alice")
-    await _insert(conn, datetime(2026, 6, 1, 1, 0, tzinfo=timezone.utc), "early", "bob")
+    await _insert(conn, datetime(2026, 6, 1, 23, 30, tzinfo=UTC), "late", "alice")
+    await _insert(conn, datetime(2026, 6, 1, 1, 0, tzinfo=UTC), "early", "bob")
     # Returning user: active again on the 3rd, so not new that day.
-    await _insert(conn, datetime(2026, 6, 3, 9, 0, tzinfo=timezone.utc), "again", "alice")
+    await _insert(conn, datetime(2026, 6, 3, 9, 0, tzinfo=UTC), "again", "alice")
     # Anonymous traffic counts toward tokens but never toward DAU.
-    await _insert(conn, datetime(2026, 6, 3, 10, 0, tzinfo=timezone.utc), "anon", None)
+    await _insert(conn, datetime(2026, 6, 3, 10, 0, tzinfo=UTC), "anon", None)
     # Outside the window entirely.
-    await _insert(conn, datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc), "before", "carol")
+    await _insert(conn, datetime(2026, 5, 20, 12, 0, tzinfo=UTC), "before", "carol")
 
     rows = await _fetch(conn, start_day, end_day)
     by_day = {r["day"]: r for r in rows}

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +86,7 @@ def parse_genai_perf(
         .get("stimulus", {})
         .get("concurrency", -1)
     )
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     rows: list[dict[str, Any]] = []
 

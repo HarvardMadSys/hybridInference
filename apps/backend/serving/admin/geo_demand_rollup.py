@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from serving.analytics.geo_demand import (
@@ -233,7 +233,7 @@ async def hourly_job(
 ) -> None:
     """Refresh the previous hour and repair any covered-window gaps."""
     started_at = time.monotonic()
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = end - min(timedelta(days=retention_days), MAX_WINDOW)
     previous_hour = end - timedelta(hours=1)
     hours_processed = 0
@@ -279,7 +279,7 @@ async def backfill_missing(
     """Fill missing hourly coverage in bounded chunks without blocking startup."""
     if days < 1 or timedelta(days=days) > MAX_WINDOW:
         raise ValueError("days must be between 1 and 90")
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(days=days)
     hours_processed = 0
     rows_written = 0
@@ -312,7 +312,7 @@ def register_rollup_job(scheduler: Any, pool: asyncpg.Pool) -> None:
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=10, timezone=timezone.utc),
+        trigger=CronTrigger(minute=10, timezone=UTC),
         args=[pool],
         id="rollup_geo_demand",
         replace_existing=True,

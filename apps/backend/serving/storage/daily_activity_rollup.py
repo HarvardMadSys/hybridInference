@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import timedelta, timezone
+from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, Any
 
 from serving.storage.user_usage_rollup import NO_JIT_SQL, SETTLED_DAY_SQL
@@ -265,7 +265,7 @@ def register_rollup_job(scheduler: Any, pool: asyncpg.Pool) -> None:
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=25, timezone=timezone.utc),
+        trigger=CronTrigger(minute=25, timezone=UTC),
         args=[pool],
         id="rollup_daily_activity",
         replace_existing=True,

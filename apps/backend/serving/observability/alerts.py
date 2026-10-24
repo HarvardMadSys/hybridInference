@@ -237,7 +237,7 @@ def alert_delivery_failures_total() -> dict[str, int]:
     return dict(_DELIVERY_FAILURES_TOTAL)
 
 
-class AlertSeverity(str, enum.Enum):
+class AlertSeverity(str, enum.Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
     """Severity of an outgoing Slack alert."""
 
     CRITICAL = "critical"
@@ -360,7 +360,7 @@ def _format_message(
     timestamp line (identity for a channel without italics), and ``escape``
     neutralises caller-controlled context values.
     """
-    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()
     # Titles are written as breach statements ("Provider circuit opened"), so a
     # resolution rendered with the breach's own severity emoji is indis-
@@ -738,7 +738,7 @@ async def alert_slack(
             break
         try:
             await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             # Keep waiting up to the attempt bound. A firing send that tries the
             # relay and then falls back to the webhook takes both timeouts, so
             # giving up on the first would drop exactly the resolution this

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -85,7 +85,7 @@ async def test_login_records_invalid_password(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "active",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr(
@@ -110,7 +110,7 @@ async def test_login_records_email_unverified(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "active",
         "email_verified": False,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr(
@@ -139,7 +139,7 @@ async def test_login_records_pending_approval(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "pending_approval",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
@@ -164,7 +164,7 @@ async def test_login_records_rejected(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "rejected",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
@@ -189,7 +189,7 @@ async def test_login_records_inactive(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "suspended",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
@@ -221,7 +221,7 @@ async def test_login_suspended_takes_precedence_over_unverified(app, fake_op_sto
         "role": "free",
         "status": "suspended",
         "email_verified": False,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
@@ -260,7 +260,7 @@ async def test_login_suspended_returns_admin_message(app, fake_op_store, monkeyp
         "role": "free",
         "status": "suspended",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
@@ -345,7 +345,7 @@ async def test_guessing_from_one_address_leaves_the_owner_able_to_sign_in(
         "role": "free",
         "status": "active",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr(
@@ -387,7 +387,7 @@ async def test_login_records_success(app, fake_op_store, monkeypatch):
         "role": "free",
         "status": "active",
         "email_verified": True,
-        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2025, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
     monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)

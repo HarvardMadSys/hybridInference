@@ -1,7 +1,7 @@
 """Authentication routes for user signup, login, logout, and email verification."""
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
@@ -130,7 +130,7 @@ async def start_user_session(
     # The browser's cookie names its browser session, never this one, so the
     # session's own refresh hash is a value no browser holds.
     auth_session_id = generate_ulid()
-    session_expires = datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days())
+    session_expires = datetime.now(UTC) + timedelta(days=get_refresh_token_expire_days())
     await op_store.create_session(
         session_id=auth_session_id,
         user_id=user_row["id"],
@@ -161,7 +161,7 @@ async def start_user_session(
             status=user_row["status"],
             email_verified=user_row["email_verified"],
             created_at=user_row["created_at"],
-            last_login_at=datetime.now(timezone.utc),
+            last_login_at=datetime.now(UTC),
             is_admin=is_admin,
         ),
     )
@@ -294,7 +294,7 @@ async def signup(
     # Skipping when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning SMTP quota.
     if require_verification and is_email_enabled():
         verification_token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+        expires_at = datetime.now(UTC) + timedelta(hours=24)
         await op_store.create_verification_token(
             token=verification_token, user_id=user_id, expires_at=expires_at
         )
@@ -890,7 +890,7 @@ async def verify_email(
             )
 
         if not user_row["email_verified"]:
-            if token_row["expires_at"] < datetime.now(timezone.utc):
+            if token_row["expires_at"] < datetime.now(UTC):
                 raise HTTPException(
                     status_code=400,
                     detail="Verification token has expired. Please request a new one.",
@@ -907,7 +907,7 @@ async def verify_email(
             email_verified=True,
         )
 
-    if token_row["expires_at"] < datetime.now(timezone.utc):
+    if token_row["expires_at"] < datetime.now(UTC):
         raise HTTPException(
             status_code=400,
             detail="Verification token has expired. Please request a new one.",
@@ -961,7 +961,7 @@ async def forgot_password(
 
     # Generate reset token
     reset_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
     await op_store.create_reset_token(
         token=reset_token, user_id=user_row["id"], expires_at=expires_at
     )
@@ -1007,7 +1007,7 @@ async def reset_password(
     if token_row["used_at"]:
         raise HTTPException(status_code=400, detail="This reset link has already been used.")
 
-    if token_row["expires_at"] < datetime.now(timezone.utc):
+    if token_row["expires_at"] < datetime.now(UTC):
         raise HTTPException(
             status_code=400, detail="Reset link has expired. Please request a new one."
         )
@@ -1057,7 +1057,7 @@ async def resend_verification(
 
     # Generate new verification token
     verification_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    expires_at = datetime.now(UTC) + timedelta(hours=24)
     await op_store.create_verification_token(
         token=verification_token, user_id=user_row["id"], expires_at=expires_at
     )
@@ -1137,7 +1137,7 @@ async def bind_email(
         )
 
     verification_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    expires_at = datetime.now(UTC) + timedelta(hours=24)
     await op_store.delete_user_verification_tokens(user_id)
     await op_store.create_verification_token(
         token=verification_token,

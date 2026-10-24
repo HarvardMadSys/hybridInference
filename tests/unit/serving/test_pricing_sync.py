@@ -19,7 +19,7 @@ from serving.servers.routers.models import _catalog_pricing
 from serving.servers.routers.routing_info import RoutingInfo
 from serving.utils import context as req_ctx
 
-NOW = dt.datetime(2026, 10, 19, 2, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 10, 19, 2, tzinfo=dt.UTC)
 SOURCE = {"provider": "deepseek", "model": "deepseek-flash"}
 
 

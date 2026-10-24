@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -65,7 +65,7 @@ async def admin_client(monkeypatch, mock_stores):
 @pytest.mark.asyncio
 async def test_create_api_key_success(admin_client, monkeypatch):
     client, op_store, _log_store, log_action = admin_client
-    created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    created_at = datetime(2025, 1, 1, tzinfo=UTC)
     op_store.check_active_key_exists.return_value = False
     op_store.create_key.return_value = {"id": 1, "created_at": created_at}
 
@@ -117,7 +117,7 @@ async def test_create_api_key_requires_token(admin_client):
 @pytest.mark.asyncio
 async def test_list_api_keys_batches_usage(admin_client):
     client, op_store, _log_store, _log_action = admin_client
-    created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    created_at = datetime(2025, 1, 1, tzinfo=UTC)
 
     op_store.list_keys.return_value = (
         1,
@@ -157,7 +157,7 @@ async def test_list_api_keys_batches_usage(admin_client):
 @pytest.mark.asyncio
 async def test_get_api_key_detail_success(admin_client):
     client, op_store, log_store, _log_action = admin_client
-    created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    created_at = datetime(2025, 1, 1, tzinfo=UTC)
 
     op_store.get_key_detail.return_value = {
         "user_id": "alice",

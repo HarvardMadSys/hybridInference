@@ -1,7 +1,7 @@
 """Test factories for authentication system."""
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from serving.utils.jwt import generate_ulid
@@ -28,7 +28,7 @@ def create_test_user(**overrides: Any) -> dict[str, Any]:
         "user_name": f"Test User {user_id[:8]}",
         "status": "active",
         "email_verified": True,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "last_login_at": None,
     }
 
@@ -103,7 +103,7 @@ def create_api_key_data(user_id: str, **overrides: Any) -> dict[str, Any]:
         "account_id": user_id,
         "status": "active",
         "quota_daily_cost_usd": 100.00,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "last_used_at": None,
     }
 
@@ -127,7 +127,7 @@ def create_verification_token(user_id: str, **overrides: Any) -> dict[str, Any]:
     defaults = {
         "token": secrets.token_urlsafe(32),
         "user_id": user_id,
-        "expires_at": datetime.now(timezone.utc) + timedelta(hours=24),
+        "expires_at": datetime.now(UTC) + timedelta(hours=24),
         "used_at": None,
     }
 
@@ -152,10 +152,10 @@ def create_auth_session(user_id: str, **overrides: Any) -> dict[str, Any]:
         "session_id": generate_ulid(),
         "user_id": user_id,
         "refresh_token_hash": secrets.token_hex(32),
-        "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+        "expires_at": datetime.now(UTC) + timedelta(days=30),
         "last_used_jti": None,
         "revoked": False,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
 
     result = dict(defaults)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -183,7 +183,7 @@ class TestAdminGrowthRoute:
     @staticmethod
     def _today_utc() -> datetime:
         """The UTC midnight the endpoint treats as the still-filling day."""
-        return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
     @pytest.fixture
     def growth_app(self, mock_db_logger):

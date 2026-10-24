@@ -217,7 +217,7 @@ async def _iter_with_idle_timeout(
             item = await asyncio.wait_for(source.__anext__(), idle_timeout)
         except StopAsyncIteration:
             return
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise UpstreamStreamIdleError(
                 idle_timeout, endpoint_id=endpoint_id, frames=frames
             ) from exc
@@ -839,7 +839,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                     retries=1,
                 )
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except (TimeoutError, aiohttp.ClientError) as e:
                 slot.release(
                     status_code=e.status if isinstance(e, aiohttp.ClientResponseError) else 0
                 )
@@ -914,7 +914,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                 )
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except (TimeoutError, aiohttp.ClientError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
                 slot.release(status_code=status)
                 outcome = self._key_pool.release(lease, status_code=status, tried=tried)
@@ -1131,7 +1131,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
                 last_error = e
                 continue
-            except (aiohttp.ClientError, asyncio.TimeoutError):
+            except (TimeoutError, aiohttp.ClientError):
                 # A non-status I/O failure may have arrived after the upstream
                 # returned 2xx and began streaming the body. ``http.stream_post``
                 # deliberately scopes its retry to the connect phase and lets
@@ -1604,7 +1604,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
             raise
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             # A socket-level read timeout, i.e. the optional first-byte budget.
             # It used to be swallowed here and the stream capped with a normal
             # flush + [DONE], which handed the caller a truncated answer dressed

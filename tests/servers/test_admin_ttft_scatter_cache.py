@@ -10,7 +10,7 @@ at once with ``refreshing`` set. The query itself is unchanged.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,10 +62,10 @@ async def _settle() -> None:
 
 def _scatter(ttft_ms: int) -> AdminTtftScatterResponse:
     point = AdminTtftScatterPoint(
-        prompt_tokens=100, ttft_ms=ttft_ms, cache_hit=False, timestamp=datetime.now(timezone.utc)
+        prompt_tokens=100, ttft_ms=ttft_ms, cache_hit=False, timestamp=datetime.now(UTC)
     )
     return AdminTtftScatterResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         models=[AdminTtftScatterModel(model_id="m", provider="p", points=[point])],
     )
 
@@ -121,12 +121,12 @@ async def test_a_failed_refresh_still_serves_the_previous_scatter(monkeypatch):
 async def test_a_provider_gets_only_its_own_series_from_the_kept_scatter(monkeypatch):
     def series(model_id: str, provider: str) -> AdminTtftScatterModel:
         point = AdminTtftScatterPoint(
-            prompt_tokens=100, ttft_ms=50, cache_hit=False, timestamp=datetime.now(timezone.utc)
+            prompt_tokens=100, ttft_ms=50, cache_hit=False, timestamp=datetime.now(UTC)
         )
         return AdminTtftScatterModel(model_id=model_id, provider=provider, points=[point])
 
     scatter = AdminTtftScatterResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         models=[series("a", "vllm"), series("b", "zai"), series("c", "vllm")],
     )
     loader = AsyncMock(return_value=scatter)

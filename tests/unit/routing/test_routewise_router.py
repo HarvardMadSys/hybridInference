@@ -208,11 +208,11 @@ def _seed_quota_snapshots(router: RouteWiseRouter, *, used: float = 0.0) -> None
     Quota pools are snapshot-backed; unit tests seed the store directly
     instead of running the async refresh loop.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from routing.routewise.quota import ProviderQuotaSnapshot
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(dt.UTC)
     for pool in router.quota_pools.values():
         router.quota_snapshots._snapshots[pool.source] = ProviderQuotaSnapshot(
             source=pool.source,
@@ -1597,7 +1597,7 @@ class TestRouteWiseLayer2:
         """A non-leader worker should consume DB probe samples without probing upstream."""
         router, api_a, _api_b = _make_router_with_two_api()
         api_a.stream_chat_completion = AsyncMock(side_effect=AssertionError("should not probe"))
-        checked_at = dt.datetime.now(dt.timezone.utc)
+        checked_at = dt.datetime.now(dt.UTC)
         store = MagicMock()
         store.list_routewise_probe_samples = AsyncMock(
             return_value=[
@@ -1653,7 +1653,7 @@ class TestRouteWiseLayer2:
                     "ttft_ms": results[0].ttft_ms,
                     "ok": True,
                     "error": None,
-                    "checked_at": dt.datetime.now(dt.timezone.utc),
+                    "checked_at": dt.datetime.now(dt.UTC),
                 }
             ]
         )
@@ -1668,7 +1668,7 @@ class TestRouteWiseLayer2:
     async def test_sync_probe_samples_applies_external_rows_once(self):
         """Persisted probe samples from another worker update this worker's profile once."""
         router, _api_a, _api_b = _make_router_with_two_api()
-        checked_at = dt.datetime.now(dt.timezone.utc)
+        checked_at = dt.datetime.now(dt.UTC)
         store = MagicMock()
         store.list_routewise_probe_samples = AsyncMock(
             return_value=[

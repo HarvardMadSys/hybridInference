@@ -26,7 +26,7 @@ rather than a policy question about which key's limit wins.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 #: What an old row with no configured quota means. Matches ``verify_api_key``
@@ -53,13 +53,13 @@ class QuotaExceeded(Exception):
 
 def next_utc_midnight(now: datetime | None = None) -> datetime:
     """Return the next UTC midnight — when the daily counter resets."""
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     return (current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def seconds_until_utc_midnight(now: datetime | None = None) -> int:
     """Return whole seconds until the daily counter resets."""
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     return max(1, int((next_utc_midnight(current) - current).total_seconds()))
 
 

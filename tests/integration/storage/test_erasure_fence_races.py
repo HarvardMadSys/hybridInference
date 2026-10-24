@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -94,7 +94,7 @@ async def _seed_row(
             "status_code, user_id, metadata) "
             "VALUES ($1, 'm', 'p', $2, 200, $3, $4::jsonb)",
             request_id,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             user_id,
             json.dumps(metadata) if metadata else None,
         )
@@ -910,7 +910,7 @@ async def test_mixed_version_old_worker_can_still_insert(fence_store):
             "timestamp, status_code, user_id) "
             "VALUES ($1, 'm', 'p', $2, 200, $3)",
             "req-fence-old-worker",
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             _OWNER,
         )
 

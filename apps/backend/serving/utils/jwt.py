@@ -1,7 +1,7 @@
 """JWT token generation and validation utilities."""
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -93,7 +93,7 @@ def create_access_token(
     jti = generate_jti()
     sid = session_id or generate_session_id()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + expires_delta
 
     payload = {

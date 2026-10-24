@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,11 +33,11 @@ async def test_scheduled_job_registers_coroutine_and_fires_once(monkeypatch) -> 
 
     monkeypatch.setattr(email_scheduler, "execute_broadcast", _recorder)
 
-    scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    scheduler = AsyncIOScheduler(timezone=UTC)
     monkeypatch.setattr(email_scheduler, "_scheduler", scheduler)
     scheduler.start()
     try:
-        run_at = datetime.now(timezone.utc) + timedelta(seconds=0.2)
+        run_at = datetime.now(UTC) + timedelta(seconds=0.2)
         email_scheduler._add_scheduler_job("b-1", run_at)
 
         # The registered job func must be a coroutine function, else the

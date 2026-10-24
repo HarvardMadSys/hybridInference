@@ -21,7 +21,7 @@ gateway's own cancellation path records.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -170,7 +170,7 @@ def _make_metrics_db_logger(
 @pytest.mark.asyncio
 async def test_request_metrics_counts_disconnects_apart_from_errors():
     """499 lands in client_disconnect_count and is excluded from error_count."""
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     # The hour card's first 5-minute bar, counted live.
     first_bar = end_time - timedelta(hours=1)
     logger, calls = _make_metrics_db_logger(end_time, counted_from=first_bar)

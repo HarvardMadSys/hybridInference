@@ -4,7 +4,7 @@ Run with: make test-db
 """
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -34,7 +34,7 @@ async def _create_refresh_session(op_store, user_id: str, refresh_token: str) ->
         refresh_token_hash=hash_refresh_token(refresh_token),
         jti=str(uuid4()),
         sid=str(uuid4()),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
     )
 
 
@@ -138,7 +138,7 @@ class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
             refresh_token_hash=hash_refresh_token(token),
             jti=str(uuid4()),
             sid=str(uuid4()),
-            expires_at=datetime.now(timezone.utc) + expires_in,
+            expires_at=datetime.now(UTC) + expires_in,
         )
         return token
 

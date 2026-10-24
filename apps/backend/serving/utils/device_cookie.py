@@ -38,7 +38,7 @@ import secrets
 import struct
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from serving.config.settings import settings
@@ -204,7 +204,7 @@ def remember_device(
         key=device_cookie_name(),
         value=".".join(_encode(entry) for entry in entries[:MAX_ENTRIES]),
         max_age=LIFETIME_SECONDS,
-        expires=datetime.now(timezone.utc) + timedelta(seconds=LIFETIME_SECONDS),
+        expires=datetime.now(UTC) + timedelta(seconds=LIFETIME_SECONDS),
         path=COOKIE_PATH,
         domain=settings.cookie_domain,
         secure=settings.cookie_secure,

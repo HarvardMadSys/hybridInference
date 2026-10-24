@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,7 +12,7 @@ from serving.admin import provider_stats_rollup as rollup
 
 
 def utc(hour: int, minute: int = 0, *, day: int = 10) -> datetime:
-    return datetime(2026, 5, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(2026, 5, day, hour, minute, tzinfo=UTC)
 
 
 def freeze(monkeypatch, now: datetime) -> None:

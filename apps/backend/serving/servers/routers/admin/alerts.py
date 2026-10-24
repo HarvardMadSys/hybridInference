@@ -85,15 +85,8 @@ def _webhook_shape_ok(webhook_url: str) -> bool:
 def _official_webhook_ok(channel: str, webhook_url: str) -> bool:
     """Whether ``webhook_url`` is the platform's own documented endpoint."""
     parts = urlsplit(webhook_url)
-    # An empty query is valid for Slack, and ``parse_qsl("", strict_parsing=True)``
-    # raises ValueError on Python 3.10 (not on 3.11+), so only parse when there
-    # is something to parse.
     try:
-        query = (
-            parse_qsl(parts.query, keep_blank_values=True, strict_parsing=True)
-            if parts.query
-            else []
-        )
+        query = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=True)
     except ValueError:
         # A malformed query string is not an official endpoint.
         return False

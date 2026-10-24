@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -127,7 +127,7 @@ def _result(
         display_name="Chutes",
         key_configured=True,
         key_masked="***",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         ok=True,
         error=None,
         usages=[

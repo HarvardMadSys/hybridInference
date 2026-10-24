@@ -336,7 +336,7 @@ async def playground_chat(
             while True:
                 try:
                     item = await asyncio.wait_for(chunks.get(), timeout=_KEEPALIVE_INTERVAL)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     idle_s += _KEEPALIVE_INTERVAL
                     if idle_s >= _MAX_IDLE_S:
                         logger.warning(

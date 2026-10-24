@@ -24,7 +24,7 @@ multi-worker deployment may need one call per worker.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 
@@ -61,7 +61,7 @@ async def list_auth_blocks(
         blocks=[
             AuthBlockItem(
                 ip_bucket=block.ip_bucket,
-                blocked_until=datetime.fromtimestamp(block.blocked_until, tz=timezone.utc),
+                blocked_until=datetime.fromtimestamp(block.blocked_until, tz=UTC),
                 retry_after_sec=block.retry_after_sec,
             )
             for block in blocks

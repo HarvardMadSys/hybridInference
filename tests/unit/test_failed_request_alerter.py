@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -153,7 +153,7 @@ def _make_alerter(pool, *, threshold=20, window=5, cooldown=5, now_fn=None):
         threshold=threshold,
         window_minutes=window,
         cooldown_minutes=cooldown,
-        now_fn=now_fn or (lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)),
+        now_fn=now_fn or (lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)),
     )
 
 
@@ -299,8 +299,8 @@ async def test_alerter_cooldown_suppresses_repeat():
     pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
-        datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 12, 2, 0, tzinfo=timezone.utc),  # +2 min, cooldown is 5
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 2, 0, tzinfo=UTC),  # +2 min, cooldown is 5
     ]
 
     def _clock():
@@ -327,8 +327,8 @@ async def test_alerter_cooldown_expires_then_fires():
     pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
-        datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 12, 6, 0, tzinfo=timezone.utc),  # +6 min, cooldown is 5
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 6, 0, tzinfo=UTC),  # +6 min, cooldown is 5
     ]
 
     def _clock():
@@ -355,8 +355,8 @@ async def test_alerter_failed_post_does_not_start_cooldown():
     pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
-        datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 12, 0, 30, tzinfo=timezone.utc),  # +30s, well inside cooldown
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, 30, tzinfo=UTC),  # +30s, well inside cooldown
     ]
 
     def _clock():
@@ -613,7 +613,7 @@ async def test_alerter_swallows_query_exception():
 
 # Smoke check: timedelta math is what we expect — fences the cooldown semantics.
 def test_cooldown_arithmetic_uses_timedelta():
-    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     assert (base + timedelta(minutes=5)) - base == timedelta(minutes=5)
 
 
@@ -628,7 +628,7 @@ def _rate_alerter(pool, *, threshold=200, rate=0.02, min_count=10):
         threshold=threshold,
         window_minutes=5,
         cooldown_minutes=5,
-        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         rate_threshold=rate,
         rate_min_count=min_count,
     )
@@ -702,7 +702,7 @@ async def test_rate_zero_restores_pure_absolute_counting():
         threshold=200,
         window_minutes=5,
         cooldown_minutes=5,
-        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         rate_threshold=0.0,
     )
     with patch(

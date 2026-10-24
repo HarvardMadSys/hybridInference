@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.geo_resolver import GeoResolver
@@ -77,7 +77,7 @@ def floor_hour(value: datetime) -> datetime:
     """Normalize an aware datetime to the beginning of its UTC hour."""
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must include a timezone")
-    return value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return value.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
 
 
 def normalize_window(since: datetime, until: datetime) -> tuple[datetime, datetime]:
@@ -143,7 +143,7 @@ def build_geo_meta(
     """Build the stable metadata shared by raw and rollup-backed responses."""
     return {
         "source": "api_logs",
-        "generated_at": (generated_at or datetime.now(timezone.utc)).isoformat(),
+        "generated_at": (generated_at or datetime.now(UTC)).isoformat(),
         "start": hours_index[0].isoformat() if hours_index else None,
         "hours": len(hours_index),
         "rows_total": rows_total,

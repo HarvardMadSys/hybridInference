@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, fields
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from serving.servers.routers.admin._common import REQUEST_OUTCOME_FILTERS
@@ -169,7 +169,7 @@ class VolumeCounts:
 def _floor(ts: datetime, minutes: int) -> datetime:
     """Floor *ts* to a whole multiple of *minutes* since the epoch, as a bar is."""
     width = minutes * 60
-    return datetime.fromtimestamp(int(ts.timestamp()) // width * width, tz=timezone.utc)
+    return datetime.fromtimestamp(int(ts.timestamp()) // width * width, tz=UTC)
 
 
 def _ceil_hour(ts: datetime) -> datetime:
@@ -387,7 +387,7 @@ def register_rollup_job(scheduler: Any, pool: asyncpg.Pool) -> None:
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=15, timezone=timezone.utc),
+        trigger=CronTrigger(minute=15, timezone=UTC),
         args=[pool],
         id="rollup_request_volume",
         replace_existing=True,

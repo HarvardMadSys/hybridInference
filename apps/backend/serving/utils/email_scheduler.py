@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.jobstores.base import JobLookupError
@@ -40,7 +40,7 @@ def start_scheduler(db_pool: asyncpg.Pool) -> None:
     # All scheduled_at timestamps are stored as TIMESTAMPTZ and rehydrated
     # with tz=UTC; pin the scheduler to UTC so DateTrigger interprets them
     # consistently regardless of the host's local timezone.
-    _scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    _scheduler = AsyncIOScheduler(timezone=UTC)
     _scheduler.start()
     logger.info("Broadcast email scheduler started")
 
@@ -67,7 +67,7 @@ async def rehydrate_scheduled_broadcasts() -> None:
     """Re-register scheduled broadcasts into APScheduler on startup (restart recovery)."""
     if not _db_pool:
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with _db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, scheduled_at FROM email_broadcasts WHERE status = 'scheduled'"

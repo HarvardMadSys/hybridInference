@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -81,7 +81,7 @@ class FakeConnection:
 
 
 def utc(hour: int) -> datetime:
-    return datetime(2026, 7, 1, hour, tzinfo=timezone.utc)
+    return datetime(2026, 7, 1, hour, tzinfo=UTC)
 
 
 def row(hour: int, **overrides: Any) -> dict[str, Any]:
@@ -105,11 +105,11 @@ def resolver() -> GeoResolver:
 
 def test_window_alignment_and_validation() -> None:
     start, end = normalize_window(
-        datetime(2026, 7, 1, 3, 41, tzinfo=timezone.utc),
-        datetime(2026, 7, 2, 4, 59, tzinfo=timezone.utc),
+        datetime(2026, 7, 1, 3, 41, tzinfo=UTC),
+        datetime(2026, 7, 2, 4, 59, tzinfo=UTC),
     )
-    assert start == datetime(2026, 7, 1, 3, tzinfo=timezone.utc)
-    assert end == datetime(2026, 7, 2, 4, tzinfo=timezone.utc)
+    assert start == datetime(2026, 7, 1, 3, tzinfo=UTC)
+    assert end == datetime(2026, 7, 2, 4, tzinfo=UTC)
     with pytest.raises(ValueError, match="timezone"):
         normalize_window(datetime(2026, 7, 1), datetime(2026, 7, 2))
     with pytest.raises(ValueError, match="90 days"):

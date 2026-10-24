@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 
 import asyncpg
@@ -180,7 +179,7 @@ def test_assert_test_db_name_rejects_a_non_test_database():
     [
         ConnectionRefusedError("refused"),
         TimeoutError(),
-        asyncio.TimeoutError(),
+        TimeoutError(),
         asyncpg.InvalidPasswordError("bad password"),
         asyncpg.InvalidCatalogNameError("no such database"),
         asyncpg.CannotConnectNowError("starting up"),

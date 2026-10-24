@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -355,7 +355,7 @@ async def test_extension_registers_the_quota_fetchers_the_tab_reports_on():
                     display_name="Example",
                     key_configured=True,
                     key_masked="exampl...1234",
-                    fetched_at=datetime.now(timezone.utc),
+                    fetched_at=datetime.now(UTC),
                     ok=True,
                     error=None,
                     usages=[],

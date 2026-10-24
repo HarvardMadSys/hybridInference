@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, Response
@@ -78,7 +78,7 @@ def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
         key=get_settings().refresh_token_cookie_name,
         value=refresh_token,
         max_age=refresh_token_max_age,
-        expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
+        expires=datetime.now(UTC) + timedelta(seconds=refresh_token_max_age),
         **_refresh_cookie_options(),
     )
 
@@ -117,7 +117,7 @@ def session_live(account: dict[str, Any], *, now: datetime | None = None) -> boo
     False once the session row is revoked, expired or gone (a password reset
     deletes them), and once the user is no longer active.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     expires_at = account.get("session_expires_at")
     return bool(
         account.get("sid")
@@ -160,7 +160,7 @@ async def resolve_browser_session(
     if not secret:
         return None
     secret_hash = hash_refresh_token(secret)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     row = await op_store.get_browser_session(secret_hash)
     if row is not None:
@@ -220,9 +220,7 @@ async def rotate_cookie(
     secret = create_refresh_token()
     secret_hash = hash_refresh_token(secret)
     expires_at = (
-        datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days())
-        if extend
-        else None
+        datetime.now(UTC) + timedelta(days=get_refresh_token_expire_days()) if extend else None
     )
     rotated = await op_store.rotate_browser_session(
         browser.id,
@@ -296,7 +294,7 @@ async def complete_sign_in(
     await op_store.create_browser_session(
         browser_session_id=browser_session_id,
         secret_hash=hash_refresh_token(secret),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days()),
+        expires_at=datetime.now(UTC) + timedelta(days=get_refresh_token_expire_days()),
     )
     await op_store.attach_browser_session_account(
         browser_session_id, user_id=user_id, auth_session_id=auth_session_id
@@ -370,7 +368,7 @@ def account_summaries(
     """
     if browser is None:
         return []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     summaries = []
     for account in browser.accounts:
         if account.get("status") is None:

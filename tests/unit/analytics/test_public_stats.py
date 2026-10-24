@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,8 +11,8 @@ import pytest
 from serving.analytics import public_stats as ps
 from serving.analytics.public_stats import ClientRow
 
-START = datetime(2026, 7, 31, 7, 33, tzinfo=timezone.utc)  # a Friday
-END = datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc)  # a Wednesday
+START = datetime(2026, 7, 31, 7, 33, tzinfo=UTC)  # a Friday
+END = datetime(2026, 8, 12, 14, 0, tzinfo=UTC)  # a Wednesday
 W1, W2, W3 = date(2026, 7, 27), date(2026, 8, 3), date(2026, 8, 10)
 
 
@@ -278,7 +278,7 @@ def test_registrations_count_every_active_and_pending_account():
 
 def test_retained_day_bounds_keep_a_partial_last_day():
     assert ps.retained_day_bounds(START, END) == (date(2026, 7, 31), date(2026, 8, 13))
-    midnight = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    midnight = datetime(2026, 8, 12, tzinfo=UTC)
     assert ps.retained_day_bounds(START, midnight) == (date(2026, 7, 31), date(2026, 8, 12))
 
 
@@ -297,9 +297,7 @@ async def test_pruned_rows_still_count_in_request_and_token_totals():
             }
         ],
     )
-    payload = await ps.compute_snapshot(
-        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
-    )
+    payload = await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
     assert payload["window"]["start"] == "2026-07-20T00:00:00+00:00"
     assert payload["totals"]["requests"] == 12
     assert payload["totals"]["tokens"] == 155
@@ -313,10 +311,10 @@ async def test_pruned_rows_still_count_in_request_and_token_totals():
 @pytest.mark.asyncio
 async def test_retained_blank_model_and_datetime_day_still_count():
     conn = _fake_conn(
-        first_retained=datetime(2026, 7, 20, 15, tzinfo=timezone.utc),
+        first_retained=datetime(2026, 7, 20, 15, tzinfo=UTC),
         retained_rows=[
             {
-                "day": datetime(2026, 7, 20, tzinfo=timezone.utc),
+                "day": datetime(2026, 7, 20, tzinfo=UTC),
                 "model": "",
                 "input_tokens": 4,
                 "output_tokens": 1,
@@ -325,9 +323,7 @@ async def test_retained_blank_model_and_datetime_day_still_count():
             }
         ],
     )
-    payload = await ps.compute_snapshot(
-        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
-    )
+    payload = await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
     assert payload["window"]["start"] == "2026-07-20T00:00:00+00:00"
     # Live fixture is 2 requests / 55 tokens; the blank model still adds.
     assert payload["totals"]["requests"] == 3
@@ -439,7 +435,7 @@ async def test_compute_snapshot_reads_from_the_first_log_to_the_hour():
         "Merci, et comment puis-je configurer la limite de requêtes pour chaque utilisateur ?",
     ]
     conn = _fake_conn(sample_texts=texts)
-    now = datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 12, 14, 27, tzinfo=UTC)
     payload = await ps.compute_snapshot(conn, now=now)
     assert payload["window"]["start"] == START.isoformat()
     assert payload["window"]["end"] == "2026-08-12T14:00:00+00:00"
@@ -460,7 +456,7 @@ async def test_compute_snapshot_reads_from_the_first_log_to_the_hour():
 async def test_compute_snapshot_names_models_after_runtime_overrides(overrides_table, named):
     conn = _fake_conn(overrides_table=overrides_table)
     payload = await ps.compute_snapshot(
-        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc), models_config=CATALOG
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC), models_config=CATALOG
     )
     models = payload["models"]
     if named:
@@ -477,9 +473,7 @@ async def test_compute_snapshot_names_models_after_runtime_overrides(overrides_t
 @pytest.mark.asyncio
 async def test_languages_are_omitted_when_prompts_are_not_stored():
     conn = _fake_conn(server_version="150008", sample_texts=[])
-    payload = await ps.compute_snapshot(
-        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=timezone.utc)
-    )
+    payload = await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
     assert payload["languages"] is None
     sample_sql = next(
         c.args[0] for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]

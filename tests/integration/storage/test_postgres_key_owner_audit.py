@@ -9,7 +9,7 @@ this method exists to close.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -116,7 +116,7 @@ async def test_expired_key_is_reported_as_expired(postgres_op_store):
         pool,
         user_id="u-audit-expired",
         key_hash="h-audit-expired",
-        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        expires_at=datetime.now(UTC) - timedelta(days=1),
     )
 
     assert await store.get_auth_context_lightweight("h-audit-expired") is None

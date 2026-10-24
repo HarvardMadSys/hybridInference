@@ -184,7 +184,7 @@ def decode_snapshot(raw: str) -> PricingSnapshot:
         versions[model] = model_version
     return PricingSnapshot(
         revision=revision,
-        fetched_at=fetched_at.astimezone(dt.timezone.utc),
+        fetched_at=fetched_at.astimezone(dt.UTC),
         calendar_years=frozenset(years),
         tariffs=MappingProxyType(tariffs),
         model_versions=MappingProxyType(versions),
@@ -237,7 +237,7 @@ class PricingSyncService:
             raise ValueError("unsupported automatic pricing models")
         self._store = store
         self._models = frozenset(models)
-        self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         self._snapshot: PricingSnapshot | None = None
         self._generation = 0
         self._task: asyncio.Task[None] | None = None
@@ -306,7 +306,7 @@ class PricingSyncService:
             logger.info("Official pricing revision loaded: %s", self.status())
 
     async def _download(self) -> dict[str, Any]:
-        now = self._clock().astimezone(dt.timezone.utc)
+        now = self._clock().astimezone(dt.UTC)
         html = await fetch_public_text(PRICE_URL)
         exclusions: dict[str, set[str]] = {}
         coverage: list[int] = []

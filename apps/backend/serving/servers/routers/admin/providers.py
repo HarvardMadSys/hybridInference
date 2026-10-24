@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -140,7 +140,7 @@ async def admin_provider_quotas(
     for provider in providers:
         provider.disabled = provider.name in disabled
     return AdminProviderQuotasResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         providers=providers,
     )
 
@@ -254,7 +254,7 @@ async def admin_provider_stats(
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=503, detail="database unavailable")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if to is not None:
         to = _require_aware_utc(to, "to")
     if from_ is not None:
@@ -386,7 +386,7 @@ async def admin_provider_observability(
     if not _is_reportable_performance_provider(provider):
         raise HTTPException(status_code=400, detail="provider must be an upstream provider")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if to is not None:
         to = _require_aware_utc(to, "to")
     if from_ is not None:
@@ -598,7 +598,7 @@ async def admin_provider_token_usage(
     # hour HH has not been written yet. Subtract one hour from `end` in
     # that window so we don't undercount and so `refreshed_at` reflects
     # the most recent bucket guaranteed to exist.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     end = _truncate_hour(now)
     if now.minute < _ROLLUP_MINUTE_OFFSET:
         end = end - timedelta(hours=1)

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -467,7 +467,7 @@ def test_merge_config_models_by_provider_preserves_runtime_models():
 
 @pytest.mark.asyncio
 async def test_provider_registry_boot_skips_reserved_provider_rows():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     class Store:
         async def list_provider_definitions(self):
@@ -606,7 +606,7 @@ async def test_boot_keeps_a_custom_provider_a_route_label_collides_with(caplog):
     rejected, so a collision means the label was added afterwards. The custom
     definition owns a key pool and a route target that live routes depend on,
     so it must survive — loudly, since both now report under one label."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     class Store:
         async def list_provider_definitions(self):

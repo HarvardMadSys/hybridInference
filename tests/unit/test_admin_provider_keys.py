@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,7 +28,7 @@ from serving.storage.base import ProviderKeyRow
 pytestmark = pytest.mark.unit
 
 AUTH = {"Authorization": "Bearer test-admin"}
-_NOW = datetime(2025, 6, 15, tzinfo=timezone.utc)
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
 
 
 def test_probe_error_reason_detects_featherless_plan_api_disabled():

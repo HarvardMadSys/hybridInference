@@ -345,7 +345,7 @@ async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
     db_logger: DatabaseLogger,
 ):
     assert db_logger.pool is not None
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     async with db_logger.pool.acquire() as conn:
         await conn.execute(
             """

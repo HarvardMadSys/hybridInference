@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,7 +43,7 @@ async def test_geo_endpoint_uses_supported_complete_hour_window(app, monkeypatch
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            value = datetime(2026, 7, 15, 10, 34, tzinfo=timezone.utc)
+            value = datetime(2026, 7, 15, 10, 34, tzinfo=UTC)
             return value if tz is None else value.astimezone(tz)
 
     monkeypatch.setattr(analytics_module, "datetime", FrozenDateTime)
@@ -55,10 +55,10 @@ async def test_geo_endpoint_uses_supported_complete_hour_window(app, monkeypatch
     assert response.status_code == 200
     call = cached.await_args
     assert call.args[0] is pool
-    assert call.args[1] == datetime(
-        2026, 7, 15, 10, tzinfo=timezone.utc
-    ) - analytics_module.timedelta(days=days)
-    assert call.args[2] == datetime(2026, 7, 15, 10, tzinfo=timezone.utc)
+    assert call.args[1] == datetime(2026, 7, 15, 10, tzinfo=UTC) - analytics_module.timedelta(
+        days=days
+    )
+    assert call.args[2] == datetime(2026, 7, 15, 10, tzinfo=UTC)
 
 
 def test_geo_endpoint_openapi_exposes_only_days_window(app) -> None:

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -164,7 +164,7 @@ async def _seed(pool, settled) -> None:
 
 def _oracle_day(row):
     return {
-        "day": row["day"].astimezone(timezone.utc).date(),
+        "day": row["day"].astimezone(UTC).date(),
         "active_users": int(row["active_users"]),
         "new_users": int(row["new_users"]),
         "requests": int(row["requests"]),
@@ -176,7 +176,7 @@ async def _assert_matches_oracle(pool, today) -> None:
     async with pool.acquire() as conn:
         for days in (30, 60, 90):
             first = today - timedelta(days=days - 1)
-            end = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+            end = datetime(today.year, today.month, today.day, tzinfo=UTC)
             start = end - timedelta(days=days - 1)
             oracle = [
                 _oracle_day(r)

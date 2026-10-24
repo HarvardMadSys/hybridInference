@@ -28,11 +28,10 @@ formulation in the paper: each request routed to S_Q consumes one slot.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from serving.admin.provider_quotas import quota_fetcher
@@ -187,7 +186,7 @@ class ProviderQuotaSnapshotStore:
                 continue
             try:
                 results = await fetcher()
-            except (asyncio.TimeoutError, OSError):
+            except (TimeoutError, OSError):
                 logger.warning(
                     "routewise_quota_snapshot_refresh_failed",
                     extra={
@@ -212,7 +211,7 @@ class ProviderQuotaSnapshotStore:
         sources: list[QuotaSource],
         results: list[ProviderQuotaResult],
     ) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         updates: dict[QuotaSource, ProviderQuotaSnapshot] = {}
 
         for source in sources:

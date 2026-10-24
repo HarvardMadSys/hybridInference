@@ -149,10 +149,9 @@ async def test_alias_model_id_resolves(anthropic_test_client, monkeypatch):
 @pytest.mark.asyncio
 async def test_upstream_timeout_returns_504_not_502(anthropic_test_client, monkeypatch):
     """A slow upstream (timeout) surfaces as 504, not a generic 502 api_error."""
-    import asyncio
 
     async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     from serving.http import AsyncHTTPClient
 

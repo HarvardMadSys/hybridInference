@@ -22,7 +22,7 @@ import logging
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
 from typing import Any
 
@@ -219,7 +219,7 @@ def _process_multi_key_results(
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _next_reset(period: str, now: datetime | None = None) -> datetime:
@@ -265,8 +265,8 @@ def _parse_iso(value: Any) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _parse_epoch_ms(value: Any) -> datetime | None:
@@ -276,7 +276,7 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
     if not isinstance(value, int | float):
         return None
     try:
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
 

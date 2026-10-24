@@ -165,7 +165,7 @@ class AsyncHTTPClient:
         for attempt in range(retries):
             try:
                 return await self.json_post(url, json=json, headers=headers, timeout=timeout)
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            except (TimeoutError, aiohttp.ClientError) as err:
                 last_err = err
                 if attempt == retries - 1:
                     raise

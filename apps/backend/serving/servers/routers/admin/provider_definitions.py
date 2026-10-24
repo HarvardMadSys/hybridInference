@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -682,7 +681,7 @@ async def _probe_openai_compat(
                 first_content_ttft_ms=first_content_ttft_ms,
                 preview=_safe_preview(preview) or None,
             )
-    except (asyncio.TimeoutError, TimeoutError) as exc:
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=400,
             detail="Probe timed out. Check provider availability or model id.",

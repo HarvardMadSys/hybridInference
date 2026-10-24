@@ -7,7 +7,7 @@ that has only one caller is a smell — move it.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -100,7 +100,7 @@ def _require_aware_utc(dt: datetime, name: str) -> datetime:
             status_code=400,
             detail=f"`{name}` must be timezone-aware (e.g. ...Z or ...+00:00)",
         )
-    return dt.astimezone(timezone.utc)
+    return dt.astimezone(UTC)
 
 
 # --- Recent Requests outcome classes -----------------------------------------

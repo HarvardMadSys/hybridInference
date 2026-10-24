@@ -636,34 +636,15 @@ async def test_the_interval_is_per_administrator(admin_client, monkeypatch):
 
 
 async def test_an_empty_slack_query_is_accepted(monkeypatch):
-    """Python 3.10's ``parse_qsl("", strict_parsing=True)`` raises; a normal
-    Slack webhook has an empty query, so the parse is skipped when there is
-    nothing to parse."""
+    """A normal Slack webhook has an empty query, which the strict parse accepts."""
     from serving.servers.routers.admin.alerts import _official_webhook_ok
 
     assert _official_webhook_ok("slack", SLACK_URL) is True
     assert _official_webhook_ok("slack", SLACK_URL + "?") is True
-    # A malformed query is still not an official endpoint, on any version.
+    # A malformed query is still not an official endpoint.
     assert _official_webhook_ok("slack", SLACK_URL + "?broken") is False
-    # WeCom's key has to survive the (real) parse.
+    # WeCom's key has to survive the parse.
     assert _official_webhook_ok("wecom", WECOM_URL) is True
-
-
-async def test_empty_query_never_reaches_parse_qsl(monkeypatch):
-    """The guard itself, so a Python 3.11+ run cannot mask a 3.10 regression."""
-    calls: list[str] = []
-    real = admin_alerts.parse_qsl
-
-    def spy(*args, **kwargs):
-        calls.append(args[0])
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(admin_alerts, "parse_qsl", spy)
-
-    assert admin_alerts._official_webhook_ok("slack", SLACK_URL) is True
-    assert calls == []
-    assert admin_alerts._official_webhook_ok("wecom", WECOM_URL) is True
-    assert calls == ["key=synthetic-secret"]
 
 
 async def test_a_whitespace_only_saved_webhook_is_not_a_channel(monkeypatch):

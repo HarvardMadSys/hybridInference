@@ -486,7 +486,7 @@ class StreamSession:
                         item = await asyncio.wait_for(
                             chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         if not self._yielded_first_chunk:
                             # Out of time to hold it: the role chunk is this
                             # interval's byte.

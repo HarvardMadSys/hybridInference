@@ -1213,7 +1213,7 @@ async def _fetch_openrouter_endpoint_payload(provider_model_id: str) -> dict[str
             payload = await response.json(content_type=None)
     except HTTPException:
         raise
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, aiohttp.ClientError) as exc:
         raise HTTPException(
             status_code=502,
             detail=f"OpenRouter provider discovery failed: {_truncate(str(exc) or type(exc).__name__)}",
@@ -1391,7 +1391,7 @@ async def _validate_base_url(base_url: str) -> str:
                 ),
                 timeout=BASE_URL_DNS_TIMEOUT_SEC,
             )
-        except (asyncio.TimeoutError, TimeoutError) as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="base_url host resolution timed out",

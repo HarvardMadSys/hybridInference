@@ -253,11 +253,11 @@ msgstr "代码风格由工具强制，而不是靠评审："
 
 #: ../developer/contributing.md:157
 msgid ""
-"**ruff**, line length 100, target `py310`, with "
+"**ruff**, line length 100, target `py311`, with "
 "`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/ `SIM`/`TCH`/`RUF` enabled (`[tool.ruff]` "
 "in `pyproject.toml`)."
 msgstr ""
-"**ruff**，行长 100，target 为 `py310`，启用 "
+"**ruff**，行长 100，target 为 `py311`，启用 "
 "`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/`SIM`/`TCH`/`RUF`（见 `pyproject.toml` 的 "
 "`[tool.ruff]`）。"
 

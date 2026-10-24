@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -11,7 +11,7 @@ from serving.servers.routers.auth_routes import verify_email
 class _UsedTokenStore:
     def __init__(self, *, email_verified: bool, expires_at: datetime | None = None) -> None:
         self.email_verified = email_verified
-        self.expires_at = expires_at or datetime.now(timezone.utc) + timedelta(hours=24)
+        self.expires_at = expires_at or datetime.now(UTC) + timedelta(hours=24)
         self.marked_verified = False
         self.marked_token_used = False
 
@@ -19,9 +19,9 @@ class _UsedTokenStore:
         return {
             "token": token,
             "user_id": "user-1",
-            "created_at": datetime.now(timezone.utc) - timedelta(minutes=5),
+            "created_at": datetime.now(UTC) - timedelta(minutes=5),
             "expires_at": self.expires_at,
-            "used_at": datetime.now(timezone.utc) - timedelta(minutes=1),
+            "used_at": datetime.now(UTC) - timedelta(minutes=1),
         }
 
     async def get_user_by_id(self, user_id: str) -> dict[str, object]:
@@ -53,7 +53,7 @@ async def test_verify_email_used_token_skips_repair_for_verified_user() -> None:
     """A used token for an already-verified user should remain read-only."""
     store = _UsedTokenStore(
         email_verified=True,
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
     response = await verify_email("already-used-token", BackgroundTasks(), op_store=store)
@@ -69,7 +69,7 @@ async def test_verify_email_expired_used_token_does_not_repair_unverified_user()
     """An expired used token should not be replayable to repair verification."""
     store = _UsedTokenStore(
         email_verified=False,
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
     with pytest.raises(HTTPException) as exc_info:

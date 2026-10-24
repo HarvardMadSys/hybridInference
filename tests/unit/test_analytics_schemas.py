@@ -1,6 +1,6 @@
 """Unit tests for AdminAnalyticsResponse schema."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -16,7 +16,7 @@ from serving.schemas_admin import (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def test_admin_analytics_response_full():

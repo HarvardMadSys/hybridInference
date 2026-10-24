@@ -154,7 +154,7 @@ target invokes it, so nothing enforces it.
 
 Style is enforced by tooling, not by review:
 
-- **ruff**, line length 100, target `py310`, with `E`/`W`/`F`/`I`/`UP`/`B`/`C4`/
+- **ruff**, line length 100, target `py311`, with `E`/`W`/`F`/`I`/`UP`/`B`/`C4`/
   `SIM`/`TCH`/`RUF` enabled (`[tool.ruff]` in `pyproject.toml`).
 - **pydocstyle**, Google convention. It skips `tests`, `.venv`,
   `node_modules`, `apps/frontend`, `ops` and `docs`, so docstrings are required

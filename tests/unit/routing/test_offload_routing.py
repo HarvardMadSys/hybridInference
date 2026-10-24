@@ -192,7 +192,7 @@ def test_only_gateway_queue_refusals_count_as_a_queue_wait():
     assert ended_in_gateway_queue(UpstreamQueueWaitExpired("x"))
     assert ended_in_gateway_queue(UpstreamSaturated("x"))
     assert not ended_in_gateway_queue(RuntimeError("upstream 500"))
-    assert not ended_in_gateway_queue(asyncio.TimeoutError())
+    assert not ended_in_gateway_queue(TimeoutError())
 
 
 def test_only_the_offload_deadlines_cut_an_attempt_short():

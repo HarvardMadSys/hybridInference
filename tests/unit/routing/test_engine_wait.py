@@ -12,7 +12,6 @@ import asyncio
 
 import pytest
 
-from routing import engine_wait
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.engine_wait import EngineWaitExpired, FirstTokenWatch
 from routing.offload import (
@@ -26,12 +25,6 @@ from serving.adapters.dispatch_watch import report_first_token
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
 from serving.utils import context as req_ctx
 
-#: The first-token wait is enforced with ``asyncio.timeout`` (Python 3.11+).
-needs_timeout = pytest.mark.skipif(
-    not hasattr(asyncio, "timeout"), reason="the first-token wait needs asyncio.timeout"
-)
-
-
 # -------------------------------------------------------------------- watch
 
 
@@ -41,7 +34,6 @@ async def _wait_under(watch: FirstTokenWatch, seconds: float) -> None:
         await asyncio.sleep(seconds)
 
 
-@needs_timeout
 async def test_the_deadline_times_out_the_wait():
     watch = FirstTokenWatch("e", wait_seconds=0.02)
 
@@ -51,7 +43,6 @@ async def test_the_deadline_times_out_the_wait():
     assert watch.expired()
 
 
-@needs_timeout
 async def test_a_cancellation_from_elsewhere_is_not_the_deadlines():
     watch = FirstTokenWatch("e", wait_seconds=5.0)
     task = asyncio.create_task(_wait_under(watch, 5))
@@ -63,14 +54,13 @@ async def test_a_cancellation_from_elsewhere_is_not_the_deadlines():
     assert not watch.expired()
 
 
-@needs_timeout
 @pytest.mark.parametrize("deadline_first", [True, False], ids=["deadline-first", "client-first"])
 async def test_a_disconnect_landing_with_the_deadline_stays_a_cancellation(deadline_first):
     """Both cancellations reach the task before it resumes, in either order.
 
     A cancellation the deadline did not ask for alone must never become an
     offload: the client is gone, and an offload request would be one nobody
-    reads. Python 3.10 merges the two, which is why the wait needs 3.11+.
+    reads.
     """
     watch = FirstTokenWatch("e", wait_seconds=5.0)
     task = asyncio.create_task(_wait_under(watch, 5))
@@ -85,7 +75,6 @@ async def test_a_disconnect_landing_with_the_deadline_stays_a_cancellation(deadl
         await task
 
 
-@needs_timeout
 async def test_queueing_pauses_the_deadline_and_sending_restarts_it():
     watch = FirstTokenWatch("e", wait_seconds=0.05)
     loop = asyncio.get_running_loop()
@@ -102,7 +91,6 @@ async def test_queueing_pauses_the_deadline_and_sending_restarts_it():
     assert 0.04 <= loop.time() - sent_at < 1.0
 
 
-@needs_timeout
 async def test_the_first_output_ends_the_deadline_for_good():
     watch = FirstTokenWatch("e", wait_seconds=0.05)
 
@@ -116,7 +104,6 @@ async def test_the_first_output_ends_the_deadline_for_good():
     assert not watch.expired()
 
 
-@needs_timeout
 async def test_a_stopped_watch_ignores_every_report():
     watch = FirstTokenWatch("e", wait_seconds=5.0)
 
@@ -174,7 +161,6 @@ async def test_a_stream_that_ends_before_a_token_is_returned_whole():
     assert not watch.expired()
 
 
-@needs_timeout
 async def test_no_first_token_in_time_unwinds_the_stream():
     watch = FirstTokenWatch("e", wait_seconds=0.02)
     closed: list = []
@@ -188,7 +174,6 @@ async def test_no_first_token_in_time_unwinds_the_stream():
     assert closed == [True]
 
 
-@needs_timeout
 async def test_output_the_adapter_holds_back_is_the_engine_answering():
     """A tool call a processor keeps until it is whole is not a queued request.
 
@@ -222,7 +207,6 @@ async def test_an_upstream_error_before_the_token_propagates():
     assert not watch.expired()
 
 
-@needs_timeout
 @pytest.mark.parametrize("deadline_first", [True, False], ids=["deadline-first", "client-first"])
 async def test_a_client_hanging_up_as_the_deadline_passes_is_not_offloaded(deadline_first):
     """The router's side of the race: the request is cancelled, not sent elsewhere."""
@@ -241,7 +225,6 @@ async def test_a_client_hanging_up_as_the_deadline_passes_is_not_offloaded(deadl
         await task
 
 
-@needs_timeout
 async def test_a_timeout_the_adapter_raises_is_its_own_failure():
     watch = FirstTokenWatch("e", wait_seconds=5.0)
 
@@ -252,24 +235,6 @@ async def test_a_timeout_the_adapter_raises_is_its_own_failure():
     with pytest.raises(TimeoutError, match="read timed out"):
         await FixedRouter._await_first_token(timing_out(), watch)
     assert not watch.expired()
-
-
-async def test_without_asyncio_timeout_streams_are_not_timed(monkeypatch, caplog):
-    monkeypatch.setattr(engine_wait, "_asyncio_timeout", None)
-    monkeypatch.setattr(engine_wait, "_warned_untimed", False)
-
-    async def slow():
-        yield _chunk(role="assistant")
-        await asyncio.sleep(0.05)
-        yield _chunk("hi")
-
-    with caplog.at_level("WARNING", logger="routing.engine_wait"):
-        for _ in range(2):
-            watch = FirstTokenWatch("e", wait_seconds=0.01)
-            held = await FixedRouter._await_first_token(slow(), watch)
-            assert held[-1] == _chunk("hi")
-
-    assert [r.getMessage() for r in caplog.records].count("engine_wait_untimed") == 1
 
 
 # ---------------------------------------------------------- fallback order

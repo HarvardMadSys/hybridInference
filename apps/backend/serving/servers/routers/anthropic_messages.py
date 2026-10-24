@@ -1969,7 +1969,7 @@ async def anthropic_messages(
                             item = await asyncio.wait_for(
                                 chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
                             )
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             idle_seconds += _KEEPALIVE_INTERVAL
                             # Prefill before the first frame, decode after it.
                             idle_ceiling = (
@@ -2387,7 +2387,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(429, error_message, headers={"retry-after": "1"})
-    except (TimeoutError, asyncio.TimeoutError) as exc:
+    except TimeoutError as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so
         # the client can tell a slow upstream from a real server fault.

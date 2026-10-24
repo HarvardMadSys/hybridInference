@@ -8,7 +8,7 @@ once per outage and stays quiet until the parsed reset time (see
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from routing.endpoint_health import (
@@ -346,7 +346,7 @@ async def test_unspecified_window_reports_mute_deadline_not_a_guessed_reset(monk
         assert "alert_muted_until" in context
         # Muted for the full floor, not the old one-hour guess.
         muted_until = datetime.fromisoformat(context["alert_muted_until"])
-        assert muted_until - datetime.now(timezone.utc) > timedelta(hours=3, minutes=55)
+        assert muted_until - datetime.now(UTC) > timedelta(hours=3, minutes=55)
 
 
 async def test_held_back_plan_page_still_mutes_the_outage(monkeypatch):
@@ -401,7 +401,7 @@ async def test_min_gap_clock_is_not_wall_clock(monkeypatch):
     # Comparable to time.monotonic(), never to a wall-clock epoch: a monotonic
     # instant on a long-lived host is far smaller than an epoch timestamp.
     assert cb._usage_limit_alerted_at is not None
-    assert cb._usage_limit_alerted_at < datetime.now(timezone.utc).timestamp() / 2
+    assert cb._usage_limit_alerted_at < datetime.now(UTC).timestamp() / 2
 
 
 async def test_zai_fair_usage_flap_pages_once_not_once_per_trip(monkeypatch):

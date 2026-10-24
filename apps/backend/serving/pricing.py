@@ -226,10 +226,10 @@ def pricing_time(at: dt.datetime | None = None) -> dt.datetime:
         contextual = req_ctx.get().get(req_ctx.PRICING_TIME)
         instant = contextual if isinstance(contextual, dt.datetime) else None
     if instant is None:
-        return dt.datetime.now(dt.timezone.utc)
+        return dt.datetime.now(dt.UTC)
     if instant.tzinfo is None:
         raise ValueError("pricing time must be timezone-aware")
-    return instant.astimezone(dt.timezone.utc)
+    return instant.astimezone(dt.UTC)
 
 
 def effective_pricing(
@@ -283,7 +283,7 @@ def _parse_effective_at(raw: Any) -> dt.datetime:
         raise ValueError("pricing_schedule.effective_at must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
         raise ValueError("pricing_schedule.effective_at must include a timezone")
-    return parsed.astimezone(dt.timezone.utc)
+    return parsed.astimezone(dt.UTC)
 
 
 def _parse_time(raw: Any, context: str) -> int:

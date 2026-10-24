@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,7 +59,7 @@ async def admin_get_geo_analytics(
 
     # Cache only complete hours; including the partial current hour would freeze
     # an early snapshot until the one-hour cache entry expires.
-    end = floor_hour(datetime.now(timezone.utc))
+    end = floor_hour(datetime.now(UTC))
     start = end - timedelta(days=days)
 
     return await get_geo_demand(db_logger.pool, start, end)
@@ -93,7 +93,7 @@ async def admin_get_growth_analytics(
         raise HTTPException(500, "Database not configured")
 
     # ``end_day`` is today, still filling, and included.
-    end_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     start_day = end_day - timedelta(days=days - 1)
 
     async with db_logger.pool.acquire() as conn:
@@ -101,7 +101,7 @@ async def admin_get_growth_analytics(
 
     points = [
         GrowthPoint(
-            day=datetime.combine(row["day"], datetime.min.time(), tzinfo=timezone.utc),
+            day=datetime.combine(row["day"], datetime.min.time(), tzinfo=UTC),
             active_users=row["active_users"],
             new_users=row["new_users"],
             tokens=row["tokens"],
@@ -117,7 +117,7 @@ async def admin_get_growth_analytics(
         points=points,
         users_trend=_as_trend(summarize([float(p.active_users) for p in complete])),
         tokens_trend=_as_trend(summarize([float(p.tokens) for p in complete])),
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )
 
 
@@ -452,5 +452,5 @@ async def admin_get_analytics(
             for row in by_provider_rows
         ],
         by_model_top_users=list(by_model_top_users_map.values()),
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )

@@ -30,7 +30,7 @@ If any of those three regressed, the default suite would stay green.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -185,7 +185,7 @@ async def test_ordered_by_overage_not_by_spend(postgres_op_store):
 
 async def test_yesterdays_spend_is_not_todays(postgres_op_store):
     """The counter is keyed by TEXT day; only today's row counts."""
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     await _seed(
         postgres_op_store,
         suffix="yday",
@@ -235,7 +235,7 @@ async def test_expired_key_is_excluded(postgres_op_store):
         suffix="expd",
         cap=Decimal("80.00"),
         spend=Decimal("80.00"),
-        key_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        key_expires_at=datetime.now(UTC) - timedelta(hours=1),
     )
 
     rows = await postgres_op_store.query_users_at_daily_quota()

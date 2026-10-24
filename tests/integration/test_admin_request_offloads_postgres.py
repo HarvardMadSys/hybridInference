@@ -15,7 +15,7 @@ import hashlib
 import itertools
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -140,7 +140,7 @@ def _row(
 
 
 async def _seed(pool: asyncpg.Pool, rows: list[dict[str, Any]]) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with pool.acquire() as conn:
         await conn.executemany(
             """

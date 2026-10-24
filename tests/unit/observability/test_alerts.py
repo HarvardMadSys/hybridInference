@@ -2050,7 +2050,7 @@ _SERVER_INFO = {
     "environment": "staging",
 }
 
-_FIXED_NOW = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.timezone.utc)
+_FIXED_NOW = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.UTC)
 
 
 class _FixedDatetime(dt.datetime):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -121,7 +121,7 @@ async def admin_client(monkeypatch, mock_stores):
 
 AUTH = {"Authorization": "Bearer test-admin"}
 
-_NOW = datetime(2025, 6, 15, tzinfo=timezone.utc)
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
 
 
 def _user_row(

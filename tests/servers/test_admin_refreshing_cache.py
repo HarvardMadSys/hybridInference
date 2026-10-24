@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -101,7 +101,7 @@ def _stale(cache: RefreshingResult, key="db") -> None:
 
 
 def _ago(seconds: float) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    return datetime.now(UTC) - timedelta(seconds=seconds)
 
 
 async def _settle() -> None:
@@ -211,7 +211,7 @@ async def test_a_failure_without_a_message_is_still_reported():
     cache, load = _cache(), _Loader()
     await cache.get("db", load)
     _stale(cache)
-    load.fail = asyncio.TimeoutError()
+    load.fail = TimeoutError()
     await cache.get("db", load)
     await _settle()
     served = await cache.get("db", load)
@@ -221,7 +221,7 @@ async def test_a_failure_without_a_message_is_still_reported():
 async def test_a_database_timeout_in_the_first_computation_is_a_failure_not_a_wait():
     """The computation's own TimeoutError must not read as "still running"."""
     cache, load = _cache(), _Loader()
-    load.fail = asyncio.TimeoutError()
+    load.fail = TimeoutError()
     with pytest.raises(asyncio.TimeoutError):
         await cache.get("db", load)
 
@@ -292,11 +292,11 @@ async def test_a_key_restoring_its_stored_result_never_gets_another_keys():
 async def test_each_result_is_stored_with_when_and_under_which_generation_it_was_computed():
     store = _Store()
     cache, load = _cache(store), _Loader()
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     await cache.get("db", load)
     value, computed_at, generation = store.rows["db"]
     assert (value, generation) == ("result-1", 0)
-    assert before <= computed_at <= datetime.now(timezone.utc)
+    assert before <= computed_at <= datetime.now(UTC)
 
 
 async def test_a_new_process_serves_the_stored_result_without_computing():
