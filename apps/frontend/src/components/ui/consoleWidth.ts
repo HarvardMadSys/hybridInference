@@ -11,8 +11,8 @@ import { usePathname } from 'next/navigation';
  * narrow themselves inside it (see `ADMIN_FORM_WIDTH`). Header and footer use
  * the same value so their edges line up with the page below them.
  */
-export const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
-export const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';
+const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
+const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';
 
 export function isWideConsoleRoute(pathname: string): boolean {
   return pathname === '/dashboard/admin' || pathname.startsWith('/dashboard/admin/');

@@ -31,7 +31,7 @@ export function isLocked(entry: ConfigEntry): boolean {
 }
 
 /** What a non-secret editor shows before any edit. */
-export function initialInput(entry: ConfigEntry): string | boolean {
+function initialInput(entry: ConfigEntry): string | boolean {
   if (entry.secret) return '';
   if (entry.type === 'bool') return entry.value === true;
   return entry.value === null || entry.value === undefined ? '' : String(entry.value);
@@ -99,7 +99,7 @@ export function draftError(entry: ConfigEntry, draft: ConfigDraft | undefined): 
  * for `int`/`float`, a string for everything else (a `list` as its
  * comma-separated string). Clearing a secret sends `""`.
  */
-export function patchValue(entry: ConfigEntry, draft: ConfigDraft): ConfigScalar {
+function patchValue(entry: ConfigEntry, draft: ConfigDraft): ConfigScalar {
   if (draft.kind === 'clear') return '';
   const raw = draft.value;
   if (typeof raw === 'boolean') return raw;
