@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
@@ -351,6 +353,67 @@ def test_chat_response_nested_usage_details_preserved():
     r = chat_response_to_responses(chat, response_id="r", created_at=1, model="m", request_body={})
     assert r["usage"]["input_tokens_details"]["cached_tokens"] == 12
     assert r["usage"]["output_tokens_details"]["reasoning_tokens"] == 5
+
+
+@pytest.mark.parametrize(
+    ("provider_usage", "cached_tokens"),
+    [
+        pytest.param({"prompt_cache_hit_tokens": 7}, 7, id="deepseek"),
+        pytest.param({"cache_read_input_tokens": 8}, 8, id="anthropic"),
+        pytest.param({"prompt_tokens_details": {"cached_tokens": 9}}, 9, id="nested-openai"),
+    ],
+)
+def test_chat_response_emits_provider_cache_usage(provider_usage, cached_tokens):
+    chat = {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
+            "total_tokens": 25,
+            **provider_usage,
+        },
+    }
+
+    response = chat_response_to_responses(
+        chat, response_id="r", created_at=1, model="m", request_body={}
+    )
+
+    assert response["usage"]["input_tokens_details"]["cached_tokens"] == cached_tokens
+
+
+@pytest.mark.parametrize(
+    ("provider_usage", "cached_tokens"),
+    [
+        pytest.param({"prompt_cache_hit_tokens": 7}, 7, id="deepseek"),
+        pytest.param({"cache_read_input_tokens": 8}, 8, id="anthropic"),
+        pytest.param({"prompt_tokens_details": {"cached_tokens": 9}}, 9, id="nested-openai"),
+    ],
+)
+def test_stream_translator_emits_provider_cache_usage(provider_usage, cached_tokens):
+    usage = {
+        "prompt_tokens": 20,
+        "completion_tokens": 5,
+        "total_tokens": 25,
+        **provider_usage,
+    }
+    chunks = [
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": usage,
+            }
+        )
+        + "\n\n"
+    ]
+
+    translator, _joined = _collect(chunks)
+
+    assert translator.final_response["usage"]["input_tokens_details"]["cached_tokens"] == (
+        cached_tokens
+    )
 
 
 def test_chat_response_length_is_incomplete():
