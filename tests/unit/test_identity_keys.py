@@ -77,7 +77,6 @@ def configured(monkeypatch, rsa_pem: str) -> str:
 
 def test_unset_key_is_unavailable(monkeypatch) -> None:
     monkeypatch.delenv(ENV_PRIVATE_KEY, raising=False)
-    assert identity_keys.identity_enabled() is False
     with pytest.raises(IdentityKeyUnavailable):
         identity_keys.public_jwks()
 
@@ -135,18 +134,6 @@ def test_encrypted_key_is_misconfigured(monkeypatch) -> None:
     monkeypatch.setenv(ENV_PRIVATE_KEY, encrypted)
     with pytest.raises(IdentityKeyMisconfigured):
         identity_keys.public_jwks()
-
-
-def test_identity_enabled_does_not_report_a_broken_key_as_off(monkeypatch) -> None:
-    """The distinction has to survive the convenience accessor too.
-
-    Returning False here would make a mangled PEM indistinguishable from a
-    deployment that never enabled identity, which is exactly the confusion the
-    two exception types exist to prevent.
-    """
-    monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
-    with pytest.raises(IdentityKeyMisconfigured):
-        identity_keys.identity_enabled()
 
 
 def test_escaped_newlines_are_accepted(monkeypatch, rsa_pem: str) -> None:

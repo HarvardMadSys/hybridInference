@@ -226,10 +226,7 @@ def get_completions_logger(
     if services.completions_logger is None:
         from serving.servers.routers.completions_logging import CompletionsLogger as _CL
 
-        services.completions_logger = _CL(
-            log_store=services.log_store,
-            model_router_registry=services.model_router_registry,
-        )
+        services.completions_logger = _CL(log_store=services.log_store)
     return services.completions_logger
 
 
@@ -375,18 +372,6 @@ async def get_current_user(
         # The auth session this token was issued for; ``auth_sessions.sid``.
         "sid": payload.get("sid"),
     }
-
-
-async def require_admin(
-    current_user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Require admin privileges. Raises 403 if user is not an admin.
-
-    Uses the authoritative ``users.role`` from DB (set by get_current_user).
-    """
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required.")
-    return current_user
 
 
 def require_role(min_role: str):

@@ -2418,13 +2418,14 @@ class FixedRouter:
                         },
                     ):
                         self._ensure_health(endpoint_id)
-                        lease = self._prefill_load.acquire(
-                            endpoint_id,
-                            prefill_tokens,
-                            affinity_key=affinity_key,
-                            fingerprint=fingerprint,
-                            anchor=anchor,
-                        )
+                        with self._prefill_load.routing_transaction():
+                            lease = self._prefill_load.acquire(
+                                endpoint_id,
+                                prefill_tokens,
+                                affinity_key=affinity_key,
+                                fingerprint=fingerprint,
+                                anchor=anchor,
+                            )
                         try:
                             resp = await leaf.chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
@@ -2768,13 +2769,14 @@ class FixedRouter:
                             offload_endpoint_id=earlier_offload_endpoint,
                         )
                         first = True
-                        lease = self._prefill_load.acquire(
-                            adapter_endpoint_id,
-                            prefill_tokens,
-                            affinity_key=affinity_key,
-                            fingerprint=fingerprint,
-                            anchor=anchor,
-                        )
+                        with self._prefill_load.routing_transaction():
+                            lease = self._prefill_load.acquire(
+                                adapter_endpoint_id,
+                                prefill_tokens,
+                                affinity_key=affinity_key,
+                                fingerprint=fingerprint,
+                                anchor=anchor,
+                            )
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
                             held = await self._await_first_token(stream, fallback_watch)

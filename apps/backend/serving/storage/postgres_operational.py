@@ -202,17 +202,16 @@ def _coerce_user_row(row: Any) -> Row | None:
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool, *, fence_secret: str | None = None) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         """Initialize with a shared asyncpg pool.
+
+        The LogStore owns the erasure-fence schema and tombstone checks; this
+        store owns the operational hard-delete claim.
 
         Args:
             pool: Shared asyncpg pool.
-            fence_secret: Retained for constructor compatibility. The
-                LogStore owns erasure-fence schema and tombstone checks;
-                this store owns the operational hard-delete claim.
         """
         self._pool = pool
-        self.fence_secret = fence_secret
         # Which account columns the users table has, read from the catalog
         # by initialize(); until then, the schema this release creates.
         self._set_account_schema(COMPLETE_ACCOUNT_SCHEMA)
@@ -2227,6 +2226,35 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.key_hash = $1 "
+                "  AND k.status = 'active' "
+                "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
+                "  AND u.id IS NOT NULL AND u.status = 'active'",
+                key_hash,
+            )
+        return _coerce_user_row(row)
+
+    async def get_auth_context_with_spend(self, key_hash: str) -> Row | None:
+        """Auth context and today's spend in one round-trip (issue #185).
+
+        The identity projection and filters are :meth:`get_auth_context_by_key_hash`'s
+        exactly; the LEFT JOIN adds the owner's ``user_daily_cost`` counter for
+        the UTC-midnight day, ``COALESCE``d to ``0.0`` so a caller with no
+        counter row yet reads the same as the separate query's default. The
+        day expression is the counter write path's, so both sides of the quota
+        gate bucket midnight identically.
+        """
+        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
+                "COALESCE(s.cost_usd, 0) AS cost_usd "
+                "FROM api_keys k "
+                "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN user_daily_cost s "
+                "  ON s.user_id = k.user_id "
+                " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "

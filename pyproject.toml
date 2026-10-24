@@ -142,4 +142,7 @@ dev = [
   "sphinx-rtd-theme>=3.0.2",
   "mypy>=1.20.2",
   "pytest-timeout>=2.3.0",
+  # Not imported here: a floor for the copy virtualenv (via pre-commit) pulls in
+  # (CVE-2026-112940 and related advisories, fixed in 4.2.1, which needs Python 3.11).
+  "filelock>=4.2.1",
 ]

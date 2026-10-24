@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
+from serving.adapters.key_pool import KeyPoolExhausted
 from serving.config.runtime_settings import get_runtime_settings
 from serving.grant_auth import ledger_attribution
 from serving.observability.tracked_tasks import tracked_task
@@ -363,6 +364,25 @@ async def create_embeddings(
             error=f"{exc.status} {exc.message}",
         )
         raise HTTPException(exc.status, "Embedding service error") from exc
+    except KeyPoolExhausted as exc:
+        # Every key the adapter could use is muted or reserved above this
+        # caller's tier — raised before anything was sent, a local
+        # precondition rather than a broken embedding backend. Answer 429 so
+        # clients back off for the mute window and the burst stays out of the
+        # failed-request rule, instead of filing it as a 500 outage
+        # (issue #1440; the anthropic surface maps the same condition to 429).
+        logger.warning(f"Embedding request rate-limited for model={model}: key pool exhausted")
+        req_ctx.publish_upstream_provider(provider)
+        _schedule_log(
+            provider=provider,
+            endpoint_id=endpoint_id,
+            status_code=429,
+            response=None,
+            usage=None,
+            pricing=None,
+            error=str(exc),
+        )
+        raise HTTPException(429, "Embedding service error") from exc
     except Exception as exc:
         logger.error(f"Embedding request failed for model={model}: {exc}")
         # Reached only after dispatch, so an upstream is always attributable here

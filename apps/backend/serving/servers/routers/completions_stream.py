@@ -32,6 +32,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
+from serving.adapters.key_pool import KeyPoolExhausted
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import (
@@ -65,6 +66,15 @@ def _extract_exception_status_code(exc: BaseException, default: int = 500) -> in
     """Return the HTTP status carried by common upstream exception shapes."""
     if isinstance(exc, (AllCircuitsOpenError, TargetUnavailableError)):
         return 503
+
+    # Key-pool exhaustion raised before anything was sent: a local
+    # precondition (every key muted, typically the tail of a provider 429
+    # storm, or reserved above the caller's tier), not an internal error.
+    # Answer 429 so clients back off for the mute window instead of hammering
+    # immediate retries — the same mapping the anthropic surface already
+    # applies (issue #1440).
+    if isinstance(exc, KeyPoolExhausted):
+        return 429
 
     status_code = None
 

@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -60,6 +61,33 @@ class _StatusError(RuntimeError):
         self.status_code = status_code
 
 
+class _TransactionRecordingPrefillLoad(PrefillLoadTracker):
+    """Record the routing-transaction depth at each lease reservation.
+
+    Same instrument the FixedRouter fallback test uses: an acquire recorded at
+    depth 0 reserved from an unserialized load snapshot; depth 1 proves it
+    happened inside ``routing_transaction()``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transaction_depth = 0
+        self.acquire_depths: list[int] = []
+
+    @contextlib.contextmanager
+    def routing_transaction(self):
+        with super().routing_transaction():
+            self.transaction_depth += 1
+            try:
+                yield
+            finally:
+                self.transaction_depth -= 1
+
+    def acquire(self, *args: Any, **kwargs: Any):
+        self.acquire_depths.append(self.transaction_depth)
+        return super().acquire(*args, **kwargs)
+
+
 def _unreserved_decision(
     adapter: Any,
     *,
@@ -72,6 +100,27 @@ def _unreserved_decision(
         metadata=metadata if metadata is not None else {},
         trace=RoutingTrace(),
     )
+
+
+class _ObservedPrefillLoad(PrefillLoadTracker):
+    """Expose when a second router enters the shared routing transaction."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.other_thread_entered = threading.Event()
+        self._owner_thread: int | None = None
+        self._owner_lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def routing_transaction(self):
+        thread_id = threading.get_ident()
+        with self._owner_lock:
+            if self._owner_thread is None:
+                self._owner_thread = thread_id
+            elif thread_id != self._owner_thread:
+                self.other_thread_entered.set()
+        with super().routing_transaction():
+            yield
 
 
 def _make_model_config(
@@ -4182,6 +4231,89 @@ class TestPrefillLoadPenalty:
         assert router._prefill_load.backlog("test-model:disabled") == 0
         assert router._prefill_load._prefix_hints == {}
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    async def test_fallback_lease_is_acquired_inside_routing_transaction(self, operation):
+        """A dispatch that arrives without a pre-reserved lease serializes its
+        fallback acquisition with selection, and holds no tracker lock over the
+        upstream call.
+
+        This is the defensive ``lease is None`` branch in the execution helpers,
+        reached through the actual dispatch entrypoint rather than by invoking
+        an acquisition helper in isolation: whatever path produced a
+        lease-less decision, the reservation it triggers must not race a
+        concurrent selection that reads the same load snapshot.
+        """
+        tracker = _TransactionRecordingPrefillLoad()
+        adapter = _make_adapter(endpoint_id="test-model:fallback-lease")
+        seen_depths: list[int] = []
+
+        async def _chat(messages, **params):
+            # The upstream call itself must run outside the routing transaction:
+            # the lease was acquired (depth 1), the transaction exited before I/O.
+            seen_depths.append(tracker.transaction_depth)
+            assert tracker.backlog("test-model:fallback-lease") > 0
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        async def _stream(messages, **params):
+            seen_depths.append(tracker.transaction_depth)
+            assert tracker.backlog("test-model:fallback-lease") > 0
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+
+        adapter.chat_completion = _chat
+        adapter.stream_chat_completion = _stream
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(db_bootstrap_enabled=False, prefill_load_routing_enabled=True),
+            prefill_load=tracker,
+        )
+        messages = [{"role": "user", "content": "x" * 4000}]
+
+        if operation == "chat":
+            await router._execute_adapter(_unreserved_decision(adapter), "test-model", messages)
+        else:
+            async for _chunk in router._execute_stream_adapter(
+                _unreserved_decision(adapter), "test-model", messages
+            ):
+                pass
+
+        # The fallback reservation was serialized with selection, the upstream
+        # I/O ran outside the transaction, and the lease did not outlive the call.
+        assert tracker.acquire_depths == [1]
+        assert seen_depths == [0]
+        assert tracker.backlog("test-model:fallback-lease") == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    async def test_fallback_lease_skipped_when_tracking_disabled(self, operation):
+        """A lease-less dispatch under disabled tracking neither reserves nor serializes."""
+        tracker = _TransactionRecordingPrefillLoad()
+        adapter = _make_adapter(endpoint_id="test-model:fallback-off")
+
+        async def _chat(messages, **params):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        async def _stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+
+        adapter.chat_completion = _chat
+        adapter.stream_chat_completion = _stream
+        router = RouteWiseRouter(
+            config=RouteWiseConfig(db_bootstrap_enabled=False, prefill_load_routing_enabled=False),
+            prefill_load=tracker,
+        )
+        messages = [{"role": "user", "content": "x" * 4000}]
+
+        if operation == "chat":
+            await router._execute_adapter(_unreserved_decision(adapter), "test-model", messages)
+        else:
+            async for _chunk in router._execute_stream_adapter(
+                _unreserved_decision(adapter), "test-model", messages
+            ):
+                pass
+
+        assert tracker.acquire_depths == []
+        assert tracker.backlog("test-model:fallback-off") == 0
+
     def test_linear_penalty(self):
         router = RouteWiseRouter(
             config=RouteWiseConfig(
@@ -4326,6 +4458,78 @@ class TestPrefillLoadRoutingDecision:
 
         assert decision is not None
         assert probe_acquired == [True]
+
+    def test_prefill_release_updates_during_candidate_computation(self, monkeypatch):
+        """A release can update tracker accounting while selection is paused."""
+        endpoint_id = "test-model:shared-prefill"
+        adapter = _make_adapter(endpoint_id=endpoint_id)
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        tracker = PrefillLoadTracker(elephant_tokens=1_000_000)
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(prefill_load_routing_enabled=True),
+            prefill_load=tracker,
+        )
+        earlier_lease = tracker.acquire(endpoint_id, 250)
+        build_entered = threading.Event()
+        continue_build = threading.Event()
+        release_finished = threading.Event()
+        original_build_candidates = router._build_candidates
+
+        def pause_candidate_build(*args: Any, **kwargs: Any):
+            build_entered.set()
+            assert continue_build.wait(timeout=2)
+            return original_build_candidates(*args, **kwargs)
+
+        monkeypatch.setattr(router, "_build_candidates", pause_candidate_build)
+        context = {
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "params": {},
+            "request_id": "req-prefill-release-during-select",
+        }
+        selections: dict[str, RoutingDecision | None] = {}
+        errors: list[Exception] = []
+
+        def select() -> None:
+            try:
+                selections["decision"] = router._select_decision(
+                    "test-model", context, reserve_prefill=True
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        def release() -> None:
+            tracker.release(earlier_lease)
+            release_finished.set()
+
+        selection_thread = threading.Thread(target=select, daemon=True)
+        release_thread = threading.Thread(target=release, daemon=True)
+        selection_thread.start()
+        released_during_selection = False
+        try:
+            assert build_entered.wait(timeout=1)
+            release_thread.start()
+            released_during_selection = release_finished.wait(timeout=1)
+        finally:
+            continue_build.set()
+            selection_thread.join(timeout=2)
+            if release_thread.ident is not None:
+                release_thread.join(timeout=2)
+
+        assert released_during_selection
+        assert not selection_thread.is_alive()
+        assert not release_thread.is_alive()
+        assert errors == []
+
+        decision = selections["decision"]
+        assert decision is not None
+        expected_tokens = router._tracked_prefill_tokens(context["messages"], context["params"])
+        assert tracker.backlog(endpoint_id) == expected_tokens
+        assert tracker.elephants(endpoint_id) == 0
+        decision.release()
+        assert tracker.backlog(endpoint_id) == 0
+        assert tracker.elephants(endpoint_id) == 0
 
     def test_shared_tracker_serializes_snapshot_selection_and_reservation(self, monkeypatch):
         """Routers sharing load state cannot select from the same stale snapshot."""
@@ -4824,3 +5028,77 @@ class TestPrefillLoadMetadata:
         assert decision.metadata["prefill_load_routing_enabled"] is False
         assert decision.metadata["candidate_outstanding_prefill_tokens"] == {}
         assert decision.metadata["candidate_prefill_load_adjusted_ttft_sec"] == {}
+
+
+@pytest.mark.unit
+def test_direct_fallback_waits_for_shared_selection_transaction():
+    """A direct fallback lease cannot race another router's paused selection."""
+    adapter = _make_adapter(endpoint_id="test-model:shared-prefill")
+    adapter.reports_leg_outcomes = False
+
+    async def _chat(messages, **params):
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    adapter.chat_completion = _chat
+    route_table = _FakeRouteTable()
+    route_table.add("test-model", [(adapter, 1.0)])
+    shared_prefill = _ObservedPrefillLoad()
+    config = RouteWiseConfig(
+        db_bootstrap_enabled=False,
+        prefill_load_routing_enabled=True,
+    )
+    selecting_router = RouteWiseRouter(
+        route_table=route_table,
+        config=config,
+        prefill_load=shared_prefill,
+    )
+    fallback_router = RouteWiseRouter(config=config, prefill_load=shared_prefill)
+    selection_started = threading.Event()
+    selection_release = threading.Event()
+    original_select = selecting_router._select_decision_locked
+
+    def _paused_select(*args, **kwargs):
+        selection_started.set()
+        assert selection_release.wait(2.0)
+        return original_select(*args, **kwargs)
+
+    selecting_router._select_decision_locked = _paused_select
+    messages = [{"role": "user", "content": "cold prompt"}]
+
+    with (
+        patch.object(routewise_router_module, "estimate_prefill_tokens", return_value=200_000),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        selection_future = pool.submit(
+            selecting_router._select_decision,
+            "test-model",
+            {"messages": messages, "request_id": "paused-selection"},
+            reserve_prefill=True,
+        )
+        assert selection_started.wait(2.0)
+        dispatch_future = pool.submit(
+            asyncio.run,
+            fallback_router._execute_adapter(_unreserved_decision(adapter), "test-model", messages),
+        )
+        try:
+            assert shared_prefill.other_thread_entered.wait(2.0)
+            assert not dispatch_future.done()
+            assert shared_prefill.backlog("test-model:shared-prefill") == 0
+        finally:
+            selection_release.set()
+
+        selected = selection_future.result(timeout=2.0)
+        assert selected is not None
+        # The fallback can acquire immediately after the selection transaction
+        # exits, so its lease may already be in the shared backlog here. Assert
+        # on the selection's captured snapshot: zero-load candidates are
+        # omitted, so the concurrent fallback reservation was not visible to
+        # the selection that committed its own lease first.
+        assert (
+            "test-model:shared-prefill"
+            not in selected.metadata["candidate_outstanding_prefill_tokens"]
+        )
+        selected.release()
+        assert dispatch_future.result(timeout=2.0) == {"choices": [{"message": {"content": "ok"}}]}
+
+    assert shared_prefill.backlog("test-model:shared-prefill") == 0

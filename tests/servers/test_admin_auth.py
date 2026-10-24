@@ -7,52 +7,8 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException, Request
 
-from serving.servers.auth import log_admin_action, verify_admin_token
-
-
-@pytest.fixture
-def mock_request() -> Request:
-    request = MagicMock(spec=Request)
-    client = MagicMock()
-    client.host = "127.0.0.1"
-    request.client = client
-    return request  # type: ignore[return-value]
-
-
-@pytest.mark.asyncio
-async def test_verify_admin_token_success(monkeypatch, mock_request):
-    monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
-    result = await verify_admin_token(
-        request=mock_request,
-        authorization="Bearer test-admin",
-    )
-    assert result == "unknown"
-
-
-@pytest.mark.asyncio
-async def test_verify_admin_token_missing_header(monkeypatch, mock_request):
-    monkeypatch.setenv("ADMIN_TOKEN", "another-token")
-    with pytest.raises(HTTPException) as exc:
-        await verify_admin_token(request=mock_request, authorization=None)
-    assert exc.value.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_verify_admin_token_invalid_token(monkeypatch, mock_request):
-    monkeypatch.setenv("ADMIN_TOKEN", "correct-token")
-    with pytest.raises(HTTPException) as exc:
-        await verify_admin_token(request=mock_request, authorization="Bearer wrong")
-    assert exc.value.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_verify_admin_token_missing_env(monkeypatch, mock_request):
-    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
-    with pytest.raises(HTTPException) as exc:
-        await verify_admin_token(request=mock_request, authorization="Bearer anything")
-    assert exc.value.status_code == 500
+from serving.servers.auth import log_admin_action
 
 
 def test_serialize_for_audit_handles_decimal_and_datetime():

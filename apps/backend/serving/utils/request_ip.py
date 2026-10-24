@@ -585,14 +585,3 @@ def get_client_ip(request: Request) -> str:
         clients behind a shared proxy.
     """
     return get_client_ip_info(request).client_ip
-
-
-def get_client_ip_bucket(request: Request) -> str:
-    """Return the rate-limit/affinity bucket key for a request's client IP.
-
-    .. deprecated::
-        This function preserves the old behavior for backward compatibility but
-        will collapse all ``"unknown"`` callers onto one bucket. Use
-        :func:`get_client_ip_info` and inspect ``resolved`` for new code.
-    """
-    return normalize_ip_bucket(get_client_ip(request))

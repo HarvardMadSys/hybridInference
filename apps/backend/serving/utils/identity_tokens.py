@@ -52,7 +52,6 @@ from serving.config.app_config import config_value
 from serving.config.settings import settings
 from serving.utils.identity_keys import (
     ALGORITHM,
-    IdentityKeyUnavailable,
     public_jwks,
     signing_key,
     signing_kid,
@@ -152,20 +151,6 @@ def assert_issuance_configured() -> None:
     issuer()
     allowed_redirects()
     public_jwks()
-
-
-def issuance_enabled() -> bool:
-    """Report whether this deployment can issue identity tokens.
-
-    Raises:
-        IdentityKeyMisconfigured: If a signing key is present but unusable —
-            that is not "issuance is off", and must not be reported as such.
-    """
-    try:
-        assert_issuance_configured()
-    except (IdentityNotConfigured, IdentityKeyUnavailable):
-        return False
-    return True
 
 
 def validate_authorization_request(*, client_id: str, redirect_uri: str, method: str) -> None:

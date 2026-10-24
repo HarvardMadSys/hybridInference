@@ -61,7 +61,7 @@ async def test_role_gates_match_the_inference_path():
 
 
 async def test_aliases_are_not_listed_twice():
-    """The picker shows canonical ids only."""
+    """The picker shows canonical ids, not one entry per alias."""
     shared = _route("canonical-model")
     router_exec = _exec({"canonical-model": shared, "alias-model": shared})
 

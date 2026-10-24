@@ -836,6 +836,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "filelock" },
     { name = "httpx" },
     { name = "mypy" },
     { name = "myst-parser" },
@@ -880,6 +881,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "filelock", specifier = ">=4.2.1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mypy", specifier = ">=1.20.2" },
     { name = "myst-parser", specifier = ">=4.0.1" },
