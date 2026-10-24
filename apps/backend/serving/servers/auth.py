@@ -31,7 +31,6 @@ from serving.observability.rejection_log import (
 )
 from serving.servers.deps import (
     auth_database_detail,
-    get_db_logger,
     get_log_store,
     get_operational_store,
 )
@@ -39,7 +38,7 @@ from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, get_client_ip_info
+from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 
@@ -850,45 +849,6 @@ def _next_utc_midnight() -> datetime:
     """Return the next UTC midnight timestamp."""
     now = datetime.now(UTC)
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-async def verify_admin_token(
-    request: Request,
-    authorization: str | None = Header(None),
-    db_logger=Depends(get_db_logger),
-) -> str:
-    """Verify admin token from Authorization header.
-
-    Returns admin IP address for audit logging.
-    Raises HTTPException(401) if invalid or missing token.
-
-    All /admin/* routes should use this dependency to protect access.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing admin token. Use 'Authorization: Bearer {ADMIN_TOKEN}' header.",
-        )
-
-    token = authorization[7:]
-    admin_token = get_settings().admin_token
-
-    if not admin_token:
-        raise HTTPException(
-            status_code=500,
-            detail="Server misconfiguration: ADMIN_TOKEN environment variable not set",
-        )
-
-    # Constant-time comparison to prevent timing attacks
-    if not constant_time_compare(token, admin_token):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid admin token",
-        )
-
-    # Extract admin IP for audit logging
-    admin_ip = get_client_ip(request)
-    return admin_ip
 
 
 async def log_admin_action(
