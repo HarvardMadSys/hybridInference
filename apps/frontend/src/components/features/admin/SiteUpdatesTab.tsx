@@ -245,15 +245,13 @@ export function SiteUpdatesTab() {
         </>
       }
     >
-      {/* Composer */}
+      {/* Composer. Only its save button saves: Enter in a field submits the
+          form, and a title alone would publish a half-written update. */}
       {composerOpen && (
         <form
           id={fieldId('composer')}
           aria-labelledby={fieldId('composer-title')}
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!saving) void save();
-          }}
+          onSubmit={(e) => e.preventDefault()}
           className={`${PANEL} animate-admin-reveal mb-4 max-w-5xl`}
         >
           <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-4 py-3">
@@ -417,7 +415,12 @@ export function SiteUpdatesTab() {
               <button type="button" onClick={() => resetForm(true)} className={BUTTON_SECONDARY}>
                 Cancel
               </button>
-              <button type="submit" disabled={saving} className={BUTTON_PRIMARY}>
+              <button
+                type="button"
+                onClick={() => void save()}
+                disabled={saving}
+                className={BUTTON_PRIMARY}
+              >
                 {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Create Update'}
               </button>
             </div>

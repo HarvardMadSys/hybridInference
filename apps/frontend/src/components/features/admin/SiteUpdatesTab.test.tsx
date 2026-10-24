@@ -106,6 +106,23 @@ describe('SiteUpdatesTab', () => {
     expect(screen.getByRole('button', { name: 'New update' })).toHaveFocus();
   });
 
+  it('saves only from the save button, not when Enter submits the form', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'New update' }));
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Half written' } });
+    const composer = screen.getByRole('form', { name: 'New update' });
+
+    fireEvent.submit(composer);
+    expect(createSiteUpdate).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Title')).toHaveValue('Half written');
+    // Enter in a field clicks the form's first submit button instead, when it
+    // has one, so the save button must not be one.
+    expect(composer.querySelector('[type="submit"], button:not([type])')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
+    await waitFor(() => expect(createSiteUpdate).toHaveBeenCalledTimes(1));
+  });
+
   it('edits in place and shows which update is being edited', async () => {
     await renderTab();
     fireEvent.click(screen.getByRole('button', { name: 'Edit Pricing note' }));
