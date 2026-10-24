@@ -355,23 +355,25 @@ carries an id, a first route, a pricing table, a router strategy and a
 `required_role` (default `admin`, so a new model stays invisible to ordinary
 users until you lower it), and is restored at every start. It also declares
 what it accepts, as `capabilities` in the request: `context_length`,
-`max_output_length`, `input_modalities` (`text`, optionally `image`) and
-`supports_tools`. All four are required, because each changes what a request
-does: a model without tool support has tool definitions dropped, `max_tokens`
-is clamped to `max_output_length`, an image reaches only a route that accepts
-images, and Auto and the context-overflow fallback read `context_length`. The
-two lengths are whole numbers of tokens, at most 10,000,000. A route added to
-any model, runtime or registry, declares its own four the same way; the console
-starts them from the model's first route, and the route stores what was
-submitted. Each route stores and restores its own four, since routes of one
-model can differ. A runtime model created before they could be declared keeps
-the defaults it was given: `context_length` 8192, `max_output_length` 4096,
-text only, no tool support. Supported parameters such as `reasoning_effort`,
-structured output and aliases still take `ModelConfig`'s defaults; when a model
-needs any of those, put it in the registry.
+`max_output_length`, `input_modalities` (`text`, optionally `image`, `audio`
+and `video`) and `supports_tools`. All four are required, because each changes
+what a request does: a model without tool support has tool definitions
+dropped, `max_tokens` is clamped to `max_output_length`, an image reaches only
+a route that accepts images, and Auto and the context-overflow fallback read
+`context_length`. The two lengths are whole numbers of tokens, at most
+10,000,000. A route added to any model, runtime or registry, declares its own
+four the same way; the console starts them from the model's first route, and the
+route stores what was submitted. Each route stores and restores its own four,
+since routes of one model can differ. A runtime model created before they could
+be declared keeps the defaults it was given: `context_length` 8192,
+`max_output_length` 4096, text only, no tool support. Supported parameters such
+as `reasoning_effort`, structured output and aliases still take `ModelConfig`'s
+defaults; when a model needs any of those, put it in the registry.
 
 Any route's four can be changed after the fact with **Capabilities**, registry
-and runtime routes alike, with the same validation. The values the route has
+and runtime routes alike, with the same validation. The console's form has a
+field for image input only: it keeps a route's `audio` and `video` input as they
+are, and an added route starts with the first route's. The values the route has
 from the registry or from its creation stay as its baseline: the change is
 stored as an override, the next request through the route follows it, a restart
 restores it, and retargeting the route keeps it. Resetting deletes the override

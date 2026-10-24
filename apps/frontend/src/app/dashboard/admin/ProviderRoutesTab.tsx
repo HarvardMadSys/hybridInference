@@ -88,6 +88,7 @@ type CreateRouteForm = {
   maxOutputLength: string;
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
+  otherInputModalities: string[];
 };
 
 const emptyCreateForm: CreateRouteForm = {

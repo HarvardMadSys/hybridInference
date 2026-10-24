@@ -169,7 +169,7 @@ function fillRuntimeModelCapabilities() {
 const ROUTE_CAPABILITIES = {
   context_length: 196608,
   max_output_length: 8192,
-  input_modalities: ['text'] as Array<'text' | 'image'>,
+  input_modalities: ['text'],
   supports_tools: true,
 };
 
@@ -2451,7 +2451,7 @@ describe('ProviderRoutesTab', () => {
     const WIDE = {
       context_length: 1048576,
       max_output_length: 65536,
-      input_modalities: ['text', 'image'] as Array<'text' | 'image'>,
+      input_modalities: ['text', 'image'],
       supports_tools: true,
     };
 
@@ -2539,6 +2539,95 @@ describe('ProviderRoutesTab', () => {
       ).toBeInTheDocument();
       expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
       expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    // As models.yaml can declare a route: inputs the form has no field for.
+    const MEDIA = { ...ROUTE_CAPABILITIES, input_modalities: ['text', 'audio', 'video'] };
+    const MEDIA_NOTE = 'Also accepts audio and video input, which this form leaves as declared.';
+
+    it('keeps the audio and video a route accepts when saving its other values', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+      });
+
+      expect(
+        within(dialog).getByText(
+          'From config: 196,608 context · 8,192 output · text, audio and video · tools',
+        ),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText(MEDIA_NOTE)).toBeInTheDocument();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Image input'), {
+        target: { value: 'yes' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 65536,
+            input_modalities: ['text', 'image', 'audio', 'video'],
+          },
+        );
+      });
+    });
+
+    it('starts an added route with the audio and video the first route accepts', async () => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [{ ...route, capabilities: MEDIA, capabilities_baseline: MEDIA }],
+      });
+      vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+      vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+        ...route,
+        route_id: 'minimax-fast:openrouter-api',
+        route_type: 'on_demand',
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        endpoint_id: 'minimax-fast:openrouter-api',
+        source: 'runtime',
+        capabilities: MEDIA,
+      });
+
+      render(<ProviderRoutesTab />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+      const form = await screen.findByRole('dialog', { name: 'Add provider route' });
+      expect(within(form).getByText(MEDIA_NOTE)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Provider model ID'), {
+        target: { value: 'minimax/minimax-m2.5' },
+      });
+      fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+        target: { value: 'sort:throughput' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+      await screen.findByRole('button', { name: 'Verified' });
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+      await waitFor(() => {
+        expect(createProviderRouteCandidate).toHaveBeenCalledWith(
+          'minimax-fast',
+          expect.objectContaining({ capabilities: MEDIA }),
+        );
+      });
     });
   });
 });

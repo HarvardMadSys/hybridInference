@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry, StaleRouterStrategyChangeError
+from routing.routers import adapter_supports_modalities
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
@@ -2843,7 +2844,8 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         None,
         {key: value for key, value in RUNTIME_CAPABILITIES.items() if key != "supports_tools"},
         {**RUNTIME_CAPABILITIES, "input_modalities": ["image"]},
-        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]},
+        # Not a modality the request gate holds media to, so declaring it means nothing.
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]},
         {**RUNTIME_CAPABILITIES, "context_length": 0},
         {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
         # Lax coercion would read these as 1, 1 (clamping every request to one
@@ -2857,7 +2859,7 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         "missing",
         "tools-unanswered",
         "no-text",
-        "unoffered-modality",
+        "unknown-modality",
         "zero-context",
         "output-over-context",
         "boolean-lengths",
@@ -5033,7 +5035,7 @@ async def test_restore_keeps_a_route_whose_stored_capabilities_no_longer_validat
     admin_client, caplog
 ):
     """An invalid stored value restores the route undeclared instead of dropping it."""
-    invalid = {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]}
+    invalid = {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]}
 
     with caplog.at_level(logging.WARNING):
         restored = await _restore_runtime_rows(
@@ -6486,15 +6488,42 @@ async def test_delete_route_capabilities_returns_the_route_to_its_baseline(admin
 
 
 @pytest.mark.asyncio
+async def test_put_route_capabilities_keeps_audio_and_video(admin_client):
+    """Raising a route's max output keeps the audio and video input it declares."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
+    # As a models.yaml route can declare it.
+    adapter.config.input_modalities = ["text", "image", "audio", "video"]
+    # What the console sends: the route's own modalities, with only the output raised.
+    edited = {**DEFAULT_CAPABILITIES, "max_output_length": 8192}
+    edited["input_modalities"] = ["text", "image", "audio", "video"]
+
+    response = await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=edited,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == edited
+    _assert_capabilities_values(adapter, edited)
+    stored = op_store.capability_rows[("minimax-fast", "minimax-fast:featherless-api")]
+    assert json.loads(stored["capabilities"]) == edited
+    # Audio and video requests are still routed to it.
+    assert adapter_supports_modalities(adapter, frozenset({"audio", "video"}))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "capabilities",
     [
         {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
         {**RUNTIME_CAPABILITIES, "input_modalities": ["image"]},
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]},
         {**RUNTIME_CAPABILITIES, "supports_tools": "yes"},
         {key: value for key, value in RUNTIME_CAPABILITIES.items() if key != "context_length"},
     ],
-    ids=["output-over-context", "no-text", "string-tools", "missing-field"],
+    ids=["output-over-context", "no-text", "unknown-modality", "string-tools", "missing-field"],
 )
 async def test_put_route_capabilities_rejects_invalid_values(admin_client, capabilities):
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client

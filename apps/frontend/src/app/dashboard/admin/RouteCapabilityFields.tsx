@@ -8,6 +8,9 @@ export type CapabilityDraft = {
   maxOutputLength: string;
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
+  // Input modalities the form has no field for (audio, video): sent back as
+  // they came, so saving the other fields never drops one.
+  otherInputModalities: string[];
 };
 
 export const emptyCapabilityDraft: CapabilityDraft = {
@@ -15,6 +18,7 @@ export const emptyCapabilityDraft: CapabilityDraft = {
   maxOutputLength: '',
   imageInput: '',
   toolCalling: '',
+  otherInputModalities: [],
 };
 
 /** A draft holding what a route serves with now, for editing or as a new route's start. */
@@ -24,6 +28,9 @@ export function capabilityDraftFrom(capabilities: RouteCapabilities): Capability
     maxOutputLength: String(capabilities.max_output_length),
     imageInput: capabilities.input_modalities.includes('image') ? 'yes' : 'no',
     toolCalling: capabilities.supports_tools ? 'yes' : 'no',
+    otherInputModalities: capabilities.input_modalities.filter(
+      (modality) => modality !== 'text' && modality !== 'image',
+    ),
   };
 }
 
@@ -66,19 +73,33 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
       ? {
           context_length: contextLength,
           max_output_length: maxOutputLength,
-          input_modalities: draft.imageInput === 'yes' ? ['text', 'image'] : ['text'],
+          input_modalities: [
+            'text',
+            ...(draft.imageInput === 'yes' ? ['image'] : []),
+            ...draft.otherInputModalities,
+          ],
           supports_tools: draft.toolCalling === 'yes',
         }
       : null;
   return { payload, contextLengthError, maxOutputLengthError };
 }
 
+/** "text, images and audio" */
+function listWords(words: string[]) {
+  return words.length > 1
+    ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`
+    : words.join('');
+}
+
 /** "131,072 context · 65,536 output · text and images · tools" */
 export function describeCapabilities(capabilities: RouteCapabilities) {
+  const media = capabilities.input_modalities
+    .filter((modality) => modality !== 'text')
+    .map((modality) => (modality === 'image' ? 'images' : modality));
   return [
     `${capabilities.context_length.toLocaleString('en-US')} context`,
     `${capabilities.max_output_length.toLocaleString('en-US')} output`,
-    capabilities.input_modalities.includes('image') ? 'text and images' : 'text only',
+    media.length ? listWords(['text', ...media]) : 'text only',
     capabilities.supports_tools ? 'tools' : 'no tools',
   ].join(' · ');
 }
@@ -185,6 +206,12 @@ export function RouteCapabilityFields({
           </select>
         </div>
       </div>
+      {draft.otherInputModalities.length > 0 && (
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">
+          Also accepts {listWords(draft.otherInputModalities)} input, which this form leaves as
+          declared.
+        </p>
+      )}
       <p className="mt-1 text-[11px] leading-5 text-gray-400">{help}</p>
     </div>
   );

@@ -2471,7 +2471,8 @@ export interface UpdateProviderRouteCandidatePayload {
 export interface RuntimeModelCapabilities {
   context_length: number;
   max_output_length: number;
-  input_modalities: Array<'text' | 'image'>;
+  /** `text`, plus any of `image`, `audio` and `video`. */
+  input_modalities: string[];
   supports_tools: boolean;
 }
 

@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from serving.config.settings import ROUTE_TYPE_ORDER
+from serving.schemas import CONTENT_BLOCK_MODALITY
 
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -1659,8 +1660,10 @@ class UpdateProviderRouteStrategyRequest(BaseModel):
     strategy: Literal["fixed", "routewise"]
 
 
-# Image is the only non-text input the console offers for a runtime model.
-RUNTIME_MODEL_INPUT_MODALITIES = ("text", "image")
+# Text, then each modality the request gate holds media to (image, audio,
+# video). The console sets image; a route's others come from models.yaml or the
+# API, and the console keeps them as they are when it saves.
+RUNTIME_MODEL_INPUT_MODALITIES = ("text", *dict.fromkeys(CONTENT_BLOCK_MODALITY.values()))
 # The largest window a model ships with today (10M tokens). A larger value is a
 # typo, and an unbounded one could exceed what JSON clients read exactly.
 RUNTIME_MODEL_MAX_TOKENS = 10_000_000
@@ -1671,23 +1674,28 @@ class RuntimeModelCapabilities(BaseModel):
 
     Each value changes what a request does: tool definitions reach the upstream
     only when ``supports_tools`` is set, ``max_tokens`` is clamped to
-    ``max_output_length``, image blocks reach the upstream only on a route
-    that lists ``image``, and Auto and the context-overflow fallback both read
-    ``context_length``. ``ModelConfig``'s defaults for them (an 8,192-token
-    window, 4,096 output tokens, text only, no tools) are not facts about any
-    upstream, so none of them may stand in for a value nobody declared.
+    ``max_output_length``, image, audio and video blocks reach the upstream
+    only on a route that lists their modality, and Auto and the
+    context-overflow fallback both read ``context_length``. ``ModelConfig``'s
+    defaults for them (an 8,192-token window, 4,096 output tokens, text only,
+    no tools) are not facts about any upstream, so none of them may stand in
+    for a value nobody declared.
     """
 
     # Strict, so ``true`` or ``"131072"`` is rejected instead of read as 1 or a number.
     context_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
     max_output_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
-    input_modalities: list[Literal["text", "image"]] = Field(..., min_length=1)
+    input_modalities: list[str] = Field(..., min_length=1)
     supports_tools: StrictBool
 
     @field_validator("input_modalities")
     @classmethod
     def validate_input_modalities(cls, value: list[str]) -> list[str]:
-        """Require text and store each modality once, in a fixed order."""
+        """Require text, refuse unknown modalities, and store each once, in a fixed order."""
+        if any(modality not in RUNTIME_MODEL_INPUT_MODALITIES for modality in value):
+            raise ValueError(
+                f"input_modalities may only list {', '.join(RUNTIME_MODEL_INPUT_MODALITIES)}"
+            )
         if "text" not in value:
             raise ValueError("input_modalities must include text")
         return [modality for modality in RUNTIME_MODEL_INPUT_MODALITIES if modality in value]
