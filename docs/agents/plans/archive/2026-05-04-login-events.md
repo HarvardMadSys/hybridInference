@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, asyncpg (Postgres), httpx + Cloudflare D1 (alt store), pytest / pytest-asyncio.
 
-**Spec:** `docs/superpowers/specs/2026-05-04-login-events-design.md`
+**Spec:** `docs/agents/specs/archive/2026-05-04-login-events-design.md`
 **Issue:** #428
 
 ---

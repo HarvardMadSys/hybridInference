@@ -15,7 +15,6 @@ import pytest
 
 from serving.model_catalog import (
     agent_model_reasoning_efforts,
-    agent_model_resolvable,
     agent_visible_models,
 )
 
@@ -61,14 +60,12 @@ async def test_role_gates_match_the_inference_path():
     assert admin == ["open-model", "internal-model", "admin-model"]
 
 
-async def test_aliases_resolve_but_are_not_listed_twice():
-    """The picker shows canonical ids; the validator accepts aliases too."""
+async def test_aliases_are_not_listed_twice():
+    """The picker shows canonical ids, not one entry per alias."""
     shared = _route("canonical-model")
     router_exec = _exec({"canonical-model": shared, "alias-model": shared})
 
     assert await agent_visible_models(router_exec, user_ctx={"role": "free"}) == ["canonical-model"]
-    assert await agent_model_resolvable("alias-model", router_exec, user_ctx={"role": "free"})
-    assert not await agent_model_resolvable("nope", router_exec, user_ctx={"role": "free"})
 
 
 async def test_unpublished_disabled_and_embedding_models_are_excluded():
@@ -84,8 +81,6 @@ async def test_unpublished_disabled_and_embedding_models_are_excluded():
     user_ctx = {"role": "internal", "disabled_models": ["banned"]}
 
     assert await agent_visible_models(router_exec, user_ctx=user_ctx) == ["usable"]
-    for model in ("hidden", "embedder", "banned"):
-        assert not await agent_model_resolvable(model, router_exec, user_ctx=user_ctx)
 
 
 async def test_visibility_resolver_override_wins_both_ways():

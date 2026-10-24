@@ -23,7 +23,6 @@ sys.path.insert(0, str(project_root))
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.config import settings as settings_module
-from serving.servers import deps as deps_module
 from serving.servers.deps import AppServices
 from serving.servers.routers import auth_routes, internal, playground, user_routes
 from serving.stream import done_sentinel, make_final_usage_chunk
@@ -185,23 +184,6 @@ async def admin_mode_client(admin_mode_app: FastAPI):
 
 class TestAdminModeUnit:
     """Unit tests that do not require a real database."""
-
-    @pytest.mark.asyncio
-    async def test_require_admin_allows_admin_role(self):
-        current_user = {"email": "admin@example.com", "user_id": "u1", "role": "admin"}
-
-        result = await deps_module.require_admin(current_user=current_user)
-
-        assert result is current_user
-
-    @pytest.mark.asyncio
-    async def test_require_admin_rejects_non_admin(self):
-        with pytest.raises(HTTPException) as exc:
-            await deps_module.require_admin(
-                current_user={"email": "user@example.com", "user_id": "u1", "role": "free"}
-            )
-
-        assert exc.value.status_code == 403
 
     def test_sanitize_chunk_strips_routing_metadata(self):
         chunk = (

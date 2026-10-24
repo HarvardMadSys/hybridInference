@@ -7,23 +7,17 @@ With both ``SLACK_WEBHOOK_URL`` and ``WECOM_ALERTS_WEBHOOK_URL`` empty, the
 feature is disabled entirely.
 
 Delivery goes through :func:`serving.observability.alerts.alert_slack`, which
-sends to the one configured channel. The legacy
-:func:`post_slack_alert` helper is kept as a thin wrapper for backward
-compatibility (existing call-sites and tests) and posts to Slack directly.
+sends to the one configured channel.
 """
 
 from __future__ import annotations
 
-import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-
-import httpx  # retained for backward-compat import symbol used by tests
 
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
-from serving.utils.secret_urls import posting_to
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -194,48 +188,9 @@ async def fetch_failure_breakdown(pool: asyncpg.Pool, window_minutes: int) -> di
         return {}
 
 
-async def post_slack_alert(webhook_url: str, message: str) -> bool:
-    """POST ``{"text": message}`` to a Slack incoming webhook.
-
-    This wrapper performs its own ``httpx`` POST so that existing callers and
-    test patch-points continue to work.  Network and HTTP errors are caught
-    and logged; this function never raises.
-
-    Args:
-        webhook_url: Slack incoming-webhook URL.
-        message: Plain-text message body.
-
-    Returns:
-        True when Slack returned a 2xx response, False on any error.
-    """
-    # Same credential-in-the-URL problem as the framework sender: httpx logs the
-    # full request URL at INFO, and for a Slack webhook that URL is the secret.
-    # See :mod:`serving.utils.secret_urls`.
-    with posting_to(webhook_url) as redaction:
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(webhook_url, json={"text": message})
-            if 200 <= resp.status_code < 300:
-                return True
-            logger.warning(
-                "Slack webhook returned non-2xx: status=%d sink=%s body=%s",
-                resp.status_code,
-                redaction.display,
-                redaction.scrub(resp.text[:200]),
-            )
-            return False
-        except Exception:
-            logger.error(
-                "Slack webhook POST failed: sink=%s\n%s",
-                redaction.display,
-                redaction.scrub(traceback.format_exc()),
-            )
-            return False
-
-
 def _utcnow() -> datetime:
     """Default time source — timezone-aware UTC ``datetime``."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class FailedRequestAlerter:

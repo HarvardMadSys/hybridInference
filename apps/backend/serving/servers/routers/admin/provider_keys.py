@@ -49,29 +49,6 @@ def _mask(api_key: str) -> str:
     return "***configured***"
 
 
-def _env_key_id(api_key: str) -> str:
-    return f"env:{dynamic_keys.env_key_hash(api_key)[:32]}"
-
-
-def _env_keys_for_provider(provider: str) -> list[str]:
-    """Return live env-sourced keys from adapter pools plus numbered env vars."""
-    keys: list[str] = []
-    seen: set[str] = set()
-
-    for pool in dynamic_keys.get_pools_for_provider(provider):
-        for raw in pool.snapshot_keys():
-            if raw and raw not in seen:
-                seen.add(raw)
-                keys.append(raw)
-
-    for raw in dynamic_keys.configured_env_keys_for_provider(provider):
-        if raw and raw not in seen:
-            seen.add(raw)
-            keys.append(raw)
-
-    return keys
-
-
 def _known_key_providers() -> set[str]:
     return {
         dynamic_keys.normalize_key_provider(provider)
@@ -199,17 +176,7 @@ async def list_provider_keys(
         )
 
     for prov in providers_to_inspect:
-        # Candidate env keys union three sources so every env credential is
-        # surfaced for management: live pool keys + base/numbered env vars
-        # (``_env_keys_for_provider``) and the static keys of legacy
-        # single-api_key adapters not yet promoted to a pool
-        # (``list_candidate_env_keys``).
-        seen: set[str] = set()
-        candidates = list(_env_keys_for_provider(prov))
-        for raw in dynamic_keys.list_candidate_env_keys(prov):
-            if raw not in candidates:
-                candidates.append(raw)
-        for raw in candidates:
+        for raw in dynamic_keys.env_key_candidates(prov):
             raw_hash = dynamic_keys.env_key_hash(raw)
             # Normally an env key shadowed by a DB row is not listed twice — the DB
             # row is the manageable record for that credential. An env *reservation*
@@ -224,12 +191,9 @@ async def list_provider_keys(
                 raw_hash,
             ):
                 continue
-            if raw in seen:
-                continue
-            seen.add(raw)
             keys.append(
                 ProviderApiKeyItem(
-                    id=_env_key_id(raw),
+                    id=dynamic_keys.env_key_id(raw),
                     provider=prov,
                     key_prefix=_mask(raw),
                     label=None,
@@ -462,14 +426,10 @@ async def disable_provider_env_key(
         ) from exc
 
     target_key: str | None = None
-    candidates = list(_env_keys_for_provider(payload.provider))
-    for raw in dynamic_keys.list_candidate_env_keys(payload.provider):
-        if raw not in candidates:
-            candidates.append(raw)
-    for raw in candidates:
+    for raw in dynamic_keys.env_key_candidates(payload.provider):
         if raw in db_raw_keys:
             continue
-        if _env_key_id(raw) == payload.env_key_id:
+        if dynamic_keys.env_key_id(raw) == payload.env_key_id:
             target_key = raw
             break
 
@@ -508,7 +468,7 @@ async def _tombstone_env_key(op_store, provider: str, raw_key: str, admin_id: st
         "disable_provider_env_key",
         None,
         {
-            "id": _env_key_id(raw_key),
+            "id": dynamic_keys.env_key_id(raw_key),
             "provider": provider,
             "key_prefix": key_prefix,
             "pools_updated": pools_updated,
@@ -634,12 +594,8 @@ async def _resolve_env_key_id(
     # declaration is a separate record from any DB row that happens to hold the
     # same secret — both are combined by the resolver. Skipping shadowed values
     # would make an env reservation unclearable while it was still enforced.
-    candidates = list(_env_keys_for_provider(provider))
-    for raw in dynamic_keys.list_candidate_env_keys(provider):
-        if raw not in candidates:
-            candidates.append(raw)
-    for raw in candidates:
-        if _env_key_id(raw) == env_key_id:
+    for raw in dynamic_keys.env_key_candidates(provider):
+        if dynamic_keys.env_key_id(raw) == env_key_id:
             return (dynamic_keys.env_key_hash(raw), _mask(raw), raw)
 
     try:
@@ -859,11 +815,7 @@ async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> _KeyRefTarg
             db_ids.append(row.id)
 
     if raw_key is None:
-        candidates = list(_env_keys_for_provider(provider))
-        for raw in dynamic_keys.list_candidate_env_keys(provider):
-            if raw not in candidates:
-                candidates.append(raw)
-        for raw in candidates:
+        for raw in dynamic_keys.env_key_candidates(provider):
             if dynamic_keys.env_key_hash(raw)[:32] == key_ref:
                 raw_key = raw
                 break

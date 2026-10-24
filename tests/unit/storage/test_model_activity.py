@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,7 +32,7 @@ def pg_pool(pg_conn):
 
 
 def _activity_row(provider: str, *, model_id: str = "glm-5.2") -> dict:
-    ts = datetime(2026, 6, 30, 8, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 30, 8, 0, tzinfo=UTC)
     return {
         "model_id": model_id,
         "provider": provider,

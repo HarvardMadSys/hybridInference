@@ -318,17 +318,6 @@ def _describes_request(exc: BaseException) -> bool:
     return _http_status_of(exc) in _REQUEST_DESCRIBING_STATUSES
 
 
-def describes_request_error(exc: BaseException) -> bool:
-    """Return whether ``exc`` reports something wrong with the request itself.
-
-    Public because the rule now has two callers: the single-router fallback loop
-    below, and the hybrid layer, which drives candidates drawn from more than one
-    execution domain and therefore has to arrive at the same answer about which
-    failure the caller is told.
-    """
-    return _describes_request(exc)
-
-
 def select_surfaced_error(errors: Sequence[BaseException]) -> int:
     """Return the index of the error the caller should be told about.
 
@@ -521,10 +510,10 @@ def exceeds_context_window(exc: BaseException) -> bool:
     route stays worthwhile. Whether a prompt fits is a matter of its length and
     the route's window, and every route's window is in its config.
 
-    Public for the same reason as ``describes_request_error``: any router that
-    walks candidates after a failure needs the same answer. The text is read
-    from ``error_body``, where ``serving.http`` keeps a failed response's body,
-    and from the message, where an in-band stream error frame carries it.
+    Public because any router that walks candidates after a failure needs the
+    same answer. The text is read from ``error_body``, where ``serving.http``
+    keeps a failed response's body, and from the message, where an in-band
+    stream error frame carries it.
     """
     if not _describes_request(exc):
         return False
@@ -2429,13 +2418,14 @@ class FixedRouter:
                         },
                     ):
                         self._ensure_health(endpoint_id)
-                        lease = self._prefill_load.acquire(
-                            endpoint_id,
-                            prefill_tokens,
-                            affinity_key=affinity_key,
-                            fingerprint=fingerprint,
-                            anchor=anchor,
-                        )
+                        with self._prefill_load.routing_transaction():
+                            lease = self._prefill_load.acquire(
+                                endpoint_id,
+                                prefill_tokens,
+                                affinity_key=affinity_key,
+                                fingerprint=fingerprint,
+                                anchor=anchor,
+                            )
                         try:
                             resp = await leaf.chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
@@ -2779,13 +2769,14 @@ class FixedRouter:
                             offload_endpoint_id=earlier_offload_endpoint,
                         )
                         first = True
-                        lease = self._prefill_load.acquire(
-                            adapter_endpoint_id,
-                            prefill_tokens,
-                            affinity_key=affinity_key,
-                            fingerprint=fingerprint,
-                            anchor=anchor,
-                        )
+                        with self._prefill_load.routing_transaction():
+                            lease = self._prefill_load.acquire(
+                                adapter_endpoint_id,
+                                prefill_tokens,
+                                affinity_key=affinity_key,
+                                fingerprint=fingerprint,
+                                anchor=anchor,
+                            )
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
                             held = await self._await_first_token(stream, fallback_watch)

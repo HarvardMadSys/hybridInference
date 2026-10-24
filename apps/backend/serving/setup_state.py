@@ -32,7 +32,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from serving.config.settings import get_settings
@@ -92,7 +92,7 @@ def _digest(code: str) -> bytes:
 
 def _now_iso() -> str:
     """Return the current time as an ISO 8601 timestamp, the marker's value."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 async def _load_code(store: Any) -> str | None:

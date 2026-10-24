@@ -1,4 +1,3 @@
-@import '@xterm/xterm/css/xterm.css';
 @import './console-theme.css';
 
 @tailwind base;
@@ -22,15 +21,6 @@
     rgb(var(--brand-accent, 165 28 48) / 0.06),
     transparent 55%
   );
-}
-
-.agent-xterm .xterm {
-  height: 100%;
-}
-
-.agent-xterm .xterm-viewport {
-  scrollbar-color: #d1d5db transparent;
-  scrollbar-width: thin;
 }
 
 @layer base {

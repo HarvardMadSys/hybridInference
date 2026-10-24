@@ -90,11 +90,11 @@ msgstr ""
 
 #: ../developer/router-tutorial.md:29
 msgid ""
-"Git, curl, GNU Make, and Python 3.10–3.13 (3.12 recommended). The smoke "
+"Git, curl, GNU Make, and Python 3.11–3.13 (3.12 recommended). The smoke "
 "clients use only the Python standard library, so there is no `pip "
 "install` step."
 msgstr ""
-"Git、curl、GNU Make 和 Python 3.10–3.13（推荐 3.12）。smoke 客户端只用 Python 标准库，所以没有"
+"Git、curl、GNU Make 和 Python 3.11–3.13（推荐 3.12）。smoke 客户端只用 Python 标准库，所以没有"
 " `pip install` 这一步。"
 
 #: ../developer/router-tutorial.md:32

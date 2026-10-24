@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 __all__ = ["MIN_ALERT_GAP", "UsageLimit", "detect_usage_limit"]
 
@@ -139,24 +139,22 @@ class UsageLimit:
 def _parse_reset_timestamp(raw: str) -> datetime | None:
     """Parse a captured ISO-8601-ish reset timestamp to UTC; None on failure.
 
-    The date/time separator is normalized to ``T`` and a trailing ``Z`` to
-    ``+00:00`` so :func:`datetime.fromisoformat` accepts the value on Python
-    3.10. A naive timestamp (no offset) is assumed to be UTC: providers rarely
-    declare a zone, and assuming UTC keeps the suppression window a slight over-
-    rather than under-estimate for zones east of UTC.
+    A trailing lower-case ``z`` is read as ``Z``, which is the only spelling of
+    UTC :func:`datetime.fromisoformat` accepts. A naive timestamp (no offset) is
+    assumed to be UTC: providers rarely declare a zone, and assuming UTC keeps
+    the suppression window a slight over- rather than under-estimate for zones
+    east of UTC.
     """
     text = raw.strip()
-    if len(text) > 10 and text[10] == " ":
-        text = text[:10] + "T" + text[11:]
-    if text.endswith(("Z", "z")):
-        text = text[:-1] + "+00:00"
+    if text.endswith("z"):
+        text = text[:-1] + "Z"
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _estimate_window(detail: str) -> tuple[timedelta, str] | None:

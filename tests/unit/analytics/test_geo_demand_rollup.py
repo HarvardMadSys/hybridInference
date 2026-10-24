@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -90,7 +90,7 @@ class AsyncContext:
 
 
 def utc(hour: int) -> datetime:
-    return datetime(2026, 7, 1, hour, tzinfo=timezone.utc)
+    return datetime(2026, 7, 1, hour, tzinfo=UTC)
 
 
 def resolver() -> GeoResolver:
@@ -250,7 +250,7 @@ async def test_hourly_job_checks_full_supported_window_and_forces_previous_hour(
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            value = datetime(2026, 7, 10, 12, 45, tzinfo=timezone.utc)
+            value = datetime(2026, 7, 10, 12, 45, tzinfo=UTC)
             return value if tz is None else value.astimezone(tz)
 
     monkeypatch.setattr(geo_demand_rollup, "datetime", FrozenDateTime)
@@ -258,8 +258,6 @@ async def test_hourly_job_checks_full_supported_window_and_forces_previous_hour(
     await geo_demand_rollup.hourly_job(object())
 
     call = repair.await_args
-    assert call.kwargs["start"] == datetime(2026, 7, 10, 12, tzinfo=timezone.utc) - timedelta(
-        days=90
-    )
-    assert call.kwargs["end"] == datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
-    assert call.kwargs["force_hours"] == (datetime(2026, 7, 10, 11, tzinfo=timezone.utc),)
+    assert call.kwargs["start"] == datetime(2026, 7, 10, 12, tzinfo=UTC) - timedelta(days=90)
+    assert call.kwargs["end"] == datetime(2026, 7, 10, 12, tzinfo=UTC)
+    assert call.kwargs["force_hours"] == (datetime(2026, 7, 10, 11, tzinfo=UTC),)

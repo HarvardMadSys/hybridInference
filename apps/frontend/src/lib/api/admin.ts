@@ -112,26 +112,9 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
 // Users cost-history + summary (new in admin Users redesign)
 // ========================================
 
-export interface UserCostHistoryResponse {
-  user_id: string;
-  days: number;
-  points: CostHistoryPoint[];
-}
-
 export interface BulkCostHistoryResponse {
   days: number;
   histories: Record<string, CostHistoryPoint[]>;
-}
-
-export async function getUserCostHistory(
-  userId: string,
-  days = 7,
-): Promise<UserCostHistoryResponse> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/users/${encodeURIComponent(userId)}/cost-history?days=${days}`,
-  );
-  return jsonOrThrow<UserCostHistoryResponse>(resp);
 }
 
 export async function getBulkCostHistory(

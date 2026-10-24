@@ -7,7 +7,7 @@ Mock-backed; the store's own transaction is covered in
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,7 +44,7 @@ def _admin_row(user_id: str, login_name: str, user_name: str) -> dict[str, Any]:
         "role": "admin",
         "status": "active",
         "email_verified": True,
-        "created_at": datetime(2026, 10, 10, tzinfo=timezone.utc),
+        "created_at": datetime(2026, 10, 10, tzinfo=UTC),
         "last_login_at": None,
         "password_hash": "unused",
         "preferences": {},

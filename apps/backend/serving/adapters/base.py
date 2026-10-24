@@ -255,19 +255,7 @@ class BaseAdapter(ABC):
 
     def __init__(self, config: ModelConfig):
         self.config = config
-        # Legacy: some adapters still use self.session; keep for compatibility.
-        self.session = None
-        # Shared HTTP client for new/updated adapters.
         self.http = AsyncHTTPClient.shared()
-        # Populated after stream_messages() completes; consumed by the router
-        # for DB logging. Concrete subclasses with their own stream_messages()
-        # (e.g. AnthropicAdapter) overwrite this themselves.
-        self.last_stream_usage: dict[str, int] = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        }
 
     @abstractmethod
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
@@ -337,7 +325,7 @@ class BaseAdapter(ABC):
                 yield ant
         for ant in translator.finalize():
             yield ant
-        # Expose accumulated usage for the router's DB-logging step.
+        # Hand the accumulated usage to the router's DB-logging step.
         translator_usage = translator.usage
         final_usage = {
             "input_tokens": translator_usage.get("input_tokens", 0),
@@ -345,7 +333,6 @@ class BaseAdapter(ABC):
             "cache_creation_input_tokens": translator_usage.get("cache_creation_input_tokens", 0),
             "cache_read_input_tokens": translator_usage.get("cache_read_input_tokens", 0),
         }
-        self.last_stream_usage = final_usage  # keep for backward-compat with tests
         if usage_sink is not None:
             usage_sink.update(final_usage)
 
@@ -439,8 +426,3 @@ class BaseAdapter(ABC):
             ],
         }
         return f"data: {json.dumps(chunk)}\n\n"
-
-    async def cleanup(self):
-        """Clean up adapter resources (override if needed)."""
-        if self.session:
-            await self.session.close()

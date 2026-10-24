@@ -26,7 +26,7 @@ legitimate client rather than protect anyone:
   to the suspended user.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -104,7 +104,7 @@ def install_exception_handlers(app: FastAPI) -> None:
                 # Matches the wording the hardened signup path in auth_routes.py
                 # already returns for the same condition.
                 "message": "Registration failed. Please try again.",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -121,7 +121,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "WEAK_PASSWORD",
                 "message": "Password does not meet security requirements",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -133,7 +133,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "INVALID_CREDENTIALS",
                 "message": "Invalid email or password",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -145,7 +145,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "EMAIL_NOT_VERIFIED",
                 "message": "Email not verified. Please check your email for the verification link.",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -165,7 +165,7 @@ def install_exception_handlers(app: FastAPI) -> None:
                 # unset. Kept: it is written by an operator *for* this user, not
                 # internal detail that leaked into an exception.
                 "suspension_message": exc.suspension_message,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -179,7 +179,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "USER_NOT_FOUND",
                 "message": "User not found",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -191,7 +191,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "DUPLICATE_API_KEY",
                 "message": "You already have an active API key",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -203,7 +203,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "API_KEY_NOT_FOUND",
                 "message": "No active API key found",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -215,7 +215,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "TOKEN_EXPIRED",
                 "message": "Token has expired",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -227,7 +227,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "INVALID_TOKEN",
                 "message": "Invalid token",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -239,7 +239,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "TOKEN_ALREADY_USED",
                 "message": "Token has already been used",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -251,7 +251,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "SESSION_NOT_FOUND",
                 "message": "Session not found",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -263,7 +263,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "SESSION_REVOKED",
                 "message": "Session has been revoked",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -284,7 +284,7 @@ def install_exception_handlers(app: FastAPI) -> None:
                 "message": f"Quota exceeded: ${exc.spent:.2f} / ${exc.quota:.2f}",
                 "quota": exc.quota,
                 "spent": exc.spent,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 

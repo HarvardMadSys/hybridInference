@@ -10,7 +10,7 @@
  */
 
 /** Session cookies issued by FastAPI: the default name and the deployment's. */
-export function consoleSessionCookieNames(): Set<string> {
+function consoleSessionCookieNames(): Set<string> {
   return new Set(['refresh_token', process.env.REFRESH_TOKEN_COOKIE_NAME || 'refresh_token']);
 }
 

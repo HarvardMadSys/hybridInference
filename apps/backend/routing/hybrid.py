@@ -34,6 +34,13 @@ Deliberate non-goals, matching the current design:
 * No client-visible buffering of streaming responses. Chunks are forwarded one
   at a time; the pre-yield buffer below exists only to decide whether a failed
   attempt still has somewhere to fall back to.
+
+The metadata this layer records and the frames it inspects have their own homes:
+:mod:`routing.hybrid_attempt_history` builds the ``_routing`` attempt records and
+the history frame, :mod:`routing.hybrid_stream_frames` decides whether a chunk is
+client-visible and tags it with its backend. This module still owns the
+coordination that uses them -- which attempt runs next, which error surfaces,
+and when a stream is committed.
 """
 
 from __future__ import annotations
@@ -50,6 +57,15 @@ from routing.dispatch import (
     check_dispatch,
     dispatch_for_attempt,
 )
+from routing.hybrid_attempt_history import (
+    attach_attempt_history,
+    attempt_history_chunk,
+    attempt_record,
+    merge_attempt_history,
+    tag_backend,
+    tag_preference,
+)
+from routing.hybrid_stream_frames import is_client_visible, tag_backend_chunk
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AllCircuitsOpenError,
@@ -386,7 +402,7 @@ class HybridRouter:
                     routing=getattr(exc, "_routing", None),
                     endpoint_id=attempt.endpoint_id,
                 )
-                attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
+                attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
                 _remember_dispatched(dispatched, attempt, exc)
                 continue
@@ -397,11 +413,11 @@ class HybridRouter:
                 routing=response.get("_routing"),
                 endpoint_id=attempt.endpoint_id,
             )
-            _merge_attempt_history(response, attempts)
-            _tag_backend(response, attempt.backend)
+            merge_attempt_history(response, attempts)
+            tag_backend(response, attempt.backend)
             # Resolve on the success path too: the metadata must say whether the
             # policy's target was in range regardless of which attempt answered.
-            _tag_preference(response, decision.target, preferred_endpoint)
+            tag_preference(response, decision.target, preferred_endpoint)
             return response
         _raise_after_attempts(errors, attempts, refusals, model_id)
 
@@ -844,25 +860,25 @@ async def _fallback_stream(
                 # Output exists; forward what was held for the fallback decision,
                 # then stream the rest through, recording commitment as it goes.
                 if attempts:
-                    yield _attempt_history_chunk(
+                    yield attempt_history_chunk(
                         attempts,
                         target=decision.target,
                         resolved_endpoint=preferred_endpoint,
                     )
                 for held in buffered:
-                    committed = committed or _is_client_visible(held)
-                    yield _tag_backend_chunk(held, attempt.backend)
+                    committed = committed or is_client_visible(held)
+                    yield tag_backend_chunk(held, attempt.backend)
                 async for chunk in stream:
                     router._remember_stream_dispatch(
                         params.get("request_id"), attempt, model_id, chunk
                     )
-                    committed = committed or _is_client_visible(chunk)
-                    yield _tag_backend_chunk(chunk, attempt.backend)
+                    committed = committed or is_client_visible(chunk)
+                    yield tag_backend_chunk(chunk, attempt.backend)
                 return
             # A stream that ended without producing anything never reached the
             # client, so it is a failed attempt and the plan may continue.
             empty_error = RuntimeError("stream produced no output")
-            attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, empty_error))
+            attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, empty_error))
             errors.append(empty_error)
         except (TargetUnavailableError, AllCircuitsOpenError) as exc:
             if committed:  # pragma: no cover - unavailability precedes any output
@@ -888,7 +904,7 @@ async def _fallback_stream(
                 # so the failure propagates exactly as the single-router path
                 # propagates it.
                 raise
-            attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
+            attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
             errors.append(exc)
             _remember_dispatched(dispatched, attempt, exc)
         finally:
@@ -1036,78 +1052,6 @@ def _remember_dispatched(
         dispatched.add(observed)
 
 
-def _attempt_record(
-    backend_name: str,
-    endpoint_id: str | None,
-    exc: BaseException,
-) -> dict[str, Any]:
-    """Return the routing-metadata record for one failed attempt.
-
-    The shape keeps the fields the single router's ``failed_attempt`` produced --
-    ``provider``, ``endpoint_id``, ``error_type``, ``error`` -- because consumers
-    read them: the DB log and the fallback diagnostic both resolve an attempt's
-    provider from here, and a record without one loses the attribution rather
-    than failing loudly. ``backend`` is added, since once one request can span two
-    execution domains "which domain" is worth recording and no legacy field
-    carries it.
-
-    ``provider`` comes from the failing router's own ``_routing`` block, which is
-    the only place this layer can read it: it holds no adapters. An attempt that
-    failed before any router touched it -- an empty stream -- has no provider to
-    report, and the caller falls back to the endpoint id as it always did.
-    """
-    error_routing = getattr(exc, "_routing", None)
-    routing = error_routing if isinstance(error_routing, dict) else {}
-    resolved = routing.get("endpoint_id") or endpoint_id or backend_name
-    record: dict[str, Any] = {
-        "endpoint_id": str(resolved),
-        "error_type": exc.__class__.__name__,
-        "error": str(exc),
-    }
-    provider = routing.get("provider")
-    if provider:
-        record["provider"] = str(provider)
-    record["backend"] = backend_name
-    return record
-
-
-def _merge_attempt_history(response: dict[str, Any], attempts: list[dict[str, Any]]) -> None:
-    """Merge every earlier attempt into the answer's routing metadata."""
-    if not attempts:
-        return
-    routing = response.get("_routing")
-    if not isinstance(routing, dict):
-        routing = {}
-        response["_routing"] = routing
-    routing.setdefault("fallback", True)
-    existing = routing.get("failed_attempts")
-    routing["failed_attempts"] = [
-        *(existing if isinstance(existing, list) else []),
-        *attempts,
-    ]
-
-
-def _attempt_history_chunk(
-    attempts: list[dict[str, Any]],
-    *,
-    target: RoutingTarget | None,
-    resolved_endpoint: str | None,
-) -> str:
-    """Build the routing-metadata frame carrying earlier backends' attempts.
-
-    Also carries the preferred target, so the stream's routing metadata explains
-    why this fallback happened the same way the non-streaming answer does.
-    """
-    routing: dict[str, Any] = {"fallback": True, "failed_attempts": attempts}
-    if resolved_endpoint is not None:
-        routing["preferred_endpoint_id"] = resolved_endpoint
-    if target is not None:
-        routing["preferred_target"] = target.describe()
-        routing["preference_in_range"] = resolved_endpoint is not None
-    payload = {"choices": [], "_routing": routing}
-    return f"data: {json.dumps(payload)}\n\n"
-
-
 def _raise_after_attempts(
     errors: Sequence[BaseException],
     attempts: list[dict[str, Any]],
@@ -1132,7 +1076,7 @@ def _raise_after_attempts(
     """
     if errors:
         surfaced = errors[select_surfaced_error(errors)]
-        _attach_attempt_history(surfaced, attempts)
+        attach_attempt_history(surfaced, attempts)
         raise surfaced
     if refusals:
         raise refusals[0]
@@ -1140,106 +1084,3 @@ def _raise_after_attempts(
         f"every configured backend failed for model {model_id}: "
         f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
     )
-
-
-def _attach_attempt_history(exc: BaseException, attempts: list[dict[str, Any]]) -> None:
-    """Record every attempt on the error the caller is told about.
-
-    The error may already carry the attempt its own router made, so the records
-    are merged by endpoint: the router saw one candidate, this layer saw them all,
-    and the caller should see each endpoint exactly once.
-    """
-    if not attempts:
-        return
-    routing = getattr(exc, "_routing", None)
-    if not isinstance(routing, dict):
-        return
-    existing = routing.get("failed_attempts")
-    if not isinstance(existing, list):
-        routing["failed_attempts"] = list(attempts)
-        return
-    known = {record.get("endpoint_id") for record in existing if isinstance(record, dict)}
-    for record in attempts:
-        endpoint_id = record.get("endpoint_id")
-        if endpoint_id in known:
-            continue
-        existing.append(record)
-        known.add(endpoint_id)
-
-
-def _tag_backend(response: dict[str, Any], backend_name: str) -> None:
-    """Record the serving backend in a response's routing metadata."""
-    routing = response.get("_routing")
-    if isinstance(routing, dict):
-        routing.setdefault("backend", backend_name)
-
-
-def _tag_preference(
-    response: dict[str, Any],
-    target: RoutingTarget | None,
-    resolved_endpoint: str | None,
-) -> None:
-    """Record the policy's target and whether this backend could honor it."""
-    routing = response.get("_routing")
-    if not isinstance(routing, dict):
-        return
-    if resolved_endpoint is not None:
-        routing.setdefault("preferred_endpoint_id", resolved_endpoint)
-    if target is not None:
-        routing.setdefault("preferred_target", target.describe())
-        routing.setdefault("preference_in_range", resolved_endpoint is not None)
-
-
-def _is_client_visible(chunk: Any) -> bool:
-    """Return whether ``chunk`` carries anything the client will actually see.
-
-    Mirrors the serving layer's own contract (``openai_chat_serializer.
-    sanitize_chunk``): a frame is dropped before it reaches the client exactly
-    when it carries ``_routing`` metadata, no ``choices`` and no ``usage``. That
-    is the shape of the synthetic routing frame every backend emits first, and of
-    the attempt-history frame this module injects.
-
-    Nothing else is treated as invisible, so anything unrecognised -- a
-    keep-alive, a malformed frame, a byte payload -- counts as committed. Being
-    wrong in that direction only forgoes a fallback; being wrong the other way
-    would splice two answers into one stream.
-    """
-    if not isinstance(chunk, str) or not chunk.startswith("data: "):
-        return True
-    raw = chunk[6:].strip()
-    if raw == "[DONE]":
-        return True
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return True
-    if not isinstance(payload, dict):
-        return True
-    if "_routing" not in payload:
-        return True
-    return bool(payload.get("choices")) or payload.get("usage") is not None
-
-
-def _tag_backend_chunk(chunk: Any, backend_name: str) -> Any:
-    """Record the serving backend in an SSE chunk's routing payload.
-
-    Only ``data:`` frames that already carry a ``_routing`` object are touched;
-    everything else -- keep-alives, content deltas, the terminal ``[DONE]`` --
-    is forwarded byte-for-byte.
-    """
-    if not isinstance(chunk, str) or not chunk.startswith("data: "):
-        return chunk
-    raw = chunk[6:].strip()
-    if raw == "[DONE]":
-        return chunk
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return chunk
-    if not isinstance(payload, dict):
-        return chunk
-    routing = payload.get("_routing")
-    if not isinstance(routing, dict):
-        return chunk
-    routing.setdefault("backend", backend_name)
-    return f"data: {json.dumps(payload)}\n\n"

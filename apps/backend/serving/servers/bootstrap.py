@@ -446,7 +446,7 @@ async def _bootstrap_routewise_from_logs(
     """
     if log_store is None:
         return
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for rw in routewise_routers:
         if not rw.config.db_bootstrap_enabled:
             continue
@@ -528,7 +528,7 @@ async def _bootstrap_routewise_from_probe_samples(
     """Best-effort warmup of RouteWise latency state from persisted probes."""
     if operational_store is None:
         return
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for rw in routewise_routers:
         if not rw.config.db_bootstrap_enabled:
             continue
@@ -1610,10 +1610,7 @@ async def initialize() -> AppServices:
     # instance via ``deps.get_completions_logger``.
     from serving.servers.routers.completions_logging import CompletionsLogger
 
-    completions_logger = CompletionsLogger(
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-    )
+    completions_logger = CompletionsLogger(log_store=log_store)
 
     # PricingLookup + CostTracker — encapsulate the four pricing-lookup
     # blocks and the ``_schedule_cost_increment`` helper that previously

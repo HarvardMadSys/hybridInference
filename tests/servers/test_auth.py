@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,6 +45,12 @@ def mock_ls():
 def _hashed_key(monkeypatch, plaintext: str) -> str:
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
     return hash_api_key(plaintext)
+
+
+async def _settle_last_used_write() -> None:
+    """Give the scheduled (fire-and-forget) last_used write its loop ticks."""
+    for _ in range(3):
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -135,6 +142,7 @@ async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_o
     assert pytest.approx(result["quota_remaining_cost_usd"], rel=1e-6) == 990.0
     mock_op_store.get_auth_context_by_key_hash.assert_awaited_once_with(hashed_key)
     mock_op_store.get_user_cost_today.assert_awaited_once_with("user123")
+    await _settle_last_used_write()
     mock_op_store.update_key_last_used.assert_awaited_once_with(1)
 
 
@@ -316,6 +324,7 @@ async def test_auth_updates_last_used_at(monkeypatch, mock_request, mock_op_stor
         op_store=mock_op_store,
         log_store=mock_ls,
     )
+    await _settle_last_used_write()
 
     mock_op_store.update_key_last_used.assert_awaited_once_with(6)
 
@@ -652,6 +661,7 @@ async def test_on_behalf_of_trusted_service_key_attributes_to_target(
     # Cost/quota are checked against the end user.
     mock_op_store.get_user_cost_today.assert_awaited_once_with("end-user-1")
     # last_used is still bumped on the *presented* (service) key.
+    await _settle_last_used_write()
     mock_op_store.update_key_last_used.assert_awaited_once_with(7)
 
 

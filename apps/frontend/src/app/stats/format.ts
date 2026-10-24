@@ -2,14 +2,6 @@ import type { ClientKind } from '@/lib/api/publicStats';
 
 export const KIND_ORDER: ClientKind[] = ['coding', 'general', 'custom', 'chat', 'direct'];
 
-export const KIND_LABELS: Record<ClientKind, string> = {
-  coding: 'Coding agents',
-  general: 'General-purpose agents',
-  custom: 'Custom agents & scripts',
-  chat: 'Chat apps',
-  direct: 'Direct API & SDKs',
-};
-
 // Categorical slots checked for color-vision-deficiency separation in this
 // order; "direct" is the unidentified remainder, so it gets the neutral.
 export const KIND_COLORS: Record<ClientKind, string> = {
@@ -83,15 +75,4 @@ export function languageName(code: string, locale = 'en'): { name: string; nativ
   const name = displayName('language', locale, code) ?? code;
   const native = displayName('language', code, code);
   return { name, native: native && native.toLowerCase() !== name.toLowerCase() ? native : null };
-}
-
-export function weekLabel(
-  week: string,
-  weeks: string[],
-  firstPartial: boolean,
-  lastPartial: boolean,
-): string {
-  const partial =
-    (firstPartial && week === weeks[0]) || (lastPartial && week === weeks[weeks.length - 1]);
-  return `Week of ${fmtDay(week)}${partial ? ' · partial' : ''}`;
 }

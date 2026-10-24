@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,7 +28,7 @@ from serving.storage.base import ProviderKeyRow
 pytestmark = pytest.mark.unit
 
 AUTH = {"Authorization": "Bearer test-admin"}
-_NOW = datetime(2025, 6, 15, tzinfo=timezone.utc)
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
 
 
 def test_probe_error_reason_detects_featherless_plan_api_disabled():
@@ -399,6 +399,44 @@ def test_configured_env_keys_read_every_numbered_setting(monkeypatch):
         "chutes-key-one",
         "chutes-key-three",
         "chutes-key-twenty",
+    ]
+
+
+def test_configured_env_keys_keep_the_raw_setting_value(monkeypatch):
+    """Not stripped: env ids, tombstones and tier reservations hash the raw value.
+
+    Normalizing it would give an existing padded key a new identity, so routes
+    pinned to the old id, a disable and a reservation would all stop applying.
+    """
+    for index in range(1, 21):
+        monkeypatch.delenv(f"CHUTES_API_KEY{index}", raising=False)
+    monkeypatch.setenv("CHUTES_API_KEY", "chutes-key-base\n")
+
+    assert dynamic_keys.configured_env_keys_for_provider("chutes") == ["chutes-key-base\n"]
+
+
+def test_env_key_candidates_are_pools_then_settings_then_pool_less_statics(monkeypatch):
+    class Pool:
+        def snapshot_keys(self):
+            return ["pool-key", "shared-key"]
+
+    monkeypatch.setattr(dynamic_keys, "get_pools_for_provider", lambda provider: [Pool()])
+    monkeypatch.setattr(
+        dynamic_keys,
+        "configured_env_keys_for_provider",
+        lambda provider: ["setting-key", "shared-key"],
+    )
+    monkeypatch.setattr(
+        dynamic_keys,
+        "list_candidate_env_keys",
+        lambda provider: ["pool-key", "shared-key", "static-key", " "],
+    )
+
+    assert dynamic_keys.env_key_candidates("zai") == [
+        "pool-key",
+        "shared-key",
+        "setting-key",
+        "static-key",
     ]
 
 

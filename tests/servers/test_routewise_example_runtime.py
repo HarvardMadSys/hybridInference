@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -252,7 +252,7 @@ class TestRouteWiseExampleQuotaSourceChain:
                     display_name=source.provider.title(),
                     key_configured=True,
                     key_masked="Local simulation (no credentials)",
-                    fetched_at=datetime.now(timezone.utc),
+                    fetched_at=datetime.now(UTC),
                     ok=True,
                     error=None,
                     usages=[

@@ -29,6 +29,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.messages import merge_leading_system_messages
+from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -367,15 +368,19 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     # shapes (prompt_tokens_details.cached_tokens /
     # completion_tokens_details.reasoning_tokens) so cache/reasoning tokens are
     # not under-reported for providers that emit the nested form.
-    prompt_details = chat_usage.get("prompt_tokens_details") or {}
-    completion_details = chat_usage.get("completion_tokens_details") or {}
-    cached = int(chat_usage.get("cache_read_tokens") or prompt_details.get("cached_tokens") or 0)
+    normalized = normalize_usage(chat_usage) or {}
+    completion_details = normalized.get("completion_tokens_details") or {}
+    cached = normalized.get("cache_read_tokens")
     reasoning = int(
-        chat_usage.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
+        normalized.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
     )
     return {
         "input_tokens": input_tokens,
-        "input_tokens_details": {"cached_tokens": cached},
+        "input_tokens_details": {
+            # The public shape requires a numeric field, so an unreported
+            # measurement is serialized as 0 for SDK compatibility.
+            "cached_tokens": cached if cached is not None else 0,
+        },
         "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": reasoning},
         "total_tokens": total,

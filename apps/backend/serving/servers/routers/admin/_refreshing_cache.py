@@ -45,7 +45,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 from serving.utils.logging import get_logger
@@ -263,7 +263,7 @@ class RefreshingResult(Generic[T]):
             for _ in range(_MAX_ATTEMPTS):
                 generation = await self.store.generation(key) if self.store is not None else 0
                 value = await load()
-                computed_at = datetime.now(timezone.utc)
+                computed_at = datetime.now(UTC)
                 if await self._publish(key, value, computed_at, generation):
                     # Not under a generation a request has already seen pass,
                     # nor over a result a later generation produced.
