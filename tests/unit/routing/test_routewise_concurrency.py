@@ -87,21 +87,6 @@ class TestConcurrencyManager:
 
         assert mgr.limit == 2
 
-    def test_congestion_price_zero_when_available(self):
-        """Lambda = 0 when at least one slot is free."""
-        mgr = ConcurrencyManager(3)
-        assert mgr.get_congestion_price() == 0.0
-        mgr.try_acquire()
-        mgr.try_acquire()
-        assert mgr.get_congestion_price() == 0.0  # Still 1 slot left.
-
-    def test_congestion_price_inf_when_full(self):
-        """Lambda = inf when all slots are occupied."""
-        mgr = ConcurrencyManager(2)
-        mgr.try_acquire()
-        mgr.try_acquire()
-        assert mgr.get_congestion_price() == float("inf")
-
     def test_concurrent_acquire_release(self):
         """Thread safety: concurrent acquires never exceed the limit."""
         limit = 4

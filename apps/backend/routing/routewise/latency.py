@@ -128,20 +128,6 @@ class ProviderProfile:
         success_rate = 1.0 - (error_count / (success_count + error_count))
         return success_rate * f_success
 
-    def error_rate(self, current_time: float) -> float:
-        """Compute error rate within the current window.
-
-        Args:
-            current_time: Reference time for window pruning.
-
-        Returns:
-            Fraction of failed requests in [0, 1].  Returns 0.0 if no events.
-        """
-        self._prune(current_time)
-        if not self._events:
-            return 0.0
-        return self._error_count / len(self._events)
-
     def mean_with_errors_sec(
         self,
         current_time: float,

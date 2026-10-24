@@ -218,10 +218,6 @@ class HybridRouter:
                 f"registered backends are {sorted(self._backends)}"
             ) from None
 
-    def backends(self) -> tuple[RoutingBackend, ...]:
-        """Return every registered backend in registration order."""
-        return tuple(self._backends.values())
-
     # ------------------------------------------------------------------
     # Policy
     # ------------------------------------------------------------------
@@ -280,23 +276,6 @@ class HybridRouter:
             for backend_name in plan
             if backend_name in self._backends and backend_name != decision.backend
         )
-
-    def backend_for_request(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        routing_options: RoutingRequestOptions | None = None,
-        **params: Any,
-    ) -> RoutingBackend:
-        """Return the backend the policy selected for this request."""
-        decision = self.select_decision(
-            model_id,
-            messages,
-            routing_options=routing_options,
-            **params,
-        )
-        return self.backend(decision.backend)
 
     # ------------------------------------------------------------------
     # Requests
@@ -700,13 +679,6 @@ class HybridRouter:
             for endpoint_id, status in backend.get_provider_status().items():
                 merged[endpoint_id] = status
         return merged
-
-    def backend_status(self) -> dict[str, dict[str, dict[str, Any]]]:
-        """Return per-backend endpoint status for diagnostics."""
-        return {
-            backend_name: backend.get_provider_status()
-            for backend_name, backend in self._backends.items()
-        }
 
     def canonical_id(self, model_id: str) -> str:
         """Resolve ``model_id`` through the backends that declare the capability."""

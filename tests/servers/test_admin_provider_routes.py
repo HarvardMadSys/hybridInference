@@ -384,9 +384,6 @@ async def admin_client(monkeypatch):
         router_cache[change.canonical_model_id] = change.router
         return change.router
 
-    def set_router_override(model_id, strategy):
-        commit_router_strategy_change(prepare_router_strategy_change(model_id, strategy))
-
     def clear_router_override(model_id):
         strategy_state.pop(model_id, None)
         router_cache.pop(model_id, None)
@@ -394,7 +391,6 @@ async def admin_client(monkeypatch):
     registry.get_router = MagicMock(side_effect=get_router)
     registry.prepare_router_strategy_change = MagicMock(side_effect=prepare_router_strategy_change)
     registry.commit_router_strategy_change = MagicMock(side_effect=commit_router_strategy_change)
-    registry.set_router_override = MagicMock(side_effect=set_router_override)
     registry.clear_router_override = MagicMock(side_effect=clear_router_override)
     registry.refresh_route_tables = MagicMock(
         side_effect=fake_routewise.refresh_route_table,
@@ -1307,7 +1303,7 @@ async def test_apply_model_router_strategy_integrates_real_registry(admin_client
 
     routewise_router = registry.get_router("on-demand-only")
     assert isinstance(routewise_router, RouteWiseRouter)
-    assert registry.get_router_override("on-demand-only") == "routewise"
+    assert registry.get_router_name("on-demand-only") == "routewise"
     assert services.managed_routers == [routewise_router]
     assert not hasattr(routewise_router, "_model_router_override_id")
     assert not hasattr(routewise_router, "_model_router_fallback_strategy")
@@ -1319,7 +1315,7 @@ async def test_apply_model_router_strategy_integrates_real_registry(admin_client
     )
 
     assert registry.get_router("on-demand-only") is route_executor
-    assert registry.get_router_override("on-demand-only") is None
+    assert registry.get_router_name("on-demand-only") == "fixed"
     assert services.managed_routers == []
 
 
@@ -3740,7 +3736,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
         }
         assert runtime_model_id not in existing_routewise.route_candidates
         assert registry.get_router(runtime_model_id) is route_executor
-        assert registry.get_router_override(runtime_model_id) is None
+        assert registry.get_router_name(runtime_model_id) == "fixed"
         assert services.managed_routers == []
     finally:
         release_persist.set()
@@ -3758,7 +3754,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
         # model, or its background latency probe would start calling this
         # model's upstream too.
         assert set(existing_routewise.route_candidates) == {existing_model_id}
-        assert registry.get_router_override(runtime_model_id) == "routewise"
+        assert registry.get_router_name(runtime_model_id) == "routewise"
         assert services.managed_routers == [active_routewise]
     finally:
         await active_routewise.stop()
@@ -3806,7 +3802,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
     assert len(staged_routes) == 1
     assert staged_routes[0].published is False
     assert model_id not in route_executor.routes
-    assert registry.get_router_override(model_id) is None
+    assert registry.get_router_name(model_id) == "fixed"
     assert registry.get_router(model_id) is route_executor
     assert all(not isinstance(router, RouteWiseRouter) for router in registry.cached_routers())
     assert services.managed_routers == []

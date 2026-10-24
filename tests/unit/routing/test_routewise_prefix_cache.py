@@ -11,11 +11,10 @@ from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.prefix_cache import (
     Block,
-    CacheAwareCostEstimator,
     CacheScope,
-    CacheSignal,
     PrefixCacheCoordinator,
     SessionProviderPrefixMemory,
+    _CacheLocalityEstimator,
     build_blocks,
     canonicalize_prompt,
     longest_common_prefix_tokens,
@@ -148,7 +147,6 @@ class TestSessionProviderPrefixMemory:
         assert signal.has_history is False
         assert signal.matched_prefix_tokens == 0
         assert signal.meets_threshold is False
-        assert signal.expected_cached_tokens == 0.0
 
     def test_observe_then_lookup_matches_prefix(self):
         mem = SessionProviderPrefixMemory(min_match_tokens=150)
@@ -209,58 +207,82 @@ class TestSessionProviderPrefixMemory:
         assert mem.lookup(live, _blocks(("x", 10)), now=20.0).has_history is True
 
 
-@pytest.mark.unit
-class TestCacheAwareCostEstimator:
-    def _signal(self, **kw) -> CacheSignal:
-        base = {
-            "matched_prefix_tokens": 1000,
-            "meets_threshold": True,
-            "has_history": True,
-        }
-        base.update(kw)
-        return CacheSignal(**base)
+_PRICE_DELTA = 0.27 / 1_000_000.0
 
-    def test_applies_matched_prefix_discount(self):
-        est = CacheAwareCostEstimator()
-        # expected cached tokens = matched prefix (1000); no hit-rate / confidence.
-        result = est.adjust(0.01, self._signal(), price_delta=0.27 / 1_000_000.0)
-        assert result.expected_cached_tokens == pytest.approx(1000.0)
-        assert result.cache_discount == pytest.approx(1000 * 0.27 / 1_000_000.0)
-        assert result.adjusted_cost == pytest.approx(0.01 - 1000 * 0.27 / 1_000_000.0)
-        assert result.applied is True
+
+@pytest.mark.unit
+class TestPrefixCacheDiscount:
+    """The cached-token discount ``PrefixCacheCoordinator.evaluate`` prices in.
+
+    The discount is ``expected_cached_tokens * (p_in - p_cache)``, floored at the
+    cold cost. A frozen evidence clock keeps verified reuse at full confidence, so
+    the expected cached tokens are exactly the 64 the provider reported.
+    """
+
+    def _coord(self, *, enabled: bool = True, min_match_tokens: int = 1) -> PrefixCacheCoordinator:
+        return PrefixCacheCoordinator(
+            enabled=enabled,
+            memory=SessionProviderPrefixMemory(min_match_tokens=min_match_tokens),
+            block_size=8,
+            secret=SECRET,
+            tokenize=_chars,
+            evidence=_CacheLocalityEstimator(time_source=lambda: 0.0),
+        )
+
+    def _verified(self, coord: PrefixCacheCoordinator) -> tuple[CacheScope, tuple[Block, ...]]:
+        """Return a scope with verified reuse evidence and the next turn's blocks."""
+        prior = [{"role": "system", "content": "S" * 200}, {"role": "user", "content": "q1"}]
+        scope = coord.scope_for(session="s", provider_id="p", endpoint_id="e", model_profile="m")
+        coord.remember(scope, coord.build_blocks(prior))
+        coord.record_evidence(scope, cached_tokens=64)
+        return scope, coord.build_blocks([*prior, {"role": "user", "content": "q2"}])
+
+    def test_applies_evidence_bounded_discount(self):
+        coord = self._coord()
+        scope, blocks = self._verified(coord)
+        record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=_PRICE_DELTA)
+        assert record.matched_prefix_tokens > 64
+        assert record.expected_cached_tokens == pytest.approx(64.0)
+        assert record.cache_discount == pytest.approx(64 * _PRICE_DELTA)
+        assert record.would_apply is True
 
     def test_discount_floored_so_cost_never_negative(self):
-        est = CacheAwareCostEstimator()
-        result = est.adjust(0.01, self._signal(), price_delta=1.0)  # absurd delta
-        assert result.cache_discount == pytest.approx(0.01)
-        assert result.adjusted_cost == pytest.approx(0.0)
+        coord = self._coord()
+        scope, blocks = self._verified(coord)
+        record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=1.0)  # absurd delta
+        assert record.cache_discount == pytest.approx(0.01)
 
     def test_no_discount_below_threshold(self):
-        est = CacheAwareCostEstimator()
-        result = est.adjust(
-            0.01, self._signal(meets_threshold=False), price_delta=0.27 / 1_000_000.0
-        )
-        assert result.applied is False
-        assert result.adjusted_cost == pytest.approx(0.01)
+        coord = self._coord(min_match_tokens=100_000)
+        scope, blocks = self._verified(coord)
+        record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=_PRICE_DELTA)
+        assert record.meets_threshold is False
+        assert record.would_apply is False
+        assert record.cache_discount == 0.0
 
     def test_no_discount_when_price_delta_zero(self):
         # The minimax-m2.5 OpenRouter leg (cache_reads=0) must be a no-op.
-        est = CacheAwareCostEstimator()
-        result = est.adjust(0.01, self._signal(), price_delta=0.0)
-        assert result.applied is False
-        assert result.adjusted_cost == pytest.approx(0.01)
+        coord = self._coord()
+        scope, blocks = self._verified(coord)
+        record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=0.0)
+        assert record.would_apply is False
+        assert record.cache_discount == 0.0
 
-    def test_no_discount_for_cold_signal(self):
-        est = CacheAwareCostEstimator()
-        result = est.adjust(0.01, CacheSignal.empty(), price_delta=0.27 / 1_000_000.0)
-        assert result.applied is False
-        assert result.adjusted_cost == pytest.approx(0.01)
+    def test_no_discount_for_cold_scope(self):
+        coord = self._coord()
+        _scope_with_history, blocks = self._verified(coord)
+        cold = coord.scope_for(session="cold", provider_id="p", endpoint_id="e", model_profile="m")
+        record = coord.evaluate(cold, blocks, cold_cost=0.01, price_delta=_PRICE_DELTA)
+        assert record.has_history is False
+        assert record.would_apply is False
+        assert record.cache_discount == 0.0
 
     def test_disabled_skips_discount(self):
-        est = CacheAwareCostEstimator()
-        result = est.adjust(0.01, self._signal(), price_delta=0.27 / 1_000_000.0, enabled=False)
-        assert result.applied is False
-        assert result.adjusted_cost == pytest.approx(0.01)
+        coord = self._coord(enabled=False)
+        scope, blocks = self._verified(coord)
+        record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=_PRICE_DELTA)
+        assert record.would_apply is False
+        assert record.cache_discount == 0.0
 
 
 @pytest.mark.unit

@@ -183,11 +183,6 @@ class TestBootstrapInitialization:
                 "serving.servers.bootstrap.ModelRouterRegistry",
                 wraps=ModelRouterRegistry,
             ) as registry_factory,
-            patch.object(
-                ModelRouterRegistry,
-                "bind_fixed_router",
-                side_effect=AssertionError("bootstrap must inject shared FixedRouter"),
-            ),
         ):
             services = await bootstrap.initialize()
 

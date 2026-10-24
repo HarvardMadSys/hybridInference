@@ -21,6 +21,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
+def _elephants(tracker: PrefillLoadTracker, endpoint_id: str) -> int:
+    """Return the elephant count the tracker's load snapshot reports for an endpoint."""
+    return tracker.snapshot().get(endpoint_id, {}).get("elephants", 0)
+
+
 def _cfg(mid: str, provider: str = "p", base_url: str = "http://test") -> ModelConfig:
     return ModelConfig(
         id=mid,
@@ -173,11 +178,11 @@ def test_elephant_counters():
     assert not t.is_elephant(999)
     assert t.is_elephant(1000)
     small = t.acquire("e1", 10)
-    assert t.elephants("e1") == 0
+    assert _elephants(t, "e1") == 0
     big = t.acquire("e1", 5000)
-    assert t.elephants("e1") == 1
+    assert _elephants(t, "e1") == 1
     t.release(big)
-    assert t.elephants("e1") == 0
+    assert _elephants(t, "e1") == 0
     t.release(small)
 
 
@@ -467,7 +472,7 @@ def test_warm_continuation_not_barred_by_elephant_limit():
     t.release(t.acquire("warm", 490_000, affinity_key="caller"), prefill_confirmed=True)
     # Someone else's cold mega-prefill saturates 'warm'.
     t.acquire("warm", 400_000, affinity_key="other")
-    assert t.elephants("warm") == 1
+    assert _elephants(t, "warm") == 1
     # The continuation is only 10k un-cached here, so it is not an elephant
     # on 'warm' and the saturation restriction does not exclude it.
     assert t.uncached_estimate("warm", 500_000, "caller") == 10_000
@@ -1038,7 +1043,7 @@ def test_elephant_gate_is_not_fooled_by_a_sibling_conversation():
     # An unrelated conversation from the same key is a cold prefill.
     other = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-b")
     assert other.elephant is True
-    assert t.elephants("ep") == 1
+    assert _elephants(t, "ep") == 1
 
 
 @pytest.mark.unit
@@ -1051,7 +1056,7 @@ def test_elephant_gate_still_clears_a_real_continuation():
     )
     warm = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-a")
     assert warm.elephant is False
-    assert t.elephants("ep") == 0
+    assert _elephants(t, "ep") == 0
 
 
 @pytest.mark.unit

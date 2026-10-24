@@ -116,9 +116,6 @@ def _effective_route_source(router: Any) -> Any:
     if callable(iterate):
         return router
     route_table = getattr(router, "route_table", None)
-    if route_table is None:
-        # One-release compatibility for the former attribute name.
-        route_table = getattr(router, "fixed_router", None)
     return route_table if callable(getattr(route_table, "iter_effective_routes", None)) else None
 
 
@@ -871,10 +868,6 @@ class LocalBackend(TreeBackend):
             return False
         return self._observation_scope.includes_endpoint(obs.endpoint_id)
 
-    def adapter_in_scope(self, adapter: Any) -> bool:
-        """Return whether ``adapter`` is inside the declared local range."""
-        return self._observation_scope.includes_adapter(adapter)
-
     def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
         """Return the declared local endpoints, or None when none were declared.
 
@@ -1102,10 +1095,6 @@ class FixedCloudBackend(CloudBackend):
             return False
         return self._observation_scope.includes_endpoint(obs.endpoint_id)
 
-    def adapter_in_scope(self, adapter: Any) -> bool:
-        """Return whether ``adapter`` is inside the declared cloud range."""
-        return self._observation_scope.includes_adapter(adapter)
-
     def refresh_route_table(self) -> None:
         """Forward the refresh and re-derive the range it may have changed.
 
@@ -1196,8 +1185,6 @@ class RouteWiseCloudBackend(CloudBackend):
     def _bind_view(self) -> None:
         """Bind the current scoped view to the wrapped router."""
         attach = getattr(self._router, "attach_route_table", None)
-        if attach is None:
-            attach = getattr(self._router, "attach_fixed_router", None)
         if callable(attach):
             attach(self._view, model_scope=self._model_scope)
 
@@ -1269,9 +1256,3 @@ class RouteWiseCloudBackend(CloudBackend):
         if self._model_scope is not None and not self.owns_model(obs.model_id):
             return False
         return obs.endpoint_id in self.allowed_endpoints()
-
-    def adapter_in_scope(self, adapter: Any, weight: float = 1.0) -> bool:
-        """Return whether ``adapter`` is inside the declared cloud range."""
-        if not adapter_in_endpoint_scope(adapter, self._endpoint_scope):
-            return False
-        return self._view.includes_adapter(adapter, weight)

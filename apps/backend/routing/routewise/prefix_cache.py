@@ -8,14 +8,13 @@ estimation:
 - :class:`Block` / :func:`build_blocks` -- turn a canonical prompt into a
   metadata-only block-hash sequence (HMAC of fixed-size token chunks).
 - :class:`CacheSignal` -- the per-candidate lookup result: how many prefix
-  tokens match the scope's most recent request. Following the paper cost layer,
-  a matched prefix is treated as cached (no hit-probability model).
+  tokens match the scope's most recent request.
 - :class:`SessionProviderPrefixMemory` -- a bounded in-memory store of the most
   recent successful request's block sequence per scope, with TTL + LRU
   eviction. ``lookup`` returns a :class:`CacheSignal`; ``observe`` records a
   selected-success outcome for future prefix matches.
-- :class:`CacheAwareCostEstimator` / :func:`price_delta_per_token` -- turn a
-  :class:`CacheSignal` into the paper's cached-token cost discount.
+- :func:`price_delta_per_token` -- the per-token saving behind the paper's
+  cached-token cost discount.
 
 This module never touches routing, billing, or provider transport directly. It
 stores metadata only: HMAC block digests and token counts -- never raw prompt
@@ -464,9 +463,8 @@ class CacheSignal:
     """Per-candidate prefix-cache lookup result.
 
     ``matched_prefix_tokens`` is a deterministic exact prefix match against the
-    scope's most recent request. Following the paper's cost layer, a matched
-    prefix that clears the minimum-cacheable threshold is treated as cached -- no
-    hit-probability model. A cold lookup returns :meth:`empty`.
+    scope's most recent request; ``meets_threshold`` says whether it clears the
+    minimum-cacheable length. A cold lookup returns :meth:`empty`.
     """
 
     matched_prefix_tokens: int
@@ -478,13 +476,6 @@ class CacheSignal:
     def empty(cls) -> CacheSignal:
         """Return the cold signal used when a scope has no usable history."""
         return cls(matched_prefix_tokens=0, meets_threshold=False, has_history=False)
-
-    @property
-    def expected_cached_tokens(self) -> float:
-        """Return the estimated cached input tokens (the matched prefix length)."""
-        if not self.has_history or not self.meets_threshold:
-            return 0.0
-        return float(max(self.matched_prefix_tokens, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -617,57 +608,6 @@ def price_delta_per_token(
     return (prompt - cached) / 1_000_000.0
 
 
-@dataclass(frozen=True, slots=True)
-class CacheAdjustment:
-    """Outcome of applying a cache signal to one candidate's cold cost."""
-
-    adjusted_cost: float
-    cold_cost: float
-    cache_discount: float
-    expected_cached_tokens: float
-    applied: bool
-
-
-class CacheAwareCostEstimator:
-    """Apply the paper cost layer's cached-token discount to one candidate."""
-
-    def adjust(
-        self,
-        cold_cost: float,
-        signal: CacheSignal,
-        price_delta: float,
-        *,
-        enabled: bool = True,
-    ) -> CacheAdjustment:
-        """Return the cache-adjusted cost for one candidate provider.
-
-        The matched prefix is treated as cached, so the discount is
-        ``expected_cached_tokens * (p_in - p_cache)`` -- exactly the paper's
-        on-demand effective cost ``p_in*(n - cached) + p_cache*cached`` -- floored
-        so the cost cannot go negative. It is skipped (cost unchanged) when
-        disabled, when there is no usable match, or when the provider offers no
-        per-token cache discount.
-        """
-        cold = max(float(cold_cost), 0.0)
-        expected = signal.expected_cached_tokens
-        if not enabled or expected <= 0.0 or price_delta <= 0.0:
-            return CacheAdjustment(
-                adjusted_cost=cold,
-                cold_cost=cold,
-                cache_discount=0.0,
-                expected_cached_tokens=expected,
-                applied=False,
-            )
-        discount = min(expected * price_delta, cold)
-        return CacheAdjustment(
-            adjusted_cost=cold - discount,
-            cold_cost=cold,
-            cache_discount=discount,
-            expected_cached_tokens=expected,
-            applied=discount > 0.0,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Prefix-cache coordinator
 # ---------------------------------------------------------------------------
@@ -708,10 +648,10 @@ class PrefixCacheCostRecord:
 class PrefixCacheCoordinator:
     """Router-facing coordinator for session-scoped prefix-cache estimates.
 
-    Owns the bounded memory and the cost estimator and centralizes the request
-    mapping decisions (which fields form a scope, which are hashed). Sensitive
-    scope fields (user, project, session, params) are HMAC hashed so no raw
-    identifier is stored.
+    Owns the bounded memory and centralizes the request mapping decisions
+    (which fields form a scope, which are hashed). Sensitive scope fields
+    (user, project, session, params) are HMAC hashed so no raw identifier is
+    stored.
 
     The coordinator combines two models:
 
@@ -726,7 +666,6 @@ class PrefixCacheCoordinator:
         *,
         enabled: bool = False,
         memory: SessionProviderPrefixMemory | None = None,
-        estimator: CacheAwareCostEstimator | None = None,
         block_size: int = DEFAULT_BLOCK_SIZE_TOKENS,
         secret: bytes | None = None,
         tokenize: Callable[[str], Sequence[int]] = tokenize_text,
@@ -735,7 +674,6 @@ class PrefixCacheCoordinator:
     ) -> None:
         self.enabled = bool(enabled)
         self._memory = memory if memory is not None else SessionProviderPrefixMemory()
-        self._estimator = estimator if estimator is not None else CacheAwareCostEstimator()
         self._block_size = int(block_size)
         self._secret = secret if secret is not None else _PROCESS_SECRET
         self._tokenize = tokenize
@@ -846,9 +784,8 @@ class PrefixCacheCoordinator:
 
         effective_expected = float(learned_tokens) if learned_tokens > 0 else 0.0
 
-        # Recompute the adjustment using the evidence-bounded expected tokens.
-        # We bypass the estimator's internal signal and compute directly so the
-        # cost layer still drives the final discount.
+        # The discount applies to the evidence-bounded expected tokens, floored
+        # so the cost cannot go negative.
         cold = max(float(cold_cost), 0.0)
         if effective_expected <= 0.0 or price_delta <= 0.0 or not self.enabled:
             return PrefixCacheCostRecord(
@@ -1032,8 +969,6 @@ __all__ = [
     "DEFAULT_MIN_MATCH_TOKENS",
     "DEFAULT_TTL_SEC",
     "Block",
-    "CacheAdjustment",
-    "CacheAwareCostEstimator",
     "CacheLocalityEvidenceState",
     "CacheScope",
     "CacheSignal",

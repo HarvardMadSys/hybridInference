@@ -785,11 +785,6 @@ class PrefillLoadTracker:
         with self._lock:
             return {endpoint_id: self._backlog.get(endpoint_id, 0) for endpoint_id in endpoint_ids}
 
-    def elephants(self, endpoint_id: str) -> int:
-        """Return the number of elephants currently prefilling on an endpoint."""
-        with self._lock:
-            return self._elephants.get(endpoint_id, 0)
-
     def acquire(
         self,
         endpoint_id: str,

@@ -7,6 +7,11 @@ import logging
 import pytest
 
 
+def _switch_strategy(reg, model_id: str, strategy: str) -> None:
+    """Switch ``model_id`` to ``strategy`` through the registry's prepare/commit API."""
+    reg.commit_router_strategy_change(reg.prepare_router_strategy_change(model_id, strategy))
+
+
 @pytest.mark.unit
 class TestModelRouterRegistry:
     def test_public_model_metadata_accessors_do_not_construct_unknown_router(self):
@@ -107,20 +112,14 @@ class TestModelRouterRegistry:
         validate.assert_called_once_with("fixed", {}, dependencies=None)
         build.assert_not_called()
 
-    def test_get_before_bind_is_not_cached_and_recovers_after_compat_bind(self):
+    def test_get_without_shared_router_raises_and_caches_nothing(self):
         from routing.model_router_registry import ModelRouterRegistry
-        from routing.routers import FixedRouter
 
         reg = ModelRouterRegistry(models_config={"model": {"router": "fixed"}})
 
         with pytest.raises(RuntimeError, match="shared FixedRouter is not registered"):
             reg.get_router("model")
         assert reg.registered_models() == {}
-
-        shared_fixed = FixedRouter()
-        reg.bind_fixed_router(shared_fixed)
-
-        assert reg.get_router("model") is shared_fixed
 
     def test_get_before_bind_reports_invalid_params_before_missing_shared_router(self):
         from pydantic import ValidationError
@@ -139,32 +138,6 @@ class TestModelRouterRegistry:
         with pytest.raises(ValidationError):
             reg.get_router("model")
         assert reg.registered_models() == {}
-
-    def test_compat_bind_is_idempotent_but_rejects_a_different_router(self):
-        from routing.model_router_registry import ModelRouterRegistry
-        from routing.routers import FixedRouter
-
-        shared_fixed = FixedRouter()
-        reg = ModelRouterRegistry(
-            models_config={"model": {}},
-            shared_fixed_router=shared_fixed,
-        )
-
-        reg.bind_fixed_router(shared_fixed)
-        with pytest.raises(ValueError, match="different shared FixedRouter"):
-            reg.bind_fixed_router(FixedRouter())
-
-        assert reg.get_router("model") is shared_fixed
-
-    def test_compat_bind_rejects_registration_after_cache_is_populated(self):
-        from routing.model_router_registry import ModelRouterRegistry
-        from routing.routers import FixedRouter
-
-        reg = ModelRouterRegistry(models_config={"model": {}})
-        reg._cache["model"] = FixedRouter()
-
-        with pytest.raises(RuntimeError, match="before router lookup"):
-            reg.bind_fixed_router(FixedRouter())
 
     def test_failed_override_construction_preserves_previous_router_and_state(self):
         from pydantic import BaseModel
@@ -191,9 +164,8 @@ class TestModelRouterRegistry:
 
         try:
             with pytest.raises(RuntimeError, match="constructor failed"):
-                reg.set_router_override("model", strategy)
+                _switch_strategy(reg, "model", strategy)
 
-            assert reg.get_router_override("model") is None
             assert reg.get_router_name("model") == "fixed"
             assert reg.get_router("model") is previous
             assert previous is shared_fixed
@@ -230,7 +202,7 @@ class TestModelRouterRegistry:
         )
 
         try:
-            reg.set_router_override("model", strategy)
+            _switch_strategy(reg, "model", strategy)
             first = reg.get_router("model")
             second = reg.get_router("model")
 
@@ -264,7 +236,7 @@ class TestModelRouterRegistry:
         assert change.previous_override is None
         assert change.previous_router is fixed
         assert isinstance(change.router, RouteWiseRouter)
-        assert reg.get_router_override("model") is None
+        assert reg.get_router_name("model") == "fixed"
         assert reg.get_router("model") is fixed
         assert reg.get_router("alias") is fixed
         with pytest.raises(FrozenInstanceError):
@@ -286,7 +258,7 @@ class TestModelRouterRegistry:
         committed = reg.commit_router_strategy_change(change)
 
         assert committed is change.router
-        assert reg.get_router_override("alias") == "routewise"
+        assert reg.get_router_name("alias") == "routewise"
         assert reg.registered_models() == {"model": "RouteWiseRouter"}
         assert reg.get_router("alias") is committed
         assert reg.registered_models() == {
@@ -326,7 +298,7 @@ class TestModelRouterRegistry:
             models_config={"model": {"router": "fixed"}},
             shared_fixed_router=fixed,
         )
-        reg.set_router_override("model", "routewise")
+        _switch_strategy(reg, "model", "routewise")
 
         change = reg.prepare_router_strategy_change("model", None)
 
@@ -336,7 +308,7 @@ class TestModelRouterRegistry:
         assert change.previous_router is reg.get_router("model")
         assert change.router is fixed
         reg.commit_router_strategy_change(change)
-        assert reg.get_router_override("model") is None
+        assert reg.get_router_name("model") == "fixed"
         assert reg.get_router("model") is fixed
 
     def test_configured_strategy_is_normalized_to_no_runtime_override(self):
@@ -348,13 +320,13 @@ class TestModelRouterRegistry:
             models_config={"model": {"router": "fixed"}},
             shared_fixed_router=fixed,
         )
-        reg.set_router_override("model", "routewise")
+        _switch_strategy(reg, "model", "routewise")
 
         change = reg.prepare_router_strategy_change("model", "fixed")
         reg.commit_router_strategy_change(change)
 
         assert change.target_override is None
-        assert reg.get_router_override("model") is None
+        assert reg.get_router_name("model") == "fixed"
         assert reg.runtime_override_for_router(fixed) is None
 
     def test_clear_override_evicts_without_seeding_and_fences_prepared_change(self):
@@ -391,7 +363,7 @@ class TestModelRouterRegistry:
             alias_to_model={"alias": "model"},
             shared_fixed_router=fixed,
         )
-        reg.set_router_override("alias", "routewise")
+        _switch_strategy(reg, "alias", "routewise")
         routewise = reg.get_router("alias")
 
         assert reg.runtime_override_for_router(routewise) == RouterRuntimeOverride(
@@ -417,8 +389,8 @@ class TestModelRouterRegistry:
             },
             shared_fixed_router=fixed,
         )
-        reg.set_router_override("first", "fixed")
-        reg.set_router_override("second", "fixed")
+        _switch_strategy(reg, "first", "fixed")
+        _switch_strategy(reg, "second", "fixed")
 
         with pytest.raises(RuntimeError, match="multiple effective runtime overrides"):
             reg.runtime_override_for_router(fixed)
@@ -441,10 +413,10 @@ class TestModelRouterRegistry:
         first_routewise = reg.get_router("model")
         health_registry.record_success("shared:endpoint")
 
-        reg.set_router_override("model", "fixed")
+        _switch_strategy(reg, "model", "fixed")
         assert reg.get_router("model") is fixed
 
-        reg.set_router_override("model", "routewise")
+        _switch_strategy(reg, "model", "routewise")
         rebuilt_routewise = reg.get_router("model")
 
         assert rebuilt_routewise is not first_routewise
@@ -574,22 +546,6 @@ class TestModelRouterRegistry:
         router = reg.get_router("glm-4.7")
         assert isinstance(router, RouteWiseRouter)
 
-    def test_configured_router_name_ignores_runtime_override(self):
-        from routing.model_router_registry import ModelRouterRegistry
-        from routing.routers import FixedRouter
-
-        shared_fixed = FixedRouter()
-        reg = ModelRouterRegistry(
-            models_config={"glm-4.7": {"router": "fixed"}},
-            default_router_name="fixed",
-            shared_fixed_router=shared_fixed,
-        )
-
-        reg.set_router_override("glm-4.7", "routewise")
-
-        assert reg.get_router_name("glm-4.7") == "routewise"
-        assert reg.get_configured_router_name("glm-4.7") == "fixed"
-
     def test_clear_router_override_restores_configured_strategy(self):
         from routing.model_router_registry import ModelRouterRegistry
         from routing.routers import FixedRouter
@@ -601,11 +557,10 @@ class TestModelRouterRegistry:
             shared_fixed_router=fixed_router,
         )
 
-        reg.set_router_override("glm-4.7", "routewise")
+        _switch_strategy(reg, "glm-4.7", "routewise")
         routewise_router = reg.get_router("glm-4.7")
         reg.clear_router_override("glm-4.7")
 
-        assert reg.get_router_override("glm-4.7") is None
         assert reg.get_router_name("glm-4.7") == "fixed"
         assert reg.get_router("glm-4.7") is fixed_router
         assert reg.get_router("glm-4.7") is not routewise_router

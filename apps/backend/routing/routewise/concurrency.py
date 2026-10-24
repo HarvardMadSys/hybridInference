@@ -8,10 +8,6 @@ The K=0 design is the simplest correct model for concurrency-limited
 subscriptions.  The upgrade path to K>0 (CAPQ-style queue with eviction)
 is clean because K=0 is the degenerate case of K>0.
 
-Congestion pricing follows the binary model:
-- ``lambda = 0`` when at least one slot is available.
-- ``lambda = inf`` when all slots are occupied.
-
 Thread safety: all reads and writes of mutable state (``_limit``, ``_active``,
 and the observability counters) are protected by a ``threading.Lock``.  Critical
 sections are short (no awaits held), matching the router-owned lock
@@ -90,13 +86,6 @@ class ConcurrencyManager:
         with self._lock:
             if self._active > 0:
                 self._active -= 1
-
-    def get_congestion_price(self) -> float:
-        """K=0 binary congestion price: 0.0 when available, inf when full."""
-        with self._lock:
-            if self._active < self._limit:
-                return 0.0
-            return float("inf")
 
     def get_stats(self) -> dict[str, int]:
         """Return observability snapshot.
