@@ -202,17 +202,16 @@ def _coerce_user_row(row: Any) -> Row | None:
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool, *, fence_secret: str | None = None) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         """Initialize with a shared asyncpg pool.
+
+        The LogStore owns the erasure-fence schema and tombstone checks; this
+        store owns the operational hard-delete claim.
 
         Args:
             pool: Shared asyncpg pool.
-            fence_secret: Retained for constructor compatibility. The
-                LogStore owns erasure-fence schema and tombstone checks;
-                this store owns the operational hard-delete claim.
         """
         self._pool = pool
-        self.fence_secret = fence_secret
         # Which account columns the users table has, read from the catalog
         # by initialize(); until then, the schema this release creates.
         self._set_account_schema(COMPLETE_ACCOUNT_SCHEMA)

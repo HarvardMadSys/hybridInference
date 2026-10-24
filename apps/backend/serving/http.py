@@ -185,26 +185,6 @@ class AsyncHTTPClient:
         assert last_err is not None
         raise last_err
 
-    async def json_get(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout: aiohttp.ClientTimeout | None = None,
-    ) -> dict[str, Any]:
-        """Send a GET request and return JSON response.
-
-        ``timeout=None`` falls back to the session default (see json_post).
-        """
-        session = await self._ensure_session()
-        async with session.get(
-            url, headers=headers, timeout=timeout if timeout is not None else _aiohttp_sentinel
-        ) as resp:
-            resp.raise_for_status()
-            from typing import cast
-
-            return cast("dict[str, Any]", await resp.json())
-
     async def stream_post(
         self,
         url: str,

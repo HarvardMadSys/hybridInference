@@ -43,12 +43,6 @@ class _MockHTTPClient:
         self.calls.append(("POST", url))
         return self.json_responses[url]
 
-    async def json_get(
-        self, url: str, *, headers: dict[str, str] | None = None, timeout=None
-    ) -> Any:
-        self.calls.append(("GET", url))
-        return self.json_responses[url]
-
     async def stream_post(
         self,
         url: str,

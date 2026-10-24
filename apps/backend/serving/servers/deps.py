@@ -226,10 +226,7 @@ def get_completions_logger(
     if services.completions_logger is None:
         from serving.servers.routers.completions_logging import CompletionsLogger as _CL
 
-        services.completions_logger = _CL(
-            log_store=services.log_store,
-            model_router_registry=services.model_router_registry,
-        )
+        services.completions_logger = _CL(log_store=services.log_store)
     return services.completions_logger
 
 

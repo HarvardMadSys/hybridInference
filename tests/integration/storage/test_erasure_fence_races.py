@@ -682,7 +682,7 @@ async def test_resume_race_resume_wins(fence_store):
 
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    op_store = PostgresOperationalStore(pool, fence_secret=_SECRET)
+    op_store = PostgresOperationalStore(pool)
     await op_store.resume_user(
         _OWNER, admin_ip="127.0.0.1", admin_id="admin", reason="test", email="a@b.com"
     )
