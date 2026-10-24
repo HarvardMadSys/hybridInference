@@ -66,7 +66,6 @@ from routing.routers import (
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
-from serving.pricing import effective_pricing
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -80,7 +79,6 @@ from .candidates import (
     QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
-    endpoint_id_for_adapter as routewise_endpoint_id_for_adapter,
 )
 from .concurrency import ConcurrencyManager
 from .decisions import (
@@ -430,7 +428,6 @@ class RouteWiseRouter:
         self._model_routewise_pools: dict[str, str] = {}
         self.classified: dict[str, list[tuple[Any, float, ProviderType]]] = {}
         self._adapter_provider_type: dict[int, ProviderType] = {}
-        self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
         self._endpoint_models: dict[str, set[str]] = {}
         # Canonical model ids with at least one quota route. The envelope is
@@ -634,7 +631,6 @@ class RouteWiseRouter:
         self.route_candidates = {}
         self._model_routewise_pools = {}
         self._adapter_provider_type = {}
-        self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
         self._endpoint_models = {}
         self._quota_bearing_models = set()
@@ -649,7 +645,6 @@ class RouteWiseRouter:
                 adapter = candidate.adapter
                 self._adapter_provider_type[id(adapter)] = candidate.provider_type
                 endpoint_id = candidate.endpoint_id
-                self._adapter_endpoint_ids[id(adapter)] = endpoint_id
                 self._endpoint_adapter[endpoint_id] = adapter
                 self._endpoint_models.setdefault(endpoint_id, set()).add(model_id)
                 if endpoint_id not in self._latency_profiles:
@@ -1126,18 +1121,6 @@ class RouteWiseRouter:
     # Classification and helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _endpoint_id(adapter: BaseAdapter) -> str:
-        return routewise_endpoint_id_for_adapter(adapter)
-
-    def _candidate_endpoint_id(self, adapter: BaseAdapter) -> str:
-        return self._adapter_endpoint_ids.get(id(adapter), self._endpoint_id(adapter))
-
-    @staticmethod
-    def _pricing(adapter: BaseAdapter) -> tuple[float, float]:
-        pricing = effective_pricing(adapter.config) or {}
-        return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
-
     def _classify_all(self) -> None:
         route_table = self.route_table
         if route_table is None:
@@ -1518,21 +1501,6 @@ class RouteWiseRouter:
             messages if isinstance(messages, list) else None,
             tools=params.get("tools") if params is not None else None,
             response_format=params.get("response_format") if params is not None else None,
-        )
-
-    def _api_cost_for_adapter(
-        self,
-        adapter: BaseAdapter,
-        *,
-        prompt_tokens: int,
-        predicted_output_tokens: float,
-    ) -> float:
-        p_in, p_out = self._pricing(adapter)
-        return api_request_cost_usd(
-            prompt_tokens=prompt_tokens,
-            predicted_output_tokens=predicted_output_tokens,
-            input_price_per_m=p_in,
-            output_price_per_m=p_out,
         )
 
     @staticmethod

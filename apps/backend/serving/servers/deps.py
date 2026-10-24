@@ -270,18 +270,6 @@ def get_cost_tracker(
     return _CT(op_store=services.operational_store, pricing=pricing)
 
 
-def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
-    """Check if database connection is active.
-
-    Args:
-        db_logger: DatabaseLogger instance from get_db_logger dependency
-
-    Returns:
-        True if database is connected and pool is available, False otherwise
-    """
-    return db_logger is not None and db_logger.pool is not None
-
-
 async def get_current_user(
     authorization: str | None = Header(None),
     op_store=Depends(get_operational_store),
