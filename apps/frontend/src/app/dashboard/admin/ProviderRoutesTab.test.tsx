@@ -48,6 +48,8 @@ vi.mock('@/lib/api/admin', () => ({
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
   updateProviderRouteCandidate: vi.fn(),
+  updateProviderRouteCapabilities: vi.fn(),
+  resetProviderRouteCapabilities: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
   verifyProviderRouteModel: vi.fn(),
@@ -79,6 +81,8 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteCapabilities,
+  resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
@@ -87,6 +91,8 @@ import {
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
 import { chooseValue, openOptions } from '@/test-utils/select';
+import toast from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 
 // A deployment whose Featherless plan is concurrency-based and whose OpenRouter
 // account is used on demand or with a concurrency cap (PROVIDER_ROUTE_TYPES).
@@ -162,6 +168,14 @@ function fillRuntimeModelCapabilities() {
   chooseValue(screen.getByLabelText('Tool calling'), 'yes');
 }
 
+// What the fixture route serves with; an added route starts from it.
+const ROUTE_CAPABILITIES = {
+  context_length: 196608,
+  max_output_length: 8192,
+  input_modalities: ['text'],
+  supports_tools: true,
+};
+
 const route = {
   model_id: 'minimax-fast',
   strategy: 'routewise',
@@ -189,6 +203,9 @@ const route = {
   source: 'yaml' as const,
   updated_at: null,
   updated_by: null,
+  capabilities: ROUTE_CAPABILITIES,
+  capabilities_baseline: ROUTE_CAPABILITIES,
+  capabilities_overridden: false,
 };
 
 const quotaRoute = {
@@ -1152,6 +1169,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1281,6 +1299,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1372,6 +1391,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -1826,7 +1846,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
   });
 
-  it('does not ask for capabilities when adding a route to an existing model', async () => {
+  it("asks for an added route's own capabilities, starting from the first route's", async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -1838,8 +1858,18 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
     await screen.findByRole('dialog', { name: 'Add provider route' });
-    expect(screen.queryByLabelText('Context length (tokens)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Tool calling')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Context length (tokens)')).toHaveValue(196608);
+    expect(screen.getByLabelText('Max output (tokens)')).toHaveValue(8192);
+    expect(screen.getByLabelText('Image input')).toHaveAttribute('data-value', 'no');
+    expect(screen.getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+
+    fireEvent.change(screen.getByLabelText('Context length (tokens)'), {
+      target: { value: '0' },
+    });
+    expect(
+      screen.getByText('Enter a whole number of tokens from 1 to 10,000,000.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
   });
 
   it('does not filter create-model providers by the selected model routes', async () => {
@@ -1914,6 +1944,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
@@ -1999,6 +2030,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2050,6 +2082,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2398,5 +2431,201 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Override not applied')).toBeInTheDocument();
     expect(screen.queryByText('Override active')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reset config' })).toBeInTheDocument();
+  });
+
+  describe('route capabilities', () => {
+    const WIDE = {
+      context_length: 1048576,
+      max_output_length: 65536,
+      input_modalities: ['text', 'image'],
+      supports_tools: true,
+    };
+
+    const renderWithRoute = async (shown = route) => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [shown],
+      });
+      render(<ProviderRoutesTab />);
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Edit minimax-fast:featherless-api capabilities',
+        }),
+      );
+      return screen.findByRole('dialog', { name: 'Route capabilities' });
+    };
+
+    it('edits a route from what it serves now', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute();
+
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(196608);
+      expect(within(dialog).getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+      expect(
+        within(dialog).getByText('From config: 196,608 context · 8,192 output · text only · tools'),
+      ).toBeInTheDocument();
+      expect(within(dialog).queryByRole('button', { name: 'Reset to config' })).toBeNull();
+
+      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
+        target: { value: '1048576' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      chooseValue(within(dialog).getByLabelText('Image input'), 'yes');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          WIDE,
+        );
+      });
+      expect(await screen.findByText('Capabilities edited')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Route capabilities' })).toBeNull();
+    });
+
+    it('resets an edited route to its config values', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      expect(screen.getByText('Capabilities edited')).toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
+
+      await waitFor(() => {
+        expect(resetProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+        );
+      });
+      await waitFor(() => expect(screen.queryByText('Capabilities edited')).toBeNull());
+    });
+
+    it('says which value blocks saving', async () => {
+      const dialog = await renderWithRoute();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '262144' },
+      });
+
+      expect(
+        within(dialog).getByText('Max output cannot exceed the context length.'),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    // As models.yaml can declare a route: inputs the form has no field for.
+    const MEDIA = { ...ROUTE_CAPABILITIES, input_modalities: ['text', 'audio', 'video'] };
+    const MEDIA_NOTE = 'Also accepts audio and video input, which this form leaves as declared.';
+
+    it('keeps the audio and video a route accepts when saving its other values', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+      });
+
+      expect(
+        within(dialog).getByText(
+          'From config: 196,608 context · 8,192 output · text, audio and video · tools',
+        ),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText(MEDIA_NOTE)).toBeInTheDocument();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      chooseValue(within(dialog).getByLabelText('Image input'), 'yes');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 65536,
+            input_modalities: ['text', 'image', 'audio', 'video'],
+          },
+        );
+      });
+    });
+
+    it('starts an added route with the audio and video the first route accepts', async () => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [{ ...route, capabilities: MEDIA, capabilities_baseline: MEDIA }],
+      });
+      vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+      vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+        ...route,
+        route_id: 'minimax-fast:openrouter-api',
+        route_type: 'on_demand',
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        endpoint_id: 'minimax-fast:openrouter-api',
+        source: 'runtime',
+        capabilities: MEDIA,
+      });
+
+      render(<ProviderRoutesTab />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+      const form = await screen.findByRole('dialog', { name: 'Add provider route' });
+      expect(within(form).getByText(MEDIA_NOTE)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Provider model ID'), {
+        target: { value: 'minimax/minimax-m2.5' },
+      });
+      chooseValue(screen.getByLabelText('OpenRouter routing'), 'sort:throughput');
+      fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+      await screen.findByRole('button', { name: 'Verified' });
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+      await waitFor(() => {
+        expect(createProviderRouteCandidate).toHaveBeenCalledWith(
+          'minimax-fast',
+          expect.objectContaining({ capabilities: MEDIA }),
+        );
+      });
+    });
+
+    it("shows the gateway's reason when a capability change is refused", async () => {
+      const reason =
+        "duplicate provider route id 'minimax-fast:featherless-api'; set unique endpoint_id " +
+        'values before editing this route';
+      // The shared client reads a typed 409 as a signup conflict; the dialog must not.
+      vi.mocked(updateProviderRouteCapabilities).mockRejectedValue(
+        new APIError('USER_ALREADY_EXISTS', reason, 409),
+      );
+      const dialog = await renderWithRoute();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalledWith(`Capability update failed: ${reason}`);
+      });
+      expect(screen.getByRole('dialog', { name: 'Route capabilities' })).toBeInTheDocument();
+    });
   });
 });
