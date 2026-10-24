@@ -31,7 +31,7 @@ under "Repository layout". Two things it does not tell you:
 
 ## 3. Getting set up
 
-Prerequisites: Python 3.10–3.13 (3.12 recommended) and [uv](https://github.com/astral-sh/uv).
+Prerequisites: Python 3.11–3.13 (3.12 recommended) and [uv](https://github.com/astral-sh/uv).
 
 ```bash
 make setup-dev

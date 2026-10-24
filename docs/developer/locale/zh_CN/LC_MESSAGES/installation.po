@@ -68,10 +68,10 @@ msgstr "从源码运行"
 
 #: ../developer/installation.md
 msgid ""
-"Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and "
+"Python 3.11–3.13 (3.12 recommended, per `pyproject.toml`) and "
 "[uv](https://github.com/astral-sh/uv)"
 msgstr ""
-"Python 3.10–3.13（推荐 3.12，以 `pyproject.toml` 为准）与 [uv](https://github.com"
+"Python 3.11–3.13（推荐 3.12，以 `pyproject.toml` 为准）与 [uv](https://github.com"
 "/astral-sh/uv)"
 
 #: ../developer/installation.md
