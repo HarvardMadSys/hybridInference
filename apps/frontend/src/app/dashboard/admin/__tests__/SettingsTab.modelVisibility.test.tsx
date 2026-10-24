@@ -87,7 +87,7 @@ describe('SettingsTab model visibility', () => {
 
     renderSettings();
 
-    expect(await screen.findByText('Model Visibility')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Model Visibility' })).toBeInTheDocument();
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     fireEvent.change(select, { target: { value: 'internal' } });
 
@@ -100,7 +100,7 @@ describe('SettingsTab model visibility', () => {
   it('does not render routing subtabs inside Settings', async () => {
     renderSettings();
 
-    expect(await screen.findByText('Feature Flags')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Feature Flags' })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Routing' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Routewise' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Routing Weights' })).not.toBeInTheDocument();

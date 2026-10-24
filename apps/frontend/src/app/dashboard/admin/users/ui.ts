@@ -1,24 +1,15 @@
-// Shared Tailwind class strings for the admin Users tab, so the filter bar,
-// table and detail panel use one control height, one card style and one
-// label style instead of a different ad-hoc size in every component.
+// Class strings for the admin Users tab. The control, card and button styles
+// are the admin console's shared ones; only the status and role colors below
+// are the Users tab's own.
 
-/** Text inputs and selects in toolbars and forms. */
-export const CONTROL =
-  'h-8 rounded-md border border-gray-200 bg-white px-2.5 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-gray-400 focus:outline-none';
-
-/** Small uppercase label above a field or a group of values. */
-export const FIELD_LABEL = 'text-[11px] font-medium uppercase tracking-wide text-gray-500';
-
-/** A white card section inside the expanded user panel. */
-export const SECTION = 'rounded-lg border border-gray-200 bg-white p-4';
-
-/** Primary (dark) and secondary (outlined) buttons. */
-export const BUTTON_PRIMARY =
-  'inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50';
-export const BUTTON_SECONDARY =
-  'inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50';
-export const BUTTON_DANGER =
-  'inline-flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-[12px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50';
+export {
+  BUTTON_DANGER,
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CONTROL,
+  FIELD_LABEL,
+  SECTION,
+} from '@/components/features/admin/adminStyles';
 
 /** Status pill per account status: label plus colors. */
 export const STATUS_STYLE: Record<string, { label: string; pill: string; dot: string }> = {

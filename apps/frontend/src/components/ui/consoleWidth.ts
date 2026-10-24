@@ -7,9 +7,10 @@ import { usePathname } from 'next/navigation';
  * current route.
  *
  * Most console pages read best at the default reading width. The admin area
- * is mostly wide data tables, so it gets a wider frame; its form-style pages
- * narrow themselves inside it (see `ADMIN_FORM_WIDTH`). Header and footer use
- * the same value so their edges line up with the page below them.
+ * is mostly wide data tables, so it gets a wider frame; its form-style tabs
+ * lay out their cards and fields for that width rather than stretching them.
+ * Header and footer use the same value so their edges line up with the page
+ * below them.
  */
 export const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
 export const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';

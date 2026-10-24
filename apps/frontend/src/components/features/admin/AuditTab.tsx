@@ -1,13 +1,31 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { AuditLogEntry, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+  AdminSpinner,
+} from './AdminPrimitives';
+import {
+  BUTTON_GHOST,
+  BUTTON_SECONDARY,
+  CONTROL,
+  NOTICE_ACTION,
+  PANEL,
+  TABLE_HEAD_CELL,
+} from './adminStyles';
 
 const AUDIT_PAGE_SIZE = 50;
 
+// The actions the filter offers. The log also records others (settings,
+// configuration, alerts, ...); "All actions" shows those, and a filter set by
+// a link is offered as it is (see the select below).
 const AUDIT_ACTIONS = [
   'create_user',
   'approve_user',
@@ -24,15 +42,22 @@ const AUDIT_ACTIONS = [
   'update_key',
 ];
 
+/**
+ * A readable name for an action: `update_user` -> "Update user",
+ * `settings.update` -> "Settings update". The stored name stays available in
+ * the entry's details.
+ */
 function actionLabel(action: string): string {
   if (!action) return action;
-  const s = action.replace(/_/g, ' ');
+  const s = action.replace(/[._]/g, ' ');
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 type AuditCategory = 'create' | 'approve' | 'reject' | 'update' | 'delete' | 'other';
 
-function actionCategory(action: string): AuditCategory {
+function actionCategory(stored: string): AuditCategory {
+  // `settings.update` has the same verb as `key_update`.
+  const action = stored.replace(/\./g, '_');
   if (action === 'regenerate_key') return 'create';
   if (
     action.startsWith('hard_delete') ||
@@ -71,35 +96,156 @@ function formatRelative(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function formatAuditDetailValue(v: unknown): { display: string; full: string } {
-  if (v === null || v === undefined) return { display: '—', full: '—' };
-  if (typeof v === 'string') {
-    const full = v;
-    const display = v.length > 80 ? `${v.slice(0, 80)}…` : v;
-    return { display, full };
-  }
-  if (typeof v === 'number' || typeof v === 'boolean') {
-    const s = String(v);
-    return { display: s, full: s };
-  }
-  const full = JSON.stringify(v);
-  const display = full.length > 80 ? `${full.slice(0, 80)}…` : full;
-  return { display, full };
+function formatShortDate(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
-function RawJsonDetails({ data }: { data: unknown }) {
-  const [open, setOpen] = useState(false);
+/** One value on one line, cut short: for the row summary. */
+function shortValue(v: unknown, max = 48): string {
+  if (v === null || v === undefined) return '—';
+  const s = typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v);
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/** A value in full: objects and arrays as indented JSON. */
+function fullValue(v: unknown): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') return JSON.stringify(v, null, 2);
+  return String(v);
+}
+
+function detailEntries(entry: AuditLogEntry): [string, unknown][] {
+  return entry.details && typeof entry.details === 'object' ? Object.entries(entry.details) : [];
+}
+
+/**
+ * What changed, in one line. A before/after pair reads `key: old → new`; a
+ * list of changed fields reads as that list; anything else shows its first
+ * two set fields and how many more there are. Every field is in the details.
+ */
+function DetailSummary({ entry }: { entry: AuditLogEntry }) {
+  const fields = detailEntries(entry);
+  if (fields.length === 0) return <span className="text-gray-400">No details</span>;
+  const d = Object.fromEntries(fields);
+
+  if ('old_value' in d || 'new_value' in d) {
+    return (
+      <>
+        {typeof d.key === 'string' ? (
+          <span className="font-mono text-[12px] text-gray-900">{d.key}</span>
+        ) : null}
+        {typeof d.key === 'string' ? <span className="text-gray-400">: </span> : null}
+        <span className="text-gray-500">{shortValue(d.old_value)}</span>
+        <span className="px-1 text-gray-400" aria-hidden="true">
+          →
+        </span>
+        <span className="sr-only"> changed to </span>
+        <span className="text-gray-900">{shortValue(d.new_value)}</span>
+      </>
+    );
+  }
+
+  if (Array.isArray(d.updated_fields) && d.updated_fields.length > 0) {
+    return (
+      <>
+        <span className="text-gray-400">Changed </span>
+        <span className="text-gray-900">{d.updated_fields.map(String).join(', ')}</span>
+      </>
+    );
+  }
+
+  const set = fields.filter(([, v]) => v !== null && v !== undefined && v !== '');
+  const shown = (set.length > 0 ? set : fields).slice(0, 2);
+  const more = fields.length - shown.length;
   return (
-    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
-        Raw JSON
-      </summary>
-      {open && (
-        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
-    </details>
+    <>
+      {shown.map(([k, v], i) => (
+        <Fragment key={k}>
+          {i > 0 ? <span className="px-1.5 text-gray-300">·</span> : null}
+          <span className="text-gray-400">{k} </span>
+          <span className="text-gray-900">{shortValue(v)}</span>
+        </Fragment>
+      ))}
+      {more > 0 ? <span className="pl-1.5 text-gray-400">+{more} more</span> : null}
+    </>
+  );
+}
+
+/** The whole record, every field in full, then the stored JSON. */
+function EntryDetails({ entry }: { entry: AuditLogEntry }) {
+  const fields = detailEntries(entry);
+  const rows: [string, ReactNode][] = [
+    ['Action', <code key="a">{entry.action}</code>],
+    [
+      'Time',
+      <span key="t">
+        {new Date(entry.timestamp).toLocaleString()}{' '}
+        <span className="text-gray-400">({entry.timestamp})</span>
+      </span>,
+    ],
+    ['Outcome', entry.success ? 'Succeeded' : 'Failed'],
+    ['Target user', entry.target_user_id ? <code key="u">{entry.target_user_id}</code> : '—'],
+    ['Source', <code key="s">{entry.admin_ip}</code>],
+  ];
+  return (
+    <div className="animate-admin-reveal space-y-3">
+      <dl className="grid grid-cols-[minmax(6rem,max-content)_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-[12px]">
+        {rows.map(([k, v]) => (
+          <Fragment key={k}>
+            <dt className="text-gray-500">{k}</dt>
+            <dd className="min-w-0 break-words text-gray-800">{v}</dd>
+          </Fragment>
+        ))}
+        {fields.length > 0 ? (
+          <dt className="col-span-2 mt-2 border-t border-gray-200 pt-2 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            Details
+          </dt>
+        ) : null}
+        {fields.map(([k, v]) => (
+          <Fragment key={`detail-${k}`}>
+            <dt className="font-mono text-gray-500">{k}</dt>
+            <dd className="min-w-0 whitespace-pre-wrap break-words font-mono text-gray-800">
+              {fullValue(v)}
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+      {entry.details != null ? (
+        <details className="group">
+          <summary className="w-fit cursor-pointer rounded text-[11px] font-medium text-gray-500 transition-colors duration-150 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400">
+            Raw JSON
+          </summary>
+          <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-600">
+            {JSON.stringify(entry.details, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      aria-hidden="true"
+      className={`h-3.5 w-3.5 transition-transform duration-150 motion-reduce:transition-none ${
+        open ? 'rotate-90' : ''
+      }`}
+    >
+      <path
+        fillRule="evenodd"
+        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+        clipRule="evenodd"
+      />
+    </svg>
   );
 }
 
@@ -108,10 +254,14 @@ export function AuditTab() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const baseId = useId();
+  const actionFilterId = `${baseId}-action`;
+  const userFilterId = `${baseId}-user`;
 
   const auditFilter = searchParams.get('action') ?? '';
   const auditUserFilter = searchParams.get('user_id') ?? '';
   const auditOffset = Number.parseInt(searchParams.get('offset') ?? '0', 10) || 0;
+  const filtered = auditFilter !== '' || auditUserFilter !== '';
 
   const setQueryParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -126,9 +276,20 @@ export function AuditTab() {
     [pathname, router, searchParams],
   );
 
-  const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
-  const [auditTotal, setAuditTotal] = useState(0);
+  // The page on screen, with the query that produced it. When the filters or
+  // offset change, these rows belong to the old query until the new one
+  // answers: they are dimmed (without count or range) while it loads and
+  // withdrawn if it fails, never shown as the new query's results.
+  const queryKey = `${auditFilter}\n${auditUserFilter}\n${auditOffset}`;
+  const [shown, setShown] = useState<{
+    key: string;
+    entries: AuditLogEntry[];
+    total: number;
+    offset: number;
+  } | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
   const auditReqIdRef = useRef(0);
 
   const loadAudit = useCallback(async () => {
@@ -142,177 +303,313 @@ export function AuditTab() {
         auditOffset,
       );
       if (auditReqIdRef.current !== reqId) return;
-      setAuditEntries(d.entries);
-      setAuditTotal(d.total);
+      setShown({ key: queryKey, entries: d.entries, total: d.total, offset: auditOffset });
+      setLoadError(null);
     } catch (e) {
       if (auditReqIdRef.current !== reqId) return;
-      toast.error(getErrorMessage(e));
+      const message = getErrorMessage(e);
+      setLoadError(message);
+      toast.error(message);
     } finally {
       if (auditReqIdRef.current === reqId) setAuditLoading(false);
     }
-  }, [auditFilter, auditUserFilter, auditOffset, toast]);
+  }, [auditFilter, auditUserFilter, auditOffset, queryKey, toast]);
 
   useEffect(() => {
     loadAudit();
   }, [loadAudit]);
 
+  const toggle = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const current = shown !== null && shown.key === queryKey;
+  // Rows of an earlier query stay (dimmed) only while the new one loads.
+  const visible = current || auditLoading ? shown : null;
+  const auditEntries = visible?.entries ?? [];
+  const auditTotal = current ? shown.total : 0;
+  const shownOffset = current ? shown.offset : 0;
+  const pending = auditLoading || !current;
+  const hasPages = current && auditTotal > AUDIT_PAGE_SIZE;
+  const clearFilters = () => setQueryParams({ action: null, user_id: null, offset: null });
+
   return (
-    <div className="mt-6">
-      {/* Action filter */}
-      <div className="flex flex-wrap items-center gap-3">
+    <AdminSection title="Audit log" description="Changes made by administrators, newest first.">
+      {/* Filters */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <label htmlFor={actionFilterId} className="sr-only">
+          Filter by action
+        </label>
         <select
+          id={actionFilterId}
           value={auditFilter}
           onChange={(e) => {
             setQueryParams({ action: e.target.value || null, offset: null });
           }}
-          className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[13px]"
+          className={CONTROL}
         >
           <option value="">All actions</option>
-          {AUDIT_ACTIONS.map((a) => (
-            <option key={a} value={a}>
-              {actionLabel(a)}
-            </option>
-          ))}
+          <optgroup label="Users and API keys">
+            {AUDIT_ACTIONS.map((a) => (
+              <option key={a} value={a}>
+                {actionLabel(a)}
+              </option>
+            ))}
+          </optgroup>
+          {/* A filter from a link that is not in the list above: show it,
+              rather than claim "All actions" while it applies. */}
+          {auditFilter && !AUDIT_ACTIONS.includes(auditFilter) ? (
+            <optgroup label="Current filter">
+              <option value={auditFilter}>{actionLabel(auditFilter)}</option>
+            </optgroup>
+          ) : null}
         </select>
+        <label htmlFor={userFilterId} className="sr-only">
+          Filter by user ID
+        </label>
         <input
+          id={userFilterId}
           type="text"
           value={auditUserFilter}
           onChange={(e) => {
             setQueryParams({ user_id: e.target.value || null, offset: null });
           }}
           placeholder="Filter by user ID…"
-          className="min-w-[180px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+          spellCheck={false}
+          className={`${CONTROL} w-full min-w-0 font-mono sm:w-72`}
         />
-        <span className="text-[12px] text-gray-400 tabular-nums">{auditTotal} entries</span>
+        {filtered ? (
+          <button type="button" onClick={clearFilters} className={BUTTON_GHOST}>
+            Clear filters
+          </button>
+        ) : null}
+        <span
+          className="ml-auto inline-flex items-center gap-2 text-[12px] tabular-nums text-gray-500"
+          aria-live="polite"
+        >
+          {auditLoading && shown ? <AdminSpinner size="sm" /> : null}
+          {auditLoading && shown
+            ? 'Loading…'
+            : current
+              ? `${auditTotal} ${filtered ? 'matching ' : ''}entries`
+              : null}
+        </span>
       </div>
 
-      {/* Entries */}
-      <div className="mt-4">
-        {auditLoading ? (
-          <div className="flex justify-center py-24">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-          </div>
-        ) : auditEntries.length === 0 ? (
-          <div className="py-24 text-center">
-            <p className="text-[13px] text-gray-400">No audit log entries.</p>
-          </div>
-        ) : (
-          <div>
-            {auditEntries.map((entry, i) => {
-              const cat = actionCategory(entry.action);
-              const badgeClass = entry.success
-                ? AUDIT_CATEGORY_CLASS[cat]
-                : 'bg-red-50 text-red-700';
-              const rowClass = [
-                'py-3',
-                i > 0 ? 'border-t border-gray-100' : '',
-                !entry.success ? 'border-l-2 border-rose-300 pl-3' : '',
-              ]
-                .filter(Boolean)
-                .join(' ');
-              const absoluteTs = new Date(entry.timestamp).toLocaleString();
-              const tid = entry.target_user_id;
-              const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
-              const detailEntries =
-                entry.details && typeof entry.details === 'object'
-                  ? Object.entries(entry.details)
-                  : [];
-              return (
-                <div
-                  key={entry.id}
-                  className={rowClass}
-                  style={entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }}
-                >
-                  <div className="flex items-center gap-3">
-                    {!entry.success && (
-                      <span className="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
-                        FAILED
-                      </span>
-                    )}
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${badgeClass}`}
-                    >
-                      {actionLabel(entry.action)}
-                    </span>
-                    {tid && (
-                      <button
-                        onClick={() => {
-                          setQueryParams({ user_id: tid, offset: null });
-                        }}
-                        title={tid}
-                        aria-label={`Filter by user ${tid}`}
-                        className="font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
-                      >
-                        <span aria-hidden="true">{tidDisplay}</span>
-                        <span className="sr-only">{tid}</span>
-                      </button>
-                    )}
-                    <time
-                      dateTime={entry.timestamp}
-                      title={absoluteTs}
-                      aria-label={absoluteTs}
-                      className="ml-auto text-[12px] text-gray-400"
-                    >
-                      {formatRelative(entry.timestamp)}
-                    </time>
-                  </div>
-                  {detailEntries.length > 0 && (
-                    <>
-                      <div className="flex flex-wrap gap-1.5 mt-1.5">
-                        {detailEntries.map(([k, v]) => {
-                          const { display, full } = formatAuditDetailValue(v);
-                          return (
-                            <span
-                              key={k}
-                              title={full}
-                              className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
+      {loadError ? (
+        <div className="mb-3">
+          <AdminNotice
+            role="alert"
+            action={
+              <button type="button" onClick={() => void loadAudit()} className={NOTICE_ACTION}>
+                Retry
+              </button>
+            }
+          >
+            The audit log could not be loaded: {loadError}
+          </AdminNotice>
+        </div>
+      ) : null}
+
+      {visible || auditLoading ? (
+        <div className={PANEL}>
+          {!visible ? (
+            <AdminLoading label="Loading audit log…" />
+          ) : auditEntries.length === 0 ? (
+            current ? (
+              <AdminEmptyState
+                variant="plain"
+                title={filtered ? 'No entries match these filters.' : 'No audit log entries yet.'}
+              >
+                {filtered ? (
+                  <button type="button" onClick={clearFilters} className={`${NOTICE_ACTION} mt-1`}>
+                    Clear filters
+                  </button>
+                ) : null}
+              </AdminEmptyState>
+            ) : null
+          ) : (
+            // One line per entry on a desktop; on a phone the table scrolls
+            // inside its box instead of widening the page. While a new page or
+            // filter loads, the current rows stay (dimmed) instead of blanking.
+            <div
+              className={`relative overflow-x-auto rounded-lg transition-opacity duration-150 ${
+                pending ? 'opacity-60' : ''
+              }`}
+              aria-busy={pending || undefined}
+            >
+              <table className="w-full min-w-[52rem] table-fixed text-[13px]">
+                <colgroup>
+                  <col className="w-[8.5rem]" />
+                  <col className="w-[11.5rem]" />
+                  <col />
+                  <col className="w-[8.5rem]" />
+                  <col className="w-[8rem]" />
+                  <col className="w-12" />
+                </colgroup>
+                <thead className="bg-gray-50/80">
+                  <tr className="border-b border-gray-200">
+                    <th className={TABLE_HEAD_CELL}>Time</th>
+                    <th className={TABLE_HEAD_CELL}>Action</th>
+                    <th className={TABLE_HEAD_CELL}>Change</th>
+                    <th className={TABLE_HEAD_CELL}>User</th>
+                    <th className={`${TABLE_HEAD_CELL} text-right`}>Source</th>
+                    <th className={TABLE_HEAD_CELL}>
+                      <span className="sr-only">Details</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditEntries.map((entry) => {
+                    const cat = actionCategory(entry.action);
+                    const badgeClass = entry.success
+                      ? AUDIT_CATEGORY_CLASS[cat]
+                      : 'bg-red-50 text-red-700';
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                    const tid = entry.target_user_id;
+                    const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                    const isOpen = expanded.has(entry.id);
+                    const detailsId = `${baseId}-entry-${entry.id}`;
+                    const knownSource = entry.admin_ip && entry.admin_ip !== 'unknown';
+                    return (
+                      <Fragment key={entry.id}>
+                        <tr
+                          className={`border-b border-gray-100 transition-colors duration-150 ${
+                            entry.success ? 'hover:bg-gray-50/60' : 'bg-red-50/50'
+                          } ${isOpen ? 'border-b-0 bg-gray-50/60' : ''}`}
+                        >
+                          <td className="px-4 py-2.5 align-top">
+                            <time
+                              dateTime={entry.timestamp}
+                              title={absoluteTs}
+                              aria-label={absoluteTs}
+                              className="block whitespace-nowrap text-[12px] tabular-nums text-gray-700"
                             >
-                              <span className="text-gray-400">{k}:</span>
-                              <span>{display}</span>
+                              {formatRelative(entry.timestamp)}
+                            </time>
+                            <span
+                              aria-hidden="true"
+                              className="block whitespace-nowrap text-[11px] tabular-nums text-gray-400"
+                            >
+                              {formatShortDate(entry.timestamp)}
                             </span>
-                          );
-                        })}
-                      </div>
-                      <RawJsonDetails data={entry.details} />
-                    </>
-                  )}
-                  <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Pagination */}
-        {auditTotal > AUDIT_PAGE_SIZE && (
-          <div className="mt-4 flex items-center justify-between">
-            <span className="text-[12px] text-gray-400 tabular-nums">
-              {auditOffset + 1}&ndash;{Math.min(auditOffset + AUDIT_PAGE_SIZE, auditTotal)} of{' '}
-              {auditTotal}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() =>
-                  setQueryParams({
-                    offset: String(Math.max(0, auditOffset - AUDIT_PAGE_SIZE)),
-                  })
-                }
-                disabled={auditOffset === 0}
-                className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
-              >
-                Prev
-              </button>
-              <button
-                onClick={() => setQueryParams({ offset: String(auditOffset + AUDIT_PAGE_SIZE) })}
-                disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
-                className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
-              >
-                Next
-              </button>
+                          </td>
+                          <td className="px-4 py-2.5 align-top">
+                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                              {!entry.success && (
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-red-700">
+                                  FAILED
+                                </span>
+                              )}
+                              <span
+                                title={entry.action}
+                                className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[12px] font-medium ${badgeClass}`}
+                              >
+                                {actionLabel(entry.action)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 align-top">
+                            <div className="truncate text-[12px] leading-5">
+                              <DetailSummary entry={entry} />
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 align-top">
+                            {tid ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQueryParams({ user_id: tid, offset: null });
+                                }}
+                                title={tid}
+                                aria-label={`Filter by user ${tid}`}
+                                className="max-w-full truncate rounded font-mono text-[12px] text-gray-700 transition-colors duration-150 hover:text-gray-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                              >
+                                <span aria-hidden="true">{tidDisplay}</span>
+                                <span className="sr-only">{tid}</span>
+                              </button>
+                            ) : (
+                              <span className="text-gray-300">—</span>
+                            )}
+                          </td>
+                          <td
+                            className={`truncate px-4 py-2.5 text-right align-top font-mono text-[12px] ${
+                              knownSource ? 'text-gray-500' : 'text-gray-400'
+                            }`}
+                            title={entry.admin_ip}
+                          >
+                            {entry.admin_ip}
+                          </td>
+                          <td className="py-2 pr-3 text-right align-top">
+                            <button
+                              type="button"
+                              onClick={() => toggle(entry.id)}
+                              aria-expanded={isOpen}
+                              aria-controls={isOpen ? detailsId : undefined}
+                              aria-label={`${isOpen ? 'Hide' : 'Show'} details of ${actionLabel(entry.action)}, ${absoluteTs}`}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                            >
+                              <Chevron open={isOpen} />
+                            </button>
+                          </td>
+                        </tr>
+                        {isOpen ? (
+                          <tr
+                            id={detailsId}
+                            className={`border-b border-gray-100 ${
+                              entry.success ? 'bg-gray-50/60' : 'bg-red-50/50'
+                            }`}
+                          >
+                            <td colSpan={6} className="px-4 pb-4 pt-1">
+                              <EntryDetails entry={entry} />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </div>
-        )}
-      </div>
-    </div>
+          )}
+
+          {/* Pagination */}
+          {hasPages && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-4 py-2.5">
+              <span className="text-[12px] tabular-nums text-gray-500">
+                {shownOffset + 1}&ndash;{Math.min(shownOffset + AUDIT_PAGE_SIZE, auditTotal)} of{' '}
+                {auditTotal}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setQueryParams({
+                      offset: String(Math.max(0, shownOffset - AUDIT_PAGE_SIZE)),
+                    })
+                  }
+                  disabled={auditLoading || shownOffset === 0}
+                  className={BUTTON_SECONDARY}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQueryParams({ offset: String(shownOffset + AUDIT_PAGE_SIZE) })}
+                  disabled={auditLoading || shownOffset + AUDIT_PAGE_SIZE >= auditTotal}
+                  className={BUTTON_SECONDARY}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </AdminSection>
   );
 }

@@ -68,11 +68,30 @@
   .animate-float-slow {
     animation: float-slow 14s ease-in-out infinite;
   }
+
+  /* Admin console: content that appears on request (an editor, a disclosed
+     detail, a save bar) fades in with a 2px settle. Opacity and transform
+     only, so nothing around it is re-laid out while it runs. */
+  @keyframes admin-reveal {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-admin-reveal {
+    animation: admin-reveal 160ms ease-out both;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in-up,
-  .animate-float-slow {
+  .animate-float-slow,
+  .animate-admin-reveal {
     animation: none;
   }
 }
