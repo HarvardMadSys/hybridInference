@@ -12,6 +12,8 @@ license = { file = "LICENSE" }
 authors = [{ name = "HarvardSys" }]
 dependencies = [
     "aiohttp>=3.14.4",
+    # Not imported here: a floor for the copy huggingface-hub pulls in
+    # (CVE-2026-112940 and related advisories, fixed in 4.2.1, which needs Python 3.11).
     "filelock>=4.2.1",
     "APScheduler>=3.10.4",
     "asyncpg>=0.28.0",

@@ -38,7 +38,7 @@ What is in the box
 - **Operational storage** — Postgres for accounts, API keys and a request log,
   with the schema created on startup rather than by a migration tool.
 
-The backend is Python (3.10–3.13) under ``apps/backend/``, split into
+The backend is Python (3.11–3.13) under ``apps/backend/``, split into
 ``serving/`` (HTTP surface, auth, adapters, storage, observability) and
 ``routing/`` (route table, strategies, endpoint health, fallback). The console
 is Next.js under ``apps/frontend/``. The repository is MIT-licensed.
