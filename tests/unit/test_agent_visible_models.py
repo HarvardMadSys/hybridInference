@@ -40,7 +40,7 @@ def _route(
 
 
 def _exec(routes: dict) -> SimpleNamespace:
-    return SimpleNamespace(routes=routes)
+    return SimpleNamespace(routes=routes, embedding_routes={})
 
 
 async def test_role_gates_match_the_inference_path():
@@ -86,6 +86,26 @@ async def test_unpublished_disabled_and_embedding_models_are_excluded():
     assert await agent_visible_models(router_exec, user_ctx=user_ctx) == ["usable"]
     for model in ("hidden", "embedder", "banned"):
         assert not await agent_model_resolvable(model, router_exec, user_ctx=user_ctx)
+
+
+async def test_grant_catalog_never_offers_embedding_models():
+    """Grant scopes stay chat-only: the mint cannot offer an embedding model.
+
+    /v1/embeddings is outside the grant surface, so a grant-authenticated
+    caller is refused there as outside its scope even when the owner could
+    call the embedding model directly. Even an admin's catalog — which lists
+    every chat model the role admits — stays free of embedding entries.
+    """
+    router_exec = _exec(
+        {"chat": _route("chat")},
+    )
+    router_exec.embedding_routes = {
+        "embed": _route("embed", model_type="embedding"),
+        "admin-embed": _route("admin-embed", model_type="embedding", admin_only=True),
+    }
+
+    assert await agent_visible_models(router_exec, user_ctx={"role": "free"}) == ["chat"]
+    assert await agent_visible_models(router_exec, user_ctx={"role": "admin"}) == ["chat"]
 
 
 async def test_visibility_resolver_override_wins_both_ways():

@@ -1160,3 +1160,295 @@ def test_an_existing_alias_still_reaches_the_same_adapter(tmp_path, monkeypatch)
     assert exe.routes["legacy-name"] is exe.routes["real-model"]
     assert exe.canonical_id("legacy-name") == "real-model"
     assert exe.routes["legacy-name"].adapters[0][0] is exe.routes["real-model"].adapters[0][0]
+
+
+def _paid_and_free_yaml() -> str:
+    return (
+        "models:\n"
+        "  - id: claude-compat\n"
+        "    name: Claude Compat\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "1.20"\n'
+        '      completion: "4.80"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://compat.example.test/v1\n"
+        "  - id: free-chat\n"
+        "    name: Free Chat\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "0"\n'
+        '      completion: "0"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://free.example.test/v1\n"
+    )
+
+
+@pytest.mark.unit
+def test_a_paid_model_without_required_role_defaults_to_pro(tmp_path, monkeypatch):
+    """Omitted roles on routes that may incur provider costs default to pro.
+
+    The Claude compatibility routes carried real upstream costs but no
+    ``required_role``, so the loader's unconditional ``"free"`` default let
+    free-tier keys reach paid upstreams. Zero user-facing prices do not prove
+    the upstream is free; use an explicit ``required_role`` for sponsored access.
+    """
+    p = tmp_path / "models.yaml"
+    p.write_text(_paid_and_free_yaml())
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["claude-compat"].required_role == "pro"
+    assert exe.routes["free-chat"].required_role == "pro"
+
+
+@pytest.mark.unit
+def test_endpointless_anthropic_defaults_to_pro_through_yaml_registry(tmp_path):
+    p = tmp_path / "models.yaml"
+    p.write_text(
+        "models:\n"
+        "  - id: claude-endpointless\n"
+        "    name: Claude Endpointless\n"
+        "    provider: anthropic\n"
+    )
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["claude-endpointless"].required_role == "pro"
+
+
+@pytest.mark.unit
+def test_admin_only_model_without_required_role_stays_admin(tmp_path):
+    """An omitted role must not weaken the explicit admin_only policy."""
+    p = tmp_path / "models.yaml"
+    p.write_text(
+        "models:\n"
+        "  - id: admin-paid\n"
+        "    name: Admin Paid\n"
+        "    provider: openai_compat\n"
+        "    admin_only: true\n"
+        "    pricing:\n"
+        '      prompt: "2.00"\n'
+        '      completion: "8.00"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://paid.example.test/v1\n"
+    )
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["admin-paid"].admin_only is True
+    assert exe.routes["admin-paid"].required_role == "admin"
+
+
+@pytest.mark.unit
+def test_explicit_required_role_still_wins_over_the_pricing_default(tmp_path):
+    """An explicit ``required_role`` is never overridden by pricing."""
+    yaml_text = (
+        "models:\n"
+        "  - id: sponsored-pro\n"
+        "    name: Sponsored Pro\n"
+        "    provider: openai_compat\n"
+        "    admin_only: true\n"
+        "    required_role: free\n"
+        "    pricing:\n"
+        '      prompt: "2.00"\n'
+        '      completion: "8.00"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://sponsored.example.test/v1\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["sponsored-pro"].admin_only is False
+    assert exe.routes["sponsored-pro"].required_role == "free"
+
+
+@pytest.mark.unit
+def test_explicit_free_role_can_sponsor_zero_priced_remote_route(tmp_path):
+    yaml_text = (
+        "models:\n"
+        "  - id: sponsored-zero-price\n"
+        "    name: Sponsored Zero Price\n"
+        "    provider: openai_compat\n"
+        "    required_role: free\n"
+        "    pricing:\n"
+        '      prompt: "0"\n'
+        '      completion: "0"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://sponsored.example.test/v1\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["sponsored-zero-price"].required_role == "free"
+
+
+def _unknown_cost_yaml() -> str:
+    """The three cost states side by side, none naming ``required_role``."""
+    return (
+        "models:\n"
+        "  - id: zero-priced-remote\n"
+        "    name: Zero Priced Remote\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "0"\n'
+        '      completion: "0"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://sponsored.example.test/v1\n"
+        "  - id: explicit-paid\n"
+        "    name: Explicit Paid\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "1.20"\n'
+        '      completion: "4.80"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://compat.example.test/v1\n"
+        "  - id: unknown-cost-external\n"
+        "    name: Unknown Cost External\n"
+        "    provider: openrouter\n"
+        "    route:\n"
+        "      - kind: openrouter\n"
+        "        weight: 1.0\n"
+        "        base_url: https://openrouter.ai/api/v1\n"
+        "        api_keys:\n"
+        '          - "${OPENROUTER_API_KEY}"\n'
+        "        provider_model_id: meta-llama/llama-3.3-70b-instruct\n"
+        "  - id: unknown-cost-local\n"
+        "    name: Unknown Cost Local\n"
+        "    provider: openai_compat\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: http://localhost:11434/v1\n"
+        "  - id: provably-local-engine\n"
+        "    name: Provably Local Engine\n"
+        "    provider: sglang\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://localhost:12003/v1\n"
+    )
+
+
+@pytest.mark.unit
+def test_unknown_cost_external_routes_default_to_pro_not_free(tmp_path, monkeypatch):
+    """The #1605 conditional gap: an externally billed upstream configured
+    with no pricing metadata and no role must not default to free.
+
+    The free default without a pricing block needs more than a local host:
+    a localhost compatibility proxy can relay to a paid remote provider,
+    so local network placement is not proof of free (audit, 2026-10-20).
+    Only a local host serving a self-hosted engine API kind (sglang, vllm)
+    keeps the historical ``free`` default; every other unpriced route —
+    remote or localhost-forwarding — defaults closed.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    p = tmp_path / "models.yaml"
+    p.write_text(_unknown_cost_yaml())
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["zero-priced-remote"].required_role == "pro"
+    assert exe.routes["explicit-paid"].required_role == "pro"
+    assert exe.routes["unknown-cost-external"].required_role == "pro"
+    # A localhost openai_compat is a forwarding dialect: it defaults closed
+    # even though the host is local.
+    assert exe.routes["unknown-cost-local"].required_role == "pro"
+    # A self-hosted engine API on a local host is the one free-by-construction
+    # shape that remains.
+    assert exe.routes["provably-local-engine"].required_role == "free"
+
+
+@pytest.mark.unit
+def test_route_level_pricing_makes_the_model_paid_even_when_model_pricing_is_zero(
+    tmp_path, monkeypatch
+):
+    """Paid-upstream routes are the actual cost carriers; a route-level price
+    alone must trip the paid default."""
+    yaml_text = (
+        "models:\n"
+        "  - id: hybrid-cost\n"
+        "    name: Hybrid Cost\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "0"\n'
+        '      completion: "0"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://local.example.test/v1\n"
+        "        pricing:\n"
+        '          prompt: "0.30"\n'
+        '          completion: "1.10"\n'
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://cloud.example.test/v1\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["hybrid-cost"].required_role == "pro"
+
+
+@pytest.mark.unit
+def test_a_scheduled_price_makes_the_model_paid(tmp_path):
+    """``pricing_schedule`` windows resolve to non-zero prices at runtime; the
+    loader sees only the base ``pricing`` dict, so the schedule itself must
+    count as a paid signal."""
+    yaml_text = (
+        "models:\n"
+        "  - id: scheduled\n"
+        "    name: Scheduled\n"
+        "    provider: openai_compat\n"
+        "    pricing:\n"
+        '      prompt: "0"\n'
+        '      completion: "0"\n'
+        "    pricing_schedule:\n"
+        '      effective_at: "2026-01-01T00:00:00Z"\n'
+        "      default:\n"
+        '        prompt: "0"\n'
+        '        completion: "0"\n'
+        "      windows:\n"
+        "        - start: '09:00'\n"
+        "          end: '17:00'\n"
+        "          pricing:\n"
+        '            prompt: "0.10"\n'
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://sched.example.test/v1\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["scheduled"].required_role == "pro"

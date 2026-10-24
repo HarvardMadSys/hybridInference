@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 19:08-0400\n"
+"POT-Creation-Date: 2026-10-23 19:14-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -519,18 +519,35 @@ msgstr ""
 
 #: ../developer/adding-models.md
 msgid ""
-"UTC-only activation time plus recurring price windows: `pricing` "
-"stays active before `effective_at`; afterwards `default` applies outside "
-"each half-open `[start, end)` window, and a window's own `pricing` "
-"overrides the base fields. Optional `weekdays` (ISO integers 1=Monday "
-"through 7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC "
-"dates can use windows"
+"UTC-only activation time plus recurring price windows: `pricing` stays "
+"active before `effective_at`; afterwards `default` applies outside each "
+"half-open `[start, end)` window, and a window's own `pricing` overrides "
+"the base fields. Optional `weekdays` (ISO integers 1=Monday through "
+"7=Sunday) and `excluded_dates` (`YYYY-MM-DD`) restrict which UTC dates "
+"can use windows"
 msgstr ""
 "一个生效时间（只支持 UTC），加上循环的价格时段：`effective_at` 之前一直用 `pricing`；之后，不在任何左闭右开的 "
 "`[start, end)` 时段内时用 `default`，落在某个时段内时，用该时段自己的 `pricing` 覆盖基础字段。可选的 "
-"`weekdays`（ISO 整数，1 为星期一，7 为星期日）和 `excluded_dates`（`YYYY-MM-DD`）限定哪些 UTC 日期可以使用这些时段"
+"`weekdays`（ISO 整数，1 为星期一，7 为星期日）和 `excluded_dates`（`YYYY-MM-DD`）限定哪些 UTC "
+"日期可以使用这些时段"
 
-#: ../developer/adding-models.md:193
+#: ../developer/adding-models.md
+msgid "`pricing_source`"
+msgstr "`pricing_source`"
+
+#: ../developer/adding-models.md
+#, python-brace-format
+msgid ""
+"Automatically follow a supported provider: `{provider: deepseek, model: "
+"deepseek-flash}` or `deepseek-v4-pro`. Requires PostgreSQL; cannot be "
+"combined with `pricing_schedule`. Set to `null` on a route to use its own"
+" prices"
+msgstr ""
+"自动跟随已支持的 provider：`{provider: deepseek, model: deepseek-flash}` 或 "
+"`deepseek-v4-pro`。需要 PostgreSQL；不能与 `pricing_schedule` 同时使用。在路由中设为 `null`"
+" 可使用该路由自己的价格"
+
+#: ../developer/adding-models.md:194
 msgid ""
 "A model entry also accepts `route` (below), `router` and `router_params` "
 "(see [Choosing a router per model](routing.md#choosing-a-router-per-"
@@ -543,27 +560,117 @@ msgstr ""
 "`required_role`——能看到并调用该模型的最低用户角色（`admin_only: true` 是 `required_role: "
 "admin` 的旧写法）。"
 
-#: ../developer/adding-models.md:197
+#: ../developer/adding-models.md:199
+msgid ""
+"When `required_role` is omitted, entries marked `admin_only: true` "
+"default to `admin`. Otherwise, models with known or uncertain provider "
+"costs default to `pro`; this includes unpriced LAN or cluster-DNS routes,"
+" environment-variable endpoints that cannot be classified at load time, "
+"and `openai_compat` routes even when their base URL is local. Zero user-"
+"facing prices do not prove that the upstream provider is free. Add "
+"`required_role: free` to keep such a model free-tier; set it explicitly "
+"whenever a route should be available at a different tier, and that value "
+"remains authoritative. Unpriced local `sglang`, `vllm`, and `ollama` "
+"engine routes can retain the `free` default when their local endpoint is "
+"identifiable from configuration."
+msgstr ""
+"未填写 `required_role` 时，标记为 `admin_only: true` 的条目默认要求 "
+"`admin`。其他模型如果已知或无法确定 provider 成本，则默认要求 `pro`；这包括未标价的 LAN "
+"或集群 DNS 路由、加载时无法分类的环境变量端点，以及即使 base URL 是本地地址的 `openai_compat` 路由。面向用户的价格为零，"
+"并不能证明上游 provider 不收费。若要将此类模型保持在 free 等级，请添加 `required_role: free`；"
+"路由应对其他等级开放时也请显式设置 required_role，显式值始终优先。未标价的本地 "
+"`sglang`、`vllm` 和 `ollama` 引擎路由，如果能从配置确认其本地端点，则仍可默认要求 `free`。"
+
+#: ../developer/adding-models.md:210
+msgid "Automatic DeepSeek prices"
+msgstr "自动同步 DeepSeek 价格"
+
+#: ../developer/adding-models.md:212
+msgid ""
+"To follow DeepSeek prices automatically, configure the official API model"
+" id as a pricing source. The source is independent of the inference "
+"endpoint, so a self-hosted route can use these reference prices too. "
+"PostgreSQL stores the last validated snapshot; no API key is sent to the "
+"pricing or calendar sources."
+msgstr ""
+"要自动跟随 DeepSeek 价格，请将官方 API 模型 id "
+"配置为价格来源。价格来源与推理端点相互独立，因此自部署路由也可以采用这些参考价。PostgreSQL "
+"保存最近一次通过校验的快照；抓取价格和日历数据时不会发送 API 密钥。"
+
+#: ../developer/adding-models.md:220
+msgid ""
+"The gateway checks the [official English price page](https://api-"
+"docs.deepseek.com/quick_start/pricing/) every five minutes for USD input,"
+" output and cache-hit prices and UTC peak windows. It reads the current "
+"and following year from [holiday-cn](https://github.com/NateScarlet"
+"/holiday-cn), a third-party dataset generated from State Council notices."
+" This calendar is not a DeepSeek API. Published future-year dates are "
+"picked up automatically; an empty placeholder is not treated as a year "
+"without holidays."
+msgstr ""
+"网关每五分钟检查[官方英文价格页](https://api-"
+"docs.deepseek.com/quick_start/pricing/)，读取以美元计价的输入、输出、缓存命中单价及 UTC "
+"峰时。当前年度和下一年度的假期来自 [holiday-cn](https://github.com/NateScarlet/holiday-"
+"cn)，这是根据国务院公告生成的第三方数据集，不是 DeepSeek API。下一年度公布后会自动同步；空占位文件不会被解释为全年没有假期。"
+
+#: ../developer/adding-models.md:222
+msgid ""
+"Validated snapshots replace the stored tariff atomically. Workers reload "
+"it every ten seconds; each request keeps the snapshot and time captured "
+"at its start, including streaming requests. Peak/off-peak switching "
+"happens locally at the configured boundaries, without waiting for a "
+"network poll. This is periodic synchronization, not a real-time guarantee"
+" that all workers observe an official price change simultaneously."
+msgstr ""
+"通过校验的快照会原子替换已保存的价目表。各 worker "
+"每十秒重新读取一次；每个请求固定使用开始时的快照和时间，流式请求也一样。峰谷切换按本地时钟在配置边界发生，不必等待网络轮询。这是定期同步，并不保证所有"
+" worker 在官方改价的瞬间同时看到新价格。"
+
+#: ../developer/adding-models.md:224
+msgid ""
+"Fetch or parsing failures retain the last validated snapshot and are "
+"logged. A first startup needs either a usable stored snapshot or a "
+"successful fetch. Unknown calendars and unrecognized price-page rules "
+"cannot silently become zero prices or an empty holiday list. The parser "
+"currently accepts the documented weekday schedule only while its UTC peak"
+" windows stay within the same Chinese calendar day."
+msgstr ""
+"抓取或解析失败时保留最近一次有效快照并记录日志。首次启动必须能读取可用的持久化快照，或成功抓取数据。未知日历和无法识别的价格页规则不能静默变成零价格或空假期列表。当前解析器支持官方文档中的工作日规则，并要求"
+" UTC 峰时仍处在同一个中国自然日内。"
+
+#: ../developer/adding-models.md:226
 msgid "Calendar-aware prices"
 msgstr "按日历调整价格"
 
-#: ../developer/adding-models.md:199
-msgid "For example, apply higher prices on weekdays except configured public holidays:"
+#: ../developer/adding-models.md:228
+msgid ""
+"For example, apply higher prices on weekdays except configured public "
+"holidays:"
 msgstr "例如，在星期一至星期五使用较高价格，但排除已配置的公共假日："
 
-#: ../developer/adding-models.md:218
-msgid "Omitting the calendar fields preserves daily schedules. On excluded dates and non-selected weekdays, all windows are skipped and `default` applies. Overnight windows use the current UTC date for both restrictions. For these manually configured schedules, deployment owners maintain holiday exclusions and prices; use `pricing_source` above for automatic updates. A request keeps the prices selected at its start, even if a stream finishes across a boundary."
-msgstr "省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。跨越午夜的时段也按当前 UTC 日期判断这两项限制。这类手工配置的时段由部署维护者更新假日和价格；需要自动更新时，使用上面的 `pricing_source`。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
+#: ../developer/adding-models.md:247
+msgid ""
+"Omitting the calendar fields preserves daily schedules. On excluded dates"
+" and non-selected weekdays, all windows are skipped and `default` "
+"applies. Overnight windows use the current UTC date for both "
+"restrictions. For these manually configured schedules, deployment owners "
+"maintain holiday exclusions and prices; use `pricing_source` above for "
+"automatic updates. A request keeps the prices selected at its start, even"
+" if a stream finishes across a boundary."
+msgstr ""
+"省略日历字段时，价格时段仍然每天生效。在排除的日期或未选中的星期几，所有时段都会跳过，使用 `default`。跨越午夜的时段也按当前 UTC "
+"日期判断这两项限制。这类手工配置的时段由部署维护者更新假日和价格；需要自动更新时，使用上面的 "
+"`pricing_source`。每个请求始终使用开始时选定的价格，即使流式响应结束时已经跨过价格切换边界。"
 
-#: ../developer/adding-models.md:225
+#: ../developer/adding-models.md:254
 msgid "Route configuration"
 msgstr "路由配置"
 
-#: ../developer/adding-models.md:200
+#: ../developer/adding-models.md:256
 msgid "Routes give one model several endpoints with weighted distribution:"
 msgstr "路由让一个模型拥有多个端点，并按权重分配流量："
 
-#: ../developer/adding-models.md:217
+#: ../developer/adding-models.md:273
 msgid "Beyond the model fields above, a route entry accepts:"
 msgstr "除上面的模型字段之外，路由条目还接受："
 
@@ -661,7 +768,7 @@ msgstr ""
 msgid "RouteWise pool and budget metadata"
 msgstr "RouteWise 的资源池与预算元数据"
 
-#: ../developer/adding-models.md:230
+#: ../developer/adding-models.md:286
 msgid ""
 "A route reports its `kind` as the provider label — the value recorded in "
 "`api_logs.provider` and grouped on by every provider-scoped admin view. "
@@ -671,11 +778,11 @@ msgstr ""
 "一条路由用自己的 `kind` 作为 provider 标签上报——这个值记录在 `api_logs.provider` 里，所有按 "
 "provider 划分的管理视图都以它分组。因此同一个 kind 的两条路由会共用仪表盘上的同一行；用 `provider:` 才能把它们分开。"
 
-#: ../developer/adding-models.md:235
+#: ../developer/adding-models.md:291
 msgid "Custom embeddings paths"
 msgstr "自定义 embeddings 路径"
 
-#: ../developer/adding-models.md:237
+#: ../developer/adding-models.md:293
 msgid ""
 "An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set "
 "`embeddings_path` on that route to avoid appending an unwanted `/v1` "
@@ -684,7 +791,7 @@ msgstr ""
 "有些 OpenAI 兼容网关的 API 前缀不是 `/v1`。在对应的路由上设置 `embeddings_path`，就不会被多拼上一段 "
 "`/v1`："
 
-#: ../developer/adding-models.md:253
+#: ../developer/adding-models.md:309
 msgid ""
 "This sends requests to `https://gateway.example/api/v2/embeddings`. The "
 "override belongs to one route and does not affect its fallbacks. Without "
@@ -697,7 +804,7 @@ msgstr ""
 " `/v1` 结尾的 base URL 追加 `/embeddings`，其他 base URL 追加 "
 "`/v1/embeddings`。拼接路径前会先去掉 base URL 末尾的斜杠。"
 
-#: ../developer/adding-models.md:258
+#: ../developer/adding-models.md:314
 msgid ""
 "Declare `embeddings_path` only inside `route:`. A model-level "
 "declaration, including on a shorthand model without a route list, is "
@@ -710,7 +817,7 @@ msgstr ""
 "里。写在模型层级会被拒绝，没有路由列表的简写模型也一样。路径前后的空白会被去掉，但纯空白字符串、除 `null` "
 "以外的非字符串值，以及父级路径段（`..`）都会被拒绝。显式写 `null` 或 `\"\"` 时，仍按默认规则推导 URL。"
 
-#: ../developer/adding-models.md:264
+#: ../developer/adding-models.md:320
 #, python-brace-format
 msgid ""
 "A whole-value `${VAR}` reference must resolve to a non-blank path; it is "
@@ -723,17 +830,17 @@ msgstr ""
 "时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。如果路由不是可选的，变量未设置或为空白都会导致启动失败。设置了 `optional: "
 "true` 时，只跳过这一条路由，并记一条写明模型、路由和变量名的警告。"
 
-#: ../developer/adding-models.md:269
+#: ../developer/adding-models.md:325
 msgid ""
 "Any other invalid `embeddings_path` stops startup, even on an optional "
 "route, so the gateway never starts with part of the registry missing."
 msgstr "其他任何非法的 `embeddings_path` 都会导致启动失败，可选路由也不例外，免得网关带着残缺的注册表启动。"
 
-#: ../developer/adding-models.md:272
+#: ../developer/adding-models.md:328
 msgid "Supported adapter kinds"
 msgstr "支持的 adapter kind"
 
-#: ../developer/adding-models.md:274
+#: ../developer/adding-models.md:330
 msgid ""
 "The `kind` field in each route entry selects the backend adapter. All "
 "kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` "
@@ -900,7 +1007,7 @@ msgstr ""
 msgid "Direct Anthropic Messages API client"
 msgstr "直连 Anthropic Messages API 的客户端"
 
-#: ../developer/adding-models.md:297
+#: ../developer/adding-models.md:353
 msgid ""
 "Any other kind needs a [backend extension](backend-extensions.md) that "
 "registers it; otherwise registry loading fails with `ValueError: Unknown "
@@ -909,11 +1016,11 @@ msgstr ""
 "其他 kind 需要由[后端扩展](backend-extensions.md)注册，否则加载注册表时会报 `ValueError: "
 "Unknown adapter kind`。"
 
-#: ../developer/adding-models.md:300
+#: ../developer/adding-models.md:356
 msgid "Weights across routes"
 msgstr "路由之间的权重"
 
-#: ../developer/adding-models.md:302
+#: ../developer/adding-models.md:358
 msgid ""
 "A model's routes share its traffic by the weights written in the "
 "registry, and the admin console can override a weight without editing the"
@@ -925,15 +1032,15 @@ msgstr ""
 "一个模型的各条路由按注册表里写的权重分摊它的流量；管理控制台可以覆盖某个权重，而不必改文件。路由配置文件也可以在本地路由和远程路由之间调整权重，但只在没有数据库的网关上生效；见[路由配置文件](configuration.md"
 "#the-routing-file)。每个请求如何选定路由，见[路由](routing.md)。"
 
-#: ../developer/adding-models.md:308
+#: ../developer/adding-models.md:364
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/adding-models.md:310
+#: ../developer/adding-models.md:366
 msgid "Model not appearing in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 里"
 
-#: ../developer/adding-models.md:312
+#: ../developer/adding-models.md:368
 msgid ""
 "Confirm the registry the backend actually loaded. It logs `Registered N "
 "routes from <path>` at startup, and logs an error naming the path when no"
@@ -942,11 +1049,11 @@ msgstr ""
 "确认后端实际加载的是哪份注册表。它在启动时会记录 `Registered N routes from "
 "<path>`；如果那个路径上没有注册表，则会记录一条写明路径的错误日志。"
 
-#: ../developer/adding-models.md:315
+#: ../developer/adding-models.md:371
 msgid "Check the YAML syntax and indentation under `models:`."
 msgstr "检查 `models:` 下的 YAML 语法和缩进。"
 
-#: ../developer/adding-models.md:316
+#: ../developer/adding-models.md:372
 #, python-brace-format
 msgid ""
 "Check for skipped models: a route whose `${VAR}`-backed key or `base_url`"
@@ -956,24 +1063,24 @@ msgstr ""
 "检查有没有模型被跳过：如果某条路由的 key 或 `base_url` 引用的 `${VAR}` "
 "解析为空，整个模型都会被丢弃，日志里会写明模型名和未设置的变量。"
 
-#: ../developer/adding-models.md:319
+#: ../developer/adding-models.md:375
 msgid ""
 "If using `aliases`, verify the canonical `id` appears exactly once and "
 "aliases do not collide with another model's. A duplicate alias resolves "
 "to whichever model loads last, and is logged as a warning."
 msgstr "如果用了 `aliases`，确认规范的 `id` 只出现一次，且别名没有和别的模型撞名。重复的别名会解析到最后加载的那个模型，并记录一条警告。"
 
-#: ../developer/adding-models.md:323
+#: ../developer/adding-models.md:379
 msgid "Authentication failures"
 msgstr "鉴权失败"
 
-#: ../developer/adding-models.md:325
+#: ../developer/adding-models.md:381
 msgid ""
 "A 401 from the gateway means your **gateway** API key was missing or "
 "invalid, or auth is enabled and you sent no `Authorization` header."
 msgstr "网关返回的 401 表示你的**网关** API key 缺失或无效，或者鉴权已开启而你没有发送 `Authorization` 头。"
 
-#: ../developer/adding-models.md:327
+#: ../developer/adding-models.md:383
 msgid ""
 "A 401 surfaced from the route can mean the **upstream** key is wrong. "
 "Some gateways also return 401 for an unmatched path, so check the request"
@@ -987,7 +1094,7 @@ msgstr ""
 "`upstream_auth_misconfig`；embeddings 接口则记一条 `Embedding request failed for"
 " model=...`，并附上上游的状态码和错误信息。"
 
-#: ../developer/adding-models.md:332
+#: ../developer/adding-models.md:388
 #, python-brace-format
 msgid ""
 "Check that `${ENV_VAR}` expansion resolved: only a value of exactly the "
@@ -998,31 +1105,31 @@ msgstr ""
 "`base_url`、`api_key`、`api_keys` 和 `provider_model_id`，以及路由级的 "
 "`embeddings_path` 生效。"
 
-#: ../developer/adding-models.md:336
+#: ../developer/adding-models.md:392
 msgid "See also"
 msgstr "另见"
 
-#: ../developer/adding-models.md:338
+#: ../developer/adding-models.md:394
 msgid ""
 "[Adding a New Local Model](add-local-model.md) — registering a self-"
 "hosted vLLM/SGLang/Ollama server"
 msgstr "[添加新的本地模型](add-local-model.md)——注册自建的 vLLM/SGLang/Ollama 服务器"
 
-#: ../developer/adding-models.md:340
+#: ../developer/adding-models.md:396
 msgid ""
 "[Quickstart](router-tutorial.md) — a runnable deployment from first "
 "request to local server"
 msgstr "[快速开始](router-tutorial.md)——从第一个请求到接入本地服务器，一步步搭起一个能跑的部署"
 
-#: ../developer/adding-models.md:342
+#: ../developer/adding-models.md:398
 msgid "[Routing through OpenRouter](openrouter.md) — architecture and endpoints"
 msgstr "[通过 OpenRouter 路由](openrouter.md)——架构与端点"
 
-#: ../developer/adding-models.md:343
+#: ../developer/adding-models.md:399
 msgid "[Routing](routing.md) — central weight overrides and strategies"
 msgstr "[路由](routing.md)——集中式权重覆盖与策略"
 
-#: ../developer/adding-models.md:344
+#: ../developer/adding-models.md:400
 msgid "[Configuration](configuration.md) — environment and YAML configuration"
 msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
 
@@ -1526,11 +1633,57 @@ msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
 #~ "file):"
 #~ msgstr "在仓库根目录的 `.env` 里**设置环境变量**（后端的配置加载器读的就是这个文件）："
 
+#~ msgid ""
+#~ "When `required_role` is omitted, entries "
+#~ "marked `admin_only: true` default to "
+#~ "`admin`. Otherwise, models with known or"
+#~ " uncertain provider costs default to "
+#~ "`pro`; only an all-zero `pricing` "
+#~ "block, or an unpriced route that "
+#~ "is both on a local host and "
+#~ "served by a self-hosted engine API"
+#~ " (`sglang`, `vllm`, `ollama`), keeps the"
+#~ " historical `free` default. An omitted "
+#~ "role is no longer a claim that "
+#~ "the model is free, so a deployment"
+#~ " that serves unpriced models without "
+#~ "cost disclosure must say so explicitly."
+#~ " In particular:"
+#~ msgstr ""
+#~ "未填写 `required_role` 时，标记为 `admin_only: true`"
+#~ " 的条目默认要求 `admin`。其他模型如果已知或无法确定 provider 成本，则默认要求"
+#~ " `pro`；只有整体价格为零的 `pricing` "
+#~ "块，或者既位于本地主机、又由自托管推理引擎（`sglang`、`vllm`、`ollama`）服务的未标价路由，才保留历史上的 "
+#~ "`free` 默认值。省略 `required_role` "
+#~ "不再表示模型免费；部署若要继续无差别开放未标价模型，必须显式声明。特别地："
 
-#: ../developer/adding-models.md
-msgid "`pricing_source`"
-msgstr "`pricing_source`"
+#~ msgid ""
+#~ "LAN or cluster-DNS endpoints "
+#~ "(`http://10.x.x.x`, `http://gpu-node.local`), "
+#~ "`${VAR}`-templated base URLs that cannot "
+#~ "be classified at load time, and "
+#~ "`openai_compat` routes even on `localhost` "
+#~ "all default to `pro`, because a "
+#~ "forwarding proxy or a resolvable "
+#~ "hostname alone proves nothing about "
+#~ "cost. Add `required_role: free` (or a"
+#~ " zero `pricing` block) to keep such"
+#~ " a model free-tier."
+#~ msgstr ""
+#~ "局域网或集群 DNS 端点（`http://10.x.x.x`、`http://gpu-"
+#~ "node.local`）、加载时无法判定的 `${VAR}` 模板 base "
+#~ "URL，以及即使位于 `localhost` 的 `openai_compat` "
+#~ "路由，默认都要求 `pro`：转发代理或一个可解析的主机名都不能证明成本为零。请添加 `required_role:"
+#~ " free`（或整体价格为零的 `pricing` 块）来让这类模型保持 free "
+#~ "档。"
 
+#~ msgid ""
+#~ "`admin_only: true` without a `required_role`"
+#~ " publishes as `admin`, never as the"
+#~ " cost-derived default."
+#~ msgstr ""
+#~ "只写 `admin_only: true` 而不填 required_role "
+#~ "的条目会发布为 `admin`，而不会采用按成本推导的默认档位。"
 
 #: ../developer/adding-models.md
 msgid "Automatically follow a supported provider: `{provider: deepseek, model: deepseek-flash}` or `deepseek-v4-pro`. Requires PostgreSQL; cannot be combined with `pricing_schedule`. Set to `null` on a route to use its own prices"

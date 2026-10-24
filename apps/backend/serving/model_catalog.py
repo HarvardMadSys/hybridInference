@@ -56,7 +56,12 @@ async def agent_visible_models(
     visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Canonical chat-model ids this user's agent jobs can call, in registry order."""
+    """Canonical chat-model ids this user's agent jobs can call, in registry order.
+
+    Chat routes only: /v1/embeddings is outside the grant surface, so a minted
+    scope can never name an embedding model and a grant-authenticated caller
+    is refused there as outside its scope.
+    """
     visible: list[str] = []
     seen: set[str] = set()
     for _model_id, route in tuple(router_exec.routes.items()):

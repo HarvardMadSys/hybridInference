@@ -698,6 +698,11 @@ class FixedRouter:
         self._lock = threading.RLock()
         self._affinity: dict[tuple[str, str], _Affinity] = {}
         self.routes: dict[str, RouteConfig] = {}
+        # Embedding models never enter ``routes`` (the weighted selection
+        # table): /v1/embeddings dispatches to their adapter directly. This
+        # holds their access gate (required_role / admin_only) so the
+        # model-level declaration is not dead config on that surface.
+        self.embedding_routes: dict[str, RouteConfig] = {}
         # Keep the validated params accessible for future use (e.g. honoring
         # local_fraction in adapter selection).  Today FixedRouter ignores it
         # because per-route weights already encode local-vs-remote balance.
@@ -1551,6 +1556,56 @@ class FixedRouter:
             self.routes[model_id] = route_cfg
             for alias in aliases or []:
                 self.routes[alias] = route_cfg  # shared reference, not a copy
+
+    def register_embedding_route(
+        self,
+        model_id: str,
+        adapters_with_weights: list[tuple[BaseAdapter, float]],
+        *,
+        aliases: list[str] | None = None,
+        admin_only: bool = False,
+        required_role: str = "free",
+    ) -> None:
+        """Record the access gate for an embedding model.
+
+        Embedding models bypass the weighted RouteExecutor, so they get no
+        entry in ``routes`` — where the chat surface reads a route's
+        ``required_role`` / ``admin_only``. Registered there anyway, the
+        model-level declaration would be dead config and /v1/embeddings
+        would serve any authenticated caller regardless of the declared
+        tier. The gate is stored here instead, per identifier (canonical +
+        aliases sharing one entry, as they share a chat route), for the
+        embeddings surface to enforce through the shared model-access
+        check. Not part of weighted selection: nothing dispatches through
+        this table.
+
+        Args:
+            model_id: Model identifier (canonical).
+            adapters_with_weights: The model's routes; only the first
+                adapter's config id is read, as the canonical model id the
+                access check keys overrides and denylists by.
+            aliases: Alias model IDs that share the model's gate.
+            admin_only: Deprecated: use required_role="admin" instead.
+            required_role: Minimum role required to call the model
+                (free/pro/internal/admin).
+        """
+        # Backward compat: admin_only=True implies required_role="admin"
+        # Recorded unconditionally — unlike register_route there is no weight
+        # normalization to protect, and skipping the record on zero-weight
+        # routes would serve such a model ungated.
+        effective_role = required_role
+        if admin_only and effective_role == "free":
+            effective_role = "admin"
+        route_cfg = RouteConfig(
+            adapters=list(adapters_with_weights),
+            canonical_model_id=model_id,
+            admin_only=admin_only,
+            required_role=effective_role,
+        )
+        with self._lock:
+            self.embedding_routes[model_id] = route_cfg
+            for alias in aliases or []:
+                self.embedding_routes[alias] = route_cfg  # shared reference, not a copy
 
     def eligible_adapters(
         self,
