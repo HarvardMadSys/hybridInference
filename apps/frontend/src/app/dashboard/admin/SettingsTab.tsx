@@ -15,6 +15,10 @@ import {
   Role,
   RoleQuotaPreview,
 } from '@/lib/api/admin';
+import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
+import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
@@ -42,31 +46,309 @@ function relTime(iso: string | null): string {
   });
 }
 
+function settingLabel(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function rangeHint(setting: RuntimeSettingItem): string | null {
+  const lo = setting.min;
+  const hi = setting.max;
+  if (lo != null && hi != null) return `${lo}–${hi}`;
+  if (lo != null) return `≥ ${lo}`;
+  if (hi != null) return `≤ ${hi}`;
+  return null;
+}
+
+function validateNumeric(setting: RuntimeSettingItem, draft: string) {
+  return validateNumericSettingInput(draft, {
+    min: setting.min,
+    max: setting.max,
+    integer: setting.value_type === 'int',
+  });
+}
+
+const flagText = (value: unknown) => (value ? 'On' : 'Off');
+
+/** A changed runtime setting: what is saved, and the value the save would write. */
+interface SettingChange {
+  setting: RuntimeSettingItem;
+  value: boolean | number;
+}
+
+/**
+ * A group of runtime settings of one type (feature flags or numbers), shown
+ * read-only until Edit. The edited values are drafts until the administrator
+ * confirms the list of changes; each changed setting is one request.
+ */
+function RuntimeSettingsSection({
+  title,
+  description,
+  kind,
+  settings,
+  loading,
+  emptyText,
+  onSaved,
+  onAfterWrite,
+  onToast,
+  renderExtra,
+}: {
+  title: string;
+  description: string;
+  kind: 'flag' | 'numeric';
+  settings: RuntimeSettingItem[];
+  loading: boolean;
+  emptyText: string;
+  onSaved: (updated: RuntimeSettingItem) => void;
+  /** Called once after a save that wrote at least one setting, even partly. */
+  onAfterWrite: () => void;
+  onToast: (msg: string) => void;
+  /** Read-only actions for a row, such as applying a quota to existing users. */
+  renderExtra?: (setting: RuntimeSettingItem) => React.ReactNode;
+}) {
+  const confirmation = useConfirmAction();
+  const [editing, setEditing] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const draftOf = (setting: RuntimeSettingItem) =>
+    drafts[setting.key] ?? (kind === 'flag' ? !!setting.value : String(setting.value ?? ''));
+
+  // A setting is changed when its draft is valid and differs from what is saved.
+  const changes = settings.flatMap((setting): SettingChange[] => {
+    if (!(setting.key in drafts)) return [];
+    const draft = drafts[setting.key];
+    if (kind === 'flag') {
+      return draft === !!setting.value ? [] : [{ setting, value: draft as boolean }];
+    }
+    const validated = validateNumeric(setting, String(draft));
+    if (!validated.ok || validated.value === setting.value) return [];
+    return [{ setting, value: validated.value as number }];
+  });
+  const invalid =
+    kind === 'numeric'
+      ? settings.filter(
+          (setting) =>
+            setting.key in drafts && !validateNumeric(setting, String(drafts[setting.key])).ok,
+        )
+      : [];
+
+  const cancel = () => {
+    if (confirmation.busy) return;
+    setDrafts({});
+    setSaveError(null);
+    setEditing(false);
+  };
+
+  const save = () => {
+    if (invalid.length > 0) {
+      setSaveError(`Correct ${invalid.map((setting) => setting.key).join(', ')} before saving.`);
+      return;
+    }
+    if (changes.length === 0) return;
+    setSaveError(null);
+    const pending = changes;
+    const format = (value: unknown) => (kind === 'flag' ? flagText(value) : String(value));
+    confirmation.request({
+      title: `Save ${plural(pending.length, 'change')} to ${title}?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={pending.map(({ setting, value }) => ({
+              label: settingLabel(setting.key),
+              before: format(setting.value),
+              after: format(value),
+            }))}
+          />
+          {pending.length === 1 && pending[0].setting.description ? (
+            <p>{pending[0].setting.description}</p>
+          ) : null}
+          <p>This takes effect immediately.</p>
+        </>
+      ),
+      run: async () => {
+        let wrote = false;
+        const failure = await writeEach(
+          pending,
+          ({ setting }) => setting.key,
+          async ({ setting, value }) => {
+            const updated = await updateRuntimeSetting(setting.key, value);
+            wrote = true;
+            onSaved(updated);
+            setDrafts((prev) => {
+              const next = { ...prev };
+              delete next[setting.key];
+              return next;
+            });
+          },
+        ).finally(() => {
+          if (wrote) onAfterWrite();
+        });
+        setSaveError(failure);
+        if (failure) return;
+        setEditing(false);
+        onToast(
+          pending.length === 1
+            ? kind === 'flag'
+              ? `${pending[0].setting.key} ${pending[0].value ? 'enabled' : 'disabled'}`
+              : `${pending[0].setting.key} set to ${pending[0].value}`
+            : `Saved ${pending.length} settings`,
+        );
+      },
+    });
+  };
+
+  return (
+    <section
+      aria-label={title}
+      className={`rounded-xl border bg-white p-5 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
+    >
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[14px] font-semibold text-gray-900">{title}</h2>
+          <p className="mt-1 text-[12px] text-gray-500">{description}</p>
+        </div>
+        {!editing && !loading && settings.length > 0 ? (
+          <EditButton target={title} onClick={() => setEditing(true)} />
+        ) : null}
+      </div>
+
+      {loading ? (
+        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+      ) : settings.length === 0 ? (
+        <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
+          {emptyText}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {settings.map((setting) => {
+            const isDefault = setting.value === setting.default_value;
+            const draft = draftOf(setting);
+            const validated = kind === 'numeric' ? validateNumeric(setting, String(draft)) : null;
+            const hint = kind === 'numeric' ? rangeHint(setting) : null;
+            const name =
+              kind === 'flag' ? `Toggle ${setting.key.replace(/_/g, ' ')}` : `${setting.key} value`;
+            return (
+              <div
+                key={setting.key}
+                className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium text-gray-900">
+                      {settingLabel(setting.key)}
+                    </span>
+                    {!isDefault && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                        Modified
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-gray-500">
+                    {setting.description}
+                    {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
+                    {kind === 'numeric' ? (
+                      <span className="ml-1 text-gray-400">
+                        Default: {String(setting.default_value)}
+                      </span>
+                    ) : null}
+                  </p>
+                  {editing && validated && !validated.ok && String(draft) !== '' && (
+                    <p className="mt-0.5 text-[11px] text-red-600" role="alert">
+                      {validated.error}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {!editing ? (
+                    <output aria-label={name} className="text-[13px] font-medium text-gray-900">
+                      {kind === 'flag' ? flagText(setting.value) : String(setting.value ?? '')}
+                    </output>
+                  ) : kind === 'flag' ? (
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={draft === true}
+                      aria-label={name}
+                      disabled={confirmation.busy}
+                      onClick={() =>
+                        setDrafts((prev) => ({ ...prev, [setting.key]: !(draft === true) }))
+                      }
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
+                        draft === true ? 'bg-gray-900' : 'bg-gray-200'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          draft === true ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  ) : (
+                    <input
+                      type="number"
+                      step={setting.value_type === 'int' ? 1 : 'any'}
+                      min={setting.min ?? undefined}
+                      max={setting.max ?? undefined}
+                      value={String(draft)}
+                      disabled={confirmation.busy}
+                      onChange={(e) =>
+                        setDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          save();
+                        }
+                      }}
+                      aria-label={name}
+                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+                    />
+                  )}
+                  {!editing && renderExtra ? renderExtra(setting) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editing ? (
+        <EditBar
+          target={title}
+          changeCount={changes.length}
+          onCancel={cancel}
+          onSave={save}
+          busy={confirmation.busy}
+          error={saveError}
+        />
+      ) : null}
+      {confirmation.dialog}
+    </section>
+  );
+}
+
 export function SettingsTab() {
   const router = useRouter();
+  const confirmation = useConfirmAction();
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [addingDomain, setAddingDomain] = useState(false);
   const [input, setInput] = useState('');
   const [inputError, setInputError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [removing, setRemoving] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<SignupAllowedDomain | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [featureFlags, setFeatureFlags] = useState<RuntimeSettingItem[]>([]);
   const [numericSettings, setNumericSettings] = useState<RuntimeSettingItem[]>([]);
-  const [numericDrafts, setNumericDrafts] = useState<Record<string, string>>({});
-  const [savingKey, setSavingKey] = useState<string | null>(null);
   const [flagsLoading, setFlagsLoading] = useState(true);
   const [flagsError, setFlagsError] = useState<string | null>(null);
-  const [togglingKey, setTogglingKey] = useState<string | null>(null);
 
   const QUOTA_KEY_PREFIX = 'user_daily_quota_';
-  const [quotaConfirm, setQuotaConfirm] = useState<RoleQuotaPreview | null>(null);
   const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
-  const [quotaApplyingRole, setQuotaApplyingRole] = useState<Role | null>(null);
 
   const loadDomains = useCallback(async () => {
     setLoading(true);
@@ -87,11 +369,9 @@ export function SettingsTab() {
     try {
       const resp = await listRuntimeSettings();
       setFeatureFlags(resp.settings.filter((s) => s.value_type === 'bool'));
-      const numerics = resp.settings.filter(
-        (s) => s.value_type === 'int' || s.value_type === 'float',
+      setNumericSettings(
+        resp.settings.filter((s) => s.value_type === 'int' || s.value_type === 'float'),
       );
-      setNumericSettings(numerics);
-      setNumericDrafts(Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])));
     } catch (e) {
       setFlagsError(getErrorMessage(e));
     } finally {
@@ -134,301 +414,146 @@ export function SettingsTab() {
    */
   const refreshSiteConfig = () => router.refresh();
 
-  const onToggleFlag = async (flag: RuntimeSettingItem) => {
-    setTogglingKey(flag.key);
-    try {
-      const updatedFlag = await updateRuntimeSetting(flag.key, !flag.value);
-      flashToast(`${updatedFlag.key} ${updatedFlag.value ? 'enabled' : 'disabled'}`);
-      setFeatureFlags((prev) => prev.map((f) => (f.key === updatedFlag.key ? updatedFlag : f)));
-      refreshSiteConfig();
-    } catch (e) {
-      flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
-    } finally {
-      setTogglingKey(null);
-    }
-  };
+  const replaceSetting = (setList: typeof setFeatureFlags) => (updated: RuntimeSettingItem) =>
+    setList((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
 
-  const onSaveNumeric = async (setting: RuntimeSettingItem) => {
-    const draft = numericDrafts[setting.key] ?? '';
-    const validated = validateNumericSettingInput(draft, {
-      min: setting.min,
-      max: setting.max,
-      integer: setting.value_type === 'int',
-    });
-    if (!validated.ok) {
-      flashToast(`${setting.key}: ${validated.error}`);
-      return;
-    }
-    setSavingKey(setting.key);
-    try {
-      const updated = await updateRuntimeSetting(setting.key, validated.value);
-      flashToast(`${updated.key} set to ${updated.value}`);
-      setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
-      setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
-      refreshSiteConfig();
-    } catch (e) {
-      flashToast(`Failed to update ${setting.key}: ${getErrorMessage(e)}`);
-    } finally {
-      setSavingKey(null);
-    }
-  };
-
-  const onAdd = async () => {
+  const onAddDomain = () => {
     setInputError(null);
     const validated = validateSignupDomainInput(input);
     if (!validated.ok) {
       setInputError(validated.error);
       return;
     }
-    setAdding(true);
-    try {
-      await addSignupAllowedDomain(input.trim());
-      setInput('');
-      flashToast(
-        validated.isWildcard
-          ? `Added wildcard *.${validated.domain}.`
-          : `Added ${validated.domain}.`,
-      );
-      await loadDomains();
-    } catch (e) {
-      setInputError(getErrorMessage(e));
-    } finally {
-      setAdding(false);
-    }
+    const shownDomain = validated.isWildcard ? `*.${validated.domain}` : validated.domain;
+    confirmation.request({
+      title: `Add ${shownDomain} to the signup allowlist?`,
+      confirmLabel: 'Add domain',
+      busyLabel: 'Adding…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <p className="[overflow-wrap:anywhere]">
+          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code>{' '}
+          {validated.isWildcard ? '(any subdomain, not the bare suffix) ' : ''}are approved
+          automatically.
+        </p>
+      ),
+      run: async () => {
+        await addSignupAllowedDomain(input.trim());
+        setInput('');
+        setAddingDomain(false);
+        flashToast(
+          validated.isWildcard
+            ? `Added wildcard *.${validated.domain}.`
+            : `Added ${validated.domain}.`,
+        );
+        await loadDomains();
+      },
+    });
   };
 
-  const onRemove = async (row: SignupAllowedDomain) => {
-    const key = `${row.domain}|${row.is_wildcard}`;
-    setRemoving(key);
-    try {
-      await removeSignupAllowedDomain(row.domain, row.is_wildcard);
-      flashToast(row.is_wildcard ? `Removed wildcard *.${row.domain}.` : `Removed ${row.domain}.`);
-      await loadDomains();
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setRemoving(null);
-      setConfirm(null);
-    }
+  const onRemove = (row: SignupAllowedDomain) => {
+    const shownDomain = row.is_wildcard ? `*.${row.domain}` : row.domain;
+    confirmation.request({
+      title: `Remove ${shownDomain} from the signup allowlist?`,
+      confirmLabel: 'Remove',
+      busyLabel: 'Removing…',
+      tone: 'danger',
+      body: (
+        <p className="[overflow-wrap:anywhere]">
+          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code> will
+          require admin approval. Existing users keep their current status.
+        </p>
+      ),
+      run: async () => {
+        await removeSignupAllowedDomain(row.domain, row.is_wildcard);
+        flashToast(
+          row.is_wildcard ? `Removed wildcard *.${row.domain}.` : `Removed ${row.domain}.`,
+        );
+        await loadDomains();
+      },
+    });
   };
 
+  // The preview is a read; applying is the write, confirmed with what the preview found.
   const onClickApply = async (role: Role) => {
     setQuotaLoadingRole(role);
+    let preview: RoleQuotaPreview;
     try {
-      const preview = await previewRoleQuotaApply(role);
-      setQuotaConfirm(preview);
+      preview = await previewRoleQuotaApply(role);
     } catch (e) {
       flashToast(`Preview failed: ${getErrorMessage(e)}`);
+      return;
     } finally {
       setQuotaLoadingRole(null);
     }
-  };
-
-  const onConfirmApply = async () => {
-    if (!quotaConfirm) return;
-    const role = quotaConfirm.role;
-    setQuotaApplyingRole(role);
-    try {
-      const res = await applyRoleQuota(role);
-      flashToast(`Updated ${res.keys_updated} keys for role ${role} to $${res.quota}`);
-      setQuotaConfirm(null);
-    } catch (e) {
-      flashToast(`Apply failed: ${getErrorMessage(e)}`);
-    } finally {
-      setQuotaApplyingRole(null);
-    }
+    confirmation.request({
+      title: `Apply the ${preview.role} quota to existing keys?`,
+      confirmLabel: 'Apply quota',
+      busyLabel: 'Applying…',
+      tone: 'danger',
+      body: (
+        <p>
+          This sets <code>quota_daily_cost_usd = ${preview.quota.toString()}</code> on{' '}
+          <strong>{preview.keys_affected}</strong> active API keys belonging to{' '}
+          <strong>{preview.users_affected}</strong> users with role <code>{preview.role}</code>.
+          Custom per-key overrides will be lost.
+        </p>
+      ),
+      run: async () => {
+        const res = await applyRoleQuota(preview.role);
+        flashToast(`Updated ${res.keys_updated} keys for role ${preview.role} to $${res.quota}`);
+      },
+    });
   };
 
   return (
     <div className="mt-5 space-y-6">
-      {/* Feature Flags */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Feature Flags</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Toggle runtime features without restarting the server. Changes take effect immediately.
-          </p>
+      {flagsError && (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
+          {flagsError}{' '}
+          <button onClick={() => setFlagsError(null)} className="ml-2 font-bold">
+            &times;
+          </button>
         </div>
+      )}
 
-        {flagsError && (
-          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-            {flagsError}{' '}
-            <button onClick={() => setFlagsError(null)} className="ml-2 font-bold">
-              &times;
+      <RuntimeSettingsSection
+        title="Feature Flags"
+        description="Toggle runtime features without restarting the server. Changes take effect immediately."
+        kind="flag"
+        settings={featureFlags}
+        loading={flagsLoading}
+        emptyText="No feature flags available."
+        onSaved={replaceSetting(setFeatureFlags)}
+        onAfterWrite={refreshSiteConfig}
+        onToast={flashToast}
+      />
+
+      <RuntimeSettingsSection
+        title="Numeric Settings"
+        description="Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect immediately."
+        kind="numeric"
+        settings={numericSettings}
+        loading={flagsLoading}
+        emptyText="No numeric settings available."
+        onSaved={replaceSetting(setNumericSettings)}
+        onAfterWrite={refreshSiteConfig}
+        onToast={flashToast}
+        renderExtra={(setting) =>
+          setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
+            <button
+              type="button"
+              onClick={() => void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)}
+              disabled={quotaLoadingRole !== null || confirmation.busy}
+              className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+            >
+              {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+                ? 'Loading...'
+                : 'Apply to existing users'}
             </button>
-          </div>
-        )}
-
-        {flagsLoading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : featureFlags.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No feature flags available.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {featureFlags.map((flag) => {
-              const isToggling = togglingKey === flag.key;
-              const isOn = !!flag.value;
-              const isDefault = flag.value === flag.default_value;
-              return (
-                <div
-                  key={flag.key}
-                  className="flex items-center justify-between rounded-lg border border-gray-100 px-4 py-3"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-gray-900">
-                        {flag.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                      </span>
-                      {!isDefault && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                          Modified
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-gray-500">{flag.description}</p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={isOn}
-                    aria-label={`Toggle ${flag.key.replace(/_/g, ' ')}`}
-                    disabled={isToggling}
-                    onClick={() => onToggleFlag(flag)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
-                      isOn ? 'bg-gray-900' : 'bg-gray-200'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                        isOn ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Numeric Settings */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Numeric Settings</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect
-            immediately.
-          </p>
-        </div>
-
-        {flagsLoading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : numericSettings.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No numeric settings available.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {numericSettings.map((setting) => {
-              const isSaving = savingKey === setting.key;
-              const draft = numericDrafts[setting.key] ?? '';
-              const validated = validateNumericSettingInput(draft, {
-                min: setting.min,
-                max: setting.max,
-                integer: setting.value_type === 'int',
-              });
-              const isDirty = validated.ok && validated.value !== setting.value;
-              const isDefault = setting.value === setting.default_value;
-              const rangeHint = (() => {
-                const lo = setting.min;
-                const hi = setting.max;
-                if (lo != null && hi != null) return `${lo}–${hi}`;
-                if (lo != null) return `≥ ${lo}`;
-                if (hi != null) return `≤ ${hi}`;
-                return null;
-              })();
-              return (
-                <div
-                  key={setting.key}
-                  className="flex items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-gray-900">
-                        {setting.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                      </span>
-                      {!isDefault && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                          Modified
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-gray-500">
-                      {setting.description}
-                      {rangeHint && (
-                        <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
-                      )}
-                      <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
-                      </span>
-                    </p>
-                    {!validated.ok && draft !== '' && (
-                      <p className="mt-0.5 text-[11px] text-red-600" role="alert">
-                        {validated.error}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
-                      value={draft}
-                      disabled={isSaving}
-                      onChange={(e) =>
-                        setNumericDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && isDirty && !isSaving) {
-                          e.preventDefault();
-                          onSaveNumeric(setting);
-                        }
-                      }}
-                      aria-label={`${setting.key} value`}
-                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onSaveNumeric(setting)}
-                      disabled={!isDirty || isSaving}
-                      className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
-                    >
-                      {isSaving ? 'Saving...' : 'Save'}
-                    </button>
-                    {setting.key.startsWith(QUOTA_KEY_PREFIX) && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
-                        }
-                        disabled={quotaLoadingRole !== null || quotaApplyingRole !== null}
-                        className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-                      >
-                        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
-                          ? 'Loading...'
-                          : 'Apply to existing users'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+          ) : null
+        }
+      />
 
       <AlertSnoozeSection onToast={flashToast} />
 
@@ -450,48 +575,72 @@ export function SettingsTab() {
           </p>
         </div>
 
-        {/* Add form */}
-        <div className="mb-4 flex flex-col gap-1.5">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                setInputError(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !adding) {
-                  e.preventDefault();
-                  onAdd();
-                }
-              }}
-              placeholder="example.com or *.example.com"
-              className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-              disabled={adding}
-              aria-label="Domain to add"
-            />
+        {/* Add form: opened explicitly, reviewed before anything is written. */}
+        {addingDomain ? (
+          <form
+            className="mb-4 flex flex-col gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!confirmation.busy) onAddDomain();
+            }}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  setInputError(null);
+                }}
+                placeholder="example.com or *.example.com"
+                className="min-w-[12rem] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+                disabled={confirmation.busy}
+                aria-label="Domain to add"
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingDomain(false);
+                  setInput('');
+                  setInputError(null);
+                }}
+                disabled={confirmation.busy}
+                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={confirmation.busy || !input.trim()}
+                className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+              >
+                Review and add
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400">
+              Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact match
+              or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow any
+              subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does not
+              match the bare suffix.
+            </p>
+            {inputError && (
+              <p className="text-[12px] text-red-600" role="alert">
+                {inputError}
+              </p>
+            )}
+          </form>
+        ) : (
+          <div className="mb-4">
             <button
               type="button"
-              onClick={onAdd}
-              disabled={adding}
-              className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+              onClick={() => setAddingDomain(true)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50"
             >
-              {adding ? 'Adding...' : 'Add'}
+              Add domain
             </button>
           </div>
-          <p className="text-[11px] text-gray-400">
-            Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact match
-            or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow any
-            subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does not
-            match the bare suffix.
-          </p>
-          {inputError && (
-            <p className="text-[12px] text-red-600" role="alert">
-              {inputError}
-            </p>
-          )}
-        </div>
+        )}
 
         {/* Status */}
         {error && (
@@ -529,7 +678,6 @@ export function SettingsTab() {
               <tbody className="divide-y divide-gray-100">
                 {domains.map((d) => {
                   const key = `${d.domain}|${d.is_wildcard}`;
-                  const isRemoving = removing === key;
                   return (
                     <tr key={key} className="bg-white">
                       <td className="px-3 py-2 text-gray-900">
@@ -542,11 +690,12 @@ export function SettingsTab() {
                       <td className="px-3 py-2 text-right">
                         <button
                           type="button"
-                          onClick={() => setConfirm(d)}
-                          disabled={isRemoving}
+                          onClick={() => onRemove(d)}
+                          disabled={confirmation.busy}
+                          aria-label={`Remove ${d.is_wildcard ? `*.${d.domain}` : d.domain}`}
                           className="text-[12px] font-medium text-red-600 transition hover:text-red-800 disabled:opacity-40"
                         >
-                          {isRemoving ? 'Removing...' : 'Remove'}
+                          Remove
                         </button>
                       </td>
                     </tr>
@@ -558,86 +707,7 @@ export function SettingsTab() {
         )}
       </div>
 
-      {/* Quota apply confirm dialog */}
-      {quotaConfirm && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
-          onClick={() => quotaApplyingRole === null && setQuotaConfirm(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-[15px] font-semibold text-gray-900">
-              Apply quota to role <code>{quotaConfirm.role}</code>
-            </h3>
-            <p className="mt-2 text-[13px] text-gray-600">
-              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code> on{' '}
-              <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
-              <strong>{quotaConfirm.users_affected}</strong> users with role{' '}
-              <code>{quotaConfirm.role}</code>. Custom per-key overrides will be lost.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setQuotaConfirm(null)}
-                disabled={quotaApplyingRole !== null}
-                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onConfirmApply}
-                disabled={quotaApplyingRole !== null}
-                className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
-              >
-                {quotaApplyingRole !== null ? 'Applying...' : 'Confirm'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm dialog */}
-      {confirm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
-          onClick={() => setConfirm(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-[15px] font-semibold text-gray-900">Remove allowed domain</h3>
-            <p className="mt-2 text-[13px] text-gray-600">
-              Future signups from{' '}
-              <code className="rounded bg-gray-100 px-1">
-                {confirm.is_wildcard ? `*.${confirm.domain}` : confirm.domain}
-              </code>{' '}
-              will require admin approval. Existing users keep their current status.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirm(null)}
-                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => onRemove(confirm)}
-                className="rounded-md bg-red-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-red-700"
-              >
-                Remove
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmation.dialog}
     </div>
   );
 }

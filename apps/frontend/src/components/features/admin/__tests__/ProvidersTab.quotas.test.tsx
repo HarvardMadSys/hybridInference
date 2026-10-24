@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProvidersTab } from '../ProvidersTab';
@@ -37,11 +37,14 @@ vi.mock('@/app/dashboard/admin/UpstreamConcurrencyPanel', () => ({
   UpstreamConcurrencyPanel: () => null,
 }));
 
+import toast from 'react-hot-toast';
 import {
   getProviderQuotas,
+  getRoutableProviders,
   setProviderDisabled,
   setProviderQuotaKeyDisabled,
 } from '@/lib/api/admin';
+import type { ProviderKeyByRefResponse } from '@/lib/api/admin';
 
 const ACTIVE_KEY = {
   name: 'zai',
@@ -111,6 +114,12 @@ async function clickSwitch(name: string) {
   });
 }
 
+async function clickInDialog(name: string) {
+  await act(async () => {
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name }));
+  });
+}
+
 describe('ProvidersTab quotas', () => {
   beforeEach(() => {
     vi.mocked(getProviderQuotas).mockResolvedValue({
@@ -124,12 +133,18 @@ describe('ProvidersTab quotas', () => {
       status: 'disabled',
       pools_updated: 1,
     });
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(setProviderDisabled).mockResolvedValue({
+      provider: 'zai',
+      disabled: true,
+      affected_model_count: 3,
+    });
+    vi.spyOn(window, 'confirm');
   });
 
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('opens the requested provider keys and retains selection across tabs', () => {
@@ -371,28 +386,83 @@ describe('ProvidersTab quotas', () => {
 
     await clickSwitch('Disable ZAI #1 key sk-zaiaaa...aaaa');
 
-    expect(window.confirm).toHaveBeenCalled();
-    expect(setProviderQuotaKeyDisabled).toHaveBeenCalledWith('zai', 'ref-active', true);
+    const confirm = screen.getByRole('dialog', { name: 'Disable key sk-zaiaaa...aaaa for zai?' });
+    expect(confirm).toHaveTextContent('stops serving traffic immediately');
+    expect(setProviderQuotaKeyDisabled).not.toHaveBeenCalled();
+    await clickInDialog('Disable key');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(setProviderQuotaKeyDisabled).mock.calls).toEqual([
+      ['zai', 'ref-active', true],
+    ]);
     await waitFor(() => expect(getProviderQuotas).toHaveBeenCalledTimes(2));
+    expect(toast.success).toHaveBeenCalledWith('Key disabled');
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it('leaves the key untouched when the confirmation is declined', async () => {
-    vi.mocked(window.confirm).mockReturnValue(false);
+  it('leaves the key untouched when the confirmation is cancelled', async () => {
     await openQuotas();
 
     await clickSwitch('Disable ZAI #1 key sk-zaiaaa...aaaa');
+    await clickInDialog('Cancel');
 
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(setProviderQuotaKeyDisabled).not.toHaveBeenCalled();
+    expect(getProviderQuotas).toHaveBeenCalledTimes(1);
   });
 
-  it('re-enables a disabled key without a confirmation prompt', async () => {
+  it('re-enables a disabled key after its own confirmation', async () => {
     await openQuotas();
 
     expect(screen.getByText('Key disabled')).toBeInTheDocument();
     await clickSwitch('Enable ZAI #2 key sk-zaibbb...bbbb');
 
+    expect(
+      screen.getByRole('dialog', { name: 'Enable key sk-zaibbb...bbbb for zai?' }),
+    ).toHaveTextContent('returns to the rotation pool');
+    expect(setProviderQuotaKeyDisabled).not.toHaveBeenCalled();
+    await clickInDialog('Enable key');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(setProviderQuotaKeyDisabled).mock.calls).toEqual([
+      ['zai', 'ref-disabled', false],
+    ]);
     expect(window.confirm).not.toHaveBeenCalled();
-    expect(setProviderQuotaKeyDisabled).toHaveBeenCalledWith('zai', 'ref-disabled', false);
+  });
+
+  it('keeps the key confirmation open with the error, blocks a second submit, and retries', async () => {
+    let fail!: (error: Error) => void;
+    vi.mocked(setProviderQuotaKeyDisabled)
+      .mockImplementationOnce(
+        () =>
+          new Promise<ProviderKeyByRefResponse>((_, reject) => {
+            fail = reject;
+          }),
+      )
+      .mockResolvedValueOnce({
+        provider: 'zai',
+        key_ref: 'ref-active',
+        source: 'db',
+        status: 'disabled',
+        pools_updated: 1,
+      });
+    await openQuotas();
+
+    await clickSwitch('Disable ZAI #1 key sk-zaiaaa...aaaa');
+    await clickInDialog('Disable key');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Disabling…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    await act(async () => fail(new Error('pool locked')));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('pool locked');
+    expect(getProviderQuotas).toHaveBeenCalledTimes(1);
+
+    await clickInDialog('Disable key');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(setProviderQuotaKeyDisabled).toHaveBeenCalledTimes(2);
   });
 
   it('offers no key toggle for cookie-based credentials', async () => {
@@ -406,8 +476,103 @@ describe('ProvidersTab quotas', () => {
     await openQuotas();
 
     await clickSwitch('Disable ZAI #1');
+    const confirm = screen.getByRole('dialog', { name: 'Disable provider zai?' });
+    expect(confirm).toHaveTextContent('removed from routing for every model');
+    expect(setProviderDisabled).not.toHaveBeenCalled();
+    await clickInDialog('Disable provider');
 
-    expect(setProviderDisabled).toHaveBeenCalledWith('zai', true);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(setProviderDisabled).mock.calls).toEqual([['zai', true]]);
     expect(setProviderQuotaKeyDisabled).not.toHaveBeenCalled();
+    expect(screen.getAllByText('Disabled').length).toBeGreaterThan(0);
+    expect(toast.success).toHaveBeenCalledWith('ZAI #1 disabled — excluded from routing');
+  });
+
+  it('leaves the provider untouched when its confirmation is cancelled', async () => {
+    await openQuotas();
+
+    await clickSwitch('Disable ZAI #1');
+    await clickInDialog('Cancel');
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(setProviderDisabled).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProvidersTab availability', () => {
+  beforeEach(() => {
+    vi.mocked(getRoutableProviders).mockResolvedValue({
+      providers: [
+        {
+          provider: 'zai',
+          display_name: 'ZAI',
+          model_count: 3,
+          endpoint_count: 4,
+          disabled: false,
+        },
+        {
+          provider: 'openrouter',
+          display_name: 'OpenRouter',
+          model_count: 1,
+          endpoint_count: 1,
+          disabled: true,
+        },
+      ],
+    });
+    vi.mocked(setProviderDisabled).mockResolvedValue({
+      provider: 'zai',
+      disabled: true,
+      affected_model_count: 3,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  async function openAvailability() {
+    render(<ProvidersTab />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Availability' }));
+    await screen.findByRole('switch', { name: 'Disable zai' });
+  }
+
+  it('disables a provider only after a confirmation that names it', async () => {
+    await openAvailability();
+
+    await clickSwitch('Disable zai');
+    expect(screen.getByRole('dialog', { name: 'Disable provider zai?' })).toBeVisible();
+    await clickInDialog('Cancel');
+    expect(setProviderDisabled).not.toHaveBeenCalled();
+
+    await clickSwitch('Disable zai');
+    await clickInDialog('Disable provider');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(setProviderDisabled).mock.calls).toEqual([['zai', true]]);
+    expect(screen.getByRole('switch', { name: 'Enable zai' })).not.toBeChecked();
+    expect(toast.success).toHaveBeenCalledWith('zai disabled — excluded from routing');
+  });
+
+  it('re-enables a provider after confirmation and keeps the dialog on failure', async () => {
+    vi.mocked(setProviderDisabled)
+      .mockRejectedValueOnce(new Error('not allowed'))
+      .mockResolvedValueOnce({ provider: 'openrouter', disabled: false, affected_model_count: 1 });
+    await openAvailability();
+
+    await clickSwitch('Enable openrouter');
+    expect(screen.getByRole('dialog', { name: 'Enable provider openrouter?' })).toBeVisible();
+    await clickInDialog('Enable provider');
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(
+      'not allowed',
+    );
+    expect(screen.getByRole('switch', { name: 'Enable openrouter' })).not.toBeChecked();
+
+    await clickInDialog('Enable provider');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(setProviderDisabled).mock.calls).toEqual([
+      ['openrouter', false],
+      ['openrouter', false],
+    ]);
+    expect(screen.getByRole('switch', { name: 'Disable openrouter' })).toBeChecked();
   });
 });

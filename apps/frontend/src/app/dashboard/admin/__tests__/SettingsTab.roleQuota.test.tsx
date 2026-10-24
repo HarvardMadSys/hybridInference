@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -80,11 +80,15 @@ describe('SettingsTab role quota', () => {
     fireEvent.click(applyBtn);
     await waitFor(() => expect(api.previewRoleQuotaApply).toHaveBeenCalledWith('pro'));
 
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Apply the pro quota to existing keys?',
+    });
     expect(dialog).toHaveTextContent('42');
     expect(dialog).toHaveTextContent(/pro/i);
+    expect(api.applyRoleQuota).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply quota' }));
     await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro'));
+    expect(api.applyRoleQuota).toHaveBeenCalledTimes(1);
   });
 });
