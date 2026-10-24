@@ -6,6 +6,7 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { ChangeList, plural, type Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useReportEditing } from '@/components/features/admin/confirm/useReportEditing';
 import type { OffloadRoute, ProviderRoute } from '@/lib/api/admin';
 import { clearOffloadRoute, setOffloadRoute } from '@/lib/api/admin';
 import { validateNumericSettingInput } from './numericSettingValidation';
@@ -32,6 +33,8 @@ interface OffloadRoutePanelProps {
   loadError?: string | null;
   routeLabel: (route: ProviderRoute) => string;
   onChange: (modelId: string, offload: OffloadRoute | null) => void;
+  /** Whether an edit or confirmation is open, so the parent can hold the model selection. */
+  onEditingChange?: (active: boolean) => void;
 }
 
 type ValidatedLimit = { ok: true; value: number | null } | { ok: false; error: string };
@@ -75,10 +78,12 @@ export function OffloadRoutePanel({
   loadError,
   routeLabel,
   onChange,
+  onEditingChange,
 }: OffloadRoutePanelProps) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [editing, setEditing] = useState(false);
+  useReportEditing(editing || confirmation.open, onEditingChange);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [draftRouteId, setDraftRouteId] = useState(offload?.route_id ?? '');
   const [draftWait, setDraftWait] = useState(

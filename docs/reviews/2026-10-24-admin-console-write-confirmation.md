@@ -174,4 +174,35 @@ The setup wizard (`app/setup/ConfigureStep.tsx`) is outside the Admin Console an
 - Broadcasts: Schedule needs a time.
 - Site updates: an edit sends only the changed fields.
 - Route editor: closes after a successful save.
-- The model selector is locked while a routing edit is open, and the provider selector while a tier edit is open, so drafts cannot be applied to a different target.
+- The model selector, and Create model (which switches to the new model), are locked while any routing edit or confirmation is open: weights, policy, concurrency limit, Queue offload or RouteWise parameters. The provider selector is locked while a tier edit is open. So drafts are never applied to, or silently dropped for, another target.
+
+## Follow-up after browser acceptance (2026-10-24)
+
+The browser review found two boundary issues. Both are fixed, and each has a regression test that fails against `0acc4b73`.
+
+1. **Emptied daily quota** (`users/UserDetailPanel.tsx`, `quotaError` / `accountPatch`).
+   - **The bug.** Clearing a non-empty "Daily quota (USD)" computed `Number('')` and reviewed `10 → 0`.
+   - **The fix.** A changed quota that is empty, whitespace or negative is now invalid. It counts as an unsaved change and is named under the field (`aria-invalid`). Save shows "Correct the daily quota before saving: …" and opens no review, so nothing is written.
+   - **Unchanged.** An explicit `0` stays valid (the API takes `ge=0`). A user with no saved quota keeps it out of a save that changes other fields.
+   - **Tests** (`UserTable.test.tsx`):
+     - "refuses an emptied daily quota instead of reviewing it as 0"
+     - "refuses a negative daily quota"
+     - "still allows a deliberate zero quota"
+     - "leaves an unsaved (null) quota out of a save that changes other fields"
+   - The first two fail on 0acc4b73. The last two pass on both, so they guard the semantics that were kept.
+2. **Model navigation guard for the child editors** (`ProviderRoutesTab.tsx`, `OffloadRoutePanel.tsx`, `RoutewiseSettingsPanel.tsx`, new `confirm/useReportEditing.ts`).
+   - **The bug.** Both panels reset their drafts when `modelId` changes, but the parent only locked the selector for its own edits.
+   - **The fix.** Each panel now reports "edit or confirmation open" through `onEditingChange`, and reports `false` again on unmount. The parent's `modelLocked` combines this with its own edits, and disables the selector and Create model.
+   - **Unchanged.** The panels' model-change resets and stale-response guards are kept.
+   - **Tests** (`ProviderRoutesTab.test.tsx`):
+     - "holds the model selection while an offload edit or its review is open" (also covers Back, then Cancel, then a switch with fresh drafts)
+     - "releases the model selection once an offload save is confirmed"
+     - "holds the model selection while RouteWise parameters are being edited"
+   - All three fail on 0acc4b73.
+   - **Hook test:** `confirm/useReportEditing.test.tsx` checks that unmounting mid-edit releases the parent.
+   - **Stale-response tests still passing** (`RoutewiseSettingsPanel.test.tsx`):
+     - "ignores stale probe data and probe completion after the model changes"
+     - "reloads on model changes and ignores a stale response from the old model"
+     - "ignores a stale mutation after switching away from and back to the same model"
+
+A suspected clipping of the UserUsageInsights confirmation inside the Users table was not reproduced: in the browser, the overlay covered the viewport. It was left unchanged, as were the existing UserTable confirmation placement and typed confirmations.

@@ -6,6 +6,7 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useReportEditing } from '@/components/features/admin/confirm/useReportEditing';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 
 import type { RoutewiseProbeSampleItem, RoutewiseSettingItem } from '@/lib/api/admin';
@@ -47,6 +48,8 @@ const PROBE_STALE_LOOKBEHIND_MS = 60 * 60 * 1000;
 interface RoutewiseSettingsPanelProps {
   modelId?: string;
   endpoints?: ProbeEndpointOption[];
+  /** Whether an edit or confirmation is open, so the parent can hold the model selection. */
+  onEditingChange?: (active: boolean) => void;
 }
 
 function displayKey(setting: RoutewiseSettingItem) {
@@ -149,13 +152,18 @@ function sampleStatusClass(sample: RoutewiseProbeSampleItem) {
   return sample.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700';
 }
 
-export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSettingsPanelProps) {
+export function RoutewiseSettingsPanel({
+  modelId,
+  endpoints = [],
+  onEditingChange,
+}: RoutewiseSettingsPanelProps) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [settings, setSettings] = useState<RoutewiseSettingItem[]>([]);
   // Setting key → the edited value; read-only until Edit, written only after Confirm.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState(false);
+  useReportEditing(editing || confirmation.open, onEditingChange);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

@@ -1692,6 +1692,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       return next;
     });
   const inlineEditing = editingWeights || editingStrategy || editingConcurrencyKey !== null;
+  // The offload and RouteWise panels keep drafts for the selected model too, and
+  // drop them when it changes; they report whether an edit or confirmation is open.
+  const [panelEditing, setPanelEditing] = useState({ offload: false, routewise: false });
+  const onOffloadEditingChange = useCallback(
+    (active: boolean) => setPanelEditing((prev) => ({ ...prev, offload: active })),
+    [],
+  );
+  const onRoutewiseEditingChange = useCallback(
+    (active: boolean) => setPanelEditing((prev) => ({ ...prev, routewise: active })),
+    [],
+  );
+  // Switching model, directly or by creating one, would drop any open draft.
+  const modelLocked = inlineEditing || panelEditing.offload || panelEditing.routewise;
 
   // Discrete row actions. Each `run` throws on failure, so the confirmation
   // stays open with the error and the same action can be retried.
@@ -2006,10 +2019,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               setAddingRoute(false);
               setCreatingModel(false);
             }}
-            // Unsaved weight, policy or limit drafts belong to this model; finish
-            // or cancel them before switching.
-            disabled={inlineEditing}
-            title={inlineEditing ? 'Save or cancel the open edit first' : undefined}
+            // Unsaved weight, policy, limit, offload or RouteWise drafts belong to
+            // this model; finish or cancel them before switching.
+            disabled={modelLocked}
+            title={modelLocked ? 'Save or cancel the open edit first' : undefined}
             className="mt-1 w-full min-w-[240px] max-w-sm rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
           >
             {models.length === 0 && <option value="">(no models loaded)</option>}
@@ -2051,7 +2064,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <button
             type="button"
             onClick={openCreateModelForm}
-            disabled={loading || providerOptions.length === 0}
+            disabled={loading || providerOptions.length === 0 || modelLocked}
+            title={modelLocked ? 'Save or cancel the open edit first' : undefined}
             className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Create model
@@ -2107,6 +2121,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             })`
           }
           onChange={onOffloadChange}
+          onEditingChange={onOffloadEditingChange}
         />
       )}
 
@@ -2121,6 +2136,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               openRouterSelectOptions,
             )}`,
           }))}
+          onEditingChange={onRoutewiseEditingChange}
         />
       )}
 

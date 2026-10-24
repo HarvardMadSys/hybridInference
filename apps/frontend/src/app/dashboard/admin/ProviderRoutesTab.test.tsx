@@ -410,6 +410,152 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
   });
 
+  it('holds the model selection while an offload edit or its review is open', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
+    // Offload needs a second route to point at, on each model.
+    const secondRoute = (base: typeof fixedRoute) => ({
+      ...base,
+      route_id: `${base.model_id}:openrouter-api`,
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      endpoint_id: `${base.model_id}:openrouter-api`,
+    });
+    const otherRoute = {
+      ...fixedRoute,
+      model_id: 'other-model',
+      route_id: 'other-model:chutes-api',
+      endpoint_id: 'other-model:chutes-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute, secondRoute(fixedRoute), otherRoute, secondRoute(otherRoute)],
+    });
+
+    render(<ProviderRoutesTab />);
+    await screen.findByTestId('offload-route-panel');
+    const selector = screen.getByLabelText('Selected model');
+    const createModel = screen.getByRole('button', { name: 'Create model' });
+    expect(selector).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
+    expect(selector).toBeDisabled();
+    expect(createModel).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Offload route'), {
+      target: { value: fixedRoute.route_id },
+    });
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
+
+    // Still held while the review is open, and after going back to it.
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(selector).toBeDisabled();
+    confirmAction('Back to editing');
+    expect(selector).toBeDisabled();
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(9);
+
+    // Cancel releases it; the next model starts from its own stored values.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
+    expect(selector).toBeEnabled();
+    expect(createModel).toBeEnabled();
+    fireEvent.change(selector, { target: { value: 'other-model' } });
+    expect(selector).toHaveValue('other-model');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Queue offload' }));
+    expect(screen.getByLabelText('Offload wait seconds')).not.toHaveValue(9);
+    expect(setOffloadRoute).not.toHaveBeenCalled();
+  });
+
+  it('releases the model selection once an offload save is confirmed', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
+    const reservedRoute = {
+      ...fixedRoute,
+      route_id: 'minimax-fast:openrouter-api',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      endpoint_id: 'minimax-fast:openrouter-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute, reservedRoute],
+    });
+    vi.mocked(setOffloadRoute).mockResolvedValue({
+      model_id: 'minimax-fast',
+      offload: {
+        model_id: 'minimax-fast',
+        route_id: fixedRoute.route_id,
+        wait_seconds: 5,
+        endpoint_id: fixedRoute.endpoint_id,
+        active: true,
+        inactive_reason: null,
+        updated_at: null,
+        updated_by: 'admin@example.com',
+      },
+    });
+
+    render(<ProviderRoutesTab />);
+    await screen.findByTestId('offload-route-panel');
+    const selector = screen.getByLabelText('Selected model');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
+    fireEvent.change(screen.getByLabelText('Offload route'), {
+      target: { value: fixedRoute.route_id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
+    expect(selector).toBeDisabled();
+    confirmAction('Confirm save');
+    await waitFor(() => expect(setOffloadRoute).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(selector).toBeEnabled());
+  });
+
+  it('holds the model selection while RouteWise parameters are being edited', async () => {
+    const otherRoute = {
+      ...route,
+      model_id: 'other-routewise',
+      route_id: 'other-routewise:chutes-api',
+      endpoint_id: 'other-routewise:chutes-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, otherRoute],
+    });
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      model_id: 'minimax-fast',
+      settings: [
+        {
+          key: 'routewise_budget_alpha',
+          value: 0.75,
+          value_type: 'float',
+          default_value: 0.75,
+          source: 'global_default',
+          overridden: false,
+          description: 'RouteWise LP cost budget interpolation.',
+          min: 0,
+          max: 1,
+        },
+      ],
+    });
+
+    render(<ProviderRoutesTab showRoutewiseSettings />);
+    const edit = await screen.findByRole('button', { name: 'Edit RouteWise parameters' });
+    const selector = screen.getByLabelText('Selected model');
+    expect(selector).toBeEnabled();
+
+    fireEvent.click(edit);
+    expect(selector).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
+    expect(selector).toBeEnabled();
+    fireEvent.change(selector, { target: { value: 'other-routewise' } });
+    await waitFor(() => expect(listRoutewiseSettings).toHaveBeenLastCalledWith('other-routewise'));
+    expect(updateRoutewiseSetting).not.toHaveBeenCalled();
+  });
+
   it('renders settings and runs RouteWise probes when requested', async () => {
     const tencentRoute = {
       ...route,

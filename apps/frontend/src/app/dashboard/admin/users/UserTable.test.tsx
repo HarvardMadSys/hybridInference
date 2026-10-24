@@ -747,6 +747,68 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
   }
 
+  it('refuses an emptied daily quota instead of reviewing it as 0', async () => {
+    const onUpdate = await openAccountEditor();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '' } });
+
+    // The change is visible and explained, but no review opens and nothing is sent.
+    expect(screen.getByText('Enter a daily quota in USD. Use 0 to allow no spend.')).toBeVisible();
+    expect(quota).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    saveAccount();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('Correct the daily quota before saving');
+    expect(quota).toHaveValue(null);
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    // Fixing it clears the error and reviews the real value.
+    fireEvent.change(quota, { target: { value: '25' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    saveAccount();
+    expect(screen.getByRole('dialog')).toHaveTextContent('Daily quota (USD)100 → 25');
+  });
+
+  it('refuses a negative daily quota', async () => {
+    const onUpdate = await openAccountEditor();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' }), {
+      target: { value: '-5' },
+    });
+    expect(screen.getByText('Enter a daily quota of 0 or more.')).toBeVisible();
+    saveAccount();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still allows a deliberate zero quota', async () => {
+    const onUpdate = await openAccountEditor();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' }), {
+      target: { value: '0' },
+    });
+    saveAccount();
+    expect(screen.getByRole('dialog')).toHaveTextContent('Daily quota (USD)100 → 0');
+    clickInDialog('Confirm save');
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { quota_daily_cost_usd: 0 }),
+    );
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an unsaved (null) quota out of a save that changes other fields', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({ role: 'free', quota_daily_usd: null, max_concurrent_requests: null }),
+    );
+    const onUpdate = await openAccountEditor();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+    saveAccount();
+    const dialog = screen.getByRole('dialog', {
+      name: 'Save 1 change to account settings for user@example.com?',
+    });
+    expect(dialog).not.toHaveTextContent('Daily quota');
+    clickInDialog('Confirm save');
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('user-1', { role: 'pro' }));
+  });
+
   it('shows role, quota and concurrency as text until Edit', async () => {
     renderTable(baseUser);
     await expand();

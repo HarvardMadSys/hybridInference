@@ -178,12 +178,28 @@ function savedAccount(detail: UserDetail): AccountDraft {
   };
 }
 
-/** The PATCH body for what the draft changes; empty for a no-op. */
+/**
+ * Why a changed daily quota cannot be sent, or `null`. The API takes a number
+ * of dollars from 0 up (0 is a deliberate "no spend"); an emptied field is not
+ * a number, and `Number('')` would otherwise send it as 0.
+ */
+function quotaError(detail: UserDetail, draft: AccountDraft): string | null {
+  if (draft.quota === savedAccount(detail).quota) return null;
+  const raw = draft.quota.trim();
+  if (raw === '') return 'Enter a daily quota in USD. Use 0 to allow no spend.';
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return 'Enter a daily quota of 0 or more.';
+  return null;
+}
+
+/** The PATCH body for what the draft changes; empty for a no-op. An invalid quota is left out. */
 function accountPatch(detail: UserDetail, draft: AccountDraft): UpdateUserData {
   const saved = savedAccount(detail);
   const patch: UpdateUserData = {};
   if (draft.role !== saved.role) patch.role = draft.role;
-  if (draft.quota !== saved.quota) patch.quota_daily_cost_usd = Number(draft.quota);
+  if (draft.quota !== saved.quota && quotaError(detail, draft) === null) {
+    patch.quota_daily_cost_usd = Number(draft.quota.trim());
+  }
   const nextDisabledModels = [...draft.disabledModels].sort();
   if (JSON.stringify(nextDisabledModels) !== JSON.stringify(saved.disabledModels)) {
     patch.disabled_models = nextDisabledModels;
@@ -263,13 +279,19 @@ function AccountSettings({
   onSave: (patch: UpdateUserData) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<AccountDraft | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const saved = savedAccount(detail);
   const busy = confirmation.busy;
   const patch = draft ? accountPatch(detail, draft) : {};
   const changes = draft ? accountChanges(detail, patch) : [];
+  const invalidQuota = draft ? quotaError(detail, draft) : null;
+  // An invalid quota is still an unsaved change: Save stays enabled and says why it cannot go.
+  const changeCount = changes.length + (invalidQuota ? 1 : 0);
 
-  const change = (next: Partial<AccountDraft>) =>
+  const change = (next: Partial<AccountDraft>) => {
+    setSaveError(null);
     setDraft((prev) => (prev ? { ...prev, ...next } : prev));
+  };
 
   const toggleDisabledModel = (modelId: string) => {
     if (!draft) return;
@@ -282,10 +304,15 @@ function AccountSettings({
 
   const cancel = () => {
     if (busy) return;
+    setSaveError(null);
     setDraft(null);
   };
 
   const save = () => {
+    if (invalidQuota) {
+      setSaveError(`Correct the daily quota before saving: ${invalidQuota}`);
+      return;
+    }
     if (changes.length === 0) return;
     const pendingPatch = patch;
     confirmation.request({
@@ -369,11 +396,19 @@ function AccountSettings({
                 <div className="mb-1 text-[11px] font-medium text-gray-500">Daily quota (USD)</div>
                 <input
                   type="number"
+                  min={0}
                   value={draft.quota}
                   onChange={(e) => change({ quota: e.target.value })}
                   disabled={busy}
+                  aria-invalid={invalidQuota ? true : undefined}
+                  aria-describedby={invalidQuota ? 'account-quota-error' : undefined}
                   className={`${CONTROL} w-28`}
                 />
+                {invalidQuota ? (
+                  <p id="account-quota-error" className="mt-1 text-[11px] text-red-600">
+                    {invalidQuota}
+                  </p>
+                ) : null}
               </label>
             )}
             <label className="block">
@@ -463,10 +498,11 @@ function AccountSettings({
 
           <EditBar
             target="account settings"
-            changeCount={changes.length}
+            changeCount={changeCount}
             onCancel={cancel}
             onSave={save}
             busy={busy}
+            error={saveError}
           />
         </>
       )}
