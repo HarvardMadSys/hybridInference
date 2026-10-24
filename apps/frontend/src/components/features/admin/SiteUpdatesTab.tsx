@@ -39,6 +39,18 @@ const EMPTY_FORM: SiteUpdateInput = {
   link_label: null,
 };
 
+/** A saved update's fields, as the editor holds them. */
+function formOf(u: SiteUpdateItem): SiteUpdateInput {
+  return {
+    title: u.title,
+    body: u.body,
+    placement: u.placement,
+    published: u.published,
+    link_url: u.link_url,
+    link_label: u.link_label,
+  };
+}
+
 function fmtDate(s: string): string {
   return new Date(s).toLocaleDateString('en-US', {
     month: 'short',
@@ -156,16 +168,24 @@ export function SiteUpdatesTab() {
     setComposerOpen(false);
   }
 
+  const editingUpdate = editingId ? updates.find((u) => u.id === editingId) : undefined;
+  // Whether the editor holds anything not saved: its fields differ from the
+  // update being edited, or from an empty form. Hiding the editor keeps
+  // them, so nothing replaces them unasked.
+  const saved = editingUpdate ? formOf(editingUpdate) : EMPTY_FORM;
+  const unsaved = (Object.keys(EMPTY_FORM) as (keyof SiteUpdateInput)[]).some(
+    (key) => form[key] !== saved[key],
+  );
+
   function startEdit(u: SiteUpdateItem) {
-    setEditingId(u.id);
-    setForm({
-      title: u.title,
-      body: u.body,
-      placement: u.placement,
-      published: u.published,
-      link_url: u.link_url,
-      link_label: u.link_label,
-    });
+    // Edit on the update already in the editor picks it up again.
+    if (editingId !== u.id) {
+      if (unsaved && !confirm(`Edit "${u.title}"? Your unsaved changes will be discarded.`)) {
+        return;
+      }
+      setEditingId(u.id);
+      setForm(formOf(u));
+    }
     openComposer();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -215,12 +235,8 @@ export function SiteUpdatesTab() {
   }
 
   const fieldId = (name: string) => `${baseId}-${name}`;
-  const editingTitle = editingId ? updates.find((u) => u.id === editingId)?.title : undefined;
-  const hasNewDraft =
-    !editingId &&
-    (Object.keys(EMPTY_FORM) as (keyof SiteUpdateInput)[]).some(
-      (key) => form[key] !== EMPTY_FORM[key],
-    );
+  const editingTitle = editingUpdate?.title;
+  const hasNewDraft = !editingId && unsaved;
   const openLabel = editingId ? 'Continue editing' : hasNewDraft ? 'Resume draft' : 'New update';
 
   return (

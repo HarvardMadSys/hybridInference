@@ -149,6 +149,53 @@ describe('SiteUpdatesTab', () => {
     );
   });
 
+  it('asks before Edit replaces a hidden draft, and keeps the draft if told no', async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'New update' }));
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Half written' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Pricing note' }));
+    expect(confirm).toHaveBeenCalledWith(
+      'Edit "Pricing note"? Your unsaved changes will be discarded.',
+    );
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume draft' }));
+    expect(screen.getByLabelText('Title')).toHaveValue('Half written');
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Pricing note' }));
+    expect(screen.getByLabelText('Title')).toHaveValue('Pricing note');
+  });
+
+  it('asks before Edit on another update replaces unsaved changes, not to resume', async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    vi.mocked(listSiteUpdates).mockResolvedValue({
+      total: 2,
+      updates: [DRAFT, { ...DRAFT, id: 'u2', title: 'Banner' }],
+    });
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Pricing note' }));
+    // Nothing changed yet: nothing to ask about.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Banner' }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Title')).toHaveValue('Banner');
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Banner, revised' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Pricing note' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Title')).toHaveValue('Banner, revised');
+
+    // Edit on the update being edited picks its changes up again.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Banner' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Title')).toHaveValue('Banner, revised');
+  });
+
   it('still asks before deleting', async () => {
     const confirm = vi.fn(() => false);
     vi.stubGlobal('confirm', confirm);
