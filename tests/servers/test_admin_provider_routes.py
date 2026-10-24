@@ -6637,6 +6637,54 @@ async def test_boot_sync_applies_stored_overrides_and_skips_invalid_rows(admin_c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "orphaned"),
+    [
+        (
+            None,
+            [
+                ("minimax-fast", "minimax-fast:10.0.0.5-api"),
+                ("retired-model", "retired-model:x-api"),
+            ],
+        ),
+        ("minimax-fast", [("minimax-fast", "minimax-fast:10.0.0.5-api")]),
+    ],
+    ids=["boot", "one-model"],
+)
+async def test_sync_warns_about_overrides_that_name_no_served_route(
+    admin_client, caplog, model_id, orphaned
+):
+    """A row nothing applies is reported: the console lists routes, not rows."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    for row_model_id, route_id in (
+        ("minimax-fast", "minimax-fast:featherless-api"),
+        # The id a route had before a models.yaml URL change minted a new one.
+        ("minimax-fast", "minimax-fast:10.0.0.5-api"),
+        ("retired-model", "retired-model:x-api"),
+    ):
+        op_store.capability_rows[(row_model_id, route_id)] = {
+            "model_id": row_model_id,
+            "route_id": route_id,
+            "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+        }
+
+    with caplog.at_level(logging.WARNING):
+        await provider_routes.sync_route_capability_overrides(
+            client.app.state.services, op_store, model_id
+        )
+
+    warned = [
+        (record.levelno, record.model_id, record.route_id)
+        for record in caplog.records
+        if getattr(record, "event", None) == "route_capability_override_orphaned"
+    ]
+    assert warned == [(logging.WARNING, *row) for row in orphaned]
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), RUNTIME_CAPABILITIES
+    )
+
+
+@pytest.mark.asyncio
 async def test_post_provider_route_candidate_requires_its_own_capabilities(admin_client):
     client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
     payload = {

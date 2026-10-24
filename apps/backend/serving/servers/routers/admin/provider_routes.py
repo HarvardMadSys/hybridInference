@@ -1971,7 +1971,9 @@ async def sync_route_capability_overrides(
     runs it for every model, an admin edit for the model it changed. A periodic
     run would bring other processes along; with one process it is not needed.
     A row that no longer validates is skipped with a warning, so its route
-    keeps its baseline.
+    keeps its baseline. A row naming no route this process serves is reported
+    too, since nothing else shows it: a models.yaml port or URL change re-mints
+    a route's id, and the console lists routes, not rows.
     """
     rows = (
         await op_store.list_all_route_capability_overrides()
@@ -1993,13 +1995,32 @@ async def sync_route_capability_overrides(
         if capabilities is not None:
             by_model.setdefault(str(row["model_id"]), {})[str(row["route_id"])] = capabilities
 
+    served: dict[str, set[str]] = {}
     model_ids = list(services.router.routes) if model_id is None else [model_id]
     for target_model_id in model_ids:
         route = services.router.routes.get(target_model_id)
         if route is None or not _is_canonical_model(target_model_id, route):
             continue
+        entries = _raw_route_entries(route)
         setattr(route, CAPABILITY_OVERRIDES_ATTR, by_model.get(target_model_id, {}))
-        _apply_capability_overrides(route, _raw_route_entries(route))
+        _apply_capability_overrides(route, entries)
+        served[target_model_id] = {
+            _route_id_for_entry(adapter, endpoint_id) for adapter, _weight, endpoint_id in entries
+        }
+
+    for orphan_model_id, overrides in by_model.items():
+        for route_id in sorted(overrides.keys() - served.get(orphan_model_id, set())):
+            logger.warning(
+                "Capability override for model=%s route_id=%s names no route this "
+                "gateway serves; it is not applied",
+                orphan_model_id,
+                route_id,
+                extra={
+                    "event": "route_capability_override_orphaned",
+                    "model_id": orphan_model_id,
+                    "route_id": route_id,
+                },
+            )
 
 
 def _stored_capabilities(row: dict[str, Any]) -> dict[str, Any] | None:
