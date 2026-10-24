@@ -273,17 +273,24 @@ export function SettingsTab() {
       <AdminSectionNav label="Settings sections" items={SECTIONS} />
 
       <div className="min-w-0">
-        {/* Feedback for every section on this page: above the sections, and
-          pinned to the top of the window while they scroll, so it is in view
-          whichever section the change was made in. */}
-        {toast && (
-          <div
-            role="status"
-            className="sticky top-4 z-20 mb-4 rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
-          >
-            {toast}
+        {/* Feedback for every section on this page. The live region is
+            always there (so a screen reader announces each message) and
+            takes no height: a message floats at the top right of the
+            sections, pinned to the top of the window while they scroll,
+            without pushing them down, and lets clicks through to whatever
+            is under it. */}
+        <div className="pointer-events-none sticky top-4 z-20 h-0">
+          <div role="status" className="flex justify-end">
+            {toast && (
+              <div
+                key={toast}
+                className="animate-admin-reveal max-w-md rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
+              >
+                {toast}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         <div className="space-y-6 [&>*+*]:border-t [&>*+*]:border-gray-200 [&>*+*]:pt-6">
           {/* Feature Flags */}
@@ -465,23 +472,23 @@ export function SettingsTab() {
             )}
           </AdminSection>
 
-          <div id="settings-alert-notifications" className="scroll-mt-4">
+          <div id="settings-alert-notifications" className="scroll-mt-4 focus:outline-none">
             <AlertSnoozeSection onToast={flashToast} />
           </div>
 
-          <div id="settings-alert-types" className="scroll-mt-4">
+          <div id="settings-alert-types" className="scroll-mt-4 focus:outline-none">
             <AlertMutesSection onToast={flashToast} />
           </div>
 
-          <div id="settings-usage-insights" className="scroll-mt-4">
+          <div id="settings-usage-insights" className="scroll-mt-4 focus:outline-none">
             <UsageInsightsSettingsSection onToast={flashToast} />
           </div>
 
-          <div id="settings-model-visibility" className="scroll-mt-4">
+          <div id="settings-model-visibility" className="scroll-mt-4 focus:outline-none">
             <ModelVisibilitySection onToast={flashToast} />
           </div>
 
-          <div id="settings-model-concurrency" className="scroll-mt-4">
+          <div id="settings-model-concurrency" className="scroll-mt-4 focus:outline-none">
             <ModelConcurrencySection onToast={flashToast} />
           </div>
 
@@ -541,7 +548,7 @@ export function SettingsTab() {
             ) : domains.length === 0 ? (
               <AdminEmptyState title="No allowed domains. All signups auto-approve." />
             ) : (
-              <div className={`${PANEL} overflow-x-auto`}>
+              <div className={`${PANEL} relative overflow-x-auto`}>
                 <table className="w-full min-w-[30rem] text-[13px]">
                   <thead className="bg-gray-50/80">
                     <tr className="border-b border-gray-200">

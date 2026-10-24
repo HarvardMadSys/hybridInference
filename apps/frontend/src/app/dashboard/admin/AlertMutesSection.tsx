@@ -188,7 +188,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
       ) : types.length === 0 ? (
         !error && <AdminEmptyState title="No alert types available." />
       ) : (
-        <div className={`${PANEL} overflow-x-auto`}>
+        <div className={`${PANEL} relative overflow-x-auto`}>
           <table className="w-full min-w-[40rem] text-[13px]">
             <thead className="bg-gray-50/80">
               <tr className="border-b border-gray-200">

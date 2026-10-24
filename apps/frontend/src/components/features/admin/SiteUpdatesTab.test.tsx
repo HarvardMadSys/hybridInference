@@ -20,7 +20,8 @@ import {
   listSiteUpdates,
   updateSiteUpdate,
 } from '@/lib/api/admin';
-import { SiteUpdatesTab } from './SiteUpdatesTab';
+import { SiteUpdatesTab, plainExcerpt } from './SiteUpdatesTab';
+import { uncontainedGrids } from './__tests__/layoutContainment';
 
 const DRAFT = {
   id: 'u1',
@@ -140,5 +141,106 @@ describe('SiteUpdatesTab', () => {
 
     expect(confirm).toHaveBeenCalledWith('Delete "Pricing note"? This cannot be undone.');
     expect(deleteSiteUpdate).not.toHaveBeenCalled();
+  });
+
+  it('previews the body as plain text and shows the full Markdown on request', async () => {
+    vi.mocked(listSiteUpdates).mockResolvedValue({
+      total: 1,
+      updates: [
+        {
+          ...DRAFT,
+          body: '- **Input** tokens unchanged\n- Output tokens [unchanged](https://x.test)',
+          link_url: 'https://docs.example.com/pricing',
+          link_label: 'Read more',
+        },
+      ],
+    });
+    await renderTab();
+
+    expect(
+      screen.getByText('Input tokens unchanged · Output tokens unchanged'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Read more (docs.example.com)' })).toHaveAttribute(
+      'href',
+      'https://docs.example.com/pricing',
+    );
+    // The list shows one row; the body's own list is not rendered yet.
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+
+    const toggle = screen.getByRole('button', { name: 'Show full text of Pricing note' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    const body = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    expect(within(body).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(body).getByRole('link', { name: 'unchanged' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide full text of Pricing note' }));
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  });
+
+  it('keeps a long title and a wide table as they are, inside the panel', async () => {
+    const title = 'A'.repeat(180);
+    const table = `| a | b |\n|---|---|\n| ${'x'.repeat(300)} | y |`;
+    vi.mocked(listSiteUpdates).mockResolvedValue({
+      total: 1,
+      updates: [{ ...DRAFT, title, body: table }],
+    });
+    render(<SiteUpdatesTab />);
+
+    const heading = await screen.findByRole('heading', { name: title });
+    expect(heading.className).toContain('[overflow-wrap:anywhere]');
+    fireEvent.click(screen.getByRole('button', { name: `Show full text of ${title}` }));
+    const rendered = screen.getByRole('table');
+    // Wide content scrolls inside the body box instead of widening the page.
+    expect(rendered.closest('div')!.className).toContain('[&_table]:overflow-x-auto');
+    expect(within(rendered).getByText('x'.repeat(300))).toBeInTheDocument();
+  });
+
+  it('shows the entry being written in a preview beside the fields', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'New update' }));
+    const preview = screen.getByRole('region', { name: 'Preview' });
+    expect(preview).toHaveTextContent('The title and body appear here as you type.');
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Maintenance' } });
+    fireEvent.change(screen.getByLabelText('Body (Markdown)'), { target: { value: '**Soon**' } });
+    fireEvent.change(screen.getByLabelText('Link URL (optional)'), {
+      target: { value: 'https://status.example.com' },
+    });
+
+    expect(within(preview).getByText('Maintenance')).toBeInTheDocument();
+    expect(within(preview).getByText('Soon').tagName).toBe('STRONG');
+    expect(within(preview).getByText('Learn more')).toBeInTheDocument();
+  });
+});
+
+describe('SiteUpdatesTab composer on a narrow screen', () => {
+  it('keeps a long title and a wide table in the preview inside the composer', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'New update' }));
+    const title = 'LongTitle'.repeat(40);
+    const cells = Array.from({ length: 6 }, () => 'X'.repeat(80));
+    const table = `| ${cells.map((_, i) => `c${i}`).join(' | ')} |\n|${'---|'.repeat(6)}\n| ${cells.join(' | ')} |`;
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: title } });
+    fireEvent.change(screen.getByLabelText('Body (Markdown)'), { target: { value: table } });
+
+    const composer = screen.getByRole('form', { name: 'New update' });
+    const preview = within(composer).getByRole('region', { name: 'Preview' });
+    const rendered = within(preview).getByRole('table');
+    // The strings are untouched…
+    expect(within(preview).getByText(title)).toBeInTheDocument();
+    expect(within(rendered).getAllByText('X'.repeat(80))).toHaveLength(6);
+    // …and nothing between them and the composer can grow past its width.
+    expect(uncontainedGrids(rendered, composer)).toEqual([]);
+    expect(uncontainedGrids(screen.getByLabelText('Title'), composer)).toEqual([]);
+  });
+});
+
+describe('plainExcerpt', () => {
+  it('drops Markdown marks but keeps the words', () => {
+    expect(plainExcerpt('# Title\n\nSee the [docs](https://x.test) for `limits`.')).toBe(
+      'Title See the docs for limits.',
+    );
+    expect(plainExcerpt('1. one\n2. two\n\n> quoted')).toBe('one · two quoted');
   });
 });

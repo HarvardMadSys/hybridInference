@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 /**
  * Building blocks shared by the admin tabs, so a section title, a sub-tab bar,
@@ -87,7 +87,11 @@ export function AdminSection({
 }) {
   const headingId = `${useId()}-title`;
   return (
-    <section id={id} aria-labelledby={headingId} className={`scroll-mt-4 ${className}`}>
+    <section
+      id={id}
+      aria-labelledby={headingId}
+      className={`scroll-mt-4 focus:outline-none ${className}`}
+    >
       <div className="mb-3 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -117,11 +121,39 @@ export interface AdminSectionNavItem {
   meta?: ReactNode;
 }
 
+/** Whether the reader asked the system for less motion. */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/** The section id in the address bar, if any. A malformed `%` escape is not one. */
+function hashTarget(): string {
+  const raw = window.location.hash.slice(1);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** How long a jump may take before the marker follows the page again. */
+const JUMP_SETTLE_MS = 900;
+
 /**
  * An index of a long tab's sections. On wide screens it is a column that stays
  * in view while the sections scroll past and marks the one being read; on
  * narrow ones it is a row of links that scrolls sideways above them. Each
  * item is an ordinary in-page link, so nothing is hidden from search or keys.
+ *
+ * A plain click glides to the section (instantly for readers who prefer less
+ * motion), records the `#hash` like a normal link and moves focus there; the
+ * marker goes straight to the chosen section instead of flickering through
+ * the ones the page passes. A modified click (new tab, and so on) is left to
+ * the browser.
  */
 export function AdminSectionNav({
   label,
@@ -136,36 +168,143 @@ export function AdminSectionNav({
   // listed, so some item is always marked.
   const active = items.some((item) => item.id === marked) ? marked : (items[0]?.id ?? null);
 
+  // While a jump is scrolling the page the marker stays on its target.
+  const settleUntil = useRef(0);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The section last chosen from the index, for the end of the page (below).
+  const chosen = useRef<string | null>(null);
+  const recompute = useRef<() => void>(() => {});
+  const openedHash = useRef(false);
+
   useEffect(() => {
-    if (typeof IntersectionObserver === 'undefined' || !idKey) return;
-    const elements = idKey
-      .split('\n')
-      .map((id) => document.getElementById(id))
-      .filter((el): el is HTMLElement => el !== null);
-    const inView = new Set<string>();
-    // A section counts as being read while it crosses the top third of the
-    // window; the first such section in page order is the current one.
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) inView.add(entry.target.id);
-          else inView.delete(entry.target.id);
-        }
-        const current = elements.find((el) => inView.has(el.id));
-        if (current) setMarked(current.id);
-      },
-      { rootMargin: '0px 0px -66% 0px' },
-    );
-    elements.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
+    if (!idKey) return;
+    const ids = idKey.split('\n');
+    const sections = () =>
+      ids.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => !!el);
+
+    const update = () => {
+      if (Date.now() < settleUntil.current) return;
+      const elements = sections();
+      if (elements.length === 0) return;
+      const viewport = window.innerHeight;
+      // The section being read is the last one whose top has passed a line
+      // near the top of the window.
+      const line = Math.min(160, viewport * 0.3);
+      let current = elements[0].id;
+      for (const el of elements) {
+        if (el.getBoundingClientRect().top <= line) current = el.id;
+      }
+      // At the very end of the page the last sections can be too short to
+      // reach that line. Then the one chosen from the index wins if it is on
+      // screen, and otherwise the last section on screen does, so the marker
+      // never stays behind on a section scrolled out of view.
+      const scrolled = window.scrollY > 0;
+      const atEnd =
+        scrolled &&
+        Math.ceil(window.scrollY + viewport) >= document.documentElement.scrollHeight - 2;
+      if (atEnd) {
+        const onScreen = elements.filter((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < viewport;
+        });
+        const pick = onScreen.find((el) => el.id === chosen.current) ?? onScreen.at(-1);
+        if (pick) current = pick.id;
+      } else {
+        chosen.current = null;
+      }
+      setMarked(current);
+    };
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        update();
+      });
+    };
+    recompute.current = schedule;
+
+    // A link to `#section` opened before the section existed (Configuration
+    // renders its categories once loaded): go there once it does.
+    const hash = hashTarget();
+    if (!openedHash.current && hash && ids.includes(hash)) {
+      openedHash.current = true;
+      document.getElementById(hash)?.scrollIntoView?.({ block: 'start' });
+      chosen.current = hash;
+      setMarked(hash);
+    } else {
+      update();
+    }
+
+    // Back and Forward between sections: the browser restores the scroll
+    // position; the marker follows the address rather than any glide in
+    // progress.
+    const onHistory = () => {
+      settleUntil.current = 0;
+      const target = hashTarget();
+      if (target && ids.includes(target)) {
+        chosen.current = target;
+        setMarked(target);
+      } else {
+        schedule();
+      }
+    };
+
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    window.addEventListener('popstate', onHistory);
+    window.addEventListener('hashchange', onHistory);
+    return () => {
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('popstate', onHistory);
+      window.removeEventListener('hashchange', onHistory);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [idKey]);
+
+  useEffect(
+    () => () => {
+      if (settleTimer.current) clearTimeout(settleTimer.current);
+    },
+    [],
+  );
+
+  const jumpTo = (event: React.MouseEvent<HTMLAnchorElement>, id: string) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    const target = document.getElementById(id);
+    if (!target) return;
+    event.preventDefault();
+    const instant = prefersReducedMotion();
+
+    chosen.current = id;
+    setMarked(id);
+    settleUntil.current = instant ? 0 : Date.now() + JUMP_SETTLE_MS;
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(
+      () => {
+        settleUntil.current = 0;
+        recompute.current();
+      },
+      instant ? 0 : JUMP_SETTLE_MS,
+    );
+
+    target.scrollIntoView?.({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
+    if (window.location.hash !== `#${id}`) window.history.pushState(null, '', `#${id}`);
+    // Like following a link: the next Tab continues from the section.
+    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+  };
 
   return (
     <nav
       aria-label={label}
       className="mb-6 lg:sticky lg:top-4 lg:mb-0 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto"
     >
-      <ul className="-mx-1 flex gap-1 overflow-x-auto px-1 py-1 [scrollbar-width:thin] lg:flex-col lg:gap-0.5 lg:overflow-visible">
+      <ul className="relative -mx-1 flex gap-1 overflow-x-auto px-1 py-1 [scrollbar-width:thin] lg:flex-col lg:gap-0.5 lg:overflow-visible">
         {items.map((item) => {
           const isActive = item.id === active;
           return (
@@ -173,8 +312,8 @@ export function AdminSectionNav({
               <a
                 href={`#${item.id}`}
                 aria-current={isActive ? 'location' : undefined}
-                onClick={() => setMarked(item.id)}
-                className={`flex items-center justify-between gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 ${
+                onClick={(event) => jumpTo(event, item.id)}
+                className={`flex items-center justify-between gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 ${
                   isActive
                     ? 'bg-gray-100 font-medium text-gray-900'
                     : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'

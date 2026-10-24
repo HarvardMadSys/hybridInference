@@ -66,6 +66,14 @@ const ROW_ACTION_BASE =
 export const ROW_ACTION = `${ROW_ACTION_BASE} text-gray-600 hover:bg-gray-100 hover:text-gray-900`;
 export const ROW_ACTION_DANGER = `${ROW_ACTION_BASE} text-red-600 hover:bg-red-50 hover:text-red-700`;
 
+/**
+ * Rendered Markdown (an announcement body, an email preview). Long words and
+ * URLs wrap, and a wide table or code block scrolls inside the text rather
+ * than widening the panel it sits in; the text itself is untouched.
+ */
+export const MARKDOWN_PROSE =
+  'min-w-0 max-w-full text-[13px] text-gray-700 [overflow-wrap:anywhere] [&_a]:text-blue-600 [&_a]:underline [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:my-2 [&_pre]:max-w-full [&_pre]:relative [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-black/5 [&_pre]:p-2 [&_pre]:[overflow-wrap:normal] [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:relative [&_table]:overflow-x-auto [&_table]:[overflow-wrap:normal] [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:text-left [&_th]:py-1 [&_img]:max-w-full';
+
 /** A text-style action inside an inline notice, e.g. Retry. */
 export const NOTICE_ACTION = 'shrink-0 font-medium underline underline-offset-2';
 

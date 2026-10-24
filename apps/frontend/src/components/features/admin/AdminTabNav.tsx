@@ -52,7 +52,7 @@ export function AdminTabNav() {
     <nav
       ref={scrollerRef}
       aria-label="Admin sections"
-      className="-mx-1 mt-3 overflow-x-auto px-1 py-1 [scrollbar-width:thin]"
+      className="relative -mx-1 mt-3 overflow-x-auto px-1 py-1 [scrollbar-width:thin]"
     >
       <div className="flex w-max items-center gap-1">
         {TABS.map((tab) => {

@@ -533,7 +533,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                   key={group.id}
                   id={sectionAnchor(group)}
                   aria-labelledby={headingId}
-                  className="scroll-mt-4"
+                  className="scroll-mt-4 focus:outline-none"
                 >
                   <div className="mb-3">
                     <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
@@ -604,7 +604,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                       {/* Stays in view at the bottom of the window while the
                   category with the changes is on screen. */}
                       {dirty > 0 ? (
-                        <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+                        <div className="animate-admin-reveal sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
                           <span className="mr-auto text-[12px] font-medium text-amber-700">
                             {plural(dirty, 'unsaved change')}
                           </span>

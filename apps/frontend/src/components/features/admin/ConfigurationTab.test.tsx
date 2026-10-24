@@ -44,6 +44,7 @@ import {
 } from '@/lib/api/config';
 
 import { ConfigurationTab } from './ConfigurationTab';
+import { escapingScreenReaderText } from './__tests__/layoutContainment';
 
 /** What a misbehaving backend might leak; the page must never show it. */
 const LEAKED_SECRET = 'sk-live-should-never-render';
@@ -1302,6 +1303,9 @@ describe('filters', () => {
     expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
       'unsaved changes',
     );
+    // Those notes are screen-reader text inside a row that scrolls sideways
+    // on a phone: they must not widen the page.
+    expect(escapingScreenReaderText(index)).toEqual([]);
   });
 
   it('opens filtered to missing settings when linked that way', async () => {

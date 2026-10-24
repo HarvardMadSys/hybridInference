@@ -18,6 +18,7 @@ vi.mock('@/lib/api/admin', () => ({
 
 import { getBroadcastDetail, listBroadcasts } from '@/lib/api/admin';
 import { BroadcastsTab } from './BroadcastsTab';
+import { escapingScreenReaderText, uncontainedGrids } from './__tests__/layoutContainment';
 
 const BROADCAST = {
   id: 'b1',
@@ -101,17 +102,54 @@ describe('BroadcastsTab', () => {
   it('opens a broadcast’s recipients from a button, not only a row click', async () => {
     render(<BroadcastsTab />);
     const history = await screen.findByRole('region', { name: 'Email broadcasts' });
-    const toggle = within(history).getByRole('button', { name: 'Maintenance tonight' });
+    const toggle = within(history).getByRole('button', {
+      name: 'Show recipients of Maintenance tonight',
+    });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(toggle);
 
+    // Opens at once, with a loading line, then the list.
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(await within(history).findByText('Recipients (1)')).toBeInTheDocument();
     expect(getBroadcastDetail).toHaveBeenCalledTimes(1);
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(getBroadcastDetail).toHaveBeenCalledWith('b1');
+    expect(escapingScreenReaderText(history)).toEqual([]);
 
-    fireEvent.click(toggle);
+    fireEvent.click(
+      within(history).getByRole('button', { name: 'Hide recipients of Maintenance tonight' }),
+    );
     await waitFor(() => expect(within(history).queryByText('Recipients (1)')).toBeNull());
     expect(getBroadcastDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a failed recipients load in place and retries it', async () => {
+    vi.mocked(getBroadcastDetail).mockRejectedValueOnce(new Error('timeout'));
+    render(<BroadcastsTab />);
+    const history = await screen.findByRole('region', { name: 'Email broadcasts' });
+
+    fireEvent.click(
+      within(history).getByRole('button', { name: 'Show recipients of Maintenance tonight' }),
+    );
+    const alert = await within(history).findByRole('alert');
+    expect(alert).toHaveTextContent('Recipients could not be loaded: timeout');
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await within(history).findByText('Recipients (1)')).toBeInTheDocument();
+    expect(getBroadcastDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a wide Markdown preview inside the composer on a narrow screen', async () => {
+    render(<BroadcastsTab />);
+    await screen.findByText('Maintenance tonight');
+    fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
+    const cells = Array.from({ length: 6 }, () => 'X'.repeat(80));
+    fireEvent.change(screen.getByLabelText('Body (Markdown)'), {
+      target: { value: `| ${cells.join(' | ')} |\n|${'---|'.repeat(6)}\n| ${cells.join(' | ')} |` },
+    });
+
+    const composer = screen.getByRole('group', { name: 'New broadcast' });
+    const rendered = within(composer).getByRole('table');
+    expect(uncontainedGrids(rendered, composer)).toEqual([]);
   });
 });

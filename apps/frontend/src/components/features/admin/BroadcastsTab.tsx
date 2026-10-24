@@ -16,9 +16,14 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel } from '@/lib/utils/userLabel';
-import { AdminEmptyState, AdminLoading, AdminSection, AdminSpinner } from './AdminPrimitives';
 import {
-  BUTTON_DANGER,
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+  AdminSpinner,
+} from './AdminPrimitives';
+import {
   BUTTON_GHOST,
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
@@ -28,10 +33,12 @@ import {
   FIELD_INVALID,
   FIELD_LABEL,
   FORM_LABEL,
+  MARKDOWN_PROSE,
+  NOTICE_ACTION,
   PANEL,
   PILL,
   ROW_ACTION,
-  TABLE_CELL,
+  ROW_ACTION_DANGER,
   TABLE_HEAD_CELL,
   TEXT_FIELD,
 } from './adminStyles';
@@ -132,20 +139,37 @@ export function BroadcastsTab() {
 
   const fieldId = (name: string) => `${baseId}-${name}`;
 
+  // The broadcast whose recipients are open. It opens at once (with a loading
+  // line) and shows a failure in place; an answer for a broadcast that is no
+  // longer open is dropped.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const openIdRef = useRef<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const loadDetail = async (id: string) => {
+    setBroadcastDetailLoading(true);
+    setDetailError(null);
+    try {
+      const detail = await getBroadcastDetail(id);
+      if (openIdRef.current === id) setBroadcastDetail(detail);
+    } catch (err) {
+      if (openIdRef.current === id) setDetailError(getErrorMessage(err));
+    } finally {
+      if (openIdRef.current === id) setBroadcastDetailLoading(false);
+    }
+  };
+
   const toggleDetail = async (id: string) => {
-    if (broadcastDetail?.broadcast.id === id) {
+    if (openIdRef.current === id) {
+      openIdRef.current = null;
+      setOpenId(null);
       setBroadcastDetail(null);
       return;
     }
-    setBroadcastDetailLoading(true);
-    try {
-      const detail = await getBroadcastDetail(id);
-      setBroadcastDetail(detail);
-    } catch {
-      /* ignore */
-    } finally {
-      setBroadcastDetailLoading(false);
-    }
+    openIdRef.current = id;
+    setOpenId(id);
+    setBroadcastDetail(null);
+    await loadDetail(id);
   };
 
   const hasDraft =
@@ -183,7 +207,7 @@ export function BroadcastsTab() {
             id={fieldId('composer')}
             role="group"
             aria-labelledby={fieldId('composer-title')}
-            className={`${PANEL} mb-4`}
+            className={`${PANEL} animate-admin-reveal mb-4`}
           >
             <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
               <h3
@@ -202,8 +226,11 @@ export function BroadcastsTab() {
               </button>
             </div>
             {/* What is sent beside who receives it and when, where there is room. */}
-            <div className="grid divide-gray-100 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:divide-x">
-              <div className="space-y-4 p-4">
+            {/* minmax(0, …) tracks and min-w-0 items at every width, so a wide
+                Markdown preview scrolls inside itself instead of widening the
+                page. */}
+            <div className="grid grid-cols-[minmax(0,1fr)] divide-gray-100 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:divide-x">
+              <div className="min-w-0 space-y-4 p-4">
                 <h3 className={FIELD_LABEL}>Message</h3>
 
                 {/* Template selector */}
@@ -340,7 +367,9 @@ export function BroadcastsTab() {
                     {bcBodyMarkdown && (
                       <div>
                         <div className={FORM_LABEL}>Preview</div>
-                        <div className="rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 text-[13px] text-gray-700 [&_a]:text-blue-600 [&_a]:underline [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5">
+                        <div
+                          className={`rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 ${MARKDOWN_PROSE}`}
+                        >
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {bcBodyMarkdown}
                           </ReactMarkdown>
@@ -351,7 +380,7 @@ export function BroadcastsTab() {
                 )}
               </div>
 
-              <div className="space-y-4 border-t border-gray-100 p-4 xl:border-t-0">
+              <div className="min-w-0 space-y-4 border-t border-gray-100 p-4 xl:border-t-0">
                 <h3 className={FIELD_LABEL}>Audience &amp; delivery</h3>
 
                 {/* Recipient filters */}
@@ -570,45 +599,52 @@ export function BroadcastsTab() {
           ) : broadcasts.length === 0 ? (
             <AdminEmptyState variant="plain" title="No broadcasts yet." />
           ) : (
-            <div className="overflow-x-auto rounded-lg">
-              <table className="w-full min-w-[40rem]">
+            <div className="relative overflow-x-auto rounded-lg">
+              <table className="w-full min-w-[44rem] table-fixed text-[13px]">
+                <colgroup>
+                  <col />
+                  <col className="w-28" />
+                  <col className="w-28" />
+                  <col className="w-48" />
+                  <col className="w-28" />
+                </colgroup>
                 <thead className="bg-gray-50/80">
                   <tr className="border-b border-gray-200">
                     <th className={TABLE_HEAD_CELL}>Subject</th>
                     <th className={TABLE_HEAD_CELL}>Status</th>
-                    <th className={TABLE_HEAD_CELL}>Recipients</th>
+                    <th className={`${TABLE_HEAD_CELL} text-right`}>Recipients</th>
                     <th className={TABLE_HEAD_CELL}>Sent / Scheduled</th>
-                    <th className={TABLE_HEAD_CELL}>Actions</th>
+                    <th className={TABLE_HEAD_CELL}>
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {broadcasts.map((bc) => {
-                    const expanded = broadcastDetail?.broadcast.id === bc.id;
+                    const expanded = openId === bc.id;
+                    const drawerId = fieldId(`recipients-${bc.id}`);
                     return (
                       <Fragment key={bc.id}>
+                        {/* The whole row toggles its recipients on click; the
+                            chevron is the same toggle for the keyboard. */}
                         <tr
-                          className="cursor-pointer border-b border-gray-100 transition-colors hover:bg-gray-50"
+                          className={`cursor-pointer border-b border-gray-100 transition-colors duration-150 ${
+                            expanded ? 'border-b-0 bg-gray-50/60' : 'hover:bg-gray-50/60'
+                          }`}
                           onClick={() => void toggleDetail(bc.id)}
                         >
-                          <td className={`${TABLE_CELL} max-w-[28rem]`}>
-                            {/* The row toggles on click; this is the same toggle
-                                  for the keyboard. */}
-                            <button
-                              type="button"
-                              aria-expanded={expanded}
-                              title={bc.subject}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void toggleDetail(bc.id);
-                              }}
-                              className="block max-w-full truncate rounded text-left font-medium text-gray-900 hover:underline"
-                            >
+                          <td className="px-4 py-2.5 align-top">
+                            <div className="truncate font-medium text-gray-900" title={bc.subject}>
                               {bc.subject}
-                            </button>
+                            </div>
+                            <div className="truncate text-[12px] text-gray-500">
+                              Created {relTime(bc.created_at)}
+                              {bc.created_by ? ` by ${bc.created_by}` : ''}
+                            </div>
                           </td>
-                          <td className={TABLE_CELL}>
+                          <td className="px-4 py-2.5 align-top">
                             <span
-                              className={`${PILL} ${
+                              className={`${PILL} capitalize ${
                                 bc.status === 'sent'
                                   ? 'bg-green-50 text-green-700'
                                   : bc.status === 'failed'
@@ -623,93 +659,147 @@ export function BroadcastsTab() {
                               {bc.status}
                             </span>
                           </td>
-                          <td className={`${TABLE_CELL} tabular-nums`}>
+                          <td className="px-4 py-2.5 text-right align-top tabular-nums text-gray-700">
                             {bc.recipient_count.toLocaleString()}
                           </td>
-                          <td className={`${TABLE_CELL} whitespace-nowrap text-gray-500`}>
-                            {bc.sent_at
-                              ? relTime(bc.sent_at)
-                              : bc.scheduled_at
-                                ? new Date(bc.scheduled_at).toLocaleString()
-                                : '—'}
-                          </td>
-                          <td className={TABLE_CELL}>
-                            {bc.status === 'scheduled' && (
-                              <button
-                                type="button"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  if (!confirm('Cancel this scheduled broadcast?')) return;
-                                  try {
-                                    await cancelBroadcast(bc.id);
-                                    toast.success('Broadcast cancelled');
-                                    await loadBroadcasts();
-                                  } catch (err) {
-                                    toast.error(getErrorMessage(err));
-                                  }
-                                }}
-                                className={BUTTON_DANGER}
-                              >
-                                Cancel
-                              </button>
+                          <td className="whitespace-nowrap px-4 py-2.5 align-top text-[12px] text-gray-500">
+                            {bc.sent_at ? (
+                              <span title={new Date(bc.sent_at).toLocaleString()}>
+                                Sent {relTime(bc.sent_at)}
+                              </span>
+                            ) : bc.scheduled_at ? (
+                              <span>For {new Date(bc.scheduled_at).toLocaleString()}</span>
+                            ) : (
+                              '—'
                             )}
                           </td>
-                        </tr>
-                        {/* Detail drawer */}
-                        {expanded && (
-                          <tr className="border-b border-gray-100">
-                            <td colSpan={5} className="bg-gray-50 px-4 py-4">
-                              {broadcastDetailLoading ? (
-                                <span className="text-[12px] text-gray-400">
-                                  Loading recipients…
-                                </span>
-                              ) : (
-                                <>
-                                  <div className="mb-2 text-[12px] font-medium text-gray-600">
-                                    Recipients ({broadcastDetail.total_recipients})
-                                  </div>
-                                  <div className="overflow-x-auto">
-                                    <table className="w-full text-[12px]">
-                                      <thead>
-                                        <tr className="text-left text-[11px] font-medium uppercase tracking-wide text-gray-400">
-                                          <th className="py-1 pr-4 font-medium">Email</th>
-                                          <th className="py-1 pr-4 font-medium">Status</th>
-                                          <th className="py-1 pr-4 font-medium">Error</th>
-                                          <th className="py-1 pr-4 font-medium">Sent At</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {broadcastDetail.recipients.map((r) => (
-                                          <tr key={r.user_id} className="border-t border-gray-100">
-                                            <td className="py-1 pr-4 text-gray-700">
-                                              {userAccountLabel(r)}
-                                            </td>
-                                            <td className="py-1 pr-4">
-                                              <span
-                                                className={
-                                                  r.status === 'sent'
-                                                    ? 'text-green-600'
-                                                    : r.status === 'failed'
-                                                      ? 'text-red-600'
-                                                      : 'text-gray-400'
-                                                }
-                                              >
-                                                {r.status}
-                                              </span>
-                                            </td>
-                                            <td className="py-1 pr-4 text-red-600">
-                                              {r.error ?? '—'}
-                                            </td>
-                                            <td className="py-1 pr-4 text-gray-400">
-                                              {r.sent_at ? relTime(r.sent_at) : '—'}
-                                            </td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </>
+                          <td className="py-2 pr-3 align-top">
+                            <div className="flex items-center justify-end gap-0.5">
+                              {bc.status === 'scheduled' && (
+                                <button
+                                  type="button"
+                                  aria-label={`Cancel scheduled broadcast ${bc.subject}`}
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Cancel this scheduled broadcast?')) return;
+                                    try {
+                                      await cancelBroadcast(bc.id);
+                                      toast.success('Broadcast cancelled');
+                                      await loadBroadcasts();
+                                    } catch (err) {
+                                      toast.error(getErrorMessage(err));
+                                    }
+                                  }}
+                                  className={ROW_ACTION_DANGER}
+                                >
+                                  Cancel
+                                </button>
                               )}
+                              <button
+                                type="button"
+                                aria-expanded={expanded}
+                                aria-controls={expanded ? drawerId : undefined}
+                                aria-label={`${expanded ? 'Hide' : 'Show'} recipients of ${bc.subject}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void toggleDetail(bc.id);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                              >
+                                <svg
+                                  viewBox="0 0 20 20"
+                                  fill="currentColor"
+                                  aria-hidden="true"
+                                  className={`h-3.5 w-3.5 transition-transform duration-150 motion-reduce:transition-none ${
+                                    expanded ? 'rotate-90' : ''
+                                  }`}
+                                >
+                                  <path
+                                    fillRule="evenodd"
+                                    d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                                    clipRule="evenodd"
+                                  />
+                                </svg>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                        {/* Recipients */}
+                        {expanded && (
+                          <tr id={drawerId} className="border-b border-gray-100 bg-gray-50/60">
+                            <td colSpan={5} className="px-4 pb-4 pt-1">
+                              <div className="animate-admin-reveal">
+                                {broadcastDetailLoading ? (
+                                  <p
+                                    role="status"
+                                    className="flex items-center gap-2 text-[12px] text-gray-500"
+                                  >
+                                    <AdminSpinner size="sm" />
+                                    Loading recipients…
+                                  </p>
+                                ) : detailError ? (
+                                  <AdminNotice
+                                    role="alert"
+                                    action={
+                                      <button
+                                        type="button"
+                                        onClick={() => void loadDetail(bc.id)}
+                                        className={NOTICE_ACTION}
+                                      >
+                                        Retry
+                                      </button>
+                                    }
+                                  >
+                                    Recipients could not be loaded: {detailError}
+                                  </AdminNotice>
+                                ) : broadcastDetail ? (
+                                  <>
+                                    <div className="mb-2 text-[12px] font-medium text-gray-600">
+                                      Recipients ({broadcastDetail.total_recipients})
+                                    </div>
+                                    <div className="relative overflow-x-auto rounded-md border border-gray-200 bg-white">
+                                      <table className="w-full text-[12px]">
+                                        <thead className="bg-gray-50/80">
+                                          <tr className="text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                                            <th className="px-3 py-1.5 font-medium">Email</th>
+                                            <th className="px-3 py-1.5 font-medium">Status</th>
+                                            <th className="px-3 py-1.5 font-medium">Error</th>
+                                            <th className="px-3 py-1.5 font-medium">Sent At</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                          {broadcastDetail.recipients.map((r) => (
+                                            <tr key={r.user_id}>
+                                              <td className="px-3 py-1.5 text-gray-700 [overflow-wrap:anywhere]">
+                                                {userAccountLabel(r)}
+                                              </td>
+                                              <td className="px-3 py-1.5">
+                                                <span
+                                                  className={
+                                                    r.status === 'sent'
+                                                      ? 'text-green-600'
+                                                      : r.status === 'failed'
+                                                        ? 'text-red-600'
+                                                        : 'text-gray-400'
+                                                  }
+                                                >
+                                                  {r.status}
+                                                </span>
+                                              </td>
+                                              <td className="px-3 py-1.5 text-red-600 [overflow-wrap:anywhere]">
+                                                {r.error ?? '—'}
+                                              </td>
+                                              <td className="whitespace-nowrap px-3 py-1.5 text-gray-400">
+                                                {r.sent_at ? relTime(r.sent_at) : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </>
+                                ) : null}
+                              </div>
                             </td>
                           </tr>
                         )}

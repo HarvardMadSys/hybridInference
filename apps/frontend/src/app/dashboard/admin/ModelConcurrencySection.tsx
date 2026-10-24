@@ -92,7 +92,7 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
       ) : models.length === 0 ? (
         <AdminEmptyState title="No models available." />
       ) : (
-        <div className={`${PANEL} overflow-x-auto`}>
+        <div className={`${PANEL} relative overflow-x-auto`}>
           <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
               <tr className="border-b border-gray-200">

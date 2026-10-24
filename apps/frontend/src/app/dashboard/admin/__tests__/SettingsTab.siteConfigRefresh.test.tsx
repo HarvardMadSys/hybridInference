@@ -159,8 +159,11 @@ describe('SettingsTab feedback', () => {
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
 
-    const feedback = await screen.findByText('signup_require_email_verification disabled');
-    expect(feedback).toHaveAttribute('role', 'status');
+    const message = await screen.findByText('signup_require_email_verification disabled');
+    const feedback = message.closest('[role="status"]') as HTMLElement;
+    expect(feedback).not.toBeNull();
+    // It floats over the sections, so it must not swallow clicks meant for them.
+    expect(feedback.closest('.pointer-events-none')).not.toBeNull();
     expect(feedback.closest('section')).toBeNull();
     const signupPolicy = screen.getByRole('region', { name: 'Signup Policy' });
     expect(feedback.compareDocumentPosition(signupPolicy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
