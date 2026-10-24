@@ -213,6 +213,18 @@ function saveAndConfirm(name: string) {
   confirmSave();
 }
 
+/** Confirm the test-send dialog that Send test notification opens. */
+function confirmTestSend() {
+  const dialog = screen.getByRole('dialog', { name: /^Send a test notification to / });
+  expect(testAlertNotification).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Send test' }));
+}
+
+/** Confirm the review dialog that Add variable's submit opens. */
+function confirmAddVariable() {
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Add variable' }));
+}
+
 function chooseAlertChannel(label: 'None' | 'Slack' | 'WeCom') {
   fireEvent.click(screen.getByRole('combobox', { name: 'Notification channel' }));
   fireEvent.click(screen.getByRole('option', { name: label }));
@@ -470,6 +482,7 @@ describe('alert notification channel', () => {
     await renderTab(config);
     expect(within(section('Alerts')).getAllByText('Pending restart').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     await waitFor(() => expect(testAlertNotification).toHaveBeenCalledWith({ channel: 'wecom' }));
     expect(
       await screen.findByText('Test sent. Check your WeCom channel for test-wecom.'),
@@ -486,6 +499,7 @@ describe('alert notification channel', () => {
       target: { value: SLACK_WEBHOOK },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     await waitFor(() =>
       expect(testAlertNotification).toHaveBeenCalledWith({
         channel: 'slack',
@@ -515,6 +529,7 @@ describe('alert notification channel', () => {
       target: { value: SLACK_WEBHOOK },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     expect(screen.getByLabelText('Notification channel')).toBeDisabled();
     expect(screen.getByLabelText('Slack webhook URL')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save changes to Alerts' })).toBeDisabled();
@@ -535,6 +550,7 @@ describe('alert notification channel', () => {
       target: { value: `  ${SLACK_WEBHOOK}  ` },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     await screen.findByText('Test sent. Check your Slack channel for test-123.');
     expect(testAlertNotification).toHaveBeenCalledWith({
       channel: 'slack',
@@ -552,12 +568,24 @@ describe('alert notification channel', () => {
     );
   });
 
+  it('sends no test notification when its confirmation is cancelled', async () => {
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    const dialog = screen.getByRole('dialog', { name: 'Send a test notification to Slack?' });
+    expect(dialog).toHaveTextContent('behind the saved webhook');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(testAlertNotification).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
   it('explains test rate limiting without echoing the backend response', async () => {
     vi.mocked(testAlertNotification).mockRejectedValueOnce(
       new APIError('RATE_LIMIT_EXCEEDED', LEAKED_SECRET, 429),
     );
     await renderTab(alertConfig());
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     expect(
       await screen.findByText(
         'Test notifications are temporarily limited. Wait a few seconds and try again.',
@@ -572,6 +600,7 @@ describe('alert notification channel', () => {
     );
     await renderTab(alertConfig());
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     expect(
       await screen.findByText('The test could not be sent. Check the webhook URL and try again.'),
     ).toBeInTheDocument();
@@ -585,6 +614,7 @@ describe('alert notification channel', () => {
     );
     await renderTab(alertConfig());
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     expect(
       await screen.findByText(
         'The saved webhook could not be read. This is a backend problem, not the address; try again in a moment.',
@@ -599,6 +629,7 @@ describe('alert notification channel', () => {
     );
     await renderTab(alertConfig());
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
     expect(await screen.findByText('Enter a valid WeCom incoming webhook URL')).toBeInTheDocument();
     expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
   });
@@ -1433,6 +1464,11 @@ describe('forms', () => {
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu' } });
 
     fireEvent.submit(form);
+    // Enter reviews; the write waits for the confirmation.
+    const dialog = screen.getByRole('dialog', { name: 'Add MY_REGION?' });
+    expect(dialog).toHaveTextContent('MY_REGIONeu');
+    expect(patchConfig).not.toHaveBeenCalled();
+    confirmAddVariable();
 
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
@@ -1672,7 +1708,9 @@ describe('reset and custom variables', () => {
     expect(box).toBeDisabled();
     expect(box).toHaveAccessibleDescription('A name like this one is always secret.');
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'k-123' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Review and add' }));
+    expect(patchConfig).not.toHaveBeenCalled();
+    confirmAddVariable();
 
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
@@ -1711,7 +1749,9 @@ describe('reset and custom variables', () => {
     fireEvent.click(box);
     expect(within(form).getByLabelText('Value')).toHaveAttribute('type', 'password');
     fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Review and add' }));
+    expect(patchConfig).not.toHaveBeenCalled();
+    confirmAddVariable();
 
     await waitFor(() =>
       expect(patchConfig).toHaveBeenCalledWith({
@@ -1727,11 +1767,11 @@ describe('reset and custom variables', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
     const form = screen.getByRole('form', { name: 'Add variable' });
     fireEvent.change(within(form).getByLabelText('Name'), { target: { value: '1BAD' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Review and add' }));
     expect(await within(form).findByRole('alert')).toHaveTextContent(/environment-variable name/);
 
     fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'SMTP_PORT' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Review and add' }));
     expect(await within(form).findByRole('alert')).toHaveTextContent('already listed');
     expect(patchConfig).not.toHaveBeenCalled();
   });

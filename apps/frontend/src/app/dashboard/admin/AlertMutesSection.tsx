@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { AlertTypeMute, listAlertMutes, muteAlertType, unmuteAlertType } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -51,7 +52,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
   const [types, setTypes] = useState<AlertTypeMute[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState<Set<string>>(new Set());
+  const confirmation = useConfirmAction();
 
   // Same guard as AlertSnoozeSection: a reload still in flight when the
   // section unmounts must not land its setState on a torn-down tree.
@@ -94,53 +95,62 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
     return () => clearTimeout(id);
   }, [types, load]);
 
-  const setRowSaving = (alertType: string, isSaving: boolean) => {
-    setSaving((prev) => {
-      const next = new Set(prev);
-      if (isSaving) next.add(alertType);
-      else next.delete(alertType);
-      return next;
-    });
-  };
-
   const replaceRow = (updated: AlertTypeMute) => {
     setTypes((prev) =>
       prev.map((type) => (type.alert_type === updated.alert_type ? updated : type)),
     );
   };
 
-  const onMute = async (type: AlertTypeMute, optionValue: string) => {
+  // Choosing a duration picks the action; nothing is written until it is confirmed.
+  const onMute = (type: AlertTypeMute, optionValue: string) => {
     const option = MUTE_OPTIONS.find((o) => o.value === optionValue);
     if (!option) return;
-    setRowSaving(type.alert_type, true);
-    try {
-      const updated = await muteAlertType(type.alert_type, option.seconds);
-      if (!mounted.current) return;
-      replaceRow(updated);
-      onToast(
+    confirmation.request({
+      title:
         option.seconds === null
-          ? `Muted "${type.label}" until unmuted`
-          : `Muted "${type.label}" for ${option.label}`,
-      );
-    } catch (e) {
-      onToast(`Failed to mute "${type.label}": ${getErrorMessage(e)}`);
-    } finally {
-      if (mounted.current) setRowSaving(type.alert_type, false);
-    }
+          ? `Mute "${type.label}" until unmuted?`
+          : `Mute "${type.label}" for ${option.label}?`,
+      confirmLabel: 'Mute',
+      busyLabel: 'Muting…',
+      body: (
+        <>
+          <p>
+            {type.muted ? `Now: ${statusText(type)}. ` : ''}No &ldquo;{type.label}&rdquo; alert is
+            sent{' '}
+            {option.seconds === null
+              ? 'until an admin unmutes it'
+              : `until ${formatUntil(Math.round(Date.now() / 1000) + option.seconds)}`}
+            . An incident that opens meanwhile also closes without a recovery message.
+          </p>
+          <p className="font-mono text-[12px] [overflow-wrap:anywhere]">{type.key_pattern}</p>
+        </>
+      ),
+      run: async () => {
+        const updated = await muteAlertType(type.alert_type, option.seconds);
+        if (!mounted.current) return;
+        replaceRow(updated);
+        onToast(
+          option.seconds === null
+            ? `Muted "${type.label}" until unmuted`
+            : `Muted "${type.label}" for ${option.label}`,
+        );
+      },
+    });
   };
 
-  const onUnmute = async (type: AlertTypeMute) => {
-    setRowSaving(type.alert_type, true);
-    try {
-      const updated = await unmuteAlertType(type.alert_type);
-      if (!mounted.current) return;
-      replaceRow(updated);
-      onToast(`Unmuted "${type.label}"`);
-    } catch (e) {
-      onToast(`Failed to unmute "${type.label}": ${getErrorMessage(e)}`);
-    } finally {
-      if (mounted.current) setRowSaving(type.alert_type, false);
-    }
+  const onUnmute = (type: AlertTypeMute) => {
+    confirmation.request({
+      title: `Unmute "${type.label}"?`,
+      confirmLabel: 'Unmute',
+      busyLabel: 'Unmuting…',
+      body: <p>&ldquo;{type.label}&rdquo; alerts are sent again from now on.</p>,
+      run: async () => {
+        const updated = await unmuteAlertType(type.alert_type);
+        if (!mounted.current) return;
+        replaceRow(updated);
+        onToast(`Unmuted "${type.label}"`);
+      },
+    });
   };
 
   const mutedCount = types.filter((type) => type.muted).length;
@@ -203,7 +213,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                     </th>
                   </tr>
                   {members.map((type) => {
-                    const isSaving = saving.has(type.alert_type);
+                    const isSaving = confirmation.busy;
                     return (
                       <tr key={type.alert_type} className="bg-white align-top">
                         <td className="px-3 py-2">
@@ -234,7 +244,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                               aria-label={`Mute ${type.label}`}
                               value=""
                               disabled={isSaving}
-                              onChange={(e) => void onMute(type, e.target.value)}
+                              onChange={(e) => onMute(type, e.target.value)}
                               className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px] text-gray-700 disabled:opacity-40"
                             >
                               <option value="" disabled>
@@ -250,7 +260,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                               <button
                                 type="button"
                                 disabled={isSaving}
-                                onClick={() => void onUnmute(type)}
+                                onClick={() => onUnmute(type)}
                                 className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
                               >
                                 Unmute
@@ -267,6 +277,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
           </table>
         </div>
       )}
+      {confirmation.dialog}
     </div>
   );
 }

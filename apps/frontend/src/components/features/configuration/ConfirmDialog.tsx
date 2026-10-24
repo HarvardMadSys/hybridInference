@@ -15,6 +15,7 @@ export function ConfirmDialog({
   busyLabel,
   tone = 'default',
   busy = false,
+  confirmDisabled = false,
   error,
   onConfirm,
   onCancel,
@@ -27,6 +28,8 @@ export function ConfirmDialog({
   busyLabel?: string;
   tone?: 'default' | 'danger';
   busy?: boolean;
+  /** Keep Confirm disabled, e.g. until a typed confirmation matches. */
+  confirmDisabled?: boolean;
   /** Shown inside the dialog, so a failed confirm can be retried in place. */
   error?: string | null;
   onConfirm: () => void;
@@ -60,7 +63,7 @@ export function ConfirmDialog({
       const container = containerRef.current;
       if (!container) return;
       const focusables = container.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [tabindex="0"]',
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
       );
       if (focusables.length === 0) return;
       const first = focusables[0];
@@ -133,7 +136,7 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             aria-busy={busy || undefined}
             className={`rounded-md px-3 py-1.5 text-[13px] font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-40 ${confirmClass}`}
           >

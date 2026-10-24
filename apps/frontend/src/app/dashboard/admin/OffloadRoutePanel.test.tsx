@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OffloadRoute, ProviderRoute } from '@/lib/api/admin';
@@ -89,6 +89,18 @@ function renderPanel(overrides: Partial<Parameters<typeof OffloadRoutePanel>[0]>
   return { onChange };
 }
 
+function edit() {
+  fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
+}
+
+function saveButton() {
+  return screen.getByRole('button', { name: 'Save changes to Queue offload' });
+}
+
+function confirmSave() {
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
+}
+
 describe('OffloadRoutePanel', () => {
   afterEach(() => {
     cleanup();
@@ -98,51 +110,143 @@ describe('OffloadRoutePanel', () => {
     vi.clearAllMocks();
   });
 
-  it('saves a newly chosen offload route with its wait', async () => {
+  it('saves a newly chosen offload route with its wait after confirmation', async () => {
     vi.mocked(setOffloadRoute).mockResolvedValue({ model_id: MODEL, offload: storedOffload });
     const { onChange } = renderPanel();
 
-    const save = screen.getByRole('button', { name: 'Save offload route' });
-    expect(save).toBeDisabled();
+    expect(screen.getByLabelText('Offload route')).toHaveTextContent('None');
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    edit();
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText('No changes yet')).toBeVisible();
 
     fireEvent.change(screen.getByLabelText('Offload route'), {
       target: { value: reserved.route_id },
     });
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '4' } });
-    expect(save).toBeEnabled();
-    fireEvent.click(save);
+    expect(saveButton()).toBeEnabled();
+    fireEvent.click(saveButton());
 
-    await waitFor(() => {
-      expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, NO_LIMITS);
-    });
+    const dialog = screen.getByRole('dialog', { name: 'Set up the offload route for glm-4.7?' });
+    expect(dialog).toHaveTextContent('Offload routeNone → reserved (glm-4.7:reserved-api)');
+    expect(dialog).toHaveTextContent('Wait before offloadingNone → 4s');
+    expect(setOffloadRoute).not.toHaveBeenCalled();
+    confirmSave();
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(setOffloadRoute).toHaveBeenCalledTimes(1);
+    expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, NO_LIMITS);
     expect(onChange).toHaveBeenCalledWith(MODEL, storedOffload);
     expect(toast.success).toHaveBeenCalledWith('Offload route saved');
+    expect(screen.getByRole('button', { name: 'Edit Queue offload' })).toBeInTheDocument();
   });
 
-  it('shows the stored route and clears it', async () => {
+  it('shows the stored route read-only and clears it only after confirmation', async () => {
     vi.mocked(clearOffloadRoute).mockResolvedValue({ model_id: MODEL, offload: null });
     const { onChange } = renderPanel({ offload: storedOffload });
 
-    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
-    expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(4);
+    expect(screen.getByLabelText('Offload route')).toHaveTextContent(
+      'reserved (glm-4.7:reserved-api)',
+    );
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveTextContent('4s');
+    expect(screen.getByLabelText('Engine queue limit')).toHaveTextContent('Off');
     expect(screen.getByTestId('offload-route-status')).toHaveTextContent('Active');
-    // Nothing changed yet, so there is nothing to save.
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear offload route' }));
+    const dialog = screen.getByRole('dialog', { name: 'Clear the offload route for glm-4.7?' });
+    expect(dialog).toHaveTextContent('reserved (glm-4.7:reserved-api)');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(clearOffloadRoute).not.toHaveBeenCalled();
 
-    await waitFor(() => {
-      expect(clearOffloadRoute).toHaveBeenCalledWith(MODEL);
-    });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear offload route' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clear' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(clearOffloadRoute).toHaveBeenCalledTimes(1);
+    expect(clearOffloadRoute).toHaveBeenCalledWith(MODEL);
     expect(onChange).toHaveBeenCalledWith(MODEL, null);
+    expect(toast.success).toHaveBeenCalledWith('Offload route cleared');
+  });
+
+  it('starts every edit from the stored values, and Cancel writes nothing', () => {
+    renderPanel({ offload: storedOffload });
+
+    edit();
+    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(4);
+    // Nothing changed yet, so there is nothing to save.
+    expect(saveButton()).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    // Typed back to the stored value, it is no change.
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '4' } });
+    expect(saveButton()).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveTextContent('4s');
+    edit();
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(4);
+    expect(setOffloadRoute).not.toHaveBeenCalled();
+  });
+
+  it('keeps the drafts when the administrator goes back to editing', () => {
+    renderPanel({ offload: storedOffload });
+
+    edit();
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
+    fireEvent.click(saveButton());
+    const dialog = screen.getByRole('dialog', {
+      name: 'Save 1 change to the glm-4.7 offload route?',
+    });
+    expect(dialog).toHaveTextContent('Wait before offloading4s → 9s');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(9);
+    expect(setOffloadRoute).not.toHaveBeenCalled();
+  });
+
+  it('blocks a second Confirm and closing while the save is in flight', async () => {
+    let finish!: (value: { model_id: string; offload: OffloadRoute }) => void;
+    vi.mocked(setOffloadRoute).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderPanel({ offload: storedOffload });
+
+    edit();
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
+    fireEvent.click(saveButton());
+    confirmSave();
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Saving…' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(setOffloadRoute).toHaveBeenCalledTimes(1);
+
+    finish({ model_id: MODEL, offload: { ...storedOffload, wait_seconds: 9 } });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(setOffloadRoute).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a wait at zero before sending it', () => {
     renderPanel({ offload: storedOffload });
 
+    edit();
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '0' } });
     expect(screen.getByRole('alert')).toHaveTextContent('Must be greater than 0.');
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
+    fireEvent.click(saveButton());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('Fix the values marked below before saving.')).toBeVisible();
     expect(setOffloadRoute).not.toHaveBeenCalled();
   });
 
@@ -153,9 +257,11 @@ describe('OffloadRoutePanel', () => {
     });
     renderPanel({ offload: storedOffload });
 
+    edit();
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '90' } });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+    fireEvent.click(saveButton());
+    confirmSave();
 
     await waitFor(() => {
       expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 90, NO_LIMITS);
@@ -169,9 +275,12 @@ describe('OffloadRoutePanel', () => {
     });
     renderPanel({ offload: storedOffload });
 
+    edit();
     expect(screen.getByLabelText('Engine queue limit')).toHaveValue(null);
     fireEvent.change(screen.getByLabelText('Engine queue limit'), { target: { value: '2' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+    fireEvent.click(saveButton());
+    expect(screen.getByRole('dialog')).toHaveTextContent('Engine queue limitOff → 2');
+    confirmSave();
 
     await waitFor(() => {
       expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, {
@@ -185,13 +294,16 @@ describe('OffloadRoutePanel', () => {
     vi.mocked(setOffloadRoute).mockResolvedValue({ model_id: MODEL, offload: storedOffload });
     renderPanel({ offload: { ...storedOffload, engine_queue_limit: 3 } });
 
+    expect(screen.getByLabelText('Engine queue limit')).toHaveTextContent('3');
+    edit();
     expect(screen.getByLabelText('Engine queue limit')).toHaveValue(3);
-    const save = screen.getByRole('button', { name: 'Save offload route' });
-    expect(save).toBeDisabled();
+    expect(saveButton()).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Engine queue limit'), { target: { value: '' } });
-    expect(save).toBeEnabled();
-    fireEvent.click(save);
+    expect(saveButton()).toBeEnabled();
+    fireEvent.click(saveButton());
+    expect(screen.getByRole('dialog')).toHaveTextContent('Engine queue limit3 → Off');
+    confirmSave();
 
     await waitFor(() => {
       expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, NO_LIMITS);
@@ -204,10 +316,12 @@ describe('OffloadRoutePanel', () => {
   ])('rejects an engine queue limit of %s before sending it', (value, error) => {
     renderPanel({ offload: storedOffload });
 
+    edit();
     fireEvent.change(screen.getByLabelText('Engine queue limit'), { target: { value } });
 
     expect(screen.getByRole('alert')).toHaveTextContent(`Engine queue limit: ${error}`);
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
+    fireEvent.click(saveButton());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(setOffloadRoute).not.toHaveBeenCalled();
   });
 
@@ -218,11 +332,13 @@ describe('OffloadRoutePanel', () => {
     });
     renderPanel({ offload: { ...storedOffload, engine_queue_limit: 2 } });
 
+    edit();
     expect(screen.getByLabelText('Max offload input tokens')).toHaveValue(null);
     fireEvent.change(screen.getByLabelText('Max offload input tokens'), {
       target: { value: '32000' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+    fireEvent.click(saveButton());
+    confirmSave();
 
     await waitFor(() => {
       expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, {
@@ -236,13 +352,16 @@ describe('OffloadRoutePanel', () => {
     vi.mocked(setOffloadRoute).mockResolvedValue({ model_id: MODEL, offload: storedOffload });
     renderPanel({ offload: { ...storedOffload, max_input_tokens: 16000 } });
 
+    expect(screen.getByLabelText('Max offload input tokens')).toHaveTextContent('16000');
+    edit();
     expect(screen.getByLabelText('Max offload input tokens')).toHaveValue(16000);
-    const save = screen.getByRole('button', { name: 'Save offload route' });
-    expect(save).toBeDisabled();
+    expect(saveButton()).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Max offload input tokens'), { target: { value: '' } });
-    expect(save).toBeEnabled();
-    fireEvent.click(save);
+    expect(saveButton()).toBeEnabled();
+    fireEvent.click(saveButton());
+    expect(screen.getByRole('dialog')).toHaveTextContent('Max offload input16000 → No limit');
+    confirmSave();
 
     await waitFor(() => {
       expect(setOffloadRoute).toHaveBeenCalledWith(MODEL, reserved.route_id, 4, NO_LIMITS);
@@ -255,10 +374,12 @@ describe('OffloadRoutePanel', () => {
   ])('rejects a max offload input of %s before sending it', (value, error) => {
     renderPanel({ offload: storedOffload });
 
+    edit();
     fireEvent.change(screen.getByLabelText('Max offload input tokens'), { target: { value } });
 
     expect(screen.getByRole('alert')).toHaveTextContent(`Max offload input: ${error}`);
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
+    fireEvent.click(saveButton());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(setOffloadRoute).not.toHaveBeenCalled();
   });
 
@@ -305,31 +426,39 @@ describe('OffloadRoutePanel', () => {
     renderPanel({ routes: [primary] });
 
     expect(screen.getByText(/Add another route first/)).toBeInTheDocument();
-    expect(screen.getByLabelText('Offload route')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Save offload route' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Edit Queue offload' })).toBeDisabled();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   });
 
   it('offers only clearing when the routing policy cannot use an offload route', () => {
     renderPanel({ offload: { ...storedOffload, active: false }, editable: false });
 
     expect(screen.queryByLabelText('Offload route')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit Queue offload' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear offload route' })).toBeInTheDocument();
   });
 
-  it('reports a rejected save', async () => {
-    vi.mocked(setOffloadRoute).mockRejectedValue(new Error('model needs fixed routing'));
+  it('keeps the dialog and drafts after a rejected save, and retries from the dialog', async () => {
+    vi.mocked(setOffloadRoute)
+      .mockRejectedValueOnce(new Error('model needs fixed routing'))
+      .mockResolvedValueOnce({ model_id: MODEL, offload: storedOffload });
     const { onChange } = renderPanel();
 
+    edit();
     fireEvent.change(screen.getByLabelText('Offload route'), {
       target: { value: reserved.route_id },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
+    fireEvent.click(saveButton());
+    confirmSave();
 
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        'Offload route update failed: model needs fixed routing',
-      );
-    });
+    const dialog = screen.getByRole('dialog');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('model needs fixed routing');
     expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
+
+    confirmSave();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(setOffloadRoute).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledWith(MODEL, storedOffload);
   });
 });

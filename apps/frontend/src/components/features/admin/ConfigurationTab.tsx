@@ -8,6 +8,8 @@ import {
   ConfigEntryField,
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
+import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import {
   AlertNotificationFields,
@@ -136,6 +138,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
+  const testConfirmation = useConfirmAction();
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const saveInFlight = useRef(false);
 
@@ -200,26 +203,47 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setAlertTestResult(null);
   };
 
-  const sendAlertTest = async () => {
+  // A test send posts a real message, so it is confirmed like any other action.
+  // Its outcome is shown beside the button, never in the dialog: only the
+  // console's own sanitized message may describe a webhook failure.
+  const sendAlertTest = () => {
     if (!webhookEntries || alertChannel === 'none' || alertTestInFlight.current) return;
     const entry = selectedWebhookEntry(webhookEntries, alertChannel);
     if (!entry || alertWebhookError(entry, drafts)) return;
     const draft = drafts[entry.key];
-    alertTestInFlight.current = true;
-    setTestingAlert(true);
-    setAlertTestResult(null);
-    try {
-      const result = await testAlertNotification({
-        channel: alertChannel,
-        ...(draft?.kind === 'replace' ? { webhook_url: draft.value.trim() } : {}),
-      });
-      setAlertTestResult({ sent: true, testId: result.test_id });
-    } catch (e) {
-      setAlertTestResult({ sent: false, message: alertTestFailureMessage(e) });
-    } finally {
-      alertTestInFlight.current = false;
-      setTestingAlert(false);
-    }
+    const channel = alertChannel;
+    const name = channel === 'wecom' ? 'WeCom' : 'Slack';
+    testConfirmation.request({
+      title: `Send a test notification to ${name}?`,
+      confirmLabel: 'Send test',
+      busyLabel: 'Sending…',
+      body: (
+        <p>
+          A test message is posted to the {name} channel{' '}
+          {draft?.kind === 'replace'
+            ? 'behind the webhook URL you typed. That URL is not saved.'
+            : 'behind the saved webhook.'}{' '}
+          Settings are not changed.
+        </p>
+      ),
+      run: async () => {
+        alertTestInFlight.current = true;
+        setTestingAlert(true);
+        setAlertTestResult(null);
+        try {
+          const result = await testAlertNotification({
+            channel,
+            ...(draft?.kind === 'replace' ? { webhook_url: draft.value.trim() } : {}),
+          });
+          setAlertTestResult({ sent: true, testId: result.test_id });
+        } catch (e) {
+          setAlertTestResult({ sent: false, message: alertTestFailureMessage(e) });
+        } finally {
+          alertTestInFlight.current = false;
+          setTestingAlert(false);
+        }
+      },
+    });
   };
 
   const groups = useMemo(
@@ -604,7 +628,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     disabled={busy}
                     testing={testingAlert}
                     testResult={alertTestResult}
-                    onTest={() => void sendAlertTest()}
+                    onTest={sendAlertTest}
                     onReset={toggleReset}
                     readOnly={!editing}
                     pendingResets={resetKeys}
@@ -672,6 +696,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           </section>
         );
       })}
+
+      {testConfirmation.dialog}
 
       {pendingSave ? (
         <ConfirmDialog
@@ -751,11 +777,12 @@ function AddVariableForm({
   // is the administrator's choice.
   const [secretChoice, setSecretChoice] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const confirmation = useConfirmAction();
+  const saving = confirmation.busy;
   const secretByName = looksSecret(name);
   const secret = secretByName || secretChoice;
 
-  const submit = async (event: React.FormEvent) => {
+  const submit = (event: React.FormEvent) => {
     event.preventDefault();
     const key = name.trim();
     if (!CUSTOM_KEY_PATTERN.test(key)) {
@@ -768,16 +795,36 @@ function AddVariableForm({
       setError(`${key} is already listed. Edit it in its category.`);
       return;
     }
-    setSaving(true);
     setError(null);
-    try {
-      const next = await patchConfig({ values: { [key]: value }, secrets: { [key]: secret } });
-      onAdded(next, key);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setSaving(false);
-    }
+    // A new variable is reviewed before it is written; a secret's value is never shown.
+    confirmation.request({
+      title: `Add ${key}?`,
+      confirmLabel: 'Add variable',
+      busyLabel: 'Adding…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={[
+              {
+                label: key,
+                after: secret ? (value ? 'Set (hidden)' : '(empty)') : value || '(empty)',
+              },
+              { label: 'Secret', after: secret ? 'Yes, write-only from now on' : 'No' },
+            ]}
+          />
+          <p>
+            It is stored in the database, where a{' '}
+            <code className="rounded bg-gray-100 px-1">{`$\{${key}}`}</code> reference in a
+            configuration file can read it.
+          </p>
+        </>
+      ),
+      run: async () => {
+        const next = await patchConfig({ values: { [key]: value }, secrets: { [key]: secret } });
+        onAdded(next, key);
+      },
+    });
   };
 
   return (
@@ -865,9 +912,10 @@ function AddVariableForm({
           aria-busy={saving || undefined}
           className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
         >
-          {saving ? 'Adding…' : 'Add'}
+          {saving ? 'Adding…' : 'Review and add'}
         </button>
       </div>
+      {confirmation.dialog}
     </form>
   );
 }
