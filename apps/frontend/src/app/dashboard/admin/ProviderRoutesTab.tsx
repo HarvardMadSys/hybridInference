@@ -34,7 +34,7 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
 import {
@@ -145,6 +145,13 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'pro', label: 'Pro, internal, and admins' },
   { value: 'free', label: 'All users' },
 ];
+
+// The gateway's own reason. The shared mapping reads any 409 as a signup
+// conflict ("This email is already registered"), which would hide why a route
+// edit, disable or delete was refused.
+function routeErrorMessage(err: unknown) {
+  return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
@@ -1518,7 +1525,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setCapabilityRoute(null);
       toast.success('Route capabilities updated');
     } catch (err) {
-      toast.error(`Capability update failed: ${getErrorMessage(err)}`);
+      toast.error(`Capability update failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingCapabilities(false);
     }
@@ -1536,7 +1543,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       setCapabilityRoute(null);
       toast.success('Route capabilities reset');
     } catch (err) {
-      toast.error(`Capability reset failed: ${getErrorMessage(err)}`);
+      toast.error(`Capability reset failed: ${routeErrorMessage(err)}`);
     } finally {
       setSavingCapabilities(false);
     }

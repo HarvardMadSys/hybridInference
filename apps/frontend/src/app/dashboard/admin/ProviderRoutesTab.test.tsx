@@ -90,6 +90,8 @@ import {
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
+import toast from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 
 // A deployment whose Featherless plan is concurrency-based and whose OpenRouter
 // account is used on demand or with a concurrency cap (PROVIDER_ROUTE_TYPES).
@@ -2628,6 +2630,24 @@ describe('ProviderRoutesTab', () => {
           expect.objectContaining({ capabilities: MEDIA }),
         );
       });
+    });
+
+    it("shows the gateway's reason when a capability change is refused", async () => {
+      const reason =
+        "duplicate provider route id 'minimax-fast:featherless-api'; set unique endpoint_id " +
+        'values before editing this route';
+      // The shared client reads a typed 409 as a signup conflict; the dialog must not.
+      vi.mocked(updateProviderRouteCapabilities).mockRejectedValue(
+        new APIError('USER_ALREADY_EXISTS', reason, 409),
+      );
+      const dialog = await renderWithRoute();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalledWith(`Capability update failed: ${reason}`);
+      });
+      expect(screen.getByRole('dialog', { name: 'Route capabilities' })).toBeInTheDocument();
     });
   });
 });
