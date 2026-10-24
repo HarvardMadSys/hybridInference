@@ -20,7 +20,7 @@ vi.mock('@/lib/api/admin', () => ({
   listAuditLog: vi.fn(),
 }));
 
-import { listAuditLog } from '@/lib/api/admin';
+import { listAuditLog, type ListAuditLogResponse } from '@/lib/api/admin';
 import { AuditTab } from './AuditTab';
 import { chooseOption } from '@/test-utils/select';
 import { escapingScreenReaderText } from './__tests__/layoutContainment';
@@ -177,6 +177,26 @@ describe('AuditTab', () => {
     expect(await screen.findByText('Update user')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(listAuditLog).toHaveBeenCalledTimes(2);
+  });
+
+  it('withdraws a failed load’s alert as soon as the next request starts', async () => {
+    vi.mocked(listAuditLog).mockRejectedValueOnce(new Error('gateway down'));
+    const { rerender } = render(<AuditTab />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('gateway down');
+
+    // A new filter whose request is still in flight: the failure was not its.
+    let resolve!: (page: ListAuditLogResponse) => void;
+    vi.mocked(listAuditLog).mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    search = new URLSearchParams('action=delete_key');
+    rerender(<AuditTab />);
+    await waitFor(() =>
+      expect(listAuditLog).toHaveBeenLastCalledWith('delete_key', undefined, 50, 0),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('Loading audit log…')).toBeInTheDocument();
+
+    resolve({ total: 0, entries: [] });
+    expect(await screen.findByText('No entries match these filters.')).toBeInTheDocument();
   });
 
   it('withdraws the old rows, count and range when a filter change fails', async () => {

@@ -306,6 +306,8 @@ export function AuditTab() {
   const loadAudit = useCallback(async () => {
     const reqId = ++auditReqIdRef.current;
     setAuditLoading(true);
+    // A failure is its own request's: its alert goes when the next one starts.
+    setLoadError(null);
     try {
       const d = await listAuditLog(
         auditFilter || undefined,
@@ -315,7 +317,6 @@ export function AuditTab() {
       );
       if (auditReqIdRef.current !== reqId) return;
       setShown({ key: queryKey, entries: d.entries, total: d.total, offset: auditOffset });
-      setLoadError(null);
     } catch (e) {
       if (auditReqIdRef.current !== reqId) return;
       const message = getErrorMessage(e);
