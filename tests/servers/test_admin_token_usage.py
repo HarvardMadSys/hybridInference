@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -258,7 +258,7 @@ async def _seed(
 async def test_token_usage_24h_happy_path(db_logger):
     """One row per (provider, model_id), sorted DESC by total tokens, totals correct."""
     pool = db_logger.pool
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     bucket = now - timedelta(hours=2)
 
     # Heavy provider/model
@@ -335,7 +335,7 @@ async def test_token_usage_empty_window_returns_zero_totals(db_logger):
     pool = db_logger.pool
 
     # Insert a row 60 days ago — falls outside any selectable range.
-    old = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(days=60)
+    old = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(days=60)
     await _seed(
         pool,
         provider="zai",
@@ -378,7 +378,7 @@ async def test_token_usage_empty_window_returns_zero_totals(db_logger):
 async def test_token_usage_window_inclusion(db_logger):
     """Rows inside [from, to) included; rows outside excluded."""
     pool = db_logger.pool
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     # 2h ago: inside the 24h window
     await _seed(

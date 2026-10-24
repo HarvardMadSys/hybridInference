@@ -20,7 +20,7 @@ report is based on.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -551,5 +551,5 @@ async def admin_analyze_usage(
         model=model,
         sampled_requests=used,
         scope=scope,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )

@@ -10,7 +10,7 @@ that the range parameter and missing model_id are validated.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -165,17 +165,17 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
         ],
         buckets=[
             {
-                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=UTC),
                 "endpoint": "minimax-fast:openrouter[wandb]-api",
                 "cnt": 2,
             },
             {
-                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=UTC),
                 "endpoint": "minimax-fast:openrouter[deepinfra]-api",
                 "cnt": 1,
             },
             {
-                "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=UTC),
                 "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
                 "cnt": 2,
             },
@@ -185,13 +185,13 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
             # total): two not hedged, one hedged primary won, one hedged backup
             # won. The hedge query is winner-agnostic, so it is unchanged.
             {
-                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=UTC),
                 "not_hedged": 2,
                 "hedged_primary_won": 1,
                 "hedged_backup_won": 1,
             },
             {
-                "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=UTC),
                 "not_hedged": 2,
                 "hedged_primary_won": 0,
                 "hedged_backup_won": 0,
@@ -371,7 +371,7 @@ async def test_decisions_zero_hedge_window_keeps_rate_zero_and_median_null():
         },
         hedge_buckets=[
             {
-                "bucket_start": datetime(2026, 7, 1, 15, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
                 "not_hedged": 12,
                 "hedged_primary_won": 0,
                 "hedged_backup_won": 0,
@@ -411,7 +411,7 @@ async def test_decisions_bucket_with_only_unattributed_rows_still_appears():
         buckets=[],  # ... and no attributed per-endpoint counts
         hedge_buckets=[
             {
-                "bucket_start": datetime(2026, 7, 1, 16, 0, tzinfo=timezone.utc),
+                "bucket_start": datetime(2026, 7, 1, 16, 0, tzinfo=UTC),
                 "not_hedged": 2,
                 "hedged_primary_won": 0,
                 "hedged_backup_won": 1,

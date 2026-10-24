@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -52,7 +52,7 @@ def _result(
         display_name=display_name,
         key_configured=key is not None,
         key_masked=_mask_key(key) if key else None,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         ok=ok,
         error=error,
         usages=usages or [],
@@ -371,34 +371,34 @@ class TestDiscoverProviderKeys:
 
 class TestNextReset:
     def test_daily_midnight(self):
-        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=UTC)
         reset = _next_reset("daily", now=now)
-        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=timezone.utc)
+        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=UTC)
 
     def test_session_same_as_daily(self):
-        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=UTC)
         reset = _next_reset("session", now=now)
-        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=timezone.utc)
+        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=UTC)
 
     def test_weekly_next_monday(self):
-        now = datetime(2026, 5, 6, 10, 0, 0, tzinfo=timezone.utc)  # Wednesday
+        now = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)  # Wednesday
         reset = _next_reset("weekly", now=now)
-        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=timezone.utc)  # next Monday
+        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=UTC)  # next Monday
 
     def test_weekly_on_monday_goes_next_week(self):
-        now = datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)  # Monday
+        now = datetime(2026, 5, 4, 0, 0, 0, tzinfo=UTC)  # Monday
         reset = _next_reset("weekly", now=now)
-        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=timezone.utc)  # next Monday
+        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=UTC)  # next Monday
 
     def test_monthly_first_of_next_month(self):
-        now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
         reset = _next_reset("monthly", now=now)
-        assert reset == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert reset == datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
 
     def test_monthly_december_wraps_year(self):
-        now = datetime(2026, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 12, 31, 23, 59, 0, tzinfo=UTC)
         reset = _next_reset("monthly", now=now)
-        assert reset == datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert reset == datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 
 class _QuotaKeyStore:

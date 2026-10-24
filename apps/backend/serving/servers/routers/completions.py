@@ -300,7 +300,7 @@ async def _streaming_response_with_keepalive(
                 chunk = await asyncio.wait_for(
                     chunk_queue.get(), timeout=_FORCE_STREAMING_KEEPALIVE_S
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield b" "
                 yielded_any = True
                 last_client_byte = time.monotonic()

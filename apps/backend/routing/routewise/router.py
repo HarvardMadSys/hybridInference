@@ -1100,7 +1100,7 @@ class RouteWiseRouter:
                 ok=result.ok,
                 error=result.error,
                 cost_usd=None,
-                checked_at=dt.datetime.now(dt.timezone.utc),
+                checked_at=dt.datetime.now(dt.UTC),
             )
         except Exception:
             logger.warning(

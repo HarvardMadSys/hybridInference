@@ -5,7 +5,7 @@ Run with: make test-db
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -285,7 +285,7 @@ async def test_a_cookie_from_before_browser_sessions_is_upgraded_once(
         refresh_token_hash=hash_refresh_token("legacy-refresh"),
         jti=str(uuid4()),
         sid=str(uuid4()),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
     )
     browser.cookie = "legacy-refresh"
 

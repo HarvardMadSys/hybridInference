@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class ProviderProfile(str, Enum):
+class ProviderProfile(str, Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
     """Provider profile identifier for usage extraction strategy."""
 
     DEFAULT = "default"

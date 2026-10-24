@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -194,7 +194,7 @@ async def _start_deferred(store: PostgresOperationalStore) -> None:
 
 async def test_an_upgrade_behind_pg_dump_serves_then_completes(pool) -> None:
     store = PostgresOperationalStore(pool)
-    expires = datetime.now(timezone.utc) + timedelta(days=1)
+    expires = datetime.now(UTC) + timedelta(days=1)
 
     async with _held_like_pg_dump(pool):
         await _start_deferred(store)

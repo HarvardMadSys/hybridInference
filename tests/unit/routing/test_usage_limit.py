@@ -1,10 +1,10 @@
 """Tests for routing.usage_limit.detect_usage_limit."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 
-NOW = datetime(2026, 7, 30, 20, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 30, 20, 0, 0, tzinfo=UTC)
 
 
 def test_returns_none_for_empty_or_non_usage_limit():
@@ -45,7 +45,7 @@ def test_reset_phrase_without_rate_limit_is_a_usage_limit():
     # limit (default window, since no named period is present).
     limit = detect_usage_limit("Your limit will reset at 2026-07-30 22:45:10", now=NOW)
     assert limit is not None
-    assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc)
+    assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=UTC)
     # Declared 2h45m out, so the 4h floor governs how long we stay quiet.
     assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
@@ -57,7 +57,7 @@ def test_explicit_reset_timestamp_wins_over_window():
     )
     limit = detect_usage_limit(detail, now=NOW)
     assert limit is not None
-    assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc)
+    assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=UTC)
     # The named window still supplies a human label.
     assert limit.window == "5 hour"
     assert limit.suppress_until == NOW + MIN_ALERT_GAP
@@ -67,7 +67,7 @@ def test_explicit_reset_timestamp_with_zone_normalized_to_utc():
     detail = "usage limit reached. limit will reset at 2026-07-30T22:45:10+02:00"
     limit = detect_usage_limit(detail, now=NOW)
     assert limit is not None
-    assert limit.reset_at == datetime(2026, 7, 30, 20, 45, 10, tzinfo=timezone.utc)
+    assert limit.reset_at == datetime(2026, 7, 30, 20, 45, 10, tzinfo=UTC)
     assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
@@ -77,7 +77,7 @@ def test_explicit_reset_timestamp_in_utc_however_spelled():
         assert limit is not None, stamp
         assert limit.reset_at is not None, stamp
         assert limit.reset_at.replace(microsecond=0) == datetime(
-            2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc
+            2026, 7, 30, 22, 45, 10, tzinfo=UTC
         ), stamp
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
@@ -1797,15 +1798,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # Shared SQL fragments used by both the count query and the row
         # query so total/rows are guaranteed consistent.
         # ──────────────────────────────────────────────────────────────────
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from decimal import Decimal as _Decimal
 
         anomaly_multiplier = _Decimal("5.0")
         anomaly_min_today = _Decimal("1.00")
         anomaly_min_history_days = 3
-        today_str = datetime.now(timezone.utc).date().isoformat()
-        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        today_str = datetime.now(UTC).date().isoformat()
+        prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
         schema = self._account_schema
 
         where_clauses: list[str] = []
@@ -3962,10 +3963,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         day: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter via upsert."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if day is None:
-            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
@@ -4140,9 +4141,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if days <= 0:
             return []
         # ``day`` is stored as TEXT (YYYY-MM-DD) — compute cutoff in Python.
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT day, cost_usd, requests "
@@ -4170,9 +4171,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Bulk variant of get_user_cost_history — one query, grouped by user."""
         if not user_ids or days <= 0:
             return {}
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT user_id, day, cost_usd, requests "
@@ -4215,15 +4216,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         of their key's quota_daily_cost_usd. Users without quota set are
         excluded.
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from decimal import Decimal as _Decimal
 
         if anomaly_min_today is None:
             anomaly_min_today = _Decimal("1.00")
 
-        today_str = datetime.now(timezone.utc).date().isoformat()
-        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        today_str = datetime.now(UTC).date().isoformat()
+        prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
         identity = ("id", "email", "login_name", "phone", "user_name", "role")
         schema = self._account_schema
 

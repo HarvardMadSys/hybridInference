@@ -11,10 +11,9 @@ import json
 import re
 import subprocess
 import tempfile
+import tomllib
 from collections import Counter, defaultdict
 from pathlib import Path
-
-import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
 

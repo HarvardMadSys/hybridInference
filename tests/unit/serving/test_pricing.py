@@ -10,7 +10,7 @@ from serving.adapters.base import ModelConfig
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.utils import context as req_ctx
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 ACTIVATION = dt.datetime(2026, 8, 16, 16, 0, tzinfo=UTC)
 
 

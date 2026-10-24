@@ -234,9 +234,9 @@ def test_pricing_lookup_does_not_cache_across_scheduled_price_windows():
         endpoint_id="deepseek-v4-flash:deepseek-api",
     )
 
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 2, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 2, tzinfo=dt.UTC)):
         peak = lookup.raw_dict_for_routing(routing)
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.UTC)):
         off_peak = lookup.raw_dict_for_routing(routing)
 
     assert peak == {"prompt": "0.44", "completion": "1.32"}

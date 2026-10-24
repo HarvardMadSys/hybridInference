@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 __all__ = ["MIN_ALERT_GAP", "UsageLimit", "detect_usage_limit"]
 
@@ -153,8 +153,8 @@ def _parse_reset_timestamp(raw: str) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _estimate_window(detail: str) -> tuple[timedelta, str] | None:

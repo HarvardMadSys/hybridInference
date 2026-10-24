@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -46,7 +46,7 @@ class FakeStore:
         self.rows[key] = {
             "value": value,
             "value_type": value_type,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
             "updated_by": updated_by,
         }
 

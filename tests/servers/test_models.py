@@ -310,7 +310,7 @@ async def test_models_pricing_resolves_current_schedule_window(day, expected):
     app.include_router(models.router)
     transport = ASGITransport(app=app)
 
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, day, 2, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, day, 2, tzinfo=dt.UTC)):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/v1/models")
 

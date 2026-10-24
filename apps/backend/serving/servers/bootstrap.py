@@ -446,7 +446,7 @@ async def _bootstrap_routewise_from_logs(
     """
     if log_store is None:
         return
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for rw in routewise_routers:
         if not rw.config.db_bootstrap_enabled:
             continue
@@ -528,7 +528,7 @@ async def _bootstrap_routewise_from_probe_samples(
     """Best-effort warmup of RouteWise latency state from persisted probes."""
     if operational_store is None:
         return
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for rw in routewise_routers:
         if not rw.config.db_bootstrap_enabled:
             continue

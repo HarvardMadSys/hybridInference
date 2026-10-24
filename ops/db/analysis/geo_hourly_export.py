@@ -24,7 +24,7 @@ import os
 import random
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -129,7 +129,7 @@ def _percentile(sorted_values: list[int], q: float) -> int | None:
 def _floor_hour(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must include a timezone")
-    return value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return value.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
 
 
 def _normalize_window(since: datetime, until: datetime) -> tuple[datetime, datetime]:
@@ -267,7 +267,7 @@ async def _aggregate_geo_demand(
     hours_index = _build_hours_index(since, until)
     meta = {
         "source": "api_logs",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "start": hours_index[0].isoformat() if hours_index else None,
         "hours": len(hours_index),
         "rows_total": rows_total,
@@ -388,7 +388,7 @@ def _demo_hour_rate(
 def generate_demo(days: int) -> dict:
     """Generate clearly labeled, seeded synthetic globe data."""
     rng = random.Random(42)
-    until = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    until = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = until - timedelta(days=days)
     hours_index = [start + timedelta(hours=index) for index in range(days * 24)]
 
@@ -421,7 +421,7 @@ def generate_demo(days: int) -> dict:
     total = sum(bucket.n for bucket in buckets.values())
     meta = {
         "source": "synthetic-demo",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "start": hours_index[0].isoformat(),
         "hours": len(hours_index),
         "rows_total": total,
@@ -483,13 +483,9 @@ def cli() -> None:
     if not args.geoip_country:
         print("WARNING: no Country MMDB configured - all origins will be country '?'.")
 
-    until = (
-        datetime.fromisoformat(args.until).astimezone(timezone.utc)
-        if args.until
-        else datetime.now(timezone.utc)
-    )
+    until = datetime.fromisoformat(args.until).astimezone(UTC) if args.until else datetime.now(UTC)
     since = (
-        datetime.fromisoformat(args.since).astimezone(timezone.utc)
+        datetime.fromisoformat(args.since).astimezone(UTC)
         if args.since
         else until - timedelta(days=args.days)
     )
