@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -64,6 +65,46 @@ class _FailAdapter(BaseAdapter):
     ) -> AsyncGenerator[str, None]:
         raise RuntimeError("fail")
         yield  # pragma: no cover
+
+
+class _TransactionRecordingPrefillLoad(PrefillLoadTracker):
+    """Record whether each lease reservation is serialized with selection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transaction_depth = 0
+        self.acquire_depths: list[int] = []
+
+    @contextlib.contextmanager
+    def routing_transaction(self):
+        with super().routing_transaction():
+            self.transaction_depth += 1
+            try:
+                yield
+            finally:
+                self.transaction_depth -= 1
+
+    def acquire(self, *args: Any, **kwargs: Any):
+        self.acquire_depths.append(self.transaction_depth)
+        return super().acquire(*args, **kwargs)
+
+
+class _TransactionCheckingEchoAdapter(_EchoAdapter):
+    def __init__(self, config: ModelConfig, tracker: _TransactionRecordingPrefillLoad) -> None:
+        super().__init__(config)
+        self._tracker = tracker
+        self.dispatch_depths: list[int] = []
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        self.dispatch_depths.append(self._tracker.transaction_depth)
+        return await super().chat_completion(messages, **params)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        self.dispatch_depths.append(self._tracker.transaction_depth)
+        async for chunk in super().stream_chat_completion(messages, **params):
+            yield chunk
 
 
 def _fixed_rand(*values: float):
@@ -756,6 +797,36 @@ async def test_stream_fallback_releases_both_leases():
     assert any("GOOD" in str(c) for c in chunks)
     assert r.prefill_load.backlog("BAD") == 0
     assert r.prefill_load.backlog("GOOD") == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_fixed_fallback_lease_is_acquired_inside_routing_transaction(stream: bool):
+    tracker = _TransactionRecordingPrefillLoad()
+    router = FixedRouter()
+    router._prefill_load = tracker
+    primary = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    fallback = _TransactionCheckingEchoAdapter(
+        _cfg("m", provider="GOOD", base_url="http://GOOD"), tracker
+    )
+    router.register_route("m", [(primary, 1.0), (fallback, 1.0)])
+    router._select_adapter = lambda *args, **kwargs: primary
+    messages = [{"role": "user", "content": "x" * 4000}]
+
+    if stream:
+        chunks = [chunk async for chunk in router.stream_chat_completion("m", messages)]
+        assert any("GOOD" in str(chunk) for chunk in chunks)
+    else:
+        response = await router.chat_completion("m", messages)
+        assert response["choices"][0]["message"]["content"] == "ok"
+
+    # The first reservation is the primary; the second is its fallback. Both
+    # serialize with selection, while upstream I/O remains outside the lock.
+    assert tracker.acquire_depths == [1, 1]
+    assert fallback.dispatch_depths == [0]
+    assert tracker.backlog("BAD") == 0
+    assert tracker.backlog("GOOD") == 0
 
 
 # ---------------------------------------------------------------------------
