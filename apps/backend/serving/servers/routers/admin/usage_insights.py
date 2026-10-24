@@ -19,7 +19,6 @@ report is based on.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -372,11 +371,10 @@ async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
         raise HTTPException(
             502, f"Analysis model returned an error (HTTP {e.status}): {snippet}"
         ) from e
-    except (TimeoutError, asyncio.TimeoutError) as e:
-        # aiohttp raises asyncio.TimeoutError, which is the builtin TimeoutError
-        # only on Python 3.11+ — catch both so this works on 3.10 too. Return a
-        # clean JSON 504 before the edge proxy would cut the request with a
-        # non-JSON 5xx (which the client shows as a generic "Network error").
+    except TimeoutError as e:
+        # aiohttp's timeout. Return a clean JSON 504 before the edge proxy would
+        # cut the request with a non-JSON 5xx (which the client shows as a
+        # generic "Network error").
         logger.warning("usage-insights analysis timed out after %ss", _ANALYSIS_TIMEOUT_SEC)
         raise HTTPException(
             504,

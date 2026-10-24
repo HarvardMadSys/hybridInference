@@ -71,6 +71,16 @@ def test_explicit_reset_timestamp_with_zone_normalized_to_utc():
     assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
+def test_explicit_reset_timestamp_in_utc_however_spelled():
+    for stamp in ("2026-07-30T22:45:10Z", "2026-07-30 22:45:10z", "2026-07-30t22:45:10.5Z"):
+        limit = detect_usage_limit(f"usage limit reached. limit will reset at {stamp}", now=NOW)
+        assert limit is not None, stamp
+        assert limit.reset_at is not None, stamp
+        assert limit.reset_at.replace(microsecond=0) == datetime(
+            2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc
+        ), stamp
+
+
 def test_weekly_window_without_timestamp():
     detail = (
         "you (1a1a11a) have reached your weekly usage limit, upgrade for higher "
