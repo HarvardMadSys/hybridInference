@@ -224,6 +224,17 @@ def mock_operational_store():
             method = getattr(OperationalStore, attr_name)
             if callable(method):
                 setattr(store, attr_name, AsyncMock())
+
+    # The merged auth+spend lookup answers like the two-query path it
+    # replaces (issue #185): delegate to the identity lookup plus the spend
+    # counter, so fixtures that configure only those two methods keep working.
+    async def _merged(key_hash: str):
+        row = await store.get_auth_context_by_key_hash(key_hash)
+        if row is None:
+            return None
+        return {**row, "cost_usd": await store.get_user_cost_today(row["user_id"])}
+
+    store.get_auth_context_with_spend = AsyncMock(side_effect=_merged)
     return store
 
 
