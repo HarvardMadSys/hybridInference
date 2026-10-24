@@ -70,14 +70,6 @@ class GrantError(Exception):
     """Base for grant failures that map to a 4xx."""
 
 
-class GrantRequestInvalid(GrantError):
-    """The request cannot be satisfied as asked — 400."""
-
-
-class GrantSubjectUnavailable(GrantError):
-    """The named user does not exist or may not use the platform — 403."""
-
-
 class InvalidGrantToken(GrantError):
     """A presented grant token is malformed or mis-signed — 401."""
 
@@ -206,11 +198,6 @@ def is_live(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     if expires_at is None:
         return False
     return expires_at > (now or datetime.now(UTC))
-
-
-def model_allowed(row: dict[str, Any], model: str) -> bool:
-    """Whether this grant's effective model scope covers ``model``."""
-    return model in (row.get("allowed_models") or [])
 
 
 #: DDL for the gateway-owned grants table.

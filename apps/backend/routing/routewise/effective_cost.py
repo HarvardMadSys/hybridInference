@@ -3,22 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Literal
 
 from llm_routewise.core import quota_effective_cost
-
-ProviderTypeName = Literal["on_demand", "quota", "concurrency"]
-
-
-@dataclass(frozen=True)
-class EffectiveCost:
-    """Effective cost for one feasible provider candidate."""
-
-    endpoint_id: str
-    provider_type: ProviderTypeName
-    cost_usd: float
-    reason: str
 
 
 def api_request_cost_usd(
