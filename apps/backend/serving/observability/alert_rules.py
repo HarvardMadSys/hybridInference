@@ -1300,10 +1300,6 @@ class AlertEngine:
         self._rules: list[_Rule] = []
         self._scheduled_jobs: list[Any] = []
 
-    def is_running(self) -> bool:
-        """Return True if the drain task is alive."""
-        return self._task is not None and not self._task.done()
-
     async def start(self) -> None:
         """Build rules, schedule periodic jobs, and start the drain task."""
         self._build_rules()

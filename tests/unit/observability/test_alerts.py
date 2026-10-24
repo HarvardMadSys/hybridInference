@@ -32,7 +32,6 @@ from serving.observability.alerts import (
     _post_to_slack,
     _post_to_wecom,
     _truncate_utf8,
-    alert_delivery_failures_total,
     alert_on_transition,
     alert_slack,
     configured_sink,
@@ -1589,25 +1588,11 @@ class TestARefusedDeliveryIsVisible:
         assert sent is True
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
-    async def test_refusals_are_counted_by_status(self):
-        """A counter is the only shape delivery health can honestly take here.
-
-        An alert about the alert transport would have to travel over the
-        transport that is failing. The count is left for the independent
-        control-plane path to read instead.
-        """
-        with patch("serving.observability.alerts.httpx.AsyncClient", _webhook_answering(404)):
-            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
-            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
-
-        assert alert_delivery_failures_total() == {"404": 2}
-
     async def test_a_transport_error_still_names_the_alert_it_lost(self, caplog):
         """The ``except`` branch logged already; what it never said was *which*.
 
         A traceback with no key tells an operator the sink is unhappy but not
-        which page went missing, and the counter needs the transport failures
-        too or a webhook that stops resolving looks like a healthy one.
+        which page went missing.
         """
         with (
             patch(
@@ -1622,7 +1607,6 @@ class TestARefusedDeliveryIsVisible:
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert len(errors) == 1
         assert "circuit_open:zhipu" in errors[0].getMessage()
-        assert alert_delivery_failures_total() == {"exception": 1}
         # ``caplog.text`` carries the formatted traceback, so this covers the
         # frames as well as the message.
         assert self.WEBHOOK not in caplog.text
@@ -1958,7 +1942,6 @@ class TestTheRequestLineCannotCarryTheWebhook:
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert len(errors) == 1
         assert "circuit_open:zhipu" in errors[0].getMessage()
-        assert alert_delivery_failures_total() == {"exception": 1}
         self._assert_no_secret(caplog)
 
     async def test_an_error_that_quotes_the_url_is_scrubbed_out_of_the_traceback(self, caplog):
@@ -2294,19 +2277,18 @@ async def test_wecom_posts_markdown_and_accepts_errcode_zero():
 
     assert sent is True
     assert captured["json"] == {"msgtype": "markdown", "markdown": {"content": "hello"}}
-    assert alert_delivery_failures_total() == {}
 
 
 @pytest.mark.parametrize(
-    ("body", "failure_key"),
+    "body",
     [
-        ({"errcode": 40001, "errmsg": "invalid webhook url"}, "errcode:40001"),
-        ({"errcode": "0"}, "invalid-errcode"),
-        ({"errcode": True}, "invalid-errcode"),
-        ({}, "invalid-errcode"),
+        {"errcode": 40001, "errmsg": "invalid webhook url"},
+        {"errcode": "0"},
+        {"errcode": True},
+        {},
     ],
 )
-async def test_wecom_rejects_anything_but_an_integer_zero_errcode(body, failure_key):
+async def test_wecom_rejects_anything_but_an_integer_zero_errcode(body):
     url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
     with patch(
         "serving.observability.alerts.httpx.AsyncClient",
@@ -2315,10 +2297,9 @@ async def test_wecom_rejects_anything_but_an_integer_zero_errcode(body, failure_
         sent = await _post_to_wecom(url, "body", dedupe_key="K")
 
     assert sent is False
-    assert alert_delivery_failures_total() == {failure_key: 1}
 
 
-async def test_wecom_non_2xx_is_a_failure_and_counted():
+async def test_wecom_non_2xx_is_a_failure():
     url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
     with patch(
         "serving.observability.alerts.httpx.AsyncClient",
@@ -2327,10 +2308,9 @@ async def test_wecom_non_2xx_is_a_failure_and_counted():
         sent = await _post_to_wecom(url, "body", dedupe_key="K")
 
     assert sent is False
-    assert alert_delivery_failures_total() == {"502": 1}
 
 
-async def test_wecom_non_json_response_is_a_failure_and_counted():
+async def test_wecom_non_json_response_is_a_failure():
     url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
     with patch(
         "serving.observability.alerts.httpx.AsyncClient",
@@ -2339,10 +2319,9 @@ async def test_wecom_non_json_response_is_a_failure_and_counted():
         sent = await _post_to_wecom(url, "body", dedupe_key="K")
 
     assert sent is False
-    assert alert_delivery_failures_total() == {"invalid-response": 1}
 
 
-async def test_wecom_timeout_is_a_failure_and_counted():
+async def test_wecom_timeout_is_a_failure():
     url = "https://qyapi.weixin.test/cgi-bin/webhook/send?key=abc"
 
     def handler(request):
@@ -2355,45 +2334,6 @@ async def test_wecom_timeout_is_a_failure_and_counted():
         sent = await _post_to_wecom(url, "body", dedupe_key="K")
 
     assert sent is False
-    assert alert_delivery_failures_total() == {"exception": 1}
-
-
-@pytest.mark.parametrize(
-    ("channel", "failure", "failure_key"),
-    [
-        ("slack", "http", "502"),
-        ("slack", "timeout", "exception"),
-        ("wecom", "http", "502"),
-        ("wecom", "timeout", "exception"),
-        ("wecom", "json", "invalid-response"),
-        ("wecom", "missing-code", "invalid-errcode"),
-        ("wecom", "rejected-code", "errcode:40001"),
-    ],
-)
-async def test_admin_delivery_failures_do_not_change_runtime_health_counters(
-    channel, failure, failure_key
-):
-    def handler(request):
-        if failure == "timeout":
-            raise httpx.ReadTimeout("timed out", request=request)
-        if failure == "http":
-            return httpx.Response(502)
-        if failure == "json":
-            return httpx.Response(200, text="not json")
-        return httpx.Response(200, json={} if failure == "missing-code" else {"errcode": 40001})
-
-    sink = (
-        SlackSink("https://hooks.slack.test/services/test/channel/token")
-        if channel == "slack"
-        else WeComSink("https://qyapi.weixin.test/cgi-bin/webhook/send?key=test-token")
-    )
-    with patch("serving.observability.alerts.httpx.AsyncClient", _real_client_over(handler)):
-        assert await sink.post("live alert", dedupe_key="live") is False
-        assert alert_delivery_failures_total() == {failure_key: 1}
-        assert await sink.post("test", dedupe_key="test", record_failure=False) is False
-        assert alert_delivery_failures_total() == {failure_key: 1}
-        assert await sink.post("live alert", dedupe_key="live-2") is False
-        assert alert_delivery_failures_total() == {failure_key: 2}
 
 
 def test_wecom_truncation_cuts_on_a_utf8_boundary():
@@ -2454,7 +2394,6 @@ async def test_alert_slack_refuses_to_send_when_both_channels_are_configured(mon
 
     assert sent is False
     assert hosts == []
-    assert alert_delivery_failures_total() == {}
     assert "mutually exclusive" in caplog.text
 
 
@@ -2478,7 +2417,6 @@ async def test_wecom_key_is_scrubbed_from_logs_and_exceptions(caplog):
     assert key not in caplog.text
     assert "key=" not in caplog.text
     assert url_fingerprint(url) in caplog.text
-    assert alert_delivery_failures_total() == {"exception": 1}
 
 
 class TestTheQueryStringIsRedacted:
@@ -2499,7 +2437,7 @@ class TestTheQueryStringIsRedacted:
             patch("serving.observability.alerts.httpx.AsyncClient", _real_client_over(handler)),
             caplog.at_level(logging.INFO),
         ):
-            sent = await _post_to_wecom(url, "test", dedupe_key="test", record_failure=False)
+            sent = await _post_to_wecom(url, "test", dedupe_key="test")
 
         assert sent is not failure
         assert "nOtArEaLtOkEn" not in caplog.text

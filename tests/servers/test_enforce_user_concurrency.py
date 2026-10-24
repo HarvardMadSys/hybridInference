@@ -413,7 +413,7 @@ async def test_exempt_model_consumes_no_slot():
             assert r.status_code == 200
 
     # The exempt path must not have touched the user's slot.
-    assert limiter.role_for("u1") is None
+    assert "u1" not in limiter._slots
 
 
 @pytest.mark.asyncio
@@ -615,7 +615,7 @@ async def test_exempt_embedding_model_uses_separate_budget():
         assert resp.json()["ok"] is True
 
     # The exempt path used the separate budget, never the user's normal slot.
-    assert limiter.role_for(_exempt_slot_key("u1")) is not None
+    assert _exempt_slot_key("u1") in limiter._slots
 
 
 @pytest.mark.asyncio

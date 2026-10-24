@@ -79,11 +79,11 @@ async def test_all_admission_wrappers_honor_explicit_deployment(
     def verify_admission():
         if deployment_type == "self_hosted":
             assert limiter.snapshot() == {}
-            assert limiter.engine_snapshot()["inference.svc:8000"]["pending"] == 1
+            assert limiter._gates["inference.svc:8000"].pending == 1
             report_first_token()
-            assert limiter.engine_snapshot()["inference.svc:8000"]["pending"] == 0
+            assert limiter._gates["inference.svc:8000"].pending == 0
         else:
-            assert limiter.engine_snapshot() == {}
+            assert limiter._gates == {}
             state = next(iter(limiter.snapshot().values()))
             assert state["in_flight"] == 1
             report_first_token()
@@ -104,6 +104,6 @@ async def test_all_admission_wrappers_honor_explicit_deployment(
                 finally:
                     slot.release()
         assert all(state["in_flight"] == 0 for state in limiter.snapshot().values())
-        assert all(state["pending"] == 0 for state in limiter.engine_snapshot().values())
+        assert all(gate.pending == 0 for gate in limiter._gates.values())
     finally:
         reset_upstream_limiter()

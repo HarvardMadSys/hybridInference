@@ -110,7 +110,7 @@ async def test_omitted_url_uses_selected_saved_secret(admin_client, channel, key
     assert post.await_args.args[0] == url
     assert post.await_args.args[1].startswith("[TEST]\n")
     assert result["test_id"] in post.await_args.args[1]
-    assert post.await_args.kwargs == {"dedupe_key": result["test_id"], "record_failure": False}
+    assert post.await_args.kwargs == {"dedupe_key": result["test_id"]}
     other.assert_not_awaited()
     assert audit.await_args.args[2] == "alerts.test"
     assert audit.await_args.args[4] == result
@@ -469,31 +469,6 @@ async def test_delivery_failure_is_safe_and_audited(admin_client, caplog, raise_
     assert "synthetic-secret" not in (
         response.text + str(audit.await_args) + str([record.__dict__ for record in caplog.records])
     )
-
-
-@pytest.mark.parametrize(("channel", "url"), [("slack", SLACK_URL), ("wecom", WECOM_URL)])
-async def test_failed_tests_disable_live_delivery_failure_accounting(
-    admin_client, monkeypatch, channel, url
-):
-    client, _, post_slack, post_wecom = admin_client
-    counters = {"503": 7}
-    monkeypatch.setattr(alerts, "_DELIVERY_FAILURES_TOTAL", counters)
-
-    async def reject(_url, _message, *, dedupe_key, record_failure=True):
-        if record_failure:
-            counters["503"] += 1
-        return False
-
-    post = post_slack if channel == "slack" else post_wecom
-    post.side_effect = reject
-
-    response = await client.post(
-        "/admin/alerts/test", headers=AUTH, json={"channel": channel, "webhook_url": url}
-    )
-
-    assert response.status_code == 502
-    assert post.await_args.kwargs["record_failure"] is False
-    assert counters == {"503": 7}
 
 
 async def test_audit_failure_does_not_misreport_a_delivered_test(admin_client, caplog):

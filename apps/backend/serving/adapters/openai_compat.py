@@ -6,7 +6,6 @@ import asyncio
 import json
 import time
 import uuid
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -709,11 +708,7 @@ class OpenAICompatAdapter(BaseAdapter):
         first_byte_timeout = get_stream_first_byte_timeout_seconds(self._usage_profile)
         if first_byte_timeout is None:
             return None
-        try:
-            return aiohttp.ClientTimeout(total=None, sock_read=first_byte_timeout)
-        except TypeError:
-            # Test doubles may expose a simplified ClientTimeout(total=...) shim.
-            return SimpleNamespace(total=None, sock_read=first_byte_timeout)
+        return aiohttp.ClientTimeout(total=None, sock_read=first_byte_timeout)
 
     def _format_passthrough_chunk(self, processed_chunk: dict[str, Any]) -> str:
         """Forward an upstream delta while normalizing model/role fields."""
