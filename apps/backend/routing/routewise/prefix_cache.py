@@ -958,10 +958,6 @@ class PrefixCacheCoordinator:
             # with a pending request after the guard itself has been evicted.
             self._evidence.invalidate(evicted_scope)
 
-    def _on_memory_evict(self, scope: CacheScope) -> None:
-        """Callback when prefix memory evicts a scope. Keeps evidence in sync."""
-        self._evidence.invalidate(scope)
-
     def record_evidence(
         self,
         scope: CacheScope,

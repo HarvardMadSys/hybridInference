@@ -134,11 +134,6 @@ def url_redaction(url: str) -> UrlRedaction:
     return UrlRedaction(url=url, fingerprint=fingerprint, display=display, variants=tuple(variants))
 
 
-def redact_url(url: str) -> str:
-    """Return ``scheme://host/#<fingerprint>`` — names the sink, not the secret."""
-    return url_redaction(url).display
-
-
 def scrub(text: str, url: str | UrlRedaction) -> str:
     """Replace every occurrence of ``url``, or of its secret parts, in ``text``.
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from serving.adapters.key_pool import KeyPoolExhausted
 from serving.utils import context as req_ctx
 
 _ROUTEWISE_UNSET = object()
@@ -239,6 +240,15 @@ def _status_code_from_exception(exc: BaseException) -> int:
 
     Returns ``500`` when none of the above yield an integer.
     """
+    # Key-pool exhaustion raised before anything was sent: a local
+    # precondition (every key muted, typically the tail of a provider 429
+    # storm, or reserved above the caller's tier), not an internal error.
+    # Answer 429 so clients back off — the same mapping the anthropic
+    # surface already applies (issue #1440) — instead of filing the burst
+    # as 500 outages.
+    if isinstance(exc, KeyPoolExhausted):
+        return 429
+
     direct = getattr(exc, "status_code", None)
     if isinstance(direct, int):
         return direct

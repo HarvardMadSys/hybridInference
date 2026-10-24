@@ -355,12 +355,6 @@ class LLMProberLayoutResponse(BaseModel):
 
 
 # API key schemas
-class APIKeyCreate(BaseModel):
-    """API key creation request (no body needed)."""
-
-    pass
-
-
 class APIKeyResponse(BaseModel):
     """API key creation response."""
 

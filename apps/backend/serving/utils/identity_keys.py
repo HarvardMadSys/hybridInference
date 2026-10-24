@@ -243,23 +243,6 @@ def _load_retiring() -> list[dict[str, Any]]:
     return jwks
 
 
-def identity_enabled() -> bool:
-    """Report whether a signing key is configured.
-
-    Returns:
-        Whether cross-service identity is offered here.
-
-    Raises:
-        IdentityKeyMisconfigured: If a key is configured but unusable — that is
-            not the same as "off", and must not be reported as such.
-    """
-    try:
-        _load_signing()
-    except IdentityKeyUnavailable:
-        return False
-    return True
-
-
 def signing_key() -> rsa.RSAPrivateKey:
     """Return the private key used to sign identity tokens.
 

@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import timezone
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -446,7 +446,7 @@ def register_rollup_job(scheduler: Any, pool: asyncpg.Pool) -> None:
 
     scheduler.add_job(
         hourly_job,
-        trigger=CronTrigger(minute=20, timezone=timezone.utc),
+        trigger=CronTrigger(minute=20, timezone=UTC),
         args=[pool],
         id="rollup_user_usage",
         replace_existing=True,

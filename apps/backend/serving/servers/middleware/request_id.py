@@ -52,7 +52,7 @@ class RequestIdMiddleware:
         req_ctx.reset_request_scope(
             request_id=req_id,
             client_user_agent=user_agent or None,
-            pricing_time=dt.datetime.now(dt.timezone.utc),
+            pricing_time=dt.datetime.now(dt.UTC),
             pricing_snapshot=get_pricing_snapshot(),
         )
 

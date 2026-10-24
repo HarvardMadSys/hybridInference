@@ -9,7 +9,7 @@ operational store, so the tests wire a mock store alongside the mock db logger.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,7 +31,7 @@ def _sample_rows():
     """
     return [
         {
-            "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+            "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=UTC),
             "model_id": "glm-5.1",
             "provider": "zhipu",
             "metadata": {"user_agent": "claude-cli/1.2.0"},
@@ -44,7 +44,7 @@ def _sample_rows():
             "prompt": None,
         },
         {
-            "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=timezone.utc),
+            "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=UTC),
             "model_id": "minimax-m3",
             "provider": "minimax",
             "metadata": {"user_agent": "kilo-code/0.9"},
@@ -68,7 +68,7 @@ def _sample_rows_new_shape():
     """
     return [
         {
-            "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+            "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=UTC),
             "model_id": "glm-5.1",
             "provider": "zhipu",
             "metadata": {"user_agent": "claude-cli/1.2.0"},
@@ -81,7 +81,7 @@ def _sample_rows_new_shape():
             ),
         },
         {
-            "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=timezone.utc),
+            "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=UTC),
             "model_id": "minimax-m3",
             "provider": "minimax",
             "metadata": {"user_agent": "kilo-code/0.9"},

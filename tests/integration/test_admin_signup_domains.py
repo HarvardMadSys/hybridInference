@@ -8,7 +8,7 @@ integration tests in ``test_signup_flow.py`` (which run under ``dbtest``).
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +21,7 @@ from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
 AUTH = {"Authorization": "Bearer test-admin"}
-_NOW = datetime(2025, 6, 15, tzinfo=timezone.utc)
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -77,7 +77,7 @@ async def admin_export_requests(
         raise HTTPException(422, "start_time must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
 
     if end_time is None:
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
     elif end_time.tzinfo is None:
         raise HTTPException(422, "end_time must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
 

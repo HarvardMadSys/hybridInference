@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
@@ -201,17 +202,16 @@ def _coerce_user_row(row: Any) -> Row | None:
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool, *, fence_secret: str | None = None) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         """Initialize with a shared asyncpg pool.
+
+        The LogStore owns the erasure-fence schema and tombstone checks; this
+        store owns the operational hard-delete claim.
 
         Args:
             pool: Shared asyncpg pool.
-            fence_secret: Retained for constructor compatibility. The
-                LogStore owns erasure-fence schema and tombstone checks;
-                this store owns the operational hard-delete claim.
         """
         self._pool = pool
-        self.fence_secret = fence_secret
         # Which account columns the users table has, read from the catalog
         # by initialize(); until then, the schema this release creates.
         self._set_account_schema(COMPLETE_ACCOUNT_SCHEMA)
@@ -776,10 +776,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
 
         # --- agent_grants ---
-        # DDL lives in serving/grants.py, the module that owns this table.
-        # Deliberately not in agent_job_store: that file is frozen and leaves
-        # with the cloud agent, while minting capabilities for this gateway's
-        # models stays here.
+        # DDL lives in serving/grants.py, the module that owns this table. It
+        # stayed behind when agent_job_store left with the cloud agent:
+        # minting capabilities for this gateway's models is the gateway's job.
         await conn.execute(grants.CREATE_TABLE_SQL)
         for statement in grants.CREATE_INDEX_SQL:
             await conn.execute(statement)
@@ -1797,15 +1796,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         # Shared SQL fragments used by both the count query and the row
         # query so total/rows are guaranteed consistent.
         # ──────────────────────────────────────────────────────────────────
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from decimal import Decimal as _Decimal
 
         anomaly_multiplier = _Decimal("5.0")
         anomaly_min_today = _Decimal("1.00")
         anomaly_min_history_days = 3
-        today_str = datetime.now(timezone.utc).date().isoformat()
-        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        today_str = datetime.now(UTC).date().isoformat()
+        prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
         schema = self._account_schema
 
         where_clauses: list[str] = []
@@ -2227,6 +2226,35 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.key_hash = $1 "
+                "  AND k.status = 'active' "
+                "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
+                "  AND u.id IS NOT NULL AND u.status = 'active'",
+                key_hash,
+            )
+        return _coerce_user_row(row)
+
+    async def get_auth_context_with_spend(self, key_hash: str) -> Row | None:
+        """Auth context and today's spend in one round-trip (issue #185).
+
+        The identity projection and filters are :meth:`get_auth_context_by_key_hash`'s
+        exactly; the LEFT JOIN adds the owner's ``user_daily_cost`` counter for
+        the UTC-midnight day, ``COALESCE``d to ``0.0`` so a caller with no
+        counter row yet reads the same as the separate query's default. The
+        day expression is the counter write path's, so both sides of the quota
+        gate bucket midnight identically.
+        """
+        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
+                "COALESCE(s.cost_usd, 0) AS cost_usd "
+                "FROM api_keys k "
+                "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN user_daily_cost s "
+                "  ON s.user_id = k.user_id "
+                " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -3962,10 +3990,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         day: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter via upsert."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if day is None:
-            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
@@ -4140,9 +4168,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if days <= 0:
             return []
         # ``day`` is stored as TEXT (YYYY-MM-DD) — compute cutoff in Python.
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT day, cost_usd, requests "
@@ -4170,9 +4198,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Bulk variant of get_user_cost_history — one query, grouped by user."""
         if not user_ids or days <= 0:
             return {}
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT user_id, day, cost_usd, requests "
@@ -4215,15 +4243,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         of their key's quota_daily_cost_usd. Users without quota set are
         excluded.
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from decimal import Decimal as _Decimal
 
         if anomaly_min_today is None:
             anomaly_min_today = _Decimal("1.00")
 
-        today_str = datetime.now(timezone.utc).date().isoformat()
-        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        today_str = datetime.now(UTC).date().isoformat()
+        prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
         identity = ("id", "email", "login_name", "phone", "user_name", "role")
         schema = self._account_schema
 

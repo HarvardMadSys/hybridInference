@@ -181,9 +181,9 @@ def test_provider_candidate_resolves_scheduled_pricing_per_request():
     }
     candidate = build_provider_candidates("glm-test", [(adapter, 1.0)])[0]
 
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 7, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 7, tzinfo=dt.UTC)):
         peak = candidate.effective_pricing()
-    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.timezone.utc)):
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.UTC)):
         off_peak = candidate.effective_pricing()
 
     assert (peak.prompt, peak.completion) == pytest.approx((0.44, 1.32))

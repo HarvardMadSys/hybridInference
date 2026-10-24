@@ -574,5 +574,3 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     </div>
   );
 }
-
-export default ProviderKeysTab;

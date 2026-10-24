@@ -2984,5 +2984,3 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     </div>
   );
 }
-
-export default ProviderRoutesTab;

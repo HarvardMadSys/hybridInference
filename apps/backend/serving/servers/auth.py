@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import secrets
 from base64 import urlsafe_b64encode
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cryptography.fernet import Fernet
@@ -29,17 +29,18 @@ from serving.observability.rejection_log import (
     rejection_logging_enabled,
     release_cached_body,
 )
+from serving.observability.tracked_tasks import tracked_task
 from serving.servers.deps import (
     auth_database_detail,
-    get_db_logger,
     get_log_store,
     get_operational_store,
 )
+from serving.storage.base import OperationalStore
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, get_client_ip_info
+from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 
@@ -220,19 +221,53 @@ async def _identify_rejected_caller(
     }
 
 
+async def _auth_context_with_spend(
+    op_store: Any, key_hash: str, *, want_spend: bool
+) -> tuple[dict[str, Any] | None, float | None]:
+    """Resolve the caller's auth context, and today's spend with it when asked.
+
+    Real stores implement :meth:`OperationalStore.get_auth_context_with_spend`
+    (issue #185): the key-identity join and the ``user_daily_cost`` read the
+    quota gate needs travel in a single query. With ``want_spend=False`` the
+    identity-only lookup runs instead — the shape the impersonation path wants,
+    where the caller's spend is not the identity the gate reads. Test doubles
+    and any store predating the merged lookup keep the two-query path, which
+    answers the same. ``spend`` is ``None`` when it was not fetched.
+    """
+    if isinstance(op_store, OperationalStore):
+        if want_spend:
+            row = await op_store.get_auth_context_with_spend(key_hash)
+            if row is None:
+                return None, 0.0
+            return row, float(row.get("cost_usd") or 0.0)
+        row = await op_store.get_auth_context_by_key_hash(key_hash)
+        return row, (None if row is not None else 0.0)
+    user = await op_store.get_auth_context_by_key_hash(key_hash)
+    if user is None:
+        return None, 0.0
+    if want_spend and op_store:
+        return user, float(await op_store.get_user_cost_today(user["user_id"]))
+    return user, None
+
+
 async def _authenticate_by_api_key(
     request: Request,
     authorization: str | None,
     x_api_key: str | None,
     op_store: Any,
-) -> tuple[dict[str, Any], str]:
+    *,
+    want_spend: bool = False,
+) -> tuple[dict[str, Any], str, float | None]:
     """Resolve and validate the caller's API key against the database.
 
     Shared by :func:`verify_api_key` and :func:`verify_api_key_for_balance` --
     both need the same identity/email-verification checks, but only
     ``verify_api_key`` additionally enforces the daily cost quota gate.
 
-    Returns ``(user_row, key_hash)``. Raises ``HTTPException(401)`` for a
+    Returns ``(user_row, key_hash, spend_today)``. ``spend_today`` is the
+    caller's daily spend when ``want_spend`` was set (the quota gate reads it
+    when the attributed identity is the caller) and ``None`` otherwise. Raises
+    ``HTTPException(401)`` for a
     missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
     # Refuse sources already blocked for repeated auth failures. The *decision*
@@ -344,7 +379,7 @@ async def _authenticate_by_api_key(
 
     key_hash = hash_api_key(api_key)
 
-    user = await op_store.get_auth_context_by_key_hash(key_hash)
+    user, spend_today = await _auth_context_with_spend(op_store, key_hash, want_spend=want_spend)
 
     if not user:
         # Resolve who the key belongs to, through the same bounded lookup the
@@ -432,7 +467,7 @@ async def _authenticate_by_api_key(
             detail="Email not verified. Please verify your email to continue.",
         )
 
-    return user, key_hash
+    return user, key_hash, spend_today
 
 
 def _impersonation_service_key_hashes() -> frozenset[str]:
@@ -639,7 +674,9 @@ async def verify_api_key(
             }
         )
 
-    caller, key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
+    caller, key_hash, caller_spend = await _authenticate_by_api_key(
+        request, authorization, x_api_key, op_store, want_spend=not x_on_behalf_of
+    )
     # The presented key is always the one whose last_used we touch, even when the
     # request is attributed to another user via X-On-Behalf-Of.
     caller_key_id = caller["id"]
@@ -651,10 +688,16 @@ async def verify_api_key(
     identity = await _resolve_effective_identity(caller, key_hash, x_on_behalf_of, op_store)
     effective_user_id = identity["user_id"]
 
-    # Pre-check daily cost quota via operational store counter table
+    # Pre-check daily cost quota via operational store counter table. On the
+    # common path (no X-On-Behalf-Of) the spend arrived with the auth lookup in
+    # one round-trip (issue #185); an impersonated identity reads its own
+    # counter, since the key lookup joined the caller's spend.
     cost_spent = 0.0
     if op_store:
-        cost_spent = await op_store.get_user_cost_today(effective_user_id)
+        if caller_spend is not None:
+            cost_spent = caller_spend
+        else:
+            cost_spent = await op_store.get_user_cost_today(effective_user_id)
 
     # Estimate cost for this request
     estimated_cost = 0.01
@@ -706,8 +749,10 @@ async def verify_api_key(
             },
         )
 
-    # Update last_used timestamp (fire and forget) on the presented key.
-    await op_store.update_key_last_used(caller_key_id)
+    # Update last_used timestamp on the presented key — fire-and-forget
+    # (issue #185): telemetry, not a gate, so the response no longer waits on
+    # the write. Failures surface through the tracked-task alert rule.
+    tracked_task(op_store.update_key_last_used(caller_key_id), name="key_last_used")
 
     # Return user context for the attributed identity.
     user_role = identity.get("role") or "free"
@@ -746,11 +791,9 @@ async def verify_api_key_for_balance(
     if not is_user_auth_enabled():
         return {"user_id": "anonymous", "authenticated": False}
 
-    user, _key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
-
-    cost_spent = 0.0
-    if op_store:
-        cost_spent = await op_store.get_user_cost_today(user["user_id"])
+    user, _key_hash, cost_spent = await _authenticate_by_api_key(
+        request, authorization, x_api_key, op_store, want_spend=True
+    )
 
     quota_daily_cost_usd = user.get("quota_daily_cost_usd")
     quota_daily_cost_usd = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
@@ -843,52 +886,13 @@ async def optional_verify_api_key(
 
 def _seconds_until_utc_midnight() -> int:
     """Calculate seconds until next UTC midnight."""
-    return int((_next_utc_midnight() - datetime.now(timezone.utc)).total_seconds())
+    return int((_next_utc_midnight() - datetime.now(UTC)).total_seconds())
 
 
 def _next_utc_midnight() -> datetime:
     """Return the next UTC midnight timestamp."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-async def verify_admin_token(
-    request: Request,
-    authorization: str | None = Header(None),
-    db_logger=Depends(get_db_logger),
-) -> str:
-    """Verify admin token from Authorization header.
-
-    Returns admin IP address for audit logging.
-    Raises HTTPException(401) if invalid or missing token.
-
-    All /admin/* routes should use this dependency to protect access.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing admin token. Use 'Authorization: Bearer {ADMIN_TOKEN}' header.",
-        )
-
-    token = authorization[7:]
-    admin_token = get_settings().admin_token
-
-    if not admin_token:
-        raise HTTPException(
-            status_code=500,
-            detail="Server misconfiguration: ADMIN_TOKEN environment variable not set",
-        )
-
-    # Constant-time comparison to prevent timing attacks
-    if not constant_time_compare(token, admin_token):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid admin token",
-        )
-
-    # Extract admin IP for audit logging
-    admin_ip = get_client_ip(request)
-    return admin_ip
 
 
 async def log_admin_action(

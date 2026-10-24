@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -62,7 +62,7 @@ def _count(rows: list[_Log], start: datetime, end: datetime) -> VolumeCounts:
 
 def _floor(ts: datetime, minutes: int) -> datetime:
     width = minutes * 60
-    return datetime.fromtimestamp(int(ts.timestamp()) // width * width, tz=timezone.utc)
+    return datetime.fromtimestamp(int(ts.timestamp()) // width * width, tz=UTC)
 
 
 def _expected(rows: list[_Log], end_time: datetime, window: int, bucket: int):
@@ -199,12 +199,12 @@ async def _bars(db: _FakeDb):
     "end_time",
     [
         # On the hour, a minute after, mid-hour, a minute before.
-        datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc),
-        datetime(2026, 10, 18, 12, 1, tzinfo=timezone.utc),
-        datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc),
-        datetime(2026, 10, 18, 12, 59, tzinfo=timezone.utc),
+        datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 18, 12, 1, tzinfo=UTC),
+        datetime(2026, 10, 18, 12, 37, tzinfo=UTC),
+        datetime(2026, 10, 18, 12, 59, tzinfo=UTC),
         # Midnight: the month card's bars and the week card's 6-hour bars turn.
-        datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 10, 18, 0, 0, tzinfo=UTC),
     ],
 )
 async def test_every_bar_matches_a_direct_count(end_time: datetime):
@@ -219,7 +219,7 @@ async def test_every_bar_matches_a_direct_count(end_time: datetime):
 
 @pytest.mark.asyncio
 async def test_completed_hours_are_counted_once_and_then_read_back():
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     db = _FakeDb(_random_rows(end_time, 500, seed=1), end_time)
 
     first = await _bars(db)
@@ -242,39 +242,39 @@ async def test_completed_hours_are_counted_once_and_then_read_back():
 
 @pytest.mark.asyncio
 async def test_stored_hours_are_read_not_recounted():
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     db = _FakeDb([], end_time)
-    three_days_ago = datetime(2026, 10, 15, 9, 0, tzinfo=timezone.utc)
+    three_days_ago = datetime(2026, 10, 15, 9, 0, tzinfo=UTC)
     db.stored[three_days_ago] = VolumeCounts(request_count=999, success_count=999)
 
     got = dict(zip([w for w, _ in _CARDS], await _bars(db), strict=True))
 
     week = dict(got[10080])
-    assert week[datetime(2026, 10, 15, 6, 0, tzinfo=timezone.utc)].request_count == 999
+    assert week[datetime(2026, 10, 15, 6, 0, tzinfo=UTC)].request_count == 999
     month = dict(got[43200])
-    assert month[datetime(2026, 10, 15, tzinfo=timezone.utc)].request_count == 999
+    assert month[datetime(2026, 10, 15, tzinfo=UTC)].request_count == 999
 
 
 @pytest.mark.asyncio
 async def test_the_last_two_hours_are_always_counted_live():
     # A stored row for an hour still inside the live span (none should exist,
     # but an hour can still be changing there) must not be read.
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
-    rows = [_Log(timestamp=datetime(2026, 10, 18, 11, 30, tzinfo=timezone.utc))]
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
+    rows = [_Log(timestamp=datetime(2026, 10, 18, 11, 30, tzinfo=UTC))]
     db = _FakeDb(rows, end_time)
-    db.stored[datetime(2026, 10, 18, 11, 0, tzinfo=timezone.utc)] = VolumeCounts(request_count=50)
+    db.stored[datetime(2026, 10, 18, 11, 0, tzinfo=UTC)] = VolumeCounts(request_count=50)
 
     day = dict((await _bars(db))[1])
 
-    assert day[datetime(2026, 10, 18, 11, 0, tzinfo=timezone.utc)].request_count == 1
+    assert day[datetime(2026, 10, 18, 11, 0, tzinfo=UTC)].request_count == 1
 
 
 @pytest.mark.asyncio
 async def test_an_hour_dropped_between_fill_and_read_is_counted_live():
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     rows = _random_rows(end_time, 500, seed=2)
     db = _FakeDb(rows, end_time)
-    gone = datetime(2026, 10, 17, 20, 0, tzinfo=timezone.utc)
+    gone = datetime(2026, 10, 17, 20, 0, tzinfo=UTC)
     db.vanish_on_next_read = {gone}
 
     got = await _bars(db)
@@ -286,7 +286,7 @@ async def test_an_hour_dropped_between_fill_and_read_is_counted_live():
 
 @pytest.mark.asyncio
 async def test_backfill_fills_newest_first_and_skips_stored_hours():
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     db = _FakeDb([], end_time)
     settled = request_volume.settled_before(end_time)
     already = settled - timedelta(hours=3)
@@ -304,7 +304,7 @@ async def test_backfill_fills_newest_first_and_skips_stored_hours():
 
 @pytest.mark.asyncio
 async def test_hourly_job_purges_and_survives_a_failure(caplog: pytest.LogCaptureFixture):
-    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=timezone.utc)
+    end_time = datetime(2026, 10, 18, 12, 37, tzinfo=UTC)
     db = _FakeDb([], end_time)
 
     await request_volume.hourly_job(db, retention_days=1)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -182,7 +182,7 @@ class TestProviderStatsRangeCap:
 @pytest.mark.asyncio
 async def test_router_provider_is_hidden_from_provider_performance():
     """Synthetic failure rows are not reportable upstream provider stats."""
-    bucket = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    bucket = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     router_row = {
         "hour_bucket": bucket,
         "provider": "router",
@@ -263,7 +263,7 @@ async def test_provider_stats_happy_path(db_logger):
     assert pool is not None
 
     # Pick an hour bucket inside the default 7-day window
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     bucket = now - timedelta(hours=2)
     other_bucket = now - timedelta(hours=3)
     # A bucket OUTSIDE the default 7-day window — its provider/model must still

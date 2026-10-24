@@ -680,7 +680,7 @@ class UpstreamConcurrencyLimiter:
         bucket.waiters.append(waiter)
         try:
             await asyncio.wait_for(waiter, wait)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             bucket.abandon(waiter)
             if deadline_bound:
                 raise self._queue_wait_expired(bucket) from None
@@ -743,7 +743,7 @@ class UpstreamConcurrencyLimiter:
         gate.waiters.append(waiter)
         try:
             await asyncio.wait_for(waiter, wait)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             gate.abandon(waiter)
             if deadline_bound:
                 raise self._engine_hold_expired(gate) from None

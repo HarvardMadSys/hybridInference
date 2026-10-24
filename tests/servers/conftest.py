@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
+from datetime import UTC
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -222,6 +224,17 @@ def mock_operational_store():
             method = getattr(OperationalStore, attr_name)
             if callable(method):
                 setattr(store, attr_name, AsyncMock())
+
+    # The merged auth+spend lookup answers like the two-query path it
+    # replaces (issue #185): delegate to the identity lookup plus the spend
+    # counter, so fixtures that configure only those two methods keep working.
+    async def _merged(key_hash: str):
+        row = await store.get_auth_context_by_key_hash(key_hash)
+        if row is None:
+            return None
+        return {**row, "cost_usd": await store.get_user_cost_today(row["user_id"])}
+
+    store.get_auth_context_with_spend = AsyncMock(side_effect=_merged)
     return store
 
 
@@ -361,7 +374,7 @@ async def _complete_first_run_setup(app: FastAPI) -> None:
     pending, and ``/auth/signup`` answers 503 until it completes. These tests
     exercise accounts, not setup.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY, mark_setup_completed
 
@@ -369,7 +382,7 @@ async def _complete_first_run_setup(app: FastAPI) -> None:
     if op_store is not None:
         if await op_store.get_setting(SETUP_MARKER_KEY) is None:
             await op_store.set_setting(
-                SETUP_MARKER_KEY, datetime.now(timezone.utc).isoformat(), "str", "tests"
+                SETUP_MARKER_KEY, datetime.now(UTC).isoformat(), "str", "tests"
             )
         # Completing setup deletes the code; do the same here.
         await op_store.delete_setting(SETUP_CODE_KEY)

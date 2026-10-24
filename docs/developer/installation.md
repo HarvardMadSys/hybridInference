@@ -13,7 +13,7 @@ This page is the next step: your own deployment, with your own providers.
 | For | Requirement |
 |---|---|
 | The Docker stack | Docker Engine 24+ and Docker Compose v2+ |
-| A source checkout | Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and [uv](https://github.com/astral-sh/uv) |
+| A source checkout | Python 3.11–3.13 (3.12 recommended, per `pyproject.toml`) and [uv](https://github.com/astral-sh/uv) |
 | Running the console outside Docker | Node.js 22 (the version CI installs) |
 
 Linux or macOS.

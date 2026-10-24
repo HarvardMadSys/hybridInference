@@ -11,7 +11,7 @@ Verifies the perf-oriented changes from issue #348:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -308,7 +308,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "user_email": "u@example.com",
                 "model_id": "gpt-4o-mini",
                 "provider": "openai",
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
                 "status_code": 200,
                 "latency_ms": 100,
                 "ttft_ms": 10,
@@ -340,7 +340,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "user_email": "v@example.com",
                 "model_id": "claude-sonnet",
                 "provider": "anthropic",
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
                 "status_code": 200,
                 "latency_ms": 120,
                 "ttft_ms": 12,
@@ -408,7 +408,7 @@ async def test_list_reports_the_credential_state_beside_the_user(admin_client_ca
                 "user_email": None,
                 "model_id": "gpt-4o-mini",
                 "provider": "openai",
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
                 "status_code": 429,
                 "latency_ms": 0,
                 "ttft_ms": None,
@@ -465,7 +465,7 @@ async def test_list_credential_state_is_absent_on_an_ordinary_row(admin_client_c
                 "user_email": "u@example.com",
                 "model_id": "m",
                 "provider": "p",
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
                 "status_code": 200,
                 "latency_ms": 100,
                 "ttft_ms": 10,
@@ -539,7 +539,7 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "user_email": "u@example.com",
                     "model_id": "m",
                     "provider": "p",
-                    "timestamp": datetime.now(timezone.utc),
+                    "timestamp": datetime.now(UTC),
                     "status_code": 200,
                     "latency_ms": 100,
                     "ttft_ms": 10,
