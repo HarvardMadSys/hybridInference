@@ -180,7 +180,7 @@ If you can't form a confident hypothesis, report what you found and ask the user
 
 Place the test in the appropriate directory following existing patterns:
 
-- **Adapter bug** → `tests/unit/adapters/` or `tests/api/test_<provider>_api.py`
+- **Adapter bug** → `tests/unit/adapters/`
 - **Routing bug** → `tests/unit/routing/`
 - **Auth bug** → `tests/unit/auth/`
 - **Config bug** → `tests/unit/config/`
@@ -220,7 +220,7 @@ make format
 
 - Grep for other callers of the changed function.
 - Grep for other uses of the changed data structure.
-- If the fix touches an adapter, run that provider's API tests: `uv run pytest tests/api/test_<provider>_api.py`.
+- If the fix touches an adapter, run the adapter tests: `uv run pytest tests/unit/adapters/`.
 - If the fix touches routing, run all routing tests: `uv run pytest tests/unit/routing/`.
 
 ## Step 5 — Report
