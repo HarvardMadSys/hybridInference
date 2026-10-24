@@ -70,14 +70,6 @@ class GrantError(Exception):
     """Base for grant failures that map to a 4xx."""
 
 
-class GrantRequestInvalid(GrantError):
-    """The request cannot be satisfied as asked — 400."""
-
-
-class GrantSubjectUnavailable(GrantError):
-    """The named user does not exist or may not use the platform — 403."""
-
-
 class InvalidGrantToken(GrantError):
     """A presented grant token is malformed or mis-signed — 401."""
 
@@ -208,16 +200,11 @@ def is_live(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     return expires_at > (now or datetime.now(UTC))
 
 
-def model_allowed(row: dict[str, Any], model: str) -> bool:
-    """Whether this grant's effective model scope covers ``model``."""
-    return model in (row.get("allowed_models") or [])
-
-
 #: DDL for the gateway-owned grants table.
 #:
-#: Deliberately not in ``agent_job_store``: that module is frozen and leaves
-#: with the cloud agent. This table stays, because minting and verifying a
-#: capability for *this* gateway's models is this gateway's job.
+#: It stayed behind when ``agent_job_store`` left with the cloud agent, because
+#: minting and verifying a capability for *this* gateway's models is this
+#: gateway's job.
 #:
 #: The unique constraint is what makes minting idempotent — a control plane that
 #: retries after a timeout gets its grant back rather than a second capability

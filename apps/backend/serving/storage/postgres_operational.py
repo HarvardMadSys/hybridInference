@@ -776,10 +776,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
 
         # --- agent_grants ---
-        # DDL lives in serving/grants.py, the module that owns this table.
-        # Deliberately not in agent_job_store: that file is frozen and leaves
-        # with the cloud agent, while minting capabilities for this gateway's
-        # models stays here.
+        # DDL lives in serving/grants.py, the module that owns this table. It
+        # stayed behind when agent_job_store left with the cloud agent:
+        # minting capabilities for this gateway's models is the gateway's job.
         await conn.execute(grants.CREATE_TABLE_SQL)
         for statement in grants.CREATE_INDEX_SQL:
             await conn.execute(statement)

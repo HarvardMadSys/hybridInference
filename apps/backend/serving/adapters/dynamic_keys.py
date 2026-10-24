@@ -216,12 +216,6 @@ def env_key_min_role(provider: str, key_hash: str) -> str:
         return _env_key_min_roles.get(provider, {}).get(key_hash, DEFAULT_MIN_ROLE)
 
 
-def get_env_key_min_roles(provider: str) -> dict[str, str]:
-    """Return ``{key_hash: min_role}`` for the provider's reserved env keys."""
-    with _lock:
-        return dict(_env_key_min_roles.get(provider, {}))
-
-
 def _resolve_min_role_locked(provider: str, raw_key: str) -> str:
     """Return the tier the pool must enforce for *raw_key*.
 
@@ -303,12 +297,6 @@ def _apply_min_roles_locked(provider: str) -> int:
             if resolved != role and pool.set_key_min_role(raw, resolved):
                 updated += 1
     return updated
-
-
-def apply_min_roles(provider: str) -> int:
-    """Public wrapper for the tier reconciliation sweep. Returns entries changed."""
-    with _lock:
-        return _apply_min_roles_locked(provider)
 
 
 def _pools_holding_hash_locked(provider: str, key_hash: str) -> int:

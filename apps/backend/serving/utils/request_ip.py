@@ -51,7 +51,7 @@ from __future__ import annotations
 import ipaddress
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
@@ -596,39 +596,3 @@ def get_client_ip_bucket(request: Request) -> str:
         :func:`get_client_ip_info` and inspect ``resolved`` for new code.
     """
     return normalize_ip_bucket(get_client_ip(request))
-
-
-def client_ip_metadata(ip_info: ClientIpInfo) -> dict[str, Any]:
-    """Build the metadata dict for persisting client IP provenance.
-
-    Used by all logging surfaces that record ``api_logs.metadata`` so that
-    the stored IP can be audited: which rung fired, what the socket peer
-    was, and what the forwarding chain said. All fields are present even
-    when their values are None so the schema is stable.
-
-    Keys:
-        ip: resolved client IP or "unknown"
-        peer_ip: socket peer that supplied the connection
-        source: resolution rung that produced the IP
-        resolved: whether client provenance was established
-        trusted_proxy_headers: whether forwarding headers were trusted
-        trusted_forwarded_headers: whether generic proxy headers were trusted
-        trusted_cloudflare_headers: whether Cloudflare headers were trusted
-        x_forwarded_for: raw header value (None if absent)
-        x_real_ip: raw header value (None if absent)
-        cf_connecting_ip: raw header value (None if absent)
-        cf_connecting_ipv6: raw header value (None if absent)
-    """
-    return {
-        "ip": ip_info.client_ip,
-        "peer_ip": ip_info.peer_ip,
-        "ip_source": ip_info.source,
-        "resolved": ip_info.resolved,
-        "trusted_proxy_headers": ip_info.trusted_proxy_headers,
-        "trusted_forwarded_headers": ip_info.trusted_forwarded_headers,
-        "trusted_cloudflare_headers": ip_info.trusted_cloudflare_headers,
-        "x_forwarded_for": ip_info.x_forwarded_for,
-        "x_real_ip": ip_info.x_real_ip,
-        "cf_connecting_ip": ip_info.cf_connecting_ip,
-        "cf_connecting_ipv6": ip_info.cf_connecting_ipv6,
-    }
