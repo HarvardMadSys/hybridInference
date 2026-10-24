@@ -196,6 +196,23 @@ A model entry also accepts `route` (below), `router` and `router_params` (see
 `required_role`, the lowest user role that can see and call the model
 (`admin_only: true` is an older way to write `required_role: admin`).
 
+When `required_role` is omitted, entries marked `admin_only: true` default to
+`admin`. Otherwise, models with known or uncertain provider costs default to
+`pro`; only an all-zero `pricing` block, or an unpriced route that is both on
+a local host and served by a self-hosted engine API (`sglang`, `vllm`,
+`ollama`), keeps the historical `free` default. An omitted role is no longer a
+claim that the model is free, so a deployment that serves unpriced models
+without cost disclosure must say so explicitly. In particular:
+
+- LAN or cluster-DNS endpoints (`http://10.x.x.x`, `http://gpu-node.local`),
+  `${VAR}`-templated base URLs that cannot be classified at load time, and
+  `openai_compat` routes even on `localhost` all default to `pro`, because a
+  forwarding proxy or a resolvable hostname alone proves nothing about cost.
+  Add `required_role: free` (or a zero `pricing` block) to keep such a model
+  free-tier.
+- `admin_only: true` without a `required_role` publishes as `admin`, never as
+  the cost-derived default.
+
 ### Automatic DeepSeek prices
 
 To follow DeepSeek prices automatically, configure the official API model id as a pricing source. The source is independent of the inference endpoint, so a self-hosted route can use these reference prices too. PostgreSQL stores the last validated snapshot; no API key is sent to the pricing or calendar sources.

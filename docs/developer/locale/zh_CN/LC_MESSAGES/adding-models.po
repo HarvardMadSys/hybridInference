@@ -543,6 +543,18 @@ msgstr ""
 "`required_role`——能看到并调用该模型的最低用户角色（`admin_only: true` 是 `required_role: "
 "admin` 的旧写法）。"
 
+#: ../developer/adding-models.md:199
+msgid "When `required_role` is omitted, entries marked `admin_only: true` default to `admin`. Otherwise, models with known or uncertain provider costs default to `pro`; only an all-zero `pricing` block, or an unpriced route that is both on a local host and served by a self-hosted engine API (`sglang`, `vllm`, `ollama`), keeps the historical `free` default. An omitted role is no longer a claim that the model is free, so a deployment that serves unpriced models without cost disclosure must say so explicitly. In particular:"
+msgstr "省略 `required_role` 时，标记 `admin_only: true` 的条目默认使用 `admin`。其他模型若 provider 成本已知或不确定，默认使用 `pro`；只有 `pricing` 全为零，或未定价路由同时位于本地 host 并由自托管引擎 API（`sglang`、`vllm`、`ollama`）提供服务时，才保留历史上的 `free` 默认值。未填写角色不再表示模型免费；如果部署在未披露成本的情况下提供模型，必须显式声明。特别是："
+
+#: ../developer/adding-models.md:207
+msgid "LAN or cluster-DNS endpoints (`http://10.x.x.x`, `http://gpu-node.local`), `${VAR}`-templated base URLs that cannot be classified at load time, and `openai_compat` routes even on `localhost` all default to `pro`, because a forwarding proxy or a resolvable hostname alone proves nothing about cost. Add `required_role: free` (or a zero `pricing` block) to keep such a model free-tier."
+msgstr "局域网或集群 DNS 端点（`http://10.x.x.x`、`http://gpu-node.local`）、无法在加载时分类的 `${VAR}` 模板 base URL，以及即使位于 `localhost` 的 `openai_compat` 路由，默认都使用 `pro`，因为转发代理或仅能解析的主机名都不足以证明模型没有成本。若要让此类模型保留 free tier，请添加 `required_role: free`（或全零 `pricing` block）。"
+
+#: ../developer/adding-models.md:213
+msgid "`admin_only: true` without a `required_role` publishes as `admin`, never as the cost-derived default."
+msgstr "`admin_only: true` 若未同时指定 `required_role`，就按 `admin` 发布，绝不会使用按成本推导的默认角色。"
+
 #: ../developer/adding-models.md:197
 msgid "Calendar-aware prices"
 msgstr "按日历调整价格"

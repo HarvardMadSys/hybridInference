@@ -28,6 +28,7 @@ from serving.adapters.base import validate_deployment_type
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
+from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
@@ -940,8 +941,15 @@ def register_from_models_yaml(
                 count += 1 + len(aliases)
             else:
                 # Chat models go through the full RouteExecutor
-                admin_only = bool(m.get("admin_only", False))
-                required_role = str(m.get("required_role", "free"))
+                # Preserve explicit required_role as the source of truth;
+                # admin_only supplies the default only when it is omitted.
+                admin_only = bool(m.get("admin_only", False)) and "required_role" not in m
+                # Issue #1576: an omitted required_role used to publish every
+                # such model free-tier, including the paid-upstream Claude
+                # compatibility routes. A model that costs anything defaults
+                # to pro; an explicit value (even invalid, failed closed
+                # below) still wins.
+                required_role = default_required_role_for_model(m)
                 # Validate required_role to prevent fail-open on typos
                 from serving.config.settings import VALID_ROLES
 
