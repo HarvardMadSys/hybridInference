@@ -10,6 +10,7 @@ import {
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import {
   AdminEmptyState,
@@ -328,6 +329,16 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
     const keys = Object.keys(values);
+    // A secret typed into this save, should a refusal echo it back. Longest
+    // first, so one that contains another is masked whole.
+    const typedSecrets = keys
+      .flatMap((key) => {
+        const value = values[key];
+        const secret =
+          secrets.includes(key) || group.entries.some((entry) => entry.key === key && entry.secret);
+        return secret && typeof value === 'string' && value ? [value] : [];
+      })
+      .sort((a, b) => b.length - a.length);
     setSavingGroup(group.id);
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
     let attempted = keys;
@@ -376,7 +387,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       );
     } catch (e) {
       // What was not written stays as a draft, with the reason beside the save.
-      const reason = getErrorMessage(e);
+      const reason = typedSecrets.reduce(
+        (message, secret) => withoutSecret(message, secret),
+        getErrorMessage(e),
+      );
       const keyed = errorForKey(reason, attempted);
       if (keyed) setEntryErrors((prev) => ({ ...prev, [keyed.key]: keyed.reason }));
       let message = failedReset ? `${failedReset} could not be reset: ${reason}` : reason;
@@ -932,7 +946,12 @@ function AddVariableForm({
         </>
       ),
       run: async () => {
-        const next = await patchConfig({ values: { [key]: value }, secrets: { [key]: secret } });
+        const next = await patchConfig({
+          values: { [key]: value },
+          secrets: { [key]: secret },
+        }).catch((err: unknown) => {
+          throw secret ? new Error(withoutSecret(getErrorMessage(err), value)) : err;
+        });
         onAdded(next, key);
       },
     });

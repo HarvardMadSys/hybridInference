@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ChangeList, type Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
   UsageInsightsSettings,
   getUsageInsightsSettings,
@@ -115,7 +116,9 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
       cancelLabel: 'Back to editing',
       body: <ChangeList changes={changes} />,
       run: async () => {
-        const updated = await updateUsageInsightsSettings(patch);
+        const updated = await updateUsageInsightsSettings(patch).catch((err: unknown) => {
+          throw new Error(withoutSecret(getErrorMessage(err), patch.api_key ?? ''));
+        });
         setSettings(updated);
         setModel(updated.model);
         setApiKey('');

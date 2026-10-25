@@ -909,6 +909,25 @@ describe('editing a category', () => {
     expect(dialog.innerHTML).not.toContain('typed-new-secret');
     expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
   });
+
+  it('masks a typed secret that a refused save echoes back', async () => {
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'SMTP_PASSWORD: typed-new-secret is not accepted', 400),
+    );
+    await renderTab();
+    editCategory('Email (SMTP)');
+    fireEvent.click(screen.getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
+    fireEvent.change(screen.getByLabelText('SMTP_PASSWORD'), {
+      target: { value: 'typed-new-secret' },
+    });
+    saveAndConfirm('Email (SMTP)');
+
+    // Beside the save and on the setting it names, as the other reasons are.
+    const email = within(section('Email (SMTP)'));
+    expect(await email.findByText('SMTP_PASSWORD: •••• is not accepted')).toBeVisible();
+    expect(email.getByText('•••• is not accepted')).toBeVisible();
+    expect(document.body.textContent).not.toContain('typed-new-secret');
+  });
 });
 
 describe('edit flow edge cases', () => {
@@ -1784,6 +1803,27 @@ describe('reset and custom variables', () => {
         secrets: { MY_PROVIDER_API_KEY: true },
       }),
     );
+  });
+
+  it('masks the secret value of a refused new variable in its review', async () => {
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'MY_PROVIDER_API_KEY: k-123-typed is not accepted', 400),
+    );
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    fireEvent.change(within(form).getByLabelText('Name'), {
+      target: { value: 'my_provider_api_key' },
+    });
+    fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'k-123-typed' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Review and add' }));
+    confirmAddVariable();
+
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(
+      'MY_PROVIDER_API_KEY: •••• is not accepted',
+    );
+    expect(document.body.textContent).not.toContain('k-123-typed');
   });
 
   it.each(['sentry_dsn', 'vertex_sa_json', 'upstream_bearer', 'ftp_pass', 'basic_auth'])(

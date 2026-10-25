@@ -98,6 +98,29 @@ describe('UsageInsightsSettingsSection', () => {
     expect(screen.getByLabelText('Model')).toHaveValue('glm-6');
   });
 
+  it('masks the typed key in a failed save, and keeps it for the retry', async () => {
+    vi.mocked(updateUsageInsightsSettings)
+      .mockRejectedValueOnce(new Error(`api_key ${TYPED_KEY} was rejected`))
+      .mockResolvedValueOnce(SAVED);
+    await openEditor();
+    fireEvent.change(screen.getByLabelText('Gateway API key'), {
+      target: { value: ` ${TYPED_KEY} ` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('api_key •••• was rejected');
+    expect(document.body.textContent).not.toContain(TYPED_KEY);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(updateUsageInsightsSettings).mock.calls).toEqual([
+      [{ api_key: TYPED_KEY }],
+      [{ api_key: TYPED_KEY }],
+    ]);
+  });
+
   it('refuses an empty model without asking or writing', async () => {
     await openEditor();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: '  ' } });

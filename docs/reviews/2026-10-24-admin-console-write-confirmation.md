@@ -29,6 +29,7 @@ All are under `apps/frontend/src/components/features/admin/confirm/`:
 - **`ChangeList.tsx`**: the `old → new` rows. Long values wrap anywhere.
 - **`EditBar.tsx`**: Cancel and Save changes, with the change count. An optional `blocked` reason replaces the count and keeps Save disabled while the save would drop another open edit. **`EditButton`** opens a section, row or entity for editing; an optional `title` says why it is disabled.
 - **`writeEach.ts`**: the multi-request save described above.
+- **`withoutSecret.ts`**: blanks a just-typed secret out of an error message, as a second guard wherever a write carries one: provider keys, provider definitions, the Usage Insights key, and secret values in a Configuration save or a new variable.
 
 They render the existing `ConfirmDialog`, which received three changes:
 - a `confirmDisabled` prop, used by the typed confirmation;
@@ -58,16 +59,16 @@ unless the path is given.
 | `clearAlertSnooze` | `AlertSnoozeSection.tsx:120` | Resume now | action | | `AlertSnoozeSection.test.tsx` |
 | `muteAlertType` | `AlertMutesSection.tsx:128` | Choose a duration in "Mute for…" | action | Choosing a duration opens the confirmation and the select resets; nothing is written on change. The error stays in the dialog. | `AlertMutesSection.test.tsx` |
 | `unmuteAlertType` | `AlertMutesSection.tsx:147` | Unmute | action | | `AlertMutesSection.test.tsx` |
-| `updateUsageInsightsSettings` | `UsageInsightsSettingsSection.tsx:106` | Usage Insights → Edit → model / key → Save changes | edit | The key field exists only in edit mode. The confirmation says `Set → Replace` and never shows the typed key. An empty model is refused inline. | `UsageInsightsSettingsSection.test.tsx` (new, 6 tests) |
+| `updateUsageInsightsSettings` | `UsageInsightsSettingsSection.tsx:106` | Usage Insights → Edit → model / key → Save changes | edit | The key field exists only in edit mode. The confirmation says `Set → Replace` and never shows the typed key, and an error that echoes it shows `••••` (`withoutSecret`). An empty model is refused inline. | `UsageInsightsSettingsSection.test.tsx` (new, 7 tests), including "masks the typed key in a failed save, and keeps it for the retry" |
 | `updateUsageInsightsSettings({api_key:''})` | `UsageInsightsSettingsSection.tsx:129` | Clear key | action (danger) | | "clears the key only after a confirmation" |
 
 ### Configuration tab
 
 | API | Call site | UI trigger | Rule | Coverage | Tests |
 |---|---|---|---|---|---|
-| `patchConfig` (category) | `components/features/admin/ConfigurationTab.tsx:322` | Edit category → Save changes → Confirm save | edit | Unchanged from 95d66693/a1028d97: the category flow plus staged Reset and Mark as secret. | `ConfigurationTab.test.tsx` (79 tests) |
+| `patchConfig` (category) | `components/features/admin/ConfigurationTab.tsx:322` | Edit category → Save changes → Confirm save | edit | Unchanged from 95d66693/a1028d97: the category flow plus staged Reset and Mark as secret. A secret value typed into the save is masked as `••••` in a refusal, beside the save and on the setting. | `ConfigurationTab.test.tsx`, including "masks a typed secret that a refused save echoes back" |
 | `resetConfigKey` | `ConfigurationTab.tsx:345` | Staged Reset inside the category save | edit (staged) | Confirmed in the same list, with partial-save reporting. The save is one PATCH, then one DELETE per reset, and the backend checks each request by itself, so a pair valid only together (resetting `TRUST_X_REAL_IP` while turning `TRUST_PROXY_HEADERS` off) is refused at the PATCH. No fixed order avoids that: the reverse pair (resetting `TRUST_PROXY_HEADERS` while turning `TRUST_X_REAL_IP` off) needs the PATCH first, and two dependent resets need their own order. So the review says when a save is several requests, and a refused PATCH says which staged resets were not sent and to save the reset on its own first. | "says in the review that the resets follow the value changes as separate requests", "says the reset was not sent when the value change before it is refused", "keeps only the unwritten steps after a reset fails, and retries just those" |
-| `patchConfig` (Add variable) | `ConfigurationTab.tsx:824` | Add variable → Review and add → Add variable | create | **New.** A review lists the name, the value (a secret reads "Set (hidden)") and the secret flag. Back keeps the form. | "adds a variable on Enter", "adds a custom variable, always secret…", "lets the administrator make any other variable secret" |
+| `patchConfig` (Add variable) | `ConfigurationTab.tsx:824` | Add variable → Review and add → Add variable | create | **New.** A review lists the name, the value (a secret reads "Set (hidden)") and the secret flag. Back keeps the form. A secret value is masked as `••••` in an error shown in the review. | "adds a variable on Enter", "adds a custom variable, always secret…", "lets the administrator make any other variable secret", "masks the secret value of a refused new variable in its review" |
 | `testAlertNotification` | `ConfigurationTab.tsx:234` | Send test notification → Send test | action (test-send) | **New.** It names the channel and says whether the typed or the saved URL is used. The result is shown inline with the existing sanitized message, never as a raw error in the dialog, so a webhook cannot leak. | 8 alert tests now confirm first; "sends no test notification when its confirmation is cancelled" |
 
 ### Requests tab
