@@ -44,7 +44,7 @@ class PricingLookup:
         """Construct with the active route executor.
 
         Args:
-            router: The :class:`routing.executor.RouteExecutor` whose
+            router: The :class:`routing.routers.FixedRouter` whose
                 ``.routes`` mapping holds the registered adapters. The
                 lookup walks ``router.routes[model].adapters`` to find the
                 config that matches the routing target.

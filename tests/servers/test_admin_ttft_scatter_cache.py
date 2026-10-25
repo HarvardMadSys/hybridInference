@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.schemas_admin import (
     AdminTtftScatterModel,
     AdminTtftScatterPoint,
@@ -73,7 +73,7 @@ def _scatter(ttft_ms: int) -> AdminTtftScatterResponse:
 def _client() -> AsyncClient:
     app = FastAPI(title="Admin TTFT scatter cache test")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=RouteExecutor(), db_logger=MagicMock(pool=object())
+        router=FixedRouter(), db_logger=MagicMock(pool=object())
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)

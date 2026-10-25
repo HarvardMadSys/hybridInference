@@ -46,7 +46,7 @@ async def reroute_client(mock_db_logger, mock_operational_store, mock_log_store)
 
     from fastapi import FastAPI, Header, HTTPException
 
-    from routing.executor import RouteExecutor
+    from routing.routers import FixedRouter
     from serving.adapters import OpenAICompatAdapter
     from serving.adapters.base import ModelConfig
     from serving.servers.auth import verify_api_key
@@ -75,7 +75,7 @@ async def reroute_client(mock_db_logger, mock_operational_store, mock_log_store)
         supported_params=["temperature", "max_tokens", "stream"],
     )
 
-    re = RouteExecutor()
+    re = FixedRouter()
     re.register_route(REASONING_MODEL, [(OpenAICompatAdapter(reasoner_cfg), 1.0)])
     re.register_route(FAST_MODEL, [(OpenAICompatAdapter(fast_cfg), 1.0)])
 

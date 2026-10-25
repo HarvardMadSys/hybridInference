@@ -16,7 +16,6 @@ from .dispatch import (
     check_dispatch,
     dispatch_for_attempt,
 )
-from .executor import RouteExecutor
 from .health import HealthMonitor
 from .hybrid import BackendSelection, HybridRouter
 from .manager import RoutingManager
@@ -41,7 +40,6 @@ __all__ = [
     "HybridRouter",
     "LeafBackend",
     "LocalBackend",
-    "RouteExecutor",
     "RouteScopeView",
     "RouteTableRefreshable",
     "RouteTableView",

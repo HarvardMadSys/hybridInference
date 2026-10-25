@@ -15,9 +15,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry, StaleRouterStrategyChangeError
-from routing.routers import adapter_supports_modalities
+from routing.routers import FixedRouter, adapter_supports_modalities
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
@@ -339,7 +338,7 @@ async def admin_client(monkeypatch):
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
 
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     chutes = _compat_adapter(
         provider="chutes",
         endpoint_id="minimax-fast:chutes-api",
@@ -3722,7 +3721,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
 ):
     client, op_store, _fixture_router, _fake_routewise, _verify_mock = admin_client
     services = client.app.state.services
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     existing_model_id = "existing-routewise"
     runtime_model_id = "deepseek-v4-flash"
     _register_on_demand_only_route(route_executor, existing_model_id)
@@ -3810,7 +3809,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
 ):
     client, op_store, _fixture_router, _fake_routewise, _verify_mock = admin_client
     services = client.app.state.services
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     registry = ModelRouterRegistry(models_config={}, shared_fixed_router=route_executor)
     services.router = route_executor
     services.model_router_registry = registry

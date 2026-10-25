@@ -36,7 +36,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.storage.log_schema import ensure_api_logs_schema
@@ -154,7 +154,7 @@ async def _seed(conn: asyncpg.Connection) -> None:
 @pytest_asyncio.fixture
 async def client(db_logger: Any) -> AsyncGenerator[AsyncClient, None]:
     app = FastAPI(title="Admin Client Disconnect Postgres Test")
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=db_logger)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=FixedRouter(), db_logger=db_logger)  # type: ignore[attr-defined]
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
     transport = ASGITransport(app=app)

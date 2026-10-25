@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -26,7 +26,7 @@ async def admin_client(monkeypatch):
     op_store.set_model_visibility_override = AsyncMock()
     op_store.delete_model_visibility_override = AsyncMock()
 
-    router = RouteExecutor()
+    router = FixedRouter()
     adapter = MagicMock()
     adapter.config.id = "public-model"
     adapter.config.name = "Public Model"

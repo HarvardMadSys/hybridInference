@@ -563,15 +563,6 @@ msgstr ""
 "这两个值。写了未注册的名字，配置校验会失败，错误消息里会列出已知的策略。每个策略都声明了一个 `extra=\"forbid\"` 的 "
 "Pydantic 参数模型，所以 `router_params:` 里有拼写错误时，启动就会报错，而不是悄悄退回默认值。"
 
-#: ../developer/architecture.md:237
-msgid ""
-"`apps/backend/routing/executor.py` is a backward-compatibility shim that "
-"re-exports `FixedRouter` under its old name `RouteExecutor`. Edit "
-"`apps/backend/routing/routers.py` instead."
-msgstr ""
-"`apps/backend/routing/executor.py` 只是一个向后兼容的 shim，用旧名字 `RouteExecutor` "
-"重新导出 `FixedRouter`。改代码请直接改 `apps/backend/routing/routers.py`。"
-
 #: ../developer/architecture.md:241
 msgid "Two layers of \"strategy\""
 msgstr "两层「策略」"

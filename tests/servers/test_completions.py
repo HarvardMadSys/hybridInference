@@ -19,8 +19,8 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -254,7 +254,7 @@ async def completions_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAP
     # Disable auth for routing-focused tests to avoid auth noise.
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(DummyAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Test Completions App")
@@ -368,7 +368,7 @@ async def test_upstream_401_reaches_the_request_log_attributed_and_at_info(
         max_output_length=4096,
         supported_params=["temperature", "max_tokens"],
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("diffusiongemma", [(RejectingAdapter(cfg), 1.0)])
 
     app = FastAPI(title="Upstream 401 App")
@@ -451,7 +451,7 @@ async def test_forced_streaming_upstream_401_reaches_the_request_log_attributed(
         max_output_length=4096,
         supported_params=["temperature", "max_tokens"],
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("diffusiongemma", [(RejectingStreamAdapter(cfg), 1.0)])
 
     runtime_settings = MagicMock()
@@ -529,7 +529,7 @@ async def test_sse_stream_upstream_401_before_first_byte_is_relayed_and_attribut
         max_output_length=4096,
         supported_params=["temperature", "max_tokens"],
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("diffusiongemma", [(RejectingStreamAdapter(cfg), 1.0)])
 
     app = FastAPI(title="SSE Upstream 401 App")
@@ -637,7 +637,7 @@ async def test_forced_streaming_buffers_thinking_delta_into_reasoning_content(mo
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "thinking-model", [(ThinkingDeltaAdapter(_mk_cfg("thinking-model")), 1.0)]
     )
@@ -676,7 +676,7 @@ async def test_runtime_forced_buffered_probe_preserves_provider_header():
 
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
-    router = RouteExecutor()
+    router = FixedRouter()
     cfg = _mk_cfg("gpt-4")
     cfg.provider = "single-provider"
     router.register_route("gpt-4", [(DummyAdapter(cfg), 1.0)])
@@ -713,7 +713,7 @@ async def test_runtime_forced_buffered_probe_preserves_provider_header():
 async def test_runtime_forced_buffered_stream_merges_split_tool_call_names():
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(SplitToolCallNameAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Forced Buffered Tool Call App")
@@ -747,7 +747,7 @@ async def test_runtime_forced_buffered_stream_returns_error_when_all_upstreams_f
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "fail-model",
         [(UpstreamStatusErrorAdapter(_mk_cfg("fail-model"), status_code=503), 1.0)],
@@ -780,7 +780,7 @@ async def test_runtime_forced_buffered_stream_returns_error_when_all_upstreams_f
 async def test_runtime_forced_buffered_stream_uses_router_fallback_before_content():
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
-    router = RouteExecutor()
+    router = FixedRouter()
     primary_cfg = _mk_cfg("gpt-4")
     primary_cfg.provider = "primary"
     backup_cfg = _mk_cfg("gpt-4")
@@ -823,7 +823,7 @@ async def test_runtime_forced_buffered_stream_preserves_all_circuits_open_503(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
-    router = RouteExecutor()
+    router = FixedRouter()
     adapter = DummyAdapter(_mk_cfg("circuit-open-model"))
     router.register_route("circuit-open-model", [(adapter, 1.0)])
     monkeypatch.setattr(router._health_registry, "allow_request", lambda _endpoint_id: False)
@@ -1036,7 +1036,7 @@ async def test_invalid_request_returns_400(completions_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_fallback_on_primary_failure(completions_app: FastAPI):
     # Rebuild router with failing primary and working fallback
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "gpt-4", [(FailingAdapter(_mk_cfg("gpt-4")), 0.9), (DummyAdapter(_mk_cfg("gpt-4")), 0.1)]
     )
@@ -1067,7 +1067,7 @@ async def test_fallback_success_logs_failed_primary_attempt_as_diagnostic(
     mock_log_store,
 ):
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
-    router = RouteExecutor()
+    router = FixedRouter()
     primary_cfg = _mk_cfg("gpt-4")
     primary_cfg.provider = "primary"
     primary_cfg.endpoint_id = "primary:endpoint"
@@ -1123,7 +1123,7 @@ async def test_non_stream_failure_logged_even_when_observation_raises(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     cfg = _mk_cfg("gpt-4")
     cfg.provider = "primary"
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(FailingAdapter(cfg), 1.0)])
     # Mimic an online-learning router whose observation update raises.
     router.record_observation = MagicMock(side_effect=RuntimeError("observation boom"))
@@ -1158,7 +1158,7 @@ async def test_synthetic_probe_skips_db_logging(mock_db_logger):
     """A trusted probe's traffic is suppressed from the DB log."""
     from serving.servers.auth import verify_api_key
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Synthetic Probe Test")
@@ -1200,7 +1200,7 @@ async def test_probe_marker_ignored_when_auth_disabled(monkeypatch, mock_db_logg
     """
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Auth-Disabled Probe Test")
@@ -1233,7 +1233,7 @@ def _probe_app_with_user_ctx(user_ctx: dict[str, Any], mock_db_logger, mock_log_
     """App with a real route and a fixed authenticated caller context."""
     from serving.servers.auth import verify_api_key
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
     app = FastAPI(title="Probe Trust Test")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -1349,7 +1349,7 @@ async def test_trusted_probe_suppresses_log_but_still_bills(mock_db_logger):
     """
     from serving.servers.auth import verify_api_key
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(_UsageRoutingAdapter(_mk_cfg("gpt-4")), 1.0)])
     mock_log_store = MagicMock()
     mock_log_store.log_request = AsyncMock()
@@ -1397,7 +1397,7 @@ async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logg
     """X-Reasoning-Passthrough: false strips reasoning_content from streaming output."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Strict Mode")
@@ -1455,7 +1455,7 @@ async def test_reasoning_content_visible_by_default_in_streaming(monkeypatch, mo
     """Default /v1/chat/completions behavior preserves reasoning_content."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Default Passthrough")
@@ -1513,7 +1513,7 @@ async def test_streaming_reasoning_content_persisted_to_db(
     """Streaming reasoning_content is accumulated into the DB-logged response."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Streaming Reasoning Persisted")
@@ -1556,7 +1556,7 @@ async def test_non_stream_strict_strips_reasoning_content(monkeypatch, mock_db_l
     """X-Reasoning-Passthrough: false strips reasoning_content from non-streaming response."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Strict Mode")
@@ -1587,7 +1587,7 @@ async def test_non_stream_default_preserves_reasoning_content(monkeypatch, mock_
     """Default non-streaming response preserves reasoning_content."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Default Passthrough")
@@ -1619,7 +1619,7 @@ async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
     """Strict mode (X-Reasoning-Passthrough: false) should hide reasoning-only output."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Strict")
@@ -1652,7 +1652,7 @@ async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
     """Passthrough non-streaming mode should expose reasoning-only responses."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Passthrough")
@@ -1685,7 +1685,7 @@ async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
 
 def _build_admin_gate_app(user_ctx: dict, mock_db_logger) -> FastAPI:
     """Build test app with an admin_only model and injected user_ctx."""
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     router_exec.register_route("public-model", [(DummyAdapter(_mk_cfg("public-model")), 1.0)])
     router_exec.register_route(
         "secret-model", [(DummyAdapter(_mk_cfg("secret-model")), 1.0)], admin_only=True
@@ -1978,7 +1978,7 @@ def _build_ttft_app(model_id: str, adapter: BaseAdapter, mock_log_store, monkeyp
     """Build a minimal app for TTFT testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(model_id, [(adapter, 1.0)])
 
     app = FastAPI(title="TTFT Test")
@@ -2486,7 +2486,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     """App with multi-provider routes for pin testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
-    router = RouteExecutor()
+    router = FixedRouter()
     zai = _ProviderEchoAdapter(_mk_cfg("test-model"))
     zai.config = ModelConfig(
         id="test-model",
@@ -2683,7 +2683,7 @@ async def image_gate_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI
     """App with a text-only model to test image rejection."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     text_only_cfg = ModelConfig(
         id="text-model",
         name="Text Only",

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import registry
 
 
@@ -28,7 +28,7 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
     monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
     # Should register canonical id + alias
     assert count == 2
@@ -69,7 +69,7 @@ def test_optional_route_skipped_when_env_base_url_unset(tmp_path, monkeypatch):
     p.write_text(yaml_text)
     monkeypatch.delenv("RC_DEPLOYMENT_URL", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
 
     assert count == 1
@@ -97,7 +97,7 @@ def test_required_route_raises_when_env_base_url_unset(tmp_path, monkeypatch):
     p.write_text(yaml_text)
     monkeypatch.delenv("SPARK_DEPLOYMENT_URL", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with pytest.raises(registry.MissingEnvBackedKeyError):
         registry.register_from_models_yaml(exe, Path(p))
 
@@ -122,7 +122,7 @@ def test_required_route_missing_base_url_skips_model_when_continue_on_missing_en
     p.write_text(yaml_text)
     monkeypatch.delenv("SPARK_DEPLOYMENT_URL", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
 
     assert count == 0
@@ -150,12 +150,12 @@ def test_top_level_env_base_url_unset_skips_default_route(tmp_path, monkeypatch)
     monkeypatch.delenv("MISSING_BASE_URL", raising=False)
 
     # A required (non-optional) blank base_url fails loudly.
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with pytest.raises(registry.MissingEnvBackedKeyError):
         registry.register_from_models_yaml(exe, Path(p))
 
     # Production bootstrap (continue_on_missing_env=True) skips the model instead.
-    exe2 = RouteExecutor()
+    exe2 = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe2, Path(p), continue_on_missing_env=True)
     assert count == 0
     assert "top-level-test" not in exe2.routes
@@ -200,7 +200,7 @@ def test_a_reference_to_a_registered_setting_uses_its_default(tmp_path, monkeypa
     entry = next(e for e in app_config.describe()["entries"] if e["key"] == "CHUTES_BASE_URL")
     assert (entry["source"], entry["missing"]) == ("default", False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     report = registry.ModelLoadReport()
     _count, infos = registry.register_from_models_yaml(
         exe, path, continue_on_missing_env=True, report=report
@@ -219,7 +219,7 @@ def test_a_value_set_anywhere_wins_over_the_registered_default(tmp_path, monkeyp
 
     path = _chutes_demo(tmp_path, monkeypatch)
     monkeypatch.setenv("CHUTES_BASE_URL", "https://chutes.env.example/v1")
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, path)
     assert exe.routes["demo-model"].adapters[0][0].config.base_url == (
         "https://chutes.env.example/v1"
@@ -229,7 +229,7 @@ def test_a_value_set_anywhere_wins_over_the_registered_default(tmp_path, monkeyp
     app_config._apply({"CHUTES_BASE_URL": row("CHUTES_BASE_URL", "")}, boot=True)
     report = registry.ModelLoadReport()
     registry.register_from_models_yaml(
-        RouteExecutor(), path, continue_on_missing_env=True, report=report
+        FixedRouter(), path, continue_on_missing_env=True, report=report
     )
     assert report.skipped_models == {"demo-model": []}
     assert report.unset_env_vars == {"CHUTES_BASE_URL"}
@@ -245,7 +245,7 @@ def test_only_a_registered_default_fills_a_reference(tmp_path, monkeypatch):
 
     report = registry.ModelLoadReport()
     registry.register_from_models_yaml(
-        RouteExecutor(), path, continue_on_missing_env=True, report=report
+        FixedRouter(), path, continue_on_missing_env=True, report=report
     )
 
     assert report.skipped_models == {"demo-model": []}
@@ -274,7 +274,7 @@ def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(yaml_text)
 
-    executor = RouteExecutor()
+    executor = FixedRouter()
     registry.register_from_models_yaml(executor, path)
 
     adapter = executor.routes["qwen-test"].adapters[0][0]
@@ -296,7 +296,7 @@ def test_register_defaults_to_single_route_when_no_route_list(tmp_path, monkeypa
     p = tmp_path / "models2.yaml"
     p.write_text(yaml_text)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
     assert count == 1
     assert "vllm-model" in exe.routes
@@ -435,7 +435,7 @@ def test_register_compatible_routes_get_distinct_endpoint_ids(tmp_path, monkeypa
     monkeypatch.setenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
     monkeypatch.setenv("MOONSHOT_API_KEY", "sk-moonshot")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     adapters = exe.routes["kimi-k2.7"].adapters
@@ -481,7 +481,7 @@ def test_register_extension_dynamic_keys_use_alias_provider(tmp_path, monkeypatc
     monkeypatch.setenv("EXAMPLE_API_KEY", "sk-example")
 
     try:
-        exe = RouteExecutor()
+        exe = FixedRouter()
         registry.register_from_models_yaml(exe, Path(p))
 
         assert "example" in dynamic_keys.get_known_providers()
@@ -562,7 +562,7 @@ def test_register_staging_and_openai_compat_get_distinct_providers(tmp_path, mon
     monkeypatch.setenv("STAGING_BASE_URL", "https://api.staging.com/v1")
     monkeypatch.setenv("STAGING_API_KEY", "sk-staging")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     adapters = exe.routes["glm-4.7"].adapters
@@ -605,7 +605,7 @@ def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
     monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
     monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
 
     assert count == 1
@@ -644,7 +644,7 @@ def test_register_from_models_yaml_carries_reasoning_effort_domain(tmp_path, mon
     monkeypatch.setenv("ZAI_URL", "http://zai.local/v1")
     monkeypatch.setenv("ZAI_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
 
     assert count == 1
@@ -682,7 +682,7 @@ def test_register_from_models_yaml_keeps_model_provider_when_route_kind_differs(
     monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
     monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, infos = registry.register_from_models_yaml(exe, Path(p))
 
     assert count == 1
@@ -724,7 +724,7 @@ def test_register_from_models_yaml_skips_bad_model_and_continues(tmp_path, monke
     monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
     monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, infos = registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
 
     assert count == 1
@@ -765,7 +765,7 @@ def test_register_from_models_yaml_skips_missing_single_api_key_in_bootstrap_mod
     monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
     monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with caplog.at_level("WARNING"):
         count, infos = registry.register_from_models_yaml(
             exe, Path(p), continue_on_missing_env=True
@@ -807,7 +807,7 @@ def test_register_from_models_yaml_does_not_register_dynamic_keys_for_skipped_mo
     monkeypatch.setenv("LIVE_KEY", "live-key")
     monkeypatch.delenv("MISSING_KEY", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
 
     assert "mixed-model" not in exe.routes
@@ -833,7 +833,7 @@ def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     p = tmp_path / "invalid_processor.yaml"
     p.write_text(yaml_text)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with pytest.raises(ValueError, match="Unknown processor override 'not_a_processor'"):
         registry.register_from_models_yaml(exe, Path(p))
 
@@ -865,7 +865,7 @@ models:
 """
     p = tmp_path / "models.yaml"
     p.write_text(yaml)
-    exe = RouteExecutor()
+    exe = FixedRouter()
     _count, infos = registry.register_from_models_yaml(exe, Path(p))
 
     by_id = {i.model_id: i for i in infos}
@@ -908,7 +908,7 @@ models:
 """
     p = tmp_path / "models.yaml"
     p.write_text(yaml)
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     first = exe.routes["routewise-model"].adapters[0][0].config
@@ -933,7 +933,7 @@ models:
 def test_embedding_model_multi_route_uses_fallback_adapter(tmp_path, monkeypatch):
     """An embedding model with >1 route is registered as a FallbackEmbeddingAdapter
     (primary first, staging canary as fallback), shared across aliases, and is not
-    placed on the chat RouteExecutor.
+    placed on the chat FixedRouter.
     """
     from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
@@ -962,7 +962,7 @@ def test_embedding_model_multi_route_uses_fallback_adapter(tmp_path, monkeypatch
     p.write_text(yaml_text)
     monkeypatch.setenv("STAGING_API_KEY", "sk-staging")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     emb: dict = {}
     count, _infos = registry.register_from_models_yaml(exe, Path(p), embedding_adapters=emb)
 
@@ -1011,7 +1011,7 @@ def test_embedding_model_single_route_uses_plain_adapter(tmp_path, monkeypatch):
     # Unset STAGING_API_KEY -> the optional staging route is dropped at load.
     monkeypatch.delenv("STAGING_API_KEY", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     emb: dict = {}
     registry.register_from_models_yaml(exe, Path(p), embedding_adapters=emb)
 
@@ -1056,7 +1056,7 @@ def test_two_models_claiming_one_alias_is_reported_without_changing_routing(
     monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with caplog.at_level("WARNING"):
         registry.register_from_models_yaml(exe, Path(p))
 
@@ -1084,7 +1084,7 @@ def test_one_model_repeating_its_own_alias_is_fine(tmp_path, monkeypatch):
     monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     assert exe.routes["same"].canonical_model_id == "model-a"
@@ -1154,7 +1154,7 @@ def test_an_existing_alias_still_reaches_the_same_adapter(tmp_path, monkeypatch)
     monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     assert exe.routes["legacy-name"] is exe.routes["real-model"]

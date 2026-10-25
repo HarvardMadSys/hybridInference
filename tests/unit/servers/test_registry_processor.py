@@ -11,7 +11,7 @@ from __future__ import annotations
 import textwrap
 from typing import TYPE_CHECKING
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.registry import register_from_models_yaml
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ def _write_yaml(tmp_path: Path, body: str) -> Path:
     return path
 
 
-def _configs(router: RouteExecutor, model_id: str):
+def _configs(router: FixedRouter, model_id: str):
     return [adapter.config for adapter, _weight in router.routes[model_id].adapters]
 
 
@@ -54,7 +54,7 @@ def test_model_level_processor_propagates_to_all_routes(tmp_path, monkeypatch):
     monkeypatch.setenv("OLLAMA_API_KEY", "key-two")
     yaml_path = _write_yaml(tmp_path, _TWO_ROUTE_MODEL.replace("__OLLAMA_EXTRA__", ""))
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     configs = _configs(router, "minimax-m3-test")
@@ -70,7 +70,7 @@ def test_route_level_processor_overrides_model_level(tmp_path, monkeypatch):
         _TWO_ROUTE_MODEL.replace("__OLLAMA_EXTRA__", "        processor: default"),
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     by_provider = {cfg.provider: cfg.processor for cfg in _configs(router, "minimax-m3-test")}
@@ -97,7 +97,7 @@ def test_absent_processor_defaults_to_none(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     (cfg,) = _configs(router, "minimax-test")

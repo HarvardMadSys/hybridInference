@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.config import settings as settings_module
 from serving.servers.deps import AppServices
@@ -68,7 +68,7 @@ def _cfg(model_id: str) -> ModelConfig:
 
 @pytest.mark.asyncio
 async def test_playground_models_hide_unpublished_routes() -> None:
-    router = RouteExecutor()
+    router = FixedRouter()
     visible = _PlaygroundAdapter(_cfg("visible-model"))
     staged = _PlaygroundAdapter(_cfg("staged-model"))
     router.register_route("visible-model", [(visible, 1.0)])
@@ -85,7 +85,7 @@ async def test_playground_source_pricing_is_checked_before_stream_response(monke
 
     from serving.utils import context as req_ctx
 
-    router = RouteExecutor()
+    router = FixedRouter()
     adapter = _PlaygroundAdapter(_cfg("canonical"))
     adapter.config.pricing_source = {"provider": "deepseek", "model": "deepseek-flash"}
     router.register_route("alias", [(adapter, 1.0)])
@@ -149,7 +149,7 @@ async def admin_mode_app(auth_backend):
     """App with auth, internal, and playground routers."""
     operational_store, log_store, db_logger, _ = auth_backend
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("playground-model", [(_PlaygroundAdapter(_cfg("playground-model")), 1.0)])
 
     services = AppServices(

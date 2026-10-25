@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +27,7 @@ def test_example_registry_registers_with_one_key(monkeypatch):
     assert referenced == ["OPENROUTER_API_KEY"]
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-example-dummy")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, infos = registry.register_from_models_yaml(exe, EXAMPLE_YAML)
 
     assert count == 3
@@ -60,7 +60,7 @@ def test_empty_catalog_names_the_variable_that_would_fix_it(monkeypatch, caplog)
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with caplog.at_level(logging.ERROR, logger="serving.servers.registry"):
         count, _infos = registry.register_from_models_yaml(
             exe, EXAMPLE_YAML, continue_on_missing_env=True

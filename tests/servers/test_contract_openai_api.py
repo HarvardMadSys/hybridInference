@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
@@ -50,7 +50,7 @@ class _FailingAdapter(_StubAdapter):
 @pytest.fixture
 async def contract_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
-    router = RouteExecutor()
+    router = FixedRouter()
     cfg = ModelConfig(id=MODEL_ID, name=MODEL_ID, provider="test", base_url="http://test")
     router.register_route(MODEL_ID, [(_StubAdapter(cfg), 1.0)])
 

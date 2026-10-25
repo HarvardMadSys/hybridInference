@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin.routewise import (
@@ -108,7 +108,7 @@ def _make_db_logger(
 
 def _build_client(logger: Any) -> AsyncClient:
     app = FastAPI(title="Admin RouteWise Decisions Test")
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=logger)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=FixedRouter(), db_logger=logger)  # type: ignore[attr-defined]
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
@@ -455,7 +455,7 @@ async def test_decisions_requires_admin_auth():
     """Without an admin token the endpoint must reject the caller."""
     logger, _calls = _make_db_logger()
     app = FastAPI(title="Admin RouteWise Decisions Auth Test")
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=logger)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=FixedRouter(), db_logger=logger)  # type: ignore[attr-defined]
     # No verify_admin_access override: the real dependency runs.
     app.include_router(admin.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

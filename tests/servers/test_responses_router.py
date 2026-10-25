@@ -15,7 +15,7 @@ import pytest_asyncio
 from fastapi import FastAPI, Header, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -179,7 +179,7 @@ async def responses_store() -> _FakeResponseStore:
 
 @pytest_asyncio.fixture
 async def responses_app(responses_store, mock_db_logger, mock_operational_store, mock_log_store):
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(TEXT_MODEL, [(TextAdapter(_cfg(TEXT_MODEL)), 1.0)])
     router.register_route(TOOL_MODEL, [(ToolAdapter(_cfg(TOOL_MODEL)), 1.0)])
 

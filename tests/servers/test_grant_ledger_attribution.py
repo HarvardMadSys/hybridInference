@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.grant_auth import LEDGER_ATTRIBUTION_VERSION
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
@@ -49,7 +49,7 @@ ATTRIBUTION_KEYS = {"agent_grant_id", "request_started_at", "attribution_version
 
 
 def _app(module, user_ctx: dict, mock_db_logger, mock_log_store) -> FastAPI:
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     router_exec.register_route(MODEL, [(DummyAdapter(_mk_cfg(MODEL)), 1.0)])
     app = FastAPI()
     app.state.services = AppServices(

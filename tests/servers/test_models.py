@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers import registry
 from serving.servers.auth import optional_verify_api_key
@@ -73,7 +73,7 @@ def _cfg(
 
 @pytest.fixture
 async def models_app() -> FastAPI:
-    router = RouteExecutor()
+    router = FixedRouter()
     # Two adapters to exercise aggregation
     a1 = _Adapter(
         _cfg(
@@ -145,7 +145,7 @@ async def test_models_aggregation_and_slug(models_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_models_omit_unpublished_routes():
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("visible-model", [(_Adapter(_cfg(id="visible-model")), 1.0)])
     router.register_route(
         "staged-model",
@@ -168,7 +168,7 @@ async def test_models_omit_unpublished_routes():
 
 @pytest.mark.asyncio
 async def test_models_empty_routes_returns_empty_list():
-    router = RouteExecutor()
+    router = FixedRouter()
     app = FastAPI()
     app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
@@ -181,7 +181,7 @@ async def test_models_empty_routes_returns_empty_list():
 
 @pytest.mark.asyncio
 async def test_models_single_adapter_no_aggregation():
-    router = RouteExecutor()
+    router = FixedRouter()
     a = _Adapter(_cfg(id="solo", context=1234, max_out=321, supported=["temperature"], tools=True))
     router.register_route("solo", [(a, 1.0)])
     app = FastAPI()
@@ -236,7 +236,7 @@ async def test_models_openai_provider_is_preserved_for_gpt_style_entry(tmp_path,
     monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
     monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     registry.register_from_models_yaml(router, p)
 
     app = FastAPI()
@@ -258,7 +258,7 @@ async def test_models_openai_provider_is_preserved_for_gpt_style_entry(tmp_path,
 
 @pytest.mark.asyncio
 async def test_models_pricing_primary_config_behavior():
-    router = RouteExecutor()
+    router = FixedRouter()
     p_primary = {"prompt": "1", "completion": "2"}
     p_secondary = {"prompt": "9", "completion": "9"}
     a1 = _Adapter(_cfg(id="price", provider="p1"))
@@ -287,7 +287,7 @@ async def test_models_pricing_primary_config_behavior():
     ],
 )
 async def test_models_pricing_resolves_current_schedule_window(day, expected):
-    router = RouteExecutor()
+    router = FixedRouter()
     adapter = _Adapter(_cfg(id="scheduled-price", provider="deepseek"))
     adapter.config.pricing = {"prompt": "0.14", "completion": "0.28"}
     adapter.config.pricing_schedule = {
@@ -352,7 +352,7 @@ def _build_admin_app(user_ctx: dict | None) -> FastAPI:
     """Build a test app with one admin_only model and inject user_ctx."""
     from serving.servers.auth import optional_verify_api_key
 
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     public = _Adapter(_cfg(id="public-model"))
     secret = _Adapter(_cfg(id="secret-model"))
     router_exec.register_route("public-model", [(public, 1.0)])
@@ -395,7 +395,7 @@ async def test_admin_only_visible_to_admin():
 
 @pytest.mark.asyncio
 async def test_models_runtime_visibility_override_hides_model_for_free_user():
-    router = RouteExecutor()
+    router = FixedRouter()
     visible = _Adapter(_cfg(id="visible-model"))
     hidden = _Adapter(_cfg(id="runtime-hidden-model"))
     router.register_route("visible-model", [(visible, 1.0)])
@@ -426,7 +426,7 @@ async def test_models_runtime_visibility_override_hides_model_for_free_user():
 
 @pytest.mark.asyncio
 async def test_models_runtime_visibility_override_uses_canonical_model_id_for_aliases():
-    router = RouteExecutor()
+    router = FixedRouter()
     aliased = _Adapter(_cfg(id="canonical-model"))
     router.register_route("alias-model", [(aliased, 1.0)], aliases=["secondary-alias"])
 
@@ -454,7 +454,7 @@ async def test_models_runtime_visibility_override_uses_canonical_model_id_for_al
 
 @pytest.mark.asyncio
 async def test_user_models_runtime_visibility_override_hides_model_for_free_user():
-    router = RouteExecutor()
+    router = FixedRouter()
     visible = _Adapter(_cfg(id="visible-model"))
     hidden = _Adapter(_cfg(id="runtime-hidden-model"))
     router.register_route("visible-model", [(visible, 1.0)])
@@ -485,7 +485,7 @@ async def test_user_models_runtime_visibility_override_hides_model_for_free_user
 
 @pytest.mark.asyncio
 async def test_user_models_excludes_disabled_models_for_user():
-    router = RouteExecutor()
+    router = FixedRouter()
     visible = _Adapter(_cfg(id="visible-model"))
     disabled = _Adapter(_cfg(id="disabled-model"))
     router.register_route("visible-model", [(visible, 1.0)])
@@ -524,7 +524,7 @@ async def test_trial_user_sees_same_models_as_free():
     """Trial-role users must see the same model set as free-role users."""
     from serving.servers.auth import optional_verify_api_key
 
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     public = _Adapter(_cfg(id="public-model"))
     router_exec.register_route("public-model", [(public, 1.0)])
 
@@ -554,7 +554,7 @@ async def test_models_tag_embedding_models_with_the_embeddings_feature():
     A client choosing a model for /v1/chat/completions has no other signal
     that an entry answers /v1/embeddings instead, so the catalog says so.
     """
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("chat-model", [(_Adapter(_cfg(id="chat-model")), 1.0)])
     embedding = _Adapter(_cfg(id="embed-model", provider="embedder"))
 

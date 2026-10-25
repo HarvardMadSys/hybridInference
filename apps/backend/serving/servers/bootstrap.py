@@ -20,9 +20,9 @@ from dotenv import load_dotenv
 
 from routing.dependencies import RouterBuildDependencies
 from routing.endpoint_health import EndpointHealthRegistry
-from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import FixedRouter
 from serving.auto_mode import AutoMode, load_auto_mode
 from serving.config import app_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
@@ -673,7 +673,7 @@ def _init_db_logger() -> DatabaseLogger | None:
 
 
 async def _init_router_and_models(
-    router: RouteExecutor,
+    router: FixedRouter,
 ) -> tuple[dict, list[ModelRegistrationInfo]]:
     """Register models on the router from YAML configuration.
 
@@ -736,7 +736,7 @@ async def _init_router_and_models(
     return embedding_adapters, model_infos
 
 
-def _load_auto_mode(router: RouteExecutor) -> AutoMode | None:
+def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     """Load the ``auto:`` section of the models registry, or ``None`` to leave auto off.
 
     Called once the route table is complete -- the registry's models and the
@@ -806,7 +806,7 @@ def _attach_hybrid_router_factory(
         logger.warning(f"Hybrid router composition not enabled: {exc}")
 
 
-def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
+def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
     """Optionally load the routing manager and apply weights from YAML.
 
     Returns:
@@ -880,7 +880,7 @@ async def initialize() -> AppServices:
         raise
 
     endpoint_health_registry = EndpointHealthRegistry()
-    router = RouteExecutor(health_registry=endpoint_health_registry)
+    router = FixedRouter(health_registry=endpoint_health_registry)
     router_dependencies = RouterBuildDependencies(
         health_registry=endpoint_health_registry,
         prefill_load=router.prefill_load,

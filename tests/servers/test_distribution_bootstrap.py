@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import bootstrap
 
 MODELS_YAML = """\
@@ -36,7 +36,7 @@ async def test_manifest_models_path_registers_routes(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     _embedding, infos = await bootstrap._init_router_and_models(router)
 
     assert set(router.routes) == {"dist-model", "dist-alias"}
@@ -52,7 +52,7 @@ async def test_env_var_beats_manifest_in_bootstrap(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("MODELS_CONFIG", str(env_models))
 
-    router = RouteExecutor()
+    router = FixedRouter()
     await bootstrap._init_router_and_models(router)
 
     assert "env-model" in router.routes
@@ -68,7 +68,7 @@ async def test_dark_mode_ignores_manifest_paths_in_bootstrap(monkeypatch, tmp_pa
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
     monkeypatch.chdir(tmp_path)  # no config/models.yaml here → legacy skip
 
-    router = RouteExecutor()
+    router = FixedRouter()
     await bootstrap._init_router_and_models(router)
 
     assert "dist-model" not in router.routes
