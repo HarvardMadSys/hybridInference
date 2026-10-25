@@ -923,11 +923,12 @@ msgid ""
 "`POST /admin/routing/provider-route-candidates/{model_id}`; "
 "`.../provider-route-candidate-verifications/{model_id}` to check first; "
 "`PATCH` / `DELETE /admin/routing/provider-route-"
-"candidates/{model_id}/{route_id}`"
+"candidates/{model_id}/{route_id}` edits it in place or deletes it"
 msgstr ""
 "`POST /admin/routing/provider-route-candidates/{model_id}`；先用 "
 "`.../provider-route-candidate-verifications/{model_id}` 检查；`PATCH` / "
-"`DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}`"
+"`DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` "
+"原地编辑或删除它"
 
 #: ../developer/configuration.md
 msgid "`provider_route_candidates`"
@@ -938,19 +939,20 @@ msgid "Point a registry route somewhere else"
 msgstr "把注册表里的一条路由指向别处"
 
 #: ../developer/configuration.md
-msgid "edit the route's **Target**"
-msgstr "编辑路由的 **Target**"
+msgid "**Edit**"
+msgstr ""
 
 #: ../developer/configuration.md
 #, python-brace-format
 msgid ""
 "`PUT /admin/routing/provider-routes/{model_id}/{route_id}`; "
-"`.../provider-route-verifications/{model_id}/{route_id}` to check first; "
-"`DELETE` removes the override and restores the YAML route"
+"`.../provider-route-verifications/{model_id}/{route_id}` to check first "
+"(it checks a runtime route's edit too); `DELETE` removes the override and "
+"restores the YAML route (**Reset config**)"
 msgstr ""
 "`PUT /admin/routing/provider-routes/{model_id}/{route_id}`；先用 "
-"`.../provider-route-verifications/{model_id}/{route_id}` 检查；`DELETE` "
-"删除覆盖项并恢复 YAML 路由"
+"`.../provider-route-verifications/{model_id}/{route_id}` 检查（运行时路由的编辑也用它检查）；"
+"`DELETE` 删除覆盖项并恢复 YAML 路由（**Reset config**）"
 
 #: ../developer/configuration.md
 msgid "`provider_route_configs`"
@@ -979,6 +981,47 @@ msgstr ""
 #: ../developer/configuration.md
 msgid "`provider_route_capabilities`"
 msgstr ""
+
+#: ../developer/configuration.md
+msgid "Disable or enable a route of either source"
+msgstr "停用或启用一条路由（两种来源都可以）"
+
+#: ../developer/configuration.md
+msgid "**Disable** / **Enable**"
+msgstr ""
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` with "
+"`{\"disabled\": true}`; the route keeps its configuration and weights, "
+"and nothing (selection, retry, fallback, offload) picks it until it is "
+"enabled"
+msgstr ""
+"`PATCH /admin/routing/provider-route-states/{model_id}/{route_id}`，请求体 "
+"`{\"disabled\": true}`；路由保留配置和权重，在重新启用之前不会被任何环节（选路、重试、fallback、offload）选中"
+
+#: ../developer/configuration.md
+msgid "`provider_route_states`"
+msgstr ""
+
+#: ../developer/configuration.md
+msgid "Delete a registry route from this deployment"
+msgstr "从当前部署中删除注册表里的一条路由"
+
+#: ../developer/configuration.md
+msgid "**Delete**, then **Restore**"
+msgstr "**Delete**，之后可用 **Restore** 恢复"
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`POST /admin/routing/provider-route-removals/{model_id}/{route_id}`; "
+"`DELETE` on the same path restores it with its edits and weights. "
+"models.yaml is not changed"
+msgstr ""
+"`POST /admin/routing/provider-route-removals/{model_id}/{route_id}`；对同一路径做 "
+"`DELETE` 会恢复它，连同它的编辑和权重。models.yaml 不会被修改"
 
 #: ../developer/configuration.md
 msgid "Change a route's weight"
@@ -1128,8 +1171,9 @@ msgid ""
 "the route has from the registry or from its creation stay as its "
 "baseline: the change is stored as an override, the next request through "
 "the route follows it, a restart restores it, and retargeting the route "
-"keeps it. Resetting deletes the override and returns the route to its "
-"baseline. Route listings report `capabilities` (as served), "
+"keeps it. Deleting a registry route keeps it too, so **Restore** brings "
+"the route back with it. Resetting deletes the override and returns the "
+"route to its baseline. Route listings report `capabilities` (as served), "
 "`capabilities_baseline` and `capabilities_overridden`. A change applies "
 "in the gateway process that handles the admin request; a deployment "
 "running several gateway processes sees it in the others after their next"
@@ -1138,6 +1182,7 @@ msgstr ""
 "任何路由的这四项之后都可以用 **Capabilities** 修改，注册表路由和运行时路由都可以，校验规则相同。"
 "控制台表单只有图片输入这一项：路由已有的 `audio` 和 `video` 输入会原样保留，新加的路由则沿用第一条路由的。"
 "路由在注册表里或创建时的值保留为它的基线：修改作为覆盖项保存，经过这条路由的下一个请求就按新值处理，重启后会恢复，改路由的目标也不会丢掉它。"
+"删除注册表路由同样会保留它，用 **Restore** 恢复路由时会一并带回。"
 "重置会删除覆盖项，让路由回到基线。"
 "路由列表会返回 `capabilities`（当前生效的值）、`capabilities_baseline` 和 `capabilities_overridden`。"
 "修改在处理这次管理请求的网关进程里生效；运行多个网关进程的部署，其他进程要在下次重启后才会看到。"

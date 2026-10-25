@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import functools
 import os
 import random
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
+from serving.config.route_states import RouteStateResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
@@ -338,6 +340,76 @@ async def _refresh_disabled_provider_snapshots(
                 _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
+
+
+async def _refresh_route_state_snapshots(
+    resolver: RouteStateResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
+    *,
+    interval_seconds: float = 10.0,
+    router: Any | None = None,
+    apply_removals: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Periodically reload disabled/removed routes so workers converge after admin edits.
+
+    ``apply_removals`` is what boot could not do: take deleted config routes
+    out of the route table. It runs once, after the first reload that
+    succeeds, and again on the next one if it fails.
+    """
+    refresh_state = _EffectiveRouteRefreshState()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            changed = await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
+            if apply_removals is not None:
+                await apply_removals()
+                apply_removals = None
+            if changed:
+                _report_route_weight_divergence(router)
+        except Exception:
+            logger.warning("Route state snapshot refresh failed", exc_info=True)
+
+
+async def _attach_route_states(router: Any, store: Any) -> RouteStateResolver:
+    """Attach the per-route admin state resolver to the shared router, loaded if it can be.
+
+    Attached even when the first load fails, as the offload resolver is: the
+    refresh loop retries the read, and until it lands routing sees no route
+    states while the admin state endpoints refuse to write (``ready``).
+    """
+    resolver = RouteStateResolver(store)
+    try:
+        await resolver.load_all()
+    except Exception:
+        logger.warning(
+            "Route state snapshot load failed; retrying in the background",
+            exc_info=True,
+        )
+    router.route_state_resolver = resolver
+    return resolver
+
+
+async def _apply_route_removals_after_boot(services: AppServices) -> None:
+    """Take deleted config routes out of the route table once the states load after boot.
+
+    Admin requests are served by then, so each model's removals run under the
+    transition lock its admin edits take.
+    """
+    from serving.servers.deps import model_router_transition_lock
+    from serving.servers.routers.admin.provider_routes import (
+        apply_persisted_provider_route_removals,
+    )
+
+    resolver = services.route_state_resolver
+    if resolver is None:
+        return
+    for model_id in sorted({model_id for model_id, _route_id in resolver.removed_routes()}):
+        async with model_router_transition_lock(services, model_id):
+            apply_persisted_provider_route_removals(services, model_ids={model_id})
 
 
 async def _refresh_offload_route_snapshots(
@@ -1285,6 +1357,10 @@ async def initialize() -> AppServices:
     # adapter key pools registered during model loading. Best-effort —
     # a failure here should not prevent the server from starting.
     restored_routewise_model_ids: set[str] = set()
+    route_state_resolver: RouteStateResolver | None = None
+    # Set when boot could not take deleted config routes out of the table, so
+    # the route-state refresh loop does it once the states can be read.
+    late_route_removals: Callable[[], Awaitable[None]] | None = None
     if operational_store is not None:
         try:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
@@ -1313,15 +1389,23 @@ async def initialize() -> AppServices:
                 apply_persisted_model_router_strategy_overrides,
                 apply_persisted_provider_route_candidates,
                 apply_persisted_provider_route_configs,
+                apply_persisted_provider_route_removals,
                 sync_route_capability_overrides,
             )
 
+            # Loaded before any route is restored, so a disabled or removed
+            # route is never selectable, not even while boot is still running.
+            route_state_resolver = await _attach_route_states(router, operational_store)
             provider_route_services = AppServices(
                 router=router,
                 operational_store=operational_store,
                 model_router_registry=model_router_registry,
                 managed_routers=managed_routers,
                 model_router_transition_locks=model_router_transition_locks,
+                route_state_resolver=route_state_resolver,
+            )
+            late_route_removals = functools.partial(
+                _apply_route_removals_after_boot, provider_route_services
             )
             await apply_persisted_model_router_strategy_overrides(
                 provider_route_services,
@@ -1352,12 +1436,17 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
-            # Last, so every route an override names is in place: models.yaml
-            # routes, restored runtime routes and their target overrides.
+            # After the routes above, so every route an override names is in
+            # place: models.yaml routes, restored runtime routes and their
+            # target overrides. Before the removals, so a deleted config route
+            # still counts as served; restoring it re-applies its override.
             await sync_route_capability_overrides(
                 provider_route_services,
                 operational_store,
             )
+            apply_persisted_provider_route_removals(provider_route_services)
+            if route_state_resolver.ready:
+                late_route_removals = None
         except _RouteWiseRouterTypeError:
             raise
         except Exception as exc:
@@ -1456,6 +1545,7 @@ async def initialize() -> AppServices:
     weight_override_refresh_task = None
     disabled_provider_resolver = None
     disabled_provider_refresh_task = None
+    route_state_refresh_task = None
     offload_route_resolver = None
     offload_route_refresh_task = None
     if operational_store is not None:
@@ -1540,6 +1630,17 @@ async def initialize() -> AppServices:
             logger.info("Disabled provider resolver initialized")
         except Exception as exc:
             logger.warning(f"Disabled provider resolver initialization failed: {exc}")
+        if route_state_resolver is not None:
+            route_state_refresh_task = asyncio.create_task(
+                _refresh_route_state_snapshots(
+                    route_state_resolver,
+                    model_router_registry,
+                    router=router,
+                    apply_removals=late_route_removals,
+                )
+            )
+            _BACKGROUND_TASKS.add(route_state_refresh_task)
+            route_state_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
         # Attached even when the first load fails: an empty snapshot routes
         # exactly as a gateway without offload routes does, and the refresh loop
         # picks the stored policies up on its next pass instead of leaving them
@@ -1697,6 +1798,7 @@ async def initialize() -> AppServices:
         routewise_settings_resolver=routewise_settings_resolver,
         weight_override_resolver=weight_override_resolver,
         disabled_provider_resolver=disabled_provider_resolver,
+        route_state_resolver=route_state_resolver,
         offload_route_resolver=offload_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
@@ -1710,6 +1812,7 @@ async def initialize() -> AppServices:
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
+        route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
 
@@ -1802,6 +1905,11 @@ async def shutdown(services: AppServices) -> None:
         services.disabled_provider_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.disabled_provider_refresh_task
+
+    if services.route_state_refresh_task is not None:
+        services.route_state_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.route_state_refresh_task
 
     if services.offload_route_refresh_task is not None:
         services.offload_route_refresh_task.cancel()

@@ -1360,6 +1360,7 @@ class OperationalStore(ABC):
         capabilities: dict[str, Any] | None,
         updated_by: str | None,
         deployment_type: str = "auto",
+        endpoint_id: str | None = None,
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate.
 
@@ -1367,6 +1368,71 @@ class OperationalStore(ABC):
         cap, input modalities and tool support. None declares nothing: a new
         row stores NULL and an existing row keeps what it has, so a stored
         declaration is never cleared by a write that did not carry one.
+        ``endpoint_id`` is the route's endpoint id when an edit moved it away
+        from ``route_id``; None means the two are the same.
+        """
+
+    @abstractmethod
+    async def update_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        expected_updated_at: datetime,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        pricing: dict[str, str] | None,
+        deployment_type: str,
+        endpoint_id: str | None,
+        previous_endpoint_id: str,
+        updated_by: str | None,
+    ) -> datetime | None:
+        """Edit one runtime provider route candidate in place.
+
+        The row is written only while its ``updated_at`` still equals
+        ``expected_updated_at``, so an edit made from stale state matches
+        nothing. ``endpoint_id`` None means the route's endpoint id is its
+        ``route_id``. When the effective endpoint id differs from
+        ``previous_endpoint_id``, the route's weight override moves with it in
+        the same transaction, replacing any leftover row at the new id. Route
+        type, weight and capabilities are left as stored.
+
+        Returns the row's new ``updated_at``, or None when no row matched.
+        """
+
+    @abstractmethod
+    async def list_all_provider_route_states(self) -> list[Row]:
+        """Return every route's admin state: disabled and/or removed, by (model, route id)."""
+
+    @abstractmethod
+    async def set_provider_route_state(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        disabled: bool,
+        removed: bool,
+        updated_by: str | None,
+        expected_disabled: bool | None = None,
+        expected_removed: bool | None = None,
+    ) -> bool:
+        """Store one route's admin state; neither flag set deletes its row.
+
+        ``disabled`` keeps the route configured but out of selection, retries,
+        fallback and offload. ``removed`` takes a config (models.yaml) route out
+        of this deployment without touching the file. Both are keyed by the
+        route id, which survives edits that move the route's endpoint.
+
+        ``expected_disabled`` and ``expected_removed`` (given together) make the
+        write a compare-and-set: it happens only while the stored flags still
+        equal them, a route without a row counting as neither flag set, so a
+        write built from a stale snapshot cannot overwrite the other flag.
+        Returns whether the state was written (always True without them).
         """
 
     @abstractmethod
@@ -1379,7 +1445,7 @@ class OperationalStore(ABC):
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate and any matching override row."""
+        """Atomically delete a route candidate, its override row and its route state."""
 
     @abstractmethod
     async def delete_runtime_model_state(
