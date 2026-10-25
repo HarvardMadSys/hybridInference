@@ -9,8 +9,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import FixedRouter
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -51,7 +51,7 @@ async def admin_client(monkeypatch):
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
 
-    router = RouteExecutor()
+    router = FixedRouter()
     local = _adapter("public-model", "local", "public-model:local")
     remote = _adapter("public-model", "remote", "public-model:remote")
     router.register_route(

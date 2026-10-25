@@ -294,9 +294,7 @@ Downstream consumers that key on `client_ip` (rate limits, auth-failure
 blocklist, routing affinity) must inspect `ClientIpInfo.resolved` and handle
 `"unknown"` explicitly — it is a legitimate outcome, not an error. New
 callers never pass unresolved provenance to `normalize_ip_bucket()`, because
-that would collapse unrelated callers onto one shared key. The deprecated
-`get_client_ip_bucket()` helper retains its legacy behavior and must not be
-used for new enforcement or affinity code.
+that would collapse unrelated callers onto one shared key.
 
 ## Cloudflare Pseudo IPv4
 

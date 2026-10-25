@@ -30,7 +30,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.model_access import is_model_outside_grant_scope
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
@@ -60,7 +60,7 @@ def _grant_ctx(allowed: list[str] | None, **extra) -> dict:
 
 
 def _app(router_cls, user_ctx: dict, mock_db_logger) -> FastAPI:
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     for model in (GRANTED, UNGRANTED):
         router_exec.register_route(model, [(DummyAdapter(_mk_cfg(model)), 1.0)])
 

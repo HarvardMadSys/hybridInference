@@ -263,25 +263,19 @@ def test_effective_route_snapshot_is_built_under_lock_and_releases_it_before_ret
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("new_hook", [True, False], ids=["route-table-hook", "legacy-hook"])
-def test_model_router_registry_prefers_route_table_hook_with_legacy_fallback(
+def test_model_router_registry_binds_strategy_through_route_table_hook(
     monkeypatch: pytest.MonkeyPatch,
-    new_hook: bool,
 ):
     import routing.model_router_registry as registry_module
     from routing.model_router_registry import ModelRouterRegistry
 
     calls: list[tuple[str, object]] = []
 
-    class _LegacyStrategy:
-        def attach_fixed_router(self, route_table: object) -> None:
-            calls.append(("legacy", route_table))
-
-    class _NewStrategy(_LegacyStrategy):
+    class _Strategy:
         def attach_route_table(self, route_table: object) -> None:
             calls.append(("new", route_table))
 
-    strategy = _NewStrategy() if new_hook else _LegacyStrategy()
+    strategy = _Strategy()
     monkeypatch.setattr(
         registry_module,
         "build_router",
@@ -294,4 +288,4 @@ def test_model_router_registry_prefers_route_table_hook_with_legacy_fallback(
     )
 
     assert registry.get_router("model") is strategy
-    assert calls == [("new" if new_hook else "legacy", shared_fixed)]
+    assert calls == [("new", shared_fixed)]

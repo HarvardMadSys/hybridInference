@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.servers.registry import register_from_models_yaml
 from serving.servers.routers.admin.provider_routes import _config_to_dict
@@ -75,7 +75,7 @@ def test_registry_inherits_source_and_route_can_disable_it(tmp_path):
             }
         )
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, path)
     configs = [adapter.config for adapter, _ in router.routes["price-source-test"].adapters]
     automatic = next(config for config in configs if config.base_url.endswith("8101"))

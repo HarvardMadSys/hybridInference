@@ -31,6 +31,15 @@ def _registry(*, router_params=None, aliases=None) -> ModelRouterRegistry:
     )
 
 
+def _overrides(resolver: RouteWiseSettingsResolver) -> dict[str, bool | int | float]:
+    """Return the runtime overrides the resolver holds for ``"model"``.
+
+    Read directly rather than through ``resolve_model``, which first refreshes
+    the global defaults and so moves the generation fence these tests race.
+    """
+    return dict(resolver._snapshots.get("model", {}))
+
+
 @pytest.mark.asyncio
 async def test_resolver_precedence_and_alias_canonicalization():
     store = AsyncMock()
@@ -77,7 +86,7 @@ async def test_resolver_precedence_and_alias_canonicalization():
     store.get_setting.assert_not_awaited()
 
     resolver.set_override("alias", "routewise_latency_min_samples", 20)
-    assert resolver.get_override_snapshot("model")["routewise_latency_min_samples"] == 20
+    assert _overrides(resolver)["routewise_latency_min_samples"] == 20
 
 
 @pytest.mark.asyncio
@@ -121,7 +130,7 @@ async def test_invalid_reload_keeps_last_known_good_override():
     assert await resolver.load_all() is True
     assert await resolver.load_all() is False
 
-    assert resolver.get_override_snapshot("model") == {"routewise_budget_alpha": 0.3}
+    assert _overrides(resolver) == {"routewise_budget_alpha": 0.3}
 
 
 @pytest.mark.asyncio
@@ -153,7 +162,7 @@ async def test_local_write_fences_stale_full_snapshot_reload():
     # The first global-default warmup may still report a change, but the stale
     # model row must not replace the concurrent local write.
     assert await load_task is True
-    assert resolver.get_override_snapshot("model") == {"routewise_budget_alpha": 0.6}
+    assert _overrides(resolver) == {"routewise_budget_alpha": 0.6}
 
 
 @pytest.mark.asyncio
@@ -192,7 +201,7 @@ async def test_newer_full_snapshot_fences_an_older_slow_reload():
     release_old_read.set()
     await older
 
-    assert resolver.get_override_snapshot("model") == {"routewise_budget_alpha": 0.9}
+    assert _overrides(resolver) == {"routewise_budget_alpha": 0.9}
     resolved_slo = await resolver.get_resolved("model", "routewise_latency_slo_sec")
     assert resolved_slo.value == 0.9
 
@@ -231,11 +240,11 @@ async def test_newer_full_snapshot_wins_when_older_reload_finishes_first():
 
     release_first.set()
     await older
-    assert resolver.get_override_snapshot("model") == {}
+    assert _overrides(resolver) == {}
 
     release_second.set()
     await newer
-    assert resolver.get_override_snapshot("model") == {"routewise_budget_alpha": 0.9}
+    assert _overrides(resolver) == {"routewise_budget_alpha": 0.9}
 
 
 @pytest.mark.asyncio

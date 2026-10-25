@@ -180,11 +180,6 @@ class UserConcurrencyLimiter:
             return
         slot.release()
 
-    def role_for(self, user_id: str) -> str | None:
-        """Return the role label captured at slot creation, or None."""
-        slot = self._slots.get(user_id)
-        return slot.role if slot is not None else None
-
 
 # Dependency lives at the bottom of the module so it can reference the
 # limiter class defined above.

@@ -508,17 +508,17 @@ async def test_queue_rejection_log_drops_the_prompt_past_the_pending_cap(
     # Create (not yet await) two coroutines: both reserve, filling the cap.
     first = mod.queue_rejection_log(**kwargs)
     second = mod.queue_rejection_log(**kwargs)
-    assert mod.pending_prompt_log_count() == 2
+    assert mod._pending_prompt_logs == 2
 
     # The third is created while the cap is full, so it carries no prompt.
     third = mod.queue_rejection_log(**kwargs)
-    assert mod.pending_prompt_log_count() == 2
+    assert mod._pending_prompt_logs == 2
 
     await asyncio.gather(first, second, third)
     prompts = [c.kwargs["prompt"] for c in fake_log_store.log_request.await_args_list]
     assert prompts == [messages, messages, ""]
     # Reservations freed once the writes drained.
-    assert mod.pending_prompt_log_count() == 0
+    assert mod._pending_prompt_logs == 0
 
 
 @pytest.mark.asyncio
@@ -541,7 +541,7 @@ async def test_queue_rejection_log_frees_its_reservation_when_the_write_fails(
         user=None,
         prompt=[{"role": "user", "content": "hi"}],
     )
-    assert mod.pending_prompt_log_count() == 0
+    assert mod._pending_prompt_logs == 0
 
 
 @pytest.mark.asyncio
@@ -562,7 +562,7 @@ async def test_queue_rejection_log_reserves_nothing_without_a_prompt(
         user=None,
         prompt="",
     )
-    assert mod.pending_prompt_log_count() == 0
+    assert mod._pending_prompt_logs == 0
     fake_log_store.log_request.assert_awaited_once()
 
 

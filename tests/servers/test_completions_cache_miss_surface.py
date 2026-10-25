@@ -36,7 +36,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.config.runtime_settings import get_runtime_settings
@@ -114,7 +114,7 @@ async def client_for(monkeypatch, mock_db_logger, mock_log_store):
     async def _build(*, licensed: bool) -> tuple[AsyncClient, FastAPI, OpenAICompatAdapter]:
         adapter = _adapter(licensed=licensed)
         _install_stream(adapter)
-        router = RouteExecutor()
+        router = FixedRouter()
         router.register_route("deepseek-v4-flash", [(adapter, 1.0)])
 
         app = FastAPI()

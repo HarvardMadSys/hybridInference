@@ -151,11 +151,13 @@ models:
     routewise_router = reg.get_router("m-routewise")
     assert isinstance(routewise_router, RouteWiseRouter)
 
-    reg.set_router_override("m-routewise", "fixed")
+    reg.commit_router_strategy_change(reg.prepare_router_strategy_change("m-routewise", "fixed"))
     assert reg.get_router_name("m-routewise") == "fixed"
     assert reg.get_router("m-routewise") is fixed
 
-    reg.set_router_override("m-routewise", "routewise")
+    reg.commit_router_strategy_change(
+        reg.prepare_router_strategy_change("m-routewise", "routewise")
+    )
     assert reg.get_router_name("m-routewise") == "routewise"
     switched_back = reg.get_router("m-routewise")
     assert isinstance(switched_back, RouteWiseRouter)

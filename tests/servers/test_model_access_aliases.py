@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -36,7 +36,7 @@ def _ctx(**extra) -> dict:
 
 
 def _app(module, user_ctx: dict, mock_db_logger, overrides: dict[str, str] | None = None):
-    router_exec = RouteExecutor()
+    router_exec = FixedRouter()
     router_exec.register_route(MODEL, [(DummyAdapter(_mk_cfg(MODEL)), 1.0)], aliases=[ALIAS])
 
     app = FastAPI()

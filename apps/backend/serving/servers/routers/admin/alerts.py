@@ -198,7 +198,7 @@ async def test_alert_endpoint(
                 "message": "Sent from Admin Configuration. No alert incident was created.",
             },
         )
-        sent = await sink.post(message, dedupe_key=test_id, record_failure=False)
+        sent = await sink.post(message, dedupe_key=test_id)
     except Exception:
         # Adapter exceptions may contain the credential; retain only safe context.
         logger.warning("alert test failed: channel=%s test_id=%s", payload.channel, test_id)

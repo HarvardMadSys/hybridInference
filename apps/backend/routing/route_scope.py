@@ -79,10 +79,6 @@ class ObservationScope:
         """Return the declared endpoints and provider labels, if any."""
         return self._endpoints
 
-    def is_declared(self) -> bool:
-        """Return whether this scope narrows anything at all."""
-        return self._endpoints is not None
-
     def prime(self, adapters: Iterable[BaseAdapter]) -> None:
         """Rebuild the endpoint-to-provider index from ``adapters``.
 
@@ -100,17 +96,6 @@ class ObservationScope:
             if isinstance(provider, str):
                 indexed[endpoint_id] = provider
         self._endpoint_providers = indexed
-
-    def includes_adapter(self, adapter: BaseAdapter) -> bool:
-        """Return whether ``adapter`` is inside the scope."""
-        endpoints = self._endpoints
-        if endpoints is None:
-            return True
-        endpoint_id = endpoint_id_for_adapter(adapter)
-        provider = getattr(adapter.config, "provider", None)
-        if endpoint_id in endpoints:
-            return True
-        return isinstance(provider, str) and provider in endpoints
 
     def includes_endpoint(self, endpoint_id: str) -> bool:
         """Return whether an endpoint id is inside the scope.
@@ -233,10 +218,6 @@ class RouteScopeView:
         if self._model_scope is None:
             return True
         return self._source.canonical_id(model_id) in self._model_scope
-
-    def includes_adapter(self, adapter: BaseAdapter, weight: float = 1.0) -> bool:
-        """Return whether ``adapter`` is inside this view's candidate range."""
-        return self._filter(adapter, weight)
 
     def clear_cache(self) -> None:
         """Drop the projected snapshot so the next read re-filters the source."""

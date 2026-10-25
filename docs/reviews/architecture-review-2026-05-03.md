@@ -138,7 +138,7 @@ Schema shape: [serving/storage/postgres_operational.py](../../apps/backend/servi
 
 - [routing/routers.py](../../apps/backend/routing/routers.py) (830 lines) — Core: `BaseRouter` abstract class with circuit breaker, EWMA health tracking, `FixedRouter` and `RouteWiseRouter` peer.
 - [routing/manager.py](../../apps/backend/routing/manager.py) (134 lines) — `RoutingManager` applies config-driven weights via `FixedRatioStrategy`.
-- [routing/executor.py](../../apps/backend/routing/executor.py) (17 lines) — Backward-compatibility alias for `FixedRouter` (coupling artifact).
+- `routing/executor.py` (17 lines) — Backward-compatibility alias for `FixedRouter` (coupling artifact).
 - [routing/health.py](../../apps/backend/routing/health.py) (90 lines) — Async `/health` polling monitor for local deployments.
 - [routing/config.py](../../apps/backend/routing/config.py) (135 lines) — Pydantic schema + env var expansion for `routing.yaml`.
 - [routing/model_router_registry.py](../../apps/backend/routing/model_router_registry.py) (99 lines) — Per-model router dispatch + canary rollout logic.

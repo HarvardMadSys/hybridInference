@@ -1,6 +1,6 @@
 """Ordered-fallback embedding adapter.
 
-Embedding models do not go through the weighted ``RouteExecutor`` that chat
+Embedding models do not go through the weighted ``FixedRouter`` that chat
 models use — the ``/v1/embeddings`` endpoint dispatches to a single adapter
 object looked up by model id. ``FallbackEmbeddingAdapter`` lets an embedding
 model declare more than one route (e.g. a primary local sglang endpoint plus a

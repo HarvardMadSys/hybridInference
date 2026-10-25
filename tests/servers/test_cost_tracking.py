@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.observability.tracked_tasks import _TRACKED_TASKS
 from serving.servers.auth import verify_api_key
@@ -82,7 +82,7 @@ async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
     # Disable auth for cost tracking tests; auth has independent coverage.
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     config = ModelConfig(
         id="tracked-model",
         name="Tracked Model",

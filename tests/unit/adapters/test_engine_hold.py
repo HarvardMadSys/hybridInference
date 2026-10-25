@@ -72,7 +72,8 @@ async def _send(
 
 
 def _line(limiter: UpstreamConcurrencyLimiter, address: str = ENGINE_ADDRESS) -> dict[str, int]:
-    return limiter.engine_snapshot()[address]
+    gate = limiter._gates[address]
+    return {"pending": gate.pending, "waiting": len(gate.waiters)}
 
 
 async def _settle() -> None:
@@ -90,7 +91,7 @@ async def test_a_dispatch_without_a_hold_goes_straight_to_its_engine():
     slots = [await _send(limiter, None) for _ in range(5)]
 
     assert all(not slot.held for slot in slots)
-    assert limiter.engine_snapshot() == {}
+    assert limiter._gates == {}
 
 
 async def test_held_dispatches_go_while_the_engine_has_room():
@@ -273,7 +274,7 @@ async def test_two_routes_to_one_engine_share_its_line():
     await _settle()
 
     assert not second.done()
-    assert list(limiter.engine_snapshot()) == [ENGINE_ADDRESS]
+    assert list(limiter._gates) == [ENGINE_ADDRESS]
     second.cancel()
 
 
@@ -283,7 +284,7 @@ async def test_a_remote_endpoint_is_never_held():
 
     slot = await _send(limiter, EngineHold(1), base_url=REMOTE)
 
-    assert limiter.engine_snapshot() == {}
+    assert limiter._gates == {}
     assert len(limiter.snapshot()) == 1
     slot.release(status_code=200)
 
@@ -632,7 +633,7 @@ async def test_localhost_provider_api_uses_account_limit_despite_engine_hold():
     try:
         with pytest.raises(UpstreamSaturated):
             await _send(limiter, EngineHold(1), deployment_type="provider_api")
-        assert limiter.engine_snapshot() == {}
+        assert limiter._gates == {}
         assert len(limiter.snapshot()) == 1
     finally:
         slot.release()

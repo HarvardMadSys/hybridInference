@@ -663,7 +663,7 @@ def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None
 class FixedRouter:
     """Weighted random routing with automatic fallback.
 
-    Drop-in replacement for RouteExecutor. Selects adapters via weighted
+    Drop-in replacement for FixedRouter. Selects adapters via weighted
     random selection and tries remaining adapters on failure.
 
     Args:

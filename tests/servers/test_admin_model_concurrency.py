@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -43,7 +43,7 @@ async def admin_client(monkeypatch):
     op_store.set_model_concurrency_exemption = AsyncMock()
     op_store.delete_model_concurrency_exemption = AsyncMock()
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "public-model",
         [(_make_adapter("public-model", "Public Model"), 1.0)],

@@ -8,7 +8,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving import quota
 from serving.servers.auth import _quota_contact, verify_api_key
 from serving.servers.deps import AppServices
@@ -36,7 +36,7 @@ async def auth_contract_client(monkeypatch: pytest.MonkeyPatch):
     app = FastAPI()
     install_error_handlers(app)
     app.state.services = AppServices(
-        router=RouteExecutor(),
+        router=FixedRouter(),
         operational_store=store,
         log_store=None,
     )

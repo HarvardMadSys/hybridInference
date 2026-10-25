@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.config.distribution import load_distribution_config
 from serving.servers.registry import register_from_models_yaml
 
@@ -102,7 +102,7 @@ def test_example_registry_loads_with_its_fake_upstream_env(
     monkeypatch.setenv("EXAMPLE_UPSTREAM_API_KEY", "example-local-key")
     monkeypatch.setenv("EXAMPLE_UPSTREAM_MODEL", "example-upstream")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     count, infos = register_from_models_yaml(router, EXAMPLE / "config" / "models.yaml")
 
     assert count == 1

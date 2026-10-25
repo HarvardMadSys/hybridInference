@@ -1,7 +1,7 @@
 """Model registry and configuration loader.
 
 This module builds provider adapters from configuration and registers them on a
-``RouteExecutor``. It supports both environment-based and YAML-based
+``FixedRouter``. It supports both environment-based and YAML-based
 configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
 """
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from routing.executor import RouteExecutor
+    from routing.routers import FixedRouter
 
 
 @dataclass
@@ -417,7 +417,7 @@ def _dynamic_key_provider_name(kind: str, adapter_cfg: dict[str, Any]) -> str:
 
 
 def register_from_models_yaml(
-    router: RouteExecutor,
+    router: FixedRouter,
     path: Path,
     embedding_adapters: dict[str, Any] | None = None,
     *,
@@ -889,7 +889,7 @@ def register_from_models_yaml(
                 if pool_capable:
                     dynamic_key_registrations.append((provider_key, adapter))
 
-            # Determine model type: "embedding" models bypass RouteExecutor
+            # Determine model type: "embedding" models bypass FixedRouter
             model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
 
             model_id = str(top_cfg["id"])  # type: ignore
@@ -923,7 +923,7 @@ def register_from_models_yaml(
                 alias_owner[str(alias)] = model_id
 
             if model_type == "embedding" and embedding_adapters is not None:
-                # Embedding models bypass the weighted RouteExecutor. Register
+                # Embedding models bypass the weighted FixedRouter. Register
                 # the routes (in YAML order) as an ordered fallback chain: the
                 # /v1/embeddings endpoint tries the primary first and falls
                 # through to later routes (e.g. a staging canary) only when an
@@ -939,7 +939,7 @@ def register_from_models_yaml(
                         embedding_adapters[alias] = emb_adapter
                 count += 1 + len(aliases)
             else:
-                # Chat models go through the full RouteExecutor
+                # Chat models go through the full FixedRouter
                 admin_only = bool(m.get("admin_only", False))
                 required_role = str(m.get("required_role", "free"))
                 # Validate required_role to prevent fail-open on typos

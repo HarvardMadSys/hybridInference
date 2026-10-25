@@ -59,10 +59,9 @@ def auth_database_detail() -> str:
 
 
 if TYPE_CHECKING:
-    from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
-    from routing.routers import ManagedRouter
+    from routing.routers import FixedRouter, ManagedRouter
     from serving.auto_mode import AutoMode
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -89,7 +88,7 @@ class AppServices:
     when accessing ``app.state``.
     """
 
-    router: RouteExecutor
+    router: FixedRouter
     embedding_adapters: dict[str, Any] | None = None
     db_logger: DatabaseLogger | None = None
     operational_store: OperationalStore | None = None
@@ -137,8 +136,8 @@ def get_services(request: Request) -> AppServices:
     return request.app.state.services  # type: ignore[attr-defined]
 
 
-def get_router(services: AppServices = Depends(get_services)) -> RouteExecutor:
-    """Dependency to obtain the RouteExecutor."""
+def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
+    """Dependency to obtain the FixedRouter."""
     return services.router
 
 

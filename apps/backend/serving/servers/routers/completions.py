@@ -14,10 +14,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.endpoints import endpoint_id_for_adapter
-from routing.executor import ProviderPinError
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
-from routing.routers import AllCircuitsOpenError, TargetUnavailableError
+from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
 from serving.auto_mode import (
     AutoModelUnavailable,
     apply_to_chat_request,

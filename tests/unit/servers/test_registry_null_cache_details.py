@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.registry import register_from_models_yaml
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def _load(tmp_path: Path, monkeypatch, body: str) -> list:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "remote-key")
     path = tmp_path / "models.yaml"
     path.write_text(textwrap.dedent(body))
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, path)
     return [adapter.config for adapter, _weight in router.routes["ds-test"].adapters]
 
@@ -189,7 +189,7 @@ def test_flag_reaches_the_adapter_usage_normalizer(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     path = tmp_path / "models.yaml"
     path.write_text(textwrap.dedent(_SGLANG_PLUS_VLLM))
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, path)
     local_adapter, remote_adapter = (a for a, _w in router.routes["ds-test"].adapters)
 

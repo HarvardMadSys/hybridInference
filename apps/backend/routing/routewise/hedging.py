@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Sequence
@@ -33,31 +33,6 @@ class HedgeBackupUnavailable(RuntimeError):
 
 class HedgeStreamRaceTimeout(TimeoutError):
     """Raised when no stream produces race-winning output before the deadline."""
-
-
-@runtime_checkable
-class ProviderEventSink(Protocol):
-    """Deprecated compatibility contract for endpoint outcome recorders.
-
-    Deprecated: pass an ``EndpointHealthRegistry`` to ``HedgedAdapter``. This
-    protocol remains exported only for callers that perform structural runtime
-    checks against the registry's canonical outcome API.
-    """
-
-    def record_success(self, endpoint_id: str) -> None:
-        """Record a successful request for *endpoint_id*."""
-        ...
-
-    def record_failure(
-        self,
-        endpoint_id: str,
-        *,
-        reason: str = "error",
-        detail: str | None = None,
-        exc: BaseException | None = None,
-    ) -> None:
-        """Record a failed request for *endpoint_id*."""
-        ...
 
 
 # ---------------------------------------------------------------------------

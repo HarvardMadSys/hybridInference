@@ -8,23 +8,18 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-import routing.executor as executor_module
-from routing.executor import (
+from routing.protocols import RoutingRequestOptions
+from routing.routers import (
     AllCircuitsOpenError,
+    FixedRouter,
     ProviderPinError,
     RouteConfig,
-    RouteExecutor,
 )
-from routing.protocols import RoutingRequestOptions
 from routing.streaming import has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-
-
-def test_legacy_content_helper_alias_points_to_public_helper():
-    assert executor_module._has_non_empty_content is has_non_empty_content
 
 
 def _cfg(mid: str, provider: str = "p") -> ModelConfig:
@@ -70,7 +65,7 @@ class _FailAdapter(BaseAdapter):
 
 @pytest.mark.unit
 def test_weighted_selection_distribution():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -93,7 +88,7 @@ def test_weighted_selection_distribution():
 @pytest.mark.unit
 def test_weighted_selection_chi_square():
     """Validate distribution with a chi-square test at 95% confidence without SciPy."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -116,7 +111,7 @@ def test_weighted_selection_chi_square():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_on_primary_failure():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -136,7 +131,7 @@ async def test_fallback_on_primary_failure():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_response_records_failed_primary_attempt():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -165,7 +160,7 @@ async def test_failed_request_attaches_routing_provider_to_exception():
     upstream on ``exc._routing`` so the error-log path attributes it to the
     provider instead of the "router" sentinel (which the provider-performance
     aggregations drop)."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="extension_alias"))
     exe.register_route("m", [(primary, 1.0)])
 
@@ -183,7 +178,7 @@ async def test_failed_request_attaches_routing_provider_to_exception():
 async def test_all_fallbacks_failed_attaches_primary_provider_and_all_attempts():
     """When every provider fails, the surfaced primary error carries the primary
     provider and the full failed-attempt chain."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _FailAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -207,7 +202,7 @@ async def test_all_fallbacks_failed_attaches_primary_provider_and_all_attempts()
 async def test_pin_failure_attaches_routing_provider_to_exception():
     """A pinned request that fails must not fall back, and must attribute the
     failure to the pinned provider rather than the "router" sentinel."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     pinned = _FailAdapter(_cfg("m", provider="extension_alias"))
     other = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(pinned, 0.5), (other, 0.5)])
@@ -229,7 +224,7 @@ async def test_pin_failure_attaches_routing_provider_to_exception():
 async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_recording(monkeypatch):
     from routing import routers as routers_mod
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     bad_fallback = _EchoAdapter(_cfg("m", provider="bad"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
@@ -273,7 +268,7 @@ async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_record
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_no_route_configured_raises():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     with pytest.raises(ValueError):
         await exe.chat_completion("unknown", messages=[{"role": "user", "content": "hi"}])
 
@@ -283,7 +278,7 @@ def test_all_circuits_open_raises_all_circuits_open_error(monkeypatch):
     """Regression: when every circuit breaker is open, _select_adapter raises
     AllCircuitsOpenError so the API layer can return 503 Service Unavailable
     rather than a generic 500."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.5), (b, 0.5)])
@@ -298,7 +293,7 @@ def test_all_circuits_open_raises_all_circuits_open_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_concurrent_route_selection():
     """Verify concurrent selections do not race or corrupt state."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     echo = _EchoAdapter(_cfg("m"))
     exe.register_route("m", [(echo, 1.0)])
 
@@ -314,7 +309,7 @@ async def test_concurrent_route_selection():
 @pytest.mark.asyncio
 async def test_multiple_fallback_chain():
     """Primary and secondary fail; tertiary succeeds."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     p1 = _FailAdapter(_cfg("m", provider="p1"))
     p2 = _FailAdapter(_cfg("m", provider="p2"))
     p3 = _EchoAdapter(_cfg("m", provider="p3"))
@@ -336,7 +331,7 @@ async def test_multiple_fallback_chain():
 @pytest.mark.unit
 def test_alias_shares_route_config():
     """Aliases share the same RouteConfig; mutations affect both."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)], aliases=["m-alias"])
@@ -363,7 +358,7 @@ def test_route_selection_performance():
 
     Wall-clock budget; flaky on shared CI runners, so gated behind RUN_PERF=1.
     """
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -445,7 +440,7 @@ class TestHasNonEmptyContent:
 @pytest.mark.unit
 def test_pin_selects_matching_provider():
     """pin_provider deterministically selects the matching adapter."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -457,7 +452,7 @@ def test_pin_selects_matching_provider():
 @pytest.mark.unit
 def test_pin_skips_zero_weight():
     """pin_provider must not route to a weight=0 (disabled) adapter."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="featherless"))
     exe.register_route("m", [(a, 1.0), (b, 0.0)])
@@ -469,7 +464,7 @@ def test_pin_skips_zero_weight():
 @pytest.mark.unit
 def test_runtime_weight_override_replaces_raw_yaml_weight():
     resolver = _StaticWeightResolver({"m": {"b-endpoint": 4.0}})
-    exe = RouteExecutor(weight_override_resolver=resolver)
+    exe = FixedRouter(weight_override_resolver=resolver)
     a_cfg = _cfg("m", provider="A")
     a_cfg.endpoint_id = "a-endpoint"
     b_cfg = _cfg("m", provider="B")
@@ -491,7 +486,7 @@ def test_runtime_weight_override_replaces_raw_yaml_weight():
 @pytest.mark.unit
 def test_runtime_weight_override_zero_excludes_route_and_pin():
     resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
-    exe = RouteExecutor(weight_override_resolver=resolver)
+    exe = FixedRouter(weight_override_resolver=resolver)
     a_cfg = _cfg("m", provider="A")
     a_cfg.endpoint_id = "a-endpoint"
     b_cfg = _cfg("m", provider="B")
@@ -509,7 +504,7 @@ def test_runtime_weight_override_zero_excludes_route_and_pin():
 @pytest.mark.unit
 def test_runtime_weight_override_uses_canonical_model_id_for_aliases():
     resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
-    exe = RouteExecutor(weight_override_resolver=resolver)
+    exe = FixedRouter(weight_override_resolver=resolver)
     a_cfg = _cfg("m", provider="A")
     a_cfg.endpoint_id = "a-endpoint"
     b_cfg = _cfg("m", provider="B")
@@ -531,7 +526,7 @@ def test_runtime_weight_override_uses_canonical_model_id_for_aliases():
 @pytest.mark.unit
 def test_pin_miss_returns_none():
     """pin_provider with unknown name returns None."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
@@ -543,7 +538,7 @@ def test_pin_miss_returns_none():
 @pytest.mark.asyncio
 async def test_pin_miss_raises_provider_pin_error():
     """chat_completion with unmatched pin raises ProviderPinError, not generic ValueError."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
@@ -559,7 +554,7 @@ async def test_pin_miss_raises_provider_pin_error():
 @pytest.mark.asyncio
 async def test_pin_no_fallback_on_failure():
     """When pin_provider is set and the pinned adapter fails, must NOT fallback."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="zai"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
@@ -576,7 +571,7 @@ async def test_pin_no_fallback_on_failure():
 @pytest.mark.asyncio
 async def test_pin_success():
     """pin_provider routes to the correct adapter and returns its response."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -593,7 +588,7 @@ async def test_pin_success():
 @pytest.mark.asyncio
 async def test_legacy_pin_keyword_is_consumed_by_fixed_router():
     """The one-release shim must pin locally instead of forwarding upstream."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -611,7 +606,7 @@ async def test_legacy_pin_keyword_is_consumed_by_fixed_router():
 @pytest.mark.asyncio
 async def test_fallback_skips_zero_weight():
     """Normal fallback loop must skip weight=0 adapters."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="zai"))
     disabled = _EchoAdapter(_cfg("m", provider="featherless"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
@@ -634,7 +629,7 @@ async def test_fallback_skips_zero_weight():
 @pytest.mark.asyncio
 async def test_stream_pin_success():
     """stream_chat_completion with pin routes to correct adapter."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
@@ -653,7 +648,7 @@ async def test_stream_pin_success():
 @pytest.mark.asyncio
 async def test_stream_pin_miss_raises():
     """stream_chat_completion with unmatched pin raises ProviderPinError."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
@@ -670,7 +665,7 @@ async def test_stream_pin_miss_raises():
 @pytest.mark.asyncio
 async def test_stream_pin_no_fallback():
     """stream_chat_completion with pin must NOT fallback on failure."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="zai"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
@@ -711,7 +706,7 @@ class _YieldThenFailAdapter(BaseAdapter):
 @pytest.mark.asyncio
 async def test_stream_fallback_when_primary_fails_before_any_chunk():
     """Primary raises before yielding → fallback runs and serves the response."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -738,7 +733,7 @@ async def test_stream_no_fallback_after_chunks_yielded():
     (duplicate role/system events, mid-message provider switch,
     mismatched token-usage totals). The fix re-raises instead.
     """
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _YieldThenFailAdapter(_cfg("m", provider="primary"), yield_count=1)
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -774,7 +769,7 @@ async def test_stream_emits_routing_chunk_with_provider_and_base_url():
     """
     import json as _json
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _EchoAdapter(_cfg("m", provider="anthropic"))
     primary.config.base_url = "https://api.anthropic.com"
     primary.config.endpoint_id = "m:anthropic-api"
@@ -806,7 +801,7 @@ async def test_stream_emits_routing_chunk_for_fallback_adapter():
     """Fallback adapter also gets a _routing chunk (with fallback=True)."""
     import json as _json
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     backup.config.base_url = "https://backup.example"
@@ -852,7 +847,7 @@ async def test_stream_failed_request_attaches_routing_provider_to_exception():
     upstream on ``exc._routing`` so the error-log path attributes it to the
     provider instead of guessing from the last in-band ``_routing`` SSE
     chunk the consumer saw."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="extension_alias"))
     exe.register_route("m", [(primary, 1.0)])
 
@@ -885,7 +880,7 @@ async def test_stream_all_fallbacks_failed_attaches_primary_provider_and_all_att
     this misattributed errors from e.g. api.kimi.com / api.z.ai to a
     low-weight canary fallback route that happened to be tried last.
     """
-    exe = RouteExecutor()
+    exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _FailAdapter(_cfg("m", provider="backup"))
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
@@ -913,7 +908,7 @@ def test_admin_only_default_false():
 @pytest.mark.unit
 def test_admin_only_propagated():
     """register_route(..., admin_only=True) sets the flag on route and aliases."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     exe.register_route("m", [(a, 1.0)], aliases=["m-alias"], admin_only=True)
 
@@ -933,7 +928,7 @@ def test_weights_renormalized_when_circuit_breaker_excludes_adapter():
     the last adapter in the pool absorbed all overflow probability mass,
     getting disproportionately more traffic than its weight warranted.
     """
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     c = _EchoAdapter(_cfg("m", provider="C"))
@@ -971,7 +966,7 @@ def test_select_skips_zero_weight_when_positive_circuits_open():
     """
     from routing.routers import AllCircuitsOpenError
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     disabled = _EchoAdapter(_cfg("m", provider="DISABLED"))
     exe.register_route("m", [(a, 1.0), (disabled, 0.0)])
@@ -996,7 +991,7 @@ class _StaticDisabledResolver:
 @pytest.mark.unit
 def test_disabled_provider_excluded_from_selection():
     """A disabled provider is never selected even at full weight."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     exe.disabled_provider_resolver = _StaticDisabledResolver({"B"})
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
@@ -1012,7 +1007,7 @@ def test_disabled_provider_excluded_from_selection():
 @pytest.mark.unit
 def test_all_providers_disabled_raises_all_circuits_open():
     """Disabling every provider for a model surfaces AllCircuitsOpenError."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     exe.disabled_provider_resolver = _StaticDisabledResolver({"A", "B"})
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
@@ -1026,7 +1021,7 @@ def test_all_providers_disabled_raises_all_circuits_open():
 @pytest.mark.asyncio
 async def test_fallback_skips_disabled_provider():
     """The fallback loop must skip a disabled provider and use the next one."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     exe.disabled_provider_resolver = _StaticDisabledResolver({"featherless"})
     primary = _FailAdapter(_cfg("m", provider="zai"))
     disabled = _EchoAdapter(_cfg("m", provider="featherless"))
@@ -1046,7 +1041,7 @@ async def test_fallback_skips_disabled_provider():
 @pytest.mark.unit
 def test_pin_to_disabled_provider_returns_none():
     """Pinning to a disabled provider yields no adapter (pin miss)."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     exe.disabled_provider_resolver = _StaticDisabledResolver({"zai"})
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
@@ -1059,7 +1054,7 @@ def test_pin_to_disabled_provider_returns_none():
 @pytest.mark.unit
 def test_eligible_adapters_reports_route_order_admissions():
     """Callers that pick their own adapter get the router's admission rules."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.9), (b, 0.1)])
@@ -1074,7 +1069,7 @@ def test_eligible_adapters_reports_route_order_admissions():
 @pytest.mark.unit
 def test_eligible_adapters_excludes_disabled_and_reports_empty_on_full_outage():
     """A disabled provider is not eligible; disabling all of them empties the list."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.5), (b, 0.5)])
@@ -1089,7 +1084,7 @@ def test_eligible_adapters_excludes_disabled_and_reports_empty_on_full_outage():
 @pytest.mark.unit
 def test_eligible_adapters_is_empty_for_unknown_or_unpublished_routes():
     """No route, or a staged one, offers nothing to dispatch to."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     exe.register_route("m", [(a, 1.0)], published=False)
 
@@ -1110,7 +1105,7 @@ def _mcfg(provider: str, modalities: list[str]) -> ModelConfig:
 @pytest.mark.unit
 def test_select_adapter_filters_routes_by_required_modality():
     """Media requests never select a route that doesn't declare the modality."""
-    exe = RouteExecutor()
+    exe = FixedRouter()
     text_only = _EchoAdapter(_mcfg("TEXT", ["text"]))
     vision = _EchoAdapter(_mcfg("VIS", ["text", "image"]))
     # Text-only route dominates by weight; without filtering it would win most picks.
@@ -1128,7 +1123,7 @@ def test_select_adapter_filters_routes_by_required_modality():
 
 @pytest.mark.unit
 def test_select_adapter_raises_when_no_route_supports_modality():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     exe.register_route("m", [(_EchoAdapter(_mcfg("A", ["text"])), 1.0)])
     with pytest.raises(AllCircuitsOpenError):
         exe._select_adapter("m", required_modalities=frozenset({"image"}))
@@ -1136,7 +1131,7 @@ def test_select_adapter_raises_when_no_route_supports_modality():
 
 @pytest.mark.unit
 async def test_chat_completion_dispatches_media_only_to_supporting_route():
-    exe = RouteExecutor()
+    exe = FixedRouter()
     text_only = _EchoAdapter(_mcfg("TEXT", ["text"]))
     vision = _EchoAdapter(_mcfg("VIS", ["text", "image"]))
     exe.register_route("m", [(text_only, 0.9), (vision, 0.1)])

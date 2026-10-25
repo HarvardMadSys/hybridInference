@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import (
@@ -42,7 +42,7 @@ async def test_admin_routing_status_with_and_without_manager(monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin-routing-token")
     headers = {"Authorization": "Bearer test-admin-routing-token"}
     # Build router with one model
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("m1", [(_EchoAdapter(_cfg("m1")), 1.0)])
 
     # Case 1: with routing manager
@@ -84,7 +84,7 @@ async def test_admin_routing_status_with_and_without_manager(monkeypatch):
 @pytest.fixture
 def admin_routing_app(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-admin-routing-secret-key-at-least-32-bytes")
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("m1", [(_EchoAdapter(_cfg("m1")), 1.0)])
     manager = Mock()
     manager.get_status.return_value = {"loaded": True, "strategy": "fixed"}

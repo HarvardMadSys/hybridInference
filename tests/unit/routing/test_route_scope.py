@@ -90,7 +90,7 @@ def test_observation_scope_admits_an_unindexed_endpoint_only_by_explicit_id() ->
 def test_observation_scope_without_a_declaration_claims_every_endpoint() -> None:
     scope = ObservationScope(None)
 
-    assert scope.is_declared() is False
+    assert scope.endpoint_scope is None
     assert scope.includes_endpoint("anything-at-all")
 
 
@@ -190,8 +190,6 @@ def test_scope_view_narrows_endpoint_ids_to_the_declared_range() -> None:
     view = scope_view_for_endpoints(table, {"model:cloud-api"})
 
     assert endpoint_ids_in_view(view) == frozenset({"model:cloud-api"})
-    assert view.includes_adapter(cloud)
-    assert not view.includes_adapter(local)
 
 
 @pytest.mark.unit

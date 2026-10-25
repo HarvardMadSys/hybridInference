@@ -27,7 +27,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin.metrics import (
@@ -384,7 +384,7 @@ async def test_summary_reconciles_with_the_list_views_decode_column(db_logger):
     await _seed(db_logger.pool, rows)
 
     app = FastAPI()
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=db_logger)
+    app.state.services = AppServices(router=FixedRouter(), db_logger=db_logger)
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
 

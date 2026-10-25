@@ -176,7 +176,7 @@ def test_explicit_deployment_defines_scope_without_changing_endpoint_ids() -> No
 
     router = _registry(shared).get_router(_MODEL_ID)
     assert isinstance(router, HybridRouter)
-    backends = {backend.name: backend for backend in router.backends()}
+    backends = {name: router.backend(name) for name in ("local", "cloud")}
     assert backends["local"].endpoint_scope == frozenset({"compose-model:engine-api"})
     assert backends["cloud"].endpoint_scope == frozenset({"compose-model:local-9000"})
 
@@ -193,7 +193,7 @@ def test_registry_builds_a_hybrid_router_for_a_mixed_model() -> None:
 
     assert isinstance(router, HybridRouter)
     assert isinstance(router.policy, FixedPolicy)
-    backends = {backend.name: backend for backend in router.backends()}
+    backends = {name: router.backend(name) for name in ("local", "cloud")}
     assert isinstance(backends["local"], LocalBackend)
     assert isinstance(backends["cloud"], FixedCloudBackend)
     assert backends["local"].endpoint_scope == frozenset({_LOCAL_ENDPOINT})

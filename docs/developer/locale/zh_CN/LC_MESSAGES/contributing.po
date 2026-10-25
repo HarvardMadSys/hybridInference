@@ -162,19 +162,6 @@ msgstr ""
 msgid "Repository layout"
 msgstr "仓库结构"
 
-#: ../developer/contributing.md:131
-msgid "Two things about the backend are easy to get wrong:"
-msgstr "后端有两件事很容易搞错："
-
-#: ../developer/contributing.md:133
-msgid ""
-"`apps/backend/routing/executor.py` is a backward-compatibility shim that "
-"re-exports `FixedRouter` as `RouteExecutor`. Edit "
-"`apps/backend/routing/routers.py` instead."
-msgstr ""
-"`apps/backend/routing/executor.py` 只是一个向后兼容的 shim，把 `FixedRouter` 以 "
-"`RouteExecutor` 的名字重新导出。要改请改 `apps/backend/routing/routers.py`。"
-
 #: ../developer/contributing.md:136
 msgid ""
 "The backend packages are `serving` and `routing`, rooted at "

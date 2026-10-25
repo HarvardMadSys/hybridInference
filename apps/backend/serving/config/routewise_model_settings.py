@@ -256,12 +256,6 @@ class RouteWiseSettingsResolver:
             raise KeyError(f"unknown RouteWise setting: {key}")
         return (await self.resolve_model(model_id))[key]
 
-    def get_override_snapshot(self, model_id: str) -> dict[str, bool | int | float]:
-        """Return the current non-blocking scoped override snapshot."""
-        canonical_model_id = self._registry.canonical_model_id(model_id)
-        with self._lock:
-            return dict(self._snapshots.get(canonical_model_id, {}))
-
     def set_override(self, model_id: str, key: str, value: Any) -> None:
         """Publish one local snapshot value after its database upsert succeeds."""
         canonical_model_id = self.canonical_model_id(model_id)

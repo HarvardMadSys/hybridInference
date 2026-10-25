@@ -24,8 +24,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from openai.types import CompletionUsage
 
-from routing.executor import RouteExecutor
-from routing.routers import ProviderPinError
+from routing.routers import FixedRouter, ProviderPinError
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
@@ -112,7 +111,7 @@ def _app(
     force_streaming: bool = False,
 ) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(_MODEL, [(adapter, 1.0) for adapter in adapters])
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=force_streaming)

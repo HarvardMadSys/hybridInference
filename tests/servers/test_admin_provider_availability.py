@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import FixedRouter
 from serving.adapters import ModelConfig
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.servers import bootstrap
@@ -48,7 +48,7 @@ async def admin_client(monkeypatch):
     op_store.set_provider_disabled = AsyncMock(side_effect=_set)
     op_store.clear_provider_disabled = AsyncMock(side_effect=_clear)
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "model-a",
         [(_adapter("openrouter", "openrouter:h:1"), 0.6), (_adapter("zai", "zai:h:1"), 0.4)],

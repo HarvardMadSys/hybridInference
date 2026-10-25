@@ -37,14 +37,6 @@ MIME_TYPE_ALIASES = {
     "image/webp": "image/webp",
 }
 
-EXTENSION_TO_MIME = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
-
 # ---------------------------------------------------------------------------
 # Request translation
 # ---------------------------------------------------------------------------
@@ -127,15 +119,6 @@ def parse_data_url(data_url: str) -> dict[str, Any]:
         "type": "image",
         "source": {"type": "base64", "media_type": media_type, "data": base64_data},
     }
-
-
-def infer_media_type_from_url(url: str) -> str:
-    """Infer media type from URL extension, defaults to image/jpeg."""
-    path = url.split("?")[0].lower()
-    for ext, mime in EXTENSION_TO_MIME.items():
-        if path.endswith(ext):
-            return mime
-    return "image/jpeg"
 
 
 def convert_content_blocks(content: str | list[Any] | Any) -> list[dict[str, Any]]:

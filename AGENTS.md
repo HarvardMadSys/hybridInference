@@ -161,8 +161,6 @@ For the full diagram (network layer, observability, storage), see
   See
   [docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
   for the current router, leaf and pool contracts, opt-in wiring and deferred work.
-- **`routing/executor.py`** — backward-compatibility shim that re-exports
-  `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
 - **Strategy** — two layers. The deployment-wide weight strategy
   (`FixedRatioStrategy` in
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))

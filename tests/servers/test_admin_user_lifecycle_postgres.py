@@ -18,7 +18,7 @@ import pytest_asyncio
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.exception_handler import install_exception_handlers
@@ -37,7 +37,7 @@ async def gateway(auth_backend, monkeypatch):
     operational_store, log_store, db_logger, _ = auth_backend
     app = FastAPI()
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=RouteExecutor(),
+        router=FixedRouter(),
         db_logger=db_logger,
         operational_store=operational_store,
         log_store=log_store,

@@ -21,7 +21,6 @@ async def test_load_all_populates_snapshot_from_store():
     assert resolver.is_disabled("openrouter")
     assert resolver.is_disabled("chutes")
     assert not resolver.is_disabled("zai")
-    assert resolver.list_disabled() == frozenset({"openrouter", "chutes"})
 
 
 @pytest.mark.asyncio

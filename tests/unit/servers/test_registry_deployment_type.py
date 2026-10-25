@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.servers.registry import register_from_models_yaml
 
@@ -31,7 +31,7 @@ def _model() -> dict:
 def _load(tmp_path, model: dict, **kwargs) -> list:
     path = tmp_path / "models.yaml"
     path.write_text(yaml.safe_dump({"models": [model]}))
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, path, **kwargs)
     return [adapter.config for adapter, _ in router.routes[model["id"]].adapters]
 

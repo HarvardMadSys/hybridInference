@@ -29,6 +29,10 @@ def _clean_transition_state():
     reset_transition_state()
 
 
+def _drain_running() -> bool:
+    return any(task.get_name() == "AlertEngine.drain" for task in asyncio.all_tasks())
+
+
 async def test_engine_starts_and_stops_cleanly():
     handler = AlertingLogHandler(maxsize=10)
     cfg = AlertConfig()
@@ -41,9 +45,9 @@ async def test_engine_starts_and_stops_cleanly():
     )
 
     await engine.start()
-    assert engine.is_running()
+    assert _drain_running()
     await engine.stop()
-    assert not engine.is_running()
+    assert not _drain_running()
 
 
 def _fake_record(
