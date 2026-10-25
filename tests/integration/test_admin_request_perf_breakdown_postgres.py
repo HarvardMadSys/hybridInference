@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -158,7 +158,7 @@ def _row(
 
 
 async def _seed(pool: asyncpg.Pool, rows: list[dict[str, Any]]) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with pool.acquire() as conn:
         await conn.executemany(
             """
@@ -449,8 +449,8 @@ def _inside_hour_bucket(hours_back: int) -> datetime:
     ago" would straddle a boundary or not depending on the wall-clock minute the
     suite ran at. Anchoring to the boundary makes placement exact.
     """
-    now = datetime.now(timezone.utc)
-    floor_hour = datetime.fromtimestamp(int(now.timestamp()) // 3600 * 3600, tz=timezone.utc)
+    now = datetime.now(UTC)
+    floor_hour = datetime.fromtimestamp(int(now.timestamp()) // 3600 * 3600, tz=UTC)
     return floor_hour - timedelta(hours=hours_back) + timedelta(minutes=30)
 
 

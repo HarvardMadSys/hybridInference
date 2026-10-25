@@ -15,6 +15,7 @@ import { useAuth } from '@/components/providers';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Markdown } from '@/components/ui/Markdown';
+import { Select } from '@/components/ui/Select';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
@@ -55,6 +56,8 @@ interface PlaygroundSession {
 interface UndoAction {
   label: string;
   restore: () => void;
+  /** The session whose action this is: the timer pauses only while *it* streams. */
+  sessionId: string;
 }
 
 let messageCounter = 0;
@@ -182,7 +185,13 @@ export default function PlaygroundPage() {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<PlaygroundSession[]>([createSession('s-1')]);
   const [activeSessionId, setActiveSessionId] = useState('s-1');
-  const [streaming, setStreaming] = useState(false);
+  // Sessions with a turn in flight. Streaming is scoped per session (issue:
+  // "streaming locks the entire UI"): other sessions stay fully usable —
+  // switching, editing, deleting, and starting their own streams — while a
+  // session streams. Every turn owns its scratch state (pending deltas, raf
+  // handle, timing, abort controller) as locals, so parallel turns cannot
+  // overwrite each other.
+  const [streamingIds, setStreamingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [copyState, setCopyState] = useState<{ id: string; ok: boolean } | null>(null);
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
@@ -190,19 +199,33 @@ export default function PlaygroundPage() {
   const [undo, setUndo] = useState<UndoAction | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const pendingRef = useRef('');
-  const pendingReasoningRef = useRef('');
-  const pendingRoutingRef = useRef<RoutingInfo | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const counterRef = useRef(2);
-  const streamStartRef = useRef<number>(0);
-  const firstTokenTimeRef = useRef<number>(0);
-  const contentStartRef = useRef<number>(0);
-  const completionTokensRef = useRef<number>(0);
-  const finishReasonRef = useRef<string | undefined>(undefined);
   const followRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+  // Which session is on screen right now, as a ref so an animation-frame
+  // callback reads the current answer rather than the one captured when the
+  // stream began: the user can switch sessions mid-stream.
+  const visibleSessionRef = useRef<string>(activeSessionId);
+
+  useEffect(() => {
+    visibleSessionRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  // Navigating away must not leave generations running until the network or
+  // idle timeout ends them: every live abort controller fires on unmount. The
+  // per-turn `finally` stays authoritative for its own scratch state (raf
+  // cancel, streaming-set removal, aborted stamp) — this only pulls the
+  // network plug.
+  useEffect(() => {
+    const controllers = abortControllersRef.current;
+    return () => {
+      for (const controller of controllers.values()) {
+        controller.abort();
+      }
+      controllers.clear();
+    };
+  }, []);
 
   const session = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
   const modelId = session?.selectedModelId || '';
@@ -215,11 +238,21 @@ export default function PlaygroundPage() {
   const selectedProvider = session?.selectedProvider ?? null;
   const modelProviders = model?.providers ?? [];
 
+  const streaming = streamingIds.size > 0;
+  const activeStreaming = streamingIds.has(session?.id ?? '');
+
+  const patchSession = useCallback(
+    (sessionId: string, fn: (s: PlaygroundSession) => PlaygroundSession) => {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? fn(s) : s)));
+    },
+    [],
+  );
+
   const patch = useCallback(
     (fn: (s: PlaygroundSession) => PlaygroundSession) => {
-      setSessions((prev) => prev.map((s) => (s.id === activeSessionId ? fn(s) : s)));
+      patchSession(activeSessionId, fn);
     },
-    [activeSessionId],
+    [activeSessionId, patchSession],
   );
 
   const loadModels = useCallback(() => {
@@ -246,12 +279,15 @@ export default function PlaygroundPage() {
     loadModels();
   }, [state.user?.role, loadModels]);
 
-  // The countdown waits for a stream to finish: Undo is disabled until then.
+  // The countdown waits for *its* session's stream to finish: Undo is
+  // disabled until then. Scoped to the Undo's own session, so a stream in
+  // another session neither blocks nor restarts this timer.
+  const undoPaused = undo !== null && streamingIds.has(undo.sessionId);
   useEffect(() => {
-    if (!undo || streaming) return;
+    if (!undo || undoPaused) return;
     const timer = setTimeout(() => setUndo(null), UNDO_MS);
     return () => clearTimeout(timer);
-  }, [undo, streaming]);
+  }, [undo, undoPaused]);
 
   /** Scroll to the newest message, unless the reader has scrolled away (`force` overrides). */
   const scrollDown = useCallback((behavior: ScrollBehavior = 'auto', force = false) => {
@@ -273,53 +309,67 @@ export default function PlaygroundPage() {
     setShowJump(!followRef.current);
   }, []);
 
-  const flushDelta = useCallback(() => {
-    const contentDelta = pendingRef.current;
-    const reasoningDelta = pendingReasoningRef.current;
-    const routing = pendingRoutingRef.current;
-    if (!contentDelta && !reasoningDelta && !routing) return;
-    pendingRef.current = '';
-    pendingReasoningRef.current = '';
-    pendingRoutingRef.current = null;
-    patch((s) => {
-      const copy = [...s.messages];
-      const last = copy[copy.length - 1];
-      if (!last) return s;
-      copy[copy.length - 1] = {
-        ...last,
-        ...(contentDelta ? { content: last.content + contentDelta } : {}),
-        ...(reasoningDelta
-          ? { reasoningContent: (last.reasoningContent || '') + reasoningDelta }
-          : {}),
-        ...(routing ? { routing } : {}),
-      };
-      return { ...s, messages: copy };
-    });
-  }, [patch]);
+  /** Deltas buffered for one in-flight turn, flushed in animation frames. */
+  interface TurnDeltas {
+    content: string;
+    reasoning: string;
+    routing: RoutingInfo | null;
+    raf: number | null;
+  }
 
-  const scheduleFlush = useCallback(() => {
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      flushDelta();
-      scrollDown('auto');
-    });
-  }, [flushDelta, scrollDown]);
+  const flushDelta = useCallback(
+    (sessionId: string, turn: TurnDeltas) => {
+      if (!turn.content && !turn.reasoning && !turn.routing) return;
+      const contentDelta = turn.content;
+      const reasoningDelta = turn.reasoning;
+      const routing = turn.routing;
+      turn.content = '';
+      turn.reasoning = '';
+      turn.routing = null;
+      patchSession(sessionId, (s) => {
+        const copy = [...s.messages];
+        const last = copy[copy.length - 1];
+        if (!last) return s;
+        copy[copy.length - 1] = {
+          ...last,
+          ...(contentDelta ? { content: last.content + contentDelta } : {}),
+          ...(reasoningDelta
+            ? { reasoningContent: (last.reasoningContent || '') + reasoningDelta }
+            : {}),
+          ...(routing ? { routing } : {}),
+        };
+        return { ...s, messages: copy };
+      });
+    },
+    [patchSession],
+  );
+
+  const scheduleFlush = useCallback(
+    (sessionId: string, turn: TurnDeltas) => {
+      if (turn.raf !== null) return;
+      turn.raf = requestAnimationFrame(() => {
+        turn.raf = null;
+        flushDelta(sessionId, turn);
+        // Only the session the reader is looking at follows the stream: a
+        // background turn still lands its deltas in its own session, but it
+        // must not yank the visible one's scroll position. The ref, not the
+        // value captured when the stream began, because the user can switch
+        // sessions mid-generation.
+        if (visibleSessionRef.current === sessionId) {
+          scrollDown('auto');
+        }
+      });
+    },
+    [flushDelta, scrollDown],
+  );
 
   useEffect(() => {
     scrollDown('auto', true);
   }, [activeSessionId, scrollDown]);
 
   useEffect(() => {
-    scrollDown(streaming ? 'auto' : 'smooth');
-  }, [msgs.length, scrollDown, streaming]);
-
-  useEffect(
-    () => () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    },
-    [],
-  );
+    scrollDown(activeStreaming ? 'auto' : 'smooth');
+  }, [msgs.length, scrollDown, activeStreaming]);
 
   // Runs on every input change, including the clear after a send and session switches.
   useLayoutEffect(() => {
@@ -355,35 +405,30 @@ export default function PlaygroundPage() {
 
   const resetSession = useCallback(() => {
     if (!session) return;
+    const wasStreaming = streamingIds.has(session.id);
     const snapshot = session.messages.map((m, i, all) =>
-      streaming && i === all.length - 1 && m.role === 'assistant' && !m.status
+      wasStreaming && i === all.length - 1 && m.role === 'assistant' && !m.status
         ? { ...m, status: 'aborted' as const }
         : m,
     );
     const draft = session.input;
     const sessionId = session.id;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    pendingRef.current = '';
-    pendingReasoningRef.current = '';
-    pendingRoutingRef.current = null;
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    setStreaming(false);
+    // Aborting is all the turn needs: it owns its scratch state, and its
+    // finally stamps the aborted placeholder — a no-op on the cleared
+    // session, whose messages are already gone.
+    if (wasStreaming) abortControllersRef.current.get(sessionId)?.abort();
     const cleared: Message[] = [];
-    patch((s) => ({ ...s, messages: cleared, input: '' }));
+    patchSession(sessionId, (s) => ({ ...s, messages: cleared, input: '' }));
     if (snapshot.length > 0 || draft) {
       setUndo({
         label: 'Conversation cleared',
+        sessionId,
         restore: () => restoreMessages(sessionId, snapshot, draft, cleared),
       });
     }
-  }, [session, streaming, patch, restoreMessages]);
+  }, [session, streamingIds, patchSession, restoreMessages]);
 
   const newSession = useCallback(() => {
-    if (streaming) return;
     const id = `s-${counterRef.current++}`;
     // Carry the current settings over, so comparing runs doesn't mean redoing them.
     const ns: PlaygroundSession = {
@@ -395,11 +440,13 @@ export default function PlaygroundPage() {
     };
     setSessions((p) => [ns, ...p]);
     setActiveSessionId(id);
-  }, [models, modelId, selectedProvider, sysPrompt, temp, maxTok, streaming]);
+  }, [models, modelId, selectedProvider, sysPrompt, temp, maxTok]);
 
   const deleteSession = useCallback(
     (id: string) => {
-      if (streaming || sessions.length <= 1) return;
+      // The session a turn is streaming into cannot be deleted out from under
+      // it; every other session deletes freely, even while something streams.
+      if (streamingIds.has(id) || sessions.length <= 1) return;
       const index = sessions.findIndex((s) => s.id === id);
       if (index < 0) return;
       const removed = sessions[index];
@@ -410,6 +457,7 @@ export default function PlaygroundPage() {
       }
       setUndo({
         label: `Deleted "${getSessionTitle(removed)}"`,
+        sessionId: id,
         restore: () => {
           setSessions((prev) =>
             prev.some((s) => s.id === id)
@@ -420,22 +468,17 @@ export default function PlaygroundPage() {
         },
       });
     },
-    [activeSessionId, sessions, streaming],
+    [activeSessionId, sessions, streamingIds],
   );
 
   const switchSession = useCallback(
     (id: string) => {
-      if (streaming || id === activeSessionId) return;
-      pendingRef.current = '';
-      pendingReasoningRef.current = '';
-      pendingRoutingRef.current = null;
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
+      if (id === activeSessionId) return;
+      // Nothing to detach: a background turn writes into its own session, so
+      // switching the view never drops or misroutes its deltas.
       setActiveSessionId(id);
     },
-    [activeSessionId, streaming],
+    [activeSessionId],
   );
 
   const handleCopy = useCallback(async (text: string, id: string) => {
@@ -459,15 +502,26 @@ export default function PlaygroundPage() {
   /**
    * Stream a reply to `base`, which ends with the user message being answered.
    * A new turn retires any pending Undo; `undo` replaces it when the turn
-   * itself is the undoable action.
+   * itself is the undoable action. Everything the turn mutates — its buffered
+   * deltas, raf handle, timing, abort controller — is a local, so turns run
+   * per session and cannot overwrite each other's state.
    */
   const startTurn = useCallback(
     async (base: Message[], undo: UndoAction | null = null) => {
-      if (streaming || !modelId) return;
+      const turnSessionId = activeSessionId;
+      if (streamingIds.has(turnSessionId) || !modelId) return;
+      const turn: TurnDeltas = { content: '', reasoning: '', routing: null, raf: null };
+      const timing = {
+        start: 0,
+        firstToken: 0,
+        contentStart: 0,
+        tokens: 0,
+        finishReason: undefined as string | undefined,
+      };
 
       setUndo(undo);
       followRef.current = true;
-      patch((s) => ({
+      patchSession(turnSessionId, (s) => ({
         ...s,
         title: getSessionTitle({ ...s, messages: base }),
         messages: [
@@ -481,16 +535,12 @@ export default function PlaygroundPage() {
           },
         ],
       }));
-      setStreaming(true);
-      streamStartRef.current = performance.now();
-      firstTokenTimeRef.current = 0;
-      contentStartRef.current = 0;
-      completionTokensRef.current = 0;
-      finishReasonRef.current = undefined;
+      setStreamingIds((prev) => new Set(prev).add(turnSessionId));
+      timing.start = performance.now();
       let failure: { status: 'error' | 'aborted'; error?: string } | null = null;
 
       const ctrl = new AbortController();
-      abortRef.current = ctrl;
+      abortControllersRef.current.set(turnSessionId, ctrl);
       let idleTimer: ReturnType<typeof setTimeout> | undefined;
       const resetIdle = () => {
         clearTimeout(idleTimer);
@@ -553,7 +603,7 @@ export default function PlaygroundPage() {
             try {
               const parsed = JSON.parse(payload);
               if (parsed.usage?.completion_tokens) {
-                completionTokensRef.current = parsed.usage.completion_tokens;
+                timing.tokens = parsed.usage.completion_tokens;
               }
               const inBandError = frameError(parsed.error);
               if (inBandError) failure = { status: 'error', error: inBandError };
@@ -562,24 +612,24 @@ export default function PlaygroundPage() {
               // that actually served the response.
               const routing = parseRouting(parsed._playground_route);
               if (routing) {
-                pendingRoutingRef.current = routing;
-                scheduleFlush();
+                turn.routing = routing;
+                scheduleFlush(turnSessionId, turn);
               }
               const choice = parsed.choices?.[0];
-              if (choice?.finish_reason) finishReasonRef.current = choice.finish_reason;
+              if (choice?.finish_reason) timing.finishReason = choice.finish_reason;
               const delta = choice?.delta;
               if (delta?.content || delta?.reasoning_content) {
                 const now = performance.now();
-                if (!firstTokenTimeRef.current) firstTokenTimeRef.current = now;
-                if (delta.content && !contentStartRef.current) contentStartRef.current = now;
+                if (!timing.firstToken) timing.firstToken = now;
+                if (delta.content && !timing.contentStart) timing.contentStart = now;
               }
               if (delta?.content) {
-                pendingRef.current += delta.content;
-                scheduleFlush();
+                turn.content += delta.content;
+                scheduleFlush(turnSessionId, turn);
               }
               if (delta?.reasoning_content) {
-                pendingReasoningRef.current += delta.reasoning_content;
-                scheduleFlush();
+                turn.reasoning += delta.reasoning_content;
+                scheduleFlush(turnSessionId, turn);
               }
             } catch {
               /* skip */
@@ -591,7 +641,7 @@ export default function PlaygroundPage() {
             break;
           }
         }
-        if (!failure && !firstTokenTimeRef.current) {
+        if (!failure && !timing.firstToken) {
           failure = { status: 'error', error: 'The model returned an empty response.' };
         }
       } catch (err) {
@@ -603,19 +653,19 @@ export default function PlaygroundPage() {
         }
       } finally {
         clearTimeout(idleTimer);
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
+        if (turn.raf !== null) {
+          cancelAnimationFrame(turn.raf);
+          turn.raf = null;
         }
-        flushDelta();
-        const start = streamStartRef.current;
+        flushDelta(turnSessionId, turn);
+        const start = timing.start;
         const end = performance.now();
-        const firstToken = firstTokenTimeRef.current;
-        const contentStart = contentStartRef.current;
-        const tokens = completionTokensRef.current || undefined;
-        const finishReason = finishReasonRef.current;
+        const firstToken = timing.firstToken;
+        const contentStart = timing.contentStart;
+        const tokens = timing.tokens || undefined;
+        const finishReason = timing.finishReason;
         const outcome = failure;
-        patch((s) => {
+        patchSession(turnSessionId, (s) => {
           const last = s.messages[s.messages.length - 1];
           // Cleared mid-stream: leave the session (and its Undo) untouched.
           if (last?.role !== 'assistant') return s;
@@ -634,19 +684,24 @@ export default function PlaygroundPage() {
           }
           return { ...s, messages: [...s.messages.slice(0, -1), cleaned] };
         });
-        setStreaming(false);
-        abortRef.current = null;
+        abortControllersRef.current.delete(turnSessionId);
+        setStreamingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(turnSessionId);
+          return next;
+        });
       }
     },
     [
-      streaming,
+      activeSessionId,
+      streamingIds,
       modelId,
       model?.name,
       sysPrompt,
       temp,
       maxTok,
       selectedProvider,
-      patch,
+      patchSession,
       flushDelta,
       scheduleFlush,
     ],
@@ -654,15 +709,15 @@ export default function PlaygroundPage() {
 
   const send = useCallback(() => {
     const text = input.trim();
-    if (!text || streaming || !modelId) return;
+    if (!text || activeStreaming || !modelId) return;
     patch((s) => ({ ...s, input: '' }));
     void startTurn([...msgs, { id: messageId(), role: 'user', content: text }]);
-  }, [input, streaming, modelId, msgs, patch, startTurn]);
+  }, [input, activeStreaming, modelId, msgs, patch, startTurn]);
 
   /** Re-run the last reply: a retry after a failure, a fresh sample otherwise. */
   const regenerate = useCallback(() => {
     const last = msgs[msgs.length - 1];
-    if (streaming || last?.role !== 'assistant' || !session) return;
+    if (activeStreaming || last?.role !== 'assistant' || !session) return;
     const sessionId = session.id;
     const snapshot = msgs;
     void startTurn(
@@ -670,15 +725,16 @@ export default function PlaygroundPage() {
       isUsableReply(last)
         ? {
             label: 'Replaced the last reply',
+            sessionId,
             restore: () => restoreMessages(sessionId, snapshot, ''),
           }
         : null,
     );
-  }, [msgs, streaming, session, restoreMessages, startTurn]);
+  }, [msgs, activeStreaming, session, restoreMessages, startTurn]);
 
   /** Move the last question back into the editor, dropping its reply. */
   const editLast = useCallback(() => {
-    if (streaming || !session) return;
+    if (activeStreaming || !session) return;
     const index = msgs.map((m) => m.role).lastIndexOf('user');
     if (index < 0) return;
     const sessionId = session.id;
@@ -692,6 +748,7 @@ export default function PlaygroundPage() {
     );
     setUndo({
       label: 'Moved your last message back to the editor',
+      sessionId,
       restore: () =>
         setSessions((prev) =>
           prev.map((s) =>
@@ -702,7 +759,7 @@ export default function PlaygroundPage() {
         ),
     });
     textareaRef.current?.focus();
-  }, [msgs, input, streaming, session]);
+  }, [msgs, input, activeStreaming, session]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -776,7 +833,6 @@ export default function PlaygroundPage() {
                 <button
                   type="button"
                   onClick={newSession}
-                  disabled={streaming}
                   className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
                 >
                   + New
@@ -797,15 +853,14 @@ export default function PlaygroundPage() {
                       <button
                         type="button"
                         onClick={() => switchSession(s.id)}
-                        disabled={streaming && !active}
-                        className="w-full px-3 py-2.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full px-3 py-2.5 text-left text-sm"
                       >
                         <div className="truncate pr-6 font-medium">{getSessionTitle(s)}</div>
                         <div className="mt-1 truncate text-xs text-gray-600">
                           {getMessageCount(s.messages)} -- {s.selectedModelId || 'no model'}
                         </div>
                       </button>
-                      {sessions.length > 1 && !streaming && (
+                      {sessions.length > 1 && !streamingIds.has(s.id) && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -859,7 +914,7 @@ export default function PlaygroundPage() {
                         selectedProvider: null,
                       }));
                     }}
-                    disabled={streaming}
+                    disabled={activeStreaming}
                     loading={modelsLoading}
                     emptyLabel={modelsError ? 'Models unavailable' : undefined}
                   />
@@ -887,25 +942,24 @@ export default function PlaygroundPage() {
                     >
                       Provider
                     </label>
-                    <select
+                    <Select
                       id="playground-provider"
+                      tone="dark"
+                      size="lg"
+                      className="w-full"
                       value={selectedProvider ?? ''}
-                      onChange={(e) =>
+                      onValueChange={(value) =>
                         patch((s) => ({
                           ...s,
-                          selectedProvider: e.target.value || null,
+                          selectedProvider: value || null,
                         }))
                       }
-                      disabled={streaming}
-                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
-                    >
-                      <option value="">Auto</option>
-                      {modelProviders.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                      disabled={activeStreaming}
+                      options={[
+                        { value: '', label: 'Auto' },
+                        ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
+                      ]}
+                    />
                   </div>
                 )}
 
@@ -929,7 +983,7 @@ export default function PlaygroundPage() {
                     onChange={(e) =>
                       patch((s) => ({ ...s, temperature: parseFloat(e.target.value) }))
                     }
-                    disabled={streaming}
+                    disabled={activeStreaming}
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
                   />
                 </div>
@@ -954,7 +1008,7 @@ export default function PlaygroundPage() {
                     onChange={(e) =>
                       patch((s) => ({ ...s, maxTokens: parseInt(e.target.value, 10) }))
                     }
-                    disabled={streaming}
+                    disabled={activeStreaming}
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
                   />
                 </div>
@@ -972,7 +1026,7 @@ export default function PlaygroundPage() {
                     onChange={(e) => patch((s) => ({ ...s, systemPrompt: e.target.value }))}
                     placeholder="You are a research assistant..."
                     rows={6}
-                    disabled={streaming}
+                    disabled={activeStreaming}
                     className="w-full resize-none rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-gray-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
                   />
                 </div>
@@ -1023,7 +1077,7 @@ export default function PlaygroundPage() {
                   {msgs.map((msg, i) => {
                     const isUser = msg.role === 'user';
                     const isLast = i === msgs.length - 1;
-                    const isStreamingThis = streaming && isLast && !isUser;
+                    const isStreamingThis = activeStreaming && isLast && !isUser;
                     const isWaiting =
                       isStreamingThis && !msg.content && !msg.reasoningContent && !msg.status;
                     const copied = copyState?.id === msg.id ? copyState : null;
@@ -1032,8 +1086,8 @@ export default function PlaygroundPage() {
                     const isRoutingExpanded = expandedRouting.has(msg.id);
                     const rate = decodeRate(msg);
                     const note = finishNote(msg);
-                    const canRetry = !isUser && isLast && !streaming;
-                    const canEdit = isUser && i === lastUserIndex && !streaming;
+                    const canRetry = !isUser && isLast && !activeStreaming;
+                    const canEdit = isUser && i === lastUserIndex && !activeStreaming;
 
                     return (
                       <div key={msg.id} className="group">
@@ -1277,7 +1331,7 @@ export default function PlaygroundPage() {
                     <div className="flex shrink-0 items-center gap-3">
                       <button
                         type="button"
-                        disabled={streaming}
+                        disabled={undoPaused}
                         onClick={() => {
                           undo.restore();
                           setUndo(null);
@@ -1321,10 +1375,12 @@ export default function PlaygroundPage() {
                       })()}
                     </div>
                     <div className="flex items-center gap-2">
-                      {streaming && (
+                      {activeStreaming && (
                         <button
                           type="button"
-                          onClick={() => abortRef.current?.abort()}
+                          onClick={() => {
+                            if (session) abortControllersRef.current.get(session.id)?.abort();
+                          }}
                           className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:border-gray-600 hover:text-white"
                         >
                           Stop
@@ -1333,10 +1389,10 @@ export default function PlaygroundPage() {
                       <button
                         type="button"
                         onClick={send}
-                        disabled={streaming || !input.trim() || !modelId}
+                        disabled={activeStreaming || !input.trim() || !modelId}
                         className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
                       >
-                        {streaming ? 'Sending...' : 'Send'}
+                        {activeStreaming ? 'Sending...' : 'Send'}
                       </button>
                     </div>
                   </div>

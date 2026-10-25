@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -125,7 +125,7 @@ async def _seed(conn: asyncpg.Connection) -> None:
     Timestamps sit a few minutes back so every row lands inside the metrics
     endpoint's 1-hour window, whose upper bound is ``date_trunc('minute', NOW())``.
     """
-    at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    at = datetime.now(UTC) - timedelta(minutes=5)
     rows: list[tuple[str, int | None, str | None, str]] = [
         (
             _GATEWAY_DISCONNECT,

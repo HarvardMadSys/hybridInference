@@ -165,7 +165,7 @@ class AsyncHTTPClient:
         for attempt in range(retries):
             try:
                 return await self.json_post(url, json=json, headers=headers, timeout=timeout)
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            except (TimeoutError, aiohttp.ClientError) as err:
                 last_err = err
                 if attempt == retries - 1:
                     raise
@@ -184,26 +184,6 @@ class AsyncHTTPClient:
         # Should never reach here, but keep mypy happy.
         assert last_err is not None
         raise last_err
-
-    async def json_get(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout: aiohttp.ClientTimeout | None = None,
-    ) -> dict[str, Any]:
-        """Send a GET request and return JSON response.
-
-        ``timeout=None`` falls back to the session default (see json_post).
-        """
-        session = await self._ensure_session()
-        async with session.get(
-            url, headers=headers, timeout=timeout if timeout is not None else _aiohttp_sentinel
-        ) as resp:
-            resp.raise_for_status()
-            from typing import cast
-
-            return cast("dict[str, Any]", await resp.json())
 
     async def stream_post(
         self,

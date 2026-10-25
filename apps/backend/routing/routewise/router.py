@@ -66,7 +66,6 @@ from routing.routers import (
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
-from serving.pricing import effective_pricing
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -80,7 +79,6 @@ from .candidates import (
     QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
-    endpoint_id_for_adapter as routewise_endpoint_id_for_adapter,
 )
 from .concurrency import ConcurrencyManager
 from .decisions import (
@@ -430,7 +428,6 @@ class RouteWiseRouter:
         self._model_routewise_pools: dict[str, str] = {}
         self.classified: dict[str, list[tuple[Any, float, ProviderType]]] = {}
         self._adapter_provider_type: dict[int, ProviderType] = {}
-        self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
         self._endpoint_models: dict[str, set[str]] = {}
         # Canonical model ids with at least one quota route. The envelope is
@@ -634,7 +631,6 @@ class RouteWiseRouter:
         self.route_candidates = {}
         self._model_routewise_pools = {}
         self._adapter_provider_type = {}
-        self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
         self._endpoint_models = {}
         self._quota_bearing_models = set()
@@ -649,7 +645,6 @@ class RouteWiseRouter:
                 adapter = candidate.adapter
                 self._adapter_provider_type[id(adapter)] = candidate.provider_type
                 endpoint_id = candidate.endpoint_id
-                self._adapter_endpoint_ids[id(adapter)] = endpoint_id
                 self._endpoint_adapter[endpoint_id] = adapter
                 self._endpoint_models.setdefault(endpoint_id, set()).add(model_id)
                 if endpoint_id not in self._latency_profiles:
@@ -1100,7 +1095,7 @@ class RouteWiseRouter:
                 ok=result.ok,
                 error=result.error,
                 cost_usd=None,
-                checked_at=dt.datetime.now(dt.timezone.utc),
+                checked_at=dt.datetime.now(dt.UTC),
             )
         except Exception:
             logger.warning(
@@ -1125,18 +1120,6 @@ class RouteWiseRouter:
     # ------------------------------------------------------------------
     # Classification and helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _endpoint_id(adapter: BaseAdapter) -> str:
-        return routewise_endpoint_id_for_adapter(adapter)
-
-    def _candidate_endpoint_id(self, adapter: BaseAdapter) -> str:
-        return self._adapter_endpoint_ids.get(id(adapter), self._endpoint_id(adapter))
-
-    @staticmethod
-    def _pricing(adapter: BaseAdapter) -> tuple[float, float]:
-        pricing = effective_pricing(adapter.config) or {}
-        return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:
         route_table = self.route_table
@@ -1518,21 +1501,6 @@ class RouteWiseRouter:
             messages if isinstance(messages, list) else None,
             tools=params.get("tools") if params is not None else None,
             response_format=params.get("response_format") if params is not None else None,
-        )
-
-    def _api_cost_for_adapter(
-        self,
-        adapter: BaseAdapter,
-        *,
-        prompt_tokens: int,
-        predicted_output_tokens: float,
-    ) -> float:
-        p_in, p_out = self._pricing(adapter)
-        return api_request_cost_usd(
-            prompt_tokens=prompt_tokens,
-            predicted_output_tokens=predicted_output_tokens,
-            input_price_per_m=p_in,
-            output_price_per_m=p_out,
         )
 
     @staticmethod
@@ -2335,10 +2303,11 @@ class RouteWiseRouter:
                 context.get("messages") if isinstance(context, dict) else None,
                 request_params if isinstance(request_params, dict) else None,
             )
-            backup_lease = self._prefill_load.acquire(
-                backup.endpoint_id,
-                tracked_tokens,
-            )
+            with self._prefill_load.routing_transaction():
+                backup_lease = self._prefill_load.acquire(
+                    backup.endpoint_id,
+                    tracked_tokens,
+                )
 
         def _confirm_backup_prefill() -> None:
             self._prefill_load.release(backup_lease, prefill_confirmed=True)
@@ -2606,11 +2575,11 @@ class RouteWiseRouter:
             trace.request_id = str(request_id)
 
         with self._route_commit_lock:
-            # Request-derived preprocessing stays outside the shared tracker
-            # transaction. Once a primary prefill lease is requested, however,
-            # the tracker must remain held from its backlog snapshot through
-            # selection and reservation. Otherwise two router instances that
-            # share one tracker can select from the same stale load view.
+            # The routing lock serializes load snapshot -> selection ->
+            # reservation across selectors so concurrent decisions cannot
+            # commit from the same stale load view. The tracker state lock
+            # remains independent, allowing release and cache/accounting
+            # updates while candidate construction and LP solving run.
             prompt_tokens = self._prompt_tokens_from_context(context)
             prediction = self._predict_output(model_id, prompt_tokens, context)
             pool = self._routewise_pool(model_id)
@@ -2620,7 +2589,7 @@ class RouteWiseRouter:
             now = time.time()
             tracker_transaction = (
                 self._prefill_load.routing_transaction()
-                if reserve_prefill
+                if reserve_prefill and self.config.prefill_load_routing_enabled
                 else contextlib.nullcontext()
             )
             with tracker_transaction:
@@ -3257,15 +3226,14 @@ class RouteWiseRouter:
             # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
             # _execute_stream_adapter.
             if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
+                # Estimate outside the shared lock: it is pure token counting
+                # over request data no tracker mutation can change, and it
+                # does not need to lengthen the critical section. The acquire
+                # stays inside so the lease cannot reserve from a stale load
+                # snapshot (see the lock-split thread on this PR).
                 tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
+                with self._prefill_load.routing_transaction():
+                    lease = self._prefill_load.acquire(endpoint_id, tracked_tokens)
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 if isinstance(adapter, HedgedAdapter):
@@ -3343,15 +3311,11 @@ class RouteWiseRouter:
             # whole-request estimation cost. Only the fallback path estimates and
             # acquires here (for direct/internal callers without that lease).
             if lease is None and self.config.prefill_load_routing_enabled:
-                # Use the prefill tracker's whole-request estimator to capture
-                # tools, response_format, tool_calls, etc. — not just message content.
+                # Estimate outside the shared lock; acquire inside. Same
+                # reasoning as _execute_adapter above.
                 tracked_tokens = self._tracked_prefill_tokens(messages, params)
-                # Track this request's prefill pressure so subsequent RouteWise decisions
-                # see it in the LP. Mirrors FixedRouter's acquire/release pattern.
-                lease = self._prefill_load.acquire(
-                    endpoint_id,
-                    tracked_tokens,
-                )
+                with self._prefill_load.routing_transaction():
+                    lease = self._prefill_load.acquire(endpoint_id, tracked_tokens)
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True

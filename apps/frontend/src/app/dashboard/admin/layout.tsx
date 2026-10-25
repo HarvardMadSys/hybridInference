@@ -40,11 +40,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         // console's users, and stays in English whatever language the reader
         // chose. `lang` says so to screen readers and browser translation.
         <div lang="en" className="w-full pb-20">
-          {/* Nav */}
-          <div className="mb-10 flex items-center justify-between">
+          {/* One short line of chrome: where you are and the way back, so
+              the tab's own content starts near the top of the window. */}
+          <header className="flex items-center gap-2">
             <Link
               href="/dashboard"
-              className="group flex items-center gap-1.5 text-[13px] text-gray-400 transition hover:text-gray-900"
+              className="group flex items-center gap-1 rounded text-[13px] text-gray-500 transition hover:text-gray-900"
             >
               <svg
                 className="h-3.5 w-3.5 transition group-hover:-translate-x-px"
@@ -52,6 +53,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={2.5}
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -61,13 +63,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               </svg>
               Dashboard
             </Link>
-          </div>
-
-          {/* Title */}
-          <h1 className="text-[28px] font-bold tracking-tight text-gray-900">Admin</h1>
-          <p className="mt-0.5 text-[15px] text-gray-500">
-            Manage users, API keys, quotas, and audit log.
-          </p>
+            <span aria-hidden="true" className="text-[13px] text-gray-300">
+              /
+            </span>
+            <h1 className="text-[18px] font-semibold tracking-tight text-gray-900">Admin</h1>
+          </header>
 
           {/* Top-level tab toggle */}
           <AdminTabNav />

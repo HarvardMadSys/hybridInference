@@ -13,6 +13,7 @@ import {
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { Select } from '@/components/ui/Select';
 
 const RANGES: { key: TokenUsageRange; label: string }[] = [
   { key: '1h', label: 'Last 1h' },
@@ -108,17 +109,13 @@ export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number 
       <div className="flex flex-wrap items-end gap-4">
         <label className="text-sm">
           <span className="block text-gray-500 mb-1">Range</span>
-          <select
-            className="border rounded px-2 py-1"
+          <Select<TokenUsageRange>
             value={range}
-            onChange={(e) => setRange(e.target.value as TokenUsageRange)}
-          >
-            {RANGES.map((r) => (
-              <option key={r.key} value={r.key}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={setRange}
+            options={RANGES.map((r) => ({ value: r.key, label: r.label }))}
+            aria-label="Range"
+            className="w-40"
+          />
         </label>
         {data ? (
           <div className="text-[12px] text-gray-500 pb-1">

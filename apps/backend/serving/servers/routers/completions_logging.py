@@ -35,24 +35,15 @@ class CompletionsLogger:
     cancel them mid-flight.
     """
 
-    def __init__(self, *, log_store: Any, model_router_registry: Any | None = None) -> None:
+    def __init__(self, *, log_store: Any) -> None:
         """Create a logger.
 
         Args:
             log_store: ``LogStore`` instance (Postgres).
                 ``None``-tolerant: ``schedule_log`` no-ops when this is
                 ``None``, so callers do not need to pre-gate.
-            model_router_registry: Accepted for backward-compat with
-                bootstrap; currently unused. ``build_db_params`` resolves
-                adapter configs via the ``get_adapter_config_for_provider``
-                closure passed in by the handler scope rather than via this
-                registry.
         """
         self._log_store = log_store
-        # NOTE: ``model_router_registry`` is intentionally not stored — the
-        # field was unused and ``build_db_params`` takes the lookup as an
-        # argument. Constructor still accepts the kwarg for API stability.
-        del model_router_registry
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     # -- DB log scheduling ---------------------------------------------------

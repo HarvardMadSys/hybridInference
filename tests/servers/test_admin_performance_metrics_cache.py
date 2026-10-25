@@ -11,7 +11,7 @@ against Postgres in ``tests/integration/test_admin_performance_views_postgres.py
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -72,9 +72,7 @@ def _response(count: int = 0) -> AdminPerformanceMetricsResponse:
             },
         }
     )
-    return AdminPerformanceMetricsResponse(
-        generated_at=datetime.now(timezone.utc), windows=[window]
-    )
+    return AdminPerformanceMetricsResponse(generated_at=datetime.now(UTC), windows=[window])
 
 
 def _count(response: AdminPerformanceMetricsResponse) -> int:
@@ -228,9 +226,7 @@ async def test_preparation_builds_the_index_then_fills_both_views_one_after_the_
         return AsyncMock(side_effect=_run)
 
     perf = _step("perf", _response(1))
-    scatter = _step(
-        "scatter", AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=[])
-    )
+    scatter = _step("scatter", AdminTtftScatterResponse(generated_at=datetime.now(UTC), models=[]))
     monkeypatch.setattr(metrics.perf_metrics_index, "ensure_index", _step("index", True))
     monkeypatch.setattr(metrics, "_load_performance_metrics", perf)
     monkeypatch.setattr(metrics, "_load_ttft_scatter", scatter)
@@ -256,11 +252,7 @@ async def test_preparation_goes_on_without_the_index_when_its_build_fails(monkey
     monkeypatch.setattr(
         metrics,
         "_load_ttft_scatter",
-        AsyncMock(
-            return_value=AdminTtftScatterResponse(
-                generated_at=datetime.now(timezone.utc), models=[]
-            )
-        ),
+        AsyncMock(return_value=AdminTtftScatterResponse(generated_at=datetime.now(UTC), models=[])),
     )
 
     await metrics.warm_performance_caches(db_logger)
@@ -310,9 +302,7 @@ def _reset_perf_breakdown_cache():
 
 
 def _breakdown(days: int = 7) -> AdminRequestPerfBreakdownResponse:
-    return AdminRequestPerfBreakdownResponse(
-        generated_at=datetime.now(timezone.utc), days=days, groups=[]
-    )
+    return AdminRequestPerfBreakdownResponse(generated_at=datetime.now(UTC), days=days, groups=[])
 
 
 _NO_FILTERS: dict[str, object] = {

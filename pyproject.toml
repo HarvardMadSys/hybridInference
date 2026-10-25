@@ -7,7 +7,7 @@ name = "hybrid-inference"
 version = "0.1.0"
 description = "Hybrid inference server, provide local deployment and offline API to openrouter"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 license = { file = "LICENSE" }
 authors = [{ name = "HarvardSys" }]
 dependencies = [
@@ -15,8 +15,6 @@ dependencies = [
     "APScheduler>=3.10.4",
     "asyncpg>=0.28.0",
     "fastapi>=0.110.0",
-    "google-genai>=1.33.0",
-    "huggingface-hub>=0.34.0",
     "llm-routewise>=0.2.0",
     "markdown-it-py>=3.0.0",
     "openai>=1.0.0",
@@ -78,7 +76,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 src = ["apps/backend", "."]
 exclude = [
   ".venv",
@@ -145,4 +143,7 @@ dev = [
   "sphinx-rtd-theme>=3.0.2",
   "mypy>=1.20.2",
   "pytest-timeout>=2.3.0",
+  # Not imported here: a floor for the copy virtualenv (via pre-commit) pulls in
+  # (CVE-2026-112940 and related advisories, fixed in 4.2.1, which needs Python 3.11).
+  "filelock>=4.2.1",
 ]

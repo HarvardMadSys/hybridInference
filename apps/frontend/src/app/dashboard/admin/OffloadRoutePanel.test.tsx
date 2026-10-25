@@ -21,6 +21,7 @@ vi.mock('react-hot-toast', () => ({
 
 import toast from 'react-hot-toast';
 import { clearOffloadRoute, setOffloadRoute } from '@/lib/api/admin';
+import { chooseOption } from '@/test-utils/select';
 
 const MODEL = 'glm-4.7';
 
@@ -105,9 +106,7 @@ describe('OffloadRoutePanel', () => {
     const save = screen.getByRole('button', { name: 'Save offload route' });
     expect(save).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: reserved.route_id },
-    });
+    chooseOption('Offload route', /^reserved/);
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '4' } });
     expect(save).toBeEnabled();
     fireEvent.click(save);
@@ -123,7 +122,9 @@ describe('OffloadRoutePanel', () => {
     vi.mocked(clearOffloadRoute).mockResolvedValue({ model_id: MODEL, offload: null });
     const { onChange } = renderPanel({ offload: storedOffload });
 
-    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
+    expect(screen.getByRole('combobox', { name: 'Offload route' })).toHaveTextContent(
+      `reserved (${reserved.endpoint_id})`,
+    );
     expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(4);
     expect(screen.getByTestId('offload-route-status')).toHaveTextContent('Active');
     // Nothing changed yet, so there is nothing to save.
@@ -320,9 +321,7 @@ describe('OffloadRoutePanel', () => {
     vi.mocked(setOffloadRoute).mockRejectedValue(new Error('model needs fixed routing'));
     const { onChange } = renderPanel();
 
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: reserved.route_id },
-    });
+    chooseOption('Offload route', /^reserved/);
     fireEvent.click(screen.getByRole('button', { name: 'Save offload route' }));
 
     await waitFor(() => {

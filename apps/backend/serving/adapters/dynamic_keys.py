@@ -216,12 +216,6 @@ def env_key_min_role(provider: str, key_hash: str) -> str:
         return _env_key_min_roles.get(provider, {}).get(key_hash, DEFAULT_MIN_ROLE)
 
 
-def get_env_key_min_roles(provider: str) -> dict[str, str]:
-    """Return ``{key_hash: min_role}`` for the provider's reserved env keys."""
-    with _lock:
-        return dict(_env_key_min_roles.get(provider, {}))
-
-
 def _resolve_min_role_locked(provider: str, raw_key: str) -> str:
     """Return the tier the pool must enforce for *raw_key*.
 
@@ -303,12 +297,6 @@ def _apply_min_roles_locked(provider: str) -> int:
             if resolved != role and pool.set_key_min_role(raw, resolved):
                 updated += 1
     return updated
-
-
-def apply_min_roles(provider: str) -> int:
-    """Public wrapper for the tier reconciliation sweep. Returns entries changed."""
-    with _lock:
-        return _apply_min_roles_locked(provider)
 
 
 def _pools_holding_hash_locked(provider: str, key_hash: str) -> int:
@@ -438,6 +426,22 @@ def list_candidate_env_keys(provider: str) -> list[str]:
         return out
 
 
+def env_key_candidates(provider: str) -> list[str]:
+    """Return every env-sourced key of *provider*, in the order a default pool takes them.
+
+    Live pool keys first, then the base and numbered settings, then the static
+    keys of adapters not yet promoted to a pool — once each, blanks dropped.
+    This is the one definition of "the provider's env keys" that the admin key
+    list, the env-key actions and route key resolution all share, so a key that
+    is listed is a key that resolves. Callers apply their own DB-row and
+    disabled-key filters, which differ by purpose.
+    """
+    keys = [key for pool in get_pools_for_provider(provider) for key in pool.snapshot_keys()]
+    keys.extend(configured_env_keys_for_provider(provider))
+    keys.extend(list_candidate_env_keys(provider))
+    return [key for key in dict.fromkeys(keys) if key.strip()]
+
+
 def is_active_env_static_key(provider: str, key: str) -> bool:
     """Return True when *key* is an env-configured static key still in use.
 
@@ -456,6 +460,11 @@ def is_active_env_static_key(provider: str, key: str) -> bool:
 def env_key_hash(key: str) -> str:
     """Return the stable hash used to identify env-sourced provider keys."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def env_key_id(key: str) -> str:
+    """Return the ``env:{hash32}`` id the admin API uses for an env-sourced key."""
+    return f"env:{env_key_hash(key)[:32]}"
 
 
 def normalize_key_provider(provider: str) -> str:

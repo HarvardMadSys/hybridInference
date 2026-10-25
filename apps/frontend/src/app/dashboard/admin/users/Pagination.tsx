@@ -1,6 +1,13 @@
 'use client';
 
+import { Select } from '@/components/ui/Select';
+
 export const PAGE_SIZE_OPTIONS = [50, 100, 250, 500] as const;
+
+const PAGE_SIZE_ITEMS = PAGE_SIZE_OPTIONS.map((size) => ({
+  value: String(size),
+  label: String(size),
+}));
 
 interface PaginationProps {
   /** Zero-based page index. */
@@ -56,18 +63,14 @@ export function Pagination({
         </span>
         <label className="ml-3 flex items-center gap-1.5 text-gray-500">
           <span>Per page</span>
-          <select
-            className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[13px] text-gray-900 focus:border-gray-400 focus:outline-none"
-            value={pageSize}
-            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          <Select
+            size="sm"
+            className="w-20"
+            value={String(pageSize)}
+            onValueChange={(v) => onPageSizeChange(Number(v))}
+            options={PAGE_SIZE_ITEMS}
             aria-label="Rows per page"
-          >
-            {PAGE_SIZE_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
+          />
         </label>
       </div>
 

@@ -14,7 +14,7 @@ out a legacy session some other way calls ``remember_session``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -104,7 +104,7 @@ class BrowserSessionFake:
                 {
                     "user_id": user_id,
                     "auth_session_id": auth_session_id,
-                    "added_at": datetime.now(timezone.utc),
+                    "added_at": datetime.now(UTC),
                     "sid": session.get("sid"),
                     "session_expires_at": session.get("expires_at"),
                     "session_revoked": session.get("revoked"),
@@ -117,7 +117,7 @@ class BrowserSessionFake:
                     "status": user.get("status"),
                     "email_verified": user.get("email_verified"),
                     "has_password": bool(user.get("password_hash")),
-                    "created_at": user.get("created_at") or datetime.now(timezone.utc),
+                    "created_at": user.get("created_at") or datetime.now(UTC),
                     "last_login_at": user.get("last_login_at"),
                 }
             )

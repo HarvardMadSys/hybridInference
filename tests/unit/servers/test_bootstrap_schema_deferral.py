@@ -28,8 +28,8 @@ def test_describe_exc_keeps_the_type_when_the_message_is_empty():
     ``f"{asyncio.TimeoutError()}"`` is ``""``, so the deploy log read
     ``Database initialization failed (attempt 1/3): .`` and named no cause.
     """
-    assert str(asyncio.TimeoutError()) == ""
-    described = _describe_exc(asyncio.TimeoutError())
+    assert str(TimeoutError()) == ""
+    described = _describe_exc(TimeoutError())
     assert described.strip(), "an empty rendering is exactly the bug"
     assert "TimeoutError" in described
 

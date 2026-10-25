@@ -25,20 +25,6 @@ export type Translate = (slot: string, fallback: string) => string;
 export const translate: Translate = (_slot, fallback) => fallback;
 
 /**
- * Build a translator over a dictionary, falling back to the caller's literal.
- *
- * It answers any slot in the dictionary it is given, so the dictionary decides
- * which slots can change. `useT` passes the compiled-in module's
- * `authMessages`, which `module.tsx` has already cut down to the contract's
- * declared keys; anything else that holds a dictionary and is not a component
- * can use it the same way.
- */
-export function translator(messages: Record<string, string> | undefined): Translate {
-  if (!messages) return translate;
-  return (slot, fallback) => messages[slot] ?? fallback;
-}
-
-/**
  * One translated string, with the English it translates.
  *
  * The English is stored beside the translation so that editing the source

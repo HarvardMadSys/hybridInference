@@ -136,13 +136,13 @@ msgstr "**运行数据存储**\\ ——用 Postgres 存账号、API key 和请�
 
 #: ../developer/index.rst:41
 msgid ""
-"The backend is Python (3.10–3.13) under ``apps/backend/``, split into "
+"The backend is Python (3.11–3.13) under ``apps/backend/``, split into "
 "``serving/`` (HTTP surface, auth, adapters, storage, observability) and "
 "``routing/`` (route table, strategies, endpoint health, fallback). The "
 "console is Next.js under ``apps/frontend/``. The repository is MIT-"
 "licensed."
 msgstr ""
-"后端是 ``apps/backend/`` 下的 Python 代码（3.10–3.13），分成两部分：``serving/``\\ （HTTP "
+"后端是 ``apps/backend/`` 下的 Python 代码（3.11–3.13），分成两部分：``serving/``\\ （HTTP "
 "接口、鉴权、adapter、存储、可观测性）和 ``routing/``\\ （路由表、路由策略、端点健康、回退）。控制台是 "
 "``apps/frontend/`` 下的 Next.js 应用。整个仓库采用 MIT 许可证。"
 

@@ -10,6 +10,7 @@ import { ACCOUNT_CHANGED_EVENT, AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
+import { chooseValue } from '@/test-utils/select';
 import { ToastProvider } from './ToastProvider';
 
 const api = vi.hoisted(() => ({
@@ -115,7 +116,7 @@ async function startAdminMutation() {
     </SiteConfigProvider>,
   );
   const selector = await screen.findByLabelText('Reserved tier for key fixture-key-prefix');
-  fireEvent.change(selector, { target: { value: 'internal' } });
+  chooseValue(selector, 'internal');
   expect(api.setProviderKeyMinRole).toHaveBeenCalledWith('key-1', 'internal');
   return pending;
 }

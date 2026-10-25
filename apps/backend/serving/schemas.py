@@ -13,6 +13,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from serving.utils.messages import merge_leading_system_messages
 
+# Maps a multimodal content block "type" to the input modality it requires.
+# Used by the router pre-flight to reject media a model can't accept before
+# any provider call (so streaming and non-streaming both get a clean 400
+# instead of silently dropping the media downstream), and by the admin
+# capability schema as the modalities a route can declare besides text.
+CONTENT_BLOCK_MODALITY = {
+    "image_url": "image",
+    "image": "image",
+    "input_image": "image",
+    "input_audio": "audio",
+    "audio": "audio",
+    "video_url": "video",
+    "video": "video",
+    "input_video": "video",
+}
+
 
 class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
     """Single chat message with role and content.
@@ -273,8 +289,3 @@ class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]
     data: list[EmbeddingData]
     model: str
     usage: EmbeddingUsage
-
-
-# Backward-compatibility aliases for older tests referring to Choice
-# New code should import ChatCompletionChoice explicitly.
-Choice = ChatCompletionChoice

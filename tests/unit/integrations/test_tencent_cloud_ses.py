@@ -14,7 +14,7 @@ from serving.config.site_identity import get_site_identity
 from serving.integrations.tencent_cloud import api, ses
 from serving.utils import email
 
-EXAMPLE_TEMPLATES = Path(__file__).resolve().parents[3] / "config/examples/tencent-ses"
+EXAMPLE_TEMPLATES = Path(ses.__file__).with_name("ses-templates")
 
 
 @pytest.fixture

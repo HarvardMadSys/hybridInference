@@ -5,7 +5,7 @@ Needs the PostgreSQL test database (``dbtest``; see tests/fixtures/postgres.py).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -101,7 +101,7 @@ async def test_purge_older_than_days(store: PostgresOperationalStore):
         await conn.execute(
             "INSERT INTO login_events (created_at, email, outcome, failure_reason, user_id) "
             "VALUES ($1, $2, $3, $4, $5)",
-            datetime.now(timezone.utc) - timedelta(days=30),
+            datetime.now(UTC) - timedelta(days=30),
             "old@example.com",
             "success",
             None,

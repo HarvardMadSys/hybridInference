@@ -443,7 +443,7 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
         # request raises from ``acquire()`` before any upstream is contacted.
         ("key_pool_exhausted", KeyPoolExhausted("All 2 keys for provider 'x' are muted")),
         ("connection_reset", ConnectionResetError("Connection reset by peer")),
-        ("timeout", asyncio.TimeoutError()),
+        ("timeout", TimeoutError()),
     ),
 )
 async def test_a_statusless_failure_keeps_the_auth_incident_open(monkeypatch, label, exc):

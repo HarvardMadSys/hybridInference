@@ -1,4 +1,6 @@
-.PHONY: help format lint test test-verbose test-cov test-db \
+.PHONY: help format lint test test-verbose test-cov test-db test-all test-external rag-ingest \
+	frontend-install frontend-lint frontend-type-check frontend-test frontend-check \
+	check-all all-with-frontend \
 	test-db-local test-db-local-reset test-db-local-clean test-db-local-down docs docs-gettext docs-translate \
 	docs-lang docs-verify setup-dev clean check all \
        docker-volumes up down restart ps logs build smoke \

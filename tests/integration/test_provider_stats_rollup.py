@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -21,11 +21,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 # The instant the frozen_clock fixture fixes, past the job's minute so the
 # hour before it is due. Tests that depend on which hours are due use it, so
 # they do not change behaviour when the suite runs early in an hour.
-NOW = datetime(2026, 5, 10, 12, 30, tzinfo=timezone.utc)
-DUE_END = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 5, 10, 12, 30, tzinfo=UTC)
+DUE_END = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
 
 # completed_at for markers a test writes itself; a rollup writes NOW().
-SEEDED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+SEEDED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture(scope="session")
@@ -253,7 +253,7 @@ async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 2, 13, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
     # 3 successful streaming requests on (openrouter, qwen)
     for i, (ttft, latency, ctok) in enumerate(
         [(400, 5400, 200), (800, 9800, 400), (1200, 12200, 220)]
@@ -338,7 +338,7 @@ async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 3, 9, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 3, 9, 0, tzinfo=UTC)
     # One chat completion and one embedding on the same provider/model/hour.
     await _insert_api_log(
         pool,
@@ -392,7 +392,7 @@ async def test_run_rollup_excludes_router_placeholder_provider(db_logger: Databa
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 2, 14, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 2, 14, 0, tzinfo=UTC)
     await _insert_api_log(
         pool,
         request_id="router-placeholder",
@@ -458,7 +458,7 @@ async def test_run_rollup_is_idempotent(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 2, 14, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 2, 14, 0, tzinfo=UTC)
     for i in range(3):
         await _insert_api_log(
             pool,
@@ -527,12 +527,8 @@ async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    old = (datetime.now(timezone.utc) - timedelta(days=45)).replace(
-        minute=0, second=0, microsecond=0
-    )
-    new = (datetime.now(timezone.utc) - timedelta(days=2)).replace(
-        minute=0, second=0, microsecond=0
-    )
+    old = (datetime.now(UTC) - timedelta(days=45)).replace(minute=0, second=0, microsecond=0)
+    new = (datetime.now(UTC) - timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
 
     async with pool.acquire() as conn:
         for ts in (old, new):
@@ -842,7 +838,7 @@ async def test_run_rollup_populates_token_totals(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 2, 16, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 2, 16, 0, tzinfo=UTC)
     # Two successes
     await _insert_api_log(
         pool,
@@ -924,7 +920,7 @@ async def test_run_rollup_coalesces_all_null_columns(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    hour = datetime(2026, 5, 2, 17, 0, tzinfo=timezone.utc)
+    hour = datetime(2026, 5, 2, 17, 0, tzinfo=UTC)
     # Seed two rows for one (provider, model) group; both have NULL for
     # cache_read_tokens, reasoning_tokens, and cost_usd. SUM over an all-NULL
     # column returns NULL in Postgres, so the only thing that turns these
@@ -973,7 +969,7 @@ async def test_backfill_token_columns_fills_null_rows(db_logger: DatabaseLogger)
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     h = now - timedelta(hours=2)
 
     # Seed an api_logs row that the backfill should aggregate
@@ -1037,7 +1033,7 @@ async def test_backfill_token_columns_no_op_when_already_populated(
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -1062,7 +1058,7 @@ async def test_backfill_token_columns_is_idempotent(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     h = now - timedelta(hours=2)
 
     await _insert_api_log(
@@ -1128,7 +1124,7 @@ async def test_backfill_token_columns_ignores_null_rows_outside_window(
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     await _insert_legacy_stats_row(pool, now - timedelta(days=3))
 
     assert await backfill_token_columns(pool, days=1) == 0
@@ -1148,7 +1144,7 @@ async def test_backfill_token_columns_rerolls_only_chunks_with_null_rows(
     assert db_logger.pool is not None
     pool = db_logger.pool
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     # Two hours in the newest 6h chunk and one in the oldest of the day's four.
     await _insert_legacy_stats_row(pool, now - timedelta(hours=2), model_id="m1")
     await _insert_legacy_stats_row(pool, now - timedelta(hours=3), model_id="m2")

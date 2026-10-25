@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 import asyncpg
@@ -404,7 +404,7 @@ async def admin_get_request_metrics(
         )
 
     return AdminRequestMetricsResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         windows=windows,
     )
 
@@ -570,7 +570,7 @@ async def _load_performance_metrics(db_logger) -> AdminPerformanceMetricsRespons
             windows.append(window)
 
     return AdminPerformanceMetricsResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         windows=windows,
     )
 
@@ -717,7 +717,7 @@ async def _load_ttft_scatter(db_logger) -> AdminTtftScatterResponse:
     ]
     models.sort(key=lambda m: len(m.points), reverse=True)
 
-    return AdminTtftScatterResponse(generated_at=datetime.now(timezone.utc), models=models)
+    return AdminTtftScatterResponse(generated_at=datetime.now(UTC), models=models)
 
 
 _ResponseT = TypeVar("_ResponseT", AdminPerformanceMetricsResponse, AdminTtftScatterResponse)
@@ -1215,7 +1215,7 @@ async def _load_request_perf_breakdown(
     ]
 
     return AdminRequestPerfBreakdownResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         days=days,
         groups=groups,
         truncated=truncated,
@@ -1409,7 +1409,7 @@ async def _load_request_offloads(
 
     ranked = sorted(folded.items(), key=lambda item: (-item[1]["request_count"], item[0]))
     return AdminRequestOffloadsResponse(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         days=days,
         total_offloaded=sum(group["request_count"] for group in folded.values()),
         groups=[
@@ -1527,7 +1527,7 @@ def _trend_grid(now: datetime, days: int, bucket_minutes: int) -> list[datetime]
     width = bucket_minutes * 60
     end = int(now.timestamp()) // width * width
     start = end - (days * 86400 // width) * width
-    return [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in range(start, end + width, width)]
+    return [datetime.fromtimestamp(ts, tz=UTC) for ts in range(start, end + width, width)]
 
 
 async def _load_request_perf_trend(
@@ -1651,7 +1651,7 @@ async def _load_request_perf_trend(
             *params,
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     grid = _trend_grid(now, days, bucket_minutes)
     # rn > cap means busier routes crowded this one out; drop it but say so.
     truncated = any(int(row["rn"]) > _PERF_TREND_MAX_SERIES for row in rows)

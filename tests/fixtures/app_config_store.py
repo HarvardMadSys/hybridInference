@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from serving.config.app_config_store import RESET_SOURCE, ConfigRow
@@ -44,7 +44,7 @@ class FakeAppConfigStore:
 
     @staticmethod
     def _stamped(row: ConfigRow) -> ConfigRow:
-        return replace(row, updated_at=datetime.now(timezone.utc))
+        return replace(row, updated_at=datetime.now(UTC))
 
     async def ensure_schema(self) -> None:
         self.schema_calls += 1
@@ -112,6 +112,6 @@ def row(key: str, value: str, *, secret: bool = False, source: str = "admin") ->
         value,
         secret=secret,
         source=source,
-        updated_at=datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 10, 12, 0, tzinfo=UTC),
         updated_by="admin@example.com",
     )

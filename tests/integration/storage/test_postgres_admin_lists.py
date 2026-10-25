@@ -10,7 +10,7 @@ count.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -86,7 +86,7 @@ async def _spend(pool: Any, user_id: str, cost: str, at: datetime) -> None:
 
 
 async def _daily(pool: Any, user_id: str, days_ago: int, cost: str) -> None:
-    day = (datetime.now(timezone.utc).date() - timedelta(days=days_ago)).isoformat()
+    day = (datetime.now(UTC).date() - timedelta(days=days_ago)).isoformat()
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests) VALUES ($1, $2, $3, 1)",
@@ -102,7 +102,7 @@ async def _listed(store: PostgresOperationalStore, **filters: Any) -> tuple[int,
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _start_of_month() -> datetime:

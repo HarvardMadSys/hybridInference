@@ -24,7 +24,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -266,8 +266,8 @@ def retained_day_bounds(start: datetime, end: datetime) -> tuple[date, date]:
     A midnight ``end`` is already the next day, so that date stays exclusive.
     An ``end`` later in the day still owns that calendar day.
     """
-    start_utc = start.astimezone(timezone.utc)
-    end_utc = end.astimezone(timezone.utc)
+    start_utc = start.astimezone(UTC)
+    end_utc = end.astimezone(UTC)
     until = end_utc.date()
     if end_utc.time() != datetime.min.time():
         until += timedelta(days=1)
@@ -576,9 +576,9 @@ def build_payload(
         "generated_at": generated_at.isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": len(daily)},
         "weeks": [w.isoformat() for w in weeks],
-        "first_week_partial": start > datetime.combine(weeks[0], datetime.min.time(), timezone.utc),
+        "first_week_partial": start > datetime.combine(weeks[0], datetime.min.time(), UTC),
         "last_week_partial": end
-        < datetime.combine(weeks[-1] + timedelta(weeks=1), datetime.min.time(), timezone.utc),
+        < datetime.combine(weeks[-1] + timedelta(weeks=1), datetime.min.time(), UTC),
         "totals": {
             "tokens": input_tokens + output_tokens,
             "input_tokens": input_tokens,
@@ -630,8 +630,8 @@ async def _sample_languages(
     by_week: dict[date, dict[str, set[str]]] = {}
     messages = 0
     for w in weeks:
-        lo = max(start, datetime.combine(w, datetime.min.time(), timezone.utc))
-        hi = min(end, datetime.combine(w + timedelta(weeks=1), datetime.min.time(), timezone.utc))
+        lo = max(start, datetime.combine(w, datetime.min.time(), UTC))
+        hi = min(end, datetime.combine(w + timedelta(weeks=1), datetime.min.time(), UTC))
         try:
             rows = await conn.fetch(sql, lo, hi, LANGUAGE_SAMPLE_PER_ACCOUNT)
         except Exception:
@@ -672,7 +672,7 @@ async def compute_snapshot(
     ``api_log_retained_daily``, so pruning old ``api_logs`` rows does not
     reduce them.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     end = now.replace(minute=0, second=0, microsecond=0)
     await ensure_public_stats_schema(conn)
     first_log = await conn.fetchval(FIRST_LOG_SQL)
@@ -680,7 +680,7 @@ async def compute_snapshot(
     earliest = datetime.combine(
         week_start(end.date()) - timedelta(weeks=lookback_weeks - 1),
         datetime.min.time(),
-        timezone.utc,
+        UTC,
     )
     candidates: list[datetime] = []
     if first_log is not None:
@@ -688,7 +688,7 @@ async def compute_snapshot(
     if first_retained is not None:
         if isinstance(first_retained, datetime):
             first_retained = first_retained.date()
-        candidates.append(datetime.combine(first_retained, datetime.min.time(), timezone.utc))
+        candidates.append(datetime.combine(first_retained, datetime.min.time(), UTC))
     start = max(earliest, min(candidates)) if candidates else earliest
 
     retained_from, retained_until = retained_day_bounds(start, end)

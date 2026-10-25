@@ -34,7 +34,7 @@ interface HomeLink {
   primary?: boolean;
 }
 
-export const GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
+const GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
 const MODEL_PREVIEW_LIMIT = 6;
 
 const statusDots: Record<GatewayStatus, string> = {

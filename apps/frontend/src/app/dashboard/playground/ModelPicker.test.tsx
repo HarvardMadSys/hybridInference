@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
+import { refuseFocusWhileHidden } from '@/test-utils/select';
 
 const models: PlaygroundModel[] = [
   {
@@ -151,5 +152,16 @@ describe('ModelPicker', () => {
     fireEvent.click(trigger);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('focuses its search once the popup is placed, as a browser requires', () => {
+    const restore = refuseFocusWhileHidden();
+    try {
+      render(<ModelPicker models={models} value={models[0].id} onChange={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: /^Model:/ }));
+      expect(screen.getByRole('combobox', { name: 'Search models' })).toHaveFocus();
+    } finally {
+      restore();
+    }
   });
 });

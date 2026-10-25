@@ -7,6 +7,7 @@ import contextlib
 import json
 import time
 from dataclasses import replace
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -105,11 +106,11 @@ def _quota_pool(router):
 
 def _seed_quota_snapshots(router, *, used: float = 0.0) -> None:
     """Install a ready provider snapshot for every quota pool on the router."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from routing.routewise.quota import ProviderQuotaSnapshot
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for pool in router.quota_pools.values():
         router.quota_snapshots._snapshots[pool.source] = ProviderQuotaSnapshot(
             source=pool.source,

@@ -84,6 +84,7 @@ async def test_postgres_deletes_all_runtime_model_state_in_one_transaction():
             "model_visibility_overrides",
             "model_concurrency_exemptions",
             "provider_weight_overrides",
+            "provider_route_capabilities",
             "site_settings",
         )
         if any(table in sql for sql, _params in connection.calls)
@@ -94,9 +95,10 @@ async def test_postgres_deletes_all_runtime_model_state_in_one_transaction():
         "model_visibility_overrides",
         "model_concurrency_exemptions",
         "provider_weight_overrides",
+        "provider_route_capabilities",
         "site_settings",
     ]
-    assert len(connection.calls) == 7
+    assert len(connection.calls) == 8
     assert all(params == ("runtime-model",) for _sql, params in connection.calls[:-1])
     assert connection.calls[-1][1] == (list(setting_keys),)
     assert "ANY($1::text[])" in connection.calls[-1][0]
@@ -109,7 +111,7 @@ async def test_postgres_returns_false_when_runtime_candidate_did_not_exist():
     deleted = await store.delete_runtime_model_state("missing-model", ())
 
     assert deleted is False
-    assert len(connection.calls) == 7
+    assert len(connection.calls) == 8
     assert connection.calls[-1][1] == ([],)
 
 
