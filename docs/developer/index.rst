@@ -124,6 +124,7 @@ explains how to configure and extend an overlay.
    openrouter
    hpc-model-host
    claude-code-setup
+   batches
    rag-chat
 
 .. toctree::

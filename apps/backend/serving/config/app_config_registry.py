@@ -86,6 +86,12 @@ CATEGORIES: tuple[Category, ...] = (
         "Route selection, endpoint health, timeouts and outbound concurrency.",
     ),
     Category(
+        "batch",
+        "Batch inference",
+        "Who may submit batches, how much of each model they may use, and how long jobs "
+        "and results are kept.",
+    ),
+    Category(
         "network", "Network", "Browser origins and which proxies may report client addresses."
     ),
     Category("alerts", "Alerts", "Backend alert notifications."),
@@ -916,6 +922,91 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Total seconds a streaming response may run. 0 or less removes the cap.",
         type="float",
         default="3600",
+    ),
+    # --- batch inference ---------------------------------------------------
+    # Read through serving.batch.config, which falls back to the same defaults
+    # and bounds; tests/unit/config/test_app_config_registry.py holds the two
+    # to each other.
+    ConfigEntry(
+        "BATCH_ENABLED",
+        "batch",
+        "Serve batch inference (/v1/batches) and run its worker. Off, every batch route "
+        "answers 404 and no queued request starts; stored batches are kept.",
+        type="bool",
+        default="1",
+        flag=True,
+    ),
+    ConfigEntry(
+        "BATCH_MIN_ROLE",
+        "batch",
+        "Lowest role that may submit batches. A queued request starts only while its "
+        "owner still holds this role; owners can always read, cancel and delete their "
+        "own batches.",
+        default="internal",
+        choices=("free", "pro", "internal", "admin"),
+    ),
+    ConfigEntry(
+        "BATCH_MODEL_CONCURRENCY",
+        "batch",
+        "Batch requests a model runs at once, across the whole deployment, when it has "
+        "no cap of its own. Per-model caps are set on the admin Settings page, under "
+        "Batch Concurrency; this is only the default. 0 pauses batch work on every "
+        "model without a cap.",
+        type="int",
+        default="4",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_YIELD_TO_INTERACTIVE",
+        "batch",
+        "Count interactive requests in flight on a model against its batch cap, so "
+        "batch work backs off while the model is busy.",
+        type="bool",
+        default="1",
+        flag=True,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_REQUESTS",
+        "batch",
+        "Requests one batch may hold.",
+        type="int",
+        default="50000",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_BODY_MB",
+        "batch",
+        "Largest batch submission, in MiB. A larger request body is refused.",
+        type="int",
+        default="32",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_ACTIVE_PER_USER",
+        "batch",
+        "Batches one user may have queued or running at once. Another is refused until "
+        "one finishes.",
+        type="int",
+        default="10",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_COMPLETION_WINDOW_HOURS",
+        "batch",
+        "Hours a new batch has to finish, at most a week. Requests not started by then "
+        "expire; those already running finish.",
+        type="int",
+        default="24",
+        minimum=1,
+        maximum=168,
+    ),
+    ConfigEntry(
+        "BATCH_RETENTION_DAYS",
+        "batch",
+        "Days a finished batch and its results are kept before they are deleted.",
+        type="int",
+        default="7",
+        minimum=1,
     ),
     # --- network -----------------------------------------------------------
     _setting(

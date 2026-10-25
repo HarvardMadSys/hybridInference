@@ -284,6 +284,13 @@ _API_LOGS_COLUMN_MIGRATIONS = [
     # that bills everything else — no need to trust an agent's self-reported
     # usage. NULL for all ordinary traffic.
     ("agent_job_id", "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS agent_job_id TEXT"),
+    # Batch inference (``/v1/batches``): the batch whose worker issued this
+    # request on its owner's behalf, so a batch's model spend can be read from
+    # the same ledger as everything else. NULL for all other traffic.
+    # Deliberately not indexed: no request path reads api_logs by batch (the
+    # batch keeps its own counts and cost), and an index built here would hold
+    # a SHARE lock blocking every log write for a full scan of the table.
+    ("batch_job_id", "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS batch_job_id TEXT"),
 ]
 
 # ``(name, ddl)`` per index. Created after the column migrations so a predicate /
@@ -592,7 +599,8 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
             last_user_msg_hash BIGINT,
             served_model_id TEXT,
             served_endpoint_id TEXT,
-            agent_job_id TEXT
+            agent_job_id TEXT,
+            batch_job_id TEXT
         )
     """)
 

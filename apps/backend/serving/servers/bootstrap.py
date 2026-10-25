@@ -25,6 +25,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving.auto_mode import AutoMode, load_auto_mode
+from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.disabled_providers import DisabledProviderResolver
@@ -44,6 +45,7 @@ from serving.servers.routewise_compat import (
     apply_routewise_settings_to_router,
 )
 from serving.setup_state import init_setup_state
+from serving.storage.batch_store import BatchStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
@@ -105,7 +107,7 @@ def _describe_exc(exc: BaseException) -> str:
 
 def _schedule_deferred_schema_migration(
     ensure_schema: Callable[[], Awaitable[None]], subject: str
-) -> None:
+) -> asyncio.Task[None]:
     """Finish a lock-blocked schema migration in the background.
 
     Startup must not block on it. The lock holder is typically a long-running
@@ -115,7 +117,8 @@ def _schedule_deferred_schema_migration(
 
     ``ensure_schema`` must be idempotent (both schema passes are catalog-gated,
     so a retry re-issues only what is still missing); ``subject`` names the
-    schema in log lines so concurrent deferrals stay distinguishable.
+    schema in log lines so concurrent deferrals stay distinguishable. Returns
+    the retry task, which an owner may cancel.
     """
 
     async def _retry() -> None:
@@ -145,6 +148,7 @@ def _schedule_deferred_schema_migration(
     task = asyncio.create_task(_retry())
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 
 
 async def _initialize_operational_store(pg_operational: PostgresOperationalStore) -> None:
@@ -183,6 +187,80 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
             "the migration in the background."
         )
         _schedule_deferred_schema_migration(pg_operational.initialize, "operational schema")
+
+
+async def _initialize_batch_store(store: BatchStore) -> bool:
+    """Run the batch store's DDL; return whether the store is ready to serve.
+
+    A migration that cannot get its lock (another process holding the batch
+    schema lock, or a long reader on a table it indexes) does not fail startup:
+    the caller finishes it in the background (:func:`_defer_batch_store`).
+    Unlike the operational store, nothing is served from a batch schema that is
+    still missing changes, so batch inference stays unavailable until then.
+
+    Anything other than a lock timeout propagates.
+    """
+    try:
+        await store.initialize()
+    except SchemaLockUnavailable as lock_exc:
+        logger.warning(
+            f"Batch schema migration deferred: {_describe_exc(lock_exc)}. "
+            "Batch inference stays unavailable until it lands; retrying in the background."
+        )
+        return False
+    return True
+
+
+class _DeferredBatchWorker:
+    """Holds the batch worker's place while the batch schema migration is deferred.
+
+    It answers the two calls the gateway makes on a worker: ``notify`` (nothing
+    to wake) and ``stop``, which cancels the deferred migration so no worker
+    starts after shutdown. The app lifespan leaves its app here, for the worker
+    the migration starts once it lands.
+    """
+
+    def __init__(self) -> None:
+        self.app: Any | None = None
+        self.retry: asyncio.Task[None] | None = None
+
+    def notify(self) -> None:
+        """Do nothing: there is no worker to wake yet."""
+
+    async def stop(self) -> None:
+        """Cancel the deferred migration."""
+        if self.retry is not None:
+            self.retry.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.retry
+
+
+def _defer_batch_store(services: AppServices, store: BatchStore) -> None:
+    """Finish a lock-blocked batch schema migration, then make batch inference available.
+
+    Until the DDL lands the services carry no batch store and no caps, so every
+    batch route answers 404, and a placeholder stands where the worker goes; the
+    store is reachable only as ``batch_store_pending``, for the hard-delete purge,
+    since batches stored before this boot are still there. Once it lands, the
+    store and its caps are published together, and the worker starts if the app
+    has asked for one by then.
+    """
+    placeholder = _DeferredBatchWorker()
+    services.batch_scheduler = placeholder
+    services.batch_store_pending = store
+
+    async def finish() -> None:
+        await store.initialize()  # SchemaLockUnavailable: retried by the caller
+        services.batch_model_limits = BatchModelLimits(store)
+        services.batch_store = store
+        services.batch_store_pending = None
+        logger.info("Batch store initialized (Postgres) after a deferred migration")
+        if services.batch_scheduler is placeholder:
+            services.batch_scheduler = None
+            if placeholder.app is not None:
+                start_batch_scheduler(placeholder.app, services)
+
+    placeholder.retry = _schedule_deferred_schema_migration(finish, "batch schema")
 
 
 class _RouteWiseRouterTypeError(TypeError):
@@ -1254,6 +1332,9 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
     responses_store = None
+    batch_store = None
+    batch_model_limits = None
+    deferred_batch_store = None
 
     if db_logger and db_logger.pool:
         # Resolve the erasure-fence derivation secret. Fail closed: if no
@@ -1288,6 +1369,16 @@ async def initialize() -> AppServices:
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
         )
+        # The batch store is built whenever there is a database, whatever
+        # BATCH_ENABLED says, so the surface can be turned on at runtime and the
+        # hard-delete purge reaches stored batches. The per-model caps an
+        # administrator sets are read through a short-lived cache in front of it.
+        batch_store = BatchStore(db_logger.pool)
+        if await _initialize_batch_store(batch_store):
+            batch_model_limits = BatchModelLimits(batch_store)
+            logger.info("Batch store initialized (Postgres)")
+        else:
+            deferred_batch_store, batch_store = batch_store, None
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
 
@@ -1783,7 +1874,7 @@ async def initialize() -> AppServices:
     if runtime_settings is not None:
         runtime_settings.start_refresh()
 
-    return AppServices(
+    services = AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
         db_logger=db_logger,
@@ -1809,12 +1900,76 @@ async def initialize() -> AppServices:
         cost_tracker=cost_tracker,
         responses_store=responses_store,
         auto_mode=auto_mode,
+        batch_store=batch_store,
+        batch_model_limits=batch_model_limits,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
         route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
+    if deferred_batch_store is not None:
+        _defer_batch_store(services, deferred_batch_store)
+    return services
+
+
+def start_batch_scheduler(app: Any, services: AppServices) -> None:
+    """Start the in-process batch worker when there is a batch store.
+
+    Called from the app lifespan once ``app.state.services`` is set: the worker
+    runs each batch request through the chat-completions handler with a
+    synthetic request whose scope carries the live app. It starts whether or not
+    ``BATCH_ENABLED`` is on, reads the setting every round and claims nothing
+    while it is off, so turning batches on needs no restart.
+
+    A worker that fails to start is logged and left out rather than taking the
+    gateway down; stored batches wait for a process whose worker runs.
+
+    Args:
+        app: The FastAPI application the worker dispatches through.
+        services: The services container returned by :func:`initialize`.
+    """
+    current = getattr(services, "batch_scheduler", None)
+    if isinstance(current, _DeferredBatchWorker):
+        # The batch schema migration is still waiting for its lock; it starts
+        # the worker once it lands.
+        current.app = app
+        return
+    store = getattr(services, "batch_store", None)
+    if store is None or current is not None:
+        return
+    try:
+        # Imported here, like the admin routers in initialize(): the worker
+        # imports the chat-completions handler, and this module stays
+        # importable without the HTTP layer.
+        from serving.batch.scheduler import BatchScheduler
+
+        if services.batch_model_limits is None:
+            services.batch_model_limits = BatchModelLimits(store)
+        scheduler = BatchScheduler(
+            app=app,
+            services=services,
+            store=store,
+            limits=services.batch_model_limits,
+        )
+        scheduler.start()
+    except Exception:
+        logger.exception("Batch scheduler failed to start; this process will not run batches")
+        return
+    services.batch_scheduler = scheduler
+    logger.info("Batch scheduler started")
+
+
+async def _stop_batch_scheduler(services: AppServices) -> None:
+    """Stop the batch worker, handing its unfinished requests back to the queue."""
+    scheduler = getattr(services, "batch_scheduler", None)
+    if scheduler is None:
+        return
+    try:
+        await scheduler.stop()
+    except Exception:
+        logger.exception("Batch scheduler shutdown failed")
+    services.batch_scheduler = None
 
 
 async def shutdown(services: AppServices) -> None:
@@ -1823,6 +1978,11 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # The batch worker first: its in-flight requests run through the whole
+    # serving stack (router, pricing, stores), so it stops before any of that
+    # is torn down.
+    await _stop_batch_scheduler(services)
+
     if services.pricing_sync is not None:
         await services.pricing_sync.stop()
         from serving.pricing import bind_pricing_snapshot_provider

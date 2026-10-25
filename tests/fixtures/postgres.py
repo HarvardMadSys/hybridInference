@@ -387,11 +387,12 @@ async def ensure_database(name: str, *, template: str | None = None) -> bool:
 async def prepare_schema(pool: Any) -> None:
     """Bring a test database to the full current schema.
 
-    The same three steps the gateway runs at startup. Running only the first
+    The same steps the gateway runs at startup. Running only the first
     leaves the operational columns (``users.signup_reason`` and friends)
     missing, which is what made the server tests fail on a fresh database.
     Idempotent: on a prepared database every step only reads the catalog.
     """
+    from serving.storage.batch_store import BatchStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.postgres_operational import PostgresOperationalStore
     from serving.storage.responses_store import ResponseStore
@@ -401,6 +402,7 @@ async def prepare_schema(pool: Any) -> None:
     await logger.ensure_schema()
     await PostgresOperationalStore(pool).initialize()
     await ResponseStore(pool).initialize()
+    await BatchStore(pool).initialize()
 
 
 #: Prefix of the comment :func:`prepare_databases` puts on a database it

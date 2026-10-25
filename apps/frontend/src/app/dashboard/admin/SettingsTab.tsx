@@ -45,6 +45,7 @@ import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
+import { BatchConcurrencySection } from './BatchConcurrencySection';
 
 /** The page's sections, in order, for its section index. */
 const SECTIONS = [
@@ -55,6 +56,7 @@ const SECTIONS = [
   { id: 'settings-usage-insights', label: 'Usage Insights' },
   { id: 'settings-model-visibility', label: 'Model Visibility' },
   { id: 'settings-model-concurrency', label: 'Model Concurrency' },
+  { id: 'settings-batch-concurrency', label: 'Batch Concurrency' },
   { id: 'settings-signup-policy', label: 'Signup Policy' },
 ] as const;
 
@@ -624,6 +626,10 @@ export function SettingsTab() {
 
           <div id="settings-model-concurrency" className="scroll-mt-4 focus:outline-none">
             <ModelConcurrencySection onToast={flashToast} />
+          </div>
+
+          <div id="settings-batch-concurrency" className="scroll-mt-4 focus:outline-none">
+            <BatchConcurrencySection onToast={flashToast} />
           </div>
 
           <AdminSection

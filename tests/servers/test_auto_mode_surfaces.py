@@ -22,15 +22,18 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import serving.config.runtime_settings as runtime_settings_module
+import serving.servers.concurrency as concurrency_module
 from routing.model_selection import parse_auto_config
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.auto_mode import AUTO_MODE_SETTING_KEY, AutoMode
+from serving.batch.interactive_load import InteractiveLoad
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.auth import optional_verify_api_key, verify_api_key
+from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
-from serving.servers.routers import anthropic_messages, completions, models, responses
+from serving.servers.routers import anthropic_messages, compat, completions, models, responses
 
 from .test_completions import VisibilityResolver
 
@@ -190,7 +193,7 @@ class _Gateway:
         install_error_handlers(self.app)
         self.app.dependency_overrides[verify_api_key] = lambda: user
         self.app.dependency_overrides[optional_verify_api_key] = lambda: user
-        for module in (completions, anthropic_messages, models, responses):
+        for module in (completions, compat, anthropic_messages, models, responses):
             self.app.include_router(module.router)
         self.switch(on=True)
 
@@ -252,6 +255,15 @@ def _no_auto_headers(response) -> bool:
 @pytest.fixture
 def gateway(mock_db_logger, mock_log_store) -> _Gateway:
     return _Gateway(mock_db_logger, mock_log_store)
+
+
+def _capture_interactive_load(gateway: _Gateway, monkeypatch) -> InteractiveLoad:
+    load = InteractiveLoad()
+    monkeypatch.setattr(concurrency_module, "INTERACTIVE_LOAD", load)
+    gateway.app.state.services.user_concurrency_limiter = UserConcurrencyLimiter(
+        static_limits_provider({"free": 10, "pro": 10, "internal": 10, "admin": 10})
+    )
+    return load
 
 
 def _chat(model: str, messages: list[dict[str, Any]] | None = None, **extra) -> dict[str, Any]:
@@ -374,6 +386,35 @@ async def test_every_chunk_of_a_streamed_chat_names_the_auto_model(gateway):
     assert MID not in response.text
     assert response.text.count('"model": "auto-balance"') >= 2  # the role chunk and the reply
     assert _no_auto_headers(response)
+
+
+@pytest.mark.asyncio
+async def test_streamed_auto_chat_counts_on_the_concrete_model_until_eof(gateway, monkeypatch):
+    load = _capture_interactive_load(gateway, monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    adapter = gateway.adapters[MID]
+
+    async def held_stream(messages, **params):
+        adapter._record(messages, params)
+        entered.set()
+        yield adapter.format_stream_chunk(model=MID, content="ok")
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(adapter, "stream_chat_completion", held_stream)
+    task = asyncio.create_task(
+        gateway.post("/v1/chat/completions", _chat("auto-balance", stream=True))
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    try:
+        assert load.in_flight(MID) == 1
+        assert load.in_flight("auto-balance") == 0
+    finally:
+        release.set()
+
+    assert (await task).status_code == 200
+    assert load.in_flight(MID) == 0
 
 
 @pytest.mark.asyncio
@@ -691,6 +732,49 @@ async def test_the_responses_api_names_the_auto_model(gateway, stream):
     assert gateway.served() == [MID]
     assert "auto-balance" in response.text
     assert MID not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        pytest.param(
+            "/v1/responses",
+            {"model": "auto-balance", "input": "hi"},
+            id="responses-direct-delegate",
+        ),
+        pytest.param("/completion", _chat("auto-balance"), id="legacy-direct-delegate"),
+        pytest.param(
+            "/v1/completions",
+            {"model": "auto-balance", "prompt": "hi"},
+            id="openai-legacy-completions",
+        ),
+        pytest.param("/v1/messages", _anthropic("auto-balance"), id="anthropic"),
+    ],
+)
+async def test_unary_auto_surfaces_retarget_concrete_load(gateway, monkeypatch, path, body):
+    load = _capture_interactive_load(gateway, monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    adapter = gateway.adapters[MID]
+    original = adapter.chat_completion
+
+    async def held_completion(messages, **params):
+        entered.set()
+        await release.wait()
+        return await original(messages, **params)
+
+    monkeypatch.setattr(adapter, "chat_completion", held_completion)
+    task = asyncio.create_task(gateway.post(path, body))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    try:
+        assert load.in_flight(MID) == 1
+        assert load.in_flight("auto-balance") == 0
+    finally:
+        release.set()
+
+    assert (await task).status_code == 200
+    assert load.in_flight(MID) == 0
 
 
 @pytest.mark.asyncio

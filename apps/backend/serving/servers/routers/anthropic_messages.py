@@ -58,7 +58,7 @@ from serving.exceptions import (
     scrub_error_for_user,
 )
 from serving.grant_auth import ledger_attribution
-from serving.model_access import model_access_denial
+from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, require_source_pricing
@@ -67,7 +67,7 @@ from serving.servers.auth import (
     verify_api_key,
     verify_api_key_for_balance,
 )
-from serving.servers.concurrency import enforce_user_concurrency
+from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
 from serving.servers.deps import (
     get_log_store,
     get_model_visibility_resolver,
@@ -1676,6 +1676,11 @@ async def anthropic_messages(
     if auto_selection is not None and reroute_info is not None:
         # The reroute's target serves the request now; keep it from the caller too.
         hide_served_model(auto_selection, *(entry[0].config for entry in _route.adapters))
+
+    # Auto selection (and the small-budget reroute above) happen after the
+    # concurrency dependency admitted the virtual model. Count the request on
+    # the final concrete canonical model for the remainder of its lifetime.
+    retarget_interactive_load(request, route_canonical_model_id(_route, canonical))
 
     forwarded_headers = _extract_forwarded_headers(request)
 

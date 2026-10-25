@@ -391,6 +391,7 @@ several gateway processes sees it in the others after their next restart.
 |---|---|---|---|
 | Change who can see a model | **Model Visibility** | `PATCH /admin/models/{model_id}/visibility` sets or clears a `required_role` override; `GET /admin/models/visibility` lists baseline, override and effective values | `model_visibility_overrides` |
 | Exempt a model from the per-user concurrency limit | **Model Concurrency Limit** | `PATCH /admin/models/{model_id}/concurrency` | `model_concurrency_exemptions` |
+| Cap how many batch requests a model runs at once | **Batch Concurrency** | `PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests | `batch_model_limits` |
 
 ### How the two layers combine
 

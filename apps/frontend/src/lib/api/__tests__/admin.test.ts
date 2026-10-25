@@ -32,6 +32,8 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
   updateModelVisibility,
+  listBatchModelLimits,
+  updateBatchModelLimit,
 } from '../admin';
 import type { RuntimeModelCapabilities } from '../admin';
 import { setAccessToken } from '../client';
@@ -276,6 +278,66 @@ describe('model visibility client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(init.body as string)).toEqual({ required_role: null });
+  });
+});
+
+describe('batch concurrency client', () => {
+  const limit = {
+    model_id: 'org/glm-4.7',
+    max_concurrency: 3,
+    effective_concurrency: 3,
+    running: 1,
+    queued: 12,
+  };
+
+  it('listBatchModelLimits GETs every model cap with the default', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ default_concurrency: 4, models: [limit] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await listBatchModelLimits();
+
+    expect(out.default_concurrency).toBe(4);
+    expect(out.models[0]).toEqual(limit);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/batch/models');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('updateBatchModelLimit PATCHes the cap to the encoded model path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(limit), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await updateBatchModelLimit('org/glm-4.7', 3);
+
+    expect(out.effective_concurrency).toBe(3);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/batch/models/org%2Fglm-4.7');
+    expect(init.method).toBe('PATCH');
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({ max_concurrency: 3 });
+  });
+
+  it('updateBatchModelLimit sends null to clear the cap', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...limit, max_concurrency: null, effective_concurrency: 4 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await updateBatchModelLimit('org/glm-4.7', null);
+
+    expect(out.max_concurrency).toBeNull();
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({ max_concurrency: null });
   });
 });
 

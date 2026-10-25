@@ -1265,6 +1265,19 @@ msgid ""
 "[Contributing](contributing.md) before sending a change."
 msgstr "要部署运行，见[部署指南](deployment.md)；要在本地开发，见[安装](installation.md)；提交改动前，先读[参与贡献](contributing.md)。"
 
+#: ../developer/architecture.md
+msgid "[Batch inference](batches.md)"
+msgstr "[批量推理](batches.md)"
+
+#: ../developer/architecture.md
+#, python-brace-format
+msgid "`POST /v1/batches`, `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`"
+msgstr "`POST /v1/batches`、`GET /v1/batches`、`GET` 和 `DELETE /v1/batches/{id}`、`POST /v1/batches/{id}/cancel`、`GET /v1/batches/{id}/results`"
+
+#: ../developer/architecture.md
+msgid "API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default"
+msgstr "API key；创建批次需要 `BATCH_MIN_ROLE` 角色，默认为 `internal`"
+
 #~ msgid ""
 #~ "`FixedRouter.chat_completion` / `stream_chat_completion`"
 #~ " call the chosen adapter. The call"

@@ -57,6 +57,7 @@ from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
     get_admin_user_id,
+    get_batch_store_for_purge,
     get_log_store,
     get_operational_store,
     get_response_store,
@@ -1059,14 +1060,15 @@ async def hard_delete_user(
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
     response_store=Depends(get_response_store),
+    batch_store=Depends(get_batch_store_for_purge),
 ) -> HardDeleteUserResponse:
     """Permanently delete a user and all linked rows.
 
     Two-step gate: only allowed when the user is already soft-deleted
     (status='deleted').  Wipes the user row, all api_keys, sessions/tokens,
-    user_daily_cost, prior admin_audit_log entries, and (via the LogStore)
-    api_logs and email_broadcast_recipients.  A fresh ``hard_delete_user``
-    audit row is recorded.
+    user_daily_cost, prior admin_audit_log entries, (via the LogStore)
+    api_logs and email_broadcast_recipients, and the user's stored Responses
+    API rows and batches.  A fresh ``hard_delete_user`` audit row is recorded.
 
     The operational store and log store acquire connections from the pool
     independently (and may be configured against different databases/engines),
@@ -1143,7 +1145,8 @@ async def hard_delete_user(
     # the account is still soft-deleted *under the exclusive advisory lock*.
     # If a concurrent resume won first and reactivated the user, it raises
     # HardDeleteStateChanged. We catch that here and abort the entire
-    # hard-delete workflow — neither response_store nor op_store is touched.
+    # hard-delete workflow — none of response_store, batch_store or op_store
+    # is touched.
     fence_established = False
     try:
         if log_store is not None:
@@ -1153,6 +1156,11 @@ async def hard_delete_user(
         # Purge stored Responses API rows (openai_responses).
         if response_store is not None:
             await response_store.delete_user_responses(user_id)
+
+        # Purge the user's batches, with the requests and results they hold
+        # (also while the batch schema migration is still pending at boot).
+        if batch_store is not None:
+            await batch_store.delete_user_batches(user_id)
 
         # Wipe operational rows + write the new hard-delete audit row,
         # atomically.

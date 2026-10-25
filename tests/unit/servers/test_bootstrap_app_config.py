@@ -134,6 +134,7 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
         bootstrap, "CachedOperationalStore", MagicMock(return_value=operational_store)
     )
     monkeypatch.setattr(bootstrap, "ResponseStore", MagicMock(return_value=AsyncMock()))
+    monkeypatch.setattr(bootstrap, "BatchStore", MagicMock(return_value=AsyncMock()))
     import_environment_values = AsyncMock(return_value=[])
     monkeypatch.setattr(
         "serving.config.runtime_settings.import_environment_values", import_environment_values

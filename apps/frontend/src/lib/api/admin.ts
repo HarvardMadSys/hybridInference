@@ -2019,6 +2019,45 @@ export async function updateModelConcurrency(
   return jsonOrThrow<AdminModelConcurrencyItem>(resp);
 }
 
+/** Highest per-model batch concurrency cap the backend accepts. */
+export const MAX_BATCH_MODEL_CONCURRENCY = 10000;
+
+export interface AdminBatchModelLimit {
+  model_id: string;
+  /** The model's own cap; `null` when it takes the default. */
+  max_concurrency: number | null;
+  /** The cap in force across every gateway process; 0 pauses batch work on the model. */
+  effective_concurrency: number;
+  /** Batch requests of the model running now. */
+  running: number;
+  /** Batch requests of the model waiting to run. */
+  queued: number;
+}
+
+export interface ListAdminBatchModelLimitsResponse {
+  /** `BATCH_MODEL_CONCURRENCY`: the cap of a model without its own. */
+  default_concurrency: number;
+  models: AdminBatchModelLimit[];
+}
+
+export async function listBatchModelLimits(): Promise<ListAdminBatchModelLimitsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/batch/models');
+  return jsonOrThrow<ListAdminBatchModelLimitsResponse>(resp);
+}
+
+/** Set a model's batch concurrency cap, or clear it with `null` so the default applies. */
+export async function updateBatchModelLimit(
+  modelId: string,
+  maxConcurrency: number | null,
+): Promise<AdminBatchModelLimit> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/batch/models/${encodeURIComponent(modelId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_concurrency: maxConcurrency }),
+  });
+  return jsonOrThrow<AdminBatchModelLimit>(resp);
+}
+
 export interface RouteWeight {
   model_id: string;
   strategy: string;
