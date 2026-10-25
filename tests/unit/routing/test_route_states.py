@@ -192,3 +192,28 @@ async def test_the_resolver_loads_disabled_and_removed_routes():
 
     resolver.clear_model(MODEL)
     assert not resolver.is_excluded(MODEL, "a")
+
+
+async def test_a_resolver_whose_first_load_failed_is_not_ready_until_one_succeeds():
+    """An unread snapshot is unknown, not empty; a later failure keeps the last good one."""
+    rows = [{"model_id": MODEL, "route_id": "a", "disabled": True, "removed": False}]
+    store = SimpleNamespace(
+        list_all_provider_route_states=AsyncMock(
+            side_effect=[RuntimeError("down"), rows, RuntimeError("down again")]
+        )
+    )
+    resolver = RouteStateResolver(store)
+    # One never asked to load holds exactly what it is given.
+    assert resolver.ready is True
+
+    with pytest.raises(RuntimeError):
+        await resolver.load_all()
+    assert resolver.ready is False
+
+    assert await resolver.load_all() is True
+    assert resolver.ready is True
+
+    with pytest.raises(RuntimeError):
+        await resolver.load_all()
+    assert resolver.ready is True
+    assert resolver.is_excluded(MODEL, "a")

@@ -9,7 +9,7 @@ import math
 import re
 import socket
 import time
-from collections.abc import MutableMapping
+from collections.abc import Collection, MutableMapping
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -5411,6 +5411,12 @@ def _require_route_state_resolver(services):
     resolver = _route_state_resolver(services)
     if resolver is None:
         raise HTTPException(status_code=503, detail="Route state is not available")
+    if not resolver.ready:
+        # Each write keeps the other flag from the snapshot, so one made while
+        # the stored states could not be read would overwrite them.
+        raise HTTPException(
+            status_code=503, detail="Route states are still loading; try again shortly"
+        )
     return resolver
 
 
@@ -5850,17 +5856,24 @@ async def restore_config_provider_route(
     return await _list_model_routes_response(services, op_store, model_id, route)
 
 
-def apply_persisted_provider_route_removals(services) -> None:
+def apply_persisted_provider_route_removals(
+    services,
+    model_ids: Collection[str] | None = None,
+) -> None:
     """Take config routes an admin deleted out of the route table at boot.
 
     Runs after the candidates and overrides are applied, so it sees the routes
     as they would serve. A removal that cannot be applied leaves the route in
     the table, where its removal mark still keeps routing from selecting it.
+    ``model_ids`` limits it to those models, for a caller that holds their
+    transition locks.
     """
     resolver = _route_state_resolver(services)
     if resolver is None:
         return
     for model_id, route_id in resolver.removed_routes():
+        if model_ids is not None and model_id not in model_ids:
+            continue
         route = services.router.routes.get(model_id)
         if route is None or not _is_canonical_model(model_id, route):
             continue

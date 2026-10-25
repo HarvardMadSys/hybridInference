@@ -8436,3 +8436,32 @@ async def test_restore_refuses_an_edit_whose_endpoint_another_route_took(
     )
     assert states.rows[("minimax-fast", CHUTES)]["removed"] is True
     assert route_executor.routes["minimax-fast"].raw_adapters == before
+
+
+@pytest.mark.asyncio
+async def test_route_state_endpoints_wait_for_the_states_to_load(admin_client):
+    """A write over a snapshot that could not be read would clobber the stored flags."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    op_store.list_all_provider_route_states = AsyncMock(
+        side_effect=ConnectionError("database unavailable")
+    )
+    with pytest.raises(ConnectionError):
+        await states.resolver.load_all()
+
+    responses = [
+        await _set_state(client, FEATHERLESS, True),
+        await _remove(client, FEATHERLESS),
+        await _restore(client, FEATHERLESS),
+    ]
+
+    assert [response.status_code for response in responses] == [503, 503, 503]
+    assert {response.json()["detail"] for response in responses} == {
+        "Route states are still loading; try again shortly"
+    }
+    assert states.rows == {}
+    assert FEATHERLESS in _live_route_ids(route_executor)
+
+    op_store.list_all_provider_route_states = AsyncMock(side_effect=states.list_all)
+    await states.resolver.load_all()
+    assert (await _set_state(client, FEATHERLESS, True)).status_code == 200

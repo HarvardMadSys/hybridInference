@@ -5,8 +5,9 @@ weight, so weighted selection, every retry and fallback loop, the offload pick
 and RouteWise's candidate set all skip it (each already gates on ``weight > 0``).
 The route's configuration and weights are left as they are, so enabling it
 again restores exactly what it had. A *removed* config route is also taken out
-of the route table at boot; until then (another process, a failed table update)
-the exclusion alone keeps it from being selected.
+of the route table at boot, or by the refresh loop once states that could not
+be read at boot load; until then (another process, a failed table update) the
+exclusion alone keeps it from being selected.
 
 Routes are named by their route id (``routing.endpoints.route_id_for_adapter``),
 which survives an edit that moves the endpoint. The snapshot is read
@@ -43,10 +44,30 @@ class RouteStateResolver:
         self._store = store
         self._states: dict[tuple[str, str], RouteState] = {}
         self._lock = RLock()
+        # "never" until a load is attempted, "failed" while none has succeeded.
+        self._load_state = "never"
+
+    @property
+    def ready(self) -> bool:
+        """Whether admin writes can build on the snapshot.
+
+        False from a failed first load until a load succeeds: an unread
+        snapshot is unknown, not empty, and a write based on it would overwrite
+        the stored flags. A later failed reload keeps the last good snapshot,
+        and a resolver never asked to load holds what it is given.
+        """
+        with self._lock:
+            return self._load_state != "failed"
 
     async def load_all(self) -> bool:
         """Reload every route state and return whether the snapshot changed."""
-        rows = await self._store.list_all_provider_route_states()
+        try:
+            rows = await self._store.list_all_provider_route_states()
+        except Exception:
+            with self._lock:
+                if self._load_state == "never":
+                    self._load_state = "failed"
+            raise
         states = {
             (str(row["model_id"]), str(row["route_id"])): RouteState(
                 disabled=bool(row["disabled"]),
@@ -58,6 +79,7 @@ class RouteStateResolver:
         with self._lock:
             changed = states != self._states
             self._states = states
+            self._load_state = "loaded"
             return changed
 
     def get(self, model_id: str, route_id: str) -> RouteState:

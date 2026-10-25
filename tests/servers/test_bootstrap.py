@@ -17,6 +17,7 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
+from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
@@ -1186,3 +1187,96 @@ class TestBootstrapErrorHandling:
             )
             # Should log a warning about routing config failure/missing
             mock_logger.warning.assert_called()
+
+
+class _RouteAdapter(BaseAdapter):
+    """Adapter double for a route-table test; it is never sent a request."""
+
+    def __init__(self, endpoint_id: str) -> None:
+        super().__init__(
+            ModelConfig(
+                id="m",
+                name="m",
+                provider=endpoint_id.split(":")[1],
+                base_url="https://upstream.example/v1",
+                endpoint_id=endpoint_id,
+            )
+        )
+
+    async def chat_completion(self, messages, **params):
+        raise NotImplementedError
+
+    async def stream_chat_completion(self, messages, **params):
+        raise NotImplementedError
+        yield
+
+
+@pytest.mark.asyncio
+async def test_initialize_keeps_route_states_when_their_first_load_fails(mock_env):
+    """One failed read at boot must not turn disabled and deleted routes on until a restart.
+
+    The resolver is attached anyway, as the offload resolver is; its refresh loop
+    retries the read and, once it lands, takes deleted config routes out of the
+    route table, which boot could not do without the states.
+    """
+    db_logger = AsyncMock()
+    db_logger.pool = object()
+    store = MagicMock()
+    store.list_all_provider_route_states = AsyncMock(
+        side_effect=ConnectionError("database unavailable")
+    )
+    for name in (
+        "list_all_provider_route_candidates",
+        "list_all_provider_route_configs",
+        "list_all_route_capability_overrides",
+        "list_settings",
+    ):
+        setattr(store, name, AsyncMock(return_value=[]))
+    refresh_loops: list[dict] = []
+
+    async def record_refresh_loop(resolver, registry, **kwargs):
+        refresh_loops.append({"resolver": resolver, **kwargs})
+
+    with (
+        patch("serving.servers.bootstrap._init_db_logger", return_value=db_logger),
+        patch(
+            "serving.servers.bootstrap._init_router_and_models",
+            new=AsyncMock(return_value=({}, [])),
+        ),
+        patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+        patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=AsyncMock()),
+        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=store),
+        patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
+        patch(
+            "serving.servers.bootstrap._refresh_route_state_snapshots",
+            new=record_refresh_loop,
+        ),
+    ):
+        services = await bootstrap.initialize()
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    resolver = services.route_state_resolver
+    assert resolver is not None
+    assert services.router.route_state_resolver is resolver
+    # Writes wait for a snapshot they can trust; routing reads the empty one.
+    assert resolver.ready is False
+    (loop,) = refresh_loops
+    assert loop["resolver"] is resolver
+    apply_removals = loop["apply_removals"]
+    assert apply_removals is not None
+
+    # The read recovers: the loop reloads the states, then runs the removals.
+    services.router.register_route(
+        "m", [(_RouteAdapter("m:first-api"), 1.0), (_RouteAdapter("m:deleted-api"), 1.0)]
+    )
+    store.list_all_provider_route_states = AsyncMock(
+        return_value=[
+            {"model_id": "m", "route_id": "m:deleted-api", "disabled": False, "removed": True}
+        ]
+    )
+    assert await resolver.load_all() is True
+    assert resolver.ready is True
+    await apply_removals()
+
+    assert [entry[2] for entry in services.router.routes["m"].raw_adapters] == ["m:first-api"]

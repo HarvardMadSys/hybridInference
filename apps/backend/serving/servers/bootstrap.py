@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import functools
 import os
 import random
 from dataclasses import dataclass
@@ -347,8 +348,14 @@ async def _refresh_route_state_snapshots(
     *,
     interval_seconds: float = 10.0,
     router: Any | None = None,
+    apply_removals: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
-    """Periodically reload disabled/removed routes so workers converge after admin edits."""
+    """Periodically reload disabled/removed routes so workers converge after admin edits.
+
+    ``apply_removals`` is what boot could not do: take deleted config routes
+    out of the route table. It runs once, after the first reload that
+    succeeds, and again on the next one if it fails.
+    """
     refresh_state = _EffectiveRouteRefreshState()
     while True:
         await asyncio.sleep(interval_seconds)
@@ -358,10 +365,51 @@ async def _refresh_route_state_snapshots(
                 model_router_registry,
                 refresh_state,
             )
+            if apply_removals is not None:
+                await apply_removals()
+                apply_removals = None
             if changed:
                 _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Route state snapshot refresh failed", exc_info=True)
+
+
+async def _attach_route_states(router: Any, store: Any) -> RouteStateResolver:
+    """Attach the per-route admin state resolver to the shared router, loaded if it can be.
+
+    Attached even when the first load fails, as the offload resolver is: the
+    refresh loop retries the read, and until it lands routing sees no route
+    states while the admin state endpoints refuse to write (``ready``).
+    """
+    resolver = RouteStateResolver(store)
+    try:
+        await resolver.load_all()
+    except Exception:
+        logger.warning(
+            "Route state snapshot load failed; retrying in the background",
+            exc_info=True,
+        )
+    router.route_state_resolver = resolver
+    return resolver
+
+
+async def _apply_route_removals_after_boot(services: AppServices) -> None:
+    """Take deleted config routes out of the route table once the states load after boot.
+
+    Admin requests are served by then, so each model's removals run under the
+    transition lock its admin edits take.
+    """
+    from serving.servers.deps import model_router_transition_lock
+    from serving.servers.routers.admin.provider_routes import (
+        apply_persisted_provider_route_removals,
+    )
+
+    resolver = services.route_state_resolver
+    if resolver is None:
+        return
+    for model_id in sorted({model_id for model_id, _route_id in resolver.removed_routes()}):
+        async with model_router_transition_lock(services, model_id):
+            apply_persisted_provider_route_removals(services, model_ids={model_id})
 
 
 async def _refresh_offload_route_snapshots(
@@ -1310,6 +1358,9 @@ async def initialize() -> AppServices:
     # a failure here should not prevent the server from starting.
     restored_routewise_model_ids: set[str] = set()
     route_state_resolver: RouteStateResolver | None = None
+    # Set when boot could not take deleted config routes out of the table, so
+    # the route-state refresh loop does it once the states can be read.
+    late_route_removals: Callable[[], Awaitable[None]] | None = None
     if operational_store is not None:
         try:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
@@ -1344,13 +1395,7 @@ async def initialize() -> AppServices:
 
             # Loaded before any route is restored, so a disabled or removed
             # route is never selectable, not even while boot is still running.
-            try:
-                route_state_resolver = RouteStateResolver(operational_store)
-                await route_state_resolver.load_all()
-                router.route_state_resolver = route_state_resolver
-            except Exception as exc:
-                route_state_resolver = None
-                logger.warning(f"Route state resolver initialization failed: {exc}")
+            route_state_resolver = await _attach_route_states(router, operational_store)
             provider_route_services = AppServices(
                 router=router,
                 operational_store=operational_store,
@@ -1358,6 +1403,9 @@ async def initialize() -> AppServices:
                 managed_routers=managed_routers,
                 model_router_transition_locks=model_router_transition_locks,
                 route_state_resolver=route_state_resolver,
+            )
+            late_route_removals = functools.partial(
+                _apply_route_removals_after_boot, provider_route_services
             )
             await apply_persisted_model_router_strategy_overrides(
                 provider_route_services,
@@ -1397,6 +1445,8 @@ async def initialize() -> AppServices:
                 operational_store,
             )
             apply_persisted_provider_route_removals(provider_route_services)
+            if route_state_resolver.ready:
+                late_route_removals = None
         except _RouteWiseRouterTypeError:
             raise
         except Exception as exc:
@@ -1586,6 +1636,7 @@ async def initialize() -> AppServices:
                     route_state_resolver,
                     model_router_registry,
                     router=router,
+                    apply_removals=late_route_removals,
                 )
             )
             _BACKGROUND_TASKS.add(route_state_refresh_task)
