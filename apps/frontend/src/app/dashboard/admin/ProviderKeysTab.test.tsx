@@ -461,6 +461,65 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(addProviderKey).toHaveBeenCalledTimes(2);
   });
 
+  // Adding a key switches the page to the key's provider, which would leave open
+  // tier drafts for the provider shown now with no Save or Cancel.
+  describe('while tier edits are open', () => {
+    const LOCKED = 'Save or cancel the open edit first';
+
+    beforeEach(() => {
+      vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['chutes', 'zai'] });
+      vi.mocked(addProviderKey).mockResolvedValue({
+        key: { ...dbKey, id: 'key-3', provider: 'chutes' },
+        pools_updated: 1,
+      });
+    });
+
+    it('holds Add key until the tier edit is saved or cancelled', async () => {
+      render(<ProviderKeysTab initialProvider="zai" />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
+      chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+      expect(screen.getByText('1 unsaved change')).toBeVisible();
+
+      const addKey = screen.getByRole('button', { name: 'Add key' });
+      expect(addKey).toBeDisabled();
+      expect(addKey).toHaveAttribute('title', LOCKED);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing zai key tiers' }));
+      expect(addKey).toBeEnabled();
+      expect(addKey).not.toHaveAttribute('title');
+    });
+
+    it('holds the review of a key for another provider while a tier edit opened after it is open', async () => {
+      render(<ProviderKeysTab initialProvider="zai" />);
+      const form = await openAddForm();
+      chooseValue(screen.getByLabelText('Provider'), 'chutes');
+      fireEvent.change(screen.getByLabelText('API key'), { target: { value: NEW_SECRET } });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit tiers zai key tiers' }));
+      chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+
+      const review = screen.getByRole('button', { name: 'Review key' });
+      expect(review).toBeDisabled();
+      expect(review).toHaveAttribute('title', LOCKED);
+      fireEvent.submit(form);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+      expect(screen.getByText('1 unsaved change')).toBeVisible();
+
+      // Once the tier edit is cancelled, the key is reviewed and added as before.
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing zai key tiers' }));
+      expect(review).toBeEnabled();
+      fireEvent.submit(form);
+      clickInDialog('Add key');
+      await waitFor(() =>
+        expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'chutes'),
+      );
+      expect(vi.mocked(addProviderKey).mock.calls).toEqual([
+        ['chutes', NEW_SECRET, undefined, 'free'],
+      ]);
+      expect(setProviderKeyMinRole).not.toHaveBeenCalled();
+    });
+  });
+
   it('verifies a key directly, without a confirmation', async () => {
     vi.mocked(verifyProviderKey).mockResolvedValue({ ok: true });
     render(<ProviderKeysTab />);

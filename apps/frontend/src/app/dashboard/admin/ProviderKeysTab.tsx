@@ -147,7 +147,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   // Review what will be created; only "Add key" in the confirmation writes it.
   const onReviewAdd = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!providers.includes(formProvider) || !formApiKey.trim()) return;
+    if (editingTiers || !providers.includes(formProvider) || !formApiKey.trim()) return;
     const provider = formProvider;
     const apiKey = formApiKey.trim();
     const label = formLabel.trim();
@@ -653,7 +653,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             <button
               type="button"
               onClick={() => setAddOpen(true)}
-              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700"
+              // Adding a key switches to its provider, away from open tier drafts.
+              disabled={editingTiers}
+              title={editingTiers ? 'Save or cancel the open edit first' : undefined}
+              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Add key
             </button>
@@ -763,7 +766,14 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
               </button>
               <button
                 type="submit"
-                disabled={confirmation.busy || verifyingKey || !formProvider || !formApiKey.trim()}
+                disabled={
+                  confirmation.busy ||
+                  verifyingKey ||
+                  editingTiers ||
+                  !formProvider ||
+                  !formApiKey.trim()
+                }
+                title={editingTiers ? 'Save or cancel the open edit first' : undefined}
                 className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Review key
