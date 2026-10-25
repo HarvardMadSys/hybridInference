@@ -27,7 +27,7 @@ The Configuration tab follows the same contract with its PATCH-then-DELETE seque
 All are under `apps/frontend/src/components/features/admin/confirm/`:
 - **`useConfirmAction.tsx`**: one dialog per screen. A `run` that resolves closes the dialog; a `run` that throws keeps it open with the error inside. It also provides the busy guard and an optional `requireText` typed confirmation.
 - **`ChangeList.tsx`**: the `old → new` rows. Long values wrap anywhere.
-- **`EditBar.tsx`**: Cancel and Save changes, with the change count. **`EditButton`** opens a section, row or entity for editing.
+- **`EditBar.tsx`**: Cancel and Save changes, with the change count. An optional `blocked` reason replaces the count and keeps Save disabled while the save would drop another open edit. **`EditButton`** opens a section, row or entity for editing; an optional `title` says why it is disabled.
 - **`writeEach.ts`**: the multi-request save described above.
 
 They render the existing `ConfirmDialog`, which received three changes:
@@ -138,7 +138,7 @@ They are called only from confirmed `run`s in `UserTable.tsx` and `UserDetailPan
 | `deleteProviderRouteCandidate` | `ProviderRoutesTab.tsx:1735` | Delete (runtime route) | action (danger) | | "asks before deleting a runtime route", "keeps a failed row action in its dialog, and Cancel writes nothing" |
 | `setRouteWeight(…, 0)` / `clearRouteWeight` | `ProviderRoutesTab.tsx:1756` / `:1777` | Disable / Enable (RouteWise config route) | action | | "disables and enables routewise config routes…", "asks before disabling a route, and Cancel writes nothing" |
 | `clearRouteWeight` | `ProviderRoutesTab.tsx:1813` | Weight Reset | action (danger) | The dialog shows `weight → configured weight`. | "edits fixed route weights after Edit and confirms each change" |
-| `updateProviderRouteStrategy` | `ProviderRoutesTab.tsx:1853` | Edit routing policy → Save | edit | Previously written when the select changed. | "updates the selected model routing policy", "cancels a routing policy edit with zero writes" |
+| `updateProviderRouteStrategy` | `ProviderRoutesTab.tsx:1853` | Edit routing policy → Save | edit | Previously written when the select changed. A switch unmounts the panel of the current policy (Queue offload for fixed, RouteWise parameters for routewise), so Edit is held while either has an edit open, and Save waits while one opened after it is still open. | "updates the selected model routing policy", "cancels a routing policy edit with zero writes", "holds the routing policy while RouteWise parameters are being edited", "holds the routing policy while a Queue offload draft is open", "holds a policy switch while a parameter edit opened after it is open" |
 | `setRouteWeight` | `ProviderRoutesTab.tsx:1914` | Edit weights → Save | edit | Previously saved directly per row. Now one request per changed route through `writeEach`. | "edits fixed route weights after Edit…", "cancels weight edits with zero writes", "refuses a negative weight before the review", "reports a partial weight save and retries only the unsaved weight" |
 | `updateProviderRouteCandidate` | `ProviderRoutesTab.tsx:1982` | Concurrency limit → Edit → Save | edit | Previously written directly. The positive-integer check is kept. | "updates a runtime OpenRouter concurrency limit after Edit and confirmation", "refuses an invalid concurrency limit before the review" |
 | `setOffloadRoute` | `OffloadRoutePanel.tsx:208` | Edit Queue offload → Save | edit | Previously written directly. All limit validations are kept. | `OffloadRoutePanel.test.tsx` (23 tests) |
@@ -174,7 +174,7 @@ The setup wizard (`app/setup/ConfigureStep.tsx`) is outside the Admin Console an
 - Broadcasts: Schedule needs a time.
 - Site updates: an edit sends only the changed fields.
 - Route editor: closes after a successful save.
-- The model selector, and Create model (which switches to the new model), are locked while any routing edit or confirmation is open: weights, policy, concurrency limit, Queue offload or RouteWise parameters. The provider selector is locked while a tier edit is open. So drafts are never applied to, or silently dropped for, another target.
+- The model selector, and Create model (which switches to the new model), are locked while any routing edit or confirmation is open: weights, policy, concurrency limit, Queue offload or RouteWise parameters. So is the routing-policy Edit, since a switch unmounts the Queue offload or RouteWise panel; a policy edit opened first cannot be saved while one of those panels is being edited. The provider selector is locked while a tier edit is open. So drafts are never applied to, or silently dropped for, another target.
 
 ## Follow-up after browser acceptance (2026-10-24)
 

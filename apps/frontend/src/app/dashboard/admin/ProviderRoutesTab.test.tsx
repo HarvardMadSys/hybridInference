@@ -89,7 +89,7 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
+import type { ListProviderApiKeysResponse, RoutewiseSettingItem } from '@/lib/api/admin';
 import { chooseValue, openOptions } from '@/test-utils/select';
 import toast from 'react-hot-toast';
 import { APIError } from '@/lib/utils/errors';
@@ -566,6 +566,101 @@ describe('ProviderRoutesTab', () => {
     chooseValue(selector, 'other-routewise');
     await waitFor(() => expect(listRoutewiseSettings).toHaveBeenLastCalledWith('other-routewise'));
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
+  });
+
+  describe('routing policy and the panels it shows', () => {
+    const LOCKED = 'Save or cancel the open edit first';
+    const budgetSetting: RoutewiseSettingItem = {
+      key: 'routewise_budget_alpha',
+      value: 0.75,
+      value_type: 'float',
+      default_value: 0.75,
+      source: 'global_default',
+      overridden: false,
+      description: 'RouteWise LP cost budget interpolation.',
+      min: 0,
+      max: 1,
+    };
+
+    function renderRoutewiseWithParameters() {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [route],
+      });
+      vi.mocked(listRoutewiseSettings).mockResolvedValue({
+        model_id: 'minimax-fast',
+        settings: [budgetSetting],
+      });
+      render(<ProviderRoutesTab showRoutewiseSettings />);
+      return screen.findByRole('button', { name: 'Edit RouteWise parameters' });
+    }
+
+    it('holds the routing policy while RouteWise parameters are being edited', async () => {
+      const editParameters = await renderRoutewiseWithParameters();
+      const editPolicy = screen.getByRole('button', { name: 'Edit minimax-fast routing policy' });
+      expect(editPolicy).toBeEnabled();
+
+      // Switching to fixed would unmount the RouteWise panel and drop its drafts.
+      fireEvent.click(editParameters);
+      expect(editPolicy).toBeDisabled();
+      expect(editPolicy).toHaveAttribute('title', LOCKED);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
+      expect(editPolicy).toBeEnabled();
+      expect(editPolicy).not.toHaveAttribute('title');
+    });
+
+    it('holds the routing policy while a Queue offload draft is open', async () => {
+      const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [
+          fixedRoute,
+          {
+            ...fixedRoute,
+            route_id: 'minimax-fast:openrouter-api',
+            provider: 'openrouter',
+            upstream_provider: 'openrouter',
+            key_provider: 'openrouter',
+            base_url: 'https://openrouter.ai/api/v1',
+            endpoint_id: 'minimax-fast:openrouter-api',
+          },
+        ],
+      });
+
+      render(<ProviderRoutesTab />);
+      await screen.findByTestId('offload-route-panel');
+      const editPolicy = screen.getByRole('button', { name: 'Edit minimax-fast routing policy' });
+      expect(editPolicy).toBeEnabled();
+
+      // Switching to routewise would unmount the offload panel and drop a new draft.
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
+      expect(editPolicy).toBeDisabled();
+      expect(editPolicy).toHaveAttribute('title', LOCKED);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
+      expect(editPolicy).toBeEnabled();
+    });
+
+    it('holds a policy switch while a parameter edit opened after it is open', async () => {
+      const editParameters = await renderRoutewiseWithParameters();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
+      chooseValue(screen.getByLabelText('Routing policy'), 'fixed');
+      const savePolicy = screen.getByRole('button', {
+        name: 'Save changes to minimax-fast routing policy',
+      });
+      expect(savePolicy).toBeEnabled();
+
+      fireEvent.click(editParameters);
+      expect(savePolicy).toBeDisabled();
+      expect(screen.getByText(LOCKED)).toBeVisible();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
+      expect(savePolicy).toBeEnabled();
+      expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
+    });
   });
 
   it('renders settings and runs RouteWise probes when requested', async () => {

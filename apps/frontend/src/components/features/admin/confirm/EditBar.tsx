@@ -4,7 +4,8 @@ import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../adminStyles';
 
 /**
  * Cancel and Save changes for a section or row being edited, with how many
- * changes are unsaved. Save is disabled for a no-op and while a write runs.
+ * changes are unsaved. Save is disabled for a no-op, while the save is
+ * `blocked` and while a write runs.
  *
  * `sticky` keeps it at the bottom of the screen while a long section scrolls;
  * place it as the last child of the edited section.
@@ -16,6 +17,7 @@ export function EditBar({
   onSave,
   busy = false,
   error,
+  blocked,
   sticky = false,
   submit = false,
 }: {
@@ -27,6 +29,11 @@ export function EditBar({
   onSave?: () => void;
   busy?: boolean;
   error?: string | null;
+  /**
+   * Why Save is unavailable for now, shown in place of the count: another open
+   * edit that the save would drop, say.
+   */
+  blocked?: string | null;
   sticky?: boolean;
   submit?: boolean;
 }) {
@@ -48,12 +55,20 @@ export function EditBar({
       ) : null}
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span
-          className={`mr-auto text-[12px] ${changeCount > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
+          className={`mr-auto text-[12px] ${
+            blocked
+              ? 'font-medium text-red-600'
+              : changeCount > 0
+                ? 'font-medium text-amber-700'
+                : 'text-gray-500'
+          }`}
           role="status"
         >
-          {changeCount > 0
-            ? `${changeCount} unsaved ${changeCount === 1 ? 'change' : 'changes'}`
-            : 'No changes yet'}
+          {blocked
+            ? blocked
+            : changeCount > 0
+              ? `${changeCount} unsaved ${changeCount === 1 ? 'change' : 'changes'}`
+              : 'No changes yet'}
         </span>
         <button
           type="button"
@@ -67,7 +82,7 @@ export function EditBar({
         <button
           type={submit ? 'submit' : 'button'}
           onClick={submit ? undefined : onSave}
-          disabled={busy || changeCount === 0}
+          disabled={busy || changeCount === 0 || Boolean(blocked)}
           aria-busy={busy || undefined}
           aria-label={`Save changes to ${target}`}
           className={BUTTON_PRIMARY}
@@ -85,17 +100,21 @@ export function EditButton({
   onClick,
   disabled = false,
   label = 'Edit',
+  title,
 }: {
   target: string;
   onClick: () => void;
   disabled?: boolean;
   label?: string;
+  /** Why it is disabled, when that is not obvious. */
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       aria-label={`${label} ${target}`}
       className={BUTTON_SECONDARY}
     >

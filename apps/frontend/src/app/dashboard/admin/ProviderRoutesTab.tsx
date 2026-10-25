@@ -1688,13 +1688,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     (active: boolean) => setPanelEditing((prev) => ({ ...prev, routewise: active })),
     [],
   );
+  const panelOpen = panelEditing.offload || panelEditing.routewise;
   // Switching model, directly or by creating one, would drop any open draft.
   // The route, capability and create dialogs are modal, but their drafts belong
-  // to this model too, as does any open confirmation.
+  // to this model too, as does any open confirmation. So would switching the
+  // routing policy: the panel being edited belongs to the current policy
+  // (Queue offload to fixed, RouteWise parameters to routewise).
   const modelLocked =
     inlineEditing ||
-    panelEditing.offload ||
-    panelEditing.routewise ||
+    panelOpen ||
     editingRoute !== null ||
     capabilityRoute !== null ||
     createFormOpen ||
@@ -2138,7 +2140,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             <EditButton
               target={`${selectedModel} routing policy`}
               onClick={startStrategyEdit}
-              disabled={!selectedModel || loading || inlineEditing}
+              disabled={!selectedModel || loading || modelLocked}
+              title={modelLocked ? 'Save or cancel the open edit first' : undefined}
             />
           )}
           <button
@@ -2188,6 +2191,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             onCancel={cancelStrategyEdit}
             onSave={saveStrategy}
             busy={confirmation.busy}
+            // A panel edit opened after this one would be dropped by the switch.
+            blocked={
+              draftStrategy !== strategy && panelOpen ? 'Save or cancel the open edit first' : null
+            }
           />
         </div>
       )}
