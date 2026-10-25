@@ -155,9 +155,11 @@ describe('AlertChannelPicker', () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
     fireEvent.click(trigger());
-    expect(
-      screen.getAllByRole('option').map((option) => option.getAttribute('aria-label')),
-    ).toEqual(['None', 'Slack', 'WeCom']);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'None',
+      'Slack',
+      'WeCom',
+    ]);
     expect(screen.queryByText(/企业微信/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('option', { name: 'Slack' }));
     expect(onChange).not.toHaveBeenCalled();

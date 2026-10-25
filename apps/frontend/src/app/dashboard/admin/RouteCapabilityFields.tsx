@@ -1,3 +1,4 @@
+import { Select } from '@/components/ui/Select';
 import type { RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
 
 export type DeclaredChoice = '' | 'yes' | 'no';
@@ -174,17 +175,20 @@ export function RouteCapabilityFields({
           >
             Image input
           </label>
-          <select
+          <Select<DeclaredChoice>
             id={`${idPrefix}-image-input`}
             value={draft.imageInput}
-            onChange={(event) => onChange({ imageInput: event.target.value as DeclaredChoice })}
-            className={FIELD_CLASS}
-            required
-          >
-            <option value="">Choose…</option>
-            <option value="no">Text only</option>
-            <option value="yes">Accepts images</option>
-          </select>
+            onValueChange={(imageInput) => onChange({ imageInput })}
+            // "" is unanswered, not "no": the form stays invalid until one is chosen.
+            options={[
+              { value: '', label: 'Choose…' },
+              { value: 'no', label: 'Text only' },
+              { value: 'yes', label: 'Accepts images' },
+            ]}
+            aria-required
+            size="lg"
+            className="mt-1 w-full"
+          />
         </div>
         <div>
           <label
@@ -193,17 +197,19 @@ export function RouteCapabilityFields({
           >
             Tool calling
           </label>
-          <select
+          <Select<DeclaredChoice>
             id={`${idPrefix}-tool-calling`}
             value={draft.toolCalling}
-            onChange={(event) => onChange({ toolCalling: event.target.value as DeclaredChoice })}
-            className={FIELD_CLASS}
-            required
-          >
-            <option value="">Choose…</option>
-            <option value="no">Not supported</option>
-            <option value="yes">Supported</option>
-          </select>
+            onValueChange={(toolCalling) => onChange({ toolCalling })}
+            options={[
+              { value: '', label: 'Choose…' },
+              { value: 'no', label: 'Not supported' },
+              { value: 'yes', label: 'Supported' },
+            ]}
+            aria-required
+            size="lg"
+            className="mt-1 w-full"
+          />
         </div>
       </div>
       {draft.otherInputModalities.length > 0 && (

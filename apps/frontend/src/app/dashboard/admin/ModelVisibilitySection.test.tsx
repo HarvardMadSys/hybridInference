@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { chooseOption } from '@/test-utils/select';
+
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 
 vi.mock('@/lib/api/admin', () => ({
@@ -91,8 +93,8 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: 'internal' } });
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
 
     await waitFor(() => {
       expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');
@@ -120,12 +122,72 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: '__default__' } });
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    chooseOption('Runtime override for gpt-4o-mini', 'Use default');
 
     await waitFor(() => {
       expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', null);
     });
+  });
+
+  it('does not PATCH when the list is only opened, browsed and dismissed', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({
+      models: [
+        {
+          model_id: 'gpt-4o-mini',
+          baseline_required_role: 'free',
+          override_required_role: null,
+          effective_required_role: 'free',
+        },
+      ],
+    });
+
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
+
+    const select = await screen.findByRole('combobox', {
+      name: 'Runtime override for gpt-4o-mini',
+    });
+    fireEvent.click(select);
+    fireEvent.keyDown(select, { key: 'ArrowDown' });
+    fireEvent.keyDown(select, { key: 'ArrowDown' });
+    fireEvent.keyDown(select, { key: 'Escape' });
+
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(select).toHaveTextContent('Use default');
+    expect(updateModelVisibility).not.toHaveBeenCalled();
+  });
+
+  it('PATCHes exactly once for a different role and not at all for the current one', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({
+      models: [
+        {
+          model_id: 'gpt-4o-mini',
+          baseline_required_role: 'free',
+          override_required_role: 'pro',
+          effective_required_role: 'pro',
+        },
+      ],
+    });
+    vi.mocked(updateModelVisibility).mockResolvedValue({
+      model_id: 'gpt-4o-mini',
+      baseline_required_role: 'free',
+      override_required_role: 'admin',
+      effective_required_role: 'admin',
+    });
+
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
+
+    const select = await screen.findByRole('combobox', {
+      name: 'Runtime override for gpt-4o-mini',
+    });
+    chooseOption('Runtime override for gpt-4o-mini', 'pro');
+    expect(updateModelVisibility).not.toHaveBeenCalled();
+
+    chooseOption('Runtime override for gpt-4o-mini', 'admin');
+    await waitFor(() => expect(select).not.toBeDisabled());
+    expect(updateModelVisibility).toHaveBeenCalledTimes(1);
+    expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'admin');
+    expect(select).toHaveTextContent('admin');
   });
 
   it('shows an inline error when loading fails', async () => {
@@ -191,10 +253,14 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const firstSelect = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    const secondSelect = screen.getByLabelText('Runtime override for claude-3-5-sonnet');
+    const firstSelect = await screen.findByRole('combobox', {
+      name: 'Runtime override for gpt-4o-mini',
+    });
+    const secondSelect = screen.getByRole('combobox', {
+      name: 'Runtime override for claude-3-5-sonnet',
+    });
 
-    fireEvent.change(firstSelect, { target: { value: 'internal' } });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
 
     await waitFor(() => {
       expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');
@@ -246,11 +312,15 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const firstSelect = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    const secondSelect = screen.getByLabelText('Runtime override for claude-3-5-sonnet');
+    const firstSelect = await screen.findByRole('combobox', {
+      name: 'Runtime override for gpt-4o-mini',
+    });
+    const secondSelect = screen.getByRole('combobox', {
+      name: 'Runtime override for claude-3-5-sonnet',
+    });
 
-    fireEvent.change(firstSelect, { target: { value: 'internal' } });
-    fireEvent.change(secondSelect, { target: { value: 'admin' } });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
+    chooseOption('Runtime override for claude-3-5-sonnet', 'admin');
 
     await waitFor(() => {
       expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');
@@ -297,13 +367,15 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: 'internal' } });
+    const select = await screen.findByRole('combobox', {
+      name: 'Runtime override for gpt-4o-mini',
+    });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
 
     await waitFor(() => {
       expect(updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');
     });
-    expect(select).toHaveValue('internal');
+    expect(select).toHaveTextContent('internal');
   });
 
   it('shows a failure toast when an update fails', async () => {
@@ -321,8 +393,8 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: 'internal' } });
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
 
     await waitFor(() => {
       expect(onToast).toHaveBeenCalledWith('Failed to update gpt-4o-mini: write failed');
@@ -352,8 +424,8 @@ describe('ModelVisibilitySection', () => {
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />, queryClient);
 
-    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    fireEvent.change(select, { target: { value: 'free' } });
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    chooseOption('Runtime override for gpt-4o-mini', 'free');
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['user', 'models'] });

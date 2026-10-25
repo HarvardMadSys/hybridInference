@@ -32,6 +32,7 @@ import {
   setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
 } from '@/lib/api/admin';
+import { chooseValue, openOptions } from '@/test-utils/select';
 
 const dbKey = {
   id: 'key-1',
@@ -99,12 +100,10 @@ describe('ProviderKeysTab tier reservation', () => {
 
     await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
     expect(listProviderKeys).not.toHaveBeenCalledWith('openrouter');
-    expect(screen.getByLabelText('Selected provider')).toHaveValue('zai');
-    expect(screen.getByLabelText('Provider')).toHaveValue('zai');
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+    expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'zai');
 
-    fireEvent.change(screen.getByLabelText('Selected provider'), {
-      target: { value: 'openrouter' },
-    });
+    chooseValue(screen.getByLabelText('Selected provider'), 'openrouter');
     await waitFor(() => expect(onProviderChange).toHaveBeenLastCalledWith('openrouter'));
   });
 
@@ -116,47 +115,59 @@ describe('ProviderKeysTab tier reservation', () => {
         'Key management is unavailable for config-only. Choose another provider above.',
       ),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Selected provider')).toHaveValue('config-only');
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'config-only');
     expect(listProviderKeys).not.toHaveBeenCalled();
     expect(screen.queryByRole('form', { name: 'Add a new key' })).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Selected provider'), { target: { value: 'zai' } });
+    chooseValue(screen.getByLabelText('Selected provider'), 'zai');
     await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
-    expect(screen.getByLabelText('Provider')).toHaveValue('zai');
+    expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'zai');
     expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
   });
 
   it('shows a DB key reservation as an editable selector', async () => {
     render(<ProviderKeysTab />);
 
-    const select = await screen.findByLabelText<HTMLSelectElement>(
-      `Reserved tier for key ${dbKey.key_prefix}`,
-    );
-    expect(select.value).toBe('pro');
-    expect(within(select).getByRole('option', { name: 'shared' })).toBeInTheDocument();
-    expect(within(select).getByRole('option', { name: 'pro+' })).toBeInTheDocument();
+    const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    expect(select).toHaveAttribute('data-value', 'pro');
+    expect(within(openOptions(select)).getByRole('option', { name: 'shared' })).toBeInTheDocument();
+    expect(within(openOptions(select)).getByRole('option', { name: 'pro+' })).toBeInTheDocument();
   });
 
   it('re-tiers a key through the endpoint when the selector changes', async () => {
     render(<ProviderKeysTab />);
 
     const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
-    fireEvent.change(select, { target: { value: 'internal' } });
+    chooseValue(select, 'internal');
 
     await waitFor(() => {
       expect(setProviderKeyMinRole).toHaveBeenCalledWith('key-1', 'internal');
     });
   });
 
+  it('re-tiers only on a deliberate choice of a different tier', async () => {
+    render(<ProviderKeysTab />);
+
+    const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    // Browsing and dismissing writes nothing.
+    fireEvent.keyDown(select, { key: 'ArrowDown' });
+    fireEvent.keyDown(select, { key: 'ArrowDown' });
+    fireEvent.keyDown(select, { key: 'Escape' });
+    // Nor does choosing the tier it already has.
+    chooseValue(select, 'pro');
+    expect(setProviderKeyMinRole).not.toHaveBeenCalled();
+
+    chooseValue(select, 'internal');
+    await waitFor(() => expect(setProviderKeyMinRole).toHaveBeenCalledTimes(1));
+  });
+
   it('re-tiers an env key through the env endpoint', async () => {
     render(<ProviderKeysTab />);
 
-    const select = await screen.findByLabelText<HTMLSelectElement>(
-      `Reserved tier for key ${envKey.key_prefix}`,
-    );
-    expect(select.value).toBe('free');
+    const select = await screen.findByLabelText(`Reserved tier for key ${envKey.key_prefix}`);
+    expect(select).toHaveAttribute('data-value', 'free');
 
-    fireEvent.change(select, { target: { value: 'pro' } });
+    chooseValue(select, 'pro');
 
     await waitFor(() => {
       // Env keys are addressed by provider + env id, not by row id.
@@ -182,7 +193,7 @@ describe('ProviderKeysTab tier reservation', () => {
     render(<ProviderKeysTab />);
 
     const tier = await screen.findByLabelText('Reserved for');
-    fireEvent.change(tier, { target: { value: 'pro' } });
+    chooseValue(tier, 'pro');
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'sk-zai-new-key-0123456789' },
     });
@@ -223,11 +234,9 @@ describe('ProviderKeysTab tier reservation', () => {
     });
     render(<ProviderKeysTab />);
 
-    const select = await screen.findByLabelText<HTMLSelectElement>(
-      `Reserved tier for key ${dbKey.key_prefix}`,
-    );
+    const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
     // The selector shows what this row declares — that is what editing changes.
-    expect(select.value).toBe('free');
+    expect(select).toHaveAttribute('data-value', 'free');
     // ...and the tier actually in force is called out, so the edit does not look
     // like it did nothing.
     expect(screen.getByText('internal+ enforced')).toBeInTheDocument();

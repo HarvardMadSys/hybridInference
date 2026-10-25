@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { Select } from '@/components/ui/Select';
 import { getUserDetail } from '@/lib/api/admin';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 import { UserAutomationPanel } from './UserAutomationPanel';
@@ -15,6 +16,11 @@ import {
   FIELD_LABEL,
   SECTION,
 } from './ui';
+
+const ROLE_OPTIONS = ['free', 'pro', 'internal', 'admin'].map((role) => ({
+  value: role,
+  label: role,
+}));
 
 export function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -301,16 +307,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               <div className="flex flex-wrap items-end gap-3">
                 <label className="block">
                   <div className="mb-1 text-[11px] font-medium text-gray-500">Role</div>
-                  <select
+                  <Select
+                    aria-label="Role"
                     value={editRole}
-                    onChange={(e) => onChangeRole(e.target.value)}
-                    className={CONTROL}
-                  >
-                    <option value="free">free</option>
-                    <option value="pro">pro</option>
-                    <option value="internal">internal</option>
-                    <option value="admin">admin</option>
-                  </select>
+                    onValueChange={onChangeRole}
+                    options={ROLE_OPTIONS}
+                    className="w-28"
+                  />
                 </label>
                 {detail.has_key && (
                   <label className="block">

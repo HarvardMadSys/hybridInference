@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { chooseOption } from '@/test-utils/select';
+
 import { Pagination } from './Pagination';
 
 afterEach(cleanup);
@@ -81,7 +83,10 @@ describe('Pagination', () => {
         onPageSizeChange={onPageSizeChange}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Rows per page'), { target: { value: '250' } });
+    const trigger = screen.getByRole('combobox', { name: 'Rows per page' });
+    expect(trigger).toHaveTextContent('50');
+    chooseOption('Rows per page', '250');
+    expect(onPageSizeChange).toHaveBeenCalledTimes(1);
     expect(onPageSizeChange).toHaveBeenCalledWith(250);
   });
 

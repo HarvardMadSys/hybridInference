@@ -6,6 +6,7 @@ import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
+import { Select } from '@/components/ui/Select';
 
 function formatUsd(amount: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -65,15 +66,17 @@ export function UsageStats(): JSX.Element {
         <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900">
           {t('dashboard.usage.title', 'Usage Statistics')}
         </h2>
-        <select
+        <Select<'today' | 'month' | 'all'>
           value={period}
-          onChange={(e) => setPeriod(e.target.value as 'today' | 'month' | 'all')}
-          className="rounded-md border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-600 focus:outline-none"
-        >
-          <option value="today">{t('dashboard.usage.period_today', 'Today')}</option>
-          <option value="month">{t('dashboard.usage.period_month', 'This Month')}</option>
-          <option value="all">{t('dashboard.usage.period_all', 'All Time')}</option>
-        </select>
+          onValueChange={setPeriod}
+          options={[
+            { value: 'today', label: t('dashboard.usage.period_today', 'Today') },
+            { value: 'month', label: t('dashboard.usage.period_month', 'This Month') },
+            { value: 'all', label: t('dashboard.usage.period_all', 'All Time') },
+          ]}
+          aria-label={t('dashboard.usage.title', 'Usage Statistics')}
+          className="w-32"
+        />
       </div>
 
       {error && (

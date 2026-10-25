@@ -32,6 +32,7 @@ import type {
   RoutewiseSettingItem,
   RunRoutewiseProbeResponse,
 } from '@/lib/api/admin';
+import { chooseOption } from '@/test-utils/select';
 
 const LIVE_ENDPOINT = 'minimax-fast:openrouter[minimax/highspeed]-api';
 const REMOVED_ENDPOINT = 'minimax-fast:featherless-api';
@@ -186,9 +187,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
     });
     vi.mocked(listRoutewiseProbeSamples).mockClear();
 
-    fireEvent.change(screen.getByLabelText('Endpoint'), {
-      target: { value: secondEndpoint },
-    });
+    chooseOption('Endpoint', 'second provider');
 
     await waitFor(() => {
       expect(listRoutewiseProbeSamples).toHaveBeenCalledWith({

@@ -143,3 +143,46 @@ describe('SettingsTab and the site configuration', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 });
+
+describe('SettingsTab feedback', () => {
+  it('shows a change’s result above the cards, not inside one of them', async () => {
+    vi.mocked(updateRuntimeSetting).mockResolvedValueOnce({
+      key: 'signup_require_email_verification',
+      value: false,
+      value_type: 'bool',
+      default_value: true,
+      description: 'Require email verification for new signups',
+    });
+    renderSettings();
+
+    fireEvent.click(
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
+    );
+
+    const message = await screen.findByText('signup_require_email_verification disabled');
+    const feedback = message.closest('[role="status"]') as HTMLElement;
+    expect(feedback).not.toBeNull();
+    // It floats over the sections, so it must not swallow clicks meant for them.
+    expect(feedback.closest('.pointer-events-none')).not.toBeNull();
+    expect(feedback.closest('section')).toBeNull();
+    const signupPolicy = screen.getByRole('region', { name: 'Signup Policy' });
+    expect(feedback.compareDocumentPosition(signupPolicy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      feedback.compareDocumentPosition(screen.getByRole('region', { name: 'Feature Flags' })),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});
+
+describe('SettingsTab section index', () => {
+  it('links to every section on the page', async () => {
+    renderSettings();
+    await screen.findByRole('switch', { name: 'Toggle signup require email verification' });
+
+    const index = screen.getByRole('navigation', { name: 'Settings sections' });
+    for (const link of within(index).getAllByRole('link')) {
+      const id = link.getAttribute('href')!.slice(1);
+      expect(document.getElementById(id), id).not.toBeNull();
+    }
+    expect(within(index).getAllByRole('link')).toHaveLength(8);
+  });
+});

@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { Select } from '@/components/ui/Select';
 import { getUserFilterProviders, type UserFilterProvider } from '@/lib/api/admin';
-import { CONTROL } from '../ui';
 
 interface Props {
   value: string | null;
@@ -35,23 +35,20 @@ export function ProviderFilter({ value, onChange }: Props) {
     };
   }, []);
 
-  const options = providers.map((p) => ({ value: p.provider, label: optionLabel(p) }));
+  const options = [
+    { value: '', label: 'Any provider' },
+    ...providers.map((p) => ({ value: p.provider, label: optionLabel(p) })),
+  ];
   if (value && !options.some((option) => option.value === value)) {
     options.push({ value, label: value });
   }
 
   return (
-    <select
+    <Select
+      aria-label="Filter by provider"
       value={value ?? ''}
-      onChange={(e) => onChange(e.target.value || null)}
-      className={CONTROL}
-    >
-      <option value="">Any provider</option>
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      onValueChange={(v) => onChange(v || null)}
+      options={options}
+    />
   );
 }

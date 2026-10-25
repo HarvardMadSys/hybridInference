@@ -1,7 +1,8 @@
 'use client';
 
+import { Select } from '@/components/ui/Select';
+
 import type { QuotaStateFilter } from '../types';
-import { CONTROL } from '../ui';
 
 const OPTIONS: Array<{ value: QuotaStateFilter | ''; label: string }> = [
   { value: '', label: 'Any quota' },
@@ -18,16 +19,11 @@ interface Props {
 
 export function QuotaFilter({ value, onChange }: Props) {
   return (
-    <select
+    <Select
+      aria-label="Filter by quota"
       value={value ?? ''}
-      onChange={(e) => onChange((e.target.value as QuotaStateFilter) || null)}
-      className={CONTROL}
-    >
-      {OPTIONS.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+      onValueChange={(v) => onChange((v as QuotaStateFilter) || null)}
+      options={OPTIONS}
+    />
   );
 }

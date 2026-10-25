@@ -16,6 +16,22 @@ import {
   RoleQuotaPreview,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+  AdminSectionNav,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CONTROL,
+  INDEXED_LAYOUT,
+  PANEL,
+  ROW_ACTION_DANGER,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
@@ -24,6 +40,18 @@ import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
+
+/** The page's sections, in order, for its section index. */
+const SECTIONS = [
+  { id: 'settings-feature-flags', label: 'Feature Flags' },
+  { id: 'settings-numeric', label: 'Numeric Settings' },
+  { id: 'settings-alert-notifications', label: 'Alert Notifications' },
+  { id: 'settings-alert-types', label: 'Alert Types' },
+  { id: 'settings-usage-insights', label: 'Usage Insights' },
+  { id: 'settings-model-visibility', label: 'Model Visibility' },
+  { id: 'settings-model-concurrency', label: 'Model Concurrency' },
+  { id: 'settings-signup-policy', label: 'Signup Policy' },
+] as const;
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -240,322 +268,330 @@ export function SettingsTab() {
   };
 
   return (
-    <div className="mt-5 space-y-6">
-      {/* Feature Flags */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Feature Flags</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Toggle runtime features without restarting the server. Changes take effect immediately.
-          </p>
+    // A section index beside full-width sections, one after another.
+    <div className={`mt-6 ${INDEXED_LAYOUT}`}>
+      <AdminSectionNav label="Settings sections" items={SECTIONS} />
+
+      <div className="min-w-0">
+        {/* Feedback for every section on this page. The live region is
+            always there (so a screen reader announces each message) and
+            takes no height: a message floats at the top right of the
+            sections, pinned to the top of the window while they scroll,
+            without pushing them down, and lets clicks through to whatever
+            is under it. */}
+        <div className="pointer-events-none sticky top-4 z-20 h-0">
+          <div role="status" className="flex justify-end">
+            {toast && (
+              <div
+                key={toast}
+                className="animate-admin-reveal max-w-md rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
+              >
+                {toast}
+              </div>
+            )}
+          </div>
         </div>
 
-        {flagsError && (
-          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-            {flagsError}{' '}
-            <button onClick={() => setFlagsError(null)} className="ml-2 font-bold">
-              &times;
-            </button>
-          </div>
-        )}
+        <div className="space-y-6 [&>*+*]:border-t [&>*+*]:border-gray-200 [&>*+*]:pt-6">
+          {/* Feature Flags */}
+          <AdminSection
+            id="settings-feature-flags"
+            title="Feature Flags"
+            description="Toggle runtime features without restarting the server. Changes take effect immediately."
+          >
+            {flagsError && (
+              <div className="mb-3">
+                <AdminNotice onDismiss={() => setFlagsError(null)}>{flagsError}</AdminNotice>
+              </div>
+            )}
 
-        {flagsLoading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : featureFlags.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No feature flags available.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {featureFlags.map((flag) => {
-              const isToggling = togglingKey === flag.key;
-              const isOn = !!flag.value;
-              const isDefault = flag.value === flag.default_value;
-              return (
-                <div
-                  key={flag.key}
-                  className="flex items-center justify-between rounded-lg border border-gray-100 px-4 py-3"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-gray-900">
-                        {flag.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                      </span>
-                      {!isDefault && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                          Modified
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-gray-500">{flag.description}</p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={isOn}
-                    aria-label={`Toggle ${flag.key.replace(/_/g, ' ')}`}
-                    disabled={isToggling}
-                    onClick={() => onToggleFlag(flag)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
-                      isOn ? 'bg-gray-900' : 'bg-gray-200'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                        isOn ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Numeric Settings */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Numeric Settings</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect
-            immediately.
-          </p>
-        </div>
-
-        {flagsLoading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : numericSettings.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No numeric settings available.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {numericSettings.map((setting) => {
-              const isSaving = savingKey === setting.key;
-              const draft = numericDrafts[setting.key] ?? '';
-              const validated = validateNumericSettingInput(draft, {
-                min: setting.min,
-                max: setting.max,
-                integer: setting.value_type === 'int',
-              });
-              const isDirty = validated.ok && validated.value !== setting.value;
-              const isDefault = setting.value === setting.default_value;
-              const rangeHint = (() => {
-                const lo = setting.min;
-                const hi = setting.max;
-                if (lo != null && hi != null) return `${lo}–${hi}`;
-                if (lo != null) return `≥ ${lo}`;
-                if (hi != null) return `≤ ${hi}`;
-                return null;
-              })();
-              return (
-                <div
-                  key={setting.key}
-                  className="flex items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-gray-900">
-                        {setting.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                      </span>
-                      {!isDefault && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                          Modified
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-gray-500">
-                      {setting.description}
-                      {rangeHint && (
-                        <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
-                      )}
-                      <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
-                      </span>
-                    </p>
-                    {!validated.ok && draft !== '' && (
-                      <p className="mt-0.5 text-[11px] text-red-600" role="alert">
-                        {validated.error}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
-                      value={draft}
-                      disabled={isSaving}
-                      onChange={(e) =>
-                        setNumericDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && isDirty && !isSaving) {
-                          e.preventDefault();
-                          onSaveNumeric(setting);
-                        }
-                      }}
-                      aria-label={`${setting.key} value`}
-                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onSaveNumeric(setting)}
-                      disabled={!isDirty || isSaving}
-                      className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+            {flagsLoading ? (
+              <AdminLoading size="sm" />
+            ) : featureFlags.length === 0 ? (
+              <AdminEmptyState title="No feature flags available." />
+            ) : (
+              <ul className={`${PANEL} divide-y divide-gray-100`}>
+                {featureFlags.map((flag) => {
+                  const isToggling = togglingKey === flag.key;
+                  const isOn = !!flag.value;
+                  const isDefault = flag.value === flag.default_value;
+                  return (
+                    <li
+                      key={flag.key}
+                      className="flex items-center justify-between gap-4 px-4 py-3"
                     >
-                      {isSaving ? 'Saving...' : 'Save'}
-                    </button>
-                    {setting.key.startsWith(QUOTA_KEY_PREFIX) && (
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-medium text-gray-900">
+                            {flag.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                          </span>
+                          {!isDefault && (
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              Modified
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
+                          {flag.description}
+                        </p>
+                      </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
-                        }
-                        disabled={quotaLoadingRole !== null || quotaApplyingRole !== null}
-                        className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                        role="switch"
+                        aria-checked={isOn}
+                        aria-label={`Toggle ${flag.key.replace(/_/g, ' ')}`}
+                        disabled={isToggling}
+                        onClick={() => onToggleFlag(flag)}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
+                          isOn ? 'bg-gray-900' : 'bg-gray-200'
+                        }`}
                       >
-                        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
-                          ? 'Loading...'
-                          : 'Apply to existing users'}
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            isOn ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
                       </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <AlertSnoozeSection onToast={flashToast} />
-
-      <AlertMutesSection onToast={flashToast} />
-
-      <UsageInsightsSettingsSection onToast={flashToast} />
-
-      <ModelVisibilitySection onToast={flashToast} />
-
-      <ModelConcurrencySection onToast={flashToast} />
-
-      {/* Signup Policy */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Signup Policy</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Signups from listed domains auto-approve. Other domains require admin approval. Empty
-            list = all signups auto-approve.
-          </p>
-        </div>
-
-        {/* Add form */}
-        <div className="mb-4 flex flex-col gap-1.5">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                setInputError(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !adding) {
-                  e.preventDefault();
-                  onAdd();
-                }
-              }}
-              placeholder="example.com or *.example.com"
-              className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-              disabled={adding}
-              aria-label="Domain to add"
-            />
-            <button
-              type="button"
-              onClick={onAdd}
-              disabled={adding}
-              className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
-            >
-              {adding ? 'Adding...' : 'Add'}
-            </button>
-          </div>
-          <p className="text-[11px] text-gray-400">
-            Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact match
-            or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow any
-            subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does not
-            match the bare suffix.
-          </p>
-          {inputError && (
-            <p className="text-[12px] text-red-600" role="alert">
-              {inputError}
-            </p>
-          )}
-        </div>
-
-        {/* Status */}
-        {error && (
-          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-            {error}{' '}
-            <button onClick={() => setError(null)} className="ml-2 font-bold">
-              &times;
-            </button>
-          </div>
-        )}
-        {toast && (
-          <div className="mb-3 rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white">
-            {toast}
-          </div>
-        )}
-
-        {/* List */}
-        {loading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : domains.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No allowed domains. All signups auto-approve.
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-md border border-gray-200">
-            <table className="w-full text-[13px]">
-              <thead className="bg-gray-50 text-gray-500">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Domain</th>
-                  <th className="px-3 py-2 text-left font-medium">Type</th>
-                  <th className="px-3 py-2 text-left font-medium">Added</th>
-                  <th className="px-3 py-2 text-right font-medium">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {domains.map((d) => {
-                  const key = `${d.domain}|${d.is_wildcard}`;
-                  const isRemoving = removing === key;
-                  return (
-                    <tr key={key} className="bg-white">
-                      <td className="px-3 py-2 text-gray-900">
-                        {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500">
-                        {d.is_wildcard ? 'Wildcard' : 'Exact'}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500">{relTime(d.created_at)}</td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setConfirm(d)}
-                          disabled={isRemoving}
-                          className="text-[12px] font-medium text-red-600 transition hover:text-red-800 disabled:opacity-40"
-                        >
-                          {isRemoving ? 'Removing...' : 'Remove'}
-                        </button>
-                      </td>
-                    </tr>
+                    </li>
                   );
                 })}
-              </tbody>
-            </table>
+              </ul>
+            )}
+          </AdminSection>
+
+          {/* Numeric Settings */}
+          <AdminSection
+            id="settings-numeric"
+            title="Numeric Settings"
+            description="Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect immediately."
+          >
+            {flagsLoading ? (
+              <AdminLoading size="sm" />
+            ) : numericSettings.length === 0 ? (
+              <AdminEmptyState title="No numeric settings available." />
+            ) : (
+              <ul className={`${PANEL} divide-y divide-gray-100`}>
+                {numericSettings.map((setting) => {
+                  const isSaving = savingKey === setting.key;
+                  const draft = numericDrafts[setting.key] ?? '';
+                  const validated = validateNumericSettingInput(draft, {
+                    min: setting.min,
+                    max: setting.max,
+                    integer: setting.value_type === 'int',
+                  });
+                  const isDirty = validated.ok && validated.value !== setting.value;
+                  const isDefault = setting.value === setting.default_value;
+                  const rangeHint = (() => {
+                    const lo = setting.min;
+                    const hi = setting.max;
+                    if (lo != null && hi != null) return `${lo}–${hi}`;
+                    if (lo != null) return `≥ ${lo}`;
+                    if (hi != null) return `≤ ${hi}`;
+                    return null;
+                  })();
+                  return (
+                    <li
+                      key={setting.key}
+                      className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-medium text-gray-900">
+                            {setting.key
+                              .replace(/_/g, ' ')
+                              .replace(/\b\w/g, (c) => c.toUpperCase())}
+                          </span>
+                          {!isDefault && (
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              Modified
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
+                          {setting.description}
+                          {rangeHint && (
+                            <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
+                          )}
+                          <span className="ml-1 text-gray-400">
+                            Default: {String(setting.default_value)}
+                          </span>
+                        </p>
+                        {!validated.ok && draft !== '' && (
+                          <p className="mt-0.5 text-[11px] text-red-600" role="alert">
+                            {validated.error}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          step={setting.value_type === 'int' ? 1 : 'any'}
+                          min={setting.min ?? undefined}
+                          max={setting.max ?? undefined}
+                          value={draft}
+                          disabled={isSaving}
+                          onChange={(e) =>
+                            setNumericDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && isDirty && !isSaving) {
+                              e.preventDefault();
+                              onSaveNumeric(setting);
+                            }
+                          }}
+                          aria-label={`${setting.key} value`}
+                          className={`${CONTROL} w-24 text-right`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onSaveNumeric(setting)}
+                          disabled={!isDirty || isSaving}
+                          className={BUTTON_PRIMARY}
+                        >
+                          {isSaving ? 'Saving...' : 'Save'}
+                        </button>
+                        {setting.key.startsWith(QUOTA_KEY_PREFIX) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
+                            }
+                            disabled={quotaLoadingRole !== null || quotaApplyingRole !== null}
+                            className={BUTTON_SECONDARY}
+                          >
+                            {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+                              ? 'Loading...'
+                              : 'Apply to existing users'}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </AdminSection>
+
+          <div id="settings-alert-notifications" className="scroll-mt-4 focus:outline-none">
+            <AlertSnoozeSection onToast={flashToast} />
           </div>
-        )}
+
+          <div id="settings-alert-types" className="scroll-mt-4 focus:outline-none">
+            <AlertMutesSection onToast={flashToast} />
+          </div>
+
+          <div id="settings-usage-insights" className="scroll-mt-4 focus:outline-none">
+            <UsageInsightsSettingsSection onToast={flashToast} />
+          </div>
+
+          <div id="settings-model-visibility" className="scroll-mt-4 focus:outline-none">
+            <ModelVisibilitySection onToast={flashToast} />
+          </div>
+
+          <div id="settings-model-concurrency" className="scroll-mt-4 focus:outline-none">
+            <ModelConcurrencySection onToast={flashToast} />
+          </div>
+
+          {/* Signup Policy */}
+          <AdminSection
+            id="settings-signup-policy"
+            title="Signup Policy"
+            description="Signups from listed domains auto-approve. Other domains require admin approval. Empty list = all signups auto-approve."
+          >
+            {/* Add form */}
+            <div className="mb-4 flex max-w-xl flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setInputError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !adding) {
+                      e.preventDefault();
+                      onAdd();
+                    }
+                  }}
+                  placeholder="example.com or *.example.com"
+                  className={`${CONTROL} min-w-0 flex-1`}
+                  disabled={adding}
+                  aria-label="Domain to add"
+                />
+                <button type="button" onClick={onAdd} disabled={adding} className={BUTTON_PRIMARY}>
+                  {adding ? 'Adding...' : 'Add'}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-400">
+                Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact
+                match or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow
+                any subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does
+                not match the bare suffix.
+              </p>
+              {inputError && (
+                <p className="text-[12px] text-red-600" role="alert">
+                  {inputError}
+                </p>
+              )}
+            </div>
+
+            {/* Status */}
+            {error && (
+              <div className="mb-3">
+                <AdminNotice onDismiss={() => setError(null)}>{error}</AdminNotice>
+              </div>
+            )}
+            {/* List */}
+            {loading ? (
+              <AdminLoading size="sm" />
+            ) : domains.length === 0 ? (
+              <AdminEmptyState title="No allowed domains. All signups auto-approve." />
+            ) : (
+              <div className={`${PANEL} relative overflow-x-auto`}>
+                <table className="w-full min-w-[30rem] text-[13px]">
+                  <thead className="bg-gray-50/80">
+                    <tr className="border-b border-gray-200">
+                      <th className={TABLE_HEAD_CELL}>Domain</th>
+                      <th className={TABLE_HEAD_CELL}>Type</th>
+                      <th className={TABLE_HEAD_CELL}>Added</th>
+                      <th className={`${TABLE_HEAD_CELL} text-right`}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {domains.map((d) => {
+                      const key = `${d.domain}|${d.is_wildcard}`;
+                      const isRemoving = removing === key;
+                      return (
+                        <tr key={key}>
+                          <td className="px-4 py-2 font-mono text-[12px] text-gray-900">
+                            {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500">
+                            {d.is_wildcard ? 'Wildcard' : 'Exact'}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2 text-gray-500">
+                            {relTime(d.created_at)}
+                          </td>
+                          <td className="px-4 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setConfirm(d)}
+                              disabled={isRemoving}
+                              className={ROW_ACTION_DANGER}
+                            >
+                              {isRemoving ? 'Removing...' : 'Remove'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AdminSection>
+        </div>
       </div>
 
       {/* Quota apply confirm dialog */}
