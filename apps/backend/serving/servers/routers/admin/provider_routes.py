@@ -332,6 +332,9 @@ class PreparedRouteCandidateEdit:
     # Whether requests would go somewhere else (provider, URL, key or upstream
     # model), so the edit must reach that upstream before it is saved.
     target_changed: bool
+    # A limit-only edit: ``candidate.adapter`` is the live adapter, whose limit
+    # is changed in place instead of swapping in a rebuilt one.
+    in_place: bool = False
 
     @property
     def stored_endpoint_id(self) -> str | None:
@@ -3017,6 +3020,48 @@ async def _prepare_route_candidate_edit(
         )
 
     current = _candidate_target(old_adapter)
+    if (edit.target is None or edit.target == current) and edit.deployment_type in (
+        None,
+        old_adapter.config.deployment_type,
+    ):
+        # Only a limit changes (the edit form resends the target as it is), so
+        # the route keeps its adapter: its key pool, the key it resolved and its
+        # OpenRouter price. A rebuild would look both up again, and a failed
+        # price lookup would leave the route on the first route's price.
+        return PreparedRouteCandidateEdit(
+            model_id=model_id,
+            route_id=route_id,
+            route=route,
+            old_adapter=old_adapter,
+            old_weight=float(old_weight),
+            old_endpoint_id=old_endpoint_id,
+            candidate=PreparedRouteCandidate(
+                route=route,
+                route_id=route_id,
+                adapter=old_adapter,
+                endpoint_id=old_endpoint_id,
+                upstream_provider=current.upstream_provider,
+                openrouter_sort=current.openrouter_sort,
+                key_provider=_target_for_provider(current.upstream_provider).key_provider,
+                base_url=current.base_url,
+                api_key_id=current.api_key_id,
+                provider_model_id=current.provider_model_id,
+                route_type=route_type,
+                quota_limit=(
+                    edit.quota_limit
+                    if edit.quota_limit is not None
+                    else _quota_limit_for_adapter(old_adapter)
+                ),
+                concurrency_limit=(
+                    edit.concurrency_limit
+                    if edit.concurrency_limit is not None
+                    else _concurrency_limit_for_adapter(old_adapter)
+                ),
+                weight=float(old_weight),
+            ),
+            target_changed=False,
+            in_place=True,
+        )
     requested = edit.target or current
     target = _target_for_provider(requested.upstream_provider)
     same_target = _same_upstream_target(target, current.upstream_provider)
@@ -3160,6 +3205,49 @@ def _move_weight_override_snapshot(
         set_override(model_id, new_endpoint_id, weight)
 
 
+def _set_route_limits_in_place(
+    services,
+    adapter: Any,
+    *,
+    quota_limit: int | None,
+    concurrency_limit: int | None,
+) -> None:
+    """Change a live runtime route's quota or concurrency limit, keeping its adapter.
+
+    RouteWise reads the limits when it builds its candidates, so it is rebuilt;
+    a failed rebuild puts the old limits back.
+    """
+    old_quota = getattr(adapter.config, "quota", None)
+    old_concurrency = getattr(adapter.config, "concurrency", None)
+    quota = old_quota if quota_limit is None else {**(old_quota or {}), "limit": quota_limit}
+    concurrency = (
+        old_concurrency
+        if concurrency_limit is None
+        else {**(old_concurrency or {}), "limit": concurrency_limit}
+    )
+
+    def set_limits(quota_value: Any, concurrency_value: Any) -> None:
+        def mutate() -> None:
+            adapter.config.quota = quota_value
+            adapter.config.concurrency = concurrency_value
+
+        _mutate_router_routes(services, mutate)
+
+    set_limits(quota, concurrency)
+    try:
+        _rebuild_routewise_routers(services)
+    except BaseException:
+        set_limits(old_quota, old_concurrency)
+        try:
+            _rebuild_routewise_routers(services)
+        except Exception:
+            logger.error(
+                "Failed to refresh RouteWise after restoring a route's limits",
+                exc_info=True,
+            )
+        raise
+
+
 def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) -> None:
     """Swap an edited runtime route in at its position, keeping its raw weight."""
     candidate = edit.candidate
@@ -3168,6 +3256,14 @@ def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) ->
     old_adapter, raw_weight, _old_endpoint_id = entries[index]
     if old_adapter is not edit.old_adapter:
         raise HTTPException(status_code=409, detail="provider route changed during verification")
+    if edit.in_place:
+        _set_route_limits_in_place(
+            services,
+            old_adapter,
+            quota_limit=candidate.quota_limit,
+            concurrency_limit=candidate.concurrency_limit,
+        )
+        return
     _ensure_route_id_available(
         _identity_entries(edit.route),
         candidate.route_id,
@@ -4634,7 +4730,8 @@ async def update_provider_route_candidate(
     go is checked against the upstream before anything is saved; the row is
     updated in place (compare-and-swap on ``updated_at``) and the live route
     swapped under the model's transition lock, and a failed swap restores the
-    row, so the database and the serving route never disagree.
+    row, so the database and the serving route never disagree. A limit-only
+    edit changes the live route's limit in place and rebuilds nothing.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -4682,6 +4779,9 @@ async def update_provider_route_candidate(
                 ),
             )
         pricing = candidate.adapter.config.pricing if _is_runtime_created_route(route) else None
+        # Read now: a limit-only edit changes the live adapter in place.
+        old_quota_limit = _quota_limit_for_adapter(edit.old_adapter)
+        old_concurrency_limit = _concurrency_limit_for_adapter(edit.old_adapter)
 
         async def persist_and_install() -> None:
             updated_at = await op_store.update_provider_route_candidate(
@@ -4759,9 +4859,9 @@ async def update_provider_route_candidate(
                     "provider_model_id": candidate.provider_model_id,
                     "old_endpoint_id": edit.old_endpoint_id,
                     "endpoint_id": candidate.endpoint_id,
-                    "old_quota_limit": _quota_limit_for_adapter(edit.old_adapter),
+                    "old_quota_limit": old_quota_limit,
                     "quota_limit": candidate.quota_limit,
-                    "old_concurrency_limit": _concurrency_limit_for_adapter(edit.old_adapter),
+                    "old_concurrency_limit": old_concurrency_limit,
                     "concurrency_limit": candidate.concurrency_limit,
                     "old_deployment_type": edit.old_adapter.config.deployment_type,
                     "deployment_type": candidate.adapter.config.deployment_type,

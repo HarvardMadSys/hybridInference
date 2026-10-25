@@ -8465,3 +8465,76 @@ async def test_route_state_endpoints_wait_for_the_states_to_load(admin_client):
     op_store.list_all_provider_route_states = AsyncMock(side_effect=states.list_all)
     await states.resolver.load_all()
     assert (await _set_state(client, FEATHERLESS, True)).status_code == 200
+
+
+# -- A limit-only edit changes the limit, not the route -----------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [{"concurrency_limit": 4}, {**OPENROUTER_PARASAIL_TARGET, "concurrency_limit": 4}],
+    ids=["inline-limit", "edit-form"],
+)
+async def test_a_limit_only_edit_keeps_the_routes_adapter_key_pool_and_price(
+    admin_client, monkeypatch, body
+):
+    """Rebuilding would look the key and the OpenRouter price up again; a failed price
+    lookup would leave the route on its model's first route's price."""
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "concurrency",
+            **OPENROUTER_PARASAIL_TARGET,
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+    adapter = _live_entry(route_executor, PARASAIL_ENDPOINT_ID)[1]
+    assert adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    key_pool = adapter._key_pool
+    fake_routewise.refresh_route_table.reset_mock()
+    verify_mock.reset_mock()
+
+    async def unavailable(_model_id):
+        raise RuntimeError("openrouter unavailable")
+
+    monkeypatch.setattr(provider_routes, "_fetch_openrouter_endpoint_payload", unavailable)
+    # Its key was deleted since: still only the limit changes.
+    op_store.get_provider_key_full.return_value = None
+
+    response = await _patch_candidate(client, PARASAIL_ENDPOINT_ID, body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["concurrency_limit"] == 4
+    assert _live_entry(route_executor, PARASAIL_ENDPOINT_ID)[1] is adapter
+    assert adapter._key_pool is key_pool
+    assert adapter.config.concurrency == {"limit": 4}
+    assert adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert table.row("minimax-fast", PARASAIL_ENDPOINT_ID)["concurrency_limit"] == 4
+    fake_routewise.refresh_route_table.assert_called_once_with()
+    verify_mock.assert_not_awaited()
+    details = provider_routes.log_admin_action.await_args.args[4]
+    assert (details["old_concurrency_limit"], details["concurrency_limit"]) == (2, 4)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_limit_change_restores_the_limit_and_the_row(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store, route_type="quota", quota_limit=100)
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _patch_candidate(client, MINIMAX_ROUTE_ID, {"quota_limit": 250})
+
+    assert _live_entry(route_executor, MINIMAX_ROUTE_ID)[1] is adapter
+    assert adapter.config.quota == {"limit": 100}
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["quota_limit"] == 100
