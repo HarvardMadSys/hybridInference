@@ -429,9 +429,9 @@ moment it is saved.
 Two rules follow from that order. A stored change never edits the file it
 overrides: delete the override and the registry route, weight or `router:`
 value is back, and a runtime candidate sits beside the registry's routes rather
-than replacing them. And the file still wins for anything the store has no row
-for, so a registry edit plus restart is how catalog metadata, aliases and new
-adapter kinds change.
+than replacing them. Once a models or routing row is stored, that document
+wins over a later edit to the file; delete the row and restart to import
+again. See [Model and routing documents in the database](#model-and-routing-documents-in-the-database).
 
 ## Settings stored in the database
 
