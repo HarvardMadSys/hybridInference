@@ -5153,6 +5153,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return {r["key_hash"]: r["min_role"] for r in rows}
 
+    async def list_all_disabled_provider_env_keys(self) -> list[tuple[str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix)`` for all disabled env keys."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, key_hash, key_prefix FROM disabled_provider_env_keys "
+                "ORDER BY provider ASC, key_hash ASC"
+            )
+        return [(r["provider"], r["key_hash"], r["key_prefix"]) for r in rows]
+
+    async def list_all_provider_env_key_reservations(self) -> list[tuple[str, str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix, min_role)`` for all reserved env keys."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, key_hash, key_prefix, min_role "
+                "FROM provider_env_key_min_roles "
+                "ORDER BY provider ASC, key_hash ASC"
+            )
+        return [(r["provider"], r["key_hash"], r["key_prefix"], r["min_role"]) for r in rows]
+
 
 def _mask_provider_key(api_key: str) -> str:
     """Mask an upstream provider API key for display.
