@@ -462,7 +462,42 @@ def register_from_models_yaml(
     """
     if not path.exists():
         return 0, []
-    data = yaml.safe_load(path.read_text()) or {}
+    return register_from_models_text(
+        router,
+        path.read_text(),
+        embedding_adapters=embedding_adapters,
+        continue_on_missing_env=continue_on_missing_env,
+        report=report,
+        origin=str(path),
+    )
+
+
+def register_from_models_text(
+    router: FixedRouter,
+    text: str,
+    embedding_adapters: dict[str, Any] | None = None,
+    *,
+    continue_on_missing_env: bool = False,
+    report: ModelLoadReport | None = None,
+    origin: str = "the database route catalog",
+) -> tuple[int, list[ModelRegistrationInfo]]:
+    """Register models and routes from a YAML document.
+
+    Args:
+        router: Executor to receive registered routes.
+        text: YAML document. ``${VAR}`` references stay unresolved in the text
+            and resolve here, the same way the file loader resolves them.
+        embedding_adapters: Receives the embedding models' adapters.
+        continue_on_missing_env: Skip a model whose required setting is unset
+            instead of raising.
+        report: Receives the models skipped that way.
+        origin: Named in the skip logs. The file loader passes the path.
+
+    Returns:
+        Tuple of (count of registered route identifiers including aliases,
+        list of ModelRegistrationInfo for each model).
+    """
+    data = yaml.safe_load(text) or {}
     models: list[dict[str, Any]] = data.get("models", [])
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
@@ -983,7 +1018,7 @@ def register_from_models_yaml(
         except MissingEnvBackedKeyError as exc:
             if not continue_on_missing_env:
                 raise
-            logger.warning("Skipping model %r from %s: %s", m.get("id"), path, exc)
+            logger.warning("Skipping model %r from %s: %s", m.get("id"), origin, exc)
             skipped_for_missing_env.append(str(m.get("id")))
             if report is not None:
                 report.skipped_models[str(m.get("id"))] = [
@@ -1003,7 +1038,7 @@ def register_from_models_yaml(
                 "restart. /v1/models will "
                 "stay empty until then, and requests will report the model as "
                 "not found. Skipped: %s",
-                path,
+                origin,
                 missing,
                 dropped,
             )
@@ -1013,7 +1048,7 @@ def register_from_models_yaml(
                 "are unset (%s). Skipped: %s",
                 len(skipped_for_missing_env),
                 len(models),
-                path,
+                origin,
                 missing,
                 dropped,
             )

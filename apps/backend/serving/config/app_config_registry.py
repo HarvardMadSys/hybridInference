@@ -1503,6 +1503,14 @@ def _load_yaml(path: Path | None) -> Any:
         return None
 
 
+def _load_yaml_text(text: str) -> Any:
+    """Parse a stored document. An unreadable document contributes no references."""
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
 def _note(
     found: dict[str, DiscoveredReference],
     key: str,
@@ -1586,6 +1594,9 @@ def discover_references(
     models_path: Path | None,
     routing_path: Path | None,
     alerts_path: Path | None,
+    *,
+    models_text: str | None = None,
+    routing_text: str | None = None,
 ) -> dict[str, DiscoveredReference]:
     """Find every ``${VAR}`` reference in the three configuration files.
 
@@ -1593,11 +1604,24 @@ def discover_references(
     for nothing. A missing or unreadable file contributes no references. A
     reference from a field that carries a credential is marked as one
     (:attr:`DiscoveredReference.credential`).
+
+    A stored catalog document replaces its file. Passing the text, including an
+    empty string, does not fall back to the path. Alerts have no stored
+    document and always come from the file.
+
+    Args:
+        models_path: Model registry file, used when ``models_text`` is None.
+        routing_path: Routing file, used when ``routing_text`` is None.
+        alerts_path: Alerts file.
+        models_text: Stored model registry, when the database has that row.
+        routing_text: Stored routing document, when the database has that row.
     """
     found: dict[str, DiscoveredReference] = {}
-    models, routing, alerts = (
-        _load_yaml(path) for path in (models_path, routing_path, alerts_path)
+    models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
+    routing = (
+        _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
     )
+    alerts = _load_yaml(alerts_path)
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)

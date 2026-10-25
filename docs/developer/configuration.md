@@ -101,7 +101,20 @@ Two things follow:
 
 A path that resolves from layer 1 or 2 but does not exist is a warning, not a
 failure: the gateway logs `Models config not found: <path> (source=env)` and
-continues with no models registered.
+continues with no models registered. That warning is about the file lookup.
+Once the database holds a models or routing row, the file is no longer read.
+
+## Model and routing documents in the database
+
+On a database-backed boot the gateway copies `models.yaml` and `routing.yaml`
+into `route_catalog` when that kind has no row and the file exists and is not
+blank. The copy keeps `${VAR}` unresolved. Later boots register from the row,
+and settings discovery scans the row. Alerts stay a file.
+
+A stored row wins, including an empty one. Editing the file and restarting
+does not change it. Delete the row and restart to import the file again.
+`provider_route_configs`, runtime candidates and weight overrides still apply
+on top of whichever document was loaded.
 
 ## What a fresh clone does with no configuration at all
 

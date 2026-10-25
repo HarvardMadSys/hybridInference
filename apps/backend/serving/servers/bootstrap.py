@@ -24,7 +24,7 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
-from serving.auto_mode import AutoMode, load_auto_mode
+from serving.auto_mode import AutoMode, load_auto_mode, load_auto_mode_from_text
 from serving.config import app_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.disabled_providers import DisabledProviderResolver
@@ -32,6 +32,13 @@ from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
+from serving.config.route_catalog import (
+    import_missing as import_route_catalog,
+    install as install_route_catalog,
+    installed_body,
+    reset_installed as reset_route_catalog,
+    seed_texts,
+)
 from serving.config.route_states import RouteStateResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -63,6 +70,7 @@ from .registry import (
     EmbeddingsPathConfigError,
     ModelLoadReport,
     ModelRegistrationInfo,
+    register_from_models_text,
     register_from_models_yaml,
 )
 from .routewise_rebuild import rebuild_cached_routewise_routers
@@ -662,6 +670,7 @@ async def _load_app_config() -> None:
             made safe to start on.
     """
     if not database_enabled():
+        reset_route_catalog()
         app_config.use_environment(database_enabled=False)
         return
 
@@ -672,6 +681,9 @@ async def _load_app_config() -> None:
         try:
             conn = await connect_app_config(settings)
             try:
+                # Import before settings load so discovery scans the stored
+                # documents. A row that already exists is left as it is.
+                install_route_catalog(await import_route_catalog(conn, seed_texts()))
                 await app_config.load(AppConfigStore(conn))
             finally:
                 await conn.close()
@@ -759,53 +771,87 @@ async def _init_router_and_models(
     embedding_adapters: dict = {}
     model_infos: list[ModelRegistrationInfo] = []
 
-    # Load models from YAML configuration
+    # A stored catalog wins over the file, including when the file is gone.
+    stored_models = installed_body("models")
     try:
-        resolved_models = resolve_config_path("models")
-        models_path = resolved_models.path
-        if resolved_models.source != "default" and not models_path.exists():
-            logger.warning(
-                f"Models config not found: {models_path} (source={resolved_models.source})"
-            )
-        elif models_path.exists():
+        if stored_models is not None:
             load_report = ModelLoadReport()
-            registered, model_infos = register_from_models_yaml(
+            registered, model_infos = register_from_models_text(
                 router,
-                models_path,
+                stored_models,
                 embedding_adapters=embedding_adapters,
                 continue_on_missing_env=True,
                 report=load_report,
             )
-            # A request for a skipped model says why it is missing.
             record_skipped_models(load_report)
             if registered:
-                logger.info(f"Registered {registered} routes from {models_path}")
+                logger.info(f"Registered {registered} routes from the database route catalog")
+            elif not load_report.skipped_models:
+                logger.error(
+                    "The database route catalog has no models, so no models are "
+                    "available: /v1/models will be empty and every request will "
+                    "report the model as not found."
+                )
             if embedding_adapters:
                 logger.info(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
         else:
-            # Default path, nothing there. Previously silent, and silence is the
-            # worst answer here: /v1/models returns an empty list, every request
-            # 404s, and the log says nothing at all. The registry is a
-            # deployment's own file — upstream ships none — so this is what a
-            # fresh checkout hits on its first run.
-            logger.error(
-                "No model registry at %s, so no models are available: "
-                "/v1/models will be empty and every request will report the "
-                "model as not found. Point MODELS_CONFIG_PATH at your registry, "
-                "or copy one of the files in config/examples/ to that path.",
-                models_path,
-            )
+            _register_models_from_file(router, embedding_adapters, model_infos)
     except EmbeddingsPathConfigError:
         # A rejected explicit path must abort startup, not leave the server
         # running on whatever models were registered before the bad entry.
         raise
     except Exception as exc:
-        logger.warning(f"Failed to load models.yaml: {exc}")
+        source = "the database route catalog" if stored_models is not None else "models.yaml"
+        logger.warning(f"Failed to load {source}: {exc}")
 
     return embedding_adapters, model_infos
+
+
+def _register_models_from_file(
+    router: FixedRouter,
+    embedding_adapters: dict,
+    model_infos: list[ModelRegistrationInfo],
+) -> None:
+    """Register the model file when the database has no models row."""
+    resolved_models = resolve_config_path("models")
+    models_path = resolved_models.path
+    if resolved_models.source != "default" and not models_path.exists():
+        logger.warning(f"Models config not found: {models_path} (source={resolved_models.source})")
+    elif models_path.exists():
+        load_report = ModelLoadReport()
+        registered, loaded_infos = register_from_models_yaml(
+            router,
+            models_path,
+            embedding_adapters=embedding_adapters,
+            continue_on_missing_env=True,
+            report=load_report,
+        )
+        model_infos.extend(loaded_infos)
+        # A request for a skipped model says why it is missing.
+        record_skipped_models(load_report)
+        if registered:
+            logger.info(f"Registered {registered} routes from {models_path}")
+        if embedding_adapters:
+            logger.info(
+                f"Registered {len(embedding_adapters)} embedding adapter(s): "
+                f"{list(embedding_adapters.keys())}"
+            )
+    else:
+        # Default path, nothing there. Previously silent, and silence is the
+        # worst answer here: /v1/models returns an empty list, every request
+        # 404s, and the log says nothing at all. The registry is a
+        # deployment's own file — upstream ships none — so this is what a
+        # fresh checkout hits on its first run.
+        logger.error(
+            "No model registry at %s, so no models are available: "
+            "/v1/models will be empty and every request will report the "
+            "model as not found. Point MODELS_CONFIG_PATH at your registry, "
+            "or copy one of the files in config/examples/ to that path.",
+            models_path,
+        )
 
 
 def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
@@ -817,6 +863,9 @@ def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     turns auto off and nothing else.
     """
     try:
+        stored_models = installed_body("models")
+        if stored_models is not None:
+            return load_auto_mode_from_text(stored_models, router.routes)
         models_path = resolve_config_path("models").path
         if not models_path.exists():
             return None
@@ -886,6 +935,21 @@ def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
         otherwise None.
     """
     try:
+        from routing.config import load_routing_config_text
+
+        stored_routing = installed_body("routing")
+        if stored_routing is not None:
+            manager = RoutingManager(router, resolve_config_path("routing").path)
+            manager.load_config(load_routing_config_text(stored_routing))
+            updated = manager.apply()
+            if updated:
+                logger.info(
+                    f"RoutingManager applied weights to {updated} routes "
+                    "from the database route catalog"
+                )
+            else:
+                logger.info("RoutingManager loaded the database route catalog; no routes updated")
+            return manager
         resolved_routing = resolve_config_path("routing")
         routing_cfg_path = resolved_routing.path
         if resolved_routing.source != "default" and not routing_cfg_path.exists():
@@ -1199,14 +1263,20 @@ async def initialize() -> AppServices:
     # parsed RoutingConfig; we re-load here cheaply (small YAML).
     default_router_name = "fixed"
     try:
-        from routing.config import load_routing_config
+        from routing.config import load_routing_config, load_routing_config_text
 
-        routing_cfg_path = resolve_config_path("routing").path
-        if routing_cfg_path.exists():
-            routing_cfg = load_routing_config(routing_cfg_path)
-            default_router_name = routing_cfg.default_router
+        stored_routing = installed_body("routing")
+        if stored_routing is not None:
+            default_router_name = load_routing_config_text(stored_routing).default_router
+        else:
+            routing_cfg_path = resolve_config_path("routing").path
+            if routing_cfg_path.exists():
+                routing_cfg = load_routing_config(routing_cfg_path)
+                default_router_name = routing_cfg.default_router
     except Exception as exc:
-        logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
+        logger.warning(
+            f"Failed to read default_router from the routing catalog: {exc}; using 'fixed'."
+        )
 
     # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
     if settings.enable_routewise and default_router_name == "fixed":
