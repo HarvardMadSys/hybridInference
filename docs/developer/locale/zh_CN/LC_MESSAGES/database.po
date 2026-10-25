@@ -1024,6 +1024,18 @@ msgstr ""
 "pgAdmin 保存的连接存放在 `hybridinference_pgadmin_data` 里，这是一个普通的项目本地卷（和 Postgres"
 " 的卷不同，它不是 external 卷）："
 
+#: ../developer/database.md
+msgid "Batch inference"
+msgstr "批量推理"
+
+#: ../developer/database.md
+msgid "`batch_jobs`, `batch_items`, `batch_model_limits`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Batches submitted to `/v1/batches`, with their requests and results until `BATCH_RETENTION_DAYS` after they finish, and the per-model batch concurrency caps; see [Batch Inference](batches.md)"
+msgstr "提交到 `/v1/batches` 的批次及其请求和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天），以及每个模型的批量并发上限；见[批量推理](batches.md)"
+
 #~ msgid "`session_id` / `conversation_id` headers"
 #~ msgstr "`session_id` / `conversation_id` 头"
 

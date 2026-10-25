@@ -2161,3 +2161,24 @@ msgstr ""
 #~ "once one is set;"
 #~ msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
 
+#: ../developer/configuration.md
+msgid "Cap how many batch requests a model runs at once"
+msgstr "限制一个模型同时运行的批量请求数"
+
+#: ../developer/configuration.md
+msgid "**Batch Concurrency**"
+msgstr ""
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; "
+"`GET /admin/batch/models` lists the caps with each model's running and "
+"queued batch requests"
+msgstr ""
+"`PATCH /admin/batch/models/{model_id}` 设置或清除某个模型的上限；`GET "
+"/admin/batch/models` 列出各模型的上限及其正在运行和排队的批量请求"
+
+#: ../developer/configuration.md
+msgid "`batch_model_limits`"
+msgstr ""

@@ -28,7 +28,7 @@ from serving.auto_mode import (
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.exceptions import scrub_error_for_user
 from serving.grant_auth import ledger_attribution
-from serving.model_access import ModelAccessDenial, model_access_denial
+from serving.model_access import ModelAccessDenial, model_access_denial, route_canonical_model_id
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.pricing import require_route_pricing
 from serving.schemas import (
@@ -38,7 +38,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.concurrency import enforce_user_concurrency
+from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
 from serving.servers.deps import (
     get_completions_logger,
     get_cost_tracker,
@@ -548,6 +548,11 @@ async def chat_completions(
     # owner's cost report and the ledger the job's budget is measured from.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # Present only when the batch worker runs the request for a batch
+    # (serving/batch/dispatch.py); lands in api_logs.batch_job_id, the batch's
+    # cost and usage attribution.
+    if user_ctx.get("batch_job_id"):
+        metadata["batch_job_id"] = user_ctx["batch_job_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
 
     early_params: dict[str, Any] = {"stream": effective_stream}
@@ -686,6 +691,13 @@ async def chat_completions(
             )
         req_ctx.mark_model_not_found()
         raise HTTPException(404, model_not_found_detail(model, user_ctx=user_ctx))
+
+    # The concurrency dependency saw the caller's virtual auto model before
+    # selection. Move its full-lifetime load count to the concrete canonical
+    # model now that dispatch has resolved it. This also works when this handler
+    # is called directly by the Responses and compatibility surfaces because
+    # they reuse the dependency-owned Request scope.
+    retarget_interactive_load(request, route_canonical_model_id(route, model))
 
     require_route_pricing(route)
 

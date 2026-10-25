@@ -21,6 +21,7 @@ from .routers import (
     agent_grants,
     anthropic_messages,
     auth_routes,
+    batches,
     compat,
     completions,
     embeddings,
@@ -55,6 +56,9 @@ async def lifespan(app: FastAPI):
     # without the authentication secrets, before it opens stores or starts tasks.
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
+    # The batch worker runs each request through this app's handlers, so it
+    # starts only once the services are reachable from the app.
+    bootstrap.start_batch_scheduler(app, services)
 
     import logging as _logging
 
@@ -109,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
+    app.include_router(batches.router)
     app.include_router(rag.router)
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)

@@ -213,6 +213,72 @@ def test_runtime_and_environment_only_names() -> None:
     assert registry.is_environment_only("REFRESH_TOKEN_COOKIE_NAME")
 
 
+# --- batch inference ---------------------------------------------------------
+
+
+def _batch_entries() -> dict[str, registry.ConfigEntry]:
+    return {entry.key: entry for entry in registry.static_entries() if entry.category == "batch"}
+
+
+def test_every_batch_setting_is_registered_and_applies_live() -> None:
+    from serving.batch import config as batch
+    from serving.config.settings import ROLE_RANK
+
+    category = next(category for category in registry.CATEGORIES if category.id == "batch")
+    assert category.label == "Batch inference"
+    entries = _batch_entries()
+    # Every key serving.batch.config reads, and nothing else.
+    assert set(entries) == {value for name, value in vars(batch).items() if name.endswith("_KEY")}
+    for entry in entries.values():
+        assert entry.field is None, entry.key
+        assert not entry.restart_required, entry.key
+    # The switches are read as value != "0" and must be stored that way.
+    assert entries[batch.ENABLED_KEY].flag
+    assert entries[batch.YIELD_KEY].flag
+    assert entries[batch.MIN_ROLE_KEY].choices == tuple(ROLE_RANK)
+
+
+def test_the_batch_entries_accept_exactly_what_the_batch_config_reads(monkeypatch) -> None:
+    """The registry's defaults and bounds are the ones serving.batch.config falls back to."""
+    from serving.batch import config as batch
+    from serving.config.app_config import _value_problem
+
+    entries = _batch_entries()
+    stored: dict[str, str] = {}
+    monkeypatch.setattr(
+        batch, "config_value", lambda key, default=None: stored.get(key, entries[key].default)
+    )
+    assert batch.batch_config() == batch.BatchConfig()
+
+    for role in entries[batch.MIN_ROLE_KEY].choices:
+        stored[batch.MIN_ROLE_KEY] = role
+        assert batch.batch_config().min_role == role
+    stored.clear()
+
+    reads = {
+        batch.MODEL_CONCURRENCY_KEY: lambda config: config.default_model_concurrency,
+        batch.MAX_REQUESTS_KEY: lambda config: config.max_requests,
+        batch.MAX_BODY_MB_KEY: lambda config: config.max_body_bytes // (1024 * 1024),
+        batch.MAX_ACTIVE_KEY: lambda config: config.max_active_per_user,
+        batch.WINDOW_HOURS_KEY: lambda config: config.completion_window_hours,
+        batch.RETENTION_DAYS_KEY: lambda config: config.retention_days,
+    }
+    for key, read in reads.items():
+        entry = entries[key]
+        default = read(batch.BatchConfig())
+        edges = [(int(entry.minimum), int(entry.minimum) - 1)]
+        if entry.maximum is not None:
+            edges.append((int(entry.maximum), int(entry.maximum) + 1))
+        for inside, outside in edges:
+            stored[key] = str(inside)
+            assert _value_problem(entry, stored[key]) is None, key
+            assert read(batch.batch_config()) == inside, key
+            stored[key] = str(outside)
+            assert _value_problem(entry, stored[key]) is not None, key
+            assert read(batch.batch_config()) == default, key
+        del stored[key]
+
+
 # --- numbered and custom -----------------------------------------------------
 
 

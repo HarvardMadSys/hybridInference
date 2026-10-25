@@ -136,6 +136,7 @@ settings govern this:
 | Cost and quota | `user_daily_cost` | Per-user daily spend used for quota enforcement |
 | RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
 | Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled |
+| Batch inference | `batch_jobs`, `batch_items`, `batch_model_limits` | Batches submitted to `/v1/batches`, with their requests and results until `BATCH_RETENTION_DAYS` after they finish, and the per-model batch concurrency caps; see [Batch Inference](batches.md) |
 | Geo analytics | `geo_hourly_coverage`, `geo_hourly_demand` | Hourly per-country request and token counts; aggregate only, no IP addresses stored |
 | Agent grants | `agent_grants` | Short-lived, model-scoped capabilities this gateway mints for an external agent control plane |
 | Account deletion | `erasure_fence` | Keyed fingerprints of permanently deleted accounts; see [Secrets for deleting accounts](#secrets-for-deleting-accounts) |
