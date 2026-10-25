@@ -800,8 +800,13 @@ def refresh_health() -> ConfigHealth:
 
 
 def _discover() -> dict[str, DiscoveredReference]:
-    """Scan the active models, routing and alerts files for ``${VAR}`` references."""
+    """Scan the model registry, routing document and alerts file for ``${VAR}``.
+
+    A route catalog loaded earlier in this boot replaces the models and routing
+    files. Alerts stay a file.
+    """
     from serving.config.distribution import resolve_config_path
+    from serving.config.route_catalog import installed_body
 
     paths = {}
     for kind in ("models", "routing", "alerts"):
@@ -810,7 +815,13 @@ def _discover() -> dict[str, DiscoveredReference]:
         except Exception:
             logger.warning("Cannot locate the %s file to scan for settings", kind, exc_info=True)
             paths[kind] = None
-    return registry.discover_references(paths["models"], paths["routing"], paths["alerts"])
+    return registry.discover_references(
+        paths["models"],
+        paths["routing"],
+        paths["alerts"],
+        models_text=installed_body("models"),
+        routing_text=installed_body("routing"),
+    )
 
 
 def _build_entries(

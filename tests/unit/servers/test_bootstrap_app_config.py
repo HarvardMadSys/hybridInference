@@ -27,6 +27,12 @@ def boot_env(monkeypatch, tmp_path):
 def _connection() -> MagicMock:
     connection = MagicMock()
     connection.close = AsyncMock()
+    connection.execute = AsyncMock()
+    connection.fetch = AsyncMock(return_value=[])
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
     return connection
 
 

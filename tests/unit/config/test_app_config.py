@@ -9,6 +9,7 @@ import pytest
 
 from serving.config import app_config
 from serving.config.app_config_registry import static_entries
+from serving.config.route_catalog import reset_installed
 from serving.config.settings import get_settings
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
@@ -26,7 +27,9 @@ def config_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
-    return tmp_path
+    reset_installed()
+    yield tmp_path
+    reset_installed()
 
 
 def _write_models(path, text: str) -> None:
