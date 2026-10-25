@@ -10,7 +10,7 @@ route handler rather than disappearing. See ``verify_admin``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -48,7 +48,7 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
     if session_row["revoked"]:
         raise HTTPException(status_code=401, detail="Session revoked.")
 
-    if session_row["expires_at"] < datetime.now(timezone.utc):
+    if session_row["expires_at"] < datetime.now(UTC):
         raise HTTPException(status_code=401, detail="Session expired.")
 
     user_row = await op_store.get_user_by_id(session_row["user_id"])

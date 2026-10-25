@@ -33,6 +33,7 @@ import type {
   RoutewiseSettingItem,
   RunRoutewiseProbeResponse,
 } from '@/lib/api/admin';
+import { chooseOption, chooseValue } from '@/test-utils/select';
 
 const LIVE_ENDPOINT = 'minimax-fast:openrouter[minimax/highspeed]-api';
 const REMOVED_ENDPOINT = 'minimax-fast:featherless-api';
@@ -211,9 +212,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
     });
     vi.mocked(listRoutewiseProbeSamples).mockClear();
 
-    fireEvent.change(screen.getByLabelText('Endpoint'), {
-      target: { value: secondEndpoint },
-    });
+    chooseOption('Endpoint', 'second provider');
 
     await waitFor(() => {
       expect(listRoutewiseProbeSamples).toHaveBeenCalledWith({
@@ -666,7 +665,9 @@ describe('RoutewiseSettingsPanel probe run', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText('Endpoint'), { target: { value: LIVE_ENDPOINT } });
+    chooseValue(screen.getByLabelText('Endpoint'), LIVE_ENDPOINT);
+    // Choosing the endpoint is a filter, not a probe.
+    expect(runRoutewiseProbe).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
     const dialog = screen.getByRole('dialog', { name: 'Run a RouteWise probe for model-a?' });
     expect(dialog).toHaveTextContent('Sends a short live request to live provider');

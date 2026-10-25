@@ -14,7 +14,6 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
-  RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
   createProviderRouteCandidate,
@@ -28,6 +27,8 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteCapabilities,
+  resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteModel,
@@ -37,12 +38,25 @@ import { ChangeList, plural, type Change } from '@/components/features/admin/con
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { BUTTON_GHOST, BUTTON_PRIMARY } from '@/components/features/admin/adminStyles';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
+import {
+  RouteCapabilityFields,
+  capabilityChanges,
+  capabilityDraftFrom,
+  capabilityRows,
+  describeCapabilities,
+  emptyCapabilityDraft,
+  readCapabilityDraft,
+  type CapabilityDraft,
+  type DeclaredChoice,
+} from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
+import { Select } from '@/components/ui/Select';
 
 type RouteForm = {
   upstreamProvider: string;
@@ -60,7 +74,6 @@ type RouteForm = {
 };
 
 // Starts unanswered: a choice the admin never made must not be sent as "no".
-type DeclaredChoice = '' | 'yes' | 'no';
 
 type CreateRouteForm = {
   routeType: ProviderRouteType;
@@ -83,6 +96,7 @@ type CreateRouteForm = {
   maxOutputLength: string;
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
+  otherInputModalities: string[];
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -102,10 +116,7 @@ const emptyCreateForm: CreateRouteForm = {
   pricingCompletion: '',
   pricingCacheReads: '',
   pricingCacheWrites: '',
-  contextLength: '',
-  maxOutputLength: '',
-  imageInput: '',
-  toolCalling: '',
+  ...emptyCapabilityDraft,
 };
 
 const OPENROUTER_PROVIDER_AUTO = '';
@@ -143,6 +154,13 @@ const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'free', label: 'All users' },
 ];
 
+// The gateway's own reason. The shared mapping reads any 409 as a signup
+// conflict ("This email is already registered"), which would hide why a route
+// edit, disable or delete was refused.
+function routeErrorMessage(err: unknown) {
+  return err instanceof APIError && err.message ? err.message : getErrorMessage(err);
+}
+
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
 }
@@ -172,52 +190,6 @@ function runtimePricingPayload(form: CreateRouteForm): Record<string, string> {
   if (cacheReads) pricing.input_cache_reads = cacheReads;
   if (cacheWrites) pricing.input_cache_writes = cacheWrites;
   return pricing;
-}
-
-// The backend's bound (RUNTIME_MODEL_MAX_TOKENS): the largest window a model ships with.
-const MAX_DECLARED_TOKENS = 10_000_000;
-const TOKEN_COUNT_ERROR = `Enter a whole number of tokens from 1 to ${MAX_DECLARED_TOKENS.toLocaleString('en-US')}.`;
-
-function tokenCountOrNull(value: string) {
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number.parseInt(trimmed, 10);
-  return parsed > 0 && parsed <= MAX_DECLARED_TOKENS ? parsed : null;
-}
-
-type RuntimeCapabilitiesDraft = {
-  payload: RuntimeModelCapabilities | null;
-  contextLengthError: string | null;
-  maxOutputLengthError: string | null;
-};
-
-// One reading of the four fields, used both for the inline messages and to
-// gate Create/Verify, so a field can never block the form without saying why.
-// An empty field has no message: it is visibly unanswered.
-function runtimeCapabilitiesDraft(form: CreateRouteForm): RuntimeCapabilitiesDraft {
-  const contextLength = tokenCountOrNull(form.contextLength);
-  const maxOutputLength = tokenCountOrNull(form.maxOutputLength);
-  const contextLengthError =
-    form.contextLength.trim() && contextLength === null ? TOKEN_COUNT_ERROR : null;
-  let maxOutputLengthError =
-    form.maxOutputLength.trim() && maxOutputLength === null ? TOKEN_COUNT_ERROR : null;
-  if (contextLength !== null && maxOutputLength !== null && maxOutputLength > contextLength) {
-    maxOutputLengthError = 'Max output cannot exceed the context length.';
-  }
-  const payload: RuntimeModelCapabilities | null =
-    contextLength !== null &&
-    maxOutputLength !== null &&
-    maxOutputLengthError === null &&
-    form.imageInput &&
-    form.toolCalling
-      ? {
-          context_length: contextLength,
-          max_output_length: maxOutputLength,
-          input_modalities: form.imageInput === 'yes' ? ['text', 'image'] : ['text'],
-          supports_tools: form.toolCalling === 'yes',
-        }
-      : null;
-  return { payload, contextLengthError, maxOutputLengthError };
 }
 
 function formatWeight(value: number) {
@@ -577,6 +549,24 @@ function openRouterRoutingOptions(
   ];
 }
 
+/**
+ * The OpenRouter routing choices for the selector: OpenRouter's own routing
+ * (automatic, or sorted by price, throughput or latency) apart from pinning
+ * one provider. Same values; only the presentation is grouped.
+ */
+function groupOpenRouterRouting(options: ReadonlyArray<{ value: string; label: string }>) {
+  const pinned = options.filter((option) =>
+    option.value.startsWith(OPENROUTER_ROUTING_PROVIDER_PREFIX),
+  );
+  const routing = options.filter(
+    (option) => !option.value.startsWith(OPENROUTER_ROUTING_PROVIDER_PREFIX),
+  );
+  return [
+    ...(routing.length ? [{ label: 'Let OpenRouter choose', options: routing }] : []),
+    ...(pinned.length ? [{ label: 'Pin a provider', options: pinned }] : []),
+  ];
+}
+
 function resolvedOpenRouterProvider(selectedProvider: string, customProvider: string) {
   if (selectedProvider === OPENROUTER_PROVIDER_CUSTOM) {
     const cleaned = customProvider.trim();
@@ -677,6 +667,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
+  // The route whose capabilities are being edited, and the fields as typed.
+  const [capabilityRoute, setCapabilityRoute] = useState<ProviderRoute | null>(null);
+  const [capabilityDraft, setCapabilityDraft] = useState<CapabilityDraft>(emptyCapabilityDraft);
   const [addingRoute, setAddingRoute] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
@@ -867,12 +860,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       pricingValueValid(createForm.pricingCompletion) &&
       optionalPricingValueValid(createForm.pricingCacheReads) &&
       optionalPricingValueValid(createForm.pricingCacheWrites));
-  const {
-    payload: runtimeCapabilities,
-    contextLengthError: createContextLengthError,
-    maxOutputLengthError: createMaxOutputLengthError,
-  } = runtimeCapabilitiesDraft(createForm);
-  const createCapabilitiesValid = !creatingModel || runtimeCapabilities !== null;
+  const createCapabilityReading = readCapabilityDraft(createForm);
+  const runtimeCapabilities = createCapabilityReading.payload;
+  // A new model and an added route both declare their own.
+  const createCapabilitiesValid = runtimeCapabilities !== null;
   const createQuotaValid =
     createForm.routeType !== 'quota' ||
     (parsedCreateQuotaLimit !== null &&
@@ -1011,7 +1002,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     strategy: creatingModel ? newModelStrategy : strategy,
     required_role: creatingModel ? newModelRequiredRole : undefined,
     pricing: creatingModel ? runtimePricing : undefined,
-    capabilities: creatingModel ? runtimeCapabilities : undefined,
+    capabilities: runtimeCapabilities,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -1359,12 +1350,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       providerModelId: firstProvider
         ? defaultProviderModelIdFor(firstProvider.provider, selectedRoutes)
         : '',
+      // A starting point, not a copy: the admin confirms or changes each value
+      // for this provider, and the route stores what was submitted.
+      ...(selectedRoutes[0]?.capabilities
+        ? capabilityDraftFrom(selectedRoutes[0].capabilities)
+        : emptyCapabilityDraft),
     });
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
     setAddingRoute(true);
     setCreatingModel(false);
     setEditingRoute(null);
+    setCapabilityRoute(null);
   };
 
   const openCreateModelForm = () => {
@@ -1399,6 +1396,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setCreatingModel(true);
     setAddingRoute(false);
     setEditingRoute(null);
+    setCapabilityRoute(null);
   };
 
   const onCreateProviderChange = (upstreamProvider: string) => {
@@ -1515,7 +1513,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   // What a Create/Add will register, for the review before the write.
   const createReview = (): Change[] => {
     const review: Change[] = [];
-    if (creatingModel && runtimeCapabilities) {
+    if (creatingModel) {
       review.push(
         { label: 'Model ID', after: newModelIdValue },
         { label: 'Routing policy', after: newModelStrategy },
@@ -1534,26 +1532,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       if (runtimePricing.input_cache_writes) {
         review.push({ label: 'Cache write $/M', after: runtimePricing.input_cache_writes });
       }
-      review.push(
-        {
-          label: 'Context length',
-          after: `${runtimeCapabilities.context_length.toLocaleString('en-US')} tokens`,
-        },
-        {
-          label: 'Max output',
-          after: `${runtimeCapabilities.max_output_length.toLocaleString('en-US')} tokens`,
-        },
-        {
-          label: 'Image input',
-          after: runtimeCapabilities.input_modalities.includes('image')
-            ? 'Accepts images'
-            : 'Text only',
-        },
-        {
-          label: 'Tool calling',
-          after: runtimeCapabilities.supports_tools ? 'Supported' : 'Not supported',
-        },
-      );
+    }
+    if (runtimeCapabilities) {
+      // A new model and an added route both declare their own.
+      review.push(...capabilityRows(runtimeCapabilities));
     }
     review.push(
       { label: 'Route type', after: createRoutePayload.route_type },
@@ -1604,22 +1586,22 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const onCreateSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!createFormValid) return;
+    // createFormValid already requires it; this check narrows the type.
+    if (!createFormValid || !runtimeCapabilities) return;
     const model = creatingModel;
-    // createFormValid already requires it for a new model; this narrows the type.
-    if (model && !runtimeCapabilities) return;
-    const routePayload = createRoutePayload;
-    const modelPayload =
-      model && runtimeCapabilities
-        ? {
-            ...routePayload,
-            model_id: newModelIdValue,
-            strategy: newModelStrategy,
-            required_role: newModelRequiredRole,
-            pricing: runtimePricing,
-            capabilities: runtimeCapabilities,
-          }
-        : null;
+    const capabilities = runtimeCapabilities;
+    // A new model and an added route both declare their own capabilities.
+    const routePayload = { ...createRoutePayload, capabilities };
+    const modelPayload = model
+      ? {
+          ...createRoutePayload,
+          model_id: newModelIdValue,
+          strategy: newModelStrategy,
+          required_role: newModelRequiredRole,
+          pricing: runtimePricing,
+          capabilities,
+        }
+      : null;
     const targetModel = selectedModel;
     confirmation.request({
       title: model ? `Create model ${newModelIdValue}?` : `Add a provider route to ${targetModel}?`,
@@ -1654,11 +1636,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const onCreateVerify = async () => {
     if (!createFormValid) return;
+    // createFormValid already requires it; this check narrows the type.
+    if (!runtimeCapabilities) return;
     setVerifyingCreateRoute(true);
     try {
       if (creatingModel) {
-        // createFormValid already requires it; this check narrows the type.
-        if (!runtimeCapabilities) return;
         await verifyProviderRouteModel({
           ...createRoutePayload,
           model_id: newModelIdValue,
@@ -1668,7 +1650,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           capabilities: runtimeCapabilities,
         });
       } else {
-        await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
+        await verifyProviderRouteCandidate(selectedModel, {
+          ...createRoutePayload,
+          capabilities: runtimeCapabilities,
+        });
       }
       setVerifiedCreateSignature(createVerificationSignature);
       toast.success(creatingModel ? 'Model route verified' : 'Provider route verified');
@@ -1704,7 +1689,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [],
   );
   // Switching model, directly or by creating one, would drop any open draft.
-  const modelLocked = inlineEditing || panelEditing.offload || panelEditing.routewise;
+  // The route, capability and create dialogs are modal, but their drafts belong
+  // to this model too, as does any open confirmation.
+  const modelLocked =
+    inlineEditing ||
+    panelEditing.offload ||
+    panelEditing.routewise ||
+    editingRoute !== null ||
+    capabilityRoute !== null ||
+    createFormOpen ||
+    confirmation.open;
 
   // Discrete row actions. Each `run` throws on failure, so the confirmation
   // stays open with the error and the same action can be retried.
@@ -1831,6 +1825,100 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         } finally {
           setSavingWeightKey(null);
         }
+      },
+    });
+  };
+
+  // A route's capabilities: the dialog's fields are a draft, Save reviews
+  // `old → new`, and only Confirm writes.
+  const openCapabilityEditor = (route: ProviderRoute) => {
+    if (!route.capabilities) return;
+    setCapabilityRoute(route);
+    setCapabilityDraft(capabilityDraftFrom(route.capabilities));
+    setEditingRoute(null);
+    setAddingRoute(false);
+    setCreatingModel(false);
+  };
+
+  const closeCapabilityEditor = () => {
+    if (confirmation.busy) return;
+    setCapabilityRoute(null);
+  };
+
+  const capabilityReading = readCapabilityDraft(capabilityDraft);
+  const capabilityEditChanges: Change[] =
+    capabilityRoute?.capabilities && capabilityReading.payload
+      ? capabilityChanges(capabilityRoute.capabilities, capabilityReading.payload)
+      : [];
+
+  const onSaveCapabilities = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!capabilityRoute || !capabilityReading.payload || capabilityEditChanges.length === 0) {
+      return;
+    }
+    const target = capabilityRoute;
+    const payload = capabilityReading.payload;
+    const changes = capabilityEditChanges;
+    confirmation.request({
+      title: `Save ${plural(changes.length, 'change')} to ${target.endpoint_id} capabilities?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList changes={changes} />
+          <p>
+            Requests through this route follow the new values from the next request on, until they
+            are reset to config.
+          </p>
+        </>
+      ),
+      run: async () => {
+        const updated = await updateProviderRouteCapabilities(
+          target.model_id,
+          target.route_id,
+          payload,
+        ).catch((err: unknown) => {
+          throw new Error(routeErrorMessage(err));
+        });
+        updateRoute(updated);
+        setCapabilityRoute(null);
+        toast.success('Route capabilities updated');
+      },
+    });
+  };
+
+  const confirmResetCapabilities = () => {
+    if (!capabilityRoute) return;
+    const target = capabilityRoute;
+    const changes =
+      target.capabilities && target.capabilities_baseline
+        ? capabilityChanges(target.capabilities, target.capabilities_baseline)
+        : [];
+    confirmation.request({
+      title: `Reset ${target.endpoint_id} capabilities to config?`,
+      confirmLabel: 'Reset',
+      busyLabel: 'Resetting…',
+      tone: 'danger',
+      body: (
+        <>
+          {changes.length > 0 ? <ChangeList changes={changes} /> : null}
+          <p>
+            The values set in the console are removed, and the route goes back to the capabilities
+            it has from its configuration.
+          </p>
+        </>
+      ),
+      run: async () => {
+        const updated = await resetProviderRouteCapabilities(
+          target.model_id,
+          target.route_id,
+        ).catch((err: unknown) => {
+          throw new Error(routeErrorMessage(err));
+        });
+        updateRoute(updated);
+        setCapabilityRoute(null);
+        toast.success('Route capabilities reset');
       },
     });
   };
@@ -2010,28 +2098,28 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <label className="text-[12px] font-medium text-gray-500" htmlFor="provider-route-model">
             Selected model
           </label>
-          <select
+          <Select
             id="provider-route-model"
             value={selectedModel}
-            onChange={(event) => {
-              setSelectedModel(event.target.value);
+            onValueChange={(next) => {
+              setSelectedModel(next);
               setEditingRoute(null);
+              setCapabilityRoute(null);
               setAddingRoute(false);
               setCreatingModel(false);
             }}
-            // Unsaved weight, policy, limit, offload or RouteWise drafts belong to
-            // this model; finish or cancel them before switching.
+            options={models.map((model) => ({ value: model, label: model }))}
+            placeholder={models.length === 0 ? '(no models loaded)' : 'Choose a model'}
+            searchable
+            searchPlaceholder="Search models…"
+            emptyText="No models match"
+            // Unsaved weight, policy, limit, capability, offload or RouteWise drafts
+            // belong to this model; finish or cancel them before switching.
             disabled={modelLocked}
             title={modelLocked ? 'Save or cancel the open edit first' : undefined}
-            className="mt-1 w-full min-w-[240px] max-w-sm rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-          >
-            {models.length === 0 && <option value="">(no models loaded)</option>}
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
+            size="lg"
+            className="mt-1 w-full min-w-[240px] max-w-sm"
+          />
         </div>
         <div className="flex items-center gap-2">
           {loading && (
@@ -2081,18 +2169,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           >
             Routing policy
           </label>
-          <select
+          <Select<ProviderRouteStrategy>
             id="provider-route-strategy"
             value={draftStrategy}
-            onChange={(event) => setDraftStrategy(event.target.value as ProviderRouteStrategy)}
+            // A draft only; Save changes reviews it and Confirm writes.
+            onValueChange={setDraftStrategy}
             disabled={confirmation.busy}
-            className={`mt-1 block rounded-lg border bg-white px-3 py-2 text-[13px] font-medium text-gray-700 focus:border-gray-400 focus:outline-none disabled:opacity-50 ${
-              draftStrategy !== strategy ? 'border-amber-400' : 'border-gray-200'
-            }`}
-          >
-            <option value="routewise">routewise</option>
-            <option value="fixed">fixed</option>
-          </select>
+            options={[
+              { value: 'routewise', label: 'routewise' },
+              { value: 'fixed', label: 'fixed' },
+            ]}
+            size="lg"
+            className={`mt-1 w-32 font-medium ${draftStrategy !== strategy ? '!border-amber-400' : ''}`}
+          />
           <EditBar
             target={`${selectedModel} routing policy`}
             changeCount={draftStrategy !== strategy ? 1 : 0}
@@ -2435,6 +2524,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           Offload
                         </span>
                       )}
+                      {route.capabilities_overridden && route.capabilities_baseline && (
+                        <span
+                          className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
+                          title={`Set in the console. From config: ${describeCapabilities(route.capabilities_baseline)}`}
+                        >
+                          Capabilities edited
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
@@ -2468,6 +2565,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {isSavingWeight ? 'Enabling…' : 'Enable'}
                       </button>
                     )}
+                    {route.capabilities && (
+                      <button
+                        type="button"
+                        aria-label={`Edit ${route.endpoint_id} capabilities`}
+                        title={describeCapabilities(route.capabilities)}
+                        onClick={() => openCapabilityEditor(route)}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                      >
+                        Capabilities
+                      </button>
+                    )}
                     {route.source === 'runtime' ? (
                       <button
                         type="button"
@@ -2485,6 +2593,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           setEditingRoute(route);
                           setAddingRoute(false);
                           setCreatingModel(false);
+                          setCapabilityRoute(null);
                         }}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
                       >
@@ -2576,18 +2685,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     >
                       Initial routing policy
                     </label>
-                    <select
+                    <Select<ProviderRouteStrategy>
                       id="new-model-strategy"
                       value={newModelStrategy}
-                      onChange={(event) => {
-                        setNewModelStrategy(event.target.value as ProviderRouteStrategy);
+                      onValueChange={(next) => {
+                        setNewModelStrategy(next);
                         setVerifiedCreateSignature(null);
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      <option value="fixed">fixed</option>
-                      <option value="routewise">routewise</option>
-                    </select>
+                      options={[
+                        { value: 'fixed', label: 'fixed' },
+                        { value: 'routewise', label: 'routewise' },
+                      ]}
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   <div>
                     <label
@@ -2596,21 +2707,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     >
                       Visibility
                     </label>
-                    <select
+                    <Select<Role>
                       id="new-model-required-role"
                       value={newModelRequiredRole}
-                      onChange={(event) => {
-                        setNewModelRequiredRole(event.target.value as Role);
+                      onValueChange={(next) => {
+                        setNewModelRequiredRole(next);
                         setVerifiedCreateSignature(null);
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {MODEL_ROLE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={MODEL_ROLE_OPTIONS}
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                 </div>
               )}
@@ -2714,145 +2821,36 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </div>
               )}
 
-              {creatingModel && (
-                <div className="mb-3">
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-context-length"
-                      >
-                        Context length (tokens)
-                      </label>
-                      <input
-                        id="new-model-context-length"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={createForm.contextLength}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            contextLength: event.target.value,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      />
-                      {createContextLengthError && (
-                        <p className="mt-1 text-[11px] leading-5 text-red-600">
-                          {createContextLengthError}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-max-output-length"
-                      >
-                        Max output (tokens)
-                      </label>
-                      <input
-                        id="new-model-max-output-length"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={createForm.maxOutputLength}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            maxOutputLength: event.target.value,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      />
-                      {createMaxOutputLengthError && (
-                        <p className="mt-1 text-[11px] leading-5 text-red-600">
-                          {createMaxOutputLengthError}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-image-input"
-                      >
-                        Image input
-                      </label>
-                      <select
-                        id="new-model-image-input"
-                        value={createForm.imageInput}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            imageInput: event.target.value as DeclaredChoice,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Text only</option>
-                        <option value="yes">Accepts images</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label
-                        className="text-[12px] font-medium text-gray-500"
-                        htmlFor="new-model-tool-calling"
-                      >
-                        Tool calling
-                      </label>
-                      <select
-                        id="new-model-tool-calling"
-                        value={createForm.toolCalling}
-                        onChange={(event) => {
-                          setCreateForm((current) => ({
-                            ...current,
-                            toolCalling: event.target.value as DeclaredChoice,
-                          }));
-                          setVerifiedCreateSignature(null);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                        required
-                      >
-                        <option value="">Choose…</option>
-                        <option value="no">Not supported</option>
-                        <option value="yes">Supported</option>
-                      </select>
-                    </div>
-                  </div>
-                  <p className="mt-1 text-[11px] leading-5 text-gray-400">
-                    Take these from the provider&apos;s model page. Requests follow them: tool
-                    definitions are dropped without tool calling, max_tokens is capped at the max
-                    output, and images reach the model only if it accepts them.
-                  </p>
-                </div>
-              )}
+              <div className="mb-3">
+                <RouteCapabilityFields
+                  idPrefix="new-model"
+                  draft={createForm}
+                  reading={createCapabilityReading}
+                  onChange={(change) => {
+                    setCreateForm((current) => ({ ...current, ...change }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  help={
+                    creatingModel
+                      ? "Take these from the provider's model page. Requests follow them: tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach the model only if it accepts them."
+                      : "This route's own values, started from the model's first route. Providers can serve the same model with a smaller window or without images or tools; set what this one serves."
+                  }
+                />
+              </div>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div>
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
                     Route type
                   </label>
-                  <select
+                  <Select<ProviderRouteType>
                     id="new-route-type"
                     value={createForm.routeType}
-                    onChange={(event) =>
-                      onCreateRouteTypeChange(event.target.value as ProviderRouteType)
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  >
-                    {createRouteTypeOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onCreateRouteTypeChange}
+                    options={createRouteTypeOptions}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
                 <div>
                   <label
@@ -2861,22 +2859,24 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   >
                     Provider
                   </label>
-                  <select
+                  <Select
                     id="new-route-provider"
                     value={createForm.upstreamProvider}
-                    onChange={(event) => onCreateProviderChange(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  >
-                    {createProviderOptions.length === 0 && (
-                      <option value="">{noProviderOptionLabel(createForm.routeType)}</option>
-                    )}
-                    {createProviderOptions.map((option) => (
-                      <option key={option.provider} value={option.provider}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onCreateProviderChange}
+                    options={createProviderOptions.map((option) => ({
+                      value: option.provider,
+                      label: option.label,
+                    }))}
+                    placeholder={
+                      createProviderOptions.length === 0
+                        ? noProviderOptionLabel(createForm.routeType)
+                        : 'Choose a provider'
+                    }
+                    searchPlaceholder="Search providers…"
+                    aria-required
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                   {createProviderOptions.length === 0 && (
                     <p className="mt-1 text-[11px] leading-5 text-gray-400">
                       {noProviderHelpText(createForm.routeType)}
@@ -2890,23 +2890,23 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   >
                     API key
                   </label>
-                  <select
+                  <Select
                     id="new-route-api-key"
                     value={createForm.apiKeyId}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, apiKeyId: event.target.value }))
+                    onValueChange={(apiKeyId) =>
+                      setCreateForm((current) => ({ ...current, apiKeyId }))
                     }
                     disabled={createKeysLoading}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                  >
-                    <option value="">{defaultKeyOptionLabel(createKeyProvider)}</option>
-                    {createKeyOptions.map((key) => (
-                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                        {key.label ? `${key.label} · ` : ''}
-                        {key.key_prefix} ({key.source})
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: '', label: defaultKeyOptionLabel(createKeyProvider) },
+                      ...createKeyOptions.map((key) => ({
+                        value: key.id ?? '',
+                        label: `${key.label ? `${key.label} · ` : ''}${key.key_prefix} (${key.source})`,
+                      })),
+                    ]}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
               </div>
 
@@ -2971,14 +2971,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                       )}
                     </div>
-                    <select
+                    <Select
                       id="new-route-openrouter-routing"
                       value={openRouterRoutingValue(
                         createForm.openRouterProvider,
                         createForm.openRouterSort,
                       )}
-                      onChange={(event) => {
-                        const routingValue = event.target.value;
+                      onValueChange={(routingValue) => {
                         const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                         setCreateForm((current) => ({
                           ...current,
@@ -2990,14 +2989,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               : '',
                         }));
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {createOpenRouterRoutingOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={groupOpenRouterRouting(createOpenRouterRoutingOptions)}
+                      searchPlaceholder="Search OpenRouter providers…"
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   {createForm.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
                     <div>
@@ -3139,6 +3135,101 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
+      {capabilityRoute && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="route-capabilities-title"
+            className="mx-auto w-full max-w-3xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
+          >
+            <form onSubmit={onSaveCapabilities}>
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3
+                    id="route-capabilities-title"
+                    className="text-[14px] font-semibold text-gray-900"
+                  >
+                    Route capabilities
+                  </h3>
+                  <p className="mt-1 font-mono text-[12px] text-gray-400">
+                    {capabilityRoute.model_id} / {capabilityRoute.endpoint_id}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeCapabilityEditor}
+                  disabled={confirmation.busy}
+                  className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                >
+                  Close
+                </button>
+              </div>
+              <RouteCapabilityFields
+                idPrefix="route-capabilities"
+                draft={capabilityDraft}
+                reading={capabilityReading}
+                onChange={(change) => setCapabilityDraft((current) => ({ ...current, ...change }))}
+                help="Requests through this route follow these values from the next request on, and they hold across restarts. Tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach this route only if it accepts them."
+              />
+              {capabilityRoute.capabilities_baseline && (
+                <p className="mt-3 text-[12px] text-gray-500">
+                  {capabilityRoute.capabilities_overridden ? 'Set in the console. ' : ''}
+                  From config: {describeCapabilities(capabilityRoute.capabilities_baseline)}
+                </p>
+              )}
+              <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
+                <span
+                  className={`mr-auto text-[12px] ${
+                    capabilityEditChanges.length > 0
+                      ? 'font-medium text-amber-700'
+                      : 'text-gray-500'
+                  }`}
+                  role="status"
+                >
+                  {capabilityEditChanges.length > 0
+                    ? `${plural(capabilityEditChanges.length, 'unsaved change')}`
+                    : capabilityReading.payload === null
+                      ? 'Answer every field to save'
+                      : 'No changes yet'}
+                </span>
+                {capabilityRoute.capabilities_overridden && (
+                  <button
+                    type="button"
+                    onClick={confirmResetCapabilities}
+                    disabled={confirmation.busy}
+                    className="h-9 rounded-lg px-3 text-[13px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                  >
+                    Reset to config
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={closeCapabilityEditor}
+                  disabled={confirmation.busy}
+                  aria-label={`Cancel editing ${capabilityRoute.endpoint_id} capabilities`}
+                  className={BUTTON_GHOST}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  // Disabled for a no-op and while a value is invalid; Confirm writes.
+                  disabled={
+                    confirmation.busy ||
+                    capabilityReading.payload === null ||
+                    capabilityEditChanges.length === 0
+                  }
+                  className={BUTTON_PRIMARY}
+                >
+                  {confirmation.busy ? 'Saving…' : 'Save capabilities'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {editingRoute && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
           <div
@@ -3175,41 +3266,39 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
                     Override provider
                   </label>
-                  <select
+                  <Select
                     id="route-provider"
                     value={form.upstreamProvider}
-                    onChange={(event) => onUpstreamProviderChange(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  >
-                    {providerSelectOptions.map((option) => (
-                      <option key={option.provider} value={option.provider}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={onUpstreamProviderChange}
+                    options={providerSelectOptions.map((option) => ({
+                      value: option.provider,
+                      label: option.label,
+                    }))}
+                    searchPlaceholder="Search providers…"
+                    aria-required
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
                 <div>
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="route-api-key">
                     API key
                   </label>
-                  <select
+                  <Select
                     id="route-api-key"
                     value={form.apiKeyId}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, apiKeyId: event.target.value }))
-                    }
+                    onValueChange={(apiKeyId) => setForm((current) => ({ ...current, apiKeyId }))}
                     disabled={keysLoading}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                  >
-                    <option value="">{defaultKeyOptionLabel(keyProvider)}</option>
-                    {keyOptions.map((key) => (
-                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                        {key.label ? `${key.label} · ` : ''}
-                        {key.key_prefix} ({key.source})
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: '', label: defaultKeyOptionLabel(keyProvider) },
+                      ...keyOptions.map((key) => ({
+                        value: key.id ?? '',
+                        label: `${key.label ? `${key.label} · ` : ''}${key.key_prefix} (${key.source})`,
+                      })),
+                    ]}
+                    size="lg"
+                    className="mt-1 w-full"
+                  />
                 </div>
               </div>
 
@@ -3274,11 +3363,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                       )}
                     </div>
-                    <select
+                    <Select
                       id="route-openrouter-routing"
                       value={openRouterRoutingValue(form.openRouterProvider, form.openRouterSort)}
-                      onChange={(event) => {
-                        const routingValue = event.target.value;
+                      onValueChange={(routingValue) => {
                         const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                         setForm((current) => ({
                           ...current,
@@ -3290,14 +3378,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               : '',
                         }));
                       }}
-                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    >
-                      {editOpenRouterRoutingOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={groupOpenRouterRouting(editOpenRouterRoutingOptions)}
+                      searchPlaceholder="Search OpenRouter providers…"
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
                   </div>
                   {form.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
                     <div>
@@ -3413,5 +3498,3 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     </div>
   );
 }
-
-export default ProviderRoutesTab;

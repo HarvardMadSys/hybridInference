@@ -76,6 +76,7 @@ Fix any issues found.
 ```bash
 make format
 make test
+make test-db-local   # also, when the change touches storage, SQL or a database test
 ```
 
 Run the project's lint and typecheck commands if available (check CLAUDE.md, Makefile, or pyproject.toml for the correct commands).

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { chooseOption } from '@/test-utils/select';
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -140,7 +141,7 @@ it('sends exactly one PATCH for a confirmed account-settings save', async () => 
 
   fireEvent.click(await screen.findByText('fixture@example.test'));
   fireEvent.click(await screen.findByRole('button', { name: 'Edit account settings' }));
-  fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+  chooseOption('Role', 'pro');
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
   expect(updateUser).not.toHaveBeenCalled();
 

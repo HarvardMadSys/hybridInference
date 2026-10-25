@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -94,7 +94,7 @@ async def _seed_row(
             "status_code, user_id, metadata) "
             "VALUES ($1, 'm', 'p', $2, 200, $3, $4::jsonb)",
             request_id,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             user_id,
             json.dumps(metadata) if metadata else None,
         )
@@ -682,7 +682,7 @@ async def test_resume_race_resume_wins(fence_store):
 
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    op_store = PostgresOperationalStore(pool, fence_secret=_SECRET)
+    op_store = PostgresOperationalStore(pool)
     await op_store.resume_user(
         _OWNER, admin_ip="127.0.0.1", admin_id="admin", reason="test", email="a@b.com"
     )
@@ -910,7 +910,7 @@ async def test_mixed_version_old_worker_can_still_insert(fence_store):
             "timestamp, status_code, user_id) "
             "VALUES ($1, 'm', 'p', $2, 200, $3)",
             "req-fence-old-worker",
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             _OWNER,
         )
 

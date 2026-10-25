@@ -10,6 +10,7 @@ import {
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { Select } from '@/components/ui/Select';
 import { getUserDetail } from '@/lib/api/admin';
 import type {
   AdminModelVisibilityItem,
@@ -29,6 +30,11 @@ import {
   FIELD_LABEL,
   SECTION,
 } from './ui';
+
+const ROLE_OPTIONS = ['free', 'pro', 'internal', 'admin'].map((role) => ({
+  value: role,
+  label: role,
+}));
 
 export function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -379,17 +385,15 @@ function AccountSettings({
           <div className="flex flex-wrap items-end gap-3">
             <label className="block">
               <div className="mb-1 text-[11px] font-medium text-gray-500">Role</div>
-              <select
+              {/* A choice only changes the draft. */}
+              <Select
+                aria-label="Role"
                 value={draft.role}
-                onChange={(e) => change({ role: e.target.value })}
+                onValueChange={(role) => change({ role })}
+                options={ROLE_OPTIONS}
                 disabled={busy}
-                className={CONTROL}
-              >
-                <option value="free">free</option>
-                <option value="pro">pro</option>
-                <option value="internal">internal</option>
-                <option value="admin">admin</option>
-              </select>
+                className="w-28"
+              />
             </label>
             {detail.has_key && (
               <label className="block">

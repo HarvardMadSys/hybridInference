@@ -6,7 +6,6 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 import { AccountMenu } from './AccountMenu';
-import { LanguageSwitcher } from './LanguageSwitcher';
 import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 export function Header() {
@@ -81,7 +80,6 @@ export function Header() {
             {link.label}
           </a>
         ))}
-        {!state.isAuthenticated && <LanguageSwitcher />}
         {state.isAuthenticated && (
           <>
             {features.rag && (

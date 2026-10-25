@@ -2,6 +2,7 @@
 
 import { useId } from 'react';
 
+import { FIELD_INVALID, TEXT_FIELD } from '@/components/features/admin/adminStyles';
 import type { ConfigEntry } from '@/lib/api/config';
 
 import {
@@ -37,7 +38,7 @@ const BADGE_TONES: Record<BadgeTone, string> = {
   gray: 'bg-gray-100 text-gray-600',
 };
 
-export function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
+function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
   const badges: Array<{ label: string; tone: BadgeTone }> = [];
   if (entry.missing) badges.push({ label: 'Missing', tone: 'red' });
   if (entry.invalid) badges.push({ label: 'Invalid', tone: 'red' });
@@ -73,10 +74,8 @@ function relativeTime(iso: string): string {
   });
 }
 
-const INPUT_CLASS =
-  'w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-gray-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-500';
-const INPUT_ERROR_CLASS =
-  'w-full rounded-md border border-red-300 bg-white px-2.5 py-1.5 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-red-500 focus:outline-none';
+const INPUT_CLASS = TEXT_FIELD;
+const INPUT_ERROR_CLASS = `${TEXT_FIELD} ${FIELD_INVALID}`;
 const LINK_BUTTON_CLASS =
   'rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-40';
 
@@ -109,6 +108,7 @@ export function ConfigEntryField({
   label = entry.key,
   allowSecretClear = true,
   presentation = 'default',
+  layout = 'stacked',
   draft,
   onChange,
   serverError,
@@ -124,6 +124,11 @@ export function ConfigEntryField({
   allowSecretClear?: boolean;
   /** Compact cards supply their own privacy and restart notes. */
   presentation?: 'default' | 'compact';
+  /**
+   * `split` puts the name and description beside the editor on wide screens,
+   * for a settings list in a wide card; both stack on narrow ones.
+   */
+  layout?: 'stacked' | 'split';
   draft: ConfigDraft | undefined;
   onChange: (key: string, draft: ConfigDraft | undefined) => void;
   /** The reason the last save gave for this key. */
@@ -282,12 +287,22 @@ export function ConfigEntryField({
   }
 
   const compact = presentation === 'compact';
+  const split = layout === 'split';
   const badges = configBadges(entry).filter(
     (badge) => !compact || !['Secret', 'Restart required', 'Pending restart'].includes(badge.label),
   );
 
   return (
-    <div className={compact ? undefined : 'py-4'} data-config-key={entry.key}>
+    <div
+      className={
+        compact
+          ? undefined
+          : split
+            ? 'py-4 lg:grid lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-8'
+            : 'py-4'
+      }
+      data-config-key={entry.key}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -346,51 +361,53 @@ export function ConfigEntryField({
         ) : null}
       </div>
 
-      <div className="mt-2">{control}</div>
+      <div className={split ? 'mt-2 min-w-0 lg:mt-0 lg:max-w-2xl' : undefined}>
+        <div className={split ? undefined : 'mt-2'}>{control}</div>
 
-      <div id={notesId} className="mt-1 space-y-0.5 text-[11px]">
-        {markSecretPending && offerMarkSecret ? (
-          <p className="text-amber-700">
-            Becomes secret when you save. This cannot be undone from the console.
-          </p>
-        ) : null}
-        {entry.type === 'list' && !locked && !readOnly && !resetPending ? (
-          <p className="text-gray-400">A comma-separated list.</p>
-        ) : null}
-        {usedBy.length > 0 ? (
-          <p className="text-gray-500">
-            Used by <span className="font-mono">{usedBy.join(', ')}</span>
-          </p>
-        ) : null}
-        {!entry.secret && entry.default !== null && entry.source !== 'default' ? (
-          <p className="text-gray-400">
-            Default: <span className="font-mono">{String(entry.default)}</span>
-          </p>
-        ) : null}
-        {entry.immutable && !entry.is_set && !locked ? (
-          <p className="text-gray-500">Cannot be changed once it is set.</p>
-        ) : null}
-        {entry.environment_ignored ? (
-          <p className="text-amber-700">
-            The environment also sets this variable; the database value wins. Remove it from .env.
-          </p>
-        ) : null}
-        {entry.invalid ? (
-          <p className="text-red-600">The stored value could not be applied: {entry.invalid}</p>
-        ) : null}
-        {entry.updated_at && !compact ? (
-          <p className="text-gray-400">
-            Updated {relativeTime(entry.updated_at)}
-            {entry.updated_by ? ` by ${entry.updated_by}` : ''}
+        <div id={notesId} className="mt-1 space-y-0.5 text-[11px]">
+          {markSecretPending && offerMarkSecret ? (
+            <p className="text-amber-700">
+              Becomes secret when you save. This cannot be undone from the console.
+            </p>
+          ) : null}
+          {entry.type === 'list' && !locked && !readOnly && !resetPending ? (
+            <p className="text-gray-400">A comma-separated list.</p>
+          ) : null}
+          {usedBy.length > 0 ? (
+            <p className="text-gray-500">
+              Used by <span className="font-mono">{usedBy.join(', ')}</span>
+            </p>
+          ) : null}
+          {!entry.secret && entry.default !== null && entry.source !== 'default' ? (
+            <p className="text-gray-400">
+              Default: <span className="font-mono">{String(entry.default)}</span>
+            </p>
+          ) : null}
+          {entry.immutable && !entry.is_set && !locked ? (
+            <p className="text-gray-500">Cannot be changed once it is set.</p>
+          ) : null}
+          {entry.environment_ignored ? (
+            <p className="text-amber-700">
+              The environment also sets this variable; the database value wins. Remove it from .env.
+            </p>
+          ) : null}
+          {entry.invalid ? (
+            <p className="text-red-600">The stored value could not be applied: {entry.invalid}</p>
+          ) : null}
+          {entry.updated_at && !compact ? (
+            <p className="text-gray-400">
+              Updated {relativeTime(entry.updated_at)}
+              {entry.updated_by ? ` by ${entry.updated_by}` : ''}
+            </p>
+          ) : null}
+        </div>
+
+        {error ? (
+          <p id={errorId} className="mt-1 text-[12px] text-red-600" role="alert">
+            {error}
           </p>
         ) : null}
       </div>
-
-      {error ? (
-        <p id={errorId} className="mt-1 text-[12px] text-red-600" role="alert">
-          {error}
-        </p>
-      ) : null}
     </div>
   );
 }

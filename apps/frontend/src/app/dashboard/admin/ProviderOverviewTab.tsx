@@ -872,5 +872,3 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
     </div>
   );
 }
-
-export default ProviderOverviewTab;

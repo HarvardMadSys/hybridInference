@@ -510,6 +510,21 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_auth_context_with_spend(self, key_hash: str) -> Row | None:
+        """Auth context plus today's spend, for one round-trip (issue #185).
+
+        Same projection and the same active-key/active-user filters as
+        :meth:`get_auth_context_by_key_hash`, plus a ``cost_usd`` field: the
+        ``user_daily_cost`` counter for the key's owner, UTC-midnight day,
+        ``0.0`` when no counter row exists. ``None`` means the key did not
+        resolve, exactly like the identity-only lookup.
+
+        Not cached: the quota gate reads ``cost_usd`` on every request, and
+        caching the merged row would stale the gate by the auth TTL. The
+        identity-only lookup above keeps its cache; this one stays fresh.
+        """
+
+    @abstractmethod
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup (no quota check, no last_used write).
 
@@ -1263,6 +1278,32 @@ class OperationalStore(ABC):
     @abstractmethod
     async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
         """Delete a provider weight override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_route_capability_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return admin capability overrides for one model's routes, ordered by route_id."""
+
+    @abstractmethod
+    async def list_all_route_capability_overrides(self) -> list[Row]:
+        """Return all admin capability override rows ordered by model_id and route_id."""
+
+    @abstractmethod
+    async def upsert_route_capability_override(
+        self,
+        model_id: str,
+        route_id: str,
+        capabilities: dict[str, Any],
+        updated_by: str | None,
+    ) -> None:
+        """Upsert the capabilities an admin set for one route.
+
+        The row overrides what the route was given by ``models.yaml`` or declared
+        with when it was created; deleting it returns the route to that value.
+        """
+
+    @abstractmethod
+    async def delete_route_capability_override(self, model_id: str, route_id: str) -> bool:
+        """Delete one route's capability override. Returns True if removed."""
 
     @abstractmethod
     async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:

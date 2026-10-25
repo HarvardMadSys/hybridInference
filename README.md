@@ -40,7 +40,7 @@ also show whether a backup request was sent and whether it won.
 
 ### Gateway with the Web and Admin Consoles
 
-Requires Git, Make, Python 3.10–3.13, and a running Docker daemon with Compose.
+Requires Git, Make, Python 3.11–3.13, and a running Docker daemon with Compose.
 The local example runs the gateway, Postgres, and both consoles with a
 simulated model provider. No GPU or provider API key is needed.
 

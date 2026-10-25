@@ -240,6 +240,74 @@ def test_normalize_usage_deepseek_miss_only_reported() -> None:
     assert info.to_dict()["cache_read_tokens"] == 0
 
 
+def test_normalize_usage_deepseek_reads_a_hit_from_the_deepseek_fields() -> None:
+    info = normalize_usage_deepseek(
+        {
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_cache_hit_tokens": 800,
+            "prompt_cache_miss_tokens": 200,
+        }
+    )
+    assert info.prompt_tokens == 1000
+    assert info.cache_read_tokens == 800
+    assert info.cache_read_reported is True
+
+
+def test_normalize_usage_deepseek_reads_a_hit_from_prompt_tokens_details() -> None:
+    """A ``kind: deepseek`` route in front of a self-hosted vLLM engine.
+
+    vLLM started with --enable-prompt-tokens-details reports cache reads in the
+    OpenAI spelling and sends no prompt_cache_hit_tokens; reading only the
+    DeepSeek fields recorded every such request as "not reported".
+    """
+    usage = {
+        "prompt_tokens": 1189,
+        "completion_tokens": 1,
+        "total_tokens": 1190,
+        "prompt_tokens_details": {"cached_tokens": 1168},
+        "completion_tokens_details": {"reasoning_tokens": 1},
+    }
+
+    info = get_usage_normalizer(ProviderProfile.DEEPSEEK)(usage)
+
+    assert info.prompt_tokens == 1189
+    assert info.cache_read_tokens == 1168
+    assert info.cache_read_reported is True
+    assert info.reasoning_tokens == 1
+
+
+def test_normalize_usage_deepseek_explicit_zero_hit_is_reported() -> None:
+    info = normalize_usage_deepseek(
+        {
+            "prompt_tokens": 50,
+            "completion_tokens": 10,
+            "total_tokens": 60,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 50,
+        }
+    )
+    assert info.cache_read_tokens == 0
+    assert info.cache_read_reported is True
+
+
+def test_normalize_usage_deepseek_without_cache_fields_is_unreported() -> None:
+    info = normalize_usage_deepseek(
+        {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60}
+    )
+    assert info.cache_read_reported is False
+    assert "cache_read_tokens" not in info.to_dict()
+
+
+def test_normalize_usage_deepseek_rebuilds_missing_prompt_tokens_from_hit_and_miss() -> None:
+    info = normalize_usage_deepseek(
+        {"completion_tokens": 10, "prompt_cache_hit_tokens": 30, "prompt_cache_miss_tokens": 20}
+    )
+    assert info.prompt_tokens == 50
+    assert info.cache_read_tokens == 30
+
+
 # ---------------------------------------------------------------------------
 # Tool schema normalization: normalize_tools_for_profile
 # ---------------------------------------------------------------------------
@@ -683,12 +751,18 @@ def test_openrouter_profile_keeps_cost_while_threading_the_licence() -> None:
     assert info.cache_read_reported is True
 
 
-def test_deepseek_profile_ignores_the_licence() -> None:
-    # DeepSeek reads prompt_cache_hit_tokens / prompt_cache_miss_tokens and never
-    # reaches the nested-details path, so the flag must be inert rather than
-    # flipping a genuinely unreported request to 0.
+def test_deepseek_profile_leaves_a_null_details_block_unknown() -> None:
+    info = get_usage_normalizer(ProviderProfile.DEEPSEEK)(dict(_SGLANG_COLD))
+
+    assert info.cache_read_reported is False
+
+
+def test_deepseek_profile_threads_the_licence() -> None:
+    # The DeepSeek profile reads the nested details through the shared
+    # extractor, so the route's licence means what it means on any other route.
     normalizer = get_usage_normalizer(ProviderProfile.DEEPSEEK, null_cache_details_means_miss=True)
 
     info = normalizer(dict(_SGLANG_COLD))
 
-    assert info.cache_read_reported is False
+    assert info.cache_read_tokens == 0
+    assert info.cache_read_reported is True

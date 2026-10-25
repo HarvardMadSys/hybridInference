@@ -5,6 +5,20 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { AlertTypeMute, listAlertMutes, muteAlertType, unmuteAlertType } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  BUTTON_PRIMARY,
+  NOTICE_ACTION,
+  PANEL,
+  PILL,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
+import { Select } from '@/components/ui/Select';
 
 /** `seconds: null` mutes the type until an admin lifts it. */
 const MUTE_OPTIONS: { value: string; label: string; seconds: number | null }[] = [
@@ -156,48 +170,41 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
   const mutedCount = types.filter((type) => type.muted).length;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5">
-      <div className="mb-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-[14px] font-semibold text-gray-900">Alert Types</h2>
-          {mutedCount > 0 && (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-              {mutedCount} muted
-            </span>
-          )}
-        </div>
-        <p className="mt-1 text-[12px] text-gray-500">
-          Mute one kind of backend alert without silencing the rest. A muted type sends nothing, and
-          an incident that opens while it is muted also closes without a recovery message. An
-          incident that was already posted still gets its recovery.
-        </p>
-      </div>
-
+    <AdminSection
+      title="Alert Types"
+      badge={
+        mutedCount > 0 && (
+          <span className={`${PILL} bg-amber-50 text-amber-700`}>{mutedCount} muted</span>
+        )
+      }
+      description="Mute one kind of backend alert without silencing the rest. A muted type sends nothing, and an incident that opens while it is muted also closes without a recovery message. An incident that was already posted still gets its recovery."
+    >
       {error && (
-        <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-          {error}
-          <button type="button" onClick={() => void load()} className="ml-2 font-medium underline">
-            Retry
-          </button>
+        <div className="mb-3">
+          <AdminNotice
+            action={
+              <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
+                Retry
+              </button>
+            }
+          >
+            {error}
+          </AdminNotice>
         </div>
       )}
 
       {loading ? (
-        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        <AdminLoading size="sm" />
       ) : types.length === 0 ? (
-        !error && (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No alert types available.
-          </div>
-        )
+        !error && <AdminEmptyState title="No alert types available." />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-gray-200">
-          <table className="min-w-full text-[13px]">
-            <thead className="bg-gray-50 text-gray-500">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Alert</th>
-                <th className="px-3 py-2 text-left font-medium">Status</th>
-                <th className="px-3 py-2 text-right font-medium">Mute</th>
+        <div className={`${PANEL} relative overflow-x-auto`}>
+          <table className="w-full min-w-[40rem] text-[13px]">
+            <thead className="bg-gray-50/80">
+              <tr className="border-b border-gray-200">
+                <th className={TABLE_HEAD_CELL}>Alert</th>
+                <th className={`${TABLE_HEAD_CELL} w-56`}>Status</th>
+                <th className={`${TABLE_HEAD_CELL} text-right`}>Mute</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -207,7 +214,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                     <th
                       colSpan={3}
                       scope="colgroup"
-                      className="px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                      className="px-4 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500"
                     >
                       {group}
                     </th>
@@ -216,14 +223,14 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                     const isSaving = confirmation.busy;
                     return (
                       <tr key={type.alert_type} className="bg-white align-top">
-                        <td className="px-3 py-2">
+                        <td className="px-4 py-2.5">
                           <div className="font-medium text-gray-900">{type.label}</div>
                           <div className="mt-0.5 text-[12px] text-gray-500">{type.description}</div>
                           <code className="mt-0.5 inline-block text-[11px] text-gray-400">
                             {type.key_pattern}
                           </code>
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2">
+                        <td className="whitespace-nowrap px-4 py-2.5">
                           <span className="inline-flex items-center gap-2">
                             <span
                               className={`inline-block h-2 w-2 rounded-full ${
@@ -238,30 +245,26 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                             </div>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right">
+                        <td className="whitespace-nowrap px-4 py-2.5 text-right">
                           <div className="inline-flex items-center gap-2">
-                            <select
+                            {/* A command, not a setting: the value stays empty, so the
+                                same duration can be chosen again to restart a mute. */}
+                            <Select
                               aria-label={`Mute ${type.label}`}
                               value=""
+                              placeholder={type.muted ? 'Change…' : 'Mute for…'}
+                              options={MUTE_OPTIONS}
                               disabled={isSaving}
-                              onChange={(e) => onMute(type, e.target.value)}
-                              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px] text-gray-700 disabled:opacity-40"
-                            >
-                              <option value="" disabled>
-                                {type.muted ? 'Change…' : 'Mute for…'}
-                              </option>
-                              {MUTE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
+                              // Choosing a duration opens its confirmation; nothing is muted yet.
+                              onValueChange={(value) => onMute(type, value)}
+                              className="w-36"
+                            />
                             {type.muted && (
                               <button
                                 type="button"
                                 disabled={isSaving}
                                 onClick={() => onUnmute(type)}
-                                className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                                className={BUTTON_PRIMARY}
                               >
                                 Unmute
                               </button>
@@ -278,6 +281,6 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
         </div>
       )}
       {confirmation.dialog}
-    </div>
+    </AdminSection>
   );
 }

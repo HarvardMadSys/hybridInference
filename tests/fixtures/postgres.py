@@ -226,8 +226,7 @@ def unavailable_errors() -> tuple[type[BaseException], ...]:
     import asyncpg
 
     return (
-        OSError,  # refused, unresolvable host, and TimeoutError from Python 3.11
-        asyncio.TimeoutError,
+        OSError,  # refused, unresolvable host, and TimeoutError
         asyncpg.PostgresConnectionError,
         asyncpg.InvalidAuthorizationSpecificationError,
         asyncpg.InvalidCatalogNameError,

@@ -5,7 +5,7 @@ The store's conditional write is exercised against Postgres in
 same contract checks what the route asks of it and returns.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -60,12 +60,12 @@ async def _choose(store: _PreferencesStore, **body: Any):
 @pytest.mark.asyncio
 async def test_a_new_choice_is_stored_at_the_server_time_and_writes_only_its_key():
     store = _PreferencesStore({"llm_prober_layout": {"e2e_models": ["m"]}})
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
 
     result = await _choose(store, locale="zh-CN")
 
     assert result.value == "zh-CN"
-    assert before <= result.chosen_at <= datetime.now(timezone.utc)
+    assert before <= result.chosen_at <= datetime.now(UTC)
     assert store.writes == ["locale"]
     assert store.preferences["llm_prober_layout"] == {"e2e_models": ["m"]}
 
@@ -73,7 +73,7 @@ async def test_a_new_choice_is_stored_at_the_server_time_and_writes_only_its_key
 @pytest.mark.asyncio
 async def test_the_stored_time_has_a_fixed_width():
     store = _PreferencesStore()
-    whole_second = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    whole_second = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
     await _choose(store, locale="en", chosen_at=whole_second)
 
@@ -84,18 +84,18 @@ async def test_the_stored_time_has_a_fixed_width():
 @pytest.mark.asyncio
 async def test_a_choice_carried_in_keeps_its_time_but_never_a_future_one():
     store = _PreferencesStore()
-    earlier = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    earlier = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
     assert (await _choose(store, locale="en", chosen_at=earlier)).chosen_at == earlier
 
-    future = datetime.now(timezone.utc) + timedelta(days=30)
+    future = datetime.now(UTC) + timedelta(days=30)
     clamped = await _choose(store, locale="zh-CN", chosen_at=future)
-    assert clamped.chosen_at <= datetime.now(timezone.utc)
+    assert clamped.chosen_at <= datetime.now(UTC)
 
 
 @pytest.mark.asyncio
 async def test_an_older_choice_returns_the_newer_one_kept():
-    newer = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    newer = datetime(2026, 10, 10, tzinfo=UTC)
     store = _PreferencesStore(
         {"locale": {"value": "en", "chosen_at": "2026-10-10T00:00:00.000000Z"}}
     )
@@ -128,7 +128,7 @@ async def test_a_missing_user_is_reported():
 async def test_a_naive_time_is_read_as_utc():
     store = _PreferencesStore()
     result = await _choose(store, locale="en", chosen_at=datetime(2026, 10, 1, 12, 0))
-    assert result.chosen_at == datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    assert result.chosen_at == datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
 
 def test_a_language_the_console_cannot_render_is_refused():
@@ -160,5 +160,5 @@ def test_a_stored_choice_reads_back():
     assert choice is not None
     assert (choice.value, choice.chosen_at) == (
         "zh-CN",
-        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        datetime(2026, 10, 1, tzinfo=UTC),
     )

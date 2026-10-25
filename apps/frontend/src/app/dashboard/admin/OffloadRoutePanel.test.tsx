@@ -21,6 +21,7 @@ vi.mock('react-hot-toast', () => ({
 
 import toast from 'react-hot-toast';
 import { clearOffloadRoute, setOffloadRoute } from '@/lib/api/admin';
+import { chooseOption } from '@/test-utils/select';
 
 const MODEL = 'glm-4.7';
 
@@ -120,9 +121,7 @@ describe('OffloadRoutePanel', () => {
     expect(saveButton()).toBeDisabled();
     expect(screen.getByText('No changes yet')).toBeVisible();
 
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: reserved.route_id },
-    });
+    chooseOption('Offload route', /^reserved/);
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '4' } });
     expect(saveButton()).toBeEnabled();
     fireEvent.click(saveButton());
@@ -174,7 +173,10 @@ describe('OffloadRoutePanel', () => {
     renderPanel({ offload: storedOffload });
 
     edit();
-    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
+    expect(screen.getByRole('combobox', { name: 'Offload route' })).toHaveAttribute(
+      'data-value',
+      reserved.route_id,
+    );
     expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(4);
     // Nothing changed yet, so there is nothing to save.
     expect(saveButton()).toBeDisabled();
@@ -445,16 +447,17 @@ describe('OffloadRoutePanel', () => {
     const { onChange } = renderPanel();
 
     edit();
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: reserved.route_id },
-    });
+    chooseOption('Offload route', /^reserved/);
     fireEvent.click(saveButton());
     confirmSave();
 
     const dialog = screen.getByRole('dialog');
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('model needs fixed routing');
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('Offload route')).toHaveValue(reserved.route_id);
+    expect(screen.getByRole('combobox', { name: 'Offload route' })).toHaveAttribute(
+      'data-value',
+      reserved.route_id,
+    );
 
     confirmSave();
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

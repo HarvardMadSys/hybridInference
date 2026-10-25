@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { chooseOption } from '@/test-utils/select';
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -799,7 +800,7 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
       detailFixture({ role: 'free', quota_daily_usd: null, max_concurrent_requests: null }),
     );
     const onUpdate = await openAccountEditor();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+    chooseOption('Role', 'pro');
     saveAccount();
     const dialog = screen.getByRole('dialog', {
       name: 'Save 1 change to account settings for user@example.com?',
@@ -822,14 +823,14 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
     expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit account settings' }));
-    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveValue('free');
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('free');
     expect(screen.getByText('No changes yet')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeDisabled();
   });
 
   it('Cancel discards the drafts and writes nothing', async () => {
     const onUpdate = await openAccountEditor();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+    chooseOption('Role', 'pro');
     expect(screen.getByText('1 unsaved change')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel editing account settings' }));
@@ -850,7 +851,7 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
 
   it('lists old -> new, keeps drafts on Back, and writes one patch on Confirm', async () => {
     const onUpdate = await openAccountEditor();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+    chooseOption('Role', 'pro');
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max concurrent' }), {
       target: { value: '4' },
     });
@@ -865,7 +866,7 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
 
     clickInDialog('Back to editing');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveValue('pro');
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('pro');
     expect(screen.getByRole('spinbutton', { name: 'Max concurrent' })).toHaveValue(4);
     expect(onUpdate).not.toHaveBeenCalled();
 
@@ -890,7 +891,7 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
         }),
     );
     await openAccountEditor(onUpdate);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'pro' } });
+    chooseOption('Role', 'pro');
     saveAccount();
     clickInDialog('Confirm save');
 

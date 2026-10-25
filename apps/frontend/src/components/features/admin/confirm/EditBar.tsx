@@ -1,5 +1,7 @@
 'use client';
 
+import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../adminStyles';
+
 /**
  * Cancel and Save changes for a section or row being edited, with how many
  * changes are unsaved. Save is disabled for a no-op and while a write runs.
@@ -58,7 +60,7 @@ export function EditBar({
           onClick={onCancel}
           disabled={busy}
           aria-label={`Cancel editing ${target}`}
-          className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+          className={BUTTON_GHOST}
         >
           Cancel
         </button>
@@ -68,7 +70,7 @@ export function EditBar({
           disabled={busy || changeCount === 0}
           aria-busy={busy || undefined}
           aria-label={`Save changes to ${target}`}
-          className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+          className={BUTTON_PRIMARY}
         >
           {busy ? 'Saving…' : 'Save changes'}
         </button>
@@ -95,7 +97,7 @@ export function EditButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={`${label} ${target}`}
-      className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+      className={BUTTON_SECONDARY}
     >
       {label}
     </button>

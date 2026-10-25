@@ -13,7 +13,7 @@ contract that replaced it:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -37,7 +37,7 @@ def _row(index: int) -> dict[str, Any]:
         "user_email": "ada@example.com",
         "model_id": "glm-4.6",
         "provider": "zai",
-        "timestamp": datetime(2026, 10, 1, tzinfo=timezone.utc),
+        "timestamp": datetime(2026, 10, 1, tzinfo=UTC),
         "status_code": 200,
         "latency_ms": 1200,
         "ttft_ms": 300,

@@ -19,13 +19,8 @@ def log_store():
 
 
 @pytest.fixture
-def registry():
-    return MagicMock()
-
-
-@pytest.fixture
-def cl_logger(log_store, registry):
-    return CompletionsLogger(log_store=log_store, model_router_registry=registry)
+def cl_logger(log_store):
+    return CompletionsLogger(log_store=log_store)
 
 
 @pytest.fixture

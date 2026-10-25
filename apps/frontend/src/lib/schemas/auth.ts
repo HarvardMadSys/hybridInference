@@ -6,7 +6,7 @@ import { translate, type Translate } from '@/lib/i18n/translate';
  * email address. The backend's rule, case-insensitive; a value containing `@`
  * is an email address instead.
  */
-export const LOGIN_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}$/;
+const LOGIN_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}$/;
 
 export function normalizePhoneWithCountry(raw: string, countryCode = '+1'): string {
   const trimmed = raw.replace(/[\s()-]/g, '');
@@ -206,7 +206,6 @@ export function buildCombinedUseCase(
  */
 const consoleSchemas = createAuthSchemas(translate);
 
-export const emailSchema = consoleSchemas.emailSchema;
 export const passwordSchema = consoleSchemas.passwordSchema;
 export const signupSchema = consoleSchemas.signupSchema;
 export const loginSchema = consoleSchemas.loginSchema;

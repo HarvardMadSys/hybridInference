@@ -44,6 +44,7 @@ import {
 } from '@/lib/api/config';
 
 import { ConfigurationTab } from './ConfigurationTab';
+import { escapingScreenReaderText } from './__tests__/layoutContainment';
 
 /** What a misbehaving backend might leak; the page must never show it. */
 const LEAKED_SECRET = 'sk-live-should-never-render';
@@ -1791,6 +1792,63 @@ describe('filters', () => {
     fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
     expect(screen.getByLabelText('ZAI_API_KEY')).toBeInTheDocument();
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
+  });
+
+  it('indexes the categories the filters leave, and keeps one marked', async () => {
+    await renderTab();
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    const names = () =>
+      within(index)
+        .getAllByRole('link')
+        .map((link) => link.textContent);
+    expect(names()).toEqual(['Email (SMTP)1 missing', 'Network', 'Providers1 missing', 'Security']);
+    expect(within(index).getByRole('link', { name: 'Network' })).toHaveAttribute(
+      'href',
+      '#config-network',
+    );
+    expect(document.getElementById('config-network')).toBe(
+      screen.getByRole('region', { name: 'Network' }),
+    );
+
+    fireEvent.click(within(index).getByRole('link', { name: 'Network' }));
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
+
+    expect(names()).toEqual(['Providers1 missing']);
+    expect(within(index).getByRole('link', { name: /Providers/ })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+  });
+
+  it('flags a category with unsaved changes in the index, until they are cancelled', async () => {
+    await renderTab();
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    const link = within(index).getByRole('link', { name: /Email \(SMTP\)/ });
+    // Opening a category is not a change.
+    editCategory('Email (SMTP)');
+    expect(link).not.toHaveTextContent('unsaved changes');
+
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    expect(link).toHaveTextContent('unsaved changes');
+    // Those notes are screen-reader text inside a row that scrolls sideways
+    // on a phone: they must not widen the page.
+    expect(escapingScreenReaderText(index)).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Email (SMTP)' }));
+    expect(link).not.toHaveTextContent('unsaved changes');
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('counts a staged reset in the index like the edit bar does', async () => {
+    await renderTab();
+    editCategory('Email (SMTP)');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
+      'unsaved changes',
+    );
+    expect(within(section('Email (SMTP)')).getByText('1 unsaved change')).toBeVisible();
+    expect(resetConfigKey).not.toHaveBeenCalled();
   });
 
   it('opens filtered to missing settings when linked that way', async () => {

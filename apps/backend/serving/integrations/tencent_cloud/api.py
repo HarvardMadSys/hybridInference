@@ -7,7 +7,7 @@ import hmac
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
@@ -33,7 +33,7 @@ def signed_headers(
 ) -> dict[str, str]:
     """Sign the exact JSON bytes using Tencent Cloud's TC3-HMAC-SHA256."""
     timestamp = int(time.time()) if timestamp is None else timestamp
-    date = datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%d")
+    date = datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%d")
     host = f"{service}.tencentcloudapi.com"
     content_type = "application/json; charset=utf-8"
     signed = "content-type;host"

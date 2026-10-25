@@ -206,3 +206,53 @@ The browser review found two boundary issues. Both are fixed, and each has a reg
      - "ignores a stale mutation after switching away from and back to the same model"
 
 A suspected clipping of the UserUsageInsights confirmation inside the Users table was not reproduced: in the browser, the overlay covered the viewport. It was left unchanged, as were the existing UserTable confirmation placement and typed confirmations.
+
+## Integration with dev at 8170f5e5 (#1640, plus #1630) — 2026-10-25
+
+`dev` (8170f5e5, "unify console styling and selection controls") was merged into this PR (prior head 4b79a946) with a normal merge. 25 files conflicted: 16 implementation files and 9 test files.
+
+**What the merged tree keeps**
+
+- **From #1640, everything:**
+  - the shared Admin palette (`adminStyles.ts`) and primitives (`AdminSection`, `AdminSectionNav`, `AdminNotice`, …);
+  - the full-width shell with category and section indexes, deep links and active markers;
+  - compact, expandable announcement and email summaries, Markdown previews, draft retention and no publish on Enter;
+  - the shared `components/ui/Select`.
+- **From #1630:** route capabilities. Its writes are integrated as rows in the Routing table below.
+- **From this PR:** every rule in the sections above.
+- **Dependencies:** the manifests and lockfiles are byte-identical to dev (filelock 4.2.4, zod 4.6.7, Next.js 15.5.28). The merge changes nothing outside `apps/frontend/src` and this document.
+- **Native controls:** no native `<select>` remains in frontend source.
+
+**Semantic resolutions**
+
+| Area | Resolution |
+|---|---|
+| Shared controls | `EditBar`/`EditButton` now use `BUTTON_PRIMARY`/`BUTTON_GHOST`/`BUTTON_SECONDARY`. In edit mode every select is the shared `Select`, and its `onValueChange` only updates a draft. |
+| `ModelVisibilitySection` | dev wrote from `onValueChange`. Now: `AdminSection` layout, read-only `<output>` until Edit, then a `Select` that changes the draft only, and `writeEach` after Confirm. dev's "browse/dismiss writes nothing" and "reselecting the current value is no change" tests are kept and adapted to edit mode. dev's immediate-write tests are superseded by the confirm-flow tests (old→new, one write per changed model, busy, failure+retry, partial+retry). |
+| `ModelConcurrencySection`, `UsageInsightsSettingsSection`, `AlertSnoozeSection` | dev's `AdminSection` layout and palette, with this PR's edit or action flow. |
+| `AlertMutesSection` | dev's command-style `Select` (value stays empty, so the same duration can be chosen again). A choice opens the mute confirmation. dev's "mutes again when the same duration is chosen twice" now confirms each time and writes once per confirmation. |
+| `SettingsTab` | Rebuilt on dev's indexed page (section index, floating live feedback, panel lists, styled domain table). Feature flags and numeric settings stay in `RuntimeSettingsSection` (edit flow, one request per setting). Add domain is a create review; Remove and Apply quota are action confirmations. dev's bespoke overlays and immediate toggle/numeric writes are not kept. dev's feedback and section-index tests now go through Edit → Confirm. |
+| `ConfigurationTab`, `ConfigEntryField`, `AlertNotificationFields` | dev's category index, anchors, split layout and panel, with this PR's read-only/Edit categories, staged Reset and Mark as secret, hidden-by-filter note and sticky edit bar. The index's unsaved marker uses this PR's count (each variable once, staged actions included), so it agrees with the edit bar. dev's index test now edits first and also checks that Cancel clears the marker. |
+| `UserDetailPanel` | This PR's `AccountSettings` editor, with dev's role `Select` (draft only). The empty-quota validation and the single PATCH are unchanged. |
+| `OffloadRoutePanel` | This PR's read-only/Edit flow and `useReportEditing`, with dev's route `Select` in edit mode. |
+| `ProviderRoutesTab` | dev's searchable model `Select`, grouped OpenRouter routing and #1630 capability fields and badge. `modelLocked` now also covers the route editor, the capability dialog, the create form and any open confirmation. dev's immediately-writing policy select is replaced by this PR's Edit flow. |
+| Route capabilities (#1630) | The dialog fields are drafts. Save opens an old→new review and only Confirm calls `updateProviderRouteCapabilities`. Reset to config is a danger confirmation that lists current → config. Errors use `routeErrorMessage`, inside the dialog. |
+| `ProviderKeysTab` | All four selects are `Select`. Tier choices are drafts (amber border). The provider selector is locked during a tier edit. A native form-provider `<select>` that auto-merged in was converted. |
+| `SiteUpdatesTab` | Built on dev (editor that opens when needed and keeps its draft, Markdown preview, no submit on Enter), with this PR's create review, changed-fields-only edit, publish and delete confirmations. dev's "ask before discarding an unsaved draft" now uses the shared dialog instead of `window.confirm`, and replaces this PR's lock on other rows' Edit buttons. |
+| `BroadcastsTab` | Built on dev (composer, template `Select`, recipients drawer), with this PR's send/schedule confirmation (current recipient count, timing), test-send recipient, cancel confirmation, and Schedule needing a time. dev's own confirm modal and `confirm()` were removed. |
+| add/add tests (`SiteUpdatesTab.test.tsx`, `BroadcastsTab.test.tsx`) | One file each with every test from both sides: 13+17+3 and 8+12+3. |
+
+**New write call sites since the inventory above**
+
+| API | Call site | Trigger | Rule | Tests |
+|---|---|---|---|---|
+| `updateProviderRouteCapabilities` | `ProviderRoutesTab.tsx:1877` | Capabilities → edit fields → Save capabilities → Confirm | edit | `ProviderRoutesTab.test.tsx`: capability edit and review tests (no draft from browsing or reselecting, changed-back is no change, Cancel, busy) |
+| `resetProviderRouteCapabilities` | `ProviderRoutesTab.tsx:1913` | Reset to config | action (danger) | `ProviderRoutesTab.test.tsx` capability reset test |
+
+**Bypass review (re-run on the merged tree)**
+
+- All 71 write call sites under the two admin trees were traced. Each one is inside a confirmed `run`, or in a handler only a `run` reaches: the `users/index.tsx` handlers, `ConfigurationTab.commitSave` (only `onConfirm` at line 809) and the `ProvidersTab` toggles (through `providerToggleRequest`).
+- The exceptions are read-exempt: probe and verify calls, and the broadcast preview.
+- Every `onChange` and `onValueChange` in the admin trees updates local state, filters or drafts. AlertMutes' `onValueChange` opens a confirmation.
+- No `window.confirm`/`confirm()` remains.
+- Raw evidence: `/tmp/pr1629-dev-integration-logs/30-native-and-trigger-audit.txt` and `31-write-callsite-trace.txt`.

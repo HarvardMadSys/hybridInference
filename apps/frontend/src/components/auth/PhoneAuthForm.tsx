@@ -81,7 +81,9 @@ export function PhoneAuthForm(props: Props) {
   );
   const resolvePhone = (raw: string) =>
     hasCountryPicker ? normalizePhoneWithCountry(raw, countryCode) : raw.trim();
-  const validate = zodResolver(schema);
+  // Login and bind validate only the phone and code, a subset of the signup
+  // fields this form is typed with.
+  const validate = zodResolver(schema) as unknown as Resolver<PhoneSignupFormData>;
   const resolver: Resolver<PhoneSignupFormData> = async (values, context, options) => {
     const phone = resolvePhone(values.phone ?? '');
     return validate({ ...values, phone }, context, options);

@@ -29,6 +29,7 @@ import {
   getRequestMetrics,
   listRecentRequests,
 } from '@/lib/api/admin';
+import { chooseOption } from '@/test-utils/select';
 
 function makeRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
   return {
@@ -214,7 +215,7 @@ describe('RequestsTab row expansion', () => {
 
     // The lookback re-scopes the list but not the summary: TTFT and decode
     // throughput are read over the panel's fixed day whatever the tab shows.
-    fireEvent.change(screen.getByLabelText('Lookback window'), { target: { value: '30' } });
+    chooseOption('Lookback window', '30d');
     await waitFor(() =>
       // days is the 7th positional argument of listRecentRequests.
       expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[6]).toBe(30),
@@ -480,16 +481,12 @@ describe('RequestsTab client disconnect classification', () => {
     // outcome is the 5th positional argument of listRecentRequests.
     expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe('all');
 
-    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
-      target: { value: 'client_disconnect' },
-    });
+    chooseOption('Filter by outcome', 'Client disconnects');
     await waitFor(() =>
       expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe('client_disconnect'),
     );
 
-    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
-      target: { value: 'errors_excluding_disconnects' },
-    });
+    chooseOption('Filter by outcome', 'Errors, no disconnects');
     await waitFor(() =>
       expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe(
         'errors_excluding_disconnects',
@@ -502,9 +499,7 @@ describe('RequestsTab client disconnect classification', () => {
     // Two rows share this model, so match all of them.
     await screen.findAllByText('gpt-4o-mini');
 
-    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
-      target: { value: 'client_disconnect' },
-    });
+    chooseOption('Filter by outcome', 'Client disconnects');
     fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }));
     fireEvent.change(screen.getByLabelText(/Start date/i) ?? screen.getByLabelText('Start date'), {
       target: { value: '2026-06-01' },

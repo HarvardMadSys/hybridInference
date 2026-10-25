@@ -22,6 +22,7 @@ import {
   verifyProviderKey,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { Select } from '@/components/ui/Select';
 
 interface Props {
   refreshKey?: number;
@@ -410,29 +411,26 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         >
           Selected provider
         </label>
-        <select
+        <Select
           id="provider-keys-select"
           value={selectedProvider}
-          onChange={(e) => {
-            setSelectedProvider(e.target.value);
-            setFormProvider(e.target.value);
+          onValueChange={(next) => {
+            setSelectedProvider(next);
+            setFormProvider(next);
           }}
+          options={[
+            ...(selectedProvider && !providers.includes(selectedProvider)
+              ? [{ value: selectedProvider, label: selectedProvider }]
+              : []),
+            ...providers.map((p) => ({ value: p, label: p })),
+          ]}
+          placeholder="(no providers loaded)"
+          searchPlaceholder="Search providers…"
           // Tier drafts belong to this provider's keys; finish or cancel them first.
           disabled={editingTiers}
-          className="mt-1 w-full max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-60"
-        >
-          {selectedProvider && !providers.includes(selectedProvider) && (
-            <option value={selectedProvider}>{selectedProvider}</option>
-          )}
-          {providers.length === 0 && !selectedProvider && (
-            <option value="">(no providers loaded)</option>
-          )}
-          {providers.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
+          size="lg"
+          className="mt-1 w-full max-w-xs"
+        />
       </div>
 
       {providersLoaded && selectedProvider && !providers.includes(selectedProvider) && (
@@ -522,23 +520,19 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                         {k.id ? (
                           <div className="flex items-center gap-1.5">
                             {editingTiers ? (
-                              <select
+                              <Select<ProviderKeyMinRole>
                                 aria-label={`Reserved tier for key ${k.key_prefix}`}
                                 value={tierDrafts[draftId(k)] ?? declaredTier(k)}
-                                onChange={(e) =>
-                                  changeTierDraft(k, e.target.value as ProviderKeyMinRole)
-                                }
+                                // A draft only; Save changes reviews it and Confirm writes.
+                                onValueChange={(next) => changeTierDraft(k, next)}
                                 disabled={confirmation.busy}
-                                className={`rounded-md border bg-white px-1.5 py-0.5 text-[12px] focus:border-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                                  drafted ? 'border-amber-400' : 'border-gray-200'
-                                }`}
-                              >
-                                {MIN_ROLES.map((r) => (
-                                  <option key={r} value={r}>
-                                    {minRoleLabel(r)}
-                                  </option>
-                                ))}
-                              </select>
+                                options={MIN_ROLES.map((r) => ({
+                                  value: r,
+                                  label: minRoleLabel(r),
+                                }))}
+                                size="sm"
+                                className={`w-28 ${drafted ? '!border-amber-400' : ''}`}
+                              />
                             ) : (
                               <output
                                 aria-label={`Reserved tier for key ${k.key_prefix}`}
@@ -675,20 +669,17 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                 >
                   Provider
                 </label>
-                <select
+                <Select
                   id="provider-keys-form-provider"
                   value={formProvider}
-                  onChange={(e) => setFormProvider(e.target.value)}
+                  onValueChange={setFormProvider}
+                  options={providers.map((p) => ({ value: p, label: p }))}
+                  searchPlaceholder="Search providers…"
                   disabled={confirmation.busy}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                >
-                  {providers.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+                  aria-required
+                  size="lg"
+                  className="mt-1 w-full"
+                />
               </div>
               <div>
                 <label
@@ -715,19 +706,15 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
               >
                 Reserved for
               </label>
-              <select
+              <Select<ProviderKeyMinRole>
                 id="provider-keys-form-min-role"
                 value={formMinRole}
-                onChange={(e) => setFormMinRole(e.target.value as ProviderKeyMinRole)}
+                onValueChange={setFormMinRole}
+                options={MIN_ROLES.map((r) => ({ value: r, label: minRoleLabel(r) }))}
                 disabled={confirmation.busy}
-                className="mt-1 w-full max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-              >
-                {MIN_ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {minRoleLabel(r)}
-                  </option>
-                ))}
-              </select>
+                size="lg"
+                className="mt-1 w-full max-w-xs"
+              />
               <p className="mt-1 text-[12px] text-gray-400">
                 &quot;shared&quot; lets every tier spend this key. Anything higher hides it from
                 lower tiers, and entitled users spend it before the shared keys. Existing keys —
@@ -789,5 +776,3 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     </div>
   );
 }
-
-export default ProviderKeysTab;

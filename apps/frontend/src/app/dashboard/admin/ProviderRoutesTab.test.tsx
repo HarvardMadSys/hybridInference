@@ -48,6 +48,8 @@ vi.mock('@/lib/api/admin', () => ({
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
   updateProviderRouteCandidate: vi.fn(),
+  updateProviderRouteCapabilities: vi.fn(),
+  resetProviderRouteCapabilities: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
   verifyProviderRouteModel: vi.fn(),
@@ -79,6 +81,8 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteCapabilities,
+  resetProviderRouteCapabilities,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
@@ -86,6 +90,9 @@ import {
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
+import { chooseValue, openOptions } from '@/test-utils/select';
+import toast from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 
 // A deployment whose Featherless plan is concurrency-based and whose OpenRouter
 // account is used on demand or with a concurrency cap (PROVIDER_ROUTE_TYPES).
@@ -157,9 +164,17 @@ function fillRuntimeModelCapabilities() {
   fireEvent.change(screen.getByLabelText('Max output (tokens)'), {
     target: { value: '65536' },
   });
-  fireEvent.change(screen.getByLabelText('Image input'), { target: { value: 'yes' } });
-  fireEvent.change(screen.getByLabelText('Tool calling'), { target: { value: 'yes' } });
+  chooseValue(screen.getByLabelText('Image input'), 'yes');
+  chooseValue(screen.getByLabelText('Tool calling'), 'yes');
 }
+
+// What the fixture route serves with; an added route starts from it.
+const ROUTE_CAPABILITIES = {
+  context_length: 196608,
+  max_output_length: 8192,
+  input_modalities: ['text'],
+  supports_tools: true,
+};
 
 const route = {
   model_id: 'minimax-fast',
@@ -188,6 +203,9 @@ const route = {
   source: 'yaml' as const,
   updated_at: null,
   updated_by: null,
+  capabilities: ROUTE_CAPABILITIES,
+  capabilities_baseline: ROUTE_CAPABILITIES,
+  capabilities_overridden: false,
 };
 
 const quotaRoute = {
@@ -310,9 +328,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByTestId(`offload-badge-${fixedRoute.route_id}`)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: fixedRoute.route_id },
-    });
+    chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
     expect(setOffloadRoute).not.toHaveBeenCalled();
     confirmAction('Confirm save');
@@ -443,9 +459,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
     expect(selector).toBeDisabled();
     expect(createModel).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: fixedRoute.route_id },
-    });
+    chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
 
     // Still held while the review is open, and after going back to it.
@@ -460,8 +474,8 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
     expect(selector).toBeEnabled();
     expect(createModel).toBeEnabled();
-    fireEvent.change(selector, { target: { value: 'other-model' } });
-    expect(selector).toHaveValue('other-model');
+    chooseValue(selector, 'other-model');
+    expect(selector).toHaveAttribute('data-value', 'other-model');
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Queue offload' }));
     expect(screen.getByLabelText('Offload wait seconds')).not.toHaveValue(9);
     expect(setOffloadRoute).not.toHaveBeenCalled();
@@ -501,9 +515,7 @@ describe('ProviderRoutesTab', () => {
     await screen.findByTestId('offload-route-panel');
     const selector = screen.getByLabelText('Selected model');
     fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
-    fireEvent.change(screen.getByLabelText('Offload route'), {
-      target: { value: fixedRoute.route_id },
-    });
+    chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
     expect(selector).toBeDisabled();
     confirmAction('Confirm save');
@@ -551,7 +563,7 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
     expect(selector).toBeEnabled();
-    fireEvent.change(selector, { target: { value: 'other-routewise' } });
+    chooseValue(selector, 'other-routewise');
     await waitFor(() => expect(listRoutewiseSettings).toHaveBeenLastCalledWith('other-routewise'));
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
   });
@@ -759,12 +771,14 @@ describe('ProviderRoutesTab', () => {
 
     expect(screen.getByLabelText('Routing policy')).toHaveTextContent('fixed');
     const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
     expect(
-      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
+    ).toBeInTheDocument();
+    expect(
+      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
     ).not.toBeInTheDocument();
     expect(
-      within(routeTypeSelect).queryByRole('option', { name: 'quota' }),
+      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'quota' }),
     ).not.toBeInTheDocument();
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
   });
@@ -922,7 +936,10 @@ describe('ProviderRoutesTab', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Edit provider route' });
     expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('Override provider')).toHaveValue('featherless');
+    expect(within(dialog).getByLabelText('Override provider')).toHaveAttribute(
+      'data-value',
+      'featherless',
+    );
     expect(within(dialog).getByLabelText('Provider model ID')).toHaveValue(
       'MiniMaxAI/MiniMax-M2.5',
     );
@@ -1049,24 +1066,24 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Override provider'), {
-      target: { value: 'openrouter' },
-    });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:parasail' },
-    });
+    chooseValue(screen.getByLabelText('Override provider'), 'openrouter');
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:parasail');
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(screen.getByLabelText('Local concurrency limit'), {
       target: { value: '3' },
     });
+    expect(screen.getByLabelText('OpenRouter routing')).toHaveAttribute(
+      'data-value',
+      'provider:parasail',
+    );
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://openrouter.ai/api/v1');
     saveRouteEdit();
     expect(updateProviderRoute).not.toHaveBeenCalled();
@@ -1121,19 +1138,15 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Override provider'), {
-      target: { value: 'openrouter' },
-    });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:parasail' },
-    });
+    chooseValue(screen.getByLabelText('Override provider'), 'openrouter');
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:parasail');
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
@@ -1203,9 +1216,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     expect(screen.getByLabelText('Provider model ID')).toHaveValue('minimax/minimax-m2.5');
 
-    fireEvent.change(screen.getByLabelText('Override provider'), {
-      target: { value: 'tencent_token_plan' },
-    });
+    chooseValue(screen.getByLabelText('Override provider'), 'tencent_token_plan');
 
     expect(screen.getByLabelText('Provider model ID')).toHaveValue('');
     expect(screen.getByLabelText('Base URL')).toHaveValue(
@@ -1259,12 +1270,8 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Override provider'), {
-      target: { value: 'openrouter' },
-    });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:parasail' },
-    });
+    chooseValue(screen.getByLabelText('Override provider'), 'openrouter');
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:parasail');
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
@@ -1381,10 +1388,8 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('auto');
-    fireEvent.change(screen.getByLabelText('Deployment type'), {
-      target: { value: 'provider_api' },
-    });
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'auto');
+    chooseValue(screen.getByLabelText('Deployment type'), 'provider_api');
 
     await waitFor(() => {
       expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
@@ -1392,18 +1397,16 @@ describe('ProviderRoutesTab', () => {
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
       expect(
-        within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }),
+        within(openOptions(openRouterSelect)).getByRole('option', { name: 'Provider: Inceptron' }),
       ).toBeInTheDocument();
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:inceptron' },
-    });
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:inceptron');
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -1423,6 +1426,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1449,22 +1453,26 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+    chooseValue(screen.getByLabelText('Route type'), 'quota');
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('openrouter');
+    expect(providerSelect).toHaveAttribute('data-value', 'openrouter');
     const routingSelect = screen.getByLabelText('OpenRouter routing');
     // A quota route is metered against one provider, so the discovered pins
     // are the choices; Auto is not, and Custom stays as the escape hatch.
-    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(routingSelect).toHaveAttribute('data-value', 'provider:deepinfra');
     expect(
-      within(routingSelect).getByRole('option', { name: 'Provider: DeepInfra' }),
+      within(openOptions(routingSelect)).getByRole('option', { name: 'Provider: DeepInfra' }),
     ).toBeInTheDocument();
     expect(
-      within(routingSelect).getByRole('option', { name: 'Provider: Parasail' }),
+      within(openOptions(routingSelect)).getByRole('option', { name: 'Provider: Parasail' }),
     ).toBeInTheDocument();
-    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
-    expect(within(routingSelect).getByRole('option', { name: /^Custom/ })).toBeInTheDocument();
+    expect(
+      within(openOptions(routingSelect)).queryByRole('option', { name: 'Auto' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(openOptions(routingSelect)).getByRole('option', { name: /^Custom/ }),
+    ).toBeInTheDocument();
   });
 
   it('adds a runtime OpenRouter provider route as concurrency', async () => {
@@ -1504,24 +1512,26 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
+    chooseValue(screen.getByLabelText('Route type'), 'concurrency');
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('openrouter');
-    expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
-    const routingSelect = screen.getByLabelText('OpenRouter routing');
-    expect(routingSelect).toHaveValue('provider:deepinfra');
-    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(providerSelect).toHaveAttribute('data-value', 'openrouter');
     expect(
-      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+      within(openOptions(providerSelect)).getByRole('option', { name: 'OpenRouter' }),
+    ).toBeInTheDocument();
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    expect(routingSelect).toHaveAttribute('data-value', 'provider:deepinfra');
+    expect(
+      within(openOptions(routingSelect)).queryByRole('option', { name: 'Auto' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(openOptions(routingSelect)).queryByRole('option', { name: 'Sort by price' }),
     ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
-    fireEvent.change(routingSelect, {
-      target: { value: 'provider:parasail' },
-    });
+    chooseValue(routingSelect, 'provider:parasail');
     fireEvent.change(screen.getByLabelText('Concurrency limit'), {
       target: { value: '2' },
     });
@@ -1530,7 +1540,7 @@ describe('ProviderRoutesTab', () => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
     confirmAction('Add');
@@ -1548,6 +1558,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
@@ -1612,16 +1623,18 @@ describe('ProviderRoutesTab', () => {
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
       expect(
-        within(openRouterSelect).getByRole('option', { name: 'Provider: MiniMax Highspeed' }),
+        within(openOptions(openRouterSelect)).getByRole('option', {
+          name: 'Provider: MiniMax Highspeed',
+        }),
       ).toBeInTheDocument();
     });
-    fireEvent.change(openRouterSelect, { target: { value: 'provider:minimax/highspeed' } });
+    chooseValue(openRouterSelect, 'provider:minimax/highspeed');
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
     confirmAction('Add');
@@ -1639,6 +1652,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -1761,9 +1775,11 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
     const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
     expect(
-      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
+    ).toBeInTheDocument();
+    expect(
+      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
     ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
@@ -1778,7 +1794,7 @@ describe('ProviderRoutesTab', () => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -1855,23 +1871,21 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
-    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
-      target: { value: 'routewise' },
-    });
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'routewise');
+    chooseValue(screen.getByLabelText('Route type'), 'concurrency');
+    chooseValue(screen.getByLabelText('Provider'), 'openrouter');
     const routingSelect = screen.getByLabelText('OpenRouter routing');
-    expect(routingSelect).toHaveValue('provider:deepinfra');
-    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(routingSelect).toHaveAttribute('data-value', 'provider:deepinfra');
     expect(
-      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+      within(openOptions(routingSelect)).queryByRole('option', { name: 'Auto' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(openOptions(routingSelect)).queryByRole('option', { name: 'Sort by price' }),
     ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
-    fireEvent.change(routingSelect, {
-      target: { value: 'provider:parasail' },
-    });
+    chooseValue(routingSelect, 'provider:parasail');
     fireEvent.change(screen.getByLabelText('Concurrency limit'), {
       target: { value: '2' },
     });
@@ -1882,7 +1896,7 @@ describe('ProviderRoutesTab', () => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
 
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     expect(createProviderRouteModel).not.toHaveBeenCalled();
     confirmAction('Create');
@@ -1928,9 +1942,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
-    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
-      target: { value: 'routewise' },
-    });
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'routewise');
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
@@ -1979,9 +1991,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
-    fireEvent.change(screen.getByLabelText('Visibility'), {
-      target: { value: 'free' },
-    });
+    chooseValue(screen.getByLabelText('Visibility'), 'free');
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
@@ -2020,8 +2030,8 @@ describe('ProviderRoutesTab', () => {
 
     const create = screen.getByRole('button', { name: 'Create' });
     const verify = screen.getByRole('button', { name: 'Verify' });
-    expect(screen.getByLabelText('Image input')).toHaveValue('');
-    expect(screen.getByLabelText('Tool calling')).toHaveValue('');
+    expect(screen.getByLabelText('Image input')).toHaveAttribute('data-value', '');
+    expect(screen.getByLabelText('Tool calling')).toHaveAttribute('data-value', '');
     expect(create).toBeDisabled();
     expect(verify).toBeDisabled();
 
@@ -2031,11 +2041,11 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Max output (tokens)'), {
       target: { value: '8192' },
     });
-    fireEvent.change(screen.getByLabelText('Image input'), { target: { value: 'no' } });
+    chooseValue(screen.getByLabelText('Image input'), 'no');
     // Unanswered is not "no": leaving tool calling unset still blocks the form.
     expect(create).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText('Tool calling'), { target: { value: 'no' } });
+    chooseValue(screen.getByLabelText('Tool calling'), 'no');
     expect(create).toBeEnabled();
     fireEvent.click(verify);
 
@@ -2116,7 +2126,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
   });
 
-  it('does not ask for capabilities when adding a route to an existing model', async () => {
+  it("asks for an added route's own capabilities, starting from the first route's", async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -2128,8 +2138,18 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
     await screen.findByRole('dialog', { name: 'Add provider route' });
-    expect(screen.queryByLabelText('Context length (tokens)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Tool calling')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Context length (tokens)')).toHaveValue(196608);
+    expect(screen.getByLabelText('Max output (tokens)')).toHaveValue(8192);
+    expect(screen.getByLabelText('Image input')).toHaveAttribute('data-value', 'no');
+    expect(screen.getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+
+    fireEvent.change(screen.getByLabelText('Context length (tokens)'), {
+      target: { value: '0' },
+    });
+    expect(
+      screen.getByText('Enter a whole number of tokens from 1 to 10,000,000.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
   });
 
   it('does not filter create-model providers by the selected model routes', async () => {
@@ -2163,14 +2183,14 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
-    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
-      target: { value: 'routewise' },
-    });
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'routewise');
+    chooseValue(screen.getByLabelText('Route type'), 'quota');
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('chutes');
-    expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
+    expect(providerSelect).toHaveAttribute('data-value', 'chutes');
+    expect(
+      within(openOptions(providerSelect)).getByRole('option', { name: 'Chutes' }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
   });
 
@@ -2188,9 +2208,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'sort:throughput' },
-    });
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'sort:throughput');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
@@ -2206,6 +2224,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
@@ -2265,9 +2284,7 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:__custom__' },
-    });
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:__custom__');
     fireEvent.change(screen.getByLabelText('Custom OpenRouter provider'), {
       target: { value: 'novita' },
     });
@@ -2275,7 +2292,7 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    chooseValue(screen.getByLabelText('API key'), 'key-1');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -2295,6 +2312,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2328,9 +2346,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'sort:throughput' },
-    });
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'sort:throughput');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -2350,6 +2366,7 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        capabilities: ROUTE_CAPABILITIES,
       });
     });
   });
@@ -2402,35 +2419,41 @@ describe('ProviderRoutesTab', () => {
     });
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('openrouter');
+    expect(providerSelect).toHaveAttribute('data-value', 'openrouter');
     expect(
-      within(providerSelect).queryByRole('option', { name: 'Chutes' }),
+      within(openOptions(providerSelect)).queryByRole('option', { name: 'Chutes' }),
     ).not.toBeInTheDocument();
     expect(
-      within(providerSelect).queryByRole('option', { name: 'Featherless' }),
+      within(openOptions(providerSelect)).queryByRole('option', { name: 'Featherless' }),
     ).not.toBeInTheDocument();
     expect(
-      within(providerSelect).queryByRole('option', { name: 'DeepInfra' }),
+      within(openOptions(providerSelect)).queryByRole('option', { name: 'DeepInfra' }),
     ).not.toBeInTheDocument();
-    expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
+    expect(
+      within(openOptions(providerSelect)).getByRole('option', { name: 'OpenRouter' }),
+    ).toBeInTheDocument();
 
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
       expect(
-        within(openRouterSelect).queryByRole('option', { name: 'Provider: DeepInfra' }),
+        within(openOptions(openRouterSelect)).queryByRole('option', {
+          name: 'Provider: DeepInfra',
+        }),
       ).not.toBeInTheDocument();
     });
     expect(
-      within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }),
+      within(openOptions(openRouterSelect)).getByRole('option', { name: 'Provider: Inceptron' }),
     ).toBeInTheDocument();
     expect(
-      within(openRouterSelect).getByRole('option', { name: 'Provider: Chutes' }),
+      within(openOptions(openRouterSelect)).getByRole('option', { name: 'Provider: Chutes' }),
     ).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+    chooseValue(screen.getByLabelText('Route type'), 'quota');
 
-    expect(providerSelect).toHaveValue('chutes');
-    expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
+    expect(providerSelect).toHaveAttribute('data-value', 'chutes');
+    expect(
+      within(openOptions(providerSelect)).getByRole('option', { name: 'Chutes' }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
   });
 
@@ -2468,22 +2491,17 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+    chooseValue(screen.getByLabelText('Route type'), 'quota');
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('');
-    expect(
-      within(providerSelect).getByRole('option', { name: 'No quota providers available' }),
-    ).toBeInTheDocument();
+    expect(providerSelect).toHaveAttribute('data-value', '');
+    // Nothing to choose: the trigger says so instead of offering a fake option.
+    expect(providerSelect).toHaveTextContent('No quota providers available');
     expect(
       screen.getByText('This model already has every configured quota provider.'),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('API key')).toHaveValue('');
-    expect(
-      within(screen.getByLabelText('API key')).getByRole('option', {
-        name: 'No provider selected',
-      }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('API key')).toHaveAttribute('data-value', '');
+    expect(screen.getByLabelText('API key')).toHaveTextContent('No provider selected');
   });
 
   it('deletes a runtime provider route', async () => {
@@ -2552,8 +2570,12 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
 
-    expect(screen.getByLabelText('Override provider')).toHaveValue('zai');
-    expect(screen.getByRole('option', { name: 'zai' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Override provider')).toHaveAttribute('data-value', 'zai');
+    expect(
+      within(openOptions(screen.getByLabelText('Override provider'))).getByRole('option', {
+        name: 'zai',
+      }),
+    ).toBeInTheDocument();
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('zai');
     });
@@ -2581,7 +2603,10 @@ describe('ProviderRoutesTab', () => {
     expect(policy).toHaveTextContent('routewise');
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
-    fireEvent.change(screen.getByLabelText('Routing policy'), { target: { value: 'fixed' } });
+    const select = screen.getByLabelText('Routing policy');
+    expect(select).toHaveAttribute('data-value', 'routewise');
+    chooseValue(select, 'fixed');
+    expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
     fireEvent.click(
       screen.getByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
     );
@@ -2615,7 +2640,7 @@ describe('ProviderRoutesTab', () => {
     });
     render(<ProviderRoutesTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('self_hosted');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'self_hosted');
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await screen.findByRole('button', { name: 'Verified' });
     // Untouched, the declaration is left to the server, which keeps it.
@@ -2623,9 +2648,7 @@ describe('ProviderRoutesTab', () => {
     expect(verified.slice(0, 2)).toEqual([route.model_id, route.route_id]);
     expect(verified[2]).toMatchObject({ base_url: route.base_url });
     expect(verified[2]).not.toHaveProperty('deployment_type');
-    fireEvent.change(screen.getByLabelText('Deployment type'), {
-      target: { value: 'provider_api' },
-    });
+    chooseValue(screen.getByLabelText('Deployment type'), 'provider_api');
     expect(screen.getByRole('button', { name: 'Verify' })).toBeInTheDocument();
     expect(screen.getByLabelText('Base URL')).toHaveValue(route.base_url);
     saveRouteEdit();
@@ -2651,18 +2674,16 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(updateProviderRoute).mockResolvedValue({ ...engineRoute, deployment_type: 'auto' });
     render(<ProviderRoutesTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Deployment type'), {
-      target: { value: 'self_hosted' },
-    });
+    chooseValue(screen.getByLabelText('Deployment type'), 'self_hosted');
     fireEvent.change(screen.getByLabelText('Base URL'), {
       target: { value: 'https://api.featherless.ai/v2' },
     });
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('auto');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'auto');
     fireEvent.change(screen.getByLabelText('Base URL'), {
       target: { value: 'https://API.featherless.ai/v1/' },
     });
     // Back on the route's own endpoint, its declaration shows again.
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('self_hosted');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'self_hosted');
     fireEvent.change(screen.getByLabelText('Base URL'), {
       target: { value: 'https://api.featherless.ai/v2' },
     });
@@ -2698,16 +2719,12 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
     render(<ProviderRoutesTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('provider_api');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'provider_api');
     // Another pin is another endpoint; the server resets its declaration.
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:deepinfra' },
-    });
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('auto');
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-      target: { value: 'provider:parasail' },
-    });
-    expect(screen.getByLabelText('Deployment type')).toHaveValue('provider_api');
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:deepinfra');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'auto');
+    chooseValue(screen.getByLabelText('OpenRouter routing'), 'provider:parasail');
+    expect(screen.getByLabelText('Deployment type')).toHaveAttribute('data-value', 'provider_api');
   });
 
   it('flags a saved override that is not in effect', async () => {
@@ -2753,6 +2770,113 @@ describe('ProviderRoutesTab', () => {
       );
       render(<ProviderRoutesTab />);
     }
+
+    const writes = () => [
+      updateProviderRoute,
+      updateProviderRouteStrategy,
+      updateProviderRouteCandidate,
+      updateProviderRouteCapabilities,
+      resetProviderRouteCapabilities,
+      setRouteWeight,
+      clearRouteWeight,
+      createProviderRouteCandidate,
+      createProviderRouteModel,
+      deleteProviderRoute,
+      deleteProviderRouteCandidate,
+    ];
+
+    it('never writes from browsing or reselecting a select, and holds the model while the policy is edited', async () => {
+      const otherRoute = {
+        ...route,
+        model_id: 'other-model',
+        route_id: 'other-model:featherless-api',
+        endpoint_id: 'other-model:featherless-api',
+      };
+      renderRoutewiseRoute([route, otherRoute]);
+      await screen.findByRole('button', { name: 'Edit minimax-fast routing policy' });
+      const selector = screen.getByLabelText('Selected model');
+      const createModel = screen.getByRole('button', { name: 'Create model' });
+
+      // The searchable model list: browsing, dismissing and choosing the same model.
+      fireEvent.keyDown(selector, { key: 'ArrowDown' });
+      fireEvent.keyDown(selector, { key: 'ArrowDown' });
+      fireEvent.keyDown(selector, { key: 'Escape' });
+      chooseValue(selector, 'minimax-fast');
+      expect(selector).toHaveAttribute('data-value', 'minimax-fast');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
+      expect(selector).toBeDisabled();
+      expect(createModel).toBeDisabled();
+      const policy = screen.getByLabelText('Routing policy');
+      fireEvent.keyDown(policy, { key: 'ArrowDown' });
+      fireEvent.keyDown(policy, { key: 'Escape' });
+      chooseValue(policy, 'routewise');
+      expect(screen.getByText('No changes yet')).toBeVisible();
+      expect(
+        screen.getByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
+      ).toBeDisabled();
+      // A different policy is only a draft.
+      chooseValue(policy, 'fixed');
+      expect(screen.getByText('1 unsaved change')).toBeVisible();
+      expect(selector).toBeDisabled();
+
+      // Cancel discards it and releases the model, which can then be switched.
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Cancel editing minimax-fast routing policy' }),
+      );
+      expect(screen.getByLabelText('Routing policy')).toHaveTextContent('routewise');
+      expect(selector).toBeEnabled();
+      expect(createModel).toBeEnabled();
+      chooseValue(selector, 'other-model');
+      expect(selector).toHaveAttribute('data-value', 'other-model');
+      expect(
+        await screen.findByRole('button', { name: 'Edit other-model routing policy' }),
+      ).toBeEnabled();
+
+      // The route editor's selects: the same provider again is no change.
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const provider = screen.getByLabelText('Override provider');
+      fireEvent.keyDown(provider, { key: 'ArrowDown' });
+      fireEvent.keyDown(provider, { key: 'Escape' });
+      chooseValue(provider, 'featherless');
+      expect(screen.getByText('No changes yet')).toBeVisible();
+      expect(
+        screen.getByRole('button', { name: 'Save changes to other-model / featherless' }),
+      ).toBeDisabled();
+
+      for (const write of writes()) expect(write).not.toHaveBeenCalled();
+    });
+
+    it('holds the model selection while fixed weights are edited, and Cancel releases it', async () => {
+      const otherRoute = {
+        ...fixedRoute,
+        model_id: 'other-model',
+        route_id: 'other-model:featherless-api',
+        endpoint_id: 'other-model:featherless-api',
+      };
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [fixedRoute, otherRoute],
+      });
+      render(<ProviderRoutesTab />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit minimax-fast weights' }));
+      const selector = screen.getByLabelText('Selected model');
+      expect(selector).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
+      fireEvent.change(screen.getByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`), {
+        target: { value: '3' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing minimax-fast weights' }));
+      expect(selector).toBeEnabled();
+      chooseValue(selector, 'other-model');
+      expect(
+        await screen.findByRole('button', { name: 'Edit other-model weights' }),
+      ).toBeInTheDocument();
+      expect(setRouteWeight).not.toHaveBeenCalled();
+    });
 
     it('keeps Save disabled for an unchanged route, and Cancel closes it with zero writes', async () => {
       renderRoutewiseRoute();
@@ -2876,9 +3000,7 @@ describe('ProviderRoutesTab', () => {
       fireEvent.change(screen.getByLabelText('Provider model ID'), {
         target: { value: 'minimax/minimax-m2.5' },
       });
-      fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
-        target: { value: 'sort:throughput' },
-      });
+      chooseValue(screen.getByLabelText('OpenRouter routing'), 'sort:throughput');
       fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
       const review = screen.getByRole('dialog', {
@@ -2889,6 +3011,10 @@ describe('ProviderRoutesTab', () => {
       expect(review).toHaveTextContent('OpenRouter routingSort by throughput');
       expect(review).toHaveTextContent('Base URLhttps://openrouter.ai/api/v1');
       expect(review).toHaveTextContent('Provider model IDminimax/minimax-m2.5');
+      // The added route declares its own capabilities, started from the first route's.
+      expect(review).toHaveTextContent('Context length196,608 tokens');
+      expect(review).toHaveTextContent('Image inputText only');
+      expect(review).toHaveTextContent('Tool callingSupported');
       expect(within(review).getByRole('button', { name: 'Back to editing' })).toHaveFocus();
 
       fireEvent.click(within(review).getByRole('button', { name: 'Back to editing' }));
@@ -2900,6 +3026,14 @@ describe('ProviderRoutesTab', () => {
       confirmAction('Add');
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith(
+        'minimax-fast',
+        expect.objectContaining({
+          provider_model_id: 'minimax/minimax-m2.5',
+          openrouter_sort: 'throughput',
+          capabilities: ROUTE_CAPABILITIES,
+        }),
+      );
       expect(await screen.findByText('Runtime added')).toBeInTheDocument();
     });
 
@@ -3052,7 +3186,7 @@ describe('ProviderRoutesTab', () => {
       fireEvent.click(
         await screen.findByRole('button', { name: 'Edit minimax-fast routing policy' }),
       );
-      fireEvent.change(screen.getByLabelText('Routing policy'), { target: { value: 'fixed' } });
+      chooseValue(screen.getByLabelText('Routing policy'), 'fixed');
       fireEvent.click(
         screen.getByRole('button', { name: 'Cancel editing minimax-fast routing policy' }),
       );
@@ -3121,6 +3255,329 @@ describe('ProviderRoutesTab', () => {
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(confirm).not.toBeInTheDocument();
       expect(setRouteWeight).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('route capabilities', () => {
+    const WIDE = {
+      context_length: 1048576,
+      max_output_length: 65536,
+      input_modalities: ['text', 'image'],
+      supports_tools: true,
+    };
+
+    const renderWithRoute = async (shown = route) => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [shown],
+      });
+      render(<ProviderRoutesTab />);
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Edit minimax-fast:featherless-api capabilities',
+        }),
+      );
+      return screen.findByRole('dialog', { name: 'Route capabilities' });
+    };
+
+    const saveCapabilities = (dialog: HTMLElement) =>
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
+
+    it('edits a route from what it serves now, writing only after the review', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute();
+
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(196608);
+      expect(within(dialog).getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+      expect(
+        within(dialog).getByText('From config: 196,608 context · 8,192 output · text only · tools'),
+      ).toBeInTheDocument();
+      expect(within(dialog).queryByRole('button', { name: 'Reset to config' })).toBeNull();
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+
+      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
+        target: { value: '1048576' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      chooseValue(within(dialog).getByLabelText('Image input'), 'yes');
+      expect(within(dialog).getByText('3 unsaved changes')).toBeVisible();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      saveCapabilities(dialog);
+
+      const review = screen.getByRole('dialog', {
+        name: 'Save 3 changes to minimax-fast:featherless-api capabilities?',
+      });
+      expect(review).toHaveTextContent('Context length196,608 tokens → 1,048,576 tokens');
+      expect(review).toHaveTextContent('Max output8,192 tokens → 65,536 tokens');
+      expect(review).toHaveTextContent('Image inputText only → Accepts images');
+      expect(review).not.toHaveTextContent('Tool calling');
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      // Back keeps the draft.
+      confirmAction('Back to editing');
+      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(1048576);
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      saveCapabilities(dialog);
+      confirmAction('Confirm save');
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          WIDE,
+        );
+      });
+      expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+      expect(await screen.findByText('Capabilities edited')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Route capabilities' })).toBeNull();
+    });
+
+    it('drafts nothing from browsing or reselecting a capability, and Cancel discards', async () => {
+      const dialog = await renderWithRoute();
+      const tools = within(dialog).getByLabelText('Tool calling');
+
+      fireEvent.keyDown(tools, { key: 'ArrowDown' });
+      fireEvent.keyDown(tools, { key: 'ArrowDown' });
+      fireEvent.keyDown(tools, { key: 'Escape' });
+      chooseValue(tools, 'yes');
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+
+      // Changed and changed back is no change either.
+      chooseValue(tools, 'no');
+      expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+      chooseValue(tools, 'yes');
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+
+      chooseValue(tools, 'no');
+      fireEvent.click(
+        within(dialog).getByRole('button', {
+          name: 'Cancel editing minimax-fast:featherless-api capabilities',
+        }),
+      );
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Edit minimax-fast:featherless-api capabilities' }),
+      );
+      expect(screen.getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+    });
+
+    it('resets an edited route to its config values only after the confirmation', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: WIDE,
+        capabilities_overridden: true,
+      });
+      expect(screen.getByText('Capabilities edited')).toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
+      const confirm = screen.getByRole('dialog', {
+        name: 'Reset minimax-fast:featherless-api capabilities to config?',
+      });
+      expect(confirm).toHaveTextContent('Context length1,048,576 tokens → 196,608 tokens');
+      expect(confirm).toHaveTextContent('Image inputAccepts images → Text only');
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      // Cancel writes nothing and leaves the editor open.
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
+      confirmAction('Reset');
+      await waitFor(() => {
+        expect(resetProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+        );
+      });
+      expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(screen.queryByText('Capabilities edited')).toBeNull());
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('says which value blocks saving', async () => {
+      const dialog = await renderWithRoute();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '262144' },
+      });
+
+      expect(
+        within(dialog).getByText('Max output cannot exceed the context length.'),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('blocks a second Confirm and closing while a capability save is in flight', async () => {
+      let finish!: (value: typeof route) => void;
+      vi.mocked(updateProviderRouteCapabilities).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve as (value: typeof route) => void;
+          }),
+      );
+      const dialog = await renderWithRoute();
+      chooseValue(within(dialog).getByLabelText('Tool calling'), 'no');
+      saveCapabilities(dialog);
+      confirmAction('Confirm save');
+
+      const confirm = topDialog();
+      expect(within(confirm).getByRole('button', { name: 'Saving…' })).toBeDisabled();
+      expect(within(confirm).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBeDisabled();
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Saving…' }));
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.getAllByRole('dialog')).toHaveLength(2);
+      expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+
+      finish({ ...route, capabilities: { ...ROUTE_CAPABILITIES, supports_tools: false } });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    // As models.yaml can declare a route: inputs the form has no field for.
+    const MEDIA = { ...ROUTE_CAPABILITIES, input_modalities: ['text', 'audio', 'video'] };
+    const MEDIA_NOTE = 'Also accepts audio and video input, which this form leaves as declared.';
+
+    it('keeps the audio and video a route accepts when saving its other values', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: MEDIA,
+        capabilities_baseline: MEDIA,
+      });
+
+      expect(
+        within(dialog).getByText(
+          'From config: 196,608 context · 8,192 output · text, audio and video · tools',
+        ),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText(MEDIA_NOTE)).toBeInTheDocument();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '65536' },
+      });
+      chooseValue(within(dialog).getByLabelText('Image input'), 'yes');
+      saveCapabilities(dialog);
+      // The kept modalities are no change, so the review does not list them.
+      expect(topDialog()).not.toHaveTextContent('Other input');
+      confirmAction('Confirm save');
+
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 65536,
+            input_modalities: ['text', 'image', 'audio', 'video'],
+          },
+        );
+      });
+    });
+
+    it('starts an added route with the audio and video the first route accepts', async () => {
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [{ ...route, capabilities: MEDIA, capabilities_baseline: MEDIA }],
+      });
+      vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+      vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+        ...route,
+        route_id: 'minimax-fast:openrouter-api',
+        route_type: 'on_demand',
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        endpoint_id: 'minimax-fast:openrouter-api',
+        source: 'runtime',
+        capabilities: MEDIA,
+      });
+
+      render(<ProviderRoutesTab />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+      const form = await screen.findByRole('dialog', { name: 'Add provider route' });
+      expect(within(form).getByText(MEDIA_NOTE)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Provider model ID'), {
+        target: { value: 'minimax/minimax-m2.5' },
+      });
+      chooseValue(screen.getByLabelText('OpenRouter routing'), 'sort:throughput');
+      fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+      await screen.findByRole('button', { name: 'Verified' });
+      expect(verifyProviderRouteCandidate).toHaveBeenCalledWith(
+        'minimax-fast',
+        expect.objectContaining({ capabilities: MEDIA }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+      expect(topDialog()).toHaveTextContent('Other inputaudio and video');
+      expect(createProviderRouteCandidate).not.toHaveBeenCalled();
+      confirmAction('Add');
+
+      await waitFor(() => {
+        expect(createProviderRouteCandidate).toHaveBeenCalledWith(
+          'minimax-fast',
+          expect.objectContaining({ capabilities: MEDIA }),
+        );
+      });
+      expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows the gateway's reason when a capability change is refused, and keeps the draft", async () => {
+      const reason =
+        "duplicate provider route id 'minimax-fast:featherless-api'; set unique endpoint_id " +
+        'values before editing this route';
+      // The shared client reads a typed 409 as a signup conflict; the dialog must not.
+      vi.mocked(updateProviderRouteCapabilities).mockRejectedValue(
+        new APIError('USER_ALREADY_EXISTS', reason, 409),
+      );
+      const dialog = await renderWithRoute();
+      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
+        target: { value: '262144' },
+      });
+
+      saveCapabilities(dialog);
+      confirmAction('Confirm save');
+
+      const alert = await within(topDialog()).findByRole('alert');
+      expect(alert).toHaveTextContent(reason);
+      expect(alert).not.toHaveTextContent('This email is already registered');
+      expect(screen.getByRole('dialog', { name: 'Route capabilities' })).toBeInTheDocument();
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(262144);
+      expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it('holds the model selection while a capability edit is open', async () => {
+      const dialog = await renderWithRoute();
+      expect(screen.getByLabelText('Selected model')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+      expect(screen.getByLabelText('Selected model')).toBeEnabled();
     });
   });
 });

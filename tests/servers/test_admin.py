@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -120,7 +120,7 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
     - histogram bucket counts sum to the metric's count
     """
     pool = require_db.pool
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Tag every test row with a unique model_id so concurrent tests don't
     # pollute each other.  Assertions rely on per-window invariants

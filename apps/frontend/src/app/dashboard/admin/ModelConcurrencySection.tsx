@@ -3,6 +3,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  CHECKBOX,
+  NOTICE_ACTION,
+  PANEL,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
@@ -121,46 +133,42 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
   };
 
   return (
-    <section
-      aria-label={SECTION}
-      className={`rounded-xl border bg-white p-5 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
-    >
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-[14px] font-semibold text-gray-900">{SECTION}</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Exempt a model from the per-user concurrency limit. Requests to an exempt model do not
-            count toward a user&apos;s normal in-flight request cap, but are still limited to at
-            most 64 concurrent requests per user.
-          </p>
-        </div>
-        {!editing && !loading && models.length > 0 ? (
+    <AdminSection
+      title={SECTION}
+      description="Exempt a model from the per-user concurrency limit. Requests to an exempt model do not count toward a user's normal in-flight request cap, but are still limited to at most 64 concurrent requests per user."
+      actions={
+        !editing && !loading && models.length > 0 ? (
           <EditButton target={SECTION} onClick={() => setEditing(true)} />
-        ) : null}
-      </div>
-
+        ) : null
+      }
+    >
       {error && (
-        <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-          {error}
-          <button type="button" onClick={() => void load()} className="ml-2 font-medium underline">
-            Retry
-          </button>
+        <div className="mb-3">
+          <AdminNotice
+            action={
+              <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
+                Retry
+              </button>
+            }
+          >
+            {error}
+          </AdminNotice>
         </div>
       )}
 
       {loading ? (
-        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        <AdminLoading size="sm" />
       ) : models.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-          No models available.
-        </div>
+        <AdminEmptyState title="No models available." />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-gray-200">
-          <table className="min-w-full text-[13px]">
-            <thead className="bg-gray-50 text-gray-500">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Model</th>
-                <th className="px-3 py-2 text-right font-medium">Exempt</th>
+        <div
+          className={`${PANEL} relative overflow-x-auto ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+        >
+          <table className="w-full min-w-[28rem] text-[13px]">
+            <thead className="bg-gray-50/80">
+              <tr className="border-b border-gray-200">
+                <th className={TABLE_HEAD_CELL}>Model</th>
+                <th className={`${TABLE_HEAD_CELL} text-right`}>Exempt</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -168,13 +176,15 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
                 const exempt = drafts[model.model_id] ?? model.exempt;
                 return (
                   <tr key={model.model_id} className="bg-white">
-                    <td className="px-3 py-2 text-gray-900">{model.model_id}</td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-4 py-2.5 font-mono text-[12px] text-gray-900">
+                      {model.model_id}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
                       {editing ? (
                         <input
                           type="checkbox"
                           aria-label={`Concurrency exemption for ${model.model_id}`}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className={CHECKBOX}
                           disabled={confirmation.busy}
                           checked={exempt}
                           onChange={(e) => changeDraft(model, e.target.checked)}
@@ -204,6 +214,6 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         />
       ) : null}
       {confirmation.dialog}
-    </section>
+    </AdminSection>
   );
 }

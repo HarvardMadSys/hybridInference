@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { ChangeList, type Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
@@ -11,6 +11,17 @@ import {
   updateUsageInsightsSettings,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  BUTTON_SECONDARY,
+  FORM_LABEL,
+  PANEL,
+  TEXT_FIELD,
+} from '@/components/features/admin/adminStyles';
 
 interface UsageInsightsSettingsSectionProps {
   onToast: (msg: string) => void;
@@ -30,6 +41,7 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   const busy = confirmation.busy;
   const [editing, setEditing] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const baseId = useId();
 
   // Empty key field means "leave the stored key unchanged" on save.
   const [apiKey, setApiKey] = useState('');
@@ -137,38 +149,32 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   const configured = !!settings?.configured;
 
   return (
-    <section
-      aria-label="Usage Insights"
-      className={`rounded-xl border bg-white p-5 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
-    >
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-[14px] font-semibold text-gray-900">Usage Insights</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            API key and model for the LLM-powered Usage Insights analysis. The analysis runs through
-            this gateway, so the key is one of its own. It is stored server-side and never shown
-            again. Run the analysis from a user&apos;s detail panel using the &ldquo;Analyze
-            usage&rdquo; button.
-          </p>
-        </div>
-        {!editing && !loading && settings ? (
+    <AdminSection
+      title="Usage Insights"
+      description={
+        <>
+          API key and model for the LLM-powered Usage Insights analysis. The analysis runs through
+          this gateway, so the key is one of its own. It is stored server-side and never shown
+          again. Run the analysis from a user&apos;s detail panel using the &ldquo;Analyze
+          usage&rdquo; button.
+        </>
+      }
+      actions={
+        !editing && !loading && settings ? (
           <EditButton target="Usage Insights" onClick={() => setEditing(true)} />
-        ) : null}
-      </div>
-
+        ) : null
+      }
+    >
       {error && (
-        <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-          {error}{' '}
-          <button onClick={() => setError(null)} className="ml-2 font-bold">
-            &times;
-          </button>
+        <div className="mb-3">
+          <AdminNotice onDismiss={() => setError(null)}>{error}</AdminNotice>
         </div>
       )}
 
       {loading ? (
-        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        <AdminLoading size="sm" />
       ) : (
-        <div className="space-y-4">
+        <div className={`${PANEL} max-w-3xl space-y-4 p-4`}>
           <div className="flex items-center gap-2">
             <span
               className={`inline-block h-2.5 w-2.5 rounded-full ${
@@ -191,14 +197,11 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="sm:col-span-2">
-                  <label
-                    htmlFor="usage-insights-api-key"
-                    className="mb-1 block text-[12px] font-medium text-gray-600"
-                  >
+                  <label htmlFor={`${baseId}-key`} className={FORM_LABEL}>
                     Gateway API key
                   </label>
                   <input
-                    id="usage-insights-api-key"
+                    id={`${baseId}-key`}
                     type="password"
                     value={apiKey}
                     disabled={busy}
@@ -207,24 +210,21 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
                       configured ? 'Enter a new key to replace the stored one' : 'sk-...'
                     }
                     autoComplete="new-password"
-                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                    className={TEXT_FIELD}
                   />
                 </div>
                 <div>
-                  <label
-                    htmlFor="usage-insights-model"
-                    className="mb-1 block text-[12px] font-medium text-gray-600"
-                  >
+                  <label htmlFor={`${baseId}-model`} className={FORM_LABEL}>
                     Model
                   </label>
                   <input
-                    id="usage-insights-model"
+                    id={`${baseId}-model`}
                     type="text"
                     value={model}
                     disabled={busy}
                     onChange={(e) => setModel(e.target.value)}
                     placeholder="glm-5.1"
-                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                    className={TEXT_FIELD}
                   />
                 </div>
               </div>
@@ -248,7 +248,7 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
                   type="button"
                   disabled={busy}
                   onClick={onClearKey}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+                  className={BUTTON_SECONDARY}
                 >
                   Clear key
                 </button>
@@ -258,6 +258,6 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
         </div>
       )}
       {confirmation.dialog}
-    </section>
+    </AdminSection>
   );
 }

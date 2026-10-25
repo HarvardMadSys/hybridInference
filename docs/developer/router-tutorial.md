@@ -26,7 +26,7 @@ first if you have never seen this gateway serve a request.
 - A running Docker daemon. On macOS, start Docker Desktop or Colima; `docker
   info` must succeed, and the directory you clone into must be one Docker is
   allowed to share into containers.
-- Git, curl, GNU Make, and Python 3.10–3.13 (3.12 recommended). The smoke
+- Git, curl, GNU Make, and Python 3.11–3.13 (3.12 recommended). The smoke
   clients use only the Python standard library, so there is no `pip install`
   step.
 - Several GB of free disk for the backend, frontend, Postgres image, and local

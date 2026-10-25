@@ -19,6 +19,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { validateNumericSettingInput } from './numericSettingValidation';
+import { Select } from '@/components/ui/Select';
 
 const SETTING_LABELS: Record<string, string> = {
   routewise_budget_alpha: 'Cost budget alpha',
@@ -692,23 +693,25 @@ export function RoutewiseSettingsPanel({
               >
                 Endpoint
               </label>
-              <select
+              <Select
                 id="routewise-probe-endpoint"
                 value={probeEndpointId}
-                onChange={(event) => {
-                  const endpointId = event.target.value;
+                onValueChange={(endpointId) => {
                   probeSelection.current = { modelId, endpointId };
                   setProbeEndpointId(endpointId);
                 }}
-                className="h-10 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 text-[13px] text-gray-800 sm:w-[420px]"
-              >
-                <option value="">All endpoints</option>
-                {probeEndpointOptions.map((endpoint) => (
-                  <option key={endpoint.endpointId} value={endpoint.endpointId}>
-                    {endpoint.label}
-                  </option>
-                ))}
-              </select>
+                options={[
+                  { value: '', label: 'All endpoints' },
+                  ...probeEndpointOptions.map((endpoint) => ({
+                    value: endpoint.endpointId,
+                    label: endpoint.label,
+                  })),
+                ]}
+                searchable={probeEndpointOptions.length > 6}
+                searchPlaceholder="Search endpoints…"
+                size="lg"
+                className="w-full sm:w-[420px]"
+              />
             </div>
             <button
               type="button"

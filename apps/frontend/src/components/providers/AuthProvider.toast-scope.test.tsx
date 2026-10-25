@@ -10,6 +10,7 @@ import { ACCOUNT_CHANGED_EVENT, AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
+import { chooseValue } from '@/test-utils/select';
 import { ToastProvider } from './ToastProvider';
 
 const api = vi.hoisted(() => ({
@@ -119,7 +120,7 @@ async function startAdminMutation() {
   // A tier change is an edit: Edit, change the draft, Save changes, Confirm save.
   fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
   const selector = screen.getByLabelText('Reserved tier for key fixture-key-prefix');
-  fireEvent.change(selector, { target: { value: 'internal' } });
+  chooseValue(selector, 'internal');
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to zai key tiers' }));
   expect(api.setProviderKeyMinRole).not.toHaveBeenCalled();
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));

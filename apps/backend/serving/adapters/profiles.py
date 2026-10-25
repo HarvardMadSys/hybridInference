@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class ProviderProfile(str, Enum):
+class ProviderProfile(str, Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
     """Provider profile identifier for usage extraction strategy."""
 
     DEFAULT = "default"
@@ -43,18 +43,16 @@ def get_usage_normalizer(
 
     ``null_cache_details_means_miss`` is the route's own statement that a null
     ``*_tokens_details`` block from this endpoint is a reported cache miss
-    rather than silence; see ``ModelConfig.null_cache_details_means_miss``. It
-    is inert for the DeepSeek profile, which reads cache usage from
-    ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens`` and never
-    reaches the nested-details path.
+    rather than silence; see ``ModelConfig.null_cache_details_means_miss``.
+    Every profile reaches the shared extractors, so every profile honors it.
     """
+    base: Callable[..., UsageInfo]
     if profile == ProviderProfile.DEEPSEEK:
-        return normalize_usage_deepseek
-    base = (
-        normalize_usage_openrouter
-        if profile == ProviderProfile.OPENROUTER
-        else normalize_usage_default
-    )
+        base = normalize_usage_deepseek
+    elif profile == ProviderProfile.OPENROUTER:
+        base = normalize_usage_openrouter
+    else:
+        base = normalize_usage_default
     if not null_cache_details_means_miss:
         return base
     return partial(base, null_cache_details_means_miss=True)
@@ -399,36 +397,39 @@ def normalize_usage_default(
     )
 
 
-def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
-    """DeepSeek-specific usage extraction.
+def normalize_usage_deepseek(
+    usage_data: dict[str, Any], *, null_cache_details_means_miss: bool = False
+) -> UsageInfo:
+    """Extract DeepSeek usage: the shared extractors plus DeepSeek's own fields.
 
-    DeepSeek returns prompt_cache_hit_tokens (cache reads) and
-    prompt_cache_miss_tokens (uncached) alongside prompt_tokens. Per their
-    API, prompt_tokens already includes the cached portion (OpenAI semantic),
-    so we keep it as-is and just surface cache_read_tokens for separate
-    rate-application in calculate_cost.
+    The DeepSeek API returns prompt_cache_hit_tokens (cache reads) and
+    prompt_cache_miss_tokens (uncached) alongside prompt_tokens. Per their API,
+    prompt_tokens already includes the cached portion (OpenAI semantic), so it
+    is kept as-is and cache_read_tokens is surfaced for separate rate
+    application in calculate_cost.
+
+    The profile is chosen by the route's ``kind``, which names the model's
+    vendor as readily as the server answering, so a ``kind: deepseek`` route
+    can sit in front of a self-hosted vLLM or SGLang engine that reports cache
+    reads as prompt_tokens_details.cached_tokens. normalize_usage_default reads
+    both spellings, so this builds on it and adds only what is DeepSeek's own:
+    a miss count alone is a reported zero hit, and hit + miss stands in for an
+    absent prompt_tokens.
     """
-    from .base import UsageInfo
-
-    cache_hit = usage_data.get("prompt_cache_hit_tokens", 0) or 0
-    cache_miss = usage_data.get("prompt_cache_miss_tokens", 0) or 0
-    prompt_tokens_raw = usage_data.get("prompt_tokens", 0) or 0
-
-    # If upstream omits prompt_tokens but provides hit+miss, reconstruct.
-    prompt_tokens = prompt_tokens_raw if prompt_tokens_raw else (cache_hit + cache_miss)
-
-    return UsageInfo(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=usage_data.get("completion_tokens", 0),
-        total_tokens=usage_data.get("total_tokens", 0),
-        reasoning_tokens=usage_data.get("reasoning_tokens", 0),
-        cache_read_tokens=cache_hit,
-        cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
-        or usage_data.get("cache_write_tokens", 0),
-        cache_read_reported=(
-            "prompt_cache_hit_tokens" in usage_data or "prompt_cache_miss_tokens" in usage_data
-        ),
+    info = normalize_usage_default(
+        usage_data, null_cache_details_means_miss=null_cache_details_means_miss
     )
+
+    if not info.cache_read_reported and usage_data.get("prompt_cache_miss_tokens") is not None:
+        info.cache_read_tokens = 0
+        info.cache_read_reported = True
+
+    if not info.prompt_tokens:
+        info.prompt_tokens = (usage_data.get("prompt_cache_hit_tokens", 0) or 0) + (
+            usage_data.get("prompt_cache_miss_tokens", 0) or 0
+        )
+
+    return info
 
 
 def normalize_usage_openrouter(

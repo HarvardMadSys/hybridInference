@@ -15,6 +15,23 @@ import {
   Role,
   RoleQuotaPreview,
 } from '@/lib/api/admin';
+import {
+  AdminEmptyState,
+  AdminLoading,
+  AdminNotice,
+  AdminSection,
+  AdminSectionNav,
+} from '@/components/features/admin/AdminPrimitives';
+import {
+  BUTTON_GHOST,
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CONTROL,
+  INDEXED_LAYOUT,
+  PANEL,
+  ROW_ACTION_DANGER,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
@@ -28,6 +45,18 @@ import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
+
+/** The page's sections, in order, for its section index. */
+const SECTIONS = [
+  { id: 'settings-feature-flags', label: 'Feature Flags' },
+  { id: 'settings-numeric', label: 'Numeric Settings' },
+  { id: 'settings-alert-notifications', label: 'Alert Notifications' },
+  { id: 'settings-alert-types', label: 'Alert Types' },
+  { id: 'settings-usage-insights', label: 'Usage Insights' },
+  { id: 'settings-model-visibility', label: 'Model Visibility' },
+  { id: 'settings-model-concurrency', label: 'Model Concurrency' },
+  { id: 'settings-signup-policy', label: 'Signup Policy' },
+] as const;
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -81,6 +110,7 @@ interface SettingChange {
  * confirms the list of changes; each changed setting is one request.
  */
 function RuntimeSettingsSection({
+  id,
   title,
   description,
   kind,
@@ -92,6 +122,8 @@ function RuntimeSettingsSection({
   onToast,
   renderExtra,
 }: {
+  /** Anchor for the page's section index. */
+  id: string;
   title: string;
   description: string;
   kind: 'flag' | 'numeric';
@@ -201,28 +233,24 @@ function RuntimeSettingsSection({
   };
 
   return (
-    <section
-      aria-label={title}
-      className={`rounded-xl border bg-white p-5 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
-    >
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-[14px] font-semibold text-gray-900">{title}</h2>
-          <p className="mt-1 text-[12px] text-gray-500">{description}</p>
-        </div>
-        {!editing && !loading && settings.length > 0 ? (
+    <AdminSection
+      id={id}
+      title={title}
+      description={description}
+      actions={
+        !editing && !loading && settings.length > 0 ? (
           <EditButton target={title} onClick={() => setEditing(true)} />
-        ) : null}
-      </div>
-
+        ) : null
+      }
+    >
       {loading ? (
-        <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        <AdminLoading size="sm" />
       ) : settings.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-          {emptyText}
-        </div>
+        <AdminEmptyState title={emptyText} />
       ) : (
-        <div className="space-y-3">
+        <ul
+          className={`${PANEL} divide-y divide-gray-100 ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+        >
           {settings.map((setting) => {
             const isDefault = setting.value === setting.default_value;
             const draft = draftOf(setting);
@@ -231,9 +259,9 @@ function RuntimeSettingsSection({
             const name =
               kind === 'flag' ? `Toggle ${setting.key.replace(/_/g, ' ')}` : `${setting.key} value`;
             return (
-              <div
+              <li
                 key={setting.key}
-                className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
+                className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -246,7 +274,7 @@ function RuntimeSettingsSection({
                       </span>
                     )}
                   </div>
-                  <p className="mt-0.5 text-[11px] text-gray-500">
+                  <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
                     {setting.description}
                     {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
                     {kind === 'numeric' ? (
@@ -261,7 +289,7 @@ function RuntimeSettingsSection({
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                   {!editing ? (
                     <output aria-label={name} className="text-[13px] font-medium text-gray-900">
                       {kind === 'flag' ? flagText(setting.value) : String(setting.value ?? '')}
@@ -304,15 +332,15 @@ function RuntimeSettingsSection({
                         }
                       }}
                       aria-label={name}
-                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+                      className={`${CONTROL} w-24 text-right`}
                     />
                   )}
                   {!editing && renderExtra ? renderExtra(setting) : null}
                 </div>
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
 
       {editing ? (
@@ -326,7 +354,7 @@ function RuntimeSettingsSection({
         />
       ) : null}
       {confirmation.dialog}
-    </section>
+    </AdminSection>
   );
 }
 
@@ -507,204 +535,225 @@ export function SettingsTab() {
   };
 
   return (
-    <div className="mt-5 space-y-6">
-      {flagsError && (
-        <div className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-          {flagsError}{' '}
-          <button onClick={() => setFlagsError(null)} className="ml-2 font-bold">
-            &times;
-          </button>
-        </div>
-      )}
+    // A section index beside full-width sections, one after another.
+    <div className={`mt-6 ${INDEXED_LAYOUT}`}>
+      <AdminSectionNav label="Settings sections" items={SECTIONS} />
 
-      <RuntimeSettingsSection
-        title="Feature Flags"
-        description="Toggle runtime features without restarting the server. Changes take effect immediately."
-        kind="flag"
-        settings={featureFlags}
-        loading={flagsLoading}
-        emptyText="No feature flags available."
-        onSaved={replaceSetting(setFeatureFlags)}
-        onAfterWrite={refreshSiteConfig}
-        onToast={flashToast}
-      />
-
-      <RuntimeSettingsSection
-        title="Numeric Settings"
-        description="Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect immediately."
-        kind="numeric"
-        settings={numericSettings}
-        loading={flagsLoading}
-        emptyText="No numeric settings available."
-        onSaved={replaceSetting(setNumericSettings)}
-        onAfterWrite={refreshSiteConfig}
-        onToast={flashToast}
-        renderExtra={(setting) =>
-          setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
-            <button
-              type="button"
-              onClick={() => void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)}
-              disabled={quotaLoadingRole !== null || confirmation.busy}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-            >
-              {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
-                ? 'Loading...'
-                : 'Apply to existing users'}
-            </button>
-          ) : null
-        }
-      />
-
-      <AlertSnoozeSection onToast={flashToast} />
-
-      <AlertMutesSection onToast={flashToast} />
-
-      <UsageInsightsSettingsSection onToast={flashToast} />
-
-      <ModelVisibilitySection onToast={flashToast} />
-
-      <ModelConcurrencySection onToast={flashToast} />
-
-      {/* Signup Policy */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <div className="mb-3">
-          <h2 className="text-[14px] font-semibold text-gray-900">Signup Policy</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            Signups from listed domains auto-approve. Other domains require admin approval. Empty
-            list = all signups auto-approve.
-          </p>
-        </div>
-
-        {/* Add form: opened explicitly, reviewed before anything is written. */}
-        {addingDomain ? (
-          <form
-            className="mb-4 flex flex-col gap-1.5"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!confirmation.busy) onAddDomain();
-            }}
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  setInputError(null);
-                }}
-                placeholder="example.com or *.example.com"
-                className="min-w-[12rem] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-                disabled={confirmation.busy}
-                aria-label="Domain to add"
-                autoFocus
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setAddingDomain(false);
-                  setInput('');
-                  setInputError(null);
-                }}
-                disabled={confirmation.busy}
-                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+      <div className="min-w-0">
+        {/* Feedback for every section on this page. The live region is
+            always there (so a screen reader announces each message) and
+            takes no height: a message floats at the top right of the
+            sections, pinned to the top of the window while they scroll,
+            without pushing them down, and lets clicks through to whatever
+            is under it. */}
+        <div className="pointer-events-none sticky top-4 z-20 h-0">
+          <div role="status" className="flex justify-end">
+            {toast && (
+              <div
+                key={toast}
+                className="animate-admin-reveal max-w-md rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
               >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={confirmation.busy || !input.trim()}
-                className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
-              >
-                Review and add
-              </button>
-            </div>
-            <p className="text-[11px] text-gray-400">
-              Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact match
-              or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow any
-              subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does not
-              match the bare suffix.
-            </p>
-            {inputError && (
-              <p className="text-[12px] text-red-600" role="alert">
-                {inputError}
-              </p>
+                {toast}
+              </div>
             )}
-          </form>
-        ) : (
-          <div className="mb-4">
-            <button
-              type="button"
-              onClick={() => setAddingDomain(true)}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50"
-            >
-              Add domain
-            </button>
           </div>
-        )}
+        </div>
 
-        {/* Status */}
-        {error && (
-          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
-            {error}{' '}
-            <button onClick={() => setError(null)} className="ml-2 font-bold">
-              &times;
-            </button>
-          </div>
-        )}
-        {toast && (
-          <div className="mb-3 rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white">
-            {toast}
-          </div>
-        )}
+        <div className="space-y-6 [&>*+*]:border-t [&>*+*]:border-gray-200 [&>*+*]:pt-6">
+          {flagsError && (
+            <AdminNotice onDismiss={() => setFlagsError(null)}>{flagsError}</AdminNotice>
+          )}
 
-        {/* List */}
-        {loading ? (
-          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
-        ) : domains.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
-            No allowed domains. All signups auto-approve.
+          <RuntimeSettingsSection
+            id="settings-feature-flags"
+            title="Feature Flags"
+            description="Toggle runtime features without restarting the server. Changes take effect immediately."
+            kind="flag"
+            settings={featureFlags}
+            loading={flagsLoading}
+            emptyText="No feature flags available."
+            onSaved={replaceSetting(setFeatureFlags)}
+            onAfterWrite={refreshSiteConfig}
+            onToast={flashToast}
+          />
+
+          <RuntimeSettingsSection
+            id="settings-numeric"
+            title="Numeric Settings"
+            description="Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect immediately."
+            kind="numeric"
+            settings={numericSettings}
+            loading={flagsLoading}
+            emptyText="No numeric settings available."
+            onSaved={replaceSetting(setNumericSettings)}
+            onAfterWrite={refreshSiteConfig}
+            onToast={flashToast}
+            renderExtra={(setting) =>
+              setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
+                  }
+                  disabled={quotaLoadingRole !== null || confirmation.busy}
+                  className={BUTTON_SECONDARY}
+                >
+                  {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+                    ? 'Loading...'
+                    : 'Apply to existing users'}
+                </button>
+              ) : null
+            }
+          />
+
+          <div id="settings-alert-notifications" className="scroll-mt-4 focus:outline-none">
+            <AlertSnoozeSection onToast={flashToast} />
           </div>
-        ) : (
-          <div className="overflow-hidden rounded-md border border-gray-200">
-            <table className="w-full text-[13px]">
-              <thead className="bg-gray-50 text-gray-500">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Domain</th>
-                  <th className="px-3 py-2 text-left font-medium">Type</th>
-                  <th className="px-3 py-2 text-left font-medium">Added</th>
-                  <th className="px-3 py-2 text-right font-medium">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {domains.map((d) => {
-                  const key = `${d.domain}|${d.is_wildcard}`;
-                  return (
-                    <tr key={key} className="bg-white">
-                      <td className="px-3 py-2 text-gray-900">
-                        {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500">
-                        {d.is_wildcard ? 'Wildcard' : 'Exact'}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500">{relTime(d.created_at)}</td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => onRemove(d)}
-                          disabled={confirmation.busy}
-                          aria-label={`Remove ${d.is_wildcard ? `*.${d.domain}` : d.domain}`}
-                          className="text-[12px] font-medium text-red-600 transition hover:text-red-800 disabled:opacity-40"
-                        >
-                          Remove
-                        </button>
-                      </td>
+
+          <div id="settings-alert-types" className="scroll-mt-4 focus:outline-none">
+            <AlertMutesSection onToast={flashToast} />
+          </div>
+
+          <div id="settings-usage-insights" className="scroll-mt-4 focus:outline-none">
+            <UsageInsightsSettingsSection onToast={flashToast} />
+          </div>
+
+          <div id="settings-model-visibility" className="scroll-mt-4 focus:outline-none">
+            <ModelVisibilitySection onToast={flashToast} />
+          </div>
+
+          <div id="settings-model-concurrency" className="scroll-mt-4 focus:outline-none">
+            <ModelConcurrencySection onToast={flashToast} />
+          </div>
+
+          <AdminSection
+            id="settings-signup-policy"
+            title="Signup Policy"
+            description="Signups from listed domains auto-approve. Other domains require admin approval. Empty list = all signups auto-approve."
+            actions={
+              addingDomain ? null : (
+                <button
+                  type="button"
+                  onClick={() => setAddingDomain(true)}
+                  className={BUTTON_SECONDARY}
+                >
+                  Add domain
+                </button>
+              )
+            }
+          >
+            {/* Add form: opened explicitly, reviewed before anything is written. */}
+            {addingDomain ? (
+              <form
+                className="mb-4 flex max-w-xl flex-col gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!confirmation.busy) onAddDomain();
+                }}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      setInputError(null);
+                    }}
+                    placeholder="example.com or *.example.com"
+                    className={`${CONTROL} min-w-[12rem] flex-1`}
+                    disabled={confirmation.busy}
+                    aria-label="Domain to add"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingDomain(false);
+                      setInput('');
+                      setInputError(null);
+                    }}
+                    disabled={confirmation.busy}
+                    className={BUTTON_GHOST}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={confirmation.busy || !input.trim()}
+                    className={BUTTON_PRIMARY}
+                  >
+                    Review and add
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact
+                  match or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow
+                  any subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code>{' '}
+                  does not match the bare suffix.
+                </p>
+                {inputError && (
+                  <p className="text-[12px] text-red-600" role="alert">
+                    {inputError}
+                  </p>
+                )}
+              </form>
+            ) : null}
+
+            {error && (
+              <div className="mb-3">
+                <AdminNotice onDismiss={() => setError(null)}>{error}</AdminNotice>
+              </div>
+            )}
+
+            {loading ? (
+              <AdminLoading size="sm" />
+            ) : domains.length === 0 ? (
+              <AdminEmptyState title="No allowed domains. All signups auto-approve." />
+            ) : (
+              <div className={`${PANEL} relative overflow-x-auto`}>
+                <table className="w-full min-w-[30rem] text-[13px]">
+                  <thead className="bg-gray-50/80">
+                    <tr className="border-b border-gray-200">
+                      <th className={TABLE_HEAD_CELL}>Domain</th>
+                      <th className={TABLE_HEAD_CELL}>Type</th>
+                      <th className={TABLE_HEAD_CELL}>Added</th>
+                      <th className={`${TABLE_HEAD_CELL} text-right`}>Action</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {domains.map((d) => {
+                      const key = `${d.domain}|${d.is_wildcard}`;
+                      return (
+                        <tr key={key}>
+                          <td className="px-4 py-2 font-mono text-[12px] text-gray-900">
+                            {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500">
+                            {d.is_wildcard ? 'Wildcard' : 'Exact'}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2 text-gray-500">
+                            {relTime(d.created_at)}
+                          </td>
+                          <td className="px-4 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => onRemove(d)}
+                              disabled={confirmation.busy}
+                              aria-label={`Remove ${d.is_wildcard ? `*.${d.domain}` : d.domain}`}
+                              className={ROW_ACTION_DANGER}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AdminSection>
+        </div>
       </div>
 
       {confirmation.dialog}

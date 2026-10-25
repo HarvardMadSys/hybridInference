@@ -396,9 +396,9 @@ that token (`apps/backend/routing/engine_wait.py`):
 Only streaming requests are watched: a non-streaming response arrives whole, so
 there is no first token to wait for. The first-token wait includes the engine's
 prefill, so a model serving very long prompts needs a wait above the time it
-takes to start answering them. The wait needs Python 3.11 or newer: its
-deadline is `asyncio.timeout`, which can tell its own cancellation from a client
-that hangs up at the same moment. On Python 3.10 streams are never timed.
+takes to start answering them. The wait's deadline is `asyncio.timeout`, which
+can tell its own cancellation from a client that hangs up at the same moment, so
+a request whose client has gone is never offloaded.
 
 A response served by the offload route carries `_routing.offload` beside the
 usual `fallback` and `failed_attempts`: `queue_wait` or `engine_wait` after an

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -171,8 +171,8 @@ async def test_provider_observability_rejects_inverted_range():
 
 @pytest.mark.asyncio
 async def test_provider_observability_happy_path_from_api_logs():
-    start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-    next_bucket = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    next_bucket = datetime(2026, 1, 1, 1, 0, tzinfo=UTC)
     fake_pool = _FakePool(
         fetchrow_response={
             "request_count": 10,

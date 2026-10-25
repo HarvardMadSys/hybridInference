@@ -82,18 +82,6 @@ class AnthropicAdapter(BaseAdapter):
 
     native_format = "anthropic"
 
-    def __init__(self, config):
-        """Initialize the adapter and set up per-stream usage tracking."""
-        super().__init__(config)
-        # Populated after stream_messages() finishes; consumed by the router for
-        # DB logging.
-        self.last_stream_usage: dict[str, int] = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        }
-
     ANTHROPIC_VERSION = "2023-06-01"
     DEFAULT_BASE = "https://api.anthropic.com"
 
@@ -417,7 +405,7 @@ class AnthropicAdapter(BaseAdapter):
         """Anthropic-format streaming identity passthrough.
 
         Forwards raw upstream SSE bytes to the caller and accumulates the
-        per-event usage counts into self.last_stream_usage so the router can
+        per-event usage counts into ``usage_sink`` so the router can
         record them in DB logging once the stream completes.
         """
         from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
@@ -470,6 +458,5 @@ class AnthropicAdapter(BaseAdapter):
             if buf.strip():
                 extract_anthropic_usage_from_sse(buf + b"\n\n", usage)
 
-        self.last_stream_usage = usage  # keep for backward-compat with tests
         if usage_sink is not None:
             usage_sink.update(usage)
