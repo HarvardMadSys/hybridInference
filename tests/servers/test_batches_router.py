@@ -25,6 +25,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import batches
+from serving.storage.batch_store import BatchDeleteInProgress, BatchOwnerUnavailable
 
 MODEL = "glm-4.7"
 ADMIN_MODEL = "admin-model"
@@ -359,6 +360,70 @@ async def test_every_route_is_404_without_a_batch_store(client, services, method
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("unavailable", ["disabled", "missing-store"])
+@pytest.mark.parametrize(("method", "path"), ROUTES)
+async def test_unavailable_surface_is_404_before_authentication(
+    client, settings, services, unavailable, method, path
+):
+    if unavailable == "disabled":
+        settings["BATCH_ENABLED"] = "0"
+    else:
+        services.batch_store = None
+
+    response = await client.request(method, path)
+
+    assert response.status_code == 404
+    assert _message(response) == "Batch inference is not available on this gateway"
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "missing-store"])
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("POST", "/v1/batches", {"content": b"{not json"}),
+        ("GET", "/v1/batches", {"params": {"limit": "not-an-integer"}}),
+        (
+            "GET",
+            "/v1/batches/batch_x/results",
+            {"params": {"limit": "not-an-integer", "after": "not-a-result-id"}},
+        ),
+    ],
+    ids=["malformed-create-body", "invalid-list-query", "invalid-results-query"],
+)
+async def test_unavailable_surface_is_404_before_request_validation(
+    client, settings, services, unavailable, method, path, kwargs
+):
+    if unavailable == "disabled":
+        settings["BATCH_ENABLED"] = "0"
+    else:
+        services.batch_store = None
+
+    response = await client.request(method, path, headers=_auth(), **kwargs)
+
+    assert response.status_code == 404
+    assert _message(response) == "Batch inference is not available on this gateway"
+
+
+async def test_disabled_surface_is_404_before_create_quota(client, settings, store, monkeypatch):
+    settings["BATCH_ENABLED"] = "0"
+
+    async def unexpected_quota_check(_user_id):
+        raise AssertionError("create quota must not run for an unavailable surface")
+
+    monkeypatch.setattr(store, "count_active_batches", unexpected_quota_check)
+
+    response = await client.post("/v1/batches", json=_body(), headers=_auth())
+
+    assert response.status_code == 404
+
+
+async def test_enabled_surface_still_requires_authentication(client):
+    response = await client.get("/v1/batches")
+
+    assert response.status_code == 401
+    assert _message(response) == "Invalid API key"
+
+
 # --- who may create -------------------------------------------------------------
 
 
@@ -581,6 +646,19 @@ async def test_a_body_the_store_refuses_is_400(client, store, monkeypatch):
     assert _message(response).startswith("Invalid batch: a custom_id is repeated")
     # The store's own words stay in the log, not the response.
     assert "appears more than once" not in response.text
+
+
+async def test_create_is_401_if_the_owner_becomes_unavailable(client, store, monkeypatch):
+    async def owner_unavailable(**kwargs):
+        raise BatchOwnerUnavailable(kwargs["user_id"])
+
+    monkeypatch.setattr(store, "create_batch", owner_unavailable)
+
+    response = await client.post("/v1/batches", json=_body(), headers=_auth())
+
+    assert response.status_code == 401
+    assert _message(response) == "Invalid or expired API key"
+    assert store.created == []
 
 
 async def test_a_duplicate_custom_id_is_400(client, store):
@@ -1092,3 +1170,22 @@ async def test_delete_removes_the_batch(client, store):
     assert batch["id"] not in store.batches
     assert again.status_code == 404
     assert (await client.get(path, headers=_auth())).status_code == 404
+
+
+async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, store, monkeypatch):
+    batch = await _create(client)
+    path = f"/v1/batches/{batch['id']}"
+
+    async def delete_in_progress(batch_id, *, user_id=None):
+        raise BatchDeleteInProgress(batch_id)
+
+    monkeypatch.setattr(store, "delete_batch", delete_in_progress)
+
+    response = await client.delete(path, headers=_auth())
+
+    assert response.status_code == 409
+    assert _message(response) == (
+        f"Batch '{batch['id']}' has a running request; cancel the batch and wait for its "
+        "running requests to finish before deleting it"
+    )
+    assert batch["id"] in store.batches

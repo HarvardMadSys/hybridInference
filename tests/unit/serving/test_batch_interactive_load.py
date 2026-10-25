@@ -31,6 +31,34 @@ def test_an_exception_still_stops_the_count():
     assert load.in_flight("a") == 0
 
 
+def test_an_unknown_tracker_can_move_to_the_concrete_model():
+    load = InteractiveLoad()
+    tracker = load.track(None)
+
+    with tracker:
+        assert load.in_flight("a") == 0
+        tracker.retarget("a")
+        assert load.in_flight("a") == 1
+
+        tracker.retarget("b")
+        assert load.in_flight("a") == 0
+        assert load.in_flight("b") == 1
+
+    assert load.in_flight("a") == 0
+    assert load.in_flight("b") == 0
+
+
+def test_an_exception_after_retargeting_stops_the_concrete_count():
+    load = InteractiveLoad()
+
+    with pytest.raises(RuntimeError), load.track(None) as tracker:
+        tracker.retarget("a")
+        assert load.in_flight("a") == 1
+        raise RuntimeError("boom")
+
+    assert load.in_flight("a") == 0
+
+
 def test_never_negative():
     load = InteractiveLoad()
     outer = load.track("a")

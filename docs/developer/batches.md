@@ -87,6 +87,11 @@ curl -s https://your-gateway.example/v1/batches \
 One batch may use several models. Auto models (`auto`, `auto-<tier>`) cannot be
 used in a batch; name a specific model.
 
+If that name is an alias, the stored request retains the name you sent, but the
+worker dispatches it to the canonical model the alias named when you created the
+batch. Changing an alias later cannot move already-submitted work to another
+model or another model's concurrency limit.
+
 The whole batch is refused when any request in it is invalid. The error has
 the gateway's usual `{"error": {...}}` shape, and its message names the request:
 
@@ -281,11 +286,12 @@ are cancelled; running ones finish and keep their results. The batch is
 `cancelling` until they do, then `cancelled`. Cancelling a batch that has
 already finished returns it unchanged.
 
-`DELETE /v1/batches/{id}` deletes a batch with its requests and results,
-whatever its status, and answers
-`{"id": "batch_...", "object": "batch.deleted", "deleted": true}`. A request of
-the batch that is running at that moment still finishes, and is logged and
-billed like any other.
+`DELETE /v1/batches/{id}` deletes a batch with its requests and results and
+answers `{"id": "batch_...", "object": "batch.deleted", "deleted": true}`.
+Its status does not matter, but deletion is blocked with `409` while any request
+holds a live upstream lease. Cancel the batch, wait for its running requests to
+finish (or their leases to expire), then delete it. A stale `running` item whose
+lease has expired does not block deletion.
 
 A finished batch is deleted automatically after the deployment's retention
 period, seven days by default, so collect its results before then.
@@ -319,6 +325,7 @@ The operator may have changed any of them. A larger job is several batches.
 | Status | When |
 |---|---|
 | `400` | The body is not valid JSON or not a batch; a request is invalid, uses an unknown or auto model, or repeats a `custom_id`; too many requests; or the request carries `X-On-Behalf-Of` |
+| `401` | The API key is invalid or expired when authentication runs, or the account becomes unavailable before the batch is stored |
 | `403` | Your role may not create batches |
 | `404` | Batch inference is not available on this gateway |
 | `413` | The body is larger than the size limit |

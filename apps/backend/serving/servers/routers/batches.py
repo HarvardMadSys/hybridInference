@@ -62,13 +62,13 @@ from serving.servers.deps import (
     get_services,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.storage.batch_store import BatchDeleteInProgress, BatchOwnerUnavailable
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from serving.batch.config import BatchConfig
 
 logger = get_logger(__name__)
-router = APIRouter()
 
 _UNAVAILABLE = "Batch inference is not available on this gateway"
 
@@ -86,6 +86,14 @@ def _surface(store: Any) -> tuple[Any, BatchConfig]:
     if store is None or not config.enabled:
         raise HTTPException(404, _UNAVAILABLE)
     return store, config
+
+
+def _require_surface(store: Any = Depends(get_batch_store)) -> None:
+    """Hide the whole surface before authentication or request validation runs."""
+    _surface(store)
+
+
+router = APIRouter(dependencies=[Depends(_require_surface)])
 
 
 def _reject_on_behalf_of(request: Request) -> None:
@@ -314,8 +322,8 @@ async def _validate_requests(
     """Check every request of the body; return the store's items and model ids.
 
     The first problem answers 400 and names the request it was found in. Each
-    item keeps the caller's body exactly as sent (an alias stays an alias, to be
-    resolved again when it runs) beside the canonical id of its model.
+    item keeps the caller's body exactly as sent for later retrieval, beside the
+    canonical id the worker pins into a copy of the body when it dispatches it.
     """
     if len(payload.requests) > config.max_requests:
         raise HTTPException(
@@ -429,6 +437,11 @@ async def create_batch(
             metadata=payload.metadata,
             completion_window_seconds=config.completion_window_seconds,
         )
+    except BatchOwnerUnavailable:
+        # Authentication succeeded before the body was validated, but the
+        # account may have been suspended or hard-deleted before this
+        # transaction locked it. Present the same answer as the auth path.
+        raise HTTPException(401, "Invalid or expired API key") from None
     except ValueError as exc:
         # The store refuses what it cannot hold (a repeated or unstorable
         # custom_id). The checks above catch those first; this keeps a 400, with
@@ -512,10 +525,18 @@ async def delete_batch(
     user_ctx: dict = Depends(verify_api_key),
     store=Depends(get_batch_store),
 ) -> BatchDeleted:
-    """Delete a batch with its requests and results, whatever its status."""
+    """Delete a batch unless one of its requests still holds a live lease."""
     store, _config = _surface(store)
     _reject_on_behalf_of(request)
-    if not await store.delete_batch(batch_id, user_id=_lookup_scope(user_ctx)):
+    try:
+        deleted = await store.delete_batch(batch_id, user_id=_lookup_scope(user_ctx))
+    except BatchDeleteInProgress:
+        raise HTTPException(
+            409,
+            f"Batch '{batch_id}' has a running request; cancel the batch and wait for its "
+            "running requests to finish before deleting it",
+        ) from None
+    if not deleted:
         raise _not_found(batch_id)
     return BatchDeleted(id=batch_id)
 

@@ -27,9 +27,10 @@ items from here, so whatever coordinates the processes lives in SQL:
   which no worker can claim back), and a batch with no open item left becomes
   ``completed``, or ``cancelled``. A late completion or retry therefore never
   undoes a cancel.
-- **Lock order**: a transaction locks a batch row before any of its items, and
-  several batch rows in id order; a heartbeat skips a locked item rather than
-  wait for it. No two transactions can wait on each other in a cycle.
+- **Lock order**: claims, heartbeats and user deletes take model advisory locks
+  in sorted order before row locks. Worker writes lock a batch before its item,
+  and several batch rows in id order. No transaction reverses a shared lock
+  order, so two transactions cannot wait on each other in a cycle.
 
 Schema creation follows :mod:`serving.storage.log_schema`: the catalog is read
 first, so a settled database takes no DDL lock at all, and whatever is missing
@@ -40,6 +41,7 @@ serializes the gateway processes that boot at once, since two concurrent
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 from typing import TYPE_CHECKING, Any
@@ -47,13 +49,29 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 from serving.storage.log_schema import bounded_ddl, execute_ddl
-from serving.storage.utils import strip_null_bytes
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from datetime import datetime
 
 logger = get_logger(__name__)
+
+
+class BatchOwnerUnavailable(RuntimeError):
+    """An authenticated batch owner is no longer allowed to create work."""
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        super().__init__(f"Batch owner {user_id!r} is not an active account.")
+
+
+class BatchDeleteInProgress(RuntimeError):
+    """A batch cannot be deleted while one of its upstream calls is live."""
+
+    def __init__(self, batch_id: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(f"Batch {batch_id!r} still has a running request.")
+
 
 #: A batch in one of these statuses is finished: its status never changes again
 #: (items already running when it expired or failed may still finish).
@@ -74,6 +92,14 @@ _SCHEMA_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hybridinference:batch
 # Retention purges at most this many batches per sweep, one per statement: a
 # batch can hold tens of thousands of items, and the next sweep continues.
 _PURGE_LIMIT = 100
+
+# JSONB rejects U+0000 even when it appears as a JSON ``\u0000`` escape. Values
+# that contain one are therefore stored as a two-element JSON array carrying a
+# marker and base64 of the original JSON text. All persisted batch payloads are
+# objects, so the array cannot collide with their ordinary JSONB shape. The
+# helper also escapes an exact envelope-shaped array if called outside that
+# narrower storage contract.
+_JSON_ENVELOPE_MARKER = "hybridinference:batch-json:v1"
 
 _TABLES: tuple[tuple[str, str], ...] = (
     (
@@ -455,6 +481,8 @@ class BatchStore:
             The batch row, status ``validating``.
 
         Raises:
+            BatchOwnerUnavailable: An authenticated owner no longer exists,
+                is not active, or has a hard-delete in progress.
             ValueError: Two items share a ``custom_id``, or one holds a NUL
                 character (which a text column cannot store).
         """
@@ -472,6 +500,13 @@ class BatchStore:
             for item in items
         ]
         async with self._pool.acquire() as conn, conn.transaction():
+            if key_hash is not None:
+                owner = await conn.fetchrow(
+                    "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR SHARE",
+                    user_id,
+                )
+                if owner is None or owner["status"] != "active" or owner["hard_delete_pending"]:
+                    raise BatchOwnerUnavailable(user_id)
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO batch_jobs
@@ -619,17 +654,52 @@ class BatchStore:
         return _batch_row(row)
 
     async def delete_batch(self, batch_id: str, *, user_id: str | None = None) -> bool:
-        """Delete a batch and, by cascade, its items. True when a batch was removed.
+        """Delete a batch with no live upstream call, including its items.
 
-        Scoped to *user_id* when given. A worker still running one of its
-        items finds the item gone and its writes become no-ops.
+        Scoped to *user_id* when given. The batch's immutable model ids are
+        read first, then their claim/heartbeat advisory locks are taken in
+        sorted order before the batch is locked and rechecked. A heartbeat
+        therefore waits rather than skipping an item lock and losing a renewal.
+
+        Raises:
+            BatchDeleteInProgress: At least one item has an unexpired running
+                lease and may still be making an upstream call.
         """
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM batch_jobs WHERE id = $1 AND ($2::text IS NULL OR user_id = $2)",
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT model_ids FROM batch_jobs "
+                "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2)",
                 batch_id,
                 user_id,
             )
+            if row is None:
+                return False
+            # model_ids is intentionally ordinary, queryable JSONB rather than
+            # an opaque NUL envelope (model ids also live in a text column).
+            model_ids = _load_plain_json(row["model_ids"])
+            if not isinstance(model_ids, list) or not all(
+                isinstance(model_id, str) for model_id in model_ids
+            ):
+                raise RuntimeError(f"Batch {batch_id!r} has invalid model_ids.")
+            for model_id in sorted(set(model_ids)):
+                await conn.execute(_CLAIM_LOCK_SQL, _CLAIM_LOCK_CLASS, model_id)
+            found = await conn.fetchval(
+                "SELECT TRUE FROM batch_jobs "
+                "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) FOR UPDATE",
+                batch_id,
+                user_id,
+            )
+            if found is None:
+                return False
+            live = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM batch_items "
+                "WHERE batch_id = $1 AND status = 'running' "
+                "AND lease_expires_at > clock_timestamp())",
+                batch_id,
+            )
+            if live:
+                raise BatchDeleteInProgress(batch_id)
+            result = await conn.execute("DELETE FROM batch_jobs WHERE id = $1", batch_id)
         return _rowcount(result) > 0
 
     async def delete_user_batches(self, user_id: str) -> int:
@@ -762,22 +832,33 @@ class BatchStore:
     async def heartbeat(self, *, worker_id: str, item_ids: list[int], lease_seconds: int) -> int:
         """Extend the leases of the items still running under *worker_id*'s claim.
 
-        An item another transaction has locked at that moment (it is being
-        completed, re-claimed or settled) is skipped rather than waited for.
+        Claims and heartbeats share the per-model advisory lock, so a claimant
+        cannot count an old committed lease as expired while its renewal is
+        still uncommitted. Multi-model heartbeats take those locks in sorted
+        order. An item another transaction has locked is skipped rather than
+        waited for.
 
         Returns:
             The number of leases extended.
         """
         if not item_ids:
             return 0
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            models = await conn.fetch(
+                "SELECT DISTINCT model_id FROM batch_items "
+                "WHERE id = ANY($1::bigint[]) ORDER BY model_id",
+                list(item_ids),
+            )
+            for model_id in sorted({row["model_id"] for row in models}):
+                await conn.execute(_CLAIM_LOCK_SQL, _CLAIM_LOCK_CLASS, model_id)
             result = await conn.execute(
                 """
                 UPDATE batch_items
-                SET lease_expires_at = now() + make_interval(secs => $3)
+                SET lease_expires_at = clock_timestamp() + make_interval(secs => $3)
                 WHERE id IN (
                     SELECT id FROM batch_items
                     WHERE id = ANY($2::bigint[]) AND status = 'running' AND claimed_by = $1
+                      AND lease_expires_at > clock_timestamp()
                     ORDER BY id
                     FOR NO KEY UPDATE SKIP LOCKED
                 )
@@ -1152,7 +1233,7 @@ def _batch_row(row: Any) -> dict[str, Any]:
         "key_hash": row["key_hash"],
         "endpoint": row["endpoint"],
         "status": row["status"],
-        "model_ids": list(_load_json(row["model_ids"]) or []),
+        "model_ids": list(_load_plain_json(row["model_ids"]) or []),
         "request_count": row["request_count"],
         "completed_count": row["completed_count"],
         "failed_count": row["failed_count"],
@@ -1196,25 +1277,89 @@ def _rowcount(result: Any) -> int:
         return 0
 
 
+def _load_plain_json(value: Any) -> Any:
+    """Decode JSON text without treating a reserved payload envelope specially."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Failed to decode a batch JSON column", exc_info=True)
+        return None
+
+
 def _dump_json(value: Any) -> str | None:
     """Encode a value for a JSONB column; None stays SQL NULL.
 
-    JSONB cannot hold a NUL character, so it is removed from every string
-    rather than failing the write.
+    Ordinary values retain their JSONB shape. A value containing a NUL uses a
+    versioned JSON-array envelope because PostgreSQL JSONB cannot represent
+    U+0000, even as an escape.
     """
     if value is None:
         return None
-    return json.dumps(strip_null_bytes(value))
+    encoded = json.dumps(value)
+    if _contains_nul(value) or _is_json_envelope(value):
+        payload = base64.b64encode(encoded.encode("utf-8")).decode("ascii")
+        return json.dumps([_JSON_ENVELOPE_MARKER, payload])
+    return encoded
 
 
 def _load_json(value: Any) -> Any:
-    """Decode a JSONB column that asyncpg may hand back as str or object."""
-    if isinstance(value, (str, bytes)):
+    """Decode ordinary JSONB and the lossless NUL envelope.
+
+    Depending on its codec, asyncpg may return either JSON text or an
+    already-decoded object.
+    """
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
         try:
-            return json.loads(value)
+            decoded = json.loads(value)
         except (json.JSONDecodeError, ValueError):
+            # The superseded string-envelope prefix was never a valid stored
+            # payload shape, but preserve a direct legacy collision.
+            if value.startswith(_JSON_ENVELOPE_MARKER):
+                return value
             # Invalid JSON in a JSONB column signals data corruption (manual
             # edit / migration bug); surface it rather than silently dropping.
             logger.warning("Failed to decode a batch JSON column", exc_info=True)
             return None
-    return value
+    else:
+        decoded = value
+    if _is_json_envelope(decoded):
+        return _load_json_envelope(decoded)
+    return decoded
+
+
+def _contains_nul(value: Any) -> bool:
+    """Return whether a JSON-compatible value contains U+0000 in a key or value."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_contains_nul(key) or _contains_nul(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_nul(item) for item in value)
+    return False
+
+
+def _is_json_envelope(value: Any) -> bool:
+    """Return whether *value* has the exact reserved envelope shape."""
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and value[0] == _JSON_ENVELOPE_MARKER
+        and isinstance(value[1], str)
+    )
+
+
+def _load_json_envelope(value: list[Any] | tuple[Any, ...]) -> Any:
+    """Decode one JSON-array envelope, preserving malformed collisions."""
+    try:
+        raw = base64.b64decode(value[1], validate=True).decode("utf-8")
+        return json.loads(raw)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        # This is not an envelope produced by _dump_json. Treat it as an
+        # ordinary array so a reserved-shape collision remains lossless.
+        return value

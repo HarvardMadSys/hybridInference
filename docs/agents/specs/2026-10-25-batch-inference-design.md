@@ -105,9 +105,11 @@ the body names), `request` (the caller's body exactly as sent), `status`,
 `error`, `status_code`, `prompt_tokens`, `completion_tokens`, `cost_usd`,
 `request_id`, `started_at`, `completed_at`.
 
-The item keeps the caller's body untouched, so an alias stays an alias and is
-resolved again when the request runs; `model_id` is the canonical id because the
-caps, the interactive-load count and the claim all key on it.
+The stored item keeps the caller's body untouched, so retrieval retains the
+alias the caller sent. Dispatch copies that body and replaces `model` with the
+stored canonical `model_id`; an alias remapped after creation therefore cannot
+run model B while consuming model A's cap. The caps, interactive-load count and
+claim all key on that same canonical id.
 
 ### `batch_model_limits`
 
@@ -244,19 +246,20 @@ sets `batch_job_id` on the request's log metadata, and forces `stream` off.
 
 ## 10. API
 
-All routes authenticate with `verify_api_key`. Without a batch store, or with
-`BATCH_ENABLED` off, every route answers 404. `X-On-Behalf-Of` is refused with
-400 on every route: a batch runs later under the key that created it, so a
-service key acting for someone else would store a batch owned by one identity and
-authorised by another.
+When the surface is available, all routes authenticate with `verify_api_key`.
+The availability gate precedes authentication and request validation: without a
+batch store, or with `BATCH_ENABLED` off, every route answers 404.
+`X-On-Behalf-Of` is refused with 400 on every available route: a batch runs later
+under the key that created it, so a service key acting for someone else would
+store a batch owned by one identity and authorised by another.
 
 | Route | Behaviour |
 |---|---|
-| `POST /v1/batches` | 403 below `BATCH_MIN_ROLE`; 413 over the body cap; 400 for invalid JSON (`NaN` and `Infinity` included), an invalid envelope, too many requests, a duplicate `custom_id`, a `url` other than `/v1/chat/completions`, a `method` other than `POST`, a body that is not a valid chat request, `stream: true`, an unknown model or one the caller may not use (worded exactly as an unknown model), an auto model; 429 at the active-batch limit. A request's error names it: `requests[3] (custom_id 'q-4'): ...`. Returns the batch object. |
+| `POST /v1/batches` | 403 below `BATCH_MIN_ROLE`; 413 over the body cap; 400 for invalid JSON (`NaN` and `Infinity` included), an invalid envelope, too many requests, a duplicate `custom_id`, a `url` other than `/v1/chat/completions`, a `method` other than `POST`, a body that is not a valid chat request, `stream: true`, an unknown model or one the caller may not use (worded exactly as an unknown model), an auto model; 429 at the active-batch limit; 401 with the ordinary invalid-or-expired-key response if the authenticated owner becomes inactive, disappears or enters hard deletion before the insert locks it. A request's error names it: `requests[3] (custom_id 'q-4'): ...`. Returns the batch object. |
 | `GET /v1/batches?after=&limit=` | The caller's own batches, newest first; `limit` 1–100 (20) |
 | `GET /v1/batches/{id}` | The batch object; owner or admin, otherwise 404 |
 | `POST /v1/batches/{id}/cancel` | Queued requests cancelled, running ones finish; a finished batch is returned unchanged |
-| `DELETE /v1/batches/{id}` | The batch with its requests and results; `{"id", "object": "batch.deleted", "deleted": true}` |
+| `DELETE /v1/batches/{id}` | The batch with its requests and results; `{"id", "object": "batch.deleted", "deleted": true}`. Status does not matter, but an unexpired running-item lease answers 409 with instructions to cancel and wait; expired leases do not block deletion. |
 | `GET /v1/batches/{id}/results?after=&limit=` | Requests in submission order with their outcomes; `limit` 1–1000 (100); `after` is a result id (`batch_req_<n>`) |
 
 The batch object has OpenAI's fields (`id`, `object: "batch"`, `endpoint`,

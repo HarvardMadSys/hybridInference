@@ -13,11 +13,50 @@ the event loop, and neither entering nor leaving awaits anything.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from types import TracebackType
+
+
+class InteractiveLoadTracker:
+    """One request's live model, which may be learned after admission.
+
+    Auto-model requests enter the HTTP concurrency dependency before the auto
+    selector has chosen a concrete model. A tracker therefore starts with an
+    optional target and can be retargeted, without a gap or an ``await``, once
+    dispatch knows which canonical model will actually serve the request.
+    """
+
+    def __init__(self, load: InteractiveLoad, model_id: str | None) -> None:
+        self._load = load
+        self._model_id = model_id
+        self._active = False
+
+    def __enter__(self) -> InteractiveLoadTracker:
+        if self._active:
+            raise RuntimeError("an interactive-load tracker cannot be entered twice")
+        self._active = True
+        self._load._increment(self._model_id)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._load._decrement(self._model_id)
+        self._active = False
+
+    def retarget(self, model_id: str | None) -> None:
+        """Move this request's count to *model_id*, if it is currently active."""
+        if model_id == self._model_id:
+            return
+        if self._active:
+            self._load._decrement(self._model_id)
+            self._load._increment(model_id)
+        self._model_id = model_id
 
 
 class InteractiveLoad:
@@ -27,18 +66,26 @@ class InteractiveLoad:
         """Start with nothing in flight."""
         self._in_flight: dict[str, int] = {}
 
-    @contextmanager
-    def track(self, model_id: str) -> Iterator[None]:
-        """Count one request on *model_id* while the ``with`` block runs."""
-        self._in_flight[model_id] = self._in_flight.get(model_id, 0) + 1
-        try:
-            yield
-        finally:
-            remaining = self._in_flight.get(model_id, 0) - 1
-            if remaining > 0:
-                self._in_flight[model_id] = remaining
-            else:
-                self._in_flight.pop(model_id, None)
+    def track(self, model_id: str | None) -> InteractiveLoadTracker:
+        """Return a context manager counting one request on *model_id*.
+
+        ``None`` starts uncounted. The returned tracker can later be retargeted
+        when an auto-model selector learns the concrete canonical model.
+        """
+        return InteractiveLoadTracker(self, model_id)
+
+    def _increment(self, model_id: str | None) -> None:
+        if model_id is not None:
+            self._in_flight[model_id] = self._in_flight.get(model_id, 0) + 1
+
+    def _decrement(self, model_id: str | None) -> None:
+        if model_id is None:
+            return
+        remaining = self._in_flight.get(model_id, 0) - 1
+        if remaining > 0:
+            self._in_flight[model_id] = remaining
+        else:
+            self._in_flight.pop(model_id, None)
 
     def in_flight(self, model_id: str) -> int:
         """Return how many requests on *model_id* are in flight now."""

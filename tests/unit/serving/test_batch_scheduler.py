@@ -360,6 +360,21 @@ async def test_drains_many_rounds_without_waiting_for_a_poll(worker, dispatch):
     assert (item["prompt_tokens"], item["completion_tokens"]) == (10, 5)
 
 
+async def test_dispatch_pins_an_alias_to_the_canonical_model_claimed_at_creation(worker, dispatch):
+    store = FakeStore()
+    request = {"model": "alias", "messages": [{"role": "user", "content": "hi"}]}
+    store.add(model="model-a", request=request)
+    scheduler = worker(store, caps={"model-a": 1})
+
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+
+    # The persisted request remains byte-for-byte caller-shaped, while dispatch
+    # is pinned to the canonical model whose deployment-wide slot was claimed.
+    assert store.items[1]["request"] == request
+    assert dispatch.calls[0]["body"] == {**request, "model": "model-a"}
+
+
 async def test_notify_wakes_an_idle_loop(worker):
     store = FakeStore()
     scheduler = worker(store)

@@ -11,6 +11,7 @@ deletes remove what they should and nothing else.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,7 +21,13 @@ import pytest
 import pytest_asyncio
 
 from serving.storage import batch_store
-from serving.storage.batch_store import ACTIVE_BATCH_STATUSES, TERMINAL_BATCH_STATUSES, BatchStore
+from serving.storage.batch_store import (
+    ACTIVE_BATCH_STATUSES,
+    TERMINAL_BATCH_STATUSES,
+    BatchDeleteInProgress,
+    BatchOwnerUnavailable,
+    BatchStore,
+)
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
@@ -50,12 +57,24 @@ BATCH_KEYS = {
     "paused_until",
 }
 RATE_LIMITED = {"code": "rate_limited", "message": "slow down", "status": 429}
+_TEST_USERS = ("alice", "bob", "carol", "dave", "erin")
 
 
 async def _wipe(pool: Any) -> None:
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM batch_jobs")
         await conn.execute("DELETE FROM batch_model_limits")
+
+
+async def _reset_test_users(pool: Any, *, create: bool) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE id = ANY($1::text[])", list(_TEST_USERS))
+        if create:
+            await conn.executemany(
+                "INSERT INTO users (id, email, password_hash, status) "
+                "VALUES ($1, $2, 'x', 'active')",
+                [(user, f"batch-store-{user}@example.invalid") for user in _TEST_USERS],
+            )
 
 
 @pytest_asyncio.fixture
@@ -65,10 +84,12 @@ async def pool():
     # Claims, sweeps and model stats read every batch in the database, so each
     # test starts from none (no other test file writes these tables).
     await _wipe(pool)
+    await _reset_test_users(pool, create=True)
     try:
         yield pool
     finally:
         await _wipe(pool)
+        await _reset_test_users(pool, create=False)
         await pool.close()
 
 
@@ -193,6 +214,104 @@ async def _expire_lease(pool: Any, item_id: int) -> None:
     )
 
 
+class _PauseAfterStatementConnection:
+    """Pause after one matching SQL statement while its transaction stays open."""
+
+    def __init__(
+        self,
+        conn: Any,
+        needle: str,
+        reached: asyncio.Event,
+        resume: asyncio.Event,
+        started: asyncio.Event | None = None,
+    ) -> None:
+        self._conn = conn
+        self._needle = needle
+        self._reached = reached
+        self._resume = resume
+        self._started = started
+        self._paused = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def _signal_before_match(self, query: str) -> None:
+        if not self._paused and self._needle in query and self._started is not None:
+            self._started.set()
+
+    async def _pause_after_match(self, query: str) -> None:
+        if not self._paused and self._needle in query:
+            self._paused = True
+            self._reached.set()
+            await self._resume.wait()
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self._signal_before_match(query)
+        result = await self._conn.fetchval(query, *args)
+        await self._pause_after_match(query)
+        return result
+
+    async def execute(self, query: str, *args: Any) -> Any:
+        self._signal_before_match(query)
+        result = await self._conn.execute(query, *args)
+        await self._pause_after_match(query)
+        return result
+
+
+class _PauseAfterStatementAcquire:
+    def __init__(
+        self,
+        pool: Any,
+        needle: str,
+        reached: asyncio.Event,
+        resume: asyncio.Event,
+        started: asyncio.Event | None = None,
+    ) -> None:
+        self._acquire = pool.acquire()
+        self._needle = needle
+        self._reached = reached
+        self._resume = resume
+        self._started = started
+
+    async def __aenter__(self) -> _PauseAfterStatementConnection:
+        conn = await self._acquire.__aenter__()
+        return _PauseAfterStatementConnection(
+            conn,
+            self._needle,
+            self._reached,
+            self._resume,
+            self._started,
+        )
+
+    async def __aexit__(self, *args: Any) -> Any:
+        return await self._acquire.__aexit__(*args)
+
+
+class _PauseAfterStatementPool:
+    def __init__(
+        self,
+        pool: Any,
+        needle: str,
+        reached: asyncio.Event,
+        resume: asyncio.Event,
+        started: asyncio.Event | None = None,
+    ) -> None:
+        self._pool = pool
+        self._needle = needle
+        self._reached = reached
+        self._resume = resume
+        self._started = started
+
+    def acquire(self) -> _PauseAfterStatementAcquire:
+        return _PauseAfterStatementAcquire(
+            self._pool,
+            self._needle,
+            self._reached,
+            self._resume,
+            self._started,
+        )
+
+
 # -- API surface ---------------------------------------------------------------
 
 
@@ -284,6 +403,53 @@ async def test_unstorable_custom_ids_are_refused_and_nothing_is_stored(store):
     assert await store.list_batches(user_id="alice", limit=10) == []
 
 
+async def test_authenticated_create_requires_a_locked_active_owner(pool, store):
+    model = _model()
+
+    await _execute(pool, "UPDATE users SET status = 'suspended' WHERE id = 'alice'")
+    with pytest.raises(BatchOwnerUnavailable):
+        await _create(store, _items(model, 1))
+
+    await _execute(
+        pool,
+        "UPDATE users SET status = 'active', hard_delete_pending = TRUE WHERE id = 'alice'",
+    )
+    with pytest.raises(BatchOwnerUnavailable):
+        await _create(store, _items(model, 1))
+
+    await _execute(pool, "DELETE FROM users WHERE id = 'alice'")
+    with pytest.raises(BatchOwnerUnavailable):
+        await _create(store, _items(model, 1))
+
+    assert await store.list_batches(user_id="alice", limit=10) == []
+
+
+async def test_auth_disabled_create_does_not_require_an_account(store):
+    created = await _create(
+        store,
+        _items(_model(), 1),
+        user="anonymous-without-account",
+        key_hash=None,
+    )
+
+    assert created["user_id"] == "anonymous-without-account"
+    assert created["key_hash"] is None
+
+
+async def test_create_waits_for_account_update_and_rechecks_status(pool, store):
+    model = _model()
+    async with pool.acquire() as blocker, blocker.transaction():
+        await blocker.execute("SELECT 1 FROM users WHERE id = 'alice' FOR UPDATE")
+        creating = asyncio.create_task(_create(store, _items(model, 1)))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(creating), timeout=0.05)
+        await blocker.execute("UPDATE users SET status = 'deleted' WHERE id = 'alice'")
+
+    with pytest.raises(BatchOwnerUnavailable):
+        await creating
+    assert await store.list_batches(user_id="alice", limit=10) == []
+
+
 async def test_every_model_an_item_names_is_listed_on_the_batch(store):
     first, second = _model(), _model()
     items = [*_items(first, 1, prefix="a"), *_items(second, 1, prefix="b")]
@@ -311,15 +477,93 @@ async def test_a_batch_at_the_request_cap_is_stored_whole_in_order(pool, store):
     assert rows[-1]["custom_id"] == "r49999"
 
 
-async def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
+async def test_nul_characters_round_trip_through_every_payload_column(pool, store):
     model = _model()
-    items = [{"custom_id": "c", "model_id": model, "request": {"content": "a\x00b"}}]
-    created = await _create(store, items, metadata={"note": "x\x00y"})
-    claimed = await _claim(store, model)
+    request = {"content": "a\x00b", "\x00key": {"nested": ["x\x00y"]}}
+    metadata = {"note": "x\x00y"}
+    items = [
+        {"custom_id": "nul-ok", "model_id": model, "request": request},
+        {"custom_id": "nul-error", "model_id": model, "request": {"content": "plain"}},
+    ]
+    created = await _create(store, items, metadata=metadata)
+    ok, failed = await _claim(store, model)
 
-    assert claimed[0]["request"] == {"content": "ab"}
-    assert created["metadata"] == {"note": "xy"}
-    assert await _complete(store, claimed[0], error={"code": "upstream_error", "message": "\x00"})
+    assert ok["request"] == request
+    assert failed["request"] == {"content": "plain"}
+    assert created["metadata"] == metadata
+
+    response = {"choices": [{"message": {"content": "r\x00s"}}]}
+    error = {"code": "upstream_error", "message": "e\x00f"}
+    assert await store.complete_item(
+        item_id=ok["id"],
+        worker_id="worker-1",
+        attempt=ok["attempts"],
+        response=response,
+        error=None,
+        status_code=200,
+    )
+    assert await _complete(store, failed, error=error)
+
+    results = {item["custom_id"]: item for item in await store.list_results(created["id"])}
+    assert results["nul-ok"]["response"] == response
+    assert results["nul-ok"]["error"] is None
+    assert results["nul-error"]["response"] is None
+    assert results["nul-error"]["error"] == error
+
+    async with pool.acquire() as conn:
+        shapes = await conn.fetchrow(
+            """
+            SELECT jsonb_typeof(j.metadata) AS metadata,
+                   jsonb_typeof(ok.request) AS request,
+                   jsonb_typeof(plain.request) AS plain_request,
+                   jsonb_typeof(ok.response) AS response,
+                   jsonb_typeof(plain.error) AS error
+            FROM batch_jobs AS j
+            JOIN batch_items AS ok
+              ON ok.batch_id = j.id AND ok.custom_id = 'nul-ok'
+            JOIN batch_items AS plain
+              ON plain.batch_id = j.id AND plain.custom_id = 'nul-error'
+            WHERE j.id = $1
+            """,
+            created["id"],
+        )
+    assert dict(shapes) == {
+        "metadata": "array",
+        "request": "array",
+        "plain_request": "object",
+        "response": "array",
+        "error": "array",
+    }
+
+
+async def test_json_envelope_preserves_reserved_shape_and_legacy_string_collisions():
+    marker = batch_store._JSON_ENVELOPE_MARKER
+    collision = [marker, "eyJsb29rcyI6ICJsaWtlIGFuIGVudmVsb3BlIn0="]
+    malformed = [marker, "not-base64!"]
+    object_collision = {marker: collision}
+    legacy_string = f"{marker}:eyJsb29rcyI6ICJsZWdhY3kifQ=="
+
+    assert batch_store._load_json(batch_store._dump_json(collision)) == collision
+    assert batch_store._load_json(batch_store._dump_json(malformed)) == malformed
+    assert batch_store._load_json(batch_store._dump_json(object_collision)) == object_collision
+    assert batch_store._load_json(json.dumps(legacy_string)) == legacy_string
+    assert batch_store._load_json(legacy_string) == legacy_string
+
+    value = {"content": "a\x00b"}
+    encoded = batch_store._dump_json(value)
+    assert batch_store._load_json(encoded) == value
+    assert batch_store._load_json(json.loads(encoded)) == value
+
+
+async def test_model_ids_that_match_payload_envelope_stay_plain_json(store):
+    marker = batch_store._JSON_ENVELOPE_MARKER
+    collision = [marker, "eyJsb29rcyI6ICJsaWtlIGFuIGVudmVsb3BlIn0="]
+    created = await _create(store, _items(marker, 1), model_ids=collision)
+
+    assert created["model_ids"] == collision
+    assert (await store.get_batch(created["id"]))["model_ids"] == collision
+    assert await store.delete_batch(created["id"]) is True
+    assert await store.get_batch(created["id"]) is None
 
 
 async def test_active_batches_are_counted_per_user(store):
@@ -532,6 +776,134 @@ async def test_a_two_connection_race_never_exceeds_the_cap(store):
     assert not {item["id"] for item in first} & {item["id"] for item in second}
 
 
+async def test_expired_heartbeat_cannot_race_a_claim_past_the_cap(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    (expired,) = await _claim(store, model, worker="worker-1", limit=1, max_running=1)
+    await _expire_lease(pool, expired["id"])
+
+    counted = asyncio.Event()
+    resume_claim = asyncio.Event()
+    racing_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SELECT count(*) FROM batch_items",
+            counted,
+            resume_claim,
+        )
+    )
+    claiming = asyncio.create_task(
+        _claim(racing_store, model, worker="worker-2", limit=1, max_running=1)
+    )
+    await asyncio.wait_for(counted.wait(), timeout=5)
+
+    heartbeat_started = asyncio.Event()
+    heartbeat_acquired = asyncio.Event()
+    no_pause = asyncio.Event()
+    no_pause.set()
+    heartbeat_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SELECT pg_advisory_xact_lock",
+            heartbeat_acquired,
+            no_pause,
+            heartbeat_started,
+        )
+    )
+    renewing = asyncio.create_task(
+        heartbeat_store.heartbeat(
+            worker_id="worker-1",
+            item_ids=[expired["id"]],
+            lease_seconds=3600,
+        )
+    )
+    try:
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=5)
+        assert not renewing.done()
+    finally:
+        resume_claim.set()
+
+    (reclaimed,) = await asyncio.wait_for(claiming, timeout=5)
+    assert await asyncio.wait_for(renewing, timeout=5) == 0
+    assert reclaimed["id"] == expired["id"]
+    assert reclaimed["attempts"] == 2
+    rows = await _rows(pool, created["id"])
+    assert [(row["status"], row["claimed_by"]) for row in rows] == [
+        ("running", "worker-2"),
+        ("queued", None),
+    ]
+
+
+async def test_uncommitted_live_heartbeat_blocks_a_claim_until_renewed(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    queued, running = await _claim(store, model, worker="worker-1", limit=2, max_running=2)
+    assert await store.release_item(
+        item_id=queued["id"], worker_id="worker-1", attempt=queued["attempts"]
+    )
+    await _execute(
+        pool,
+        "UPDATE batch_items "
+        "SET lease_expires_at = clock_timestamp() + interval '2 seconds' WHERE id = $1",
+        running["id"],
+    )
+
+    updated = asyncio.Event()
+    resume_heartbeat = asyncio.Event()
+    heartbeat_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SET lease_expires_at = clock_timestamp()",
+            updated,
+            resume_heartbeat,
+        )
+    )
+    renewing = asyncio.create_task(
+        heartbeat_store.heartbeat(
+            worker_id="worker-1", item_ids=[running["id"]], lease_seconds=3600
+        )
+    )
+    await asyncio.wait_for(updated.wait(), timeout=5)
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT GREATEST(EXTRACT(EPOCH FROM "
+            "(lease_expires_at - clock_timestamp())), 0) "
+            "FROM batch_items WHERE id = $1",
+            running["id"],
+        )
+    await asyncio.sleep(float(remaining) + 0.05)
+
+    claim_started = asyncio.Event()
+    claim_acquired = asyncio.Event()
+    no_pause = asyncio.Event()
+    no_pause.set()
+    claim_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SELECT pg_advisory_xact_lock",
+            claim_acquired,
+            no_pause,
+            claim_started,
+        )
+    )
+    claiming = asyncio.create_task(
+        _claim(claim_store, model, worker="worker-2", limit=1, max_running=1)
+    )
+    try:
+        await asyncio.wait_for(claim_started.wait(), timeout=5)
+        assert not claiming.done()
+    finally:
+        resume_heartbeat.set()
+
+    assert await asyncio.wait_for(renewing, timeout=5) == 1
+    assert await asyncio.wait_for(claiming, timeout=5) == []
+    rows = await _rows(pool, created["id"])
+    assert [(row["status"], row["claimed_by"]) for row in rows] == [
+        ("queued", None),
+        ("running", "worker-1"),
+    ]
+
+
 async def test_a_zero_cap_or_limit_claims_nothing(store):
     model = _model()
     await _create(store, _items(model, 2))
@@ -689,6 +1061,36 @@ async def test_heartbeat_extends_only_the_workers_running_leases(pool, store):
     ids = [item["id"] for item in mine]
     assert await store.heartbeat(worker_id="worker-1", item_ids=ids, lease_seconds=60) == 1
     assert await store.heartbeat(worker_id="worker-1", item_ids=[], lease_seconds=60) == 0
+
+
+async def test_multi_model_heartbeats_take_locks_in_one_order(store):
+    first_model, second_model = sorted((_model(), _model()))
+    await _create(
+        store,
+        [
+            *_items(first_model, 1, prefix="first"),
+            *_items(second_model, 1, prefix="second"),
+        ],
+    )
+    (first_item,) = await _claim(store, first_model, worker="worker-1")
+    (second_item,) = await _claim(store, second_model, worker="worker-1")
+
+    touched = await asyncio.wait_for(
+        asyncio.gather(
+            store.heartbeat(
+                worker_id="worker-1",
+                item_ids=[first_item["id"], second_item["id"]],
+                lease_seconds=3600,
+            ),
+            store.heartbeat(
+                worker_id="worker-1",
+                item_ids=[second_item["id"], first_item["id"]],
+                lease_seconds=3600,
+            ),
+        ),
+        timeout=2,
+    )
+    assert touched == [2, 2]
 
 
 # -- cancel, fail, pause -------------------------------------------------------
@@ -958,28 +1360,111 @@ async def test_sweep_purges_finished_batches_past_retention(pool, store):
 # -- deletes ---------------------------------------------------------------------
 
 
-async def test_a_delete_removes_the_batch_and_its_items(pool, store):
+async def test_delete_waits_until_live_items_finish(pool, store):
     model = _model()
     created = await _create(store, _items(model, 3))
     (running,) = await _claim(store, model, limit=1)
 
     assert await store.delete_batch(created["id"], user_id="bob") is False
+    with pytest.raises(BatchDeleteInProgress):
+        await store.delete_batch(created["id"], user_id="alice")
     assert await store.get_batch(created["id"]) is not None
 
+    assert await _complete(store, running)
+    # The batch is still active with queued items, but no upstream call is live.
+    assert (await store.get_batch(created["id"]))["status"] == "in_progress"
     assert await store.delete_batch(created["id"], user_id="alice") is True
     assert await store.get_batch(created["id"]) is None
     assert await _rows(pool, created["id"]) == []
     assert await store.delete_batch(created["id"]) is False
-    # The worker still running one of its items finds it gone.
-    assert await _complete(store, running) is False
-    assert await store.release_item(item_id=running["id"], worker_id="worker-1", attempt=1) is False
 
 
-async def test_an_unscoped_delete_removes_any_owners_batch(store):
+async def test_an_active_queued_batch_can_be_deleted(store):
     created = await _create(store, _items(_model(), 1))
 
+    assert created["status"] == "validating"
     assert await store.delete_batch(created["id"]) is True
     assert await store.get_batch(created["id"]) is None
+
+
+async def test_a_terminal_batch_with_a_live_item_cannot_be_deleted(store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    (running,) = await _claim(store, model, limit=1)
+    assert await store.fail_batch(
+        created["id"],
+        {"code": "owner_unauthorized", "message": "owner key was revoked"},
+    )
+    assert (await store.get_batch(created["id"]))["status"] == "failed"
+
+    with pytest.raises(BatchDeleteInProgress):
+        await store.delete_batch(created["id"])
+
+    assert await _complete(store, running)
+    assert await store.delete_batch(created["id"]) is True
+
+
+async def test_a_running_item_with_an_expired_lease_does_not_block_delete(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 1))
+    (expired,) = await _claim(store, model)
+    await _expire_lease(pool, expired["id"])
+
+    assert await store.delete_batch(created["id"]) is True
+    assert (
+        await store.heartbeat(worker_id="worker-1", item_ids=[expired["id"]], lease_seconds=60) == 0
+    )
+    assert await _complete(store, expired) is False
+
+
+async def test_rejected_delete_cannot_suppress_a_live_heartbeat(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 1))
+    (running,) = await _claim(store, model, worker="worker-1", lease=60)
+
+    checked = asyncio.Event()
+    resume_delete = asyncio.Event()
+    delete_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SELECT EXISTS (SELECT 1 FROM batch_items",
+            checked,
+            resume_delete,
+        )
+    )
+    deleting = asyncio.create_task(delete_store.delete_batch(created["id"]))
+    await asyncio.wait_for(checked.wait(), timeout=5)
+
+    heartbeat_started = asyncio.Event()
+    heartbeat_acquired = asyncio.Event()
+    no_pause = asyncio.Event()
+    no_pause.set()
+    heartbeat_store = BatchStore(
+        _PauseAfterStatementPool(
+            pool,
+            "SELECT pg_advisory_xact_lock",
+            heartbeat_acquired,
+            no_pause,
+            heartbeat_started,
+        )
+    )
+    renewing = asyncio.create_task(
+        heartbeat_store.heartbeat(
+            worker_id="worker-1",
+            item_ids=[running["id"]],
+            lease_seconds=3600,
+        )
+    )
+    try:
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=5)
+        assert not renewing.done()
+    finally:
+        resume_delete.set()
+
+    with pytest.raises(BatchDeleteInProgress):
+        await asyncio.wait_for(deleting, timeout=5)
+    assert await asyncio.wait_for(renewing, timeout=5) == 1
+    assert await store.get_batch(created["id"]) is not None
 
 
 async def test_a_hard_delete_purges_every_batch_of_that_user_only(pool, store):
@@ -1071,7 +1556,7 @@ async def test_processes_booting_at_once_create_the_schema_once():
                 schema,
             )
             store = BatchStore(fresh)
-            created = await _create(store, _items("model-x", 2))
+            created = await _create(store, _items("model-x", 2), key_hash=None)
             assert len(await _claim(store, "model-x")) == 2
             assert (await store.get_batch(created["id"]))["status"] == "in_progress"
         finally:

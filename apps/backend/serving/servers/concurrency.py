@@ -184,12 +184,12 @@ class UserConcurrencyLimiter:
 # Dependency lives at the bottom of the module so it can reference the
 # limiter class defined above.
 
-import contextlib
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, HTTPException, Request
 
-from serving.batch.interactive_load import INTERACTIVE_LOAD
+from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
 
 from .auth import verify_api_key
 from .deps import (
@@ -200,7 +200,44 @@ from .deps import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
+
+
+_INTERACTIVE_LOAD_SCOPE_STATE_KEY = "_interactive_load_tracker"
+_NO_TRACKER = object()
+
+
+@contextmanager
+def _track_interactive_request(
+    request: Request, canonical: str | None
+) -> Iterator[InteractiveLoadTracker]:
+    """Publish a retargetable load tracker for this request's full lifetime."""
+    state = request.scope.setdefault("state", {})
+    previous = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, _NO_TRACKER)
+    tracker = INTERACTIVE_LOAD.track(canonical)
+    state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = tracker
+    try:
+        with tracker:
+            yield tracker
+    finally:
+        if previous is _NO_TRACKER:
+            state.pop(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, None)
+        else:
+            state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = previous
+
+
+def retarget_interactive_load(request: Request, canonical: str) -> None:
+    """Count this request on the concrete model selected after admission.
+
+    The HTTP concurrency dependency publishes the tracker in the request scope,
+    so handlers called directly by compatibility and Responses routes retarget
+    the same request. Calls without that dependency (notably batch dispatch)
+    intentionally do nothing: they are not interactive traffic.
+    """
+    state = request.scope.get("state")
+    tracker = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY) if isinstance(state, dict) else None
+    if isinstance(tracker, InteractiveLoadTracker):
+        tracker.retarget(canonical)
 
 
 def _exempt_slot_key(user_id: str) -> str:
@@ -239,6 +276,25 @@ def canonical_model_id(
         emb = embedding_adapters.get(resolved)
         canonical = getattr(getattr(emb, "config", None), "id", None)
     return canonical
+
+
+async def _request_model(
+    request: Request,
+    *,
+    router: Any,
+    embedding_adapters: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Read and canonicalize a POST body's model without breaking admission."""
+    if router is None or request.method != "POST":
+        return None, None
+    try:
+        body = await request.json()
+        model = body.get("model") if isinstance(body, dict) else None
+        canonical = canonical_model_id(model, router=router, embedding_adapters=embedding_adapters)
+        return model, canonical
+    except Exception:
+        logger.debug("user_concurrency: exemption check skipped", exc_info=True)
+        return None, None
 
 
 async def _slot_for_canonical(
@@ -325,34 +381,25 @@ async def enforce_user_concurrency(
     counted as interactive load on its model (:data:`INTERACTIVE_LOAD`), which
     batch work on the model yields to.
     """
-    if limiter is None:
-        # If the limiter isn't configured (e.g., misconfigured deployment),
-        # fail open — never block requests when the gate itself is broken.
-        logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        yield
-        return
-
-    # Which model the request is for: the concurrency-exemption check below
-    # needs it, and so does the interactive-load count. Restricted to POST
-    # requests: only the inference routes (chat/completions/embeddings/messages)
-    # carry a JSON body with a ``model`` field, so parsing anything else (e.g.
-    # GET ``/v1/models``) is wasted work and a slow-body attack surface. Parsing
-    # must never break the gate, so any failure here falls through to the
-    # normal acquire/release path. FastAPI caches the parsed body, so the
-    # handler's own ``await request.json()`` still works.
+    # An exemption resolver needs the model before admission to choose its slot.
+    # Without one, acquire the normal slot first so a slow POST body is counted.
+    # FastAPI caches the parsed body for the handler later.
+    parse_before_acquire = limiter is None or concurrency_resolver is not None
     model: str | None = None
     canonical: str | None = None
-    if concurrency_resolver is not None and router is not None and request.method == "POST":
-        try:
-            body = await request.json()
-            model = body.get("model") if isinstance(body, dict) else None
-            canonical = canonical_model_id(
-                model, router=router, embedding_adapters=embedding_adapters
-            )
-        except Exception:
-            # Never let exemption parsing break the gate; fall through to the
-            # normal per-user concurrency path below.
-            logger.debug("user_concurrency: exemption check skipped", exc_info=True)
+    if parse_before_acquire:
+        model, canonical = await _request_model(
+            request, router=router, embedding_adapters=embedding_adapters
+        )
+
+    if limiter is None:
+        # If the limiter isn't configured (e.g., misconfigured deployment),
+        # fail open for per-user admission. Interactive load is independent and
+        # remains visible to the batch worker, including a later auto retarget.
+        logger.warning("user_concurrency: limiter is None; passing request through unguarded")
+        with _track_interactive_request(request, canonical):
+            yield
+        return
 
     user_id = user["user_id"]
     role = user.get("role", "free") or "free"
@@ -408,9 +455,12 @@ async def enforce_user_concurrency(
             headers={"Retry-After": "1"},
         )
 
-    load = INTERACTIVE_LOAD.track(canonical) if canonical is not None else contextlib.nullcontext()
     try:
-        with load:
+        if not parse_before_acquire:
+            model, canonical = await _request_model(
+                request, router=router, embedding_adapters=embedding_adapters
+            )
+        with _track_interactive_request(request, canonical):
             yield
     finally:
         try:

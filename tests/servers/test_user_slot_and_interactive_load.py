@@ -62,6 +62,23 @@ class _Resolver:
         return model_id in self.exempt
 
 
+class _ObservedLimiter(UserConcurrencyLimiter):
+    def __init__(self) -> None:
+        super().__init__(static_limits_provider(LIMITS))
+        self.acquired = asyncio.Event()
+
+    async def try_acquire(
+        self,
+        user_id: str,
+        role: str,
+        is_admin: bool,
+        max_concurrent_requests: int | None = None,
+    ) -> tuple[bool, int, str]:
+        result = await super().try_acquire(user_id, role, is_admin, max_concurrent_requests)
+        self.acquired.set()
+        return result
+
+
 ROUTER = _Router(
     {"normal-model": "normal-model", "exempt-model": "exempt-model", "alias": "exempt-model"}
 )
@@ -236,6 +253,45 @@ async def test_failed_request_stops_counting(load):
         response = await client.post("/probe_raise", json={"model": "normal-model"})
 
     assert response.status_code == 500
+    assert load.in_flight("normal-model") == 0
+
+
+async def test_without_exemption_resolver_acquires_slot_before_slow_body(load):
+    limiter = _ObservedLimiter()
+    app = _app({"user_id": "u1", "role": "internal"}, limiter)
+    app.dependency_overrides[get_model_concurrency_resolver] = lambda: None
+    release_body = asyncio.Event()
+
+    async def slow_body():
+        yield b'{"model":"normal-model",'
+        await release_body.wait()
+        yield b'"messages":[]}'
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        task = asyncio.create_task(
+            client.post(
+                "/probe",
+                content=slow_body(),
+                headers={"content-type": "application/json"},
+            )
+        )
+        try:
+            await asyncio.wait_for(limiter.acquired.wait(), timeout=5)
+            assert not app.entered.is_set()  # type: ignore[attr-defined]
+
+            release_body.set()
+            await asyncio.wait_for(app.entered.wait(), timeout=5)  # type: ignore[attr-defined]
+            assert load.in_flight("normal-model") == 1
+
+            app.release.set()  # type: ignore[attr-defined]
+            assert (await task).status_code == 200
+        finally:
+            release_body.set()
+            app.release.set()  # type: ignore[attr-defined]
+            if not task.done():
+                await task
+
     assert load.in_flight("normal-model") == 0
 
 

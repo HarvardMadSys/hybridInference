@@ -187,6 +187,14 @@ msgid ""
 msgstr ""
 
 #: ../developer/batches.md:90
+msgid ""
+"If that name is an alias, the stored request retains the name you sent, "
+"but the worker dispatches it to the canonical model the alias named when "
+"you created the batch. Changing an alias later cannot move already-"
+"submitted work to another model or another model's concurrency limit."
+msgstr ""
+
+#: ../developer/batches.md:95
 #, python-brace-format
 msgid ""
 "The whole batch is refused when any request in it is invalid. The error "
@@ -422,14 +430,16 @@ msgid ""
 " that has already finished returns it unchanged."
 msgstr ""
 
-#: ../developer/batches.md:284
+#: ../developer/batches.md:289
 #, python-brace-format
 msgid ""
-"`DELETE /v1/batches/{id}` deletes a batch with its requests and results, "
-"whatever its status, and answers `{\"id\": \"batch_...\", \"object\": "
-"\"batch.deleted\", \"deleted\": true}`. A request of the batch that is "
-"running at that moment still finishes, and is logged and billed like any "
-"other."
+"`DELETE /v1/batches/{id}` deletes a batch with its requests and results "
+"and answers `{\"id\": \"batch_...\", \"object\": \"batch.deleted\", "
+"\"deleted\": true}`. Its status does not matter, but deletion is blocked "
+"with `409` while any request holds a live upstream lease. Cancel the batch, "
+"wait for its running requests to finish (or their leases to expire), then "
+"delete it. A stale `running` item whose lease has expired does not block "
+"deletion."
 msgstr ""
 
 #: ../developer/batches.md:290
@@ -536,6 +546,16 @@ msgid ""
 "The body is not valid JSON or not a batch; a request is invalid, uses an "
 "unknown or auto model, or repeats a `custom_id`; too many requests; or "
 "the request carries `X-On-Behalf-Of`"
+msgstr ""
+
+#: ../developer/batches.md:13
+msgid "`401`"
+msgstr ""
+
+#: ../developer/batches.md:13
+msgid ""
+"The API key is invalid or expired when authentication runs, or the account"
+" becomes unavailable before the batch is stored"
 msgstr ""
 
 #: ../developer/batches.md:13

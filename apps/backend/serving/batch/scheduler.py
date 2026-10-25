@@ -512,8 +512,13 @@ class BatchScheduler:
             return
 
         body = item.get("request")
-        model = body.get("model") if isinstance(body, dict) else None
-        give_back = await self._take_user_slot(user_ctx, model or entry.model_id)
+        # The claim and deployment-wide cap are keyed by the canonical model
+        # admitted when the batch was created. Never resolve the caller's saved
+        # alias again at execution time: an admin may have remapped it meanwhile,
+        # which would otherwise run model B while consuming model A's capacity.
+        # Copy so retrieval still returns the body exactly as the caller sent it.
+        dispatch_body = {**body, "model": entry.model_id} if isinstance(body, dict) else body
+        give_back = await self._take_user_slot(user_ctx, entry.model_id)
         if give_back is None:
             logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
             await self._release(entry, delay=self._timings.slot_retry_seconds)
@@ -523,7 +528,7 @@ class BatchScheduler:
                 app=self._app,
                 services=self._services,
                 user_ctx=user_ctx,
-                body=body,
+                body=dispatch_body,
                 batch_id=batch_id,
                 timeout_s=self._timings.attempt_timeout_seconds,
             )
