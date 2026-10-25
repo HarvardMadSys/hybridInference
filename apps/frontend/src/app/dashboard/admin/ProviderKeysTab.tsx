@@ -2,6 +2,11 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { ChangeList, plural, shown } from '@/components/features/admin/confirm/ChangeList';
+import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
+import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import {
   ProviderApiKeyItem,
   ProviderKeyMinRole,
@@ -33,6 +38,21 @@ function minRoleLabel(minRole: ProviderKeyMinRole): string {
   return minRole === 'free' ? 'shared' : `${minRole}+`;
 }
 
+// The tier this row declares, which is what editing it changes.
+function declaredTier(key: ProviderApiKeyItem): ProviderKeyMinRole {
+  return key.declared_min_role ?? key.min_role;
+}
+
+// Env and DB ids live in different namespaces, so a draft is keyed by both.
+function draftId(key: ProviderApiKeyItem): string {
+  return `${key.source}:${key.id}`;
+}
+
+// How a key is named in confirmations: its masked prefix, never the secret.
+function keyName(key: ProviderApiKeyItem): string {
+  return key.label ? `${key.key_prefix} (${key.label})` : key.key_prefix;
+}
+
 function formatRelative(s: string | null): string {
   if (!s) return '—';
   const ms = Date.now() - new Date(s).getTime();
@@ -47,23 +67,25 @@ function formatRelative(s: string | null): string {
 
 export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProviderChange }: Props) {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
   const [providers, setProviders] = useState<string[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>(initialProvider);
   const [keys, setKeys] = useState<ProviderApiKeyItem[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [addOpen, setAddOpen] = useState(false);
   const [formProvider, setFormProvider] = useState<string>(initialProvider);
   const [formApiKey, setFormApiKey] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [formMinRole, setFormMinRole] = useState<ProviderKeyMinRole>('free');
-  const [submittingKey, setSubmittingKey] = useState(false);
   const [verifyingKey, setVerifyingKey] = useState(false);
   const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
-  const [retieringId, setRetieringId] = useState<string | null>(null);
+
+  const [editingTiers, setEditingTiers] = useState(false);
+  // draftId → the chosen tier; only real changes are kept.
+  const [tierDrafts, setTierDrafts] = useState<Record<string, ProviderKeyMinRole>>({});
+  const [tierSaveError, setTierSaveError] = useState<string | null>(null);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -111,155 +133,274 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     onProviderChange?.(selectedProvider);
   }, [onProviderChange, selectedProvider]);
 
-  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!providers.includes(formProvider) || !formApiKey.trim()) return;
-    setSubmittingKey(true);
-    try {
-      const resp = await addProviderKey(
-        formProvider,
-        formApiKey.trim(),
-        formLabel.trim() || undefined,
-        formMinRole,
-      );
-      if (resp.pools_updated === 0) {
-        toast.error(
-          'Key saved but not attached to any live pool — it will NOT be used ' +
-            'for inference. This provider has no multi-key-capable adapter loaded.',
-        );
-      } else {
-        toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
-      }
-      setFormApiKey('');
-      setFormLabel('');
-      setFormMinRole('free');
-      setVerifiedKeySignature(null);
-      if (formProvider === selectedProvider) {
-        await loadKeys(selectedProvider);
-      } else {
-        setSelectedProvider(formProvider);
-      }
-    } catch (err) {
-      toast.error(`Add failed: ${getErrorMessage(err)}`);
-    } finally {
-      setSubmittingKey(false);
-    }
+  const resetAddForm = () => {
+    setFormApiKey('');
+    setFormLabel('');
+    setFormMinRole('free');
+    setVerifiedKeySignature(null);
   };
 
   const formKeySignature =
     formProvider && formApiKey.trim() ? `${formProvider}\u0000${formApiKey.trim()}` : null;
   const keyVerified = verifiedKeySignature != null && verifiedKeySignature === formKeySignature;
 
+  // Review what will be created; only "Add key" in the confirmation writes it.
+  const onReviewAdd = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (editingTiers || !providers.includes(formProvider) || !formApiKey.trim()) return;
+    const provider = formProvider;
+    const apiKey = formApiKey.trim();
+    const label = formLabel.trim();
+    const minRole = formMinRole;
+    confirmation.request({
+      title: `Add a key to ${provider}?`,
+      confirmLabel: 'Add key',
+      busyLabel: 'Adding…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={[
+              { label: 'Provider', after: provider },
+              { label: 'Label', after: shown(label, '(none)') },
+              { label: 'Reserved for', after: minRoleLabel(minRole) },
+              { label: 'API key', after: 'Set (hidden)' },
+              { label: 'Verified', after: keyVerified ? 'Yes' : 'Not verified' },
+            ]}
+          />
+          <p>The key joins the {provider} pool and can serve traffic as soon as it is added.</p>
+        </>
+      ),
+      run: async () => {
+        const resp = await addProviderKey(provider, apiKey, label || undefined, minRole).catch(
+          (err: unknown) => {
+            throw new Error(withoutSecret(getErrorMessage(err), apiKey));
+          },
+        );
+        if (resp.pools_updated === 0) {
+          toast.error(
+            'Key saved but not attached to any live pool — it will NOT be used ' +
+              'for inference. This provider has no multi-key-capable adapter loaded.',
+          );
+        } else {
+          toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
+        }
+        resetAddForm();
+        setAddOpen(false);
+        if (provider === selectedProvider) {
+          await loadKeys(selectedProvider);
+        } else {
+          setSelectedProvider(provider);
+        }
+      },
+    });
+  };
+
+  const cancelAdd = () => {
+    if (confirmation.busy) return;
+    resetAddForm();
+    setAddOpen(false);
+  };
+
+  // A check against the upstream that stores nothing: no confirmation.
   const onVerifyKey = async () => {
     if (!providers.includes(formProvider) || !formApiKey.trim() || !formKeySignature) return;
+    const apiKey = formApiKey.trim();
     setVerifyingKey(true);
     try {
-      await verifyProviderKey(formProvider, formApiKey.trim());
+      await verifyProviderKey(formProvider, apiKey);
       setVerifiedKeySignature(formKeySignature);
       toast.success('Provider key verified');
     } catch (err) {
       setVerifiedKeySignature(null);
-      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+      toast.error(`Verify failed: ${withoutSecret(getErrorMessage(err), apiKey)}`);
     } finally {
       setVerifyingKey(false);
     }
   };
 
-  const onDelete = async (id: string) => {
-    if (!window.confirm('Delete this provider key? This cannot be undone.')) return;
-    setDeletingId(id);
-    try {
-      await deleteProviderKey(id);
-      toast.success('Key deleted');
-      await loadKeys(selectedProvider);
-    } catch (err) {
-      toast.error(`Delete failed: ${getErrorMessage(err)}`);
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const onDisableEnv = async (provider: string, id: string) => {
-    if (!window.confirm('Disable this env provider key? It will stop being used immediately.')) {
-      return;
-    }
-    setDisablingEnvId(id);
-    try {
-      await disableProviderEnvKey(provider, id);
-      toast.success('Env key disabled');
-      await loadKeys(selectedProvider);
-    } catch (err) {
-      toast.error(`Disable failed: ${getErrorMessage(err)}`);
-    } finally {
-      setDisablingEnvId(null);
-    }
-  };
-
-  const onEnableEnv = async (provider: string, id: string) => {
-    setDisablingEnvId(id);
-    try {
-      const resp = await enableProviderEnvKey(provider, id);
-      if (resp.pools_updated === 0) {
-        toast.error('Env key re-enabled but could not be re-added to any pool.');
-      } else {
-        toast.success('Env key enabled');
-      }
-      await loadKeys(selectedProvider);
-    } catch (err) {
-      toast.error(`Enable failed: ${getErrorMessage(err)}`);
-    } finally {
-      setDisablingEnvId(null);
-    }
-  };
-
-  const onToggleDb = async (id: string, enable: boolean) => {
-    setTogglingId(id);
-    try {
-      const resp = await setProviderKeyStatus(id, enable);
-      if (enable && resp.pools_updated === 0) {
-        toast.error('Key enabled but not attached to any live pool — it will not be used.');
-      } else {
-        toast.success(enable ? 'Key enabled' : 'Key disabled');
-      }
-      await loadKeys(selectedProvider);
-    } catch (err) {
-      toast.error(`${enable ? 'Enable' : 'Disable'} failed: ${getErrorMessage(err)}`);
-    } finally {
-      setTogglingId(null);
-    }
-  };
-
-  const onChangeMinRole = async (key: ProviderApiKeyItem, minRole: ProviderKeyMinRole) => {
+  const requestDelete = (key: ProviderApiKeyItem) => {
     const id = key.id;
     if (!id) return;
-    setRetieringId(id);
-    try {
-      // Env keys carry no row id, so they are addressed by provider + env id.
-      const resp =
-        key.source === 'env'
-          ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
-          : await setProviderKeyMinRole(id, minRole);
-      toast.success(
-        minRole === 'free' ? 'Key shared with every tier' : `Key reserved for ${minRole} and above`,
-      );
-      if (resp.pools_updated === 0) {
-        toast.error(
-          'Saved, but no live pool holds this key right now — the new tier ' +
-            'applies once it is back in rotation.',
-        );
-      }
-      await loadKeys(selectedProvider);
-    } catch (err) {
-      toast.error(`Tier change failed: ${getErrorMessage(err)}`);
-    } finally {
-      setRetieringId(null);
-    }
+    const provider = selectedProvider;
+    confirmation.request({
+      title: `Delete key ${key.key_prefix}?`,
+      confirmLabel: 'Delete',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      body: (
+        <p>
+          The {key.provider} key {keyName(key)} is removed from its pools and deleted. This cannot
+          be undone.
+        </p>
+      ),
+      run: async () => {
+        await deleteProviderKey(id);
+        toast.success('Key deleted');
+        await loadKeys(provider);
+      },
+    });
+  };
+
+  const requestEnvStatus = (key: ProviderApiKeyItem, enable: boolean) => {
+    const id = key.id;
+    if (!id) return;
+    const provider = selectedProvider;
+    confirmation.request({
+      title: `${enable ? 'Enable' : 'Disable'} env key ${key.key_prefix}?`,
+      confirmLabel: enable ? 'Enable' : 'Disable',
+      busyLabel: enable ? 'Enabling…' : 'Disabling…',
+      body: enable ? (
+        <p>
+          The {key.provider} env key {keyName(key)} is re-added to its pools and serves traffic
+          again.
+        </p>
+      ) : (
+        <p>
+          The {key.provider} env key {keyName(key)} stops being used immediately. You can enable it
+          again later.
+        </p>
+      ),
+      run: async () => {
+        if (enable) {
+          const resp = await enableProviderEnvKey(key.provider, id);
+          if (resp.pools_updated === 0) {
+            toast.error('Env key re-enabled but could not be re-added to any pool.');
+          } else {
+            toast.success('Env key enabled');
+          }
+        } else {
+          await disableProviderEnvKey(key.provider, id);
+          toast.success('Env key disabled');
+        }
+        await loadKeys(provider);
+      },
+    });
+  };
+
+  const requestDbStatus = (key: ProviderApiKeyItem, enable: boolean) => {
+    const id = key.id;
+    if (!id) return;
+    const provider = selectedProvider;
+    confirmation.request({
+      title: `${enable ? 'Enable' : 'Disable'} key ${key.key_prefix}?`,
+      confirmLabel: enable ? 'Enable' : 'Disable',
+      busyLabel: enable ? 'Enabling…' : 'Disabling…',
+      body: enable ? (
+        <p>
+          The {key.provider} key {keyName(key)} rejoins its pools and serves traffic again.
+        </p>
+      ) : (
+        <p>
+          The {key.provider} key {keyName(key)} stops serving traffic immediately. You can enable it
+          again later.
+        </p>
+      ),
+      run: async () => {
+        const resp = await setProviderKeyStatus(id, enable);
+        if (enable && resp.pools_updated === 0) {
+          toast.error('Key enabled but not attached to any live pool — it will not be used.');
+        } else {
+          toast.success(enable ? 'Key enabled' : 'Key disabled');
+        }
+        await loadKeys(provider);
+      },
+    });
   };
 
   const sortedKeys = useMemo(
     () => [...keys].sort((a, b) => (a.source === b.source ? 0 : a.source === 'db' ? -1 : 1)),
     [keys],
   );
+
+  const tiersTarget = `${selectedProvider} key tiers`;
+  const tierEditable = sortedKeys.some((k) => k.id);
+  const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
+
+  const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
+    setTierDrafts((prev) => {
+      const next = { ...prev };
+      if (value === declaredTier(key)) delete next[draftId(key)];
+      else next[draftId(key)] = value;
+      return next;
+    });
+  };
+
+  const cancelTiers = () => {
+    if (confirmation.busy) return;
+    setTierDrafts({});
+    setTierSaveError(null);
+    setEditingTiers(false);
+  };
+
+  const saveTiers = () => {
+    if (changedTiers.length === 0) return;
+    const provider = selectedProvider;
+    const pending = changedTiers.map((key) => ({ key, minRole: tierDrafts[draftId(key)] }));
+    confirmation.request({
+      title: `Save ${plural(pending.length, 'tier change')} for ${provider} keys?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={pending.map(({ key, minRole }) => ({
+              label: keyName(key),
+              before: minRoleLabel(declaredTier(key)),
+              after: minRoleLabel(minRole),
+            }))}
+          />
+          <p>
+            A reserved key is hidden from lower tiers as soon as this is saved; &quot;shared&quot;
+            lets every tier spend it.
+          </p>
+        </>
+      ),
+      run: async () => {
+        const unpooled: string[] = [];
+        const failure = await writeEach(
+          pending,
+          ({ key }) => keyName(key),
+          async ({ key, minRole }) => {
+            const id = key.id as string;
+            // Env keys carry no row id, so they are addressed by provider + env id.
+            const resp =
+              key.source === 'env'
+                ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
+                : await setProviderKeyMinRole(id, minRole);
+            if (resp.pools_updated === 0) unpooled.push(keyName(key));
+            setTierDrafts((prev) => {
+              const next = { ...prev };
+              delete next[draftId(key)];
+              return next;
+            });
+          },
+        );
+        if (!failure) {
+          const only = pending[0].minRole;
+          toast.success(
+            pending.length > 1
+              ? `Updated reserved tiers for ${pending.length} keys`
+              : only === 'free'
+                ? 'Key shared with every tier'
+                : `Key reserved for ${only} and above`,
+          );
+        }
+        if (unpooled.length > 0) {
+          toast.error(
+            `Saved, but no live pool holds ${
+              pending.length === 1 ? 'this key' : unpooled.join(', ')
+            } right now — the new tier applies once it is back in rotation.`,
+          );
+        }
+        await loadKeys(provider);
+        setTierSaveError(failure);
+        if (failure) return;
+        setEditingTiers(false);
+      },
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -285,6 +426,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
           ]}
           placeholder="(no providers loaded)"
           searchPlaceholder="Search providers…"
+          // Tier drafts belong to this provider's keys; finish or cancel them first.
+          disabled={editingTiers}
           size="lg"
           className="mt-1 w-full max-w-xs"
         />
@@ -297,7 +440,19 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
       )}
 
       <div hidden={!providers.includes(selectedProvider)}>
-        <h3 className="text-[14px] font-semibold text-gray-900">Configured keys</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-[14px] font-semibold text-gray-900">Configured keys</h3>
+          {!editingTiers && !loading && tierEditable ? (
+            <EditButton
+              target={tiersTarget}
+              label="Edit tiers"
+              onClick={() => {
+                setTierSaveError(null);
+                setEditingTiers(true);
+              }}
+            />
+          ) : null}
+        </div>
         {loading ? (
           <div className="flex justify-center py-12">
             <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
@@ -321,7 +476,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
               <tbody className="divide-y divide-gray-100 bg-white">
                 {sortedKeys.map((k) => {
                   const disabled = k.status === 'disabled';
-                  const busy = (k.id && (togglingId === k.id || disablingEnvId === k.id)) || false;
+                  const drafted = k.id != null && draftId(k) in tierDrafts;
                   return (
                     <tr
                       key={`${k.source}-${k.id ?? k.key_prefix}`}
@@ -364,16 +519,29 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                       <td className="px-3 py-2">
                         {k.id ? (
                           <div className="flex items-center gap-1.5">
-                            <Select<ProviderKeyMinRole>
-                              aria-label={`Reserved tier for key ${k.key_prefix}`}
-                              value={k.declared_min_role ?? k.min_role}
-                              onValueChange={(next) => onChangeMinRole(k, next)}
-                              disabled={retieringId === k.id}
-                              options={MIN_ROLES.map((r) => ({ value: r, label: minRoleLabel(r) }))}
-                              size="sm"
-                              className="w-28"
-                            />
-                            {(k.declared_min_role ?? k.min_role) !== k.min_role && (
+                            {editingTiers ? (
+                              <Select<ProviderKeyMinRole>
+                                aria-label={`Reserved tier for key ${k.key_prefix}`}
+                                value={tierDrafts[draftId(k)] ?? declaredTier(k)}
+                                // A draft only; Save changes reviews it and Confirm writes.
+                                onValueChange={(next) => changeTierDraft(k, next)}
+                                disabled={confirmation.busy}
+                                options={MIN_ROLES.map((r) => ({
+                                  value: r,
+                                  label: minRoleLabel(r),
+                                }))}
+                                size="sm"
+                                className={`w-28 ${drafted ? '!border-amber-400' : ''}`}
+                              />
+                            ) : (
+                              <output
+                                aria-label={`Reserved tier for key ${k.key_prefix}`}
+                                className="text-[12px] text-gray-700"
+                              >
+                                {minRoleLabel(declaredTier(k))}
+                              </output>
+                            )}
+                            {declaredTier(k) !== k.min_role && (
                               // Another record declares something stricter for this
                               // same credential, and the pool enforces that one — say
                               // so, or editing this row looks like it did nothing.
@@ -410,49 +578,47 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                             disabled ? (
                               <button
                                 type="button"
-                                onClick={() => k.id && onEnableEnv(k.provider, k.id)}
-                                disabled={busy}
+                                onClick={() => requestEnvStatus(k, true)}
+                                disabled={!k.id}
+                                aria-label={`Enable key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
-                                {busy ? 'Enabling…' : 'Enable'}
+                                Enable
                               </button>
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => k.id && onDisableEnv(k.provider, k.id)}
-                                disabled={busy}
+                                onClick={() => requestEnvStatus(k, false)}
+                                disabled={!k.id}
+                                aria-label={`Disable key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
-                                {busy ? 'Disabling…' : 'Disable'}
+                                Disable
                               </button>
                             )
                           ) : (
                             <>
                               <button
                                 type="button"
-                                onClick={() => k.id && onToggleDb(k.id, disabled)}
-                                disabled={busy}
+                                onClick={() => requestDbStatus(k, disabled)}
+                                disabled={!k.id}
+                                aria-label={`${disabled ? 'Enable' : 'Disable'} key ${k.key_prefix}`}
                                 className={
                                   disabled
                                     ? 'rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent'
                                     : 'rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent'
                                 }
                               >
-                                {busy
-                                  ? disabled
-                                    ? 'Enabling…'
-                                    : 'Disabling…'
-                                  : disabled
-                                    ? 'Enable'
-                                    : 'Disable'}
+                                {disabled ? 'Enable' : 'Disable'}
                               </button>
                               <button
                                 type="button"
-                                onClick={() => k.id && onDelete(k.id)}
-                                disabled={!k.id || deletingId === k.id}
+                                onClick={() => requestDelete(k)}
+                                disabled={!k.id}
+                                aria-label={`Delete key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
-                                {deletingId === k.id ? 'Deleting…' : 'Delete'}
+                                Delete
                               </button>
                             </>
                           )}
@@ -465,112 +631,158 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             </table>
           </div>
         )}
+        {editingTiers ? (
+          <EditBar
+            target={tiersTarget}
+            changeCount={changedTiers.length}
+            onCancel={cancelTiers}
+            onSave={saveTiers}
+            busy={confirmation.busy}
+            error={tierSaveError}
+          />
+        ) : null}
       </div>
 
       <div
         hidden={!providers.includes(selectedProvider)}
         className="space-y-3 rounded-lg border border-gray-200 bg-white p-4"
       >
-        <h3 className="text-[14px] font-semibold text-gray-900">Add a new key</h3>
-        <form aria-label="Add a new key" onSubmit={onSubmit} className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label
-                className="block text-[12px] font-medium text-gray-500"
-                htmlFor="provider-keys-form-provider"
-              >
-                Provider
-              </label>
-              <Select
-                id="provider-keys-form-provider"
-                value={formProvider}
-                onValueChange={setFormProvider}
-                options={providers.map((p) => ({ value: p, label: p }))}
-                searchPlaceholder="Search providers…"
-                aria-required
-                size="lg"
-                className="mt-1 w-full"
-              />
-            </div>
-            <div>
-              <label
-                className="block text-[12px] font-medium text-gray-500"
-                htmlFor="provider-keys-form-label"
-              >
-                Label (optional)
-              </label>
-              <input
-                id="provider-keys-form-label"
-                type="text"
-                value={formLabel}
-                onChange={(e) => setFormLabel(e.target.value)}
-                maxLength={255}
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-              />
-            </div>
-          </div>
-          <div>
-            <label
-              className="block text-[12px] font-medium text-gray-500"
-              htmlFor="provider-keys-form-min-role"
-            >
-              Reserved for
-            </label>
-            <Select<ProviderKeyMinRole>
-              id="provider-keys-form-min-role"
-              value={formMinRole}
-              onValueChange={setFormMinRole}
-              options={MIN_ROLES.map((r) => ({ value: r, label: minRoleLabel(r) }))}
-              size="lg"
-              className="mt-1 w-full max-w-xs"
-            />
-            <p className="mt-1 text-[12px] text-gray-400">
-              &quot;shared&quot; lets every tier spend this key. Anything higher hides it from lower
-              tiers, and entitled users spend it before the shared keys. Existing keys — env-sourced
-              ones included — can be re-tiered from the table above.
-            </p>
-          </div>
-          <div>
-            <label
-              className="block text-[12px] font-medium text-gray-500"
-              htmlFor="provider-keys-form-key"
-            >
-              API key
-            </label>
-            <input
-              id="provider-keys-form-key"
-              type="password"
-              value={formApiKey}
-              onChange={(e) => setFormApiKey(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-mono focus:border-gray-400 focus:outline-none"
-              required
-            />
-          </div>
-          <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-[14px] font-semibold text-gray-900">Add a new key</h3>
+          {!addOpen ? (
             <button
               type="button"
-              onClick={onVerifyKey}
-              disabled={verifyingKey || submittingKey || !formProvider || !formApiKey.trim()}
-              className={
-                keyVerified
-                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
-                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
-              }
-            >
-              {verifyingKey ? 'Verifying…' : keyVerified ? 'Verified' : 'Verify'}
-            </button>
-            <button
-              type="submit"
-              disabled={submittingKey || verifyingKey || !formProvider || !formApiKey.trim()}
+              onClick={() => setAddOpen(true)}
+              // Adding a key switches to its provider, away from open tier drafts.
+              disabled={editingTiers}
+              title={editingTiers ? 'Save or cancel the open edit first' : undefined}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {submittingKey ? 'Adding…' : 'Add key'}
+              Add key
             </button>
-          </div>
-        </form>
+          ) : null}
+        </div>
+        {addOpen ? (
+          <form aria-label="Add a new key" onSubmit={onReviewAdd} className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  className="block text-[12px] font-medium text-gray-500"
+                  htmlFor="provider-keys-form-provider"
+                >
+                  Provider
+                </label>
+                <Select
+                  id="provider-keys-form-provider"
+                  value={formProvider}
+                  onValueChange={setFormProvider}
+                  options={providers.map((p) => ({ value: p, label: p }))}
+                  searchPlaceholder="Search providers…"
+                  disabled={confirmation.busy}
+                  aria-required
+                  size="lg"
+                  className="mt-1 w-full"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-[12px] font-medium text-gray-500"
+                  htmlFor="provider-keys-form-label"
+                >
+                  Label (optional)
+                </label>
+                <input
+                  id="provider-keys-form-label"
+                  type="text"
+                  value={formLabel}
+                  onChange={(e) => setFormLabel(e.target.value)}
+                  disabled={confirmation.busy}
+                  maxLength={255}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div>
+              <label
+                className="block text-[12px] font-medium text-gray-500"
+                htmlFor="provider-keys-form-min-role"
+              >
+                Reserved for
+              </label>
+              <Select<ProviderKeyMinRole>
+                id="provider-keys-form-min-role"
+                value={formMinRole}
+                onValueChange={setFormMinRole}
+                options={MIN_ROLES.map((r) => ({ value: r, label: minRoleLabel(r) }))}
+                disabled={confirmation.busy}
+                size="lg"
+                className="mt-1 w-full max-w-xs"
+              />
+              <p className="mt-1 text-[12px] text-gray-400">
+                &quot;shared&quot; lets every tier spend this key. Anything higher hides it from
+                lower tiers, and entitled users spend it before the shared keys. Existing keys —
+                env-sourced ones included — can be re-tiered from the table above.
+              </p>
+            </div>
+            <div>
+              <label
+                className="block text-[12px] font-medium text-gray-500"
+                htmlFor="provider-keys-form-key"
+              >
+                API key
+              </label>
+              <input
+                id="provider-keys-form-key"
+                type="password"
+                value={formApiKey}
+                onChange={(e) => setFormApiKey(e.target.value)}
+                disabled={confirmation.busy}
+                autoComplete="off"
+                spellCheck={false}
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-mono focus:border-gray-400 focus:outline-none"
+                required
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelAdd}
+                disabled={confirmation.busy}
+                className="rounded-md px-4 py-2 text-[13px] font-medium text-gray-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onVerifyKey}
+                disabled={verifyingKey || confirmation.busy || !formProvider || !formApiKey.trim()}
+                className={
+                  keyVerified
+                    ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                    : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+                }
+              >
+                {verifyingKey ? 'Verifying…' : keyVerified ? 'Verified' : 'Verify'}
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  confirmation.busy ||
+                  verifyingKey ||
+                  editingTiers ||
+                  !formProvider ||
+                  !formApiKey.trim()
+                }
+                title={editingTiers ? 'Save or cancel the open edit first' : undefined}
+                className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Review key
+              </button>
+            </div>
+          </form>
+        ) : null}
       </div>
+      {confirmation.dialog}
     </div>
   );
 }

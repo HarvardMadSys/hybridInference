@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +26,15 @@ function renderWithQueryClient(ui: React.ReactElement, queryClient = createTestQ
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
+async function editSection() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Concurrency Limit' }));
+}
+
+function saveAndConfirm() {
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to Model Concurrency Limit' }));
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
+}
+
 describe('ModelConcurrencySection', () => {
   const onToast = vi.fn();
 
@@ -46,6 +55,12 @@ describe('ModelConcurrencySection', () => {
 
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     expect(await screen.findByText('gpt-4o-mini')).toBeInTheDocument();
+    // Read-only until Edit.
+    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).toHaveTextContent(
+      'Not exempt',
+    );
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    await editSection();
     const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
     expect(checkbox).not.toBeChecked();
   });
@@ -61,12 +76,22 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
+    await editSection();
+    const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
     fireEvent.click(checkbox);
+    expect(updateModelConcurrency).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save changes to Model Concurrency Limit' }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Save 1 concurrency change?' });
+    expect(dialog).toHaveTextContent('gpt-4o-miniNot exempt → Exempt');
+    expect(updateModelConcurrency).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
 
     await waitFor(() => {
       expect(updateModelConcurrency).toHaveBeenCalledWith('gpt-4o-mini', true);
     });
+    expect(updateModelConcurrency).toHaveBeenCalledTimes(1);
     expect(onToast).toHaveBeenCalledWith('Updated concurrency exemption for gpt-4o-mini.');
   });
 
@@ -81,9 +106,11 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
+    await editSection();
+    const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
     expect(checkbox).toBeChecked();
     fireEvent.click(checkbox);
+    saveAndConfirm();
 
     await waitFor(() => {
       expect(updateModelConcurrency).toHaveBeenCalledWith('gpt-4o-mini', false);
@@ -118,20 +145,29 @@ describe('ModelConcurrencySection', () => {
     });
   });
 
-  it('shows a failure toast when an update fails', async () => {
+  it('keeps the draft and the dialog when an update fails, and retries from it', async () => {
     vi.mocked(listModelConcurrency).mockResolvedValue({
       models: [{ model_id: 'gpt-4o-mini', exempt: false }],
     });
-    vi.mocked(updateModelConcurrency).mockRejectedValue(new Error('write failed'));
+    vi.mocked(updateModelConcurrency)
+      .mockRejectedValueOnce(new Error('write failed'))
+      .mockResolvedValueOnce({ model_id: 'gpt-4o-mini', exempt: true });
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
-    fireEvent.click(checkbox);
+    await editSection();
+    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    saveAndConfirm();
 
-    await waitFor(() => {
-      expect(onToast).toHaveBeenCalledWith('Failed to update gpt-4o-mini: write failed');
-    });
+    const dialog = screen.getByRole('dialog');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'gpt-4o-mini could not be saved: write failed',
+    );
+    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).toBeChecked();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(updateModelConcurrency).toHaveBeenCalledTimes(2);
+    expect(onToast).toHaveBeenCalledWith('Updated concurrency exemption for gpt-4o-mini.');
   });
 
   it('invalidates the dashboard model list after a successful update', async () => {
@@ -148,11 +184,27 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />, queryClient);
 
-    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
-    fireEvent.click(checkbox);
+    await editSection();
+    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    saveAndConfirm();
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['user', 'models'] });
     });
+  });
+
+  it('discards drafts on Cancel without writing', async () => {
+    vi.mocked(listModelConcurrency).mockResolvedValue({
+      models: [{ model_id: 'gpt-4o-mini', exempt: false }],
+    });
+    renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
+    await editSection();
+    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Model Concurrency Limit' }));
+    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).toHaveTextContent(
+      'Not exempt',
+    );
+    expect(updateModelConcurrency).not.toHaveBeenCalled();
   });
 });

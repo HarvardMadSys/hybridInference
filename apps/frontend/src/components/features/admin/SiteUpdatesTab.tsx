@@ -6,6 +6,14 @@ import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ChangeList,
+  diffFields,
+  plural,
+  shown,
+} from '@/components/features/admin/confirm/ChangeList';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import {
   createSiteUpdate,
   deleteSiteUpdate,
   listSiteUpdates,
@@ -39,6 +47,36 @@ const EMPTY_FORM: SiteUpdateInput = {
   link_label: null,
 };
 
+const PLACEMENT_LABEL: Record<SiteUpdatePlacement, string> = {
+  feed: 'Feed',
+  banner: 'Banner',
+};
+
+/** The same fields as a plain record, which `diffFields` compares. */
+type UpdateFields = Pick<SiteUpdateInput, keyof SiteUpdateInput>;
+
+/** The fields of an update, in form order, as they read in a confirmation. */
+const FIELDS: ReadonlyArray<{
+  key: keyof UpdateFields;
+  label: string;
+  format?: (value: UpdateFields[keyof UpdateFields]) => string;
+}> = [
+  { key: 'title', label: 'Title' },
+  {
+    key: 'placement',
+    label: 'Placement',
+    format: (value) => PLACEMENT_LABEL[value as SiteUpdatePlacement] ?? shown(value),
+  },
+  { key: 'body', label: 'Body' },
+  { key: 'link_url', label: 'Link URL' },
+  { key: 'link_label', label: 'Link label' },
+  {
+    key: 'published',
+    label: 'Visibility',
+    format: (value) => (value ? 'Published' : 'Draft'),
+  },
+];
+
 /** A saved update's fields, as the editor holds them. */
 function formOf(u: SiteUpdateItem): SiteUpdateInput {
   return {
@@ -57,6 +95,10 @@ function fmtDate(s: string): string {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function where(placement: SiteUpdatePlacement): string {
+  return placement === 'banner' ? 'as the homepage banner' : 'in the homepage Updates section';
 }
 
 /**
@@ -95,16 +137,23 @@ function linkHost(url: string): string {
 
 const MD_CLASSES = MARKDOWN_PROSE;
 
+/**
+ * Homepage updates. The list is read-only; New update opens a form that is
+ * reviewed before it is created, Edit opens one update's fields as drafts that
+ * are saved after the administrator confirms `old → new`, and Publish /
+ * Unpublish / Delete are each confirmed on their own. Hiding the editor keeps
+ * its drafts; opening another update for editing asks before discarding them.
+ */
 export function SiteUpdatesTab() {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
   const baseId = useId();
   const [updates, setUpdates] = useState<SiteUpdateItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SiteUpdateInput>(EMPTY_FORM);
-  // The editor opens on demand. Hiding it keeps the draft; only Cancel, a
-  // successful save, or deleting the update being edited clears it.
+  // The editor opens on demand. Hiding it keeps the draft; only Cancel or a
+  // confirmed create or save clears it.
   const [composerOpen, setComposerOpen] = useState(false);
   // Updates whose full Markdown is shown in the list.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -116,15 +165,21 @@ export function SiteUpdatesTab() {
       return next;
     });
   // The opener disappears while the editor is open, so focus moves into the
-  // editor when it opens and back to the opener when it is put away.
+  // editor when it opens and back to the opener when it is put away. A
+  // confirmation returns focus to its trigger as it closes, so the title is
+  // focused only once no confirmation is open.
   const [focusRequest, setFocusRequest] = useState(0);
+  const focusTitle = useRef(false);
   const returnFocus = useRef(false);
   const openerRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (focusRequest > 0) titleRef.current?.focus();
-  }, [focusRequest]);
+    if (focusTitle.current && !confirmation.open) {
+      focusTitle.current = false;
+      titleRef.current?.focus();
+    }
+  }, [focusRequest, confirmation.open]);
 
   useEffect(() => {
     if (!composerOpen && returnFocus.current) {
@@ -135,6 +190,7 @@ export function SiteUpdatesTab() {
 
   function openComposer() {
     setComposerOpen(true);
+    focusTitle.current = true;
     setFocusRequest((n) => n + 1);
   }
 
@@ -160,6 +216,8 @@ export function SiteUpdatesTab() {
     load();
   }, [load]);
 
+  const busy = confirmation.busy;
+
   /** Clear the draft and close the editor; `refocus` returns to the opener. */
   function resetForm(refocus = false) {
     returnFocus.current = refocus;
@@ -168,76 +226,187 @@ export function SiteUpdatesTab() {
     setComposerOpen(false);
   }
 
-  const editingUpdate = editingId ? updates.find((u) => u.id === editingId) : undefined;
+  function closeEditor() {
+    if (busy) return;
+    resetForm(true);
+  }
+
+  const editing = editingId ? updates.find((u) => u.id === editingId) : undefined;
+  // An edit whose update is gone (deleted elsewhere) has nothing left to save
+  // to: it counts as no editor at all.
+  const editingGone = editingId !== null && editing === undefined;
+  const changes = editing ? diffFields<UpdateFields>(formOf(editing), form, FIELDS) : [];
   // Whether the editor holds anything not saved: its fields differ from the
   // update being edited, or from an empty form. Hiding the editor keeps
   // them, so nothing replaces them unasked.
-  const saved = editingUpdate ? formOf(editingUpdate) : EMPTY_FORM;
-  const unsaved = (Object.keys(EMPTY_FORM) as (keyof SiteUpdateInput)[]).some(
-    (key) => form[key] !== saved[key],
-  );
+  const saved = editing ? formOf(editing) : EMPTY_FORM;
+  const unsaved =
+    !editingGone &&
+    (Object.keys(EMPTY_FORM) as (keyof SiteUpdateInput)[]).some((key) => form[key] !== saved[key]);
 
-  function startEdit(u: SiteUpdateItem) {
-    // Edit on the update already in the editor picks it up again.
-    if (editingId !== u.id) {
-      if (unsaved && !confirm(`Edit "${u.title}"? Your unsaved changes will be discarded.`)) {
-        return;
-      }
-      setEditingId(u.id);
-      setForm(formOf(u));
-    }
+  function switchTo(u: SiteUpdateItem) {
+    setEditingId(u.id);
+    setForm(formOf(u));
     openComposer();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  async function save() {
+  function startEdit(u: SiteUpdateItem) {
+    // Edit on the update already in the editor picks it up again.
+    if (editingId === u.id && editing) {
+      openComposer();
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (!unsaved) {
+      switchTo(u);
+      return;
+    }
+    const draftOf = editing
+      ? `your unsaved changes to “${editing.title}”`
+      : 'your unsaved new update';
+    confirmation.request({
+      title: `Edit “${u.title}”?`,
+      confirmLabel: 'Discard and edit',
+      cancelLabel: 'Keep my changes',
+      tone: 'danger',
+      body: <p>{`Opening it discards ${draftOf}. Nothing is saved or deleted on the site.`}</p>,
+      run: async () => {
+        switchTo(u);
+      },
+    });
+  }
+
+  /** New update, Resume draft or Continue editing: the editor as it was left. */
+  function openEditor() {
+    if (editingGone) resetForm();
+    openComposer();
+  }
+
+  function reviewCreate() {
     if (!form.title.trim()) {
       toast.error('Title is required');
       return;
     }
-    setSaving(true);
-    try {
-      if (editingId) {
-        await updateSiteUpdate(editingId, form);
-        toast.success('Update saved');
-      } else {
-        await createSiteUpdate(form);
+    const input = form;
+    confirmation.request({
+      title: input.published ? 'Create and publish this update?' : 'Create this update as a draft?',
+      confirmLabel: input.published ? 'Create and publish' : 'Create draft',
+      busyLabel: 'Creating…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={FIELDS.map((field) => ({
+              label: field.label,
+              after: (field.format ?? ((value) => shown(value as never)))(input[field.key]),
+            }))}
+          />
+          <p>
+            {input.published
+              ? `It appears ${where(input.placement)} as soon as it is created.`
+              : 'Nobody sees it until it is published.'}
+            {input.published && input.placement === 'banner'
+              ? ' Only the most recent published banner is shown.'
+              : ''}
+          </p>
+        </>
+      ),
+      run: async () => {
+        await createSiteUpdate(input);
         toast.success('Update created');
+        resetForm(true);
+        await load();
+      },
+    });
+  }
+
+  function reviewEdit() {
+    if (!editing || changes.length === 0) return;
+    if (!form.title.trim()) {
+      toast.error('Title is required');
+      return;
+    }
+    const target = editing;
+    const pending = changes;
+    // Only the changed fields are sent: what is confirmed is exactly what is written.
+    const patch: Partial<SiteUpdateInput> = {};
+    for (const field of FIELDS) {
+      if (JSON.stringify(target[field.key]) !== JSON.stringify(form[field.key])) {
+        Object.assign(patch, { [field.key]: form[field.key] });
       }
-      resetForm(true);
-      await load();
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    } finally {
-      setSaving(false);
     }
+    confirmation.request({
+      title: `Save ${plural(pending.length, 'change')} to “${target.title}”?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList changes={pending} />
+          {target.published || form.published ? (
+            <p>The homepage reflects this as soon as it is saved.</p>
+          ) : null}
+        </>
+      ),
+      run: async () => {
+        await updateSiteUpdate(target.id, patch);
+        toast.success('Update saved');
+        resetForm(true);
+        await load();
+      },
+    });
   }
 
-  async function togglePublished(u: SiteUpdateItem) {
-    try {
-      await updateSiteUpdate(u.id, { published: !u.published });
-      await load();
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    }
+  function confirmTogglePublished(u: SiteUpdateItem) {
+    const publish = !u.published;
+    confirmation.request({
+      title: publish ? `Publish “${u.title}”?` : `Unpublish “${u.title}”?`,
+      confirmLabel: publish ? 'Publish' : 'Unpublish',
+      busyLabel: publish ? 'Publishing…' : 'Unpublishing…',
+      body: (
+        <p>
+          {publish
+            ? `It appears ${where(u.placement)} right away.${
+                u.placement === 'banner' ? ' Only the most recent published banner is shown.' : ''
+              }`
+            : `It disappears from the homepage and stays here as a draft.`}
+        </p>
+      ),
+      run: async () => {
+        await updateSiteUpdate(u.id, { published: publish });
+        await load();
+      },
+    });
   }
 
-  async function remove(u: SiteUpdateItem) {
-    if (!confirm(`Delete "${u.title}"? This cannot be undone.`)) return;
-    try {
-      await deleteSiteUpdate(u.id);
-      toast.success('Update deleted');
-      if (editingId === u.id) resetForm();
-      await load();
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    }
+  function confirmRemove(u: SiteUpdateItem) {
+    confirmation.request({
+      title: `Delete “${u.title}”?`,
+      confirmLabel: 'Delete',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      body: (
+        <p>
+          {u.published
+            ? `It is removed from the homepage (${PLACEMENT_LABEL[u.placement].toLowerCase()}) and from this list. `
+            : 'This draft is removed from this list. '}
+          This cannot be undone.
+        </p>
+      ),
+      run: async () => {
+        await deleteSiteUpdate(u.id);
+        toast.success('Update deleted');
+        await load();
+      },
+    });
   }
 
   const fieldId = (name: string) => `${baseId}-${name}`;
-  const editingTitle = editingUpdate?.title;
-  const hasNewDraft = !editingId && unsaved;
-  const openLabel = editingId ? 'Continue editing' : hasNewDraft ? 'Resume draft' : 'New update';
+  const isEditMode = editingId !== null && !editingGone;
+  const hasNewDraft = !isEditMode && unsaved;
+  const openLabel = isEditMode ? 'Continue editing' : hasNewDraft ? 'Resume draft' : 'New update';
+  const composerVisible = composerOpen && !editingGone;
 
   return (
     <AdminSection
@@ -246,17 +415,17 @@ export function SiteUpdatesTab() {
       actions={
         <>
           {loading && updates.length > 0 ? <AdminSpinner size="sm" /> : null}
-          {!composerOpen && (
-            <button type="button" ref={openerRef} onClick={openComposer} className={BUTTON_PRIMARY}>
+          {!composerVisible && (
+            <button type="button" ref={openerRef} onClick={openEditor} className={BUTTON_PRIMARY}>
               {openLabel}
             </button>
           )}
         </>
       }
     >
-      {/* Composer. Only its save button saves: Enter in a field submits the
-          form, and a title alone would publish a half-written update. */}
-      {composerOpen && (
+      {/* Composer. Only its buttons act: Enter in a field submits the form,
+          and a title alone must not open a review of a half-written update. */}
+      {composerVisible && (
         <form
           aria-labelledby={fieldId('composer-title')}
           onSubmit={(e) => e.preventDefault()}
@@ -268,17 +437,18 @@ export function SiteUpdatesTab() {
                 id={fieldId('composer-title')}
                 className="text-[13px] font-semibold text-gray-900"
               >
-                {editingId ? 'Edit update' : 'New update'}
+                {isEditMode ? 'Edit update' : 'New update'}
               </h3>
-              {editingId ? (
+              {editing ? (
                 <p className="mt-0.5 truncate text-[12px] text-gray-500">
-                  Editing “{editingTitle ?? form.title}”
+                  Editing “{editing.title}”
                 </p>
               ) : null}
             </div>
             <button
               type="button"
               onClick={hideComposer}
+              disabled={busy}
               title="Hide the editor. Your changes are kept until you cancel or save."
               className={ROW_ACTION}
             >
@@ -303,6 +473,7 @@ export function SiteUpdatesTab() {
                     className={TEXT_FIELD}
                     placeholder="e.g. New model: Llama 4 available"
                     value={form.title}
+                    disabled={busy}
                     onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
                   />
                 </div>
@@ -313,6 +484,7 @@ export function SiteUpdatesTab() {
                   <Select<SiteUpdatePlacement>
                     id={fieldId('placement')}
                     value={form.placement}
+                    disabled={busy}
                     onValueChange={(placement) => setForm((f) => ({ ...f, placement }))}
                     options={[
                       { value: 'feed', label: 'Feed (Updates section)' },
@@ -341,6 +513,7 @@ export function SiteUpdatesTab() {
                     'Describe the update. **Markdown** and [links](https://...) are supported.'
                   }
                   value={form.body}
+                  disabled={busy}
                   onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
                 />
               </div>
@@ -355,6 +528,7 @@ export function SiteUpdatesTab() {
                     className={TEXT_FIELD}
                     placeholder="https://docs.example.com/..."
                     value={form.link_url ?? ''}
+                    disabled={busy}
                     onChange={(e) => setForm((f) => ({ ...f, link_url: e.target.value || null }))}
                   />
                 </div>
@@ -367,6 +541,7 @@ export function SiteUpdatesTab() {
                     className={TEXT_FIELD}
                     placeholder="e.g. Read more"
                     value={form.link_label ?? ''}
+                    disabled={busy}
                     onChange={(e) => setForm((f) => ({ ...f, link_label: e.target.value || null }))}
                   />
                 </div>
@@ -409,29 +584,48 @@ export function SiteUpdatesTab() {
             </section>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 px-4 py-3">
-            <label className="flex items-center gap-2 text-[13px] text-gray-700">
-              <input
-                type="checkbox"
-                checked={form.published}
-                onChange={(e) => setForm((f) => ({ ...f, published: e.target.checked }))}
-                className={CHECKBOX}
-              />
-              Published (visible on homepage)
-            </label>
-            <div className="ml-auto flex items-center gap-2">
-              <button type="button" onClick={() => resetForm(true)} className={BUTTON_SECONDARY}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void save()}
-                disabled={saving}
-                className={BUTTON_PRIMARY}
-              >
-                {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Create Update'}
-              </button>
+          <div className="border-t border-gray-100 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={form.published}
+                  disabled={busy}
+                  onChange={(e) => setForm((f) => ({ ...f, published: e.target.checked }))}
+                  className={CHECKBOX}
+                />
+                Published (visible on homepage)
+              </label>
+              {editing ? null : (
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={closeEditor}
+                    disabled={busy}
+                    className={BUTTON_SECONDARY}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={reviewCreate}
+                    disabled={busy}
+                    className={BUTTON_PRIMARY}
+                  >
+                    Create Update
+                  </button>
+                </div>
+              )}
             </div>
+            {editing ? (
+              <EditBar
+                target={editing.title}
+                changeCount={changes.length}
+                onCancel={closeEditor}
+                onSave={reviewEdit}
+                busy={busy}
+              />
+            ) : null}
           </div>
         </form>
       )}
@@ -445,7 +639,9 @@ export function SiteUpdatesTab() {
         ) : (
           <ul className="divide-y divide-gray-100">
             {updates.map((u) => {
-              const isEditing = editingId === u.id;
+              // The update being edited keeps its Publish and Delete until the
+              // editor closes: either would leave its drafts stale or orphaned.
+              const isEditing = editing?.id === u.id;
               const isOpen = expanded.has(u.id);
               const excerpt = u.body ? plainExcerpt(u.body) : '';
               const bodyId = fieldId(`body-${u.id}`);
@@ -557,7 +753,8 @@ export function SiteUpdatesTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => togglePublished(u)}
+                      onClick={() => confirmTogglePublished(u)}
+                      disabled={isEditing}
                       aria-label={`${u.published ? 'Unpublish' : 'Publish'} ${u.title}`}
                       className={ROW_ACTION}
                     >
@@ -565,7 +762,8 @@ export function SiteUpdatesTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => remove(u)}
+                      onClick={() => confirmRemove(u)}
+                      disabled={isEditing}
                       aria-label={`Delete ${u.title}`}
                       className={ROW_ACTION_DANGER}
                     >
@@ -578,6 +776,7 @@ export function SiteUpdatesTab() {
           </ul>
         )}
       </div>
+      {confirmation.dialog}
     </AdminSection>
   );
 }

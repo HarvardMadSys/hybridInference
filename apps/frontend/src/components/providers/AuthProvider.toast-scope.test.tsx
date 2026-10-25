@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import toast from 'react-hot-toast';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
@@ -60,7 +60,9 @@ vi.mock('@/lib/api/admin', () => ({
 const admin = { id: 'admin-user', email: 'admin@example.test', role: 'admin', is_admin: true };
 const normal = { id: 'normal-user', email: 'normal@example.test', role: 'free', is_admin: false };
 const SUCCESS = 'Key reserved for internal and above';
-const FAILURE = 'Tier change failed: old administrator request failed';
+// A failed write is reported inside the confirmation (and once by a toast in
+// older builds); neither may surface for an account that has moved on.
+const FAILURE = /old administrator request failed/;
 
 let controller: ReturnType<typeof useAuth>;
 function Page() {
@@ -115,8 +117,13 @@ async function startAdminMutation() {
       </QueryClientProvider>
     </SiteConfigProvider>,
   );
-  const selector = await screen.findByLabelText('Reserved tier for key fixture-key-prefix');
+  // A tier change is an edit: Edit, change the draft, Save changes, Confirm save.
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
+  const selector = screen.getByLabelText('Reserved tier for key fixture-key-prefix');
   chooseValue(selector, 'internal');
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to zai key tiers' }));
+  expect(api.setProviderKeyMinRole).not.toHaveBeenCalled();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
   expect(api.setProviderKeyMinRole).toHaveBeenCalledWith('key-1', 'internal');
   return pending;
 }

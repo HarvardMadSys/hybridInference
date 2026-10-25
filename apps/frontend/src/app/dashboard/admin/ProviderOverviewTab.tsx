@@ -15,6 +15,15 @@ import {
   updateProviderDefinition,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import {
+  ChangeList,
+  diffFields,
+  plural,
+  shown,
+} from '@/components/features/admin/confirm/ChangeList';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 
 function slugify(value: string): string {
   return value
@@ -68,6 +77,7 @@ interface AddProviderModalProps {
 
 function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
   const [displayName, setDisplayName] = useState('');
   const [provider, setProvider] = useState('');
   const [providerTouched, setProviderTouched] = useState(false);
@@ -76,9 +86,9 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
   const [apiKeyLabel, setApiKeyLabel] = useState('');
   const [probeModelId, setProbeModelId] = useState('');
   const [probing, setProbing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeProviderDefinitionResponse | null>(null);
   const [verifiedSignature, setVerifiedSignature] = useState<string | null>(null);
+  const saving = confirmation.busy;
 
   const signature = useMemo(
     () => JSON.stringify([baseUrl.trim(), apiKey.trim(), probeModelId.trim()]),
@@ -118,48 +128,71 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
     }
   };
 
+  // A check against the upstream that stores nothing: no confirmation.
   const onProbe = async () => {
     if (!canProbe) return;
+    const key = apiKey.trim();
     setProbing(true);
     resetProbe();
     try {
       const result = await probeProviderDefinition({
         default_base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
+        api_key: key,
         probe_model_id: probeModelId.trim(),
       });
       setProbeResult(result);
       setVerifiedSignature(signature);
       toast.success('Provider probe succeeded');
     } catch (err) {
-      toast.error(`Probe failed: ${getErrorMessage(err)}`);
+      toast.error(`Probe failed: ${withoutSecret(getErrorMessage(err), key)}`);
     } finally {
       setProbing(false);
     }
   };
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  // Review what will be created; only "Add provider" in the confirmation writes it.
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canSave) return;
-    setSaving(true);
-    try {
-      await createProviderDefinition({
-        provider: provider.trim(),
-        display_name: displayName.trim(),
-        adapter_kind: 'openai_compat',
-        default_base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
-        api_key_label: apiKeyLabel.trim() || null,
-        probe_model_id: probeModelId.trim(),
-      });
-      toast.success('Provider added');
-      await onCreated();
-      onClose();
-    } catch (err) {
-      toast.error(`Add provider failed: ${getErrorMessage(err)}`);
-    } finally {
-      setSaving(false);
-    }
+    const payload = {
+      provider: provider.trim(),
+      display_name: displayName.trim(),
+      adapter_kind: 'openai_compat' as const,
+      default_base_url: baseUrl.trim(),
+      api_key: apiKey.trim(),
+      api_key_label: apiKeyLabel.trim() || null,
+      probe_model_id: probeModelId.trim(),
+    };
+    confirmation.request({
+      title: `Add provider “${payload.display_name}”?`,
+      confirmLabel: 'Add provider',
+      busyLabel: 'Adding…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={[
+              { label: 'Display name', after: payload.display_name },
+              { label: 'Slug', after: payload.provider },
+              { label: 'Adapter', after: 'OpenAI-compatible' },
+              { label: 'Base URL', after: payload.default_base_url },
+              { label: 'Probe model ID', after: payload.probe_model_id },
+              { label: 'API key', after: 'Set (hidden)' },
+              { label: 'Key label', after: shown(payload.api_key_label, '(none)') },
+            ]}
+          />
+          <p>The provider and its first key are stored and become available to keys and routing.</p>
+        </>
+      ),
+      run: async () => {
+        await createProviderDefinition(payload).catch((err: unknown) => {
+          throw new Error(withoutSecret(getErrorMessage(err), payload.api_key));
+        });
+        toast.success('Provider added');
+        await onCreated();
+        onClose();
+      },
+    });
   };
 
   return (
@@ -337,11 +370,13 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
               disabled={!canSave}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {saving ? 'Saving…' : 'Save provider'}
+              Review provider
             </button>
           </div>
         </form>
       </div>
+      {/* Rendered after the form, so the confirmation stacks over this modal. */}
+      {confirmation.dialog}
     </div>
   );
 }
@@ -354,14 +389,16 @@ interface EditProviderModalProps {
 
 function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalProps) {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
   const [displayName, setDisplayName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [probeModelId, setProbeModelId] = useState('');
   const [probing, setProbing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeProviderDefinitionResponse | null>(null);
   const [verifiedSignature, setVerifiedSignature] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saving = confirmation.busy;
 
   useEffect(() => {
     setDisplayName(provider?.display_name ?? '');
@@ -370,6 +407,7 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
     setProbeModelId('');
     setProbeResult(null);
     setVerifiedSignature(null);
+    setSaveError(null);
   }, [provider]);
 
   const resetProbe = () => {
@@ -386,66 +424,101 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
   const baseUrlNeedsProbe = baseUrlChanged && customProvider;
   const probeCurrent = probeResult != null && verifiedSignature === signature;
   const canProbe = baseUrlNeedsProbe && baseUrl.trim() && apiKey.trim() && probeModelId.trim();
-  const canSave =
-    provider != null &&
-    displayName.trim() &&
-    baseUrl.trim() &&
-    !probing &&
-    !saving &&
-    (!baseUrlNeedsProbe || probeCurrent);
 
   if (!provider) return null;
 
+  // The saved fields this edit changes; the key and probe model only verify a
+  // new Base URL and are not stored, so they are not changes of their own.
+  const changes = diffFields(
+    { display_name: provider.display_name, default_base_url: provider.default_base_url },
+    { display_name: displayName.trim(), default_base_url: baseUrl.trim() },
+    [
+      { key: 'display_name', label: 'Display name' },
+      { key: 'default_base_url', label: 'Base URL' },
+    ],
+  );
+
+  // A check against the upstream that stores nothing: no confirmation.
   const onProbe = async () => {
     if (!canProbe) return;
+    const key = apiKey.trim();
     setProbing(true);
     resetProbe();
     try {
       const result = await probeProviderDefinition({
         default_base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
+        api_key: key,
         probe_model_id: probeModelId.trim(),
       });
       setProbeResult(result);
       setVerifiedSignature(signature);
+      setSaveError(null);
       toast.success('Provider probe succeeded');
     } catch (err) {
-      toast.error(`Probe failed: ${getErrorMessage(err)}`);
+      toast.error(`Probe failed: ${withoutSecret(getErrorMessage(err), key)}`);
     } finally {
       setProbing(false);
     }
   };
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSave) return;
-    setSaving(true);
-    try {
-      const payload: UpdateProviderDefinitionPayload = {
-        display_name: displayName.trim(),
-      };
-      if (baseUrlChanged) {
-        payload.default_base_url = baseUrl.trim();
-        if (baseUrlNeedsProbe) {
-          payload.api_key = apiKey.trim();
-          payload.probe_model_id = probeModelId.trim();
-        }
-      }
-      await updateProviderDefinition(provider.provider, payload);
-      toast.success('Provider updated');
-      await onUpdated();
-      onClose();
-    } catch (err) {
-      toast.error(`Update failed: ${getErrorMessage(err)}`);
-    } finally {
-      setSaving(false);
+    if (changes.length === 0 || probing || saving) return;
+    if (!displayName.trim()) {
+      setSaveError('Display name is required.');
+      return;
     }
+    if (!baseUrl.trim()) {
+      setSaveError('Base URL is required.');
+      return;
+    }
+    if (baseUrlNeedsProbe && !probeCurrent) {
+      setSaveError('Probe the new Base URL with an API key and probe model before saving.');
+      return;
+    }
+    setSaveError(null);
+    const payload: UpdateProviderDefinitionPayload = {
+      display_name: displayName.trim(),
+    };
+    if (baseUrlChanged) {
+      payload.default_base_url = baseUrl.trim();
+      if (baseUrlNeedsProbe) {
+        payload.api_key = apiKey.trim();
+        payload.probe_model_id = probeModelId.trim();
+      }
+    }
+    const reviewed = changes;
+    confirmation.request({
+      title: `Save ${plural(reviewed.length, 'change')} to ${provider.display_name}?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList changes={reviewed} />
+          {baseUrlNeedsProbe ? (
+            <p>
+              The new Base URL was probed with model {payload.probe_model_id}. The API key used for
+              that check is not stored.
+            </p>
+          ) : null}
+        </>
+      ),
+      run: async () => {
+        await updateProviderDefinition(provider.provider, payload).catch((err: unknown) => {
+          throw new Error(withoutSecret(getErrorMessage(err), payload.api_key ?? ''));
+        });
+        toast.success('Provider updated');
+        await onUpdated();
+        onClose();
+      },
+    });
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
       <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
-        <form onSubmit={onSubmit}>
+        <form onSubmit={onSubmit} aria-label={`Edit provider ${provider.display_name}`}>
           <div className="border-b border-gray-100 px-5 py-4">
             <h3 className="text-[16px] font-semibold text-gray-900">Edit provider</h3>
           </div>
@@ -462,6 +535,7 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
                   id="edit-provider-name"
                   value={displayName}
                   onChange={(event) => setDisplayName(event.target.value)}
+                  disabled={saving}
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                   required
                 />
@@ -496,51 +570,66 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
                   setBaseUrl(event.target.value);
                   resetProbe();
                 }}
+                disabled={saving}
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               />
             </div>
 
             {baseUrlNeedsProbe && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label
-                    className="block text-[12px] font-medium text-gray-500"
-                    htmlFor="edit-provider-api-key"
-                  >
-                    API key
-                  </label>
-                  <input
-                    id="edit-provider-api-key"
-                    type="password"
-                    value={apiKey}
-                    onChange={(event) => {
-                      setApiKey(event.target.value);
-                      resetProbe();
-                    }}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  />
+              <div className="space-y-2">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label
+                      className="block text-[12px] font-medium text-gray-500"
+                      htmlFor="edit-provider-api-key"
+                    >
+                      API key
+                    </label>
+                    <input
+                      id="edit-provider-api-key"
+                      type="password"
+                      value={apiKey}
+                      onChange={(event) => {
+                        setApiKey(event.target.value);
+                        resetProbe();
+                      }}
+                      disabled={saving}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="block text-[12px] font-medium text-gray-500"
+                      htmlFor="edit-probe-model-id"
+                    >
+                      Probe model ID
+                    </label>
+                    <input
+                      id="edit-probe-model-id"
+                      value={probeModelId}
+                      onChange={(event) => {
+                        setProbeModelId(event.target.value);
+                        resetProbe();
+                      }}
+                      disabled={saving}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                      required
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label
-                    className="block text-[12px] font-medium text-gray-500"
-                    htmlFor="edit-probe-model-id"
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onProbe}
+                    disabled={probing || saving || !canProbe}
+                    className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Probe model ID
-                  </label>
-                  <input
-                    id="edit-probe-model-id"
-                    value={probeModelId}
-                    onChange={(event) => {
-                      setProbeModelId(event.target.value);
-                      resetProbe();
-                    }}
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  />
+                    {probing ? 'Probing…' : probeCurrent ? 'Probe again' : 'Probe'}
+                  </button>
                 </div>
               </div>
             )}
@@ -558,120 +647,22 @@ function EditProviderModal({ provider, onClose, onUpdated }: EditProviderModalPr
               </div>
             )}
           </div>
-          <div className="flex justify-end gap-2 border-t border-gray-100 px-5 py-4">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={probing || saving}
-              className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Cancel
-            </button>
-            {baseUrlNeedsProbe && (
-              <button
-                type="button"
-                onClick={onProbe}
-                disabled={probing || saving || !canProbe}
-                className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {probing ? 'Probing…' : probeCurrent ? 'Probe again' : 'Probe'}
-              </button>
-            )}
-            <button
-              type="submit"
-              disabled={!canSave}
-              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {saving ? 'Saving…' : 'Save changes'}
-            </button>
+          <div className="px-5 pb-4">
+            <EditBar
+              target={provider.display_name}
+              changeCount={changes.length}
+              onCancel={() => {
+                if (!saving && !probing) onClose();
+              }}
+              busy={saving}
+              error={saveError}
+              submit
+            />
           </div>
         </form>
       </div>
-    </div>
-  );
-}
-
-interface DeleteProviderModalProps {
-  provider: ProviderDefinitionItem | null;
-  onClose: () => void;
-  onDeleted: () => Promise<void>;
-}
-
-function DeleteProviderModal({ provider, onClose, onDeleted }: DeleteProviderModalProps) {
-  const toast = useAccountToast();
-  const [confirmValue, setConfirmValue] = useState('');
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    setConfirmValue('');
-  }, [provider?.provider]);
-
-  if (!provider) return null;
-
-  const canDelete = confirmValue === provider.provider && !deleting;
-
-  const onDelete = async () => {
-    if (!canDelete) return;
-    setDeleting(true);
-    try {
-      await deleteProviderDefinition(provider.provider);
-      toast.success('Provider deleted');
-      await onDeleted();
-      onClose();
-    } catch (err) {
-      toast.error(`Delete failed: ${getErrorMessage(err)}`);
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
-      <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
-        <div className="border-b border-gray-100 px-5 py-4">
-          <h3 className="text-[16px] font-semibold text-gray-900">
-            Delete provider “{provider.display_name}”
-          </h3>
-        </div>
-        <div className="space-y-3 px-5 py-4">
-          <p className="text-[13px] text-gray-600">
-            This removes the custom provider definition and its stored provider keys. This cannot be
-            undone.
-          </p>
-          <div>
-            <label
-              className="block text-[12px] font-medium text-gray-500"
-              htmlFor="delete-provider-confirm"
-            >
-              Type {provider.provider} to confirm
-            </label>
-            <input
-              id="delete-provider-confirm"
-              value={confirmValue}
-              onChange={(event) => setConfirmValue(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-            />
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-gray-100 px-5 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={deleting}
-            className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={!canDelete}
-            className="rounded-md bg-red-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {deleting ? 'Deleting…' : 'Delete provider'}
-          </button>
-        </div>
-      </div>
+      {/* Rendered after the form, so the confirmation stacks over this modal. */}
+      {confirmation.dialog}
     </div>
   );
 }
@@ -682,11 +673,11 @@ interface ProviderOverviewTabProps {
 
 export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
   const [providers, setProviders] = useState<ProviderDefinitionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ProviderDefinitionItem | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ProviderDefinitionItem | null>(null);
 
   const providerSummary = useMemo(
     () =>
@@ -715,6 +706,27 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
   useEffect(() => {
     void loadProviders();
   }, [loadProviders]);
+
+  const requestDelete = (provider: ProviderDefinitionItem) => {
+    confirmation.request({
+      title: `Delete provider “${provider.display_name}”?`,
+      confirmLabel: 'Delete provider',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      requireText: provider.provider,
+      body: (
+        <p>
+          This removes the custom provider definition {provider.provider} and its stored provider
+          keys ({formatCount(provider.keys_count, 'key')}). This cannot be undone.
+        </p>
+      ),
+      run: async () => {
+        await deleteProviderDefinition(provider.provider);
+        toast.success('Provider deleted');
+        await loadProviders();
+      },
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -813,6 +825,7 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
                               <button
                                 type="button"
                                 onClick={() => setEditTarget(provider)}
+                                aria-label={`Edit ${provider.display_name}`}
                                 className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
                               >
                                 Edit
@@ -821,7 +834,8 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
                                 type="button"
                                 disabled={hasLinkedModels}
                                 aria-describedby={hasLinkedModels ? deleteReasonId : undefined}
-                                onClick={() => setDeleteTarget(provider)}
+                                onClick={() => requestDelete(provider)}
+                                aria-label={`Delete ${provider.display_name}`}
                                 className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:hover:bg-transparent"
                               >
                                 Delete
@@ -854,11 +868,7 @@ export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) 
         onClose={() => setEditTarget(null)}
         onUpdated={loadProviders}
       />
-      <DeleteProviderModal
-        provider={deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onDeleted={loadProviders}
-      />
+      {confirmation.dialog}
     </div>
   );
 }

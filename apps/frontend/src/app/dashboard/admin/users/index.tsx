@@ -13,6 +13,7 @@ import {
   rejectUser,
   resumeUser,
   updateUser,
+  type UpdateUserData,
 } from '@/lib/api/admin';
 import { SummaryCards } from './SummaryCards';
 import { SavedViews } from './SavedViews';
@@ -227,82 +228,55 @@ export default function UsersTab() {
     if (view) applyFilterState(view.filterState);
   };
 
-  // Action handlers — wrap admin API fns and refetch on success.
-  // These are passed down to UserTable, which owns its own delete/hard-delete
-  // modals and detail-edit interactions.
+  // Write handlers — wrap the admin API fns and refetch on success. UserTable
+  // runs each one inside a confirmation it owns, so a failure is thrown, not
+  // toasted: the confirmation stays open with the error and can be retried.
+  const labelOf = (id: string) => userAccountLabel(users.find((u) => u.id === id)) || id;
   const handlers = {
     onApprove: async (id: string) => {
-      try {
-        const user = users.find((u) => u.id === id);
-        await approveUser(id);
-        toast.success(`Approved ${userAccountLabel(user) || id}`);
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      const label = labelOf(id);
+      await approveUser(id);
+      toast.success(`Approved ${label}`);
+      void refreshUsers();
     },
     onReject: async (id: string, reason: string) => {
-      try {
-        const user = users.find((u) => u.id === id);
-        await rejectUser(id, reason);
-        toast.success(`Rejected ${userAccountLabel(user) || id}`);
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      const label = labelOf(id);
+      await rejectUser(id, reason);
+      toast.success(`Rejected ${label}`);
+      void refreshUsers();
     },
-    onUpdate: async (id: string, patch: Record<string, unknown>) => {
-      try {
-        await updateUser(id, patch);
-        toast.success('Saved');
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+    onUpdate: async (id: string, patch: UpdateUserData) => {
+      await updateUser(id, patch);
+      toast.success('Saved');
+      void refreshUsers();
     },
     onSuspend: async (id: string, suspensionMessage?: string | null) => {
-      try {
-        // Always send suspension_message (null when blank) so re-suspending
-        // clears any stale message from a prior suspension.
-        await updateUser(id, {
-          status: 'suspended',
-          suspension_message: suspensionMessage ?? null,
-        });
-        toast.success('Suspended');
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      // Always send suspension_message (null when blank) so re-suspending
+      // clears any stale message from a prior suspension.
+      await updateUser(id, {
+        status: 'suspended',
+        suspension_message: suspensionMessage ?? null,
+      });
+      toast.success('Suspended');
+      void refreshUsers();
     },
     onResume: async (id: string) => {
-      try {
-        const user = users.find((u) => u.id === id);
-        await resumeUser(id);
-        toast.success(`Resumed ${userAccountLabel(user) || id}`);
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      const label = labelOf(id);
+      await resumeUser(id);
+      toast.success(`Resumed ${label}`);
+      void refreshUsers();
     },
     onDelete: async (id: string, reason: string) => {
-      try {
-        const user = users.find((u) => u.id === id);
-        await deleteUser(id, reason);
-        toast.success(`Deleted ${userAccountLabel(user) || id}`);
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      const label = labelOf(id);
+      await deleteUser(id, reason);
+      toast.success(`Deleted ${label}`);
+      void refreshUsers();
     },
     onHardDelete: async (id: string, reason: string) => {
-      try {
-        const user = users.find((u) => u.id === id);
-        await hardDeleteUser(id, reason || undefined);
-        toast.success(`Permanently deleted ${userAccountLabel(user) || id}`);
-        refreshUsers();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
+      const label = labelOf(id);
+      await hardDeleteUser(id, reason || undefined);
+      toast.success(`Permanently deleted ${label}`);
+      void refreshUsers();
     },
   };
 

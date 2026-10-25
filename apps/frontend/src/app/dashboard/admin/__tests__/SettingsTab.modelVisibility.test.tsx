@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -90,8 +90,13 @@ describe('SettingsTab model visibility', () => {
     renderSettings();
 
     expect(await screen.findByRole('heading', { name: 'Model Visibility' })).toBeInTheDocument();
-    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Visibility' }));
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Model Visibility' }));
+    expect(api.updateModelVisibility).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
+    );
 
     await waitFor(() => {
       expect(api.updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');

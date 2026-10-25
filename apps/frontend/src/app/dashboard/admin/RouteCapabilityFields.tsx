@@ -1,3 +1,4 @@
+import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { Select } from '@/components/ui/Select';
 import type { RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
 
@@ -103,6 +104,48 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
     media.length ? listWords(['text', ...media]) : 'text only',
     capabilities.supports_tools ? 'tools' : 'no tools',
   ].join(' · ');
+}
+
+/** One review row per capability, as the form names them. */
+export function capabilityRows(capabilities: RouteCapabilities): Change[] {
+  const others = capabilities.input_modalities.filter(
+    (modality) => modality !== 'text' && modality !== 'image',
+  );
+  return [
+    {
+      label: 'Context length',
+      after: `${capabilities.context_length.toLocaleString('en-US')} tokens`,
+    },
+    {
+      label: 'Max output',
+      after: `${capabilities.max_output_length.toLocaleString('en-US')} tokens`,
+    },
+    {
+      label: 'Image input',
+      after: capabilities.input_modalities.includes('image') ? 'Accepts images' : 'Text only',
+    },
+    ...(others.length ? [{ label: 'Other input', after: listWords(others) }] : []),
+    { label: 'Tool calling', after: capabilities.supports_tools ? 'Supported' : 'Not supported' },
+  ];
+}
+
+/** The capabilities that differ, `before → after`, in the form's order. */
+export function capabilityChanges(before: RouteCapabilities, after: RouteCapabilities): Change[] {
+  const old = new Map(capabilityRows(before).map((row) => [row.label, row.after]));
+  const next = capabilityRows(after);
+  const labels = new Set(next.map((row) => row.label));
+  return [
+    ...next
+      .filter((row) => old.get(row.label) !== row.after)
+      .map((row) => ({
+        label: row.label,
+        before: old.get(row.label) ?? '(none)',
+        after: row.after,
+      })),
+    ...[...old]
+      .filter(([label]) => !labels.has(label))
+      .map(([label, value]) => ({ label, before: value, after: '(none)' })),
+  ];
 }
 
 const FIELD_CLASS =
