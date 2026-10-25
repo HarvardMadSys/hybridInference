@@ -183,6 +183,10 @@ def test_client_error_burst_on_with_no_alerts_file(tmp_path: Path):
     assert cfg.rules.client_error_burst.window_sec == 600
     assert cfg.rules.client_error_burst.threshold_count == 12
     assert cfg.rules.client_error_burst.cooldown_sec == 3600
+    assert cfg.rules.key_pool_exhaustion_burst.enabled is True
+    assert cfg.rules.key_pool_exhaustion_burst.window_sec == 600
+    assert cfg.rules.key_pool_exhaustion_burst.threshold_count == 12
+    assert cfg.rules.key_pool_exhaustion_burst.cooldown_sec == 3600
 
 
 def test_stream_failure_rate_on_with_no_alerts_file(tmp_path: Path):

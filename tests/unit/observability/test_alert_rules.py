@@ -2095,6 +2095,32 @@ def _make_client_error_record(
     return rec
 
 
+def _make_key_pool_exhaustion_record(
+    endpoint_id: str = "zai:api",
+) -> logging.LogRecord:
+    """Build a record shaped like endpoint_health's exhaustion skip event."""
+    rec = logging.LogRecord(
+        name="routing.endpoint_health",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="key_pool_exhausted_skip_breaker",
+        args=None,
+        exc_info=None,
+    )
+    rec.event = "key_pool_exhausted_skip_breaker"
+    rec.endpoint_id = endpoint_id
+    return rec
+
+
+def _key_pool_rule(**overrides):
+    from serving.observability.alert_config import KeyPoolExhaustionBurstConfig
+    from serving.observability.alert_rules import KeyPoolExhaustionBurstRule
+
+    defaults = {"enabled": True, "window_sec": 600, "threshold_count": 12, "cooldown_sec": 0}
+    return KeyPoolExhaustionBurstRule(KeyPoolExhaustionBurstConfig(**{**defaults, **overrides}))
+
+
 def _make_stream_failed_record(
     model: str = "deepseek-v4-flash",
     error_type: str = "HTTPStatusError",
@@ -2256,6 +2282,37 @@ async def test_client_error_burst_ignores_records_without_the_event() -> None:
             await rule.on_record(echoed)
         # A different structured event must not count either.
         await rule.on_record(_make_stream_failed_record())
+
+    assert mock_alert.await_count == 0
+
+
+async def test_key_pool_exhaustion_burst_fires_and_explains_no_circuit_alert() -> None:
+    """Provider-wide 402/403 remains observable after exhaustion skips the breaker."""
+    rule = _key_pool_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(13):
+            await rule.on_record(_make_key_pool_exhaustion_record())
+
+    assert mock_alert.await_count >= 1
+    payload = mock_alert.call_args_list[0].args[2]
+    assert payload["count"] == 13
+    assert "zai:api (13)" in payload["top_endpoints"]
+    assert "without a circuit-open alert" in payload["note"]
+
+
+async def test_key_pool_exhaustion_burst_stays_silent_at_threshold() -> None:
+    rule = _key_pool_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(12):
+            await rule.on_record(_make_key_pool_exhaustion_record())
 
     assert mock_alert.await_count == 0
 

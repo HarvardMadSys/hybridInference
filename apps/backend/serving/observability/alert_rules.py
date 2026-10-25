@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         AuthIpBlockedConfig,
         ClientErrorBurstConfig,
         CountRule,
+        KeyPoolExhaustionBurstConfig,
         LatencyRule,
         PendingPrefixCacheLeakConfig,
         ProviderHourlySpend,
@@ -966,6 +967,61 @@ class ClientErrorBurstRule:
         )
 
 
+class KeyPoolExhaustionBurstRule:
+    """Alert when key-pool exhaustion bypassing the breaker piles up.
+
+    Fires when more than ``threshold_count`` ``key_pool_exhausted_skip_breaker``
+    events arrive within ``window_sec``. The breaker exemption is intentional:
+    exhaustion happens before an upstream dispatch, so it is not endpoint
+    failure evidence. Provider-wide 402/403 incidents are also exempt as client
+    errors, which makes this rule their alerting surface after the circuit no
+    longer opens on the exhaustion echo.
+    """
+
+    name = "key_pool_exhaustion_burst"
+
+    def __init__(self, cfg: KeyPoolExhaustionBurstConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Track breaker-exempt key-pool refusals and alert on a burst."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "key_pool_exhausted_skip_breaker":
+            return
+        now = time.time()
+        self._window.add(now, {"endpoint_id": getattr(record, "endpoint_id", None)})
+        items = self._window.items(now)
+
+        def breach_context() -> dict[str, Any]:
+            endpoint_counts: collections.Counter[str] = collections.Counter(
+                str(item["endpoint_id"]) for item in items if item["endpoint_id"]
+            )
+            return {
+                "count": len(items),
+                "window_sec": self._cfg.window_sec,
+                "top_endpoints": _top_offenders(endpoint_counts),
+                "note": (
+                    "key-pool exhaustion happens before an upstream dispatch and bypasses "
+                    "the circuit breaker by design. Provider-wide 402/403 incidents can "
+                    "produce these refusals without a circuit-open alert; inspect "
+                    "key-pool mutes and recent upstream statuses in logs"
+                ),
+            }
+
+        await alert_on_transition(
+            key="key_pool_exhaustion_burst",
+            breached=len(items) > self._cfg.threshold_count,
+            severity=AlertSeverity.ERROR,
+            title="Key-pool exhaustion burst",
+            context=breach_context,
+            cooldown_sec=self._cfg.cooldown_sec,
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
+        )
+
+
 class StreamFailureRateRule:
     """Alert when one model's streams keep dying mid-flight.
 
@@ -1352,6 +1408,7 @@ class AlertEngine:
         # after the response has already started. See ClientErrorBurstRule and
         # StreamFailureRateRule.
         self._rules.append(ClientErrorBurstRule(self._config.rules.client_error_burst))
+        self._rules.append(KeyPoolExhaustionBurstRule(self._config.rules.key_pool_exhaustion_burst))
         self._rules.append(StreamFailureRateRule(self._config.rules.stream_failure_rate))
 
     def _schedule_periodic_jobs(self) -> None:

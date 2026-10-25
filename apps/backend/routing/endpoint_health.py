@@ -93,13 +93,14 @@ _CALLERS_IN_ALERT = 10
 # Deriving ownership from the endpoint's base_url instead would mean threading it
 # (or an explicit ownership flag) through ``record_failure`` at every router,
 # RouteWise, and hedging call site — new plumbing on the failure path to widen an
-# escalation whose absence is tolerated: 403 is key-specific for ``KeyPool``, so
-# an endpoint answering 403 to everything mutes its keys and then fails with
-# ``KeyPoolExhausted`` — a local precondition refusal (nothing was sent) that
-# endpoint health never counts (see ``record_failure``). The mutes themselves
-# keep the account quiet while they last and every 403 lands in ``api_logs``.
-# So 403 keeps the pre-existing exemption, and only the unambiguous statuses
-# escalate.
+# escalation whose absence is tolerated: 402 and 403 are key-specific for
+# ``KeyPool``, so an endpoint answering either to everything mutes its keys and
+# then fails with ``KeyPoolExhausted`` — a local precondition refusal (nothing
+# was sent) that endpoint health never counts (see ``record_failure``). The
+# mutes keep the account quiet while they last, every upstream status lands in
+# ``api_logs``, and the key-pool exhaustion burst rule pages when the refusals
+# pile up. So 402/403 keep the client-error exemption, and only the
+# unambiguous credential challenges escalate.
 _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
 
 # Cooldown for the upstream-auth page. Matches the circuit-open alert so a
@@ -690,8 +691,8 @@ class _CircuitBreaker:
             # the current generation is mid-delivery, or its mute deadline has not
             # passed — stay silent no matter how *this* failure presents. A
             # half-open re-trip often surfaces differently from the original 429
-            # (e.g. KeyPoolExhausted once the key's 429-backoff exceeds the circuit
-            # cooldown, or a timeout); those must not resurrect the storm. The
+            # (for example a timeout once key backoff exceeds the circuit
+            # cooldown); those must not resurrect the storm. The
             # in-flight guard is scoped to the generation, so a recovery (which
             # bumps it) does not let a stale in-flight page mute the *next* outage;
             # recovery also clears the deadline, re-arming the endpoint.
@@ -718,10 +719,10 @@ class _CircuitBreaker:
             #
             # Reason-agnostic within the floor, because the deadline alone does not
             # hold here: behind a key pool, one sibling key with quota left reads as
-            # a recovery and clears it, and the re-trip that follows is usually
-            # ``KeyPoolExhausted`` — no usage marker, so ``usage_limit`` is None and
-            # a text-scoped gate would let exactly the page this policy exists to
-            # remove through. So a trip within ``_MIN_ALERT_GAP_SEC`` of the last
+            # a recovery and clears it, and the next trip can surface without the
+            # usage marker, so ``usage_limit`` can be None and a text-scoped gate
+            # would let exactly the page this policy exists to remove through. So a
+            # trip within ``_MIN_ALERT_GAP_SEC`` of the last
             # recognized plan limit stays silent whatever it looks like. That does
             # mute an unrelated outage on the same endpoint for up to the floor —
             # the same trade the ``max()`` re-arm below already makes, and bounded
