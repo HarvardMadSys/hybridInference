@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config import app_config
 from serving.schemas_config import ConfigResponse, UpdateConfigRequest
 from serving.servers import restart
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
 
 router = APIRouter(prefix="/admin")
 
@@ -27,6 +28,7 @@ async def get_config(_admin_id: str = Depends(verify_admin_access)) -> ConfigRes
 async def update_config(
     payload: UpdateConfigRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> ConfigResponse:
     """Validate a batch of values together, store it in one transaction, and apply it.
@@ -40,7 +42,13 @@ async def update_config(
     except app_config.ConfigUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
     for change in changes:
-        await log_admin_action(op_store, admin_id, "config.update", None, change.audit_details())
+        await log_admin_action(
+            op_store,
+            action="config.update",
+            details=change.audit_details(),
+            actor=actor,
+            target=AuditTarget("config", change.key),
+        )
     return _response()
 
 
@@ -48,6 +56,7 @@ async def update_config(
 async def reset_config(
     key: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> ConfigResponse:
     """Remove a stored value, so the setting falls back to the environment or its default."""
@@ -55,5 +64,11 @@ async def reset_config(
         change = await app_config.delete(key, updated_by=admin_id)
     except app_config.ConfigUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
-    await log_admin_action(op_store, admin_id, "config.reset", None, change.audit_details())
+    await log_admin_action(
+        op_store,
+        action="config.reset",
+        details=change.audit_details(),
+        actor=actor,
+        target=AuditTarget("config", change.key),
+    )
     return _response()

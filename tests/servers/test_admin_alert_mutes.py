@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.audit import AuditTarget
 from serving.observability import alert_mutes
 from serving.observability.alert_types import ALERT_TYPES
 from serving.observability.alerts import AlertSeverity, alert_slack, reset_dedupe_state
@@ -111,9 +112,10 @@ async def test_mute_for_a_duration_is_listed_and_audited(admin_client):
     assert before + 3600 <= body["muted_until"] <= time.time() + 3600
     assert body["muted_by"] == store.rows["slack_alert_mute:auth_ip_blocked"]["updated_by"]
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "alerts.mute"
-    assert audit.await_args.args[4]["alert_type"] == "auth_ip_blocked"
-    assert audit.await_args.args[4]["duration_seconds"] == 3600
+    assert audit.await_args.kwargs["action"] == "alerts.mute"
+    assert audit.await_args.kwargs["details"]["alert_type"] == "auth_ip_blocked"
+    assert audit.await_args.kwargs["details"]["duration_seconds"] == 3600
+    assert audit.await_args.kwargs["target"] == AuditTarget("alert_type", "auth_ip_blocked")
 
     listed = _by_type((await client.get("/admin/alerts/mutes", headers=AUTH)).json())
     assert listed["auth_ip_blocked"]["muted"] is True
@@ -147,15 +149,15 @@ async def test_unmute_lifts_the_mute_and_is_audited(admin_client):
     assert response.status_code == 200
     assert response.json()["muted"] is False
     assert "slack_alert_mute:circuit_open" not in store.rows
-    assert audit.await_args.args[2] == "alerts.unmute"
-    assert audit.await_args.args[4] == {"alert_type": "circuit_open", "removed": True}
+    assert audit.await_args.kwargs["action"] == "alerts.unmute"
+    assert audit.await_args.kwargs["details"] == {"alert_type": "circuit_open", "removed": True}
     listed = _by_type((await client.get("/admin/alerts/mutes", headers=AUTH)).json())
     assert listed["circuit_open"]["muted"] is False
 
     # Unmuting a type that is not muted is a harmless no-op.
     again = await client.delete("/admin/alerts/mutes/circuit_open", headers=AUTH)
     assert again.status_code == 200
-    assert audit.await_args.args[4] == {"alert_type": "circuit_open", "removed": False}
+    assert audit.await_args.kwargs["details"] == {"alert_type": "circuit_open", "removed": False}
 
 
 @pytest.mark.asyncio

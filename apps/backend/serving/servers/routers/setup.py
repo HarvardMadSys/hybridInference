@@ -92,7 +92,7 @@ async def create_setup_admin(
             login_name=body.login_name,
             password_hash=password_utils.hash_password(body.password),
             user_name=body.display_name or body.login_name,
-            admin_ip=client_ip,
+            source_ip=client_ip,
         )
     except AccountSchemaPending as exc:
         logger.warning(

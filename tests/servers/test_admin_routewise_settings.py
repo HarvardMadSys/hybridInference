@@ -14,6 +14,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseProbeResult, RouteWiseRouter
+from serving.audit import AuditTarget
 from serving.config.routewise_model_settings import (
     RouteWiseSettingsResolver,
     model_routewise_setting_key,
@@ -229,7 +230,13 @@ async def test_model_settings_patch_isolates_models_and_persists_canonical_key(a
     scoped_key = model_routewise_setting_key("routewise_budget_alpha", "model-a")
     assert rows[scoped_key]["value"] == "0.4"
     assert model_routewise_setting_key("routewise_budget_alpha", "model/a") not in rows
-    assert audit.await_args.args[4]["admin_id"]
+    audit_kwargs = audit.await_args.kwargs
+    assert audit_kwargs["details"]["admin_id"]
+    # The canonical model is the typed target. Legacy rows of this action put
+    # the model id in target_user_id; a model id is never an affected user.
+    assert audit_kwargs["target"] == AuditTarget.model("model-a")
+    assert audit_kwargs.get("target_user_id") is None
+    assert audit_kwargs["actor"].type == "admin_token"
 
 
 @pytest.mark.asyncio
@@ -792,7 +799,7 @@ async def test_list_routewise_probe_samples(admin_client):
 
 @pytest.mark.asyncio
 async def test_run_routewise_probe_calls_live_router(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, audit = admin_client
     route_table = MagicMock()
     route_table.iter_effective_routes.return_value = ()
     route_table.canonical_id.side_effect = lambda model_id: {"test-alias": "test-model"}.get(
@@ -833,6 +840,11 @@ async def test_run_routewise_probe_calls_live_router(admin_client):
         endpoint_id="test-model:api",
         idle_only=False,
     )
+    audit.assert_awaited_once()
+    recorded = audit.await_args.kwargs
+    assert recorded["target"] == AuditTarget.model("test-model")
+    assert recorded.get("target_user_id") is None
+    assert recorded["details"]["model_id"] == "test-alias"
 
 
 @pytest.mark.asyncio

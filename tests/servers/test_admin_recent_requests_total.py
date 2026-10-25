@@ -23,9 +23,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
+from tests.fixtures.audit import ADMIN_ACTOR
 
 
 def _row(index: int) -> dict[str, Any]:
@@ -125,6 +126,7 @@ def _app(db: _FakeDb, **services: Any) -> FastAPI:
         router=FixedRouter(), db_logger=MagicMock(pool=db.pool), **services
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.include_router(admin.router)
     return app
 

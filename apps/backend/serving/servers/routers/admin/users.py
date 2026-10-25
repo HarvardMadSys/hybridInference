@@ -9,6 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import get_settings
 from serving.exceptions import HardDeleteStateChanged
@@ -56,6 +57,7 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
+    get_admin_audit_actor,
     get_admin_user_id,
     get_log_store,
     get_operational_store,
@@ -66,7 +68,6 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -504,6 +505,7 @@ async def approve_user(
     user_id: str,
     payload: ApproveUserRequest | None = None,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> ApproveUserResponse:
     """Approve a pending user registration.
@@ -532,10 +534,10 @@ async def approve_user(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "approve_user",
-        user_id,
-        {"email": user_row["email"], "note": note},
+        action="approve_user",
+        details={"email": user_row["email"], "note": note},
+        actor=actor,
+        target=AuditTarget.user(user_id),
     )
 
     from serving.utils.email import is_email_enabled, send_approval_email
@@ -558,6 +560,7 @@ async def reject_user(
     user_id: str,
     payload: RejectUserRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> RejectUserResponse:
     """Reject a pending user registration.
@@ -585,10 +588,10 @@ async def reject_user(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "reject_user",
-        user_id,
-        {"email": user_row["email"], "reason": payload.reason},
+        action="reject_user",
+        details={"email": user_row["email"], "reason": payload.reason},
+        actor=actor,
+        target=AuditTarget.user(user_id),
     )
 
     from serving.utils.email import is_email_enabled, send_rejection_email
@@ -748,6 +751,7 @@ async def update_user(
     user_id: str,
     payload: UpdateUserRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     router_exec=Depends(get_router),
 ) -> UpdateUserResponse:
@@ -869,10 +873,10 @@ async def update_user(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "update_user",
-        user_id,
-        _serialize_for_audit({"updated_fields": updated, "values": payload_dict}),
+        action="update_user",
+        details=_serialize_for_audit({"updated_fields": updated, "values": payload_dict}),
+        actor=actor,
+        target=AuditTarget.user(user_id),
     )
 
     return UpdateUserResponse(
@@ -893,9 +897,14 @@ async def list_audit_log(
 ) -> ListAuditLogResponse:
     """List admin audit log entries with optional filtering.
 
+    Each entry carries its actor (``actor_type`` / ``actor_id``), the
+    trusted ``source_ip`` and its typed target (``target_type`` /
+    ``target_id``), all null for a row written before they were recorded;
+    ``admin_ip`` and ``target_user_id`` are returned as stored.
+
     Query Parameters:
     - action: Filter by action type (e.g. approve_user, reject_user)
-    - target_user_id: Filter by affected user
+    - target_user_id: Filter by affected user (matches ``target_user_id``)
     - limit: Max results (default: 50)
     - offset: Pagination offset
 
@@ -926,6 +935,11 @@ async def list_audit_log(
                 target_user_id=row["target_user_id"],
                 details=details,
                 success=row["success"],
+                actor_type=row.get("actor_type"),
+                actor_id=row.get("actor_id"),
+                source_ip=row.get("source_ip"),
+                target_type=row.get("target_type"),
+                target_id=row.get("target_id"),
             )
         )
 
@@ -934,10 +948,10 @@ async def list_audit_log(
 
 @router.post("/users/{user_id}/delete", response_model=DeleteUserResponse)
 async def delete_user(
-    request: Request,
     user_id: str,
     payload: DeleteUserRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> DeleteUserResponse:
     """Soft-delete a user account.
@@ -968,10 +982,10 @@ async def delete_user(
     # and inserts audit log — all in a single transaction.
     await op_store.delete_user(
         user_id,
-        admin_ip=get_client_ip(request),
         admin_id=admin_id,
         reason=payload.reason,
         email=user_row["email"],
+        actor=actor,
     )
 
     return DeleteUserResponse(
@@ -985,10 +999,10 @@ async def delete_user(
 
 @router.post("/users/{user_id}/resume", response_model=ResumeUserResponse)
 async def resume_user(
-    request: Request,
     user_id: str,
     payload: ResumeUserRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> ResumeUserResponse:
@@ -1029,10 +1043,10 @@ async def resume_user(
     try:
         await op_store.resume_user(
             user_id,
-            admin_ip=get_client_ip(request),
             admin_id=admin_id,
             reason=payload.reason,
             email=user_row["email"],
+            actor=actor,
         )
     except HardDeleteStateChanged:
         raise HTTPException(
@@ -1052,10 +1066,10 @@ async def resume_user(
 
 @router.post("/users/{user_id}/hard-delete", response_model=HardDeleteUserResponse)
 async def hard_delete_user(
-    request: Request,
     user_id: str,
     payload: HardDeleteUserRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
     response_store=Depends(get_response_store),
@@ -1159,10 +1173,10 @@ async def hard_delete_user(
         await op_store.hard_delete_user(
             user_id,
             claim_token=claim_token,
-            admin_ip=get_client_ip(request),
             admin_id=admin_id,
             reason=payload.reason,
             email=email,
+            actor=actor,
         )
     except Exception:
         if claim_token and not fence_established:

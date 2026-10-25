@@ -162,7 +162,8 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
     names, phone numbers): the store reads which of them exist and queries
     only those, so sign-in by email and API keys keep working while first-run
     setup and phone sign-in answer 503 until the retry lands them. Only the
-    hard-delete claim columns are required up front.
+    hard-delete claim columns and the audit-log attribution columns are
+    required up front.
 
     Anything other than a lock timeout still propagates — startup must not
     mask a genuinely broken schema.
@@ -171,9 +172,9 @@ async def _initialize_operational_store(pg_operational: PostgresOperationalStore
         await pg_operational.initialize()
     except RequiredOperationalSchemaUnavailable:
         logger.error(
-            "Operational store cannot start until the required users columns "
-            "(hard-delete claim) are installed; refusing to serve against an "
-            "unsafe schema."
+            "Operational store cannot start until its required columns "
+            "(users hard-delete claim, admin_audit_log attribution) are "
+            "installed; refusing to serve against an unsafe schema."
         )
         raise
     except SchemaLockUnavailable as lock_exc:

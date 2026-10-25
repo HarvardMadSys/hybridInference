@@ -21,6 +21,7 @@ from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
+from serving.audit import AuditTarget
 from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
@@ -941,7 +942,12 @@ async def test_strategy_patch_cancellation_waits_for_publish_then_propagates(adm
     assert registry.get_router_name("on-demand-only") == "fixed"
     assert registry.get_router("on-demand-only") is route_executor
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.strategy.update"
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.strategy.update"
+    # Run after the request was cancelled, the deferred audit still names who
+    # was admitted: the shared token, which is no account.
+    actor = audit.await_args.kwargs["actor"]
+    assert actor.type == "admin_token"
+    assert actor.id is None
 
 
 @pytest.mark.asyncio
@@ -2643,8 +2649,12 @@ async def test_runtime_route_edit_retargets_in_place_and_keeps_identity_and_weig
     assert resolver.get_snapshot_for_model("minimax-fast") == {PARASAIL_ENDPOINT_ID: 5.0}
 
     provider_routes.log_admin_action.assert_awaited()
-    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    audit = provider_routes.log_admin_action.await_args.kwargs
+    action, details = audit["action"], audit["details"]
     assert action == "routing.provider_routes.candidate.update"
+    # A route belongs to its model: the model is the typed target, never a user.
+    assert audit["target"] == AuditTarget.model("minimax-fast")
+    assert audit["target"].user_id is None
     assert details["old_endpoint_id"] == MINIMAX_ROUTE_ID
     assert details["endpoint_id"] == PARASAIL_ENDPOINT_ID
     assert details["old_upstream_provider"] == "minimax"
@@ -6285,7 +6295,7 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.candidate.create"
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.candidate.create"
 
 
 @pytest.mark.asyncio
@@ -7131,7 +7141,8 @@ async def test_route_update_audit_records_deployment_type(admin_client):
         headers=AUTH,
     )
     assert response.status_code == 200, response.text
-    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    audit = provider_routes.log_admin_action.await_args.kwargs
+    action, details = audit["action"], audit["details"]
     assert action == "routing.provider_routes.update"
     assert details["old_deployment_type"] == "auto"
     assert details["deployment_type"] == "self_hosted"
@@ -7210,7 +7221,7 @@ async def _set_state(client, route_id: str, disabled: bool, model_id: str = "min
 
 
 def _audited_actions() -> list[str]:
-    return [call.args[2] for call in provider_routes.log_admin_action.await_args_list]
+    return [call.kwargs["action"] for call in provider_routes.log_admin_action.await_args_list]
 
 
 @pytest.mark.asyncio
@@ -7671,9 +7682,9 @@ async def test_put_route_capabilities_overrides_a_yaml_route(admin_client, monke
     )
     audit = provider_routes.log_admin_action
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.capabilities.update"
-    assert audit.await_args.args[4]["old_capabilities"] == DEFAULT_CAPABILITIES
-    assert audit.await_args.args[4]["capabilities"] == RUNTIME_CAPABILITIES
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.capabilities.update"
+    assert audit.await_args.kwargs["details"]["old_capabilities"] == DEFAULT_CAPABILITIES
+    assert audit.await_args.kwargs["details"]["capabilities"] == RUNTIME_CAPABILITIES
 
     # The next request through the route is served with the new values.
     adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
@@ -8530,7 +8541,7 @@ async def test_a_limit_only_edit_keeps_the_routes_adapter_key_pool_and_price(
     assert table.row("minimax-fast", PARASAIL_ENDPOINT_ID)["concurrency_limit"] == 4
     fake_routewise.refresh_route_table.assert_called_once_with()
     verify_mock.assert_not_awaited()
-    details = provider_routes.log_admin_action.await_args.args[4]
+    details = provider_routes.log_admin_action.await_args.kwargs["details"]
     assert (details["old_concurrency_limit"], details["concurrency_limit"]) == (2, 4)
 
 

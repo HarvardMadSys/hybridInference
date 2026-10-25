@@ -9,6 +9,7 @@ from serving.schemas_admin import CreateProviderDefinitionRequest, UpdateProvide
 from serving.servers.routers.admin import provider_definitions
 from serving.servers.routers.admin.provider_definitions import _configured_provider_specs
 from serving.storage.base import ProviderDefinitionRow
+from tests.fixtures.audit import ADMIN_ACTOR
 
 
 class FakeProviderDefinitionStore:
@@ -111,6 +112,7 @@ async def test_update_builtin_provider_is_rejected(monkeypatch):
             "kimi",
             UpdateProviderDefinitionRequest(display_name="Kimi Coding"),
             admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=_empty_services(),
         )
@@ -140,7 +142,7 @@ async def test_delete_builtin_provider_is_rejected(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         await provider_definitions.delete_provider_definition(
             "kimi",
-            admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=_empty_services(),
         )
@@ -171,6 +173,7 @@ async def test_create_custom_provider_rejects_blank_display_name(monkeypatch):
                 probe_model_id="acme/model",
             ),
             admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=_empty_services(),
         )
@@ -210,6 +213,7 @@ async def test_update_custom_provider_display_name_without_probe(monkeypatch):
         "acme",
         UpdateProviderDefinitionRequest(display_name="Acme Prod"),
         admin_id="admin",
+        actor=ADMIN_ACTOR,
         op_store=store,
         services=_empty_services(),
     )
@@ -244,7 +248,7 @@ async def test_delete_custom_provider_hard_deletes_definition_and_keys(monkeypat
 
     response = await provider_definitions.delete_provider_definition(
         "acme",
-        admin_id="admin",
+        actor=ADMIN_ACTOR,
         op_store=store,
         services=_empty_services(),
     )
@@ -1007,6 +1011,7 @@ async def test_create_provider_definition_rejects_key_provider_aliases(monkeypat
                 probe_model_id="example-chat",
             ),
             admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=_empty_services(),
         )
@@ -1127,7 +1132,10 @@ def wiring(monkeypatch):
     async def base_url(value: str) -> str:
         return value.rstrip("/")
 
-    async def audit(_store, _admin, action, _target, details):
+    async def audit(_store, *, action, details, actor, target):
+        # A provider definition is a provider: typed as one, never a user id.
+        assert actor is ADMIN_ACTOR
+        assert target.type == "provider" and target.user_id is None
         seen["audits"].append((action, details))
 
     async def load_roles(_store, _provider):
@@ -1171,7 +1179,11 @@ async def test_create_probes_then_stores_registers_and_pools_the_key(wiring):
     store = _KeyStore()
 
     item = await provider_definitions.create_provider_definition(
-        _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+        _create_request(),
+        admin_id="admin",
+        actor=ADMIN_ACTOR,
+        op_store=store,
+        services=_empty_services(),
     )
 
     assert item.provider == "acme" and item.source == "custom"
@@ -1194,7 +1206,11 @@ async def test_a_key_that_cannot_be_stored_leaves_no_keyless_provider(wiring):
 
     with pytest.raises(RuntimeError, match="key table unavailable"):
         await provider_definitions.create_provider_definition(
-            _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+            _create_request(),
+            admin_id="admin",
+            actor=ADMIN_ACTOR,
+            op_store=store,
+            services=_empty_services(),
         )
 
     assert "acme" not in store.rows
@@ -1211,7 +1227,11 @@ async def test_a_failed_probe_writes_nothing(wiring, monkeypatch):
 
     with pytest.raises(HTTPException) as caught:
         await provider_definitions.create_provider_definition(
-            _create_request(), admin_id="admin", op_store=store, services=_empty_services()
+            _create_request(),
+            admin_id="admin",
+            actor=ADMIN_ACTOR,
+            op_store=store,
+            services=_empty_services(),
         )
 
     assert caught.value.status_code == 400
@@ -1239,7 +1259,11 @@ async def test_create_refuses_before_probing(wiring, monkeypatch, setup, status)
 
     with pytest.raises(HTTPException) as caught:
         await provider_definitions.create_provider_definition(
-            request, admin_id="admin", op_store=store, services=_empty_services()
+            request,
+            admin_id="admin",
+            actor=ADMIN_ACTOR,
+            op_store=store,
+            services=_empty_services(),
         )
 
     assert caught.value.status_code == status
@@ -1255,6 +1279,7 @@ async def test_a_base_url_change_needs_a_key_and_model_to_probe(wiring):
             "acme",
             UpdateProviderDefinitionRequest(default_base_url="https://new.acme.test/v1"),
             admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=_empty_services(),
         )
@@ -1275,6 +1300,7 @@ async def test_a_base_url_change_is_probed_before_it_is_saved(wiring):
             probe_model_id="acme/model",
         ),
         admin_id="admin",
+        actor=ADMIN_ACTOR,
         op_store=store,
         services=_empty_services(),
     )
@@ -1295,6 +1321,7 @@ async def test_the_same_base_url_is_not_a_change_and_is_not_probed(wiring):
         "acme",
         UpdateProviderDefinitionRequest(default_base_url="https://api.acme.test/v1/"),
         admin_id="admin",
+        actor=ADMIN_ACTOR,
         op_store=store,
         services=_empty_services(),
     )
@@ -1316,12 +1343,13 @@ async def test_a_provider_models_route_to_cannot_move_or_go(wiring):
                 default_base_url="https://new.acme.test/v1", api_key=_KEY, probe_model_id="m"
             ),
             admin_id="admin",
+            actor=ADMIN_ACTOR,
             op_store=store,
             services=services,
         )
     with pytest.raises(HTTPException) as deleted:
         await provider_definitions.delete_provider_definition(
-            "acme", admin_id="admin", op_store=store, services=services
+            "acme", actor=ADMIN_ACTOR, op_store=store, services=services
         )
 
     assert (moved.value.status_code, deleted.value.status_code) == (409, 409)
@@ -1340,12 +1368,13 @@ async def test_an_unknown_provider_is_404(wiring, call):
                 "acme",
                 UpdateProviderDefinitionRequest(display_name="x"),
                 admin_id="admin",
+                actor=ADMIN_ACTOR,
                 op_store=store,
                 services=_empty_services(),
             )
         else:
             await provider_definitions.delete_provider_definition(
-                "acme", admin_id="admin", op_store=store, services=_empty_services()
+                "acme", actor=ADMIN_ACTOR, op_store=store, services=_empty_services()
             )
 
     assert caught.value.status_code == 404

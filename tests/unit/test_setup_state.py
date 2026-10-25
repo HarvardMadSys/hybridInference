@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from serving import setup_state
+from serving.audit import AuditActor
 from serving.setup_state import (
     SETUP_CODE_ALPHABET,
     SETUP_CODE_KEY,
@@ -242,7 +243,7 @@ class TestCompleteSetup:
             login_name="admin",
             password_hash="hash",
             user_name="Ops",
-            admin_ip="203.0.113.7",
+            source_ip="203.0.113.7",
         )
 
         assert created is True
@@ -251,7 +252,11 @@ class TestCompleteSetup:
         assert kwargs["code_key"] == SETUP_CODE_KEY
         assert kwargs["marker_value"].endswith("+00:00")
         assert kwargs["login_name"] == "admin"
-        assert kwargs["admin_ip"] == "203.0.113.7"
+        # No account existed to act: the row names the setup bootstrap, from
+        # the request's address, and no account id.
+        assert kwargs["actor"] == AuditActor.bootstrap("203.0.113.7")
+        assert kwargs["actor"].id is None
+        assert "admin_ip" not in kwargs
         assert setup_state._state.required is False
         assert not verify_setup_code(STORED_CODE)
 
@@ -266,7 +271,7 @@ class TestCompleteSetup:
             login_name="admin",
             password_hash="hash",
             user_name="admin",
-            admin_ip="203.0.113.7",
+            source_ip="203.0.113.7",
         )
 
         assert created is False
@@ -284,7 +289,7 @@ class TestCompleteSetup:
                 login_name="admin",
                 password_hash="hash",
                 user_name="admin",
-                admin_ip="203.0.113.7",
+                source_ip="203.0.113.7",
             )
 
         assert setup_state._state.required is True

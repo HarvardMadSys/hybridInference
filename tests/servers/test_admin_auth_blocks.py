@@ -128,10 +128,13 @@ async def test_clear_lifts_the_block_and_is_audited(admin_client, small_limits):
     assert await is_ip_blocked("203.0.113.78") == (False, 0)
 
     audit.assert_awaited_once()
-    action = audit.await_args.args[2]
-    details = audit.await_args.args[4]
+    action = audit.await_args.kwargs["action"]
+    details = audit.await_args.kwargs["details"]
     assert action == "auth_blocks.clear"
     assert details == {"ip": "203.0.113.78", "ip_bucket": "203.0.113.78", "cleared": True}
+    # The lifted block is the target; the blocked address is not the actor's.
+    target = audit.await_args.kwargs["target"]
+    assert (target.type, target.id, target.user_id) == ("auth_block", "203.0.113.78", None)
 
 
 @pytest.mark.asyncio

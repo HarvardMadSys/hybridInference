@@ -25,6 +25,7 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
+from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
 from serving.config.offload_routes import offload_route_setting_key
 from serving.config.route_states import ENABLED, RouteState
@@ -55,6 +56,7 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
@@ -4185,6 +4187,7 @@ async def update_provider_route_strategy(
     model_id: str,
     payload: UpdateProviderRouteStrategyRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -4228,10 +4231,10 @@ async def update_provider_route_strategy(
     async def audit_strategy_update() -> None:
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.provider_routes.strategy.update",
-            None,
-            {
+            action="routing.provider_routes.strategy.update",
+            actor=actor,
+            target=AuditTarget.model(canonical_model_id),
+            details={
                 "model_id": canonical_model_id,
                 "strategy": payload.strategy,
             },
@@ -4269,6 +4272,7 @@ async def update_provider_route_strategy(
 async def create_provider_route_model(
     payload: CreateProviderRouteModelRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4350,10 +4354,10 @@ async def create_provider_route_model(
     async def audit_model_create() -> None:
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.provider_routes.model.create",
-            None,
-            {
+            action="routing.provider_routes.model.create",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "strategy": payload.strategy,
                 "required_role": payload.required_role,
@@ -4508,6 +4512,7 @@ async def create_provider_route_candidate(
     model_id: str,
     payload: CreateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4608,10 +4613,10 @@ async def create_provider_route_candidate(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.candidate.create",
-                None,
-                {
+                action="routing.provider_routes.candidate.create",
+                actor=actor,
+                target=AuditTarget.model(canonical_model_id),
+                details={
                     "model_id": canonical_model_id,
                     "route_id": candidate.route_id,
                     "route_type": candidate.route_type,
@@ -4770,6 +4775,7 @@ async def update_provider_route_candidate(
     model_route_path: str,
     payload: UpdateProviderRouteCandidateRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4897,10 +4903,10 @@ async def update_provider_route_candidate(
             old_target = _candidate_target(edit.old_adapter)
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.candidate.update",
-                None,
-                {
+                action="routing.provider_routes.candidate.update",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "route_type": candidate.route_type,
@@ -4948,6 +4954,7 @@ async def _change_route_capabilities(
     model_route_path: str,
     capabilities: dict[str, Any] | None,
     admin_id: str,
+    actor: AuditActor,
 ) -> ProviderRouteItem:
     """Store or clear one route's capability override and serve the route with it."""
     model_id, route_id, _route = _split_model_route_path(services, model_route_path)
@@ -4969,14 +4976,14 @@ async def _change_route_capabilities(
             await sync_route_capability_overrides(services, op_store, model_id)
             await log_admin_action(
                 op_store,
-                admin_id,
-                (
+                action=(
                     "routing.provider_routes.capabilities.reset"
                     if capabilities is None
                     else "routing.provider_routes.capabilities.update"
                 ),
-                None,
-                {
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "old_capabilities": old_capabilities,
@@ -5010,6 +5017,7 @@ async def update_provider_route_capabilities(
     model_route_path: str,
     payload: RuntimeModelCapabilities,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5027,6 +5035,7 @@ async def update_provider_route_capabilities(
         model_route_path=model_route_path,
         capabilities=payload.model_dump(),
         admin_id=admin_id,
+        actor=actor,
     )
 
 
@@ -5037,6 +5046,7 @@ async def update_provider_route_capabilities(
 async def reset_provider_route_capabilities(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5049,6 +5059,7 @@ async def reset_provider_route_capabilities(
         model_route_path=model_route_path,
         capabilities=None,
         admin_id=admin_id,
+        actor=actor,
     )
 
 
@@ -5057,6 +5068,7 @@ async def update_provider_route(
     model_route_path: str,
     payload: UpdateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5149,10 +5161,10 @@ async def update_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.update",
-                None,
-                {
+                action="routing.provider_routes.update",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "route_provider": context.route_provider,
@@ -5232,6 +5244,7 @@ async def verify_provider_route_update(
 async def delete_provider_route_override(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5292,10 +5305,10 @@ async def delete_provider_route_override(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.delete",
-                None,
-                {
+                action="routing.provider_routes.delete",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "old_upstream_provider": _upstream_provider(old_adapter),
@@ -5334,6 +5347,7 @@ async def delete_provider_route_override(
 async def delete_provider_route_candidate(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -5509,14 +5523,14 @@ async def delete_provider_route_candidate(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                (
+                action=(
                     "routing.provider_routes.model.delete"
                     if deleting_model
                     else "routing.provider_routes.candidate.delete"
                 ),
-                None,
-                {
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "upstream_provider": _upstream_provider(removed[0]),
@@ -5667,6 +5681,7 @@ async def update_provider_route_state(
     model_route_path: str,
     payload: UpdateProviderRouteStateRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5747,14 +5762,14 @@ async def update_provider_route_state(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                (
+                action=(
                     "routing.provider_routes.disable"
                     if state.disabled
                     else "routing.provider_routes.enable"
                 ),
-                None,
-                {
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": endpoint_id,
@@ -5792,6 +5807,7 @@ async def update_provider_route_state(
 async def remove_config_provider_route(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -5877,10 +5893,10 @@ async def remove_config_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.remove",
-                None,
-                {
+                action="routing.provider_routes.remove",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": endpoint_id,
@@ -6002,6 +6018,7 @@ async def _prepare_restored_route_edit(
 async def restore_config_provider_route(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -6114,10 +6131,10 @@ async def restore_config_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.restore",
-                None,
-                {
+                action="routing.provider_routes.restore",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": restored_entry[2],

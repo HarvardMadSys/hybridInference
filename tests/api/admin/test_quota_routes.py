@@ -25,10 +25,16 @@ def app_with_admin():
     rt.get_float.return_value = 250.0
 
     from serving.config.runtime_settings import get_runtime_settings
-    from serving.servers.deps import get_operational_store, verify_admin_access
+    from serving.servers.deps import (
+        get_admin_audit_actor,
+        get_operational_store,
+        verify_admin_access,
+    )
+    from tests.fixtures.audit import ADMIN_ACTOR
 
     app.dependency_overrides[get_operational_store] = lambda: op_store
     app.dependency_overrides[verify_admin_access] = lambda: "admin-id"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.dependency_overrides[get_runtime_settings] = lambda: rt
     return app, op_store, rt
 

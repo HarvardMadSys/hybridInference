@@ -6,6 +6,7 @@ import uuid as _uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.schemas_admin import (
     CreateSiteUpdateRequest,
     ListSiteUpdatesResponse,
@@ -13,7 +14,7 @@ from serving.schemas_admin import (
     UpdateSiteUpdateRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.deps import get_admin_audit_actor, get_db_logger, verify_admin_access
 
 router = APIRouter(prefix="/admin")
 
@@ -62,6 +63,7 @@ async def list_site_updates(
 async def create_site_update(
     req: CreateSiteUpdateRequest,
     admin: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db=Depends(get_db_logger),
 ) -> SiteUpdateItem:
     """Create a new site update.
@@ -91,7 +93,11 @@ async def create_site_update(
         )
 
     await log_admin_action(
-        db, admin, "site_update_create", None, {"id": update_id, "title": req.title}
+        db,
+        action="site_update_create",
+        details={"id": update_id, "title": req.title},
+        actor=actor,
+        target=AuditTarget("site_update", update_id),
     )
     return _row_to_item(row)
 
@@ -100,7 +106,7 @@ async def create_site_update(
 async def update_site_update(
     update_id: str,
     req: UpdateSiteUpdateRequest,
-    admin: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db=Depends(get_db_logger),
 ) -> SiteUpdateItem:
     """Update one or more fields of an existing site update.
@@ -135,7 +141,11 @@ async def update_site_update(
         raise HTTPException(status_code=404, detail="Site update not found")
 
     await log_admin_action(
-        db, admin, "site_update_update", None, {"id": update_id, "fields": list(fields)}
+        db,
+        action="site_update_update",
+        details={"id": update_id, "fields": list(fields)},
+        actor=actor,
+        target=AuditTarget("site_update", update_id),
     )
     return _row_to_item(row)
 
@@ -143,7 +153,7 @@ async def update_site_update(
 @router.delete("/site-updates/{update_id}")
 async def delete_site_update(
     update_id: str,
-    admin: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db=Depends(get_db_logger),
 ):
     """Delete a site update. Returns 404 when it does not exist.
@@ -158,5 +168,11 @@ async def delete_site_update(
     if not row:
         raise HTTPException(status_code=404, detail="Site update not found")
 
-    await log_admin_action(db, admin, "site_update_delete", None, {"id": update_id})
+    await log_admin_action(
+        db,
+        action="site_update_delete",
+        details={"id": update_id},
+        actor=actor,
+        target=AuditTarget("site_update", update_id),
+    )
     return {"message": "Site update deleted"}

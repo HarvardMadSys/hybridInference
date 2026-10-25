@@ -30,13 +30,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin.metrics import REQUEST_METRIC_WINDOWS
 from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
+from tests.fixtures.audit import ADMIN_ACTOR
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -183,6 +184,7 @@ async def client(pool: asyncpg.Pool) -> AsyncGenerator[AsyncClient, None]:
         log_store=PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET),
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.include_router(admin.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

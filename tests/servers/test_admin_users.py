@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.audit import AuditActor, AuditTarget
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
@@ -281,6 +282,49 @@ async def test_list_audit_log_success(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_list_audit_log_returns_attribution_and_legacy_rows_as_stored(admin_client):
+    """New rows carry actor, source and typed target; legacy rows read as not recorded.
+
+    A legacy row keeps its raw ``admin_ip`` (here an email, as some writers
+    stored) and a ``target_user_id`` that is not a user (a provider name, as
+    the provider toggle stored): both come back exactly as written, with the
+    attribution fields null, never re-typed from what the values look like.
+    """
+    client, op_store, _log_store, _log = admin_client
+    attributed = {
+        **_audit_row(action="models.concurrency.update", target="ignored"),
+        "id": 2,
+        "admin_ip": "198.51.100.4",
+        "target_user_id": None,
+        "actor_type": "admin",
+        "actor_id": "u-admin",
+        "source_ip": "198.51.100.4",
+        "target_type": "model",
+        "target_id": "glm-4.6",
+    }
+    legacy = {
+        **_audit_row(action="providers.disabled.update", target="openrouter"),
+        "id": 1,
+        "admin_ip": "admin@test",
+    }
+    op_store.list_audit_log.return_value = (2, [attributed, legacy])
+
+    response = await client.get("/admin/audit-log", headers=AUTH)
+
+    assert response.status_code == 200
+    new_entry, old_entry = response.json()["entries"]
+    assert new_entry["actor_type"] == "admin"
+    assert new_entry["actor_id"] == "u-admin"
+    assert new_entry["source_ip"] == "198.51.100.4"
+    assert (new_entry["target_type"], new_entry["target_id"]) == ("model", "glm-4.6")
+    assert new_entry["target_user_id"] is None
+    assert old_entry["admin_ip"] == "admin@test"
+    assert old_entry["target_user_id"] == "openrouter"
+    for field in ("actor_type", "actor_id", "source_ip", "target_type", "target_id"):
+        assert old_entry[field] is None
+
+
+@pytest.mark.asyncio
 async def test_list_audit_log_filter_by_action(admin_client):
     """GET /admin/audit-log?action=approve_user filters correctly."""
     client, op_store, _log_store, _log = admin_client
@@ -514,6 +558,33 @@ async def test_delete_user_key_cleanup_covers_legacy_user_id(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_delete_user_passes_the_admitted_actor_to_its_transaction(admin_client):
+    """The transactional delete is attributed to whoever was admitted, not dropped.
+
+    ``delete_user`` writes its audit row inside its own transaction, so the
+    route hands it the actor; the shared token is recorded as itself, with no
+    account id and the request's address, never as an email or a guessed user.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "active",
+    }
+
+    response = await client.post("/admin/users/u1/delete", headers=AUTH, json={"reason": "x"})
+
+    assert response.status_code == 200
+    call_kwargs = op_store.delete_user.await_args.kwargs
+    actor = call_kwargs["actor"]
+    assert isinstance(actor, AuditActor)
+    assert actor.type == "admin_token"
+    assert actor.id is None
+    # The address comes from the actor; no separate, possibly different one.
+    assert "admin_ip" not in call_kwargs
+
+
+@pytest.mark.asyncio
 async def test_delete_user_audit_inside_transaction(admin_client):
     """delete_user store method handles atomicity internally."""
     client, op_store, _log_store, _log = admin_client
@@ -571,7 +642,7 @@ async def test_patch_user_sets_admin_note(admin_client):
         "u1", admin_note="VIP customer — handle with care"
     )
     assert response.json()["updated_fields"] == ["admin_note"]
-    audit_payload = mock_log.await_args.args[4]
+    audit_payload = mock_log.await_args.kwargs["details"]
     assert audit_payload["values"]["admin_note"] == "VIP customer — handle with care"
 
 
@@ -638,7 +709,7 @@ async def test_patch_user_sets_suspension_message(admin_client):
         "u1", suspension_message="Contact support to appeal."
     )
     assert response.json()["updated_fields"] == ["suspension_message"]
-    audit_payload = mock_log.await_args.args[4]
+    audit_payload = mock_log.await_args.kwargs["details"]
     assert audit_payload["values"]["suspension_message"] == "Contact support to appeal."
 
 
@@ -784,7 +855,7 @@ async def test_patch_user_updates_disabled_models(admin_client):
         "u1", "disabled_models", ["a-model", "z-model"]
     )
     assert response.json()["updated_fields"] == ["disabled_models"]
-    audit_payload = mock_log.await_args.args[4]
+    audit_payload = mock_log.await_args.kwargs["details"]
     assert audit_payload["values"]["disabled_models"] == ["a-model", "z-model"]
 
 
@@ -1148,8 +1219,9 @@ async def test_resume_user_success(admin_client):
     assert call_kwargs["reason"] == "false alarm"
     assert "admin_id" in call_kwargs
     assert isinstance(call_kwargs["admin_id"], str)
-    assert "admin_ip" in call_kwargs
-    assert isinstance(call_kwargs["admin_ip"], str)
+    assert call_kwargs["actor"].type == "admin_token"
+    assert call_kwargs["actor"].id is None
+    assert "admin_ip" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -1382,12 +1454,13 @@ async def test_hard_delete_user_wipes_data(admin_client):
     assert call_kwargs["claim_token"] == "claim-token"
     assert call_kwargs["email"] == "alice@example.com"
     assert call_kwargs["reason"] == "user requested"
-    # admin_id is the verified admin identifier (JWT email or ADMIN_TOKEN
-    # marker); admin_ip is the request's client IP, derived independently.
+    # admin_id is the verified admin's display identifier (JWT email or
+    # ADMIN_TOKEN marker), kept in the details; who acted is the actor.
     assert "admin_id" in call_kwargs
     assert isinstance(call_kwargs["admin_id"], str)
-    assert "admin_ip" in call_kwargs
-    assert isinstance(call_kwargs["admin_ip"], str)
+    assert call_kwargs["actor"].type == "admin_token"
+    assert call_kwargs["actor"].id is None
+    assert "admin_ip" not in call_kwargs
 
     # LogStore wipe was issued with the user_id
     log_store.hard_delete_user_data.assert_awaited_once_with("u1")
@@ -1818,7 +1891,8 @@ async def test_reject_a_pending_user_records_and_tells_them_why(admin_client, se
     assert resp.json()["status"] == "rejected"
     op_store.reject_user.assert_awaited_once()
     assert op_store.reject_user.await_args.kwargs["reason"] == "outside the pilot"
-    assert log_action.await_args.args[2:4] == ("reject_user", "u1")
+    assert log_action.await_args.kwargs["action"] == "reject_user"
+    assert log_action.await_args.kwargs["target"] == AuditTarget.user("u1")
     assert sent_emails == [("reject", "alice@example.com", "outside the pilot")]
 
 

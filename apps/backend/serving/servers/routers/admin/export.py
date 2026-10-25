@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.deps import get_admin_audit_actor, get_db_logger
 from serving.servers.routers.admin._common import (
     _escape_ilike_substring_term,
     resolve_request_outcome_filter,
@@ -20,6 +20,8 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from serving.audit import AuditActor
 
 logger = get_logger(__name__)
 
@@ -48,7 +50,7 @@ async def admin_export_requests(
     outcome: str | None = None,
     request_type: str | None = None,
     include_content: bool = False,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
 ) -> StreamingResponse:
     """Stream all request logs matching the given filters as JSONL.
@@ -208,12 +210,14 @@ async def admin_export_requests(
                     cursor_ts = rows[-1]["timestamp"]
                     cursor_id = rows[-1]["request_id"]
         finally:
+            # ``actor`` was resolved by the dependency before the response
+            # started; the generator runs after, outside the request's
+            # dependency scope, and only reads that immutable value.
             await log_admin_action(
                 db_logger,
-                admin_id,
-                "export_requests",
-                None,
-                {
+                action="export_requests",
+                actor=actor,
+                details={
                     "range": f"{start_str}-{end_str}",
                     "include_content": include_content,
                     "user_id": user_id,

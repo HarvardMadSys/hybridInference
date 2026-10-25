@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.audit import AuditTarget
 from serving.config import app_config
 from serving.config.settings import get_settings
 from serving.servers import restart
@@ -161,10 +162,13 @@ async def test_patch_stores_and_returns_the_full_configuration(config_client) ->
         "SMTP_PORT",
         "CHAT_UPSTREAM_KEY",
     }
-    details = [call.args[4] for call in audit.await_args_list]
+    details = [call.kwargs["details"] for call in audit.await_args_list]
     assert {"key": "CHAT_UPSTREAM_KEY", "changed": True} in details
     assert {"key": "SITE_NAME", "old_value": None, "new_value": "Acme Gateway"} in details
-    assert all(call.args[2] == "config.update" for call in audit.await_args_list)
+    assert all(call.kwargs["action"] == "config.update" for call in audit.await_args_list)
+    # Each change targets its own configuration key, typed, never a user.
+    for call in audit.await_args_list:
+        assert call.kwargs["target"] == AuditTarget("config", call.kwargs["details"]["key"])
     assert '"k"' not in repr(details)
 
 
@@ -231,7 +235,10 @@ async def test_delete_falls_back_and_custom_variables_disappear(config_client) -
     response = await client.delete("/admin/config/BOX_REGION", headers=AUTH)
     assert response.status_code == 200
     assert "BOX_REGION" not in _entries(response.json())
-    assert [call.args[2] for call in audit.await_args_list] == ["config.reset", "config.reset"]
+    assert [call.kwargs["action"] for call in audit.await_args_list] == [
+        "config.reset",
+        "config.reset",
+    ]
 
 
 @pytest.mark.asyncio
@@ -301,7 +308,7 @@ async def test_patch_marks_a_stored_variable_secret_without_a_value(config_clien
     assert store.rows["BOX_REGION"].secret
     assert store.rows["BOX_REGION"].value == "east"
     assert len(store.writes) == writes  # the value was not rewritten
-    assert [call.args[4] for call in audit.await_args_list] == [
+    assert [call.kwargs["details"] for call in audit.await_args_list] == [
         {"key": "BOX_REGION", "marked_secret": True}
     ]
     assert '"east"' not in response.text
@@ -404,4 +411,5 @@ async def test_restart_answers_202_then_signals(config_client, monkeypatch) -> N
     assert restart.restart_requested()
     assert exits == []  # the watchdog has not fired
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "system.restart"
+    assert audit.await_args.kwargs["action"] == "system.restart"
+    assert audit.await_args.kwargs["actor"].type == "admin_token"

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.audit import AuditActor, AuditTarget
 from serving.schemas_admin import (
     BroadcastDetailResponse,
     BroadcastListItem,
@@ -20,7 +21,12 @@ from serving.schemas_admin import (
     ListBroadcastsResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_admin_user_id, get_db_logger, verify_admin_access
+from serving.servers.deps import (
+    get_admin_audit_actor,
+    get_admin_user_id,
+    get_db_logger,
+    verify_admin_access,
+)
 from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
@@ -165,6 +171,7 @@ async def test_broadcast_email(
 async def create_broadcast(
     req: CreateBroadcastRequest,
     admin: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db=Depends(get_db_logger),
 ):
     """Create a broadcast, snapshot its recipients, and schedule (or fire immediately)."""
@@ -243,10 +250,10 @@ async def create_broadcast(
 
     await log_admin_action(
         db,
-        admin,
-        "broadcast_email_create",
-        None,
-        {"broadcast_id": broadcast_id, "subject": rendered["subject"]},
+        action="broadcast_email_create",
+        details={"broadcast_id": broadcast_id, "subject": rendered["subject"]},
+        actor=actor,
+        target=AuditTarget("broadcast", broadcast_id),
     )
 
     return CreateBroadcastResponse(
@@ -378,7 +385,7 @@ async def get_broadcast_detail(
 @router.delete("/broadcast-email/{broadcast_id}")
 async def cancel_broadcast(
     broadcast_id: str,
-    admin: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db=Depends(get_db_logger),
 ):
     """Cancel a scheduled broadcast. Returns 409 if not in 'scheduled' status."""
@@ -400,6 +407,10 @@ async def cancel_broadcast(
 
     cancel_broadcast_job(broadcast_id)
     await log_admin_action(
-        db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
+        db,
+        action="broadcast_email_cancel",
+        details={"broadcast_id": broadcast_id},
+        actor=actor,
+        target=AuditTarget("broadcast", broadcast_id),
     )
     return {"message": "Broadcast cancelled"}

@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.audit import AuditActor, AuditTarget
 from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
@@ -24,6 +25,7 @@ from serving.servers.auth import (
     log_admin_action,
 )
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_log_store,
     get_operational_store,
     verify_admin_access,
@@ -37,7 +39,7 @@ router = APIRouter(prefix="/admin")
 async def create_api_key(
     request: Request,
     payload: CreateAPIKeyRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> CreateAPIKeyResponse:
     """Create a new API key for a user.
@@ -49,14 +51,16 @@ async def create_api_key(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    # A key row's target is the user who owns the key, so filtering by that
+    # user and erasing them both keep reaching these rows.
     if await op_store.check_active_key_exists(payload.user_id):
         await log_admin_action(
             op_store,
-            admin_id,
-            "create_key",
-            payload.user_id,
-            {"error": "user_id already exists"},
+            action="create_key",
+            details={"error": "user_id already exists"},
             success=False,
+            actor=actor,
+            target=AuditTarget.user(payload.user_id),
         )
         raise HTTPException(
             status_code=409,
@@ -82,13 +86,13 @@ async def create_api_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "create_key",
-        payload.user_id,
-        {
+        action="create_key",
+        details={
             "quota_daily_usd": float(payload.quota_daily_cost_usd),
             "key_prefix": key_prefix,
         },
+        actor=actor,
+        target=AuditTarget.user(payload.user_id),
     )
 
     return CreateAPIKeyResponse(
@@ -235,7 +239,7 @@ async def update_api_key(
     request: Request,
     user_id: str,
     payload: UpdateAPIKeyRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> UpdateAPIKeyResponse:
     """Update an existing API key's settings.
@@ -259,10 +263,12 @@ async def update_api_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "update_key",
-        user_id,
-        _serialize_for_audit({"updated_fields": list(payload_dict), "new_values": payload_dict}),
+        action="update_key",
+        details=_serialize_for_audit(
+            {"updated_fields": list(payload_dict), "new_values": payload_dict}
+        ),
+        actor=actor,
+        target=AuditTarget.user(user_id),
     )
 
     return UpdateAPIKeyResponse(
@@ -277,7 +283,7 @@ async def revoke_api_key(
     request: Request,
     user_id: str,
     hard_delete: bool = False,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> RevokeAPIKeyResponse:
     """Revoke or delete an API key.
@@ -308,6 +314,12 @@ async def revoke_api_key(
             f"API key for user '{user_id}' has been revoked. User can no longer access the API."
         )
 
-    await log_admin_action(op_store, admin_id, action_type, user_id, {"hard_delete": hard_delete})
+    await log_admin_action(
+        op_store,
+        action=action_type,
+        details={"hard_delete": hard_delete},
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
 
     return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)
