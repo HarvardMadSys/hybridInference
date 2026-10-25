@@ -30,7 +30,7 @@ and sends only what is left.
 ### Shared building blocks
 
 All are under `apps/frontend/src/components/features/admin/confirm/`:
-- **`useConfirmAction.tsx`**: one dialog per screen. A `run` that resolves closes the dialog; a `run` that throws keeps it open with the error inside. It also provides the busy guard and an optional `requireText` typed confirmation.
+- **`useConfirmAction.tsx`**: one dialog per screen. A `run` that resolves closes the dialog; a `run` that throws keeps it open with the error inside. It also provides the busy guard and an optional `requireText` typed confirmation. An open confirmation is never replaced: a request made while one is open, failed or not, is refused rather than queued, so a request that resolves after a read (Send Now's recipient count, the role-quota preview) cannot turn the button of another open confirmation into its own write. The administrator asks again once the open one is cancelled or confirmed. Tests: `confirm/useConfirmAction.test.tsx` ("an open confirmation is never replaced"), `BroadcastsTab.test.tsx` ("keeps an open test-send confirmation when a Send Now count arrives after it"), `__tests__/SettingsTab.roleQuota.test.tsx` ("keeps an open Remove confirmation when the quota preview arrives after it").
 - **`ChangeList.tsx`**: the `old → new` rows. Long values wrap anywhere.
 - **`EditBar.tsx`**: Cancel and Save changes, with the change count. An optional `blocked` reason replaces the count and keeps Save disabled while the save would drop another open edit. **`EditButton`** opens a section, row or entity for editing; an optional `title` says why it is disabled.
 - **`writeEach.ts`**: the multi-request save described above.

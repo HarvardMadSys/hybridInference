@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChangeList } from './ChangeList';
@@ -107,6 +107,163 @@ describe('useConfirmAction', () => {
     expect(details).toContainElement(input);
     fireEvent.click(confirm);
     await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+  });
+});
+
+/**
+ * Two writes on one confirmation: "alpha" opens at once, "beta" opens after a
+ * read the test resolves (like a recipient count or a preview), and "both"
+ * asks for the two in the same tick.
+ */
+function TwoActions({
+  runAlpha,
+  runBeta,
+  readBeta,
+}: {
+  runAlpha: () => Promise<void>;
+  runBeta: () => Promise<void>;
+  readBeta: () => Promise<void>;
+}) {
+  const confirmation = useConfirmAction();
+  const alpha: ConfirmRequest = {
+    title: 'Delete "alpha"?',
+    confirmLabel: 'Delete',
+    body: <p>Removes alpha.</p>,
+    run: runAlpha,
+  };
+  const beta: ConfirmRequest = {
+    title: 'Publish "beta"?',
+    confirmLabel: 'Publish',
+    body: <p>Publishes beta.</p>,
+    run: runBeta,
+  };
+  return (
+    <>
+      <button type="button" onClick={() => confirmation.request(alpha)}>
+        Delete alpha
+      </button>
+      <button
+        type="button"
+        onClick={async () => {
+          await readBeta();
+          confirmation.request(beta);
+        }}
+      >
+        Publish beta
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          confirmation.request(alpha);
+          confirmation.request(beta);
+        }}
+      >
+        Both
+      </button>
+      {confirmation.dialog}
+    </>
+  );
+}
+
+describe('useConfirmAction: an open confirmation is never replaced', () => {
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  function setup() {
+    const read = deferred();
+    const runAlpha = vi.fn(async () => {});
+    const runBeta = vi.fn(async () => {});
+    render(<TwoActions runAlpha={runAlpha} runBeta={runBeta} readBeta={() => read.promise} />);
+    return { read, runAlpha, runBeta };
+  }
+
+  it('keeps the open confirmation when a request arrives after a read, and its button runs only its own write', async () => {
+    const { read, runAlpha, runBeta } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish beta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete "alpha"?' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete' });
+
+    await act(async () => read.resolve());
+
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Delete "alpha"?' })).toHaveTextContent(
+      'Removes alpha.',
+    );
+    expect(confirm).toHaveTextContent('Delete');
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(runAlpha).toHaveBeenCalledTimes(1);
+    expect(runBeta).not.toHaveBeenCalled();
+  });
+
+  it('refuses the second of two requests made in the same tick', async () => {
+    const { runAlpha, runBeta } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Both' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete "alpha"?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(runAlpha).toHaveBeenCalledTimes(1);
+    expect(runBeta).not.toHaveBeenCalled();
+  });
+
+  it('queues nothing: a refused request does not open once the confirmation closes', async () => {
+    const { read, runBeta } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish beta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    await act(async () => read.resolve());
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Delete "alpha"?' })).getByRole('button', {
+        name: 'Cancel',
+      }),
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(runBeta).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed confirmation protected until it is retried', async () => {
+    const read = deferred();
+    const runAlpha = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce();
+    const runBeta = vi.fn(async () => {});
+    render(<TwoActions runAlpha={runAlpha} runBeta={runBeta} readBeta={() => read.promise} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Publish beta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete "alpha"?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('backend unavailable');
+
+    // The late request finds the failed confirmation still open: it stays, error and all.
+    await act(async () => read.resolve());
+    expect(screen.getByRole('dialog', { name: 'Delete "alpha"?' })).toHaveTextContent(
+      'backend unavailable',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(runAlpha).toHaveBeenCalledTimes(2);
+    expect(runBeta).not.toHaveBeenCalled();
+  });
+
+  it('opens a new request after a cancel, and after a successful confirm', async () => {
+    const { runAlpha } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    expect(screen.getByRole('dialog', { name: 'Delete "alpha"?' })).toBeInTheDocument();
+    expect(runAlpha).toHaveBeenCalledTimes(1);
   });
 });
 

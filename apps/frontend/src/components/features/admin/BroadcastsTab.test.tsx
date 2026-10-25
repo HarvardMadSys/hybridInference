@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-hot-toast', () => ({
@@ -519,6 +519,47 @@ describe('BroadcastsTab', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(vi.mocked(sendTestBroadcastEmail).mock.calls).toEqual([[BASE_REQUEST]]);
       expect(toast.success).toHaveBeenCalledWith('Test email sent to your address');
+      expect(createBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('keeps an open test-send confirmation when a Send Now count arrives after it', async () => {
+      // Send Now counts the recipients first; the count is still out when the
+      // test send is asked for, and lands while its confirmation is open.
+      let finishCount!: (value: BroadcastPreviewResponse) => void;
+      vi.mocked(previewBroadcast).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishCount = resolve;
+          }),
+      );
+      vi.mocked(sendTestBroadcastEmail).mockResolvedValue(undefined);
+      await renderComposed();
+      fireEvent.click(screen.getByRole('button', { name: 'Send Now' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
+      const review = screen.getByRole('dialog', {
+        name: 'Send a test email to ops@example.test?',
+      });
+      const sendTest = within(review).getByRole('button', { name: 'Send test' });
+
+      await act(async () => finishCount(previewOf(1234)));
+
+      // Same dialog, same action: nothing about the broadcast replaced it.
+      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      expect(
+        screen.getByRole('dialog', { name: 'Send a test email to ops@example.test?' }),
+      ).toHaveTextContent('Only ops@example.test receives it');
+      expect(sendTest).toHaveTextContent('Send test');
+      fireEvent.click(sendTest);
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(vi.mocked(sendTestBroadcastEmail).mock.calls).toEqual([[BASE_REQUEST]]);
+      expect(createBroadcast).not.toHaveBeenCalled();
+
+      // The send was not queued behind it: it needs Send Now and its own review.
+      expect(screen.queryByRole('dialog')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Send Now' }));
+      expect(
+        await screen.findByRole('dialog', { name: 'Send this broadcast to 1234 recipients now?' }),
+      ).toBeInTheDocument();
       expect(createBroadcast).not.toHaveBeenCalled();
     });
 

@@ -26,8 +26,12 @@ export interface ConfirmRequest {
 }
 
 export interface ConfirmAction {
-  /** Open the confirmation. Ignored while another write is in flight. */
-  request: (request: ConfirmRequest) => void;
+  /**
+   * Open the confirmation. Ignored, and `false`, while another confirmation is
+   * open (in flight or not): it is never replaced, and nothing is queued
+   * behind it. Ask again once it is cancelled or confirmed.
+   */
+  request: (request: ConfirmRequest) => boolean;
   /** Render this once; it is `null` while nothing waits for confirmation. */
   dialog: ReactNode;
   /** Whether a confirmed write is running. */
@@ -46,38 +50,50 @@ export function useConfirmAction(): ConfirmAction {
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
   const inFlight = useRef(false);
+  // The open confirmation, set the moment it opens. A request that resolves
+  // after a read (a count, a preview) can arrive while another confirmation is
+  // open; replacing that one would turn the button under the administrator's
+  // pointer into a different write. State alone would miss two requests made
+  // before React re-renders.
+  const openRef = useRef<ConfirmRequest | null>(null);
 
   const request = useCallback((next: ConfirmRequest) => {
-    if (inFlight.current) return;
+    if (inFlight.current || openRef.current) return false;
+    openRef.current = next;
     setError(null);
     setTyped('');
     setPending(next);
+    return true;
   }, []);
 
   const close = useCallback(() => {
     if (inFlight.current) return;
+    openRef.current = null;
     setPending(null);
     setError(null);
     setTyped('');
   }, []);
 
   const confirm = useCallback(async () => {
-    if (!pending || inFlight.current) return;
-    if (pending.requireText !== undefined && typed !== pending.requireText) return;
+    const current = openRef.current;
+    if (!current || inFlight.current) return;
+    if (current.requireText !== undefined && typed !== current.requireText) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      await pending.run();
+      await current.run();
+      openRef.current = null;
       setPending(null);
       setTyped('');
     } catch (e) {
+      // Still open, with the error: it stays the confirmation until retried or cancelled.
       setError(getErrorMessage(e));
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
-  }, [pending, typed]);
+  }, [typed]);
 
   const dialog = pending ? (
     <ConfirmDialog
