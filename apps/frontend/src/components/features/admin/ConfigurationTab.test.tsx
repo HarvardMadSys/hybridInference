@@ -974,6 +974,71 @@ describe('edit flow edge cases', () => {
     expect(screen.getByRole('button', { name: 'Edit Email (SMTP)' })).toBeEnabled();
   });
 
+  describe('a save that both changes and resets', () => {
+    // TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS, so turning the second off
+    // is valid only once the first is reset; the backend checks each request alone.
+    function trustConfig(): ConfigResponse {
+      return makeConfig({
+        entries: [
+          entry({ key: 'SMTP_HOST', category: 'email', value: 'smtp.example.test' }),
+          entry({ key: 'TRUST_PROXY_HEADERS', category: 'network', type: 'bool', value: true }),
+          entry({ key: 'TRUST_X_REAL_IP', category: 'network', type: 'bool', value: true }),
+        ],
+        missing: [],
+        pending_restart: [],
+      });
+    }
+
+    async function stageTrustChange() {
+      await renderTab(trustConfig());
+      editCategory('Network');
+      fireEvent.click(
+        within(section('Network')).getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Reset TRUST_X_REAL_IP' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes to Network' }));
+      return screen.getByRole('dialog', { name: 'Save 2 changes to Network?' });
+    }
+
+    it('says in the review that the resets follow the value changes as separate requests', async () => {
+      const dialog = await stageTrustChange();
+
+      expect(dialog).toHaveTextContent(
+        'The value changes are sent first, in one request; then each reset, on its own. ' +
+          'The backend checks each request by itself, so a change that is valid only together ' +
+          'with one of these resets can be refused; if so, save that reset on its own first.',
+      );
+    });
+
+    it('says the reset was not sent when the value change before it is refused', async () => {
+      vi.mocked(patchConfig).mockRejectedValueOnce(
+        new APIError(
+          'HTTP_400',
+          'TRUST_PROXY_HEADERS: TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; ' +
+            'change TRUST_X_REAL_IP in the same save',
+          400,
+        ),
+      );
+      await stageTrustChange();
+      confirmSave();
+
+      // The category's own alert, beside its Save; the setting it names shows the reason too.
+      const alerts = await within(section('Network')).findAllByRole('alert');
+      const alert = alerts.find((candidate) =>
+        candidate.textContent?.startsWith('TRUST_PROXY_HEADERS: '),
+      );
+      expect(alert).toHaveTextContent(
+        'TRUST_X_REAL_IP requires TRUST_PROXY_HEADERS; change TRUST_X_REAL_IP in the same save. ' +
+          'TRUST_X_REAL_IP was not reset: resets are sent after the value changes, one request ' +
+          'each. If this change needs a reset, save the reset on its own first.',
+      );
+      expect(resetConfigKey).not.toHaveBeenCalled();
+      expect(within(section('Network')).getByLabelText('TRUST_X_REAL_IP')).toHaveTextContent(
+        'Reset when you save',
+      );
+    });
+  });
+
   it('does not resend a channel switch that was written before a reset failed', async () => {
     const config = alertConfig(['SLACK_ALERTS_WEBHOOK_URL']);
     await renderTab(config);

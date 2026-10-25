@@ -382,6 +382,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       let message = failedReset ? `${failedReset} could not be reset: ${reason}` : reason;
       if (written > 0) {
         message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved; the rest are still unsaved.`;
+      } else if (!failedReset && resets.length > 0) {
+        // The backend judged the value changes without the resets, which were
+        // never sent, so its "in the same save" can read as if they had been.
+        message = `${/[.!?]$/.test(message) ? message : `${message}.`} ${resets.join(', ')} ${
+          resets.length === 1 ? 'was' : 'were'
+        } not reset: resets are sent after the value changes, one request each. If this change needs a reset, save the reset on its own first.`;
       }
       setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
       setPendingSave(null);
@@ -832,6 +838,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
             <p>
               A reset removes the stored value: the setting falls back to the environment, then to
               its default. A custom variable is deleted.
+            </p>
+          ) : null}
+          {/* Each request is validated alone (PATCH, then one DELETE per reset). */}
+          {pendingSave.resets.length > 0 &&
+          (pendingSave.resets.length > 1 ||
+            Object.keys(pendingSave.values).length + pendingSave.secrets.length > 0) ? (
+            <p>
+              {Object.keys(pendingSave.values).length + pendingSave.secrets.length > 0
+                ? 'The value changes are sent first, in one request; then each reset, on its own.'
+                : 'Each reset is sent on its own, in the order listed.'}{' '}
+              The backend checks each request by itself, so a change that is valid only together
+              with one of these resets can be refused; if so, save that reset on its own first.
             </p>
           ) : null}
           {pendingSave.secrets.length > 0 ? (
