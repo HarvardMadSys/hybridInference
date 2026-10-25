@@ -234,10 +234,6 @@ known strategies. Each strategy declares a Pydantic params model with
 `extra="forbid"`, so a typo in `router_params:` fails at boot instead of
 silently falling back to a default.
 
-`apps/backend/routing/executor.py` is a backward-compatibility shim that
-re-exports `FixedRouter` under its old name `RouteExecutor`. Edit
-`apps/backend/routing/routers.py` instead.
-
 ### Two layers of "strategy"
 
 Two different things are called a strategy:

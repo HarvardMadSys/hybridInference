@@ -64,16 +64,6 @@ _ANNOUNCED: set[str] = set()
 #: its type was muted never lands here, so its close is still posted.
 _MUTED_UNANNOUNCED: set[str] = set()
 
-#: Failed webhook deliveries since process start, keyed by HTTP status as a
-#: string (or ``"exception"`` for a transport error). WeCom also reports its
-#: application failures over a 2xx, keyed ``"errcode:<n>"``, with
-#: ``"invalid-errcode"`` and ``"invalid-response"`` for a body that cannot
-#: confirm delivery. Delivery health cannot be alerted on over the transport
-#: that is failing, so this is deliberately just a counter: the independent
-#: control-plane path can read it, and nothing here turns it into a Slack alert
-#: that would have to survive the same broken sink.
-_DELIVERY_FAILURES_TOTAL: dict[str, int] = defaultdict(int)
-
 #: How long a resolution waits for an in-flight send of the same key, and how
 #: many times. Bounded so a hung sink cannot pin the caller — the alert path
 #: runs on the request loop for the health checks.
@@ -213,28 +203,12 @@ def _monotonic() -> float:
 
 
 def reset_dedupe_state() -> None:
-    """Test helper — clears in-memory dedupe table and delivery counters."""
+    """Test helper — clears the in-memory dedupe state."""
     _LAST_FIRED.clear()
     _IN_FLIGHT.clear()
     _FAILED_DELIVERIES.clear()
-    _DELIVERY_FAILURES_TOTAL.clear()
     _ANNOUNCED.clear()
     _MUTED_UNANNOUNCED.clear()
-
-
-def alert_delivery_failures_total() -> dict[str, int]:
-    """Failed webhook deliveries since process start, keyed by failure kind.
-
-    HTTP refusals use their status as the key and transport errors use
-    ``"exception"``. WeCom's 2xx application failures use ``"errcode:<n>"``,
-    ``"invalid-errcode"`` or ``"invalid-response"``.
-
-    A revoked webhook is invisible from inside the alert path — every post is
-    answered, just not with a 2xx — so the only honest signal of a dead sink is
-    a count of what it refused. Exposed as a plain counter on purpose: an alert
-    about the alert transport would travel over that same transport.
-    """
-    return dict(_DELIVERY_FAILURES_TOTAL)
 
 
 class AlertSeverity(str, enum.Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
@@ -404,14 +378,12 @@ async def _post_json(
     *,
     channel: str,
     dedupe_key: str = "",
-    record_failure: bool = True,
 ) -> tuple[httpx.Response | None, str, UrlRedaction]:
     """POST ``payload`` to ``webhook_url`` and return ``(response, failure_key, redaction)``.
 
-    The shared half of the two senders: the request, the non-2xx check, the
-    transport-failure line and the failure counter. ``failure_key`` is ``""``
-    when the post got a 2xx, the status string for a refusal, and ``"exception"``
-    for a transport error — the same keys :data:`_DELIVERY_FAILURES_TOTAL` uses.
+    The shared half of the two senders: the request, the non-2xx check and the
+    transport-failure line. ``failure_key`` is ``""`` when the post got a 2xx,
+    the status string for a refusal, and ``"exception"`` for a transport error.
     The response is returned so a channel that reports application failures over
     a 2xx (WeCom's ``errcode``) can finish the decision itself, and the
     ``redaction`` so it can name the sink without re-deriving the hash.
@@ -427,8 +399,6 @@ async def _post_json(
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(webhook_url, json=payload)
         except Exception:
-            if record_failure:
-                _DELIVERY_FAILURES_TOTAL["exception"] += 1
             # Rendered and scrubbed here rather than handed to ``log.exception``:
             # a transport that words its error in terms of the request puts the
             # URL in the traceback, and the traceback is formatted inside the
@@ -445,8 +415,6 @@ async def _post_json(
         if 200 <= resp.status_code < 300:
             return resp, "", redaction
         failure_key = str(resp.status_code)
-        if record_failure:
-            _DELIVERY_FAILURES_TOTAL[failure_key] += 1
         # A refusal raises nothing, so without this line a webhook that had been
         # revoked failed in complete silence: it answered every post with 404,
         # the caller saw a bare ``False``, and the sole trace was httpx's INFO
@@ -462,16 +430,13 @@ async def _post_json(
         return resp, failure_key, redaction
 
 
-async def _post_to_slack(
-    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
-) -> bool:
+async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
     """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx."""
     _, failure_key, _ = await _post_json(
         webhook_url,
         {"text": message},
         channel="slack",
         dedupe_key=dedupe_key,
-        record_failure=record_failure,
     )
     return not failure_key
 
@@ -496,9 +461,7 @@ def _truncate_utf8(text: str, limit: int = _WECOM_CONTENT_LIMIT_BYTES) -> str:
     return encoded[:budget].decode("utf-8", errors="ignore") + _WECOM_ELLIPSIS
 
 
-async def _post_to_wecom(
-    webhook_url: str, message: str, *, dedupe_key: str = "", record_failure: bool = True
-) -> bool:
+async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
     """Post a WeCom group-bot markdown message. Returns True only on success.
 
     WeCom answers transport failures and application failures differently: a
@@ -512,7 +475,6 @@ async def _post_to_wecom(
         payload,
         channel="wecom",
         dedupe_key=dedupe_key,
-        record_failure=record_failure,
     )
     if failure_key or resp is None:
         return False
@@ -520,8 +482,6 @@ async def _post_to_wecom(
     try:
         body = resp.json()
     except Exception:
-        if record_failure:
-            _DELIVERY_FAILURES_TOTAL["invalid-response"] += 1
         log.warning(
             "wecom webhook post rejected: non-JSON response alert=%s sink=%s",
             dedupe_key or "-",
@@ -529,16 +489,10 @@ async def _post_to_wecom(
         )
         return False
     errcode = body.get("errcode") if isinstance(body, dict) else None
-    if isinstance(errcode, int) and not isinstance(errcode, bool):
-        if errcode == 0:
-            return True
-        failure_key = f"errcode:{errcode}"
-    else:
-        # Missing, null or non-integer: the response cannot confirm
-        # delivery, so it is a failure rather than a success.
-        failure_key = "invalid-errcode"
-    if record_failure:
-        _DELIVERY_FAILURES_TOTAL[failure_key] += 1
+    # Only an integer zero confirms delivery. Missing, null or non-integer: the
+    # response cannot confirm delivery, so it is a failure rather than a success.
+    if isinstance(errcode, int) and not isinstance(errcode, bool) and errcode == 0:
+        return True
     log.warning(
         "wecom webhook post rejected: errcode=%s alert=%s sink=%s",
         errcode,
@@ -564,8 +518,8 @@ class AlertSink(Protocol):
         """Render one alert in the channel's markup."""
         ...
 
-    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
-        """Deliver a message; admin tests opt out of runtime failure counters."""
+    async def post(self, message: str, *, dedupe_key: str) -> bool:
+        """Deliver a message."""
         ...
 
 
@@ -594,14 +548,9 @@ class SlackSink:
             escape=escape_slack_text,
         )
 
-    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+    async def post(self, message: str, *, dedupe_key: str) -> bool:
         """Post ``{"text": message}`` to this webhook."""
-        return await _post_to_slack(
-            self.webhook_url,
-            message,
-            dedupe_key=dedupe_key,
-            record_failure=record_failure,
-        )
+        return await _post_to_slack(self.webhook_url, message, dedupe_key=dedupe_key)
 
 
 @dataclass(frozen=True)
@@ -629,14 +578,9 @@ class WeComSink:
             escape=escape_wecom_text,
         )
 
-    async def post(self, message: str, *, dedupe_key: str, record_failure: bool = True) -> bool:
+    async def post(self, message: str, *, dedupe_key: str) -> bool:
         """Post a markdown card to this webhook."""
-        return await _post_to_wecom(
-            self.webhook_url,
-            message,
-            dedupe_key=dedupe_key,
-            record_failure=record_failure,
-        )
+        return await _post_to_wecom(self.webhook_url, message, dedupe_key=dedupe_key)
 
 
 def configured_sink() -> AlertSink | None:

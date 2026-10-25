@@ -167,14 +167,6 @@ async def init_setup_state(store: Any) -> None:
         _adopt_code(code)
 
 
-def is_setup_required() -> bool:
-    """Return whether first-run setup is still pending, from memory.
-
-    False in database-free mode and before :func:`init_setup_state` has run.
-    """
-    return _state.required
-
-
 async def refresh_setup_state() -> bool:
     """Re-check a pending setup against the database, then return whether it is pending.
 
@@ -185,7 +177,8 @@ async def refresh_setup_state() -> bool:
     or slow read leaves setup pending.
 
     Returns:
-        The same answer :func:`is_setup_required` gives afterwards.
+        Whether setup is still pending after the check: False in database-free
+        mode and before :func:`init_setup_state` has run.
     """
     if not _state.required or _state.store is None:
         return _state.required

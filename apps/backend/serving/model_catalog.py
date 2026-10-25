@@ -1,4 +1,4 @@
-"""Which models an agent job can actually call — one predicate, used twice.
+"""Which models an agent job can actually call.
 
 The composer's model picker and the create endpoint's validation must agree
 with what the inference path will do when the sandbox makes its first call,

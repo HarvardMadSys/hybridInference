@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import {
   analyzeUsageInsights,
   sampleUsageInsights,
@@ -22,26 +23,54 @@ const SAMPLE_LIMIT = 100;
  * Settings → Usage Insights; if no key is set the backend returns a 400 that
  * points the admin there. "View user turns" returns the same random sample
  * without calling the model.
+ *
+ * Analyze usage is confirmed first: it sends this user's request text to an
+ * LLM, a paid call on the configured analysis key. View user turns is a read
+ * (the backend only records an audit entry), so it runs directly.
  */
-export function UserUsageInsights({ userId }: { userId: string }) {
+export function UserUsageInsights({
+  userId,
+  userLabel = userId,
+}: {
+  userId: string;
+  /** How the confirmation names the user; the id when omitted. */
+  userLabel?: string;
+}) {
+  const confirmation = useConfirmAction();
   const [analyzing, setAnalyzing] = useState(false);
   const [sampling, setSampling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UsageInsightsResponse | null>(null);
   const [samples, setSamples] = useState<UsageInsightsSamplesResponse | null>(null);
 
-  const analyze = useCallback(async () => {
-    setAnalyzing(true);
-    setError(null);
-    try {
-      const res = await analyzeUsageInsights({ user_id: userId, limit: SAMPLE_LIMIT });
-      setResult(res);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setAnalyzing(false);
-    }
-  }, [userId]);
+  const analyze = () => {
+    confirmation.request({
+      title: `${result ? 'Re-analyze' : 'Analyze'} usage for ${userLabel}?`,
+      body: (
+        <>
+          <p>
+            The user-turn text of a random sample of up to {SAMPLE_LIMIT} of {userLabel}&apos;s
+            requests is sent to the analysis model set in Admin → Settings → Usage Insights.
+          </p>
+          <p>
+            The model call runs on that analysis API key and counts toward its usage and cost. The
+            run is recorded in the audit log.
+          </p>
+        </>
+      ),
+      confirmLabel: result ? 'Re-analyze' : 'Analyze',
+      busyLabel: 'Analyzing…',
+      run: async () => {
+        setAnalyzing(true);
+        setError(null);
+        try {
+          setResult(await analyzeUsageInsights({ user_id: userId, limit: SAMPLE_LIMIT }));
+        } finally {
+          setAnalyzing(false);
+        }
+      },
+    });
+  };
 
   const viewTurns = useCallback(async () => {
     setSampling(true);
@@ -99,6 +128,7 @@ export function UserUsageInsights({ userId }: { userId: string }) {
 
       {analyzing && <UsageInsightsReportSkeleton />}
       {result && !analyzing && <UsageInsightsReport result={result} />}
+      {confirmation.dialog}
     </div>
   );
 }

@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.model_access import GRANT_ALLOWED_MODELS_KEY
 from serving.servers.model_availability import (
     model_not_found_detail,
@@ -110,7 +110,7 @@ def test_the_registry_reports_what_it_skipped(tmp_path, monkeypatch) -> None:
     report = ModelLoadReport()
 
     _count, infos = register_from_models_yaml(
-        RouteExecutor(), models, continue_on_missing_env=True, report=report
+        FixedRouter(), models, continue_on_missing_env=True, report=report
     )
 
     assert [info.model_id for info in infos] == ["fine"]

@@ -22,7 +22,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
@@ -122,7 +122,7 @@ def _isolate_count_cache():
 def _app(db: _FakeDb, **services: Any) -> FastAPI:
     app = FastAPI(title="Admin Recent Requests Total Test")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=RouteExecutor(), db_logger=MagicMock(pool=db.pool), **services
+        router=FixedRouter(), db_logger=MagicMock(pool=db.pool), **services
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)

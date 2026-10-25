@@ -14,7 +14,7 @@ from __future__ import annotations
 import textwrap
 from typing import TYPE_CHECKING
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.servers.registry import register_from_models_yaml
 
@@ -48,7 +48,7 @@ def _load_single_adapter_cfg(tmp_path: Path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
     return router.routes["minimax-test"].adapters[0][0].config
 
@@ -109,7 +109,7 @@ def test_route_level_extra_body_still_applied(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
     cfg = router.routes["minimax-test"].adapters[0][0].config
     assert cfg.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}

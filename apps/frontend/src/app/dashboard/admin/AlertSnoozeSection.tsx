@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { AlertSnoozeStatus, clearAlertSnooze, getAlertSnooze, snoozeAlerts } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
@@ -45,7 +46,8 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
   const [status, setStatus] = useState<AlertSnoozeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const confirmation = useConfirmAction();
+  const busy = confirmation.busy;
 
   // A reload in flight when this section goes away — a tab switch, or a test
   // environment tearing down — would otherwise land its setState on an
@@ -92,28 +94,39 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
     return () => clearInterval(id);
   }, [status?.snoozed, status?.snooze_until, load]);
 
-  const onSnooze = async (seconds: number, label: string) => {
-    setBusy(true);
-    try {
-      setStatus(await snoozeAlerts(seconds));
-      onToast(`Alert notifications snoozed for ${label}`);
-    } catch (e) {
-      onToast(`Failed to snooze alerts: ${getErrorMessage(e)}`);
-    } finally {
-      setBusy(false);
-    }
+  // Both are discrete actions: each asks once, naming what stops or starts.
+  const onSnooze = (seconds: number, label: string) => {
+    const extending = Boolean(status?.snoozed);
+    confirmation.request({
+      title: extending
+        ? `Extend the alert snooze to ${label} from now?`
+        : `Snooze alert notifications for ${label}?`,
+      confirmLabel: extending ? 'Extend snooze' : 'Snooze',
+      busyLabel: 'Snoozing…',
+      body: (
+        <p>
+          No backend alert is sent until {formatUntil(Math.round(Date.now() / 1000) + seconds)},
+          including alerts for new incidents. Alerting resumes by itself then.
+        </p>
+      ),
+      run: async () => {
+        setStatus(await snoozeAlerts(seconds));
+        onToast(`Alert notifications snoozed for ${label}`);
+      },
+    });
   };
 
-  const onResume = async () => {
-    setBusy(true);
-    try {
-      setStatus(await clearAlertSnooze());
-      onToast('Alert notifications resumed');
-    } catch (e) {
-      onToast(`Failed to resume alerts: ${getErrorMessage(e)}`);
-    } finally {
-      setBusy(false);
-    }
+  const onResume = () => {
+    confirmation.request({
+      title: 'Resume alert notifications now?',
+      confirmLabel: 'Resume now',
+      busyLabel: 'Resuming…',
+      body: <p>The snooze ends at once, and the next backend alert is sent as usual.</p>,
+      run: async () => {
+        setStatus(await clearAlertSnooze());
+        onToast('Alert notifications resumed');
+      },
+    });
   };
 
   const snoozed = !!status?.snoozed;
@@ -172,6 +185,7 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
           </div>
         </div>
       )}
+      {confirmation.dialog}
     </AdminSection>
   );
 }

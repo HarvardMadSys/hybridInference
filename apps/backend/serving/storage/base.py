@@ -1418,13 +1418,21 @@ class OperationalStore(ABC):
         disabled: bool,
         removed: bool,
         updated_by: str | None,
-    ) -> None:
+        expected_disabled: bool | None = None,
+        expected_removed: bool | None = None,
+    ) -> bool:
         """Store one route's admin state; neither flag set deletes its row.
 
         ``disabled`` keeps the route configured but out of selection, retries,
         fallback and offload. ``removed`` takes a config (models.yaml) route out
         of this deployment without touching the file. Both are keyed by the
         route id, which survives edits that move the route's endpoint.
+
+        ``expected_disabled`` and ``expected_removed`` (given together) make the
+        write a compare-and-set: it happens only while the stored flags still
+        equal them, a route without a row counting as neither flag set, so a
+        write built from a stale snapshot cannot overwrite the other flag.
+        Returns whether the state was written (always True without them).
         """
 
     @abstractmethod

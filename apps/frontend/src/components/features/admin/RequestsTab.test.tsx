@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRecentRequestItem, AdminRecentRequestsResponse } from '@/lib/api/admin';
@@ -21,6 +21,7 @@ vi.mock('@/lib/api/admin', () => ({
 }));
 
 import {
+  clearErrorRequests,
   exportRequests,
   getRecentRequestContent,
   getRecentRequestOffloads,
@@ -285,6 +286,26 @@ describe('RequestsTab session labelling', () => {
   });
 
   afterEach(cleanup);
+
+  it('deletes the last hour of errors only after a confirmation, once', async () => {
+    vi.mocked(clearErrorRequests).mockResolvedValue({
+      message: 'Deleted 3 error requests.',
+    } as never);
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear last hour errors' }));
+    let dialog = screen.getByRole('dialog', { name: 'Delete the last hour of error requests?' });
+    expect(dialog).toHaveTextContent('cannot be undone');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(clearErrorRequests).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear last hour errors' }));
+    dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete error requests' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(clearErrorRequests).toHaveBeenCalledTimes(1);
+    expect(clearErrorRequests).toHaveBeenCalledWith(1);
+  });
 
   it("shows a row's session, shortened, with the full value and its source in the title", async () => {
     render(<RequestsTab />);

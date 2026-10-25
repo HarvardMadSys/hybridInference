@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import AppServices
@@ -108,7 +108,7 @@ async def test_anthropic_v1_models_always_anthropic_format(test_client):
 
 @pytest.mark.asyncio
 async def test_anthropic_model_listing_respects_runtime_visibility_override():
-    router = RouteExecutor()
+    router = FixedRouter()
     visible = _Adapter(_cfg("visible-model"))
     hidden = _Adapter(_cfg("runtime-hidden-model"))
     router.register_route("visible-model", [(visible, 1.0)])

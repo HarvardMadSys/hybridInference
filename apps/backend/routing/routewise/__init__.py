@@ -12,7 +12,6 @@ Exports:
     HedgedAdapter      -- Composite adapter that races primary vs backup.
     CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
     CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
-    ProviderEventSink  -- Deprecated compatibility protocol for outcome recorders.
 """
 
 from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
@@ -30,7 +29,7 @@ from .config import RouteWiseConfig
 from .decisions import ProviderReservation, RoutingDecision, RoutingTrace
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
-from .hedging import HedgedAdapter, ProviderEventSink
+from .hedging import HedgedAdapter
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import (
@@ -56,7 +55,6 @@ __all__ = [
     "LPSolution",
     "PendingPrefixCacheStore",
     "ProviderCandidate",
-    "ProviderEventSink",
     "ProviderProfile",
     "ProviderQuotaSnapshot",
     "ProviderQuotaSnapshotStore",

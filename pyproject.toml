@@ -27,7 +27,6 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.32.5",
     "uvicorn[standard]>=0.27.0",
-    "uvloop>=0.19.0",
     "httpx>=0.28.1",
     "cryptography>=48.0.1",
     "tiktoken>=0.13.0",

@@ -22,8 +22,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import serving.config.runtime_settings as runtime_settings_module
-from routing.executor import RouteExecutor
 from routing.model_selection import parse_auto_config
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.auto_mode import AUTO_MODE_SETTING_KEY, AutoMode
 from serving.config.runtime_settings import RuntimeSettings
@@ -172,7 +172,7 @@ class _Gateway:
                 self._served,
             ),
         }
-        self.router = RouteExecutor()
+        self.router = FixedRouter()
         for model_id, adapter in self.adapters.items():
             self.router.register_route(model_id, [(adapter, 1.0)])
         self.disabled = _Disabled()

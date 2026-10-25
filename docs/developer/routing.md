@@ -928,10 +928,6 @@ Four pieces, all under `apps/backend/routing/`:
 | Routing | `routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`) | Chooses the endpoint for a request, admits it against capacity, walks the fallback order, and records endpoint health. |
 | Execution | `backends.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
 
-`apps/backend/routing/executor.py` is a backward-compatibility shim that re-exports
-`FixedRouter` as `RouteExecutor` along with `AllCircuitsOpenError`,
-`ProviderPinError`, and `RouteConfig`. Do not edit it — edit `routers.py`.
-
 How the router hands a request to the adapter it chose, and the experimental
 composition that plans across a local and a cloud pool, are described in
 [Routing Internals](routing-internals.md).

@@ -390,11 +390,6 @@ async def _log_rejection_releasing_slot(**kwargs: Any) -> None:
         _pending_prompt_logs = max(0, _pending_prompt_logs - 1)
 
 
-def pending_prompt_log_count() -> int:
-    """Return outstanding prompt-bearing rejection logs. For tests/diagnostics."""
-    return _pending_prompt_logs
-
-
 async def log_rejection(
     *,
     request: Request,

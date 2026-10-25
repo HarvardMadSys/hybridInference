@@ -229,7 +229,7 @@ def test_local_backend_resolves_a_provider_scope_to_the_endpoints_it_serves() ->
         model_scope={_MODEL_ID},
     )
 
-    assert backend.adapter_in_scope(local)
+    assert backend.dispatch_scope(_MODEL_ID) == frozenset({_LOCAL_ENDPOINT})
     assert backend.owns_observation(_observation(_LOCAL_ENDPOINT))
     assert not backend.owns_observation(_observation(_CLOUD_ENDPOINT))
 

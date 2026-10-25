@@ -19,7 +19,6 @@ from serving.adapters.claude import ClaudeAdapter
 from serving.adapters.claude_format import (
     convert_content_block,
     convert_content_blocks,
-    infer_media_type_from_url,
     parse_data_url,
 )
 
@@ -470,47 +469,3 @@ class TestConvertMessagesWithImages:
         content = assistant_msgs[0]["content"]
         assert content[1]["type"] == "image"
         assert content[1]["source"]["type"] == "url"
-
-
-class TestInferMediaTypeFromUrl:
-    """Tests for claude_format.infer_media_type_from_url."""
-
-    def test_jpg_extension(self):
-        """Test .jpg extension."""
-        result = infer_media_type_from_url("https://example.com/photo.jpg")
-        assert result == "image/jpeg"
-
-    def test_jpeg_extension(self):
-        """Test .jpeg extension."""
-        result = infer_media_type_from_url("https://example.com/photo.jpeg")
-        assert result == "image/jpeg"
-
-    def test_png_extension(self):
-        """Test .png extension."""
-        result = infer_media_type_from_url("https://example.com/image.png")
-        assert result == "image/png"
-
-    def test_gif_extension(self):
-        """Test .gif extension."""
-        result = infer_media_type_from_url("https://example.com/anim.gif")
-        assert result == "image/gif"
-
-    def test_webp_extension(self):
-        """Test .webp extension."""
-        result = infer_media_type_from_url("https://example.com/modern.webp")
-        assert result == "image/webp"
-
-    def test_url_with_query_params(self):
-        """Test URL with query parameters."""
-        result = infer_media_type_from_url("https://example.com/photo.png?size=large&quality=high")
-        assert result == "image/png"
-
-    def test_unknown_extension_defaults_to_jpeg(self):
-        """Test unknown extension defaults to image/jpeg."""
-        result = infer_media_type_from_url("https://example.com/image")
-        assert result == "image/jpeg"
-
-    def test_uppercase_extension(self):
-        """Test uppercase extension is handled."""
-        result = infer_media_type_from_url("https://example.com/PHOTO.JPG")
-        assert result == "image/jpeg"

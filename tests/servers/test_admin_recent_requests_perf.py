@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 
@@ -86,7 +86,7 @@ def _isolate_perf_breakdown_cache():
 @pytest.fixture
 def admin_app_with_capture() -> tuple[FastAPI, dict[str, list[Any]], Any]:
     logger, calls = _make_db_logger_with_capture()
-    router = RouteExecutor()
+    router = FixedRouter()
     app = FastAPI(title="Admin Recent Requests Perf Test")
     app.state.services = AppServices(router=router, db_logger=logger)  # type: ignore[attr-defined]
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
@@ -640,7 +640,7 @@ async def test_content_query_uses_request_id_param(admin_client_capture):
 async def test_content_requires_admin_auth():
     """Without an admin token the endpoint must reject the caller."""
     logger, _calls = _make_db_logger_with_capture()
-    router = RouteExecutor()
+    router = FixedRouter()
     app = FastAPI(title="Admin Recent Requests Auth Test")
     app.state.services = AppServices(router=router, db_logger=logger)  # type: ignore[attr-defined]
     # Note: NO override of verify_admin_access here, so the real dependency runs.
@@ -1048,7 +1048,7 @@ async def test_perf_summary_repeat_request_is_served_from_cache(admin_client_cap
 async def test_perf_summary_requires_admin_auth():
     logger, _calls = _make_db_logger_with_capture()
     app = FastAPI(title="Admin Recent Requests Perf Auth Test")
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=logger)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=FixedRouter(), db_logger=logger)  # type: ignore[attr-defined]
     # No verify_admin_access override: the real dependency runs.
     app.include_router(admin.router)
     transport = ASGITransport(app=app)

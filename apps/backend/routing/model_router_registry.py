@@ -33,10 +33,9 @@ logger = get_logger(__name__)
 def _attach_accepts_model_scope(attach: Any) -> bool:
     """Report whether a route-table binding hook takes ``model_scope``.
 
-    In-tree strategies always do. The check exists for the external strategies
-    the ``attach_fixed_router`` fallback below still supports: calling those
-    with the keyword would raise, and an unscoped bind is the pre-existing
-    behavior rather than a regression.
+    In-tree strategies always do. An external strategy may implement the
+    documented ``attach_route_table(route_table)`` without it; calling that with
+    the keyword would raise, so it gets the unscoped bind it was written for.
     """
     try:
         parameters = inspect.signature(attach).parameters
@@ -139,12 +138,6 @@ class ModelRouterRegistry:
 
     def _register_shared_fixed_router(self, fixed_router: FixedRouter) -> None:
         """Register the process-scoped FixedRouter at the composition boundary."""
-        if self._shared_fixed is fixed_router:
-            return
-        if self._shared_fixed is not None:
-            raise ValueError("a different shared FixedRouter is already registered")
-        if self._cache:
-            raise RuntimeError("shared FixedRouter must be registered before router lookup")
         if (
             self._dependencies is not None
             and fixed_router.endpoint_health_registry is not self._dependencies.health_registry
@@ -165,14 +158,6 @@ class ModelRouterRegistry:
         if self._cache:
             raise RuntimeError("hybrid router factory must be attached before router lookup")
         self._hybrid_router_factory = factory
-
-    def bind_fixed_router(self, fixed_router: FixedRouter) -> None:
-        """Compatibility shim for registering the shared ``FixedRouter``.
-
-        New composition roots should pass ``shared_fixed_router=`` to the
-        constructor. This method remains for one release for external callers.
-        """
-        self._register_shared_fixed_router(fixed_router)
 
     def get_router(self, model_id: str) -> RouterProtocol:
         """Return (constructing on first call) the router for ``model_id``."""
@@ -240,10 +225,6 @@ class ModelRouterRegistry:
             # Late-bind the read-only route-table port for RouteWise (and any
             # future late-bound strategy that exposes attach_route_table).
             attach = getattr(router, "attach_route_table", None)
-            if attach is None:
-                # One-release compatibility for external strategies that still
-                # expose the former binding hook.
-                attach = getattr(router, "attach_fixed_router", None)
             if attach is not None:
                 # The shared table carries every model; this router serves one.
                 # Without the scope a strategy that derives background work
@@ -273,12 +254,6 @@ class ModelRouterRegistry:
         name, _params = self._router_spec(canonical_model_id, cfg)
         return name
 
-    def get_configured_router_name(self, model_id: str) -> str:
-        """Return the YAML/default strategy name, ignoring runtime overrides."""
-        canonical_model_id = self.canonical_model_id(model_id)
-        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
-        return str(cfg.get("router") or self._default)
-
     def _router_spec(
         self, canonical_model_id: str, cfg: dict[str, Any]
     ) -> tuple[str, dict[str, Any]]:
@@ -298,11 +273,6 @@ class ModelRouterRegistry:
         configured_name = str(cfg.get("router") or self._default)
         params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
         validate_router_config(strategy, params, dependencies=self._dependencies)
-
-    def set_router_override(self, model_id: str, strategy: str) -> None:
-        """Compatibility wrapper that prepares and commits one strategy change."""
-        change = self.prepare_router_strategy_change(model_id, strategy)
-        self.commit_router_strategy_change(change)
 
     def clear_router_override(self, model_id: str) -> None:
         """Remove an override and cached router without constructing a fallback.
@@ -426,11 +396,6 @@ class ModelRouterRegistry:
             self._router_revisions.get(canonical_model_id, 0) + 1
         )
 
-    def get_router_override(self, model_id: str) -> str | None:
-        """Return the runtime router override, if present."""
-        canonical_model_id = self.canonical_model_id(model_id)
-        return self._router_overrides.get(canonical_model_id)
-
     def canonical_model_id(self, model_id: str) -> str:
         """Return the canonical id used for router and setting ownership."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
@@ -497,22 +462,6 @@ class ModelRouterRegistry:
             seen_ids.add(id(router))
             if isinstance(router, RouteTableRefreshable):
                 router.refresh_route_table()
-                continue
-
-            # One-release compatibility for external strategies that still
-            # expose the former private hook. Keep this adapter inside the
-            # routing composition boundary so serving never owns router locks.
-            refresh = getattr(router, "_rebuild_from_route_table", None)
-            if not callable(refresh):
-                refresh = getattr(router, "_rebuild_from_fixed_router", None)
-            if not callable(refresh):
-                continue
-            commit_lock = getattr(router, "_route_commit_lock", None)
-            if commit_lock is None:
-                refresh()
-            else:
-                with commit_lock:
-                    refresh()
 
     def configured_model_ids(self) -> list[str]:
         """Return model ids known to the registry config."""

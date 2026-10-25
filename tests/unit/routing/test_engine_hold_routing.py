@@ -238,7 +238,8 @@ def _routing(chunks: list[str]) -> list[dict[str, Any]]:
 
 
 def _line() -> dict[str, int]:
-    return get_upstream_limiter().engine_snapshot().get(ENGINE_ADDRESS, {})
+    gate = get_upstream_limiter()._gates.get(ENGINE_ADDRESS)
+    return {} if gate is None else {"pending": gate.pending, "waiting": len(gate.waiters)}
 
 
 async def _until(predicate) -> None:
@@ -274,7 +275,7 @@ async def test_a_model_without_an_engine_queue_limit_holds_nothing():
     await first
 
     assert engine.holds == [None]
-    assert get_upstream_limiter().engine_snapshot() == {}
+    assert get_upstream_limiter()._gates == {}
 
 
 @pytest.mark.parametrize(

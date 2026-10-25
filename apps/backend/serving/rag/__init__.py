@@ -11,7 +11,7 @@ Design notes
 * **Embeddings & chat route through the gateway itself** — the ingest CLI calls
   the OpenAI-compatible ``/v1/embeddings`` endpoint; the serving endpoint embeds
   the query with the in-process embedding adapter and generates the answer with
-  the routing engine (``RouteExecutor.stream_chat_completion``).
+  the routing engine (``FixedRouter.stream_chat_completion``).
 * **Vector store** is a plain JSON file searched with pure-Python cosine
   similarity. The corpus is tiny (a handful of docs), so no ANN index / numpy
   dependency is warranted for this prototype.

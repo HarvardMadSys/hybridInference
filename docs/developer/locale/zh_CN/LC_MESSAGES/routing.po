@@ -2160,17 +2160,6 @@ msgid ""
 "to a pool that chooses inside its own declared range."
 msgstr "调用 router 已经选定的那个端点，或者把请求交给一个池，由池在自己声明的范围内选择。"
 
-#: ../developer/routing.md:706
-msgid ""
-"`apps/backend/routing/executor.py` is a backward-compatibility shim that "
-"re-exports `FixedRouter` as `RouteExecutor` along with "
-"`AllCircuitsOpenError`, `ProviderPinError`, and `RouteConfig`. Do not "
-"edit it — edit `routers.py`."
-msgstr ""
-"`apps/backend/routing/executor.py` 只是为向后兼容保留的一层转发：它把 `FixedRouter` 重新导出为 "
-"`RouteExecutor`，同时导出 `AllCircuitsOpenError`、`ProviderPinError` 和 "
-"`RouteConfig`。不要改它——要改就改 `routers.py`。"
-
 #: ../developer/routing.md:710
 msgid ""
 "How the router hands a request to the adapter it chose, and the "

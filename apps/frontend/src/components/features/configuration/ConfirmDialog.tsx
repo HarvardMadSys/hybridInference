@@ -11,9 +11,11 @@ export function ConfirmDialog({
   title,
   children,
   confirmLabel,
+  cancelLabel = 'Cancel',
   busyLabel,
   tone = 'default',
   busy = false,
+  confirmDisabled = false,
   error,
   onConfirm,
   onCancel,
@@ -21,9 +23,13 @@ export function ConfirmDialog({
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** What the dismissing button says; it never writes anything. */
+  cancelLabel?: string;
   busyLabel?: string;
   tone?: 'default' | 'danger';
   busy?: boolean;
+  /** Keep Confirm disabled, e.g. until a typed confirmation matches. */
+  confirmDisabled?: boolean;
   /** Shown inside the dialog, so a failed confirm can be retried in place. */
   error?: string | null;
   onConfirm: () => void;
@@ -56,7 +62,9 @@ export function ConfirmDialog({
       if (event.key !== 'Tab') return;
       const container = containerRef.current;
       if (!container) return;
-      const focusables = container.querySelectorAll<HTMLElement>('button:not([disabled])');
+      const focusables = container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
+      );
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
@@ -80,7 +88,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={() => {
         if (!busy) onCancel();
       }}
@@ -91,21 +99,31 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl bg-white p-5 shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 id={titleId} className="text-[15px] font-semibold text-gray-900">
+        <h3 id={titleId} className="shrink-0 break-words text-[15px] font-semibold text-gray-900">
           {title}
         </h3>
-        <div id={bodyId} className="mt-2 space-y-2 text-[13px] text-gray-600">
-          {children}
+        <div
+          role="region"
+          aria-label="Confirmation details"
+          tabIndex={0}
+          className="min-h-0 overflow-y-auto overscroll-contain"
+        >
+          <div id={bodyId} className="mt-2 space-y-2 break-words text-[13px] text-gray-600">
+            {children}
+          </div>
+          {error ? (
+            <p
+              className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700"
+              role="alert"
+            >
+              {error}
+            </p>
+          ) : null}
         </div>
-        {error ? (
-          <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-4 flex shrink-0 justify-end gap-2">
           <button
             ref={cancelRef}
             type="button"
@@ -113,12 +131,12 @@ export function ConfirmDialog({
             disabled={busy}
             className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-40"
           >
-            Cancel
+            {cancelLabel}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             aria-busy={busy || undefined}
             className={`rounded-md px-3 py-1.5 text-[13px] font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-40 ${confirmClass}`}
           >

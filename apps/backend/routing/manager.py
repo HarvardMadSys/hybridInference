@@ -13,17 +13,17 @@ if TYPE_CHECKING:
 
     from serving.adapters.base import BaseAdapter
 
-    from .executor import RouteExecutor
+    from .routers import FixedRouter
 
 
 class RoutingManager:
     """Decision layer for applying routing weights to the executor.
 
     This manager loads configuration, optionally starts health monitoring,
-    and computes per-adapter weights that are applied to the `RouteExecutor`.
+    and computes per-adapter weights that are applied to the `FixedRouter`.
     """
 
-    def __init__(self, router: RouteExecutor, config_path: Path) -> None:
+    def __init__(self, router: FixedRouter, config_path: Path) -> None:
         self.router = router
         self.config_path = config_path
         self.conf: RoutingConfig | None = None
@@ -80,7 +80,7 @@ class RoutingManager:
         return groups
 
     def apply(self) -> int:
-        """Compute and apply weights to RouteExecutor routes.
+        """Compute and apply weights to FixedRouter routes.
 
         Returns the number of models whose routes were updated.
         """

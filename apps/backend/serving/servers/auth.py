@@ -102,11 +102,6 @@ def decrypt_api_key(encrypted_key: str | None) -> str | None:
     return _api_key_cipher().decrypt(encrypted_key.encode()).decode()
 
 
-def constant_time_compare(a: str, b: str) -> bool:
-    """Constant-time string comparison to prevent timing attacks."""
-    return hmac.compare_digest(a, b)
-
-
 def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | None:
     """Return the presented credential from either accepted header."""
     if authorization and authorization.startswith("Bearer "):

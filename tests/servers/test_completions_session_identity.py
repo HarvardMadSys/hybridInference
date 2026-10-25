@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -73,7 +73,7 @@ def session_app(
 ) -> tuple[FastAPI, ParamCapturingAdapter]:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     adapter = ParamCapturingAdapter(_cfg())
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(MODEL, [(adapter, 1.0)])
 
     app = FastAPI(title="Session Identity Test App")

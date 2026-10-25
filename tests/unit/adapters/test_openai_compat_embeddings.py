@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.servers.registry import register_from_models_yaml
@@ -114,7 +114,7 @@ async def test_yaml_embeddings_path_reaches_upstream(tmp_path, monkeypatch, path
         )
     )
     embeddings = {}
-    count, _ = register_from_models_yaml(RouteExecutor(), path, embeddings)
+    count, _ = register_from_models_yaml(FixedRouter(), path, embeddings)
     assert count == 1
     primary, fallback = embeddings["embedding-test"]._adapters
     primary.http = MagicMock()
@@ -159,7 +159,7 @@ def test_empty_yaml_embeddings_path_keeps_default(tmp_path, path_value):
         )
     )
     embeddings = {}
-    register_from_models_yaml(RouteExecutor(), path, embeddings)
+    register_from_models_yaml(FixedRouter(), path, embeddings)
 
     assert (
         embeddings["embedding-test"]._build_embeddings_url()
@@ -187,4 +187,4 @@ def test_invalid_yaml_embeddings_path_is_rejected(tmp_path, path_value):
     )
 
     with pytest.raises(ValueError, match="embeddings_path must be a string or null"):
-        register_from_models_yaml(RouteExecutor(), path)
+        register_from_models_yaml(FixedRouter(), path)

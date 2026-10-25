@@ -24,7 +24,7 @@ from serving.setup_state import (
     SETUP_CODE_KEY,
     SETUP_MARKER_KEY,
     init_setup_state,
-    is_setup_required,
+    refresh_setup_state,
 )
 from serving.utils import password as password_utils
 from serving.utils.jwt import get_jwt_secret
@@ -98,7 +98,7 @@ async def client(app: FastAPI):
 async def pending(op_store) -> None:
     """Boot with no users and no marker; the stored setup code is SETUP_CODE."""
     await init_setup_state(op_store)
-    assert is_setup_required()
+    assert await refresh_setup_state()
 
 
 def _body(**overrides: Any) -> dict[str, Any]:
@@ -162,7 +162,7 @@ class TestCreateAdmin:
         assert password_utils.verify_password(STRONG_PASSWORD, created["password_hash"])
         op_store.update_user_last_login.assert_awaited_once_with(user_id)
         assert op_store.create_session.await_args.kwargs["user_id"] == user_id
-        assert is_setup_required() is False
+        assert await refresh_setup_state() is False
 
     async def test_display_name_defaults_to_login_name(self, client, pending, op_store):
         resp = await client.post("/auth/setup/admin", json=_body(login_name="root"))
@@ -174,7 +174,7 @@ class TestCreateAdmin:
 
         assert resp.status_code == 403
         op_store.create_first_admin.assert_not_awaited()
-        assert is_setup_required() is True
+        assert await refresh_setup_state() is True
 
     async def test_already_complete_is_409(self, client, op_store):
         op_store.get_or_create_setup_code.return_value = None
@@ -191,7 +191,7 @@ class TestCreateAdmin:
         resp = await client.post("/auth/setup/admin", json=_body())
 
         assert resp.status_code == 409
-        assert is_setup_required() is False
+        assert await refresh_setup_state() is False
 
     async def test_second_attempt_after_success_is_409(self, client, pending):
         assert (await client.post("/auth/setup/admin", json=_body())).status_code == 200
@@ -248,7 +248,7 @@ class TestCreateAdmin:
         assert resp.status_code == 503
         assert resp.json()["detail"] == AccountSchemaPending.MESSAGE
         # Nothing was created, so the same code works once the upgrade is done.
-        assert is_setup_required() is True
+        assert await refresh_setup_state() is True
         op_store.create_session.assert_not_awaited()
 
     @pytest.mark.parametrize(
@@ -274,7 +274,7 @@ class TestCreateAdmin:
         assert resp.status_code == 422
         assert resp.json()["detail"][0]["loc"][-1] == field
         op_store.create_first_admin.assert_not_awaited()
-        assert is_setup_required() is True
+        assert await refresh_setup_state() is True
 
 
 class TestSignupWhileSetupPending:

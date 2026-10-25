@@ -3999,16 +3999,80 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         disabled: bool,
         removed: bool,
         updated_by: str | None,
-    ) -> None:
-        """Upsert one route's state, or delete its row when neither flag is set."""
+        expected_disabled: bool | None = None,
+        expected_removed: bool | None = None,
+    ) -> bool:
+        """Upsert one route's state, or delete its row when neither flag is set.
+
+        With an expectation, each case is one statement, so a concurrent write
+        either lands first and makes this one match nothing, or lands after it.
+        """
+        if (expected_disabled is None) != (expected_removed is None):
+            raise ValueError("expected_disabled and expected_removed go together")
+        expecting = expected_disabled is not None
+        # A route with neither flag set has no row.
+        expected_row = bool(expected_disabled or expected_removed)
         async with self._pool.acquire() as conn:
+            if expecting and not expected_row:
+                if not disabled and not removed:
+                    # Nothing to write; the route must still have no state.
+                    current = await conn.fetchrow(
+                        "SELECT disabled, removed FROM provider_route_states "
+                        "WHERE model_id = $1 AND route_id = $2",
+                        model_id,
+                        route_id,
+                    )
+                    return current is None or not (current["disabled"] or current["removed"])
+                # Insert, or take over a row that sets neither flag; a row any
+                # other process stored in between keeps its flags.
+                written = await conn.fetchval(
+                    "INSERT INTO provider_route_states "
+                    "(model_id, route_id, disabled, removed, updated_at, updated_by) "
+                    "VALUES ($1, $2, $3, $4, NOW(), $5) "
+                    "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                    "disabled = EXCLUDED.disabled, removed = EXCLUDED.removed, "
+                    "updated_at = NOW(), updated_by = EXCLUDED.updated_by "
+                    "WHERE provider_route_states.disabled = FALSE "
+                    "AND provider_route_states.removed = FALSE "
+                    "RETURNING TRUE",
+                    model_id,
+                    route_id,
+                    disabled,
+                    removed,
+                    updated_by,
+                )
+                return bool(written)
+            if expected_row:
+                if not disabled and not removed:
+                    tag = await conn.execute(
+                        "DELETE FROM provider_route_states "
+                        "WHERE model_id = $1 AND route_id = $2 AND disabled = $3 AND removed = $4",
+                        model_id,
+                        route_id,
+                        expected_disabled,
+                        expected_removed,
+                    )
+                else:
+                    tag = await conn.execute(
+                        "UPDATE provider_route_states SET disabled = $5, removed = $6, "
+                        "updated_at = NOW(), updated_by = $7 "
+                        "WHERE model_id = $1 AND route_id = $2 AND disabled = $3 AND removed = $4",
+                        model_id,
+                        route_id,
+                        expected_disabled,
+                        expected_removed,
+                        disabled,
+                        removed,
+                        updated_by,
+                    )
+                return _parse_command_tag_count(tag) > 0
             if not disabled and not removed:
                 await conn.execute(
                     "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
                     model_id,
                     route_id,
                 )
-                return
+                return True
             await conn.execute(
                 "INSERT INTO provider_route_states "
                 "(model_id, route_id, disabled, removed, updated_at, updated_by) "
@@ -4022,6 +4086,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 removed,
                 updated_by,
             )
+            return True
 
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True when removed."""

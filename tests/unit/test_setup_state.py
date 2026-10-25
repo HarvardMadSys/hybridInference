@@ -19,7 +19,6 @@ from serving.setup_state import (
     format_setup_code,
     generate_setup_code,
     init_setup_state,
-    is_setup_required,
     mark_setup_completed,
     normalize_setup_code,
     refresh_setup_state,
@@ -75,12 +74,11 @@ class TestSetupCode:
 
 class TestInitSetupState:
     def test_not_required_before_init(self):
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
         assert verify_setup_code("ABCD-EFGH-JKLM") is False
 
     async def test_database_free_mode_has_no_setup(self):
         await init_setup_state(None)
-        assert is_setup_required() is False
         assert await refresh_setup_state() is False
 
     async def test_complete_setup_logs_no_code(self, logs):
@@ -88,7 +86,7 @@ class TestInitSetupState:
 
         await init_setup_state(store)
 
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
         assert _logged_codes(logs) == []
 
     async def test_asks_the_store_for_the_shared_code(self):
@@ -107,7 +105,7 @@ class TestInitSetupState:
 
         await init_setup_state(_store())
 
-        assert is_setup_required() is True
+        assert setup_state._state.required is True
         (warning,) = [r for r in logs.records if "First-run setup is pending" in r.getMessage()]
         assert warning.levelno == logging.WARNING
         assert warning.getMessage() == (
@@ -157,7 +155,7 @@ class TestInitSetupState:
 
         await init_setup_state(store)
 
-        assert is_setup_required() is True
+        assert setup_state._state.required is True
         assert not verify_setup_code(STORED_CODE)
         assert _logged_codes(logs) == []
 
@@ -166,13 +164,13 @@ class TestRefreshSetupState:
     async def test_notices_setup_completed_elsewhere(self, monkeypatch):
         store = _store()
         await init_setup_state(store)
-        assert is_setup_required() is True
+        assert setup_state._state.required is True
 
         store.get_or_create_setup_code.return_value = None
         monkeypatch.setattr(setup_state._state, "checked_at", 0.0)
 
         assert await refresh_setup_state() is False
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
         assert not verify_setup_code(STORED_CODE)
 
     async def test_picks_up_the_code_once_the_database_answers(self, logs, monkeypatch):
@@ -221,7 +219,7 @@ class TestRefreshSetupState:
         store.get_or_create_setup_code = AsyncMock(side_effect=OSError("refused"))
         monkeypatch.setattr(setup_state._state, "checked_at", 0.0)
         assert await refresh_setup_state() is True
-        assert is_setup_required() is True
+        assert setup_state._state.required is True
         assert verify_setup_code(STORED_CODE)
 
     async def test_complete_setup_is_never_reread(self):
@@ -254,7 +252,7 @@ class TestCompleteSetup:
         assert kwargs["marker_value"].endswith("+00:00")
         assert kwargs["login_name"] == "admin"
         assert kwargs["admin_ip"] == "203.0.113.7"
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
         assert not verify_setup_code(STORED_CODE)
 
     async def test_lost_race_still_ends_pending_state(self):
@@ -272,7 +270,7 @@ class TestCompleteSetup:
         )
 
         assert created is False
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
 
     async def test_store_error_keeps_setup_pending(self):
         store = _store()
@@ -289,7 +287,7 @@ class TestCompleteSetup:
                 admin_ip="203.0.113.7",
             )
 
-        assert is_setup_required() is True
+        assert setup_state._state.required is True
         assert verify_setup_code(STORED_CODE)
 
     def test_mark_completed_forgets_the_code(self):
@@ -298,5 +296,5 @@ class TestCompleteSetup:
 
         mark_setup_completed()
 
-        assert is_setup_required() is False
+        assert setup_state._state.required is False
         assert setup_state._state.code_digest is None

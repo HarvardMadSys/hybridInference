@@ -26,6 +26,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { Select } from '@/components/ui/Select';
+import { useConfirmAction } from './confirm/useConfirmAction';
 import { FoldedText } from './requestContent';
 import { OffloadedRequestsPanel } from './OffloadedRequestsPanel';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
@@ -526,7 +527,9 @@ export function RequestsTab() {
   const [exportEndDate, setExportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [exportIncludeContent, setExportIncludeContent] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
-  const [clearingErrors, setClearingErrors] = useState(false);
+  const clearConfirmation = useConfirmAction();
+  const requestClearConfirmation = clearConfirmation.request;
+  const clearingErrors = clearConfirmation.busy;
 
   // Monotonic id for list fetches so an out-of-order response (e.g. a slow
   // request issued under an older filter) can't overwrite a newer one.
@@ -596,27 +599,34 @@ export function RequestsTab() {
     }
   }, [toast]);
 
-  const handleClearErrors = useCallback(async () => {
-    if (
-      !window.confirm(
-        'Permanently delete all error requests from the past hour? This cannot be undone.',
-      )
-    ) {
-      return;
-    }
-    setClearingErrors(true);
-    try {
-      const result = await clearErrorRequests(1);
-      toast.success(result.message);
-      loadRequests(reqUserFilter, reqModelFilter);
-      loadRequestMetrics();
-      setPerfRefreshKey((key) => key + 1);
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setClearingErrors(false);
-    }
-  }, [toast, loadRequests, reqUserFilter, reqModelFilter, loadRequestMetrics]);
+  const handleClearErrors = useCallback(() => {
+    requestClearConfirmation({
+      title: 'Delete the last hour of error requests?',
+      confirmLabel: 'Delete error requests',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      body: (
+        <p>
+          Every request that ended in an error during the past hour is permanently removed from the
+          request log and its metrics. This cannot be undone.
+        </p>
+      ),
+      run: async () => {
+        const result = await clearErrorRequests(1);
+        toast.success(result.message);
+        loadRequests(reqUserFilter, reqModelFilter);
+        loadRequestMetrics();
+        setPerfRefreshKey((key) => key + 1);
+      },
+    });
+  }, [
+    requestClearConfirmation,
+    toast,
+    loadRequests,
+    reqUserFilter,
+    reqModelFilter,
+    loadRequestMetrics,
+  ]);
 
   useEffect(() => {
     loadRequests(debouncedUserFilter, debouncedModelFilter);
@@ -832,6 +842,7 @@ export function RequestsTab() {
         >
           {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
         </button>
+        {clearConfirmation.dialog}
         <button
           type="button"
           onClick={() => setShowExportPanel((v) => !v)}

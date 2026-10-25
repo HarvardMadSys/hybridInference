@@ -7,8 +7,8 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from routing.routers import FixedRouter
 from serving.servers.registry import register_from_models_yaml
 
 
@@ -49,7 +49,7 @@ def test_apply_keeps_alias_and_canonical_route_in_sync(tmp_path: Path):
     models_path.write_text(models_yaml)
     routing_path.write_text(routing_yaml)
 
-    router = RouteExecutor()
+    router = FixedRouter()
     registered, _infos = register_from_models_yaml(router, models_path)
     assert registered == 2
     assert router.routes["canonical-model"] is router.routes["alias-model"]
@@ -111,7 +111,7 @@ def test_apply_renormalizes_when_routing_yaml_covers_subset(tmp_path: Path):
     models_path.write_text(models_yaml)
     routing_path.write_text(routing_yaml)
 
-    router = RouteExecutor()
+    router = FixedRouter()
     registered, _infos = register_from_models_yaml(router, models_path)
     assert registered == 1
 

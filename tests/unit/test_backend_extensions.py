@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving import agent_access, extensions
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.admin import provider_quotas
@@ -268,7 +268,7 @@ async def test_yaml_adapter_and_key_probe_use_registered_factory(tmp_path, monke
         "        base_url: https://api.example.test/v1\n"
         "        api_keys: [original-key]\n"
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     registry.register_from_models_yaml(router, models)
     original = adapters[0]
 
@@ -290,7 +290,7 @@ async def test_admin_model_candidate_and_update_paths_use_registered_factory(mon
     registry.register_adapter_factory("example_extension", factory)
     dynamic_keys.register_known_provider("example_extension")
     original = _factory(_config())
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("example-model", [(original, 1.0)])
     services = SimpleNamespace(router=router, model_router_registry=None)
     monkeypatch.setattr(

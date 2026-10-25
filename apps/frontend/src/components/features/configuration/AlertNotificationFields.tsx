@@ -30,6 +30,8 @@ export function AlertNotificationFields({
   testResult,
   onTest,
   onReset,
+  readOnly,
+  pendingResets,
 }: {
   entries: AlertWebhookEntries;
   channel: AlertChannelChoice;
@@ -41,8 +43,12 @@ export function AlertNotificationFields({
   testing: boolean;
   testResult: AlertTestResult | null;
   onTest: () => void;
-  /** Remove a stored row, so the setting follows the environment again. */
+  /** Stage (or unstage) removing a stored row, so the setting follows the environment again. */
   onReset: (entry: ConfigEntry) => void;
+  /** Show the saved channel and webhook only; Send test still works. */
+  readOnly: boolean;
+  /** Keys whose stored row the save removes. */
+  pendingResets: ReadonlySet<string>;
 }) {
   const id = useId();
   const entry = selectedWebhookEntry(entries, channel);
@@ -70,13 +76,23 @@ export function AlertNotificationFields({
         </p>
       </div>
       <div className="min-w-0 space-y-4 lg:max-w-2xl">
-        <AlertChannelPicker
-          id={id}
-          value={channel}
-          onChange={onChannelChange}
-          disabled={disabled}
-          describedBy={`${id}-description ${id}-restart`}
-        />
+        {readOnly ? (
+          <output
+            id={id}
+            aria-describedby={`${id}-description ${id}-restart`}
+            className="block text-[13px] text-gray-800"
+          >
+            {channel === 'wecom' ? 'WeCom' : channel === 'slack' ? 'Slack' : 'None'}
+          </output>
+        ) : (
+          <AlertChannelPicker
+            id={id}
+            value={channel}
+            onChange={onChannelChange}
+            disabled={disabled}
+            describedBy={`${id}-description ${id}-restart`}
+          />
+        )}
 
         {entry ? (
           <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
@@ -95,6 +111,8 @@ export function AlertNotificationFields({
               onChange={onDraftChange}
               serverError={errors[entry.key]}
               onReset={onReset}
+              readOnly={readOnly}
+              resetPending={pendingResets.has(entry.key)}
               disabled={disabled}
             />
             <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-gray-200/70 pt-3">
@@ -134,20 +152,31 @@ export function AlertNotificationFields({
               Resetting removes the stored value, so the setting follows .env again on the next
               restart.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {storedElsewhere.map((candidate) => (
-                <button
-                  key={candidate.key}
-                  type="button"
-                  onClick={() => onReset(candidate)}
-                  disabled={disabled}
-                  aria-label={`Reset ${candidate.key}`}
-                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 font-mono text-[11px] font-medium text-gray-700 shadow-sm transition hover:border-gray-300 hover:bg-gray-50 disabled:opacity-40"
-                >
-                  Reset {candidate.key}
-                </button>
-              ))}
-            </div>
+            {readOnly ? null : (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {storedElsewhere.map((candidate) => {
+                  const staged = pendingResets.has(candidate.key);
+                  return (
+                    <button
+                      key={candidate.key}
+                      type="button"
+                      onClick={() => onReset(candidate)}
+                      disabled={disabled}
+                      aria-label={
+                        staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`
+                      }
+                      className={`rounded-md border px-3 py-1.5 font-mono text-[11px] font-medium shadow-sm transition disabled:opacity-40 ${
+                        staged
+                          ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                          : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      {staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : null}
         <p

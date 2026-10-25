@@ -3,9 +3,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import type { AdminModelConcurrencyItem } from '@/lib/api/admin';
-import { listModelConcurrency, updateModelConcurrency } from '@/lib/api/admin';
-import { getErrorMessage } from '@/lib/utils/errors';
 import {
   AdminEmptyState,
   AdminLoading,
@@ -18,17 +15,35 @@ import {
   PANEL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
+import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
+import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { writeEach } from '@/components/features/admin/confirm/writeEach';
+import type { AdminModelConcurrencyItem } from '@/lib/api/admin';
+import { listModelConcurrency, updateModelConcurrency } from '@/lib/api/admin';
+import { getErrorMessage } from '@/lib/utils/errors';
+
+const SECTION = 'Model Concurrency Limit';
 
 interface ModelConcurrencySectionProps {
   onToast: (msg: string) => void;
 }
 
+const exemptLabel = (exempt: boolean) => (exempt ? 'Exempt' : 'Not exempt');
+
+/**
+ * Per-model exemption from the per-user concurrency limit. Read-only until
+ * Edit; the changed models are saved together after confirmation.
+ */
 export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProps) {
   const queryClient = useQueryClient();
+  const confirmation = useConfirmAction();
   const [models, setModels] = useState<AdminModelConcurrencyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [savingModelIds, setSavingModelIds] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, boolean>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -47,31 +62,85 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
     void load();
   }, [load]);
 
-  const handleToggleExempt = useCallback(
-    async (modelId: string, exempt: boolean) => {
-      setSavingModelIds((prev) => new Set(prev).add(modelId));
-      try {
-        const updated = await updateModelConcurrency(modelId, exempt);
-        setModels((prev) => prev.map((model) => (model.model_id === modelId ? updated : model)));
+  const changeDraft = (model: AdminModelConcurrencyItem, exempt: boolean) => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      if (exempt === model.exempt) delete next[model.model_id];
+      else next[model.model_id] = exempt;
+      return next;
+    });
+  };
+
+  const cancel = () => {
+    if (confirmation.busy) return;
+    setDrafts({});
+    setSaveError(null);
+    setEditing(false);
+  };
+
+  const changed = models.filter((model) => model.model_id in drafts);
+
+  const save = () => {
+    if (changed.length === 0) return;
+    const pending = changed.map((model) => ({ model, exempt: drafts[model.model_id] }));
+    confirmation.request({
+      title: `Save ${plural(pending.length, 'concurrency change')}?`,
+      confirmLabel: 'Confirm save',
+      busyLabel: 'Saving…',
+      cancelLabel: 'Back to editing',
+      body: (
+        <>
+          <ChangeList
+            changes={pending.map(({ model, exempt }) => ({
+              label: model.model_id,
+              before: exemptLabel(model.exempt),
+              after: exemptLabel(exempt),
+            }))}
+          />
+          <p>
+            Requests to an exempt model stop counting toward a user&apos;s in-flight limit, up to 64
+            concurrent requests per user.
+          </p>
+        </>
+      ),
+      run: async () => {
+        const failure = await writeEach(
+          pending,
+          ({ model }) => model.model_id,
+          async ({ model, exempt }) => {
+            const updated = await updateModelConcurrency(model.model_id, exempt);
+            setModels((prev) =>
+              prev.map((item) => (item.model_id === model.model_id ? updated : item)),
+            );
+            setDrafts((prev) => {
+              const next = { ...prev };
+              delete next[model.model_id];
+              return next;
+            });
+          },
+        );
         void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
-        onToast(`Updated concurrency exemption for ${modelId}.`);
-      } catch (e) {
-        onToast(`Failed to update ${modelId}: ${getErrorMessage(e)}`);
-      } finally {
-        setSavingModelIds((prev) => {
-          const next = new Set(prev);
-          next.delete(modelId);
-          return next;
-        });
-      }
-    },
-    [onToast, queryClient],
-  );
+        setSaveError(failure);
+        if (failure) return;
+        setEditing(false);
+        onToast(
+          pending.length === 1
+            ? `Updated concurrency exemption for ${pending[0].model.model_id}.`
+            : `Updated concurrency exemption for ${pending.length} models.`,
+        );
+      },
+    });
+  };
 
   return (
     <AdminSection
-      title="Model Concurrency Limit"
+      title={SECTION}
       description="Exempt a model from the per-user concurrency limit. Requests to an exempt model do not count toward a user's normal in-flight request cap, but are still limited to at most 64 concurrent requests per user."
+      actions={
+        !editing && !loading && models.length > 0 ? (
+          <EditButton target={SECTION} onClick={() => setEditing(true)} />
+        ) : null
+      }
     >
       {error && (
         <div className="mb-3">
@@ -92,7 +161,9 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
       ) : models.length === 0 ? (
         <AdminEmptyState title="No models available." />
       ) : (
-        <div className={`${PANEL} relative overflow-x-auto`}>
+        <div
+          className={`${PANEL} relative overflow-x-auto ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+        >
           <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
               <tr className="border-b border-gray-200">
@@ -102,22 +173,27 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
             </thead>
             <tbody className="divide-y divide-gray-100">
               {models.map((model) => {
-                const isSaving = savingModelIds.has(model.model_id);
-
+                const exempt = drafts[model.model_id] ?? model.exempt;
                 return (
                   <tr key={model.model_id} className="bg-white">
                     <td className="px-4 py-2.5 font-mono text-[12px] text-gray-900">
                       {model.model_id}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <input
-                        type="checkbox"
-                        aria-label={`Concurrency exemption for ${model.model_id}`}
-                        className={CHECKBOX}
-                        disabled={isSaving}
-                        checked={model.exempt}
-                        onChange={(e) => void handleToggleExempt(model.model_id, e.target.checked)}
-                      />
+                      {editing ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`Concurrency exemption for ${model.model_id}`}
+                          className={CHECKBOX}
+                          disabled={confirmation.busy}
+                          checked={exempt}
+                          onChange={(e) => changeDraft(model, e.target.checked)}
+                        />
+                      ) : (
+                        <output aria-label={`Concurrency exemption for ${model.model_id}`}>
+                          {exemptLabel(model.exempt)}
+                        </output>
+                      )}
                     </td>
                   </tr>
                 );
@@ -126,6 +202,18 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
           </table>
         </div>
       )}
+
+      {editing ? (
+        <EditBar
+          target={SECTION}
+          changeCount={changed.length}
+          onCancel={cancel}
+          onSave={save}
+          busy={confirmation.busy}
+          error={saveError}
+        />
+      ) : null}
+      {confirmation.dialog}
     </AdminSection>
   );
 }

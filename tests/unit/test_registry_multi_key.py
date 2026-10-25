@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.registry import register_from_models_yaml
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ def test_route_level_input_modalities_override(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     adapters = router.routes["vmodel"].adapters
@@ -78,7 +78,7 @@ def test_api_keys_list_is_loaded(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     # In this codebase, RouteConfig.adapters is a list of (adapter, weight)
@@ -112,7 +112,7 @@ def test_api_key_and_api_keys_both_set_raises(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     with pytest.raises(ValueError, match=r"api_key.*api_keys"):
         register_from_models_yaml(router, yaml_path)
 
@@ -140,7 +140,7 @@ def test_blank_api_keys_are_dropped_with_warning(tmp_path, monkeypatch, caplog):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     with caplog.at_level("WARNING"):
         register_from_models_yaml(router, yaml_path)
     assert "ZAI_API_KEY_2" in caplog.text or "blank" in caplog.text.lower()
@@ -170,7 +170,7 @@ def test_all_api_keys_blank_raises(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     with pytest.raises(ValueError, match="empty"):
         register_from_models_yaml(router, yaml_path)
 
@@ -195,7 +195,7 @@ def test_single_api_key_form_still_works(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
     cfg = router.routes["glm-test"].adapters[0][0].config
     assert cfg.api_key == "single-key"
@@ -221,7 +221,7 @@ def test_missing_single_api_key_raises_in_strict_mode(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     with pytest.raises(ValueError, match="after env expansion"):
         register_from_models_yaml(router, yaml_path)
 
@@ -254,7 +254,7 @@ def test_optional_route_skipped_when_key_unset(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     # Model survives with only the primary route; the optional staging route
@@ -292,7 +292,7 @@ def test_optional_route_included_when_key_set(tmp_path, monkeypatch):
         """,
     )
 
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     adapters = router.routes["glm-test"].adapters

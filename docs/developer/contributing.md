@@ -128,15 +128,10 @@ tests/            see the test tiers below
 benchmark/        benchmarking scripts
 ```
 
-Two things about the backend are easy to get wrong:
-
-- `apps/backend/routing/executor.py` is a backward-compatibility shim that
-  re-exports `FixedRouter` as `RouteExecutor`. Edit
-  `apps/backend/routing/routers.py` instead.
-- The backend packages are `serving` and `routing`, rooted at `apps/backend`.
-  `make setup-dev` installs them into `.venv`, so `uv run` or an activated
-  `.venv` imports them from any directory; outside that environment, set
-  `PYTHONPATH=apps/backend`.
+The backend packages are `serving` and `routing`, rooted at `apps/backend`.
+`make setup-dev` installs them into `.venv`, so `uv run` or an activated
+`.venv` imports them from any directory; outside that environment, set
+`PYTHONPATH=apps/backend`.
 
 ## Quality gates
 

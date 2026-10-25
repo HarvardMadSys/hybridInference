@@ -15,16 +15,17 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry, StaleRouterStrategyChangeError
-from routing.routers import adapter_supports_modalities
+from routing.routers import FixedRouter, adapter_supports_modalities
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
+from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
 from serving.pricing import PricingSchedule, effective_pricing
+from serving.servers.bootstrap import _EffectiveRouteRefreshState, _reload_effective_route_state
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
@@ -339,7 +340,7 @@ async def admin_client(monkeypatch):
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
 
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     chutes = _compat_adapter(
         provider="chutes",
         endpoint_id="minimax-fast:chutes-api",
@@ -415,9 +416,6 @@ async def admin_client(monkeypatch):
         router_cache[change.canonical_model_id] = change.router
         return change.router
 
-    def set_router_override(model_id, strategy):
-        commit_router_strategy_change(prepare_router_strategy_change(model_id, strategy))
-
     def clear_router_override(model_id):
         strategy_state.pop(model_id, None)
         router_cache.pop(model_id, None)
@@ -425,7 +423,6 @@ async def admin_client(monkeypatch):
     registry.get_router = MagicMock(side_effect=get_router)
     registry.prepare_router_strategy_change = MagicMock(side_effect=prepare_router_strategy_change)
     registry.commit_router_strategy_change = MagicMock(side_effect=commit_router_strategy_change)
-    registry.set_router_override = MagicMock(side_effect=set_router_override)
     registry.clear_router_override = MagicMock(side_effect=clear_router_override)
     registry.refresh_route_tables = MagicMock(
         side_effect=fake_routewise.refresh_route_table,
@@ -1338,7 +1335,7 @@ async def test_apply_model_router_strategy_integrates_real_registry(admin_client
 
     routewise_router = registry.get_router("on-demand-only")
     assert isinstance(routewise_router, RouteWiseRouter)
-    assert registry.get_router_override("on-demand-only") == "routewise"
+    assert registry.get_router_name("on-demand-only") == "routewise"
     assert services.managed_routers == [routewise_router]
     assert not hasattr(routewise_router, "_model_router_override_id")
     assert not hasattr(routewise_router, "_model_router_fallback_strategy")
@@ -1350,7 +1347,7 @@ async def test_apply_model_router_strategy_integrates_real_registry(admin_client
     )
 
     assert registry.get_router("on-demand-only") is route_executor
-    assert registry.get_router_override("on-demand-only") is None
+    assert registry.get_router_name("on-demand-only") == "fixed"
     assert services.managed_routers == []
 
 
@@ -4454,7 +4451,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
 ):
     client, op_store, _fixture_router, _fake_routewise, _verify_mock = admin_client
     services = client.app.state.services
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     existing_model_id = "existing-routewise"
     runtime_model_id = "deepseek-v4-flash"
     _register_on_demand_only_route(route_executor, existing_model_id)
@@ -4511,7 +4508,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
         }
         assert runtime_model_id not in existing_routewise.route_candidates
         assert registry.get_router(runtime_model_id) is route_executor
-        assert registry.get_router_override(runtime_model_id) is None
+        assert registry.get_router_name(runtime_model_id) == "fixed"
         assert services.managed_routers == []
     finally:
         release_persist.set()
@@ -4529,7 +4526,7 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
         # model, or its background latency probe would start calling this
         # model's upstream too.
         assert set(existing_routewise.route_candidates) == {existing_model_id}
-        assert registry.get_router_override(runtime_model_id) == "routewise"
+        assert registry.get_router_name(runtime_model_id) == "routewise"
         assert services.managed_routers == [active_routewise]
     finally:
         await active_routewise.stop()
@@ -4542,7 +4539,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
 ):
     client, op_store, _fixture_router, _fake_routewise, _verify_mock = admin_client
     services = client.app.state.services
-    route_executor = RouteExecutor()
+    route_executor = FixedRouter()
     registry = ModelRouterRegistry(models_config={}, shared_fixed_router=route_executor)
     services.router = route_executor
     services.model_router_registry = registry
@@ -4577,7 +4574,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
     assert len(staged_routes) == 1
     assert staged_routes[0].published is False
     assert model_id not in route_executor.routes
-    assert registry.get_router_override(model_id) is None
+    assert registry.get_router_name(model_id) == "fixed"
     assert registry.get_router(model_id) is route_executor
     assert all(not isinstance(router, RouteWiseRouter) for router in registry.cached_routers())
     assert services.managed_routers == []
@@ -7149,8 +7146,6 @@ class _RouteStateTable:
     """Stateful stand-in for ``provider_route_states`` with a real resolver on top."""
 
     def __init__(self, client, op_store, route_executor) -> None:
-        from serving.config.route_states import RouteStateResolver
-
         self.rows: dict[tuple[str, str], dict[str, Any]] = {}
         op_store.set_provider_route_state = AsyncMock(side_effect=self.set)
         op_store.list_all_provider_route_states = AsyncMock(side_effect=self.list_all)
@@ -7158,10 +7153,26 @@ class _RouteStateTable:
         client.app.state.services.route_state_resolver = self.resolver
         route_executor.route_state_resolver = self.resolver
 
-    async def set(self, model_id, route_id, *, disabled, removed, updated_by):
+    async def set(
+        self,
+        model_id,
+        route_id,
+        *,
+        disabled,
+        removed,
+        updated_by,
+        expected_disabled=None,
+        expected_removed=None,
+    ):
+        if expected_disabled is not None:
+            # Compare-and-set, as the store does: a route with no row has neither flag.
+            row = self.rows.get((model_id, route_id))
+            stored = (row["disabled"], row["removed"]) if row else (False, False)
+            if stored != (expected_disabled, expected_removed):
+                return False
         if not disabled and not removed:
             self.rows.pop((model_id, route_id), None)
-            return
+            return True
         self.rows[(model_id, route_id)] = {
             "model_id": model_id,
             "route_id": route_id,
@@ -7169,6 +7180,7 @@ class _RouteStateTable:
             "removed": removed,
             "updated_by": updated_by,
         }
+        return True
 
     async def list_all(self):
         return [dict(row) for _key, row in sorted(self.rows.items())]
@@ -7352,10 +7364,8 @@ async def test_delete_and_restore_a_config_route_across_a_restart(admin_client):
     assert _audited_actions()[-1] == "routing.provider_routes.remove"
 
     # Restart with the same models.yaml: the route stays deleted.
-    restarted = RouteExecutor()
+    restarted = FixedRouter()
     restarted.register_route("minimax-fast", yaml_entries_as_weights(yaml_entries))
-    from serving.config.route_states import RouteStateResolver
-
     reloaded = RouteStateResolver(op_store)
     await reloaded.load_all()
     restarted.route_state_resolver = reloaded
@@ -8538,3 +8548,362 @@ async def test_a_failed_limit_change_restores_the_limit_and_the_row(admin_client
     assert _live_entry(route_executor, MINIMAX_ROUTE_ID)[1] is adapter
     assert adapter.config.quota == {"limit": 100}
     assert table.row("minimax-fast", MINIMAX_ROUTE_ID)["quota_limit"] == 100
+
+
+# -- Edits, deletes and restores that interleave ------------------------------
+
+
+def _hold_verification(verify_mock, route_id: str | None = None):
+    """Make the upstream check of ``route_id`` (default: any route) wait for a release."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def verify(candidate):
+        if route_id is None or candidate.route_id == route_id:
+            entered.set()
+            await release.wait()
+
+    verify_mock.side_effect = verify
+    return entered, release
+
+
+def _real_routewise(client, route_executor) -> RouteWiseRouter:
+    """Rebuild a real RouteWise router from the route table on every admin refresh."""
+    routewise = RouteWiseRouter(route_table=route_executor)
+    registry = client.app.state.services.model_router_registry
+    registry.refresh_route_tables.side_effect = routewise.refresh_route_table
+    return routewise
+
+
+def _routewise_endpoints(routewise: RouteWiseRouter, model_id: str = "minimax-fast") -> set[str]:
+    return {candidate.endpoint_id for candidate in routewise.route_candidates[model_id]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shift", ["delete", "restore"])
+async def test_config_route_edit_lands_on_its_route_after_an_earlier_route_moves(
+    admin_client, shift
+):
+    """An edit names its route by id: deleting or restoring the route ahead of it
+    while the edit is verified moves every route after it."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    if shift == "restore":
+        assert (await _remove(client, CHUTES)).status_code == 200
+    entered, release = _hold_verification(verify_mock)
+    edit = asyncio.create_task(
+        client.put(
+            f"/admin/routing/provider-routes/minimax-fast/{FEATHERLESS}",
+            json=OPENROUTER_PARASAIL_TARGET,
+            headers=AUTH,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+
+    moved = await (_remove(client, CHUTES) if shift == "delete" else _restore(client, CHUTES))
+    assert moved.status_code == 200, moved.text
+    release.set()
+    response = await edit
+
+    assert response.status_code == 200, response.text
+    served = dict(
+        zip(_live_route_ids(route_executor), _live_endpoint_ids(route_executor), strict=False)
+    )
+    if shift == "delete":
+        assert served == {FEATHERLESS: PARASAIL_ENDPOINT_ID, DEEPINFRA: DEEPINFRA}
+    else:
+        assert served == {CHUTES: CHUTES, FEATHERLESS: PARASAIL_ENDPOINT_ID, DEEPINFRA: DEEPINFRA}
+        assert _route_adapter(route_executor, CHUTES).config.provider == "chutes"
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_rechecks_its_endpoint_after_verification(admin_client):
+    """A route added while the edit is verified may take the endpoint it moves to."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    _CandidateTable(op_store)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    entered, release = _hold_verification(verify_mock, FEATHERLESS)
+    edit = asyncio.create_task(
+        client.put(
+            f"/admin/routing/provider-routes/minimax-fast/{FEATHERLESS}",
+            json=OPENROUTER_PARASAIL_TARGET,
+            headers=AUTH,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            **OPENROUTER_PARASAIL_TARGET,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+    before = list(route_executor.routes["minimax-fast"].raw_adapters)
+
+    release.set()
+    response = await edit
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"another route of this model already uses endpoint id {PARASAIL_ENDPOINT_ID!r}"
+    )
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    assert route_executor.routes["minimax-fast"].raw_adapters == before
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_rechecks_its_endpoint_before_saving(admin_client):
+    """The same for a runtime route: refused before its row is rewritten."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    entered, release = _hold_verification(verify_mock, MINIMAX_ROUTE_ID)
+    edit = asyncio.create_task(
+        _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            **OPENROUTER_PARASAIL_TARGET,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+
+    release.set()
+    response = await edit
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"another route of this model already uses endpoint id {PARASAIL_ENDPOINT_ID!r}"
+    )
+    op_store.update_provider_route_candidate.assert_not_awaited()
+    assert table.row("minimax-fast", MINIMAX_ROUTE_ID) == before_row
+    assert _live_entry(route_executor, MINIMAX_ROUTE_ID)[3] == MINIMAX_ROUTE_ID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit_field", ["quota_limit", "concurrency_limit"])
+async def test_a_target_edit_verified_across_a_limit_change_does_not_undo_it(
+    admin_client, limit_field
+):
+    """A limit-only edit keeps the adapter, so the edit being verified must notice
+    the limit it was built from is gone rather than write it back."""
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    route_type = "quota" if limit_field == "quota_limit" else "concurrency"
+    await _add_minimax_runtime_route(client, op_store, route_type=route_type, **{limit_field: 100})
+    entered, release = _hold_verification(verify_mock, MINIMAX_ROUTE_ID)
+    moving = asyncio.create_task(
+        _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    changed = await _patch_candidate(client, MINIMAX_ROUTE_ID, {limit_field: 250})
+    assert changed.status_code == 200, changed.text
+
+    release.set()
+    moved = await moving
+
+    assert moved.status_code == 409, moved.text
+    assert moved.json()["detail"] == "provider route changed during verification"
+    row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    assert (row["provider"], row[limit_field]) == ("minimax", 250)
+    _index, adapter, _weight, endpoint_id = _live_entry(route_executor, MINIMAX_ROUTE_ID)
+    assert endpoint_id == MINIMAX_ROUTE_ID
+    limit_of = (
+        provider_routes._quota_limit_for_adapter
+        if limit_field == "quota_limit"
+        else provider_routes._concurrency_limit_for_adapter
+    )
+    assert limit_of(adapter) == 250
+
+
+@pytest.mark.asyncio
+async def test_a_moved_runtime_route_keeps_its_zero_weight_through_the_routewise_rebuild(
+    admin_client,
+):
+    """The weight override moves with the endpoint before RouteWise is rebuilt, so the
+    route never becomes a candidate the database and the console say has weight 0."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    weights = _attach_weight_resolver(client, route_executor, table)
+    await _add_minimax_runtime_route(client, op_store)
+    table.weights[("minimax-fast", MINIMAX_ROUTE_ID)] = 0.0
+    weights.set_override("minimax-fast", MINIMAX_ROUTE_ID, 0.0)
+    routewise = _real_routewise(client, route_executor)
+    assert MINIMAX_ROUTE_ID not in _routewise_endpoints(routewise)
+
+    response = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+
+    assert response.status_code == 200, response.text
+    assert weights.get_snapshot_for_model("minimax-fast") == {PARASAIL_ENDPOINT_ID: 0.0}
+    assert PARASAIL_ENDPOINT_ID not in _routewise_endpoints(routewise)
+    # The stored weights match what was published, so a poll rebuilds nothing.
+    registry = client.app.state.services.model_router_registry
+    assert not await _reload_effective_route_state(weights, registry, _EffectiveRouteRefreshState())
+    assert PARASAIL_ENDPOINT_ID not in _routewise_endpoints(routewise)
+
+
+@pytest.mark.asyncio
+async def test_a_restored_route_is_a_routewise_candidate_again_without_another_change(
+    admin_client,
+):
+    """The restore publishes the route state before the rebuild that adds the route, so
+    an unchanged route-state poll afterwards has nothing left to fix."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    routewise = _real_routewise(client, route_executor)
+    assert FEATHERLESS in _routewise_endpoints(routewise)
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+    assert FEATHERLESS not in _routewise_endpoints(routewise)
+
+    restored = await _restore(client, FEATHERLESS)
+
+    assert restored.status_code == 200, restored.text
+    assert FEATHERLESS in _routewise_endpoints(routewise)
+    registry = client.app.state.services.model_router_registry
+    assert not await _reload_effective_route_state(
+        states.resolver, registry, _EffectiveRouteRefreshState()
+    )
+    assert FEATHERLESS in _routewise_endpoints(routewise)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_leaves_the_route_deleted_in_every_rebuild(admin_client):
+    """Each RouteWise rebuild sees the route and its state agree: restored while it is
+    in the table, deleted again once the failed restore takes it back out."""
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+    seen: list[tuple[bool, bool]] = []
+
+    def refresh() -> None:
+        seen.append(
+            (
+                FEATHERLESS in _live_route_ids(route_executor),
+                states.resolver.get("minimax-fast", FEATHERLESS).removed,
+            )
+        )
+        if len(seen) == 1:
+            raise RuntimeError("rebuild failed")
+
+    fake_routewise.refresh_route_table.side_effect = refresh
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _restore(client, FEATHERLESS)
+
+    assert seen == [(True, False), (False, True)]
+    assert FEATHERLESS not in _live_route_ids(route_executor)
+    assert states.rows[("minimax-fast", FEATHERLESS)]["removed"] is True
+    assert states.resolver.get("minimax-fast", FEATHERLESS).removed
+
+
+@pytest.mark.asyncio
+async def test_restore_never_serves_the_yaml_target_of_a_route_with_a_saved_edit(
+    admin_client, monkeypatch
+):
+    """The saved edit is built while the route is still out, and the route comes back
+    already on it: no request and no RouteWise rebuild sees its models.yaml target."""
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    _seed_chutes_edit(op_store)
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    assert (await _remove(client, CHUTES)).status_code == 200
+    selectable_on: list[str] = []
+
+    def record_selectable_targets() -> None:
+        if _effective_weights(route_executor).get(CHUTES, 0.0) > 0:
+            selectable_on.append(_route_adapter(route_executor, CHUTES).config.provider)
+
+    prepare = provider_routes._prepare_route_update
+
+    async def observed_prepare(*args, **kwargs):
+        record_selectable_targets()
+        return await prepare(*args, **kwargs)
+
+    monkeypatch.setattr(provider_routes, "_prepare_route_update", observed_prepare)
+    fake_routewise.refresh_route_table.side_effect = record_selectable_targets
+
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 200, restored.text
+    assert {r["route_id"]: r for r in restored.json()["routes"]}[CHUTES]["override_applied"]
+    assert selectable_on and set(selectable_on) == {"openrouter"}
+    assert _route_adapter(route_executor, CHUTES).config.openrouter_pinned_provider == "parasail"
+
+
+@pytest.mark.asyncio
+async def test_an_enable_from_a_stale_snapshot_cannot_undo_another_process_delete(admin_client):
+    """Both flags are written from this process's snapshot, so the write only lands
+    while the stored state is still the one the snapshot shows."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    assert (await _set_state(client, FEATHERLESS, True)).status_code == 200
+    # A second gateway process, whose snapshot was read before the delete below.
+    other_router = FixedRouter()
+    other_router.register_route(
+        "minimax-fast", list(route_executor.routes["minimax-fast"].adapters)
+    )
+    other_states = RouteStateResolver(op_store)
+    await other_states.load_all()
+    other_router.route_state_resolver = other_states
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+    services = client.app.state.services
+    services.router = other_router
+    services.route_state_resolver = other_states
+
+    response = await _set_state(client, FEATHERLESS, False)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"route {FEATHERLESS!r} was changed from another gateway process; reload and try again"
+    )
+    stored = states.rows[("minimax-fast", FEATHERLESS)]
+    assert (stored["disabled"], stored["removed"]) == (True, True)
+    assert other_states.get("minimax-fast", FEATHERLESS) == RouteState(disabled=True)
+    provider_routes.log_admin_action.assert_awaited()
+    assert _audited_actions()[-1] == "routing.provider_routes.remove"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_from_a_stale_snapshot_keeps_another_process_disable(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    # Another gateway process disabled the route; this one has not reloaded yet.
+    await states.set("minimax-fast", FEATHERLESS, disabled=True, removed=False, updated_by="b")
+
+    response = await _remove(client, FEATHERLESS)
+
+    assert response.status_code == 409, response.text
+    stored = states.rows[("minimax-fast", FEATHERLESS)]
+    assert (stored["disabled"], stored["removed"]) == (True, False)
+    assert FEATHERLESS in _live_route_ids(route_executor)
+    assert not states.resolver.is_excluded("minimax-fast", FEATHERLESS)
+
+
+@pytest.mark.asyncio
+async def test_a_route_marked_deleted_but_still_listed_cannot_be_toggled(admin_client):
+    """A removal not yet applied to this table: enabling it would only rewrite the mark."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    await states.set("minimax-fast", FEATHERLESS, disabled=True, removed=True, updated_by="b")
+    await states.resolver.load_all()
+    assert FEATHERLESS in _live_route_ids(route_executor)
+
+    response = await _set_state(client, FEATHERLESS, False)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        f"route {FEATHERLESS!r} is deleted from this deployment; restore it first"
+    )
+    stored = states.rows[("minimax-fast", FEATHERLESS)]
+    assert (stored["disabled"], stored["removed"]) == (True, True)

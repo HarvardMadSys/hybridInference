@@ -29,7 +29,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
@@ -103,7 +103,7 @@ def _isolate_count_cache():
 
 def _build_app(logger: Any) -> FastAPI:
     app = FastAPI(title="Admin Client Disconnect Test")
-    app.state.services = AppServices(router=RouteExecutor(), db_logger=logger)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=FixedRouter(), db_logger=logger)  # type: ignore[attr-defined]
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
     return app

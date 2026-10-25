@@ -5,9 +5,14 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useAuth } from '@/components/providers';
 import {
   BroadcastDetailResponse,
   BroadcastListItem,
+  type BroadcastPreviewRequest,
+  type BroadcastPreviewResponse,
   cancelBroadcast,
   createBroadcast,
   getBroadcastDetail,
@@ -25,7 +30,6 @@ import {
   AdminSpinner,
 } from './AdminPrimitives';
 import {
-  BUTTON_GHOST,
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
   CHECKBOX,
@@ -57,8 +61,19 @@ function relTime(s: string | null): string {
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/** A recipient preview, with the request it was computed for. */
+type CountedPreview = BroadcastPreviewResponse & { key: string };
+
+/**
+ * Email broadcasts. Preview & Count is a direct read; Send Now / Schedule,
+ * Send Test to Me and cancelling a scheduled broadcast each open a
+ * confirmation first, and only its Confirm sends anything.
+ */
 export function BroadcastsTab() {
   const toast = useAccountToast();
+  const confirmation = useConfirmAction();
+  const { state: authState } = useAuth();
+  const adminEmail = authState.user?.email ?? null;
   const baseId = useId();
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
@@ -71,14 +86,8 @@ export function BroadcastsTab() {
   const [bcBodyMarkdown, setBcBodyMarkdown] = useState('');
   const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
   const [bcScheduledAt, setBcScheduledAt] = useState('');
-  const [bcPreview, setBcPreview] = useState<{
-    recipient_count: number;
-    rendered_subject: string;
-    rendered_body_html: string;
-  } | null>(null);
+  const [bcPreview, setBcPreview] = useState<CountedPreview | null>(null);
   const [bcPreviewLoading, setBcPreviewLoading] = useState(false);
-  const [bcSending, setBcSending] = useState(false);
-  const [bcConfirm, setBcConfirm] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   // The opener disappears while the composer is open: focus moves to its
   // first field on open, and back to the opener when it is hidden.
@@ -103,7 +112,6 @@ export function BroadcastsTab() {
     focusOnToggle.current = true;
     setComposerOpen(open);
   };
-  const [bcTestLoading, setBcTestLoading] = useState(false);
   const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
@@ -121,6 +129,24 @@ export function BroadcastsTab() {
   // sending rather than silently dropping the filter — a typo'd threshold must
   // never quietly become "email everyone".
   const isSpendInvalid = bcMinSpendToday.trim() !== '' && parsedMinSpend === null;
+  // "Schedule for later" without a valid time would be sent immediately.
+  const scheduledAtMs = bcScheduleMode === 'later' ? new Date(bcScheduledAt).getTime() : null;
+  const isScheduleMissing = scheduledAtMs !== null && Number.isNaN(scheduledAtMs);
+
+  const previewRequest: BroadcastPreviewRequest = {
+    template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+    template_vars: bcTemplateVars,
+    subject: bcSubject,
+    body_markdown: bcBodyMarkdown,
+    body_text: '',
+    target_roles: bcTargetRoles,
+    target_statuses: bcTargetStatuses,
+    min_spend_today_usd: parsedMinSpend,
+  };
+  const previewKey = JSON.stringify(previewRequest);
+  // A count is shown and confirmed only for the content and filters it was computed for.
+  const freshPreview = bcPreview?.key === previewKey ? bcPreview : null;
+  const busy = confirmation.busy;
 
   const loadBroadcasts = useCallback(async () => {
     setBroadcastLoading(true);
@@ -139,6 +165,129 @@ export function BroadcastsTab() {
   }, [loadBroadcasts]);
 
   const fieldId = (name: string) => `${baseId}-${name}`;
+
+  async function countRecipients(
+    request: BroadcastPreviewRequest,
+    key: string,
+  ): Promise<CountedPreview | null> {
+    setBcPreviewLoading(true);
+    try {
+      const res = await previewBroadcast(request);
+      const counted = { ...res, key };
+      setBcPreview(counted);
+      return counted;
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+      return null;
+    } finally {
+      setBcPreviewLoading(false);
+    }
+  }
+
+  function audienceRows(request: BroadcastPreviewRequest) {
+    return [
+      { label: 'Roles', after: request.target_roles.join(', ') || '(none)' },
+      {
+        label: 'Statuses',
+        after: request.target_statuses.map((s) => s.replace('_', ' ')).join(', ') || '(none)',
+      },
+      ...(request.min_spend_today_usd !== null && request.min_spend_today_usd !== undefined
+        ? [{ label: 'Spend today (UTC)', after: `More than $${request.min_spend_today_usd}` }]
+        : []),
+    ];
+  }
+
+  /**
+   * Send now or schedule: confirmed with the recipient count from a preview of
+   * exactly this content and audience (counted first when there is none), the
+   * subject, the filters and the delivery time.
+   */
+  async function reviewSend() {
+    if (busy || isSpendInvalid || isScheduleMissing) return;
+    const request = previewRequest;
+    const scheduledAt = scheduledAtMs === null ? null : new Date(scheduledAtMs).toISOString();
+    const preview = freshPreview ?? (await countRecipients(request, previewKey));
+    if (!preview) return;
+    const count = preview.recipient_count;
+    const later = scheduledAt !== null;
+    confirmation.request({
+      title: later
+        ? `Schedule this broadcast for ${plural(count, 'recipient')}?`
+        : `Send this broadcast to ${plural(count, 'recipient')} now?`,
+      confirmLabel: later ? 'Schedule' : `Send to ${plural(count, 'recipient')}`,
+      busyLabel: later ? 'Scheduling…' : 'Sending…',
+      body: (
+        <>
+          <ChangeList
+            changes={[
+              { label: 'Recipients', after: `${count.toLocaleString()} matching right now` },
+              { label: 'Subject', after: preview.rendered_subject || '(empty)' },
+              ...audienceRows(request),
+              {
+                label: 'Delivery',
+                after: later ? new Date(scheduledAt).toLocaleString() : 'Immediately',
+              },
+            ]}
+          />
+          <p>
+            {later
+              ? 'The recipient list is fixed when you confirm. Until it is sent, the broadcast can be cancelled from Send History.'
+              : 'The emails go out as soon as you confirm and cannot be recalled.'}
+          </p>
+        </>
+      ),
+      run: async () => {
+        await createBroadcast({ ...request, scheduled_at: scheduledAt });
+        toast.success(later ? 'Broadcast scheduled' : 'Broadcast queued');
+        await loadBroadcasts();
+      },
+    });
+  }
+
+  function reviewTestSend() {
+    if (busy || isSpendInvalid) return;
+    const request = previewRequest;
+    confirmation.request({
+      title: adminEmail
+        ? `Send a test email to ${adminEmail}?`
+        : 'Send a test email to your account?',
+      confirmLabel: 'Send test',
+      busyLabel: 'Sending…',
+      body: (
+        <p className="[overflow-wrap:anywhere]">
+          {adminEmail
+            ? `Only ${adminEmail} receives it, with [TEST] before the subject. Nobody in the audience is emailed.`
+            : 'Your account has no email address, so the server has nowhere to send a test.'}
+        </p>
+      ),
+      run: async () => {
+        await sendTestBroadcastEmail(request);
+        toast.success('Test email sent to your address');
+      },
+    });
+  }
+
+  function confirmCancel(bc: BroadcastListItem) {
+    confirmation.request({
+      title: `Cancel the scheduled broadcast “${bc.subject}”?`,
+      confirmLabel: 'Cancel broadcast',
+      busyLabel: 'Cancelling…',
+      cancelLabel: 'Keep scheduled',
+      tone: 'danger',
+      body: (
+        <p>
+          {`It will not be sent to its ${plural(bc.recipient_count, 'recipient')}${
+            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString()}` : ''
+          }. This cannot be undone.`}
+        </p>
+      ),
+      run: async () => {
+        await cancelBroadcast(bc.id);
+        toast.success('Broadcast cancelled');
+        await loadBroadcasts();
+      },
+    });
+  }
 
   // The broadcast whose recipients are open. It opens at once (with a loading
   // line) and shows a failure in place; an answer for a broadcast that is no
@@ -494,13 +643,23 @@ export function BroadcastsTab() {
                     </label>
                   </div>
                   {bcScheduleMode === 'later' && (
-                    <input
-                      type="datetime-local"
-                      aria-label="Scheduled send time"
-                      className={`${CONTROL} mt-2`}
-                      value={bcScheduledAt}
-                      onChange={(e) => setBcScheduledAt(e.target.value)}
-                    />
+                    <>
+                      <input
+                        type="datetime-local"
+                        aria-label="Scheduled send time"
+                        aria-describedby={
+                          isScheduleMissing ? fieldId('schedule-missing') : undefined
+                        }
+                        className={`${CONTROL} mt-2`}
+                        value={bcScheduledAt}
+                        onChange={(e) => setBcScheduledAt(e.target.value)}
+                      />
+                      {isScheduleMissing && (
+                        <p id={fieldId('schedule-missing')} className={FIELD_HINT}>
+                          Choose a date and time to schedule the broadcast.
+                        </p>
+                      )}
+                    </>
                   )}
                 </fieldset>
               </div>
@@ -509,29 +668,11 @@ export function BroadcastsTab() {
             {/* Action buttons */}
             <div className="border-t border-gray-100 px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
+                {/* A pure read: counts recipients, sends and stores nothing. */}
                 <button
                   type="button"
                   disabled={bcPreviewLoading || isSpendInvalid}
-                  onClick={async () => {
-                    setBcPreviewLoading(true);
-                    try {
-                      const res = await previewBroadcast({
-                        template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
-                        template_vars: bcTemplateVars,
-                        subject: bcSubject,
-                        body_markdown: bcBodyMarkdown,
-                        body_text: '',
-                        target_roles: bcTargetRoles,
-                        target_statuses: bcTargetStatuses,
-                        min_spend_today_usd: parsedMinSpend,
-                      });
-                      setBcPreview(res);
-                    } catch (err) {
-                      toast.error(getErrorMessage(err));
-                    } finally {
-                      setBcPreviewLoading(false);
-                    }
-                  }}
+                  onClick={() => void countRecipients(previewRequest, previewKey)}
                   className={BUTTON_SECONDARY}
                 >
                   {bcPreviewLoading ? 'Loading…' : 'Preview & Count'}
@@ -539,54 +680,35 @@ export function BroadcastsTab() {
 
                 <button
                   type="button"
-                  disabled={bcTestLoading || isSpendInvalid}
-                  onClick={async () => {
-                    setBcTestLoading(true);
-                    try {
-                      await sendTestBroadcastEmail({
-                        template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
-                        template_vars: bcTemplateVars,
-                        subject: bcSubject,
-                        body_markdown: bcBodyMarkdown,
-                        body_text: '',
-                        target_roles: bcTargetRoles,
-                        target_statuses: bcTargetStatuses,
-                        min_spend_today_usd: parsedMinSpend,
-                      });
-                      toast.success('Test email sent to your address');
-                    } catch (err) {
-                      toast.error(getErrorMessage(err));
-                    } finally {
-                      setBcTestLoading(false);
-                    }
-                  }}
+                  disabled={busy || isSpendInvalid}
+                  onClick={reviewTestSend}
                   className={BUTTON_SECONDARY}
                 >
-                  {bcTestLoading ? 'Sending…' : 'Send Test to Me'}
+                  Send Test to Me
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setBcConfirm(true)}
-                  disabled={bcSending || isSpendInvalid}
+                  onClick={() => void reviewSend()}
+                  disabled={busy || bcPreviewLoading || isSpendInvalid || isScheduleMissing}
                   className={`${BUTTON_PRIMARY} sm:ml-auto`}
                 >
                   {bcScheduleMode === 'later' ? 'Schedule' : 'Send Now'}
                 </button>
               </div>
 
-              {/* Preview panel */}
-              {bcPreview && (
+              {/* Preview panel: only for the content and filters it counted. */}
+              {freshPreview && (
                 <div
                   role="status"
                   className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-4"
                 >
                   <div className="mb-1 text-[13px] font-medium text-blue-800">
-                    {bcPreview.recipient_count} recipient
-                    {bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
+                    {freshPreview.recipient_count} recipient
+                    {freshPreview.recipient_count !== 1 ? 's' : ''} match your filters
                   </div>
                   <div className="text-[12px] text-blue-700">
-                    Subject: {bcPreview.rendered_subject}
+                    Subject: {freshPreview.rendered_subject}
                   </div>
                 </div>
               )}
@@ -681,16 +803,9 @@ export function BroadcastsTab() {
                                 <button
                                   type="button"
                                   aria-label={`Cancel scheduled broadcast ${bc.subject}`}
-                                  onClick={async (e) => {
+                                  onClick={(e) => {
                                     e.stopPropagation();
-                                    if (!confirm('Cancel this scheduled broadcast?')) return;
-                                    try {
-                                      await cancelBroadcast(bc.id);
-                                      toast.success('Broadcast cancelled');
-                                      await loadBroadcasts();
-                                    } catch (err) {
-                                      toast.error(getErrorMessage(err));
-                                    }
+                                    confirmCancel(bc);
                                   }}
                                   className={ROW_ACTION_DANGER}
                                 >
@@ -815,79 +930,7 @@ export function BroadcastsTab() {
         </div>
       </AdminSection>
 
-      {/* Confirmation modal */}
-      {bcConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={fieldId('confirm-title')}
-            className="w-full max-w-sm rounded-xl bg-white p-5 shadow-lg"
-          >
-            <h3
-              id={fieldId('confirm-title')}
-              className="mb-2 text-[15px] font-semibold text-gray-900"
-            >
-              Confirm Broadcast
-            </h3>
-            <p className="mb-1 text-[13px] text-gray-600">
-              {bcPreview
-                ? `This will send to ${bcPreview.recipient_count} recipient(s).`
-                : 'Send broadcast email?'}
-            </p>
-            {bcScheduleMode === 'later' && bcScheduledAt && (
-              <p className="mb-4 text-[12px] text-gray-500">
-                Scheduled for: {new Date(bcScheduledAt).toLocaleString()}
-              </p>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                autoFocus
-                onClick={() => setBcConfirm(false)}
-                className={BUTTON_GHOST}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={bcSending}
-                onClick={async () => {
-                  setBcSending(true);
-                  setBcConfirm(false);
-                  try {
-                    await createBroadcast({
-                      template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
-                      template_vars: bcTemplateVars,
-                      subject: bcSubject,
-                      body_markdown: bcBodyMarkdown,
-                      body_text: '',
-                      target_roles: bcTargetRoles,
-                      target_statuses: bcTargetStatuses,
-                      min_spend_today_usd: parsedMinSpend,
-                      scheduled_at:
-                        bcScheduleMode === 'later' && bcScheduledAt
-                          ? new Date(bcScheduledAt).toISOString()
-                          : null,
-                    });
-                    toast.success(
-                      bcScheduleMode === 'later' ? 'Broadcast scheduled' : 'Broadcast queued',
-                    );
-                    await loadBroadcasts();
-                  } catch (err) {
-                    toast.error(getErrorMessage(err));
-                  } finally {
-                    setBcSending(false);
-                  }
-                }}
-                className={BUTTON_PRIMARY}
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmation.dialog}
     </>
   );
 }

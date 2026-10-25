@@ -22,7 +22,6 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
     HedgeStreamRaceTimeout,
-    ProviderEventSink,
 )
 
 if TYPE_CHECKING:
@@ -2364,23 +2363,19 @@ class TestRouterHedgeMode:
 
 
 # ===========================================================================
-# TestProviderEventSinkCompatibility
+# TestHedgeOutcomeRecorder
 # ===========================================================================
 
 
 @pytest.mark.unit
-class TestProviderEventSinkCompatibility:
-    def test_canonical_fake_and_registry_satisfy_compatibility_protocol(self):
-        """Canonical outcome recorders satisfy the deprecated protocol."""
-        assert isinstance(_FakeEventSink(), ProviderEventSink)
-        assert isinstance(EndpointHealthRegistry(), ProviderEventSink)
-
-    def test_router_does_not_satisfy_compatibility_protocol(self):
+class TestHedgeOutcomeRecorder:
+    def test_router_is_not_a_hedge_outcome_sink(self):
         """The router no longer acts as a hedge outcome forwarding sink."""
         config = RouteWiseConfig()
         router, _, _ = _make_router_with_two_api(config)
         assert isinstance(router._health_registry, EndpointHealthRegistry)
-        assert not isinstance(router, ProviderEventSink)
+        assert not hasattr(router, "record_success")
+        assert not hasattr(router, "record_failure")
         assert not hasattr(router, "on_provider_success")
         assert not hasattr(router, "on_provider_failure")
 

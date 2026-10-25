@@ -35,11 +35,6 @@ class DisabledProviderResolver:
         with self._lock:
             return provider in self._disabled
 
-    def list_disabled(self) -> frozenset[str]:
-        """Return the current snapshot of disabled provider labels."""
-        with self._lock:
-            return self._disabled
-
     def set_disabled(self, provider: str) -> None:
         """Update the snapshot after a successful admin disable."""
         with self._lock:

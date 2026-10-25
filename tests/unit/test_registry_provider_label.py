@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters import dynamic_keys
 from serving.config.provider_labels import (
     display_names_from_router,
@@ -65,7 +65,7 @@ def _two_local_boxes_yaml(tmp_path: Path, extra: str = "") -> Path:
 
 def test_same_kind_routes_get_distinct_provider_labels(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, _two_local_boxes_yaml(tmp_path))
 
     adapters = router.routes["qwen-local"].adapters
@@ -80,7 +80,7 @@ def test_same_kind_routes_get_distinct_provider_labels(tmp_path, monkeypatch):
 
 def test_label_records_upstream_identity_in_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, _two_local_boxes_yaml(tmp_path))
 
     adapter = router.routes["qwen-local"].adapters[0][0]
@@ -99,7 +99,7 @@ def test_label_records_upstream_identity_in_metadata(tmp_path, monkeypatch):
 def test_relabelled_routes_share_the_kind_key_pool(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     dynamic_keys.reset()
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, _two_local_boxes_yaml(tmp_path))
 
     # Keys live under the provider actually being talked to, not the label, so
@@ -132,7 +132,7 @@ def test_explicit_route_metadata_wins_over_the_pins(tmp_path, monkeypatch):
                   upstream_provider: chutes
         """,
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     metadata = router.routes["qwen-local"].adapters[0][0].config.route_metadata
@@ -143,7 +143,7 @@ def test_explicit_route_metadata_wins_over_the_pins(tmp_path, monkeypatch):
 
 def test_display_names_are_exposed_for_the_dashboard(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, _two_local_boxes_yaml(tmp_path))
 
     assert display_names_from_router(router) == {"local-a": "Local box A", "local-b": "Local box B"}
@@ -170,7 +170,7 @@ def test_route_without_label_is_unchanged(tmp_path, monkeypatch):
                 api_key: ${LOCAL_API_KEY}
         """,
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
 
     adapter = router.routes["plain"].adapters[0][0]
@@ -200,7 +200,7 @@ def test_openai_compat_openai_model_still_labels_as_openai(tmp_path, monkeypatch
                 api_key: ${OPENAI_KEY}
         """,
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     register_from_models_yaml(router, yaml_path)
     assert router.routes["gpt-x"].adapters[0][0].config.provider == "openai"
 
@@ -276,7 +276,7 @@ def test_bad_label_fails_the_load(tmp_path, monkeypatch):
                 api_key: ${LOCAL_API_KEY}
         """,
     )
-    router = RouteExecutor()
+    router = FixedRouter()
     with pytest.raises(ValueError, match="must use lowercase"):
         register_from_models_yaml(router, yaml_path)
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import bootstrap
 from serving.servers.registry import register_from_models_yaml
 
@@ -52,7 +52,7 @@ def test_required_path_env_cannot_fall_back_to_default(
 
     with pytest.raises(ValueError) as caught:
         register_from_models_yaml(
-            RouteExecutor(), path, {}, continue_on_missing_env=continue_on_missing_env
+            FixedRouter(), path, {}, continue_on_missing_env=continue_on_missing_env
         )
 
     message = str(caught.value)
@@ -70,7 +70,7 @@ def test_optional_missing_path_env_skips_only_its_route(tmp_path, monkeypatch, c
     path = _write_models(tmp_path, [model, _model("/embeddings", model_id="later-model")])
     adapters = {}
 
-    register_from_models_yaml(RouteExecutor(), path, adapters)
+    register_from_models_yaml(FixedRouter(), path, adapters)
 
     assert adapters["embedding-test"].config.provider == "vllm"
     assert adapters["embedding-test"].config.embeddings_path is None
@@ -90,7 +90,7 @@ def test_model_level_path_is_rejected_including_shorthand(tmp_path, explicit_rou
     path = _write_models(tmp_path, [model])
 
     with pytest.raises(ValueError, match="must be declared on a route") as caught:
-        register_from_models_yaml(RouteExecutor(), path, {})
+        register_from_models_yaml(FixedRouter(), path, {})
     assert "embedding-test" in str(caught.value)
 
 
@@ -101,7 +101,7 @@ def test_path_padding_is_trimmed_before_env_expansion_and_url_join(tmp_path, mon
     path = _write_models(tmp_path, [_model(raw_path)])
     adapters = {}
 
-    register_from_models_yaml(RouteExecutor(), path, adapters)
+    register_from_models_yaml(FixedRouter(), path, adapters)
 
     assert adapters["embedding-test"].config.embeddings_path == "/embeddings"
     assert (
@@ -116,7 +116,7 @@ def test_invalid_literal_path_is_not_an_optional_missing_value(tmp_path, raw_pat
     path = _write_models(tmp_path, [_model(raw_path, optional=optional)])
 
     with pytest.raises(ValueError) as caught:
-        register_from_models_yaml(RouteExecutor(), path, {})
+        register_from_models_yaml(FixedRouter(), path, {})
     message = str(caught.value)
     assert "embeddings_path" in message
     assert "embedding-test" in message
@@ -131,7 +131,7 @@ def test_optional_missing_env_does_not_hide_invalid_path(tmp_path, monkeypatch, 
     path = _write_models(tmp_path, [model])
 
     with pytest.raises(ValueError, match="embeddings_path must be a string or null"):
-        register_from_models_yaml(RouteExecutor(), path, {})
+        register_from_models_yaml(FixedRouter(), path, {})
 
 
 @pytest.mark.asyncio
@@ -159,7 +159,7 @@ async def test_bootstrap_does_not_serve_partial_registry_on_invalid_path(
     )
 
     with pytest.raises(ValueError, match="invalid-middle"):
-        await bootstrap._init_router_and_models(RouteExecutor())
+        await bootstrap._init_router_and_models(FixedRouter())
 
 
 @pytest.mark.asyncio
@@ -176,5 +176,5 @@ async def test_other_model_loading_errors_keep_existing_bootstrap_behavior(
 
     monkeypatch.setattr(bootstrap, "register_from_models_yaml", fail)
 
-    assert await bootstrap._init_router_and_models(RouteExecutor()) == ({}, [])
+    assert await bootstrap._init_router_and_models(FixedRouter()) == ({}, [])
     assert "Failed to load models.yaml: unrelated config error" in caplog.text

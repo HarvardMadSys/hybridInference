@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import registry
 
 FIXTURE_YAML = """\
@@ -45,10 +45,10 @@ models:
 
 
 @pytest.fixture
-def registered(tmp_path) -> tuple[RouteExecutor, int]:
+def registered(tmp_path) -> tuple[FixedRouter, int]:
     p = tmp_path / "models.yaml"
     p.write_text(FIXTURE_YAML)
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count, _infos = registry.register_from_models_yaml(exe, Path(p))
     return exe, count
 
@@ -120,7 +120,7 @@ def test_omitted_optional_fields_fall_back_to_dataclass_defaults(tmp_path):
     """
     p = tmp_path / "models.yaml"
     p.write_text(MINIMAL_YAML)
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     adapter, _weight = exe.routes["minimal-model"].adapters[0]
@@ -141,7 +141,7 @@ def test_explicit_null_is_preserved_over_the_default(tmp_path):
             "    provider: openai_compat\n    provider_model_id: null\n",
         )
     )
-    exe = RouteExecutor()
+    exe = FixedRouter()
     registry.register_from_models_yaml(exe, Path(p))
 
     adapter, _weight = exe.routes["minimal-model"].adapters[0]

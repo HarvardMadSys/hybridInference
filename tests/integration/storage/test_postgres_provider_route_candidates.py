@@ -7,6 +7,8 @@ must come back from the database exactly as the restore path reads them.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -411,6 +413,78 @@ async def test_route_state_round_trip(postgres_op_store: PostgresOperationalStor
         "itest-state", "b", disabled=False, removed=False, updated_by="z"
     )
     assert await _states(store, "itest-state") == {}
+
+
+async def _cas(
+    store: PostgresOperationalStore,
+    route_id: str,
+    state: tuple[bool, bool],
+    expected: tuple[bool, bool],
+) -> bool:
+    return await store.set_provider_route_state(
+        "itest-cas",
+        route_id,
+        disabled=state[0],
+        removed=state[1],
+        updated_by="x",
+        expected_disabled=expected[0],
+        expected_removed=expected[1],
+    )
+
+
+async def test_route_state_compare_and_set(postgres_op_store: PostgresOperationalStore):
+    """A write built from a stale snapshot changes nothing, so it cannot drop a flag
+    another gateway process set meanwhile."""
+    store = postgres_op_store
+    no_state, disabled, removed, both = (False, False), (True, False), (False, True), (True, True)
+
+    # From no row: expecting no state inserts one.
+    assert await _cas(store, "a", disabled, expected=no_state)
+    # Stale: it would take over a row it believes absent.
+    assert not await _cas(store, "a", removed, expected=no_state)
+    assert await _states(store, "itest-cas") == {"a": disabled}
+
+    assert await _cas(store, "a", both, expected=disabled)
+    # A stale enable must not clear the removal.
+    assert not await _cas(store, "a", no_state, expected=disabled)
+    assert await _states(store, "itest-cas") == {"a": both}
+
+    # Clearing both flags deletes the row, only while it is the expected one.
+    assert not await _cas(store, "a", no_state, expected=removed)
+    assert await _cas(store, "a", no_state, expected=both)
+    assert await _states(store, "itest-cas") == {}
+
+    # Expecting a row that is gone writes nothing.
+    assert not await _cas(store, "a", removed, expected=disabled)
+    assert not await _cas(store, "a", no_state, expected=both)
+    assert await _states(store, "itest-cas") == {}
+
+    # Nothing to write holds only while there is still no state.
+    assert await _cas(store, "a", no_state, expected=no_state)
+    await store.set_provider_route_state(
+        "itest-cas", "b", disabled=True, removed=False, updated_by="x"
+    )
+    assert not await _cas(store, "b", no_state, expected=no_state)
+
+    with pytest.raises(ValueError):
+        await store.set_provider_route_state(
+            "itest-cas", "a", disabled=True, removed=False, updated_by="x", expected_disabled=False
+        )
+
+
+async def test_route_state_compare_and_set_lets_one_of_two_racing_writes_win(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """Two processes acting on the same empty snapshot: exactly one write lands."""
+    store = postgres_op_store
+    results = await asyncio.gather(
+        _cas(store, "race", (True, False), expected=(False, False)),
+        _cas(store, "race", (False, True), expected=(False, False)),
+    )
+
+    assert sorted(results) == [False, True]
+    stored = (await _states(store, "itest-cas"))["race"]
+    assert stored == ((True, False) if results[0] else (False, True))
 
 
 async def test_deleting_a_runtime_route_drops_its_state(

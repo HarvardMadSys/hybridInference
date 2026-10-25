@@ -242,11 +242,14 @@ def _allowed_route_types(provider: str, policy: dict[str, frozenset[str]]) -> li
 
 @dataclass
 class PreparedRouteUpdate:
-    """Prepared replacement for an existing provider route target."""
+    """Prepared replacement for an existing provider route target.
+
+    It names the route by its id, never by position: a route deleted or
+    restored while the edit is verified moves every route after it.
+    """
 
     route: Any
     route_id: str
-    route_index: int
     adapter: Any
     endpoint_id: str
     upstream_provider: str
@@ -332,9 +335,22 @@ class PreparedRouteCandidateEdit:
     # Whether requests would go somewhere else (provider, URL, key or upstream
     # model), so the edit must reach that upstream before it is saved.
     target_changed: bool
+    # The live limits the edit was built from. A limit-only edit changes them
+    # on the same adapter, so its identity alone cannot show that it moved on.
+    old_quota_limit: int | None
+    old_concurrency_limit: int | None
     # A limit-only edit: ``candidate.adapter`` is the live adapter, whose limit
     # is changed in place instead of swapping in a rebuilt one.
     in_place: bool = False
+
+    def is_stale(self, route: Any, adapter: Any) -> bool:
+        """Whether the live route moved on since this edit was built from it."""
+        return (
+            route is not self.route
+            or adapter is not self.old_adapter
+            or _quota_limit_for_adapter(adapter) != self.old_quota_limit
+            or _concurrency_limit_for_adapter(adapter) != self.old_concurrency_limit
+        )
 
     @property
     def stored_endpoint_id(self) -> str | None:
@@ -2708,12 +2724,19 @@ async def _prepare_route_update(
     quota_limit_override: int | None = None,
     concurrency_limit_override: int | None = None,
     deployment_type_override: str | None = None,
+    removed_entry: tuple[object, float, str] | None = None,
 ) -> PreparedRouteUpdate:
+    """Build a config route's edited adapter without installing it.
+
+    ``removed_entry`` is the models.yaml entry of a deleted route, for a restore
+    that prepares the route's saved edit before the route is served again.
+    """
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
-    index = _route_index_for_id(entries, route_id)
-
-    current_adapter, _raw_weight, _old_endpoint_id = entries[index]
+    if removed_entry is None:
+        current_adapter = entries[_route_index_for_id(entries, route_id)][0]
+    else:
+        current_adapter = removed_entry[0]
     if _is_runtime_candidate(current_adapter):
         raise HTTPException(
             status_code=400,
@@ -2821,7 +2844,6 @@ async def _prepare_route_update(
     return PreparedRouteUpdate(
         route=route,
         route_id=route_id,
-        route_index=index,
         adapter=adapter,
         endpoint_id=endpoint_id_for_adapter(adapter),
         upstream_provider=upstream_provider,
@@ -2864,13 +2886,23 @@ def _replace_route_entries(
     services,
     route,
     entries: list[tuple[object, float, str]],
+    *,
+    rollback: Callable[[], None] | None = None,
 ) -> None:
-    """Replace route entries and restore the prior snapshot if refresh fails."""
+    """Replace route entries and restore the prior snapshot if refresh fails.
+
+    A caller that published other routing state with the entries (a route
+    state, a weight override) passes ``rollback`` to undo it. It runs before
+    the prior snapshot is rebuilt, so RouteWise is rebuilt from what is
+    actually restored rather than from a mix of the two.
+    """
     previous_entries = _raw_route_entries(route)
     _set_route_entries(services, route, entries)
     try:
         _rebuild_routewise_routers(services)
     except BaseException:
+        if rollback is not None:
+            rollback()
         _set_route_entries(services, route, previous_entries)
         try:
             _rebuild_routewise_routers(services)
@@ -2903,10 +2935,9 @@ def _unregister_replaced_dynamic_adapter(route, adapter: Any) -> None:
 def _install_route_update(services, update: PreparedRouteUpdate) -> None:
     _baseline_route_entries(update.route)
     entries = _raw_route_entries(update.route)
-    if update.route_index >= len(entries):
-        raise HTTPException(status_code=400, detail="unknown route id")
-    old_adapter, raw_weight, _old_endpoint_id = entries[update.route_index]
-    entries[update.route_index] = (update.adapter, float(raw_weight), update.endpoint_id)
+    index = _route_index_for_id(entries, update.route_id)
+    old_adapter, raw_weight, _old_endpoint_id = entries[index]
+    entries[index] = (update.adapter, float(raw_weight), update.endpoint_id)
 
     dynamic_keys.register_known_provider(update.key_provider)
     registered = False
@@ -3011,6 +3042,8 @@ async def _prepare_route_candidate_edit(
             detail="Only runtime-added provider routes can be edited as candidates",
         )
     route_type = _route_type(old_adapter)
+    old_quota_limit = _quota_limit_for_adapter(old_adapter)
+    old_concurrency_limit = _concurrency_limit_for_adapter(old_adapter)
     if edit.quota_limit is not None and route_type != "quota":
         raise HTTPException(status_code=422, detail="quota_limit is only valid for quota routes")
     if edit.concurrency_limit is not None and route_type != "concurrency":
@@ -3047,19 +3080,17 @@ async def _prepare_route_candidate_edit(
                 api_key_id=current.api_key_id,
                 provider_model_id=current.provider_model_id,
                 route_type=route_type,
-                quota_limit=(
-                    edit.quota_limit
-                    if edit.quota_limit is not None
-                    else _quota_limit_for_adapter(old_adapter)
-                ),
+                quota_limit=(edit.quota_limit if edit.quota_limit is not None else old_quota_limit),
                 concurrency_limit=(
                     edit.concurrency_limit
                     if edit.concurrency_limit is not None
-                    else _concurrency_limit_for_adapter(old_adapter)
+                    else old_concurrency_limit
                 ),
                 weight=float(old_weight),
             ),
             target_changed=False,
+            old_quota_limit=old_quota_limit,
+            old_concurrency_limit=old_concurrency_limit,
             in_place=True,
         )
     requested = edit.target or current
@@ -3092,15 +3123,9 @@ async def _prepare_route_candidate_edit(
         "base_url": base_url,
         "api_key_id": requested.api_key_id,
         "provider_model_id": requested.provider_model_id,
-        "quota_limit": (
-            edit.quota_limit
-            if edit.quota_limit is not None
-            else _quota_limit_for_adapter(old_adapter)
-        ),
+        "quota_limit": edit.quota_limit if edit.quota_limit is not None else old_quota_limit,
         "concurrency_limit": (
-            edit.concurrency_limit
-            if edit.concurrency_limit is not None
-            else _concurrency_limit_for_adapter(old_adapter)
+            edit.concurrency_limit if edit.concurrency_limit is not None else old_concurrency_limit
         ),
         "weight": float(old_weight),
         "route_id": route_id,
@@ -3160,6 +3185,8 @@ async def _prepare_route_candidate_edit(
         old_endpoint_id=old_endpoint_id,
         candidate=candidate,
         target_changed=target_changed,
+        old_quota_limit=old_quota_limit,
+        old_concurrency_limit=old_concurrency_limit,
     )
 
 
@@ -3184,25 +3211,45 @@ def _candidate_row_describes(row: dict[str, Any], adapter: Any, endpoint_id: str
     )
 
 
-def _move_weight_override_snapshot(
+def _put_weight_override_snapshot(
+    services,
+    model_id: str,
+    endpoint_id: str,
+    weight: float | None,
+) -> None:
+    """Set an endpoint's in-memory weight override, or clear it for None."""
+    if weight is None:
+        _clear_weight_override_snapshot(services, model_id, endpoint_id)
+        return
+    resolver = getattr(services, "weight_override_resolver", None)
+    set_override = getattr(resolver, "set_override", None)
+    if callable(set_override):
+        set_override(model_id, endpoint_id, weight)
+
+
+def _stage_weight_override_move(
     services,
     model_id: str,
     old_endpoint_id: str,
     new_endpoint_id: str,
-) -> None:
-    """Carry a route's in-memory weight override to its new endpoint id."""
-    if old_endpoint_id == new_endpoint_id:
-        return
+) -> Callable[[], None]:
+    """Give a moving route's new endpoint id its weight override; return the undo.
+
+    Staged before the route table is swapped, so the RouteWise rebuild that
+    publishes the moved route already reads its weight: an override of 0 keeps
+    it out of the candidates, as the database and the console say. The old id
+    keeps its override until the caller clears it once the swap stands.
+    """
     resolver = getattr(services, "weight_override_resolver", None)
     get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
-    if not callable(get_snapshot):
-        return
-    weight = get_snapshot(model_id).get(old_endpoint_id)
-    _clear_weight_override_snapshot(services, model_id, new_endpoint_id)
-    _clear_weight_override_snapshot(services, model_id, old_endpoint_id)
-    set_override = getattr(resolver, "set_override", None)
-    if weight is not None and callable(set_override):
-        set_override(model_id, new_endpoint_id, weight)
+    if old_endpoint_id == new_endpoint_id or not callable(get_snapshot):
+        return lambda: None
+    snapshot = get_snapshot(model_id)
+    displaced = snapshot.get(new_endpoint_id)
+    _put_weight_override_snapshot(
+        services, model_id, new_endpoint_id, snapshot.get(old_endpoint_id)
+    )
+    return lambda: _put_weight_override_snapshot(services, model_id, new_endpoint_id, displaced)
 
 
 def _set_route_limits_in_place(
@@ -3254,7 +3301,7 @@ def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) ->
     entries = _raw_route_entries(edit.route)
     index = _route_index_for_id(entries, edit.route_id)
     old_adapter, raw_weight, _old_endpoint_id = entries[index]
-    if old_adapter is not edit.old_adapter:
+    if edit.is_stale(edit.route, old_adapter):
         raise HTTPException(status_code=409, detail="provider route changed during verification")
     if edit.in_place:
         _set_route_limits_in_place(
@@ -3282,20 +3329,22 @@ def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) ->
         )
         registered = True
 
-    try:
-        _replace_route_entries(services, edit.route, entries)
-    except BaseException:
-        if registered:
-            dynamic_keys.unregister_adapter_for_provider(candidate.key_provider, candidate.adapter)
-        raise
-    _unregister_replaced_dynamic_adapter(edit.route, old_adapter)
-    # No await since the swap: no request sees the new endpoint without its weight.
-    _move_weight_override_snapshot(
+    undo_weight = _stage_weight_override_move(
         services,
         edit.model_id,
         edit.old_endpoint_id,
         candidate.endpoint_id,
     )
+    try:
+        _replace_route_entries(services, edit.route, entries)
+    except BaseException:
+        undo_weight()
+        if registered:
+            dynamic_keys.unregister_adapter_for_provider(candidate.key_provider, candidate.adapter)
+        raise
+    _unregister_replaced_dynamic_adapter(edit.route, old_adapter)
+    if edit.old_endpoint_id != candidate.endpoint_id:
+        _clear_weight_override_snapshot(services, edit.model_id, edit.old_endpoint_id)
 
 
 def _install_provider_route_model(
@@ -4753,9 +4802,20 @@ async def update_provider_route_candidate(
         current_route = _validate_canonical_route(services, model_id)
         current_entries = _raw_route_entries(current_route)
         current_adapter = current_entries[_route_index_for_id(current_entries, route_id)][0]
-        if current_route is not route or current_adapter is not edit.old_adapter:
+        # A limit-only edit saved meanwhile keeps the adapter but changes its
+        # limits, and the row it rewrites would then pass the check below.
+        if edit.is_stale(current_route, current_adapter):
             raise HTTPException(
                 status_code=409, detail="provider route changed during verification"
+            )
+        if not edit.in_place:
+            # Checked when the edit was built; another route may have taken
+            # the endpoint while it was verified.
+            _ensure_route_id_available(
+                _identity_entries(current_route),
+                candidate.route_id,
+                candidate.endpoint_id,
+                replacing_route_id=route_id,
             )
         _validate_route_type_for_strategy(
             candidate.route_type,
@@ -4779,9 +4839,6 @@ async def update_provider_route_candidate(
                 ),
             )
         pricing = candidate.adapter.config.pricing if _is_runtime_created_route(route) else None
-        # Read now: a limit-only edit changes the live adapter in place.
-        old_quota_limit = _quota_limit_for_adapter(edit.old_adapter)
-        old_concurrency_limit = _concurrency_limit_for_adapter(edit.old_adapter)
 
         async def persist_and_install() -> None:
             updated_at = await op_store.update_provider_route_candidate(
@@ -4859,9 +4916,9 @@ async def update_provider_route_candidate(
                     "provider_model_id": candidate.provider_model_id,
                     "old_endpoint_id": edit.old_endpoint_id,
                     "endpoint_id": candidate.endpoint_id,
-                    "old_quota_limit": old_quota_limit,
+                    "old_quota_limit": edit.old_quota_limit,
                     "quota_limit": candidate.quota_limit,
-                    "old_concurrency_limit": old_concurrency_limit,
+                    "old_concurrency_limit": edit.old_concurrency_limit,
                     "concurrency_limit": candidate.concurrency_limit,
                     "old_deployment_type": edit.old_adapter.config.deployment_type,
                     "deployment_type": candidate.adapter.config.deployment_type,
@@ -5024,6 +5081,15 @@ async def update_provider_route(
         if current_route is not context.route or current_adapter is not context.old_adapter:
             raise HTTPException(
                 status_code=409, detail="provider route changed during verification"
+            )
+        if update.endpoint_id != context.old_endpoint_id:
+            # Checked when the edit was prepared; a route added, edited or
+            # restored while it was verified may hold the endpoint now.
+            _ensure_route_id_available(
+                _identity_entries(current_route),
+                route_id,
+                update.endpoint_id,
+                replacing_route_id=route_id,
             )
         _validate_route_type_for_strategy(
             _route_type(update.adapter),
@@ -5520,6 +5586,39 @@ def _require_route_state_resolver(services):
     return resolver
 
 
+async def _store_route_state(
+    op_store,
+    model_id: str,
+    route_id: str,
+    state: RouteState,
+    *,
+    expected: RouteState,
+    updated_by: str | None,
+) -> None:
+    """Write a route's state only while the stored one is still ``expected``.
+
+    ``expected`` is this process's snapshot. Another gateway process may have
+    changed the stored state since (deleted the route, say); writing both
+    flags from the snapshot would silently undo that, so the write is refused.
+    """
+    written = await op_store.set_provider_route_state(
+        model_id,
+        route_id,
+        disabled=state.disabled,
+        removed=state.removed,
+        updated_by=updated_by,
+        expected_disabled=expected.disabled,
+        expected_removed=expected.removed,
+    )
+    if not written:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"route {route_id!r} was changed from another gateway process; reload and try again"
+            ),
+        )
+
+
 def _refuse_removed_route(route, route_id: str) -> None:
     if any(
         _route_id_for_entry(adapter, endpoint_id) == route_id
@@ -5531,7 +5630,13 @@ def _refuse_removed_route(route, route_id: str) -> None:
         )
 
 
-def _install_config_route_removal(services, route, index: int) -> tuple[object, float, str]:
+def _install_config_route_removal(
+    services,
+    route,
+    index: int,
+    *,
+    rollback: Callable[[], None] | None = None,
+) -> tuple[object, float, str]:
     """Take the config route at ``index`` out of the live table; return its live entry.
 
     Its models.yaml entry stays in the baseline, listed and restorable, and is
@@ -5542,7 +5647,9 @@ def _install_config_route_removal(services, route, index: int) -> tuple[object, 
     _baseline_route_entries(route)
     entries = _raw_route_entries(route)
     removed = entries[index]
-    _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+    _replace_route_entries(
+        services, route, entries[:index] + entries[index + 1 :], rollback=rollback
+    )
     _apply_capability_overrides(route, _removed_baseline_entries(route))
     served = getattr(route, REMOVED_ENTRIES_ATTR, None)
     if served is None:
@@ -5581,10 +5688,16 @@ async def update_provider_route_state(
         _refuse_removed_route(route, route_id)
         entries = _raw_route_entries(route)
         adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+        previous = resolver.get(model_id, route_id)
+        if previous.removed:
+            # Marked deleted, though its removal has not reached this table yet.
+            raise HTTPException(
+                status_code=409,
+                detail=f"route {route_id!r} is deleted from this deployment; restore it first",
+            )
         if payload.disabled:
             _ensure_not_last_usable_route(services, model_id, route, route_id, "disable")
-        previous = resolver.get(model_id, route_id)
-        state = RouteState(disabled=payload.disabled, removed=previous.removed)
+        state = RouteState(disabled=payload.disabled)
         weight_overrides = getattr(services, "weight_override_resolver", None)
         get_snapshot = getattr(weight_overrides, "get_snapshot_for_model", None)
         legacy_zero = (
@@ -5594,12 +5707,8 @@ async def update_provider_route_state(
         )
 
         async def persist_and_apply() -> None:
-            await op_store.set_provider_route_state(
-                model_id,
-                route_id,
-                disabled=state.disabled,
-                removed=state.removed,
-                updated_by=admin_id,
+            await _store_route_state(
+                op_store, model_id, route_id, state, expected=previous, updated_by=admin_id
             )
             zero_cleared = False
             try:
@@ -5612,11 +5721,12 @@ async def update_provider_route_state(
             except BaseException:
                 resolver.set_state(model_id, route_id, previous)
                 try:
-                    await op_store.set_provider_route_state(
+                    await _store_route_state(
+                        op_store,
                         model_id,
                         route_id,
-                        disabled=previous.disabled,
-                        removed=previous.removed,
+                        previous,
+                        expected=state,
                         updated_by=admin_id,
                     )
                     if zero_cleared:
@@ -5702,8 +5812,7 @@ async def remove_config_provider_route(
         model_id, route_id, route = _split_model_route_path(services, model_route_path)
         _refuse_removed_route(route, route_id)
         entries = _raw_route_entries(route)
-        index = _route_index_for_id(entries, route_id)
-        adapter, _raw_weight, endpoint_id = entries[index]
+        adapter, _raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
         if _is_runtime_candidate(adapter):
             raise HTTPException(
                 status_code=400,
@@ -5728,27 +5837,32 @@ async def remove_config_provider_route(
         # The baseline must hold the route before it leaves the live table.
         _baseline_route_entries(route)
 
+        removed_state = RouteState(disabled=previous.disabled, removed=True)
+
         async def persist_and_remove() -> None:
-            await op_store.set_provider_route_state(
-                model_id,
-                route_id,
-                disabled=previous.disabled,
-                removed=True,
-                updated_by=admin_id,
+            await _store_route_state(
+                op_store, model_id, route_id, removed_state, expected=previous, updated_by=admin_id
             )
             try:
-                resolver.set_state(
-                    model_id, route_id, RouteState(disabled=previous.disabled, removed=True)
+                resolver.set_state(model_id, route_id, removed_state)
+                _install_config_route_removal(
+                    services,
+                    route,
+                    # By id: positions are only stable while nothing awaits.
+                    _route_index_for_id(_raw_route_entries(route), route_id),
+                    # The route goes back into the table: the rebuild that
+                    # follows must see it as it was, not as removed.
+                    rollback=lambda: resolver.set_state(model_id, route_id, previous),
                 )
-                _install_config_route_removal(services, route, index)
             except BaseException:
                 resolver.set_state(model_id, route_id, previous)
                 try:
-                    await op_store.set_provider_route_state(
+                    await _store_route_state(
+                        op_store,
                         model_id,
                         route_id,
-                        disabled=previous.disabled,
-                        removed=previous.removed,
+                        previous,
+                        expected=removed_state,
                         updated_by=admin_id,
                     )
                 except Exception:
@@ -5813,9 +5927,12 @@ def _refuse_restore_onto_a_taken_endpoint(
         )
 
 
-def _entries_with_restored_route(route, restored_entry) -> list[tuple[object, float, str]]:
+def _entries_with_restored_route(
+    route,
+    route_id: str,
+    restored_entry: tuple[object, float, str],
+) -> list[tuple[object, float, str]]:
     """Return the live entries with a restored config route back at its models.yaml place."""
-    restored_id = _route_id_for_entry(restored_entry[0], restored_entry[2])
     live = {
         _route_id_for_entry(adapter, endpoint_id): (adapter, weight, endpoint_id)
         for adapter, weight, endpoint_id in _raw_route_entries(route)
@@ -5825,11 +5942,57 @@ def _entries_with_restored_route(route, restored_entry) -> list[tuple[object, fl
         baseline_id = _route_id_for_entry(adapter, endpoint_id)
         if baseline_id in live:
             ordered.append(live.pop(baseline_id))
-        elif baseline_id == restored_id:
+        elif baseline_id == route_id:
             ordered.append(restored_entry)
     # Runtime-added routes keep their order after the config routes.
     ordered.extend(live.values())
     return ordered
+
+
+async def _prepare_restored_route_edit(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route_id: str,
+    route,
+    baseline_entry: tuple[object, float, str],
+    override_row: dict[str, Any],
+) -> PreparedRouteUpdate | None:
+    """Build a deleted route's saved edit, or None when it no longer applies.
+
+    Built while the route is still out of the table, so nothing selects it on
+    its models.yaml target meanwhile. An edit that no longer applies leaves
+    that target serving, the way boot treats it, and is reported as such.
+    """
+    try:
+        update = await _prepare_route_update(
+            services,
+            op_store,
+            model_id=model_id,
+            route_id=route_id,
+            upstream_provider=str(override_row["provider"]),
+            openrouter_sort=override_row.get("openrouter_sort"),
+            base_url=str(override_row["base_url"]),
+            api_key_id=override_row.get("api_key_id"),
+            provider_model_id_override=str(override_row["provider_model_id"]),
+            quota_limit_override=override_row.get("quota_limit"),
+            concurrency_limit_override=override_row.get("concurrency_limit"),
+            deployment_type_override=override_row.get("deployment_type"),
+            removed_entry=baseline_entry,
+        )
+        # Checked before anything was built; this holds the line if the edit
+        # resolves to another endpoint than that check saw.
+        _ensure_endpoint_free(route, route_id, update.endpoint_id)
+    except Exception as exc:
+        logger.warning(
+            "Restored route model=%s route_id=%s without its edit override: %s",
+            model_id,
+            route_id,
+            exc,
+        )
+        return None
+    return update
 
 
 @router.delete(
@@ -5844,7 +6007,10 @@ async def restore_config_provider_route(
 ) -> ListProviderRoutesResponse:
     """Restore a deleted config route, with the edit override and weights it had.
 
-    A route that was disabled when it was deleted comes back disabled.
+    A route that was disabled when it was deleted comes back disabled. The
+    route returns in one step, already on its edited target and with its state
+    published, so no request or RouteWise rebuild sees it on its models.yaml
+    target or still marked deleted.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -5857,40 +6023,82 @@ async def restore_config_provider_route(
             _route_id_for_entry(entry[0], entry[2]): entry
             for entry in _removed_baseline_entries(route)
         }
-        restored_entry = removed.get(route_id)
-        if restored_entry is None:
+        baseline_entry = removed.get(route_id)
+        if baseline_entry is None:
             raise HTTPException(status_code=404, detail=f"route {route_id!r} is not deleted")
-        _ensure_route_id_available(_raw_route_entries(route), route_id, restored_entry[2])
+        _ensure_route_id_available(_raw_route_entries(route), route_id, baseline_entry[2])
         previous = resolver.get(model_id, route_id)
         restored_state = RouteState(disabled=previous.disabled)
         override_row = _rows_by_route_id(
             await op_store.list_provider_route_configs_for_model(model_id)
         ).get(route_id)
+        update: PreparedRouteUpdate | None = None
         if override_row is not None:
             _refuse_restore_onto_a_taken_endpoint(
-                model_id, route, route_id, restored_entry[0], override_row
+                model_id, route, route_id, baseline_entry[0], override_row
             )
+            update = await _prepare_restored_route_edit(
+                services,
+                op_store,
+                model_id=model_id,
+                route_id=route_id,
+                route=route,
+                baseline_entry=baseline_entry,
+                override_row=override_row,
+            )
+        override_applied = override_row is None or update is not None
+        restored_entry = (
+            baseline_entry
+            if update is None
+            else (update.adapter, float(baseline_entry[1]), update.endpoint_id)
+        )
+
+        def unpublish_state() -> None:
+            resolver.set_state(model_id, route_id, previous)
 
         async def persist_and_restore() -> None:
-            await op_store.set_provider_route_state(
+            await _store_route_state(
+                op_store,
                 model_id,
                 route_id,
-                disabled=restored_state.disabled,
-                removed=False,
+                restored_state,
+                expected=previous,
                 updated_by=admin_id,
             )
+            registered: PreparedRouteUpdate | None = None
             try:
-                _replace_route_entries(
-                    services, route, _entries_with_restored_route(route, restored_entry)
-                )
+                if update is not None:
+                    dynamic_keys.register_known_provider(update.key_provider)
+                    if getattr(update.adapter, "_key_pool", None) is not None:
+                        dynamic_keys.register_adapter_for_provider(
+                            update.key_provider,
+                            update.adapter,
+                            allow_db_key_injection=update.api_key_id is None,
+                        )
+                        registered = update
+                # Published before the table, with no await between them, so
+                # the rebuild that adds the route reads it as restored; a
+                # route state reload that finds nothing changed rebuilds nothing.
                 resolver.set_state(model_id, route_id, restored_state)
+                _replace_route_entries(
+                    services,
+                    route,
+                    _entries_with_restored_route(route, route_id, restored_entry),
+                    rollback=unpublish_state,
+                )
             except BaseException:
+                unpublish_state()
+                if registered is not None:
+                    dynamic_keys.unregister_adapter_for_provider(
+                        registered.key_provider, registered.adapter
+                    )
                 try:
-                    await op_store.set_provider_route_state(
+                    await _store_route_state(
+                        op_store,
                         model_id,
                         route_id,
-                        disabled=previous.disabled,
-                        removed=previous.removed,
+                        previous,
+                        expected=restored_state,
                         updated_by=admin_id,
                     )
                 except Exception:
@@ -5903,39 +6111,6 @@ async def restore_config_provider_route(
                     )
                 raise
             (getattr(route, REMOVED_ENTRIES_ATTR, None) or {}).pop(route_id, None)
-
-            # Re-apply the route's edit override the way boot does: one that no
-            # longer applies leaves the models.yaml target serving, and the
-            # list reports the override as not applied.
-            override_applied = override_row is None
-            if override_row is not None:
-                try:
-                    update = await _prepare_route_update(
-                        services,
-                        op_store,
-                        model_id=model_id,
-                        route_id=route_id,
-                        upstream_provider=str(override_row["provider"]),
-                        openrouter_sort=override_row.get("openrouter_sort"),
-                        base_url=str(override_row["base_url"]),
-                        api_key_id=override_row.get("api_key_id"),
-                        provider_model_id_override=str(override_row["provider_model_id"]),
-                        quota_limit_override=override_row.get("quota_limit"),
-                        concurrency_limit_override=override_row.get("concurrency_limit"),
-                        deployment_type_override=override_row.get("deployment_type"),
-                    )
-                    # Checked before anything was saved; this holds the line if
-                    # the edit resolves to another endpoint than that check saw.
-                    _ensure_endpoint_free(route, route_id, update.endpoint_id)
-                    _install_route_update(services, update)
-                    override_applied = True
-                except Exception as exc:
-                    logger.warning(
-                        "Restored route model=%s route_id=%s without its edit override: %s",
-                        model_id,
-                        route_id,
-                        exc,
-                    )
 
             await log_admin_action(
                 op_store,

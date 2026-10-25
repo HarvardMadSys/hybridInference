@@ -19,7 +19,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices
 from serving.storage.base import LogStore, OperationalStore
 from serving.storage.database import DatabaseLogger
@@ -165,8 +165,8 @@ def mock_env(monkeypatch):
 
 @pytest.fixture
 def mock_router():
-    """Create a mock RouteExecutor with test routes."""
-    router = RouteExecutor()
+    """Create a mock FixedRouter with test routes."""
+    router = FixedRouter()
 
     # Create mock adapter
     mock_adapter = MagicMock()
@@ -572,12 +572,12 @@ ANTHROPIC_TEST_API_KEY = "hyi-anthropic-compat-test"
 
 @pytest_asyncio.fixture
 async def anthropic_compat_router():
-    """RouteExecutor with one anthropic-kind and one zai-kind real adapter."""
-    from routing.executor import RouteExecutor
+    """FixedRouter with one anthropic-kind and one zai-kind real adapter."""
+    from routing.routers import FixedRouter
     from serving.adapters import AnthropicAdapter, OpenAICompatAdapter
     from serving.adapters.base import ModelConfig
 
-    re = RouteExecutor()
+    re = FixedRouter()
 
     anthropic_cfg = ModelConfig(
         id="claude-opus-4.7",

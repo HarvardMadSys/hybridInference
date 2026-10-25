@@ -1297,14 +1297,18 @@ class CachedOperationalStore(OperationalStore):
         disabled: bool,
         removed: bool,
         updated_by: str | None,
-    ) -> None:
+        expected_disabled: bool | None = None,
+        expected_removed: bool | None = None,
+    ) -> bool:
         """Delegate to wrapped store."""
-        await self._store.set_provider_route_state(
+        return await self._store.set_provider_route_state(
             model_id,
             route_id,
             disabled=disabled,
             removed=removed,
             updated_by=updated_by,
+            expected_disabled=expected_disabled,
+            expected_removed=expected_removed,
         )
 
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:

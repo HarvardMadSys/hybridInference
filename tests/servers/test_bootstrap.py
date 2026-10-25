@@ -13,8 +13,8 @@ sys.path.insert(0, str(project_root))
 
 import pytest
 
-from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
@@ -184,16 +184,11 @@ class TestBootstrapInitialization:
                 "serving.servers.bootstrap.ModelRouterRegistry",
                 wraps=ModelRouterRegistry,
             ) as registry_factory,
-            patch.object(
-                ModelRouterRegistry,
-                "bind_fixed_router",
-                side_effect=AssertionError("bootstrap must inject shared FixedRouter"),
-            ),
         ):
             services = await bootstrap.initialize()
 
             assert isinstance(services, AppServices)
-            assert isinstance(services.router, RouteExecutor)
+            assert isinstance(services.router, FixedRouter)
             assert services.db_logger is None  # Disabled in mock_env
             assert services.routing_manager is None
             assert services.model_visibility_resolver is None
@@ -999,7 +994,7 @@ class TestBootstrapShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_handles_none_services(self):
         """Test that shutdown handles None values gracefully."""
-        services = AppServices(router=RouteExecutor(), db_logger=None, routing_manager=None)
+        services = AppServices(router=FixedRouter(), db_logger=None, routing_manager=None)
 
         # Should not raise any errors
         await bootstrap.shutdown(services)
@@ -1074,7 +1069,7 @@ models:
 
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
-        router = RouteExecutor()
+        router = FixedRouter()
 
         await bootstrap._init_router_and_models(router)
 
@@ -1107,7 +1102,7 @@ models:
         )
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
-        router = RouteExecutor()
+        router = FixedRouter()
         await bootstrap._init_router_and_models(router)
         assert "deepseek-chat" in router.routes
 
@@ -1139,7 +1134,7 @@ models:
         )
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
-        router = RouteExecutor()
+        router = FixedRouter()
         await bootstrap._init_router_and_models(router)
         assert "gemini-2.5-flash" in router.routes
 
