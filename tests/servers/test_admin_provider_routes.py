@@ -8310,3 +8310,129 @@ async def test_disable_and_enable_keep_a_routes_capability_override(admin_client
     assert enabled.json()["capabilities_overridden"] is True
     assert set(op_store.capability_rows) == {("minimax-fast", FEATHERLESS)}
     _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), RUNTIME_CAPABILITIES)
+
+
+# -- A deleted route's saved edit and the endpoint its restore needs ----------
+
+
+def _live_endpoint_ids(route_executor, model_id: str = "minimax-fast") -> list[str]:
+    return [endpoint_id for _a, _w, endpoint_id in route_executor.routes[model_id].raw_adapters]
+
+
+def _refuse_shared_endpoints(route_executor, model_id: str = "minimax-fast"):
+    """Fail a RouteWise refresh, as its candidate build does, when routes share an endpoint."""
+
+    def refresh() -> None:
+        endpoint_ids = _live_endpoint_ids(route_executor, model_id)
+        if len(set(endpoint_ids)) != len(endpoint_ids):
+            raise ValueError(f"duplicate endpoint id in {endpoint_ids}")
+
+    return refresh
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_routes_saved_edit_keeps_its_endpoint_reserved(admin_client):
+    """While a route is deleted, no route can take the endpoint its restore serves on."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    table = _CandidateTable(op_store)
+    _seed_chutes_edit(op_store)
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    assert _live_endpoint_ids(route_executor)[0] == PARASAIL_ENDPOINT_ID
+    assert (await _remove(client, CHUTES)).status_code == 200
+
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            **OPENROUTER_PARASAIL_TARGET,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert added.status_code == 409, added.text
+    assert added.json()["detail"] == "provider route already exists"
+    assert table.rows == {}
+    # Nor can a route already there be moved onto it.
+    await _add_minimax_runtime_route(client, op_store)
+    moved = await _patch_candidate(client, MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET)
+    assert moved.status_code == 409, moved.text
+    assert moved.json()["detail"] == (
+        f"another route of this model already uses endpoint id {PARASAIL_ENDPOINT_ID!r}"
+    )
+
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 200, restored.text
+    assert _live_endpoint_ids(route_executor) == [
+        PARASAIL_ENDPOINT_ID,
+        FEATHERLESS,
+        DEEPINFRA,
+        MINIMAX_ROUTE_ID,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refresh_refuses_duplicates", [False, True], ids=["fixed", "routewise"])
+async def test_restore_refuses_an_edit_whose_endpoint_another_route_took(
+    admin_client, caplog, refresh_refuses_duplicates
+):
+    """A route that took the endpoint anyway (another process, an older build) wins at boot,
+    and the deleted route's restore is refused instead of sharing the endpoint with it."""
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    table = _CandidateTable(op_store)
+    if refresh_refuses_duplicates:
+        fake_routewise.refresh_route_table.side_effect = _refuse_shared_endpoints(route_executor)
+    _seed_chutes_edit(op_store)
+    await states.set("minimax-fast", CHUTES, disabled=False, removed=True, updated_by="seed")
+    await table.upsert(
+        "minimax-fast",
+        PARASAIL_ENDPOINT_ID,
+        "on_demand",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        None,
+        1.0,
+        None,
+        RUNTIME_CAPABILITIES,
+        "other-admin",
+    )
+    services = client.app.state.services
+    await states.resolver.load_all()
+
+    # Boot, in bootstrap's order: the runtime route is restored before the edit.
+    with caplog.at_level(logging.WARNING):
+        await provider_routes.apply_persisted_provider_route_candidates(services, op_store)
+        await apply_persisted_provider_route_configs(services, op_store)
+        endpoint_ids = _live_endpoint_ids(route_executor)
+        assert len(set(endpoint_ids)) == len(endpoint_ids), endpoint_ids
+        await provider_routes.sync_route_capability_overrides(services, op_store)
+        provider_routes.apply_persisted_provider_route_removals(services)
+
+    assert _live_endpoint_ids(route_executor) == [FEATHERLESS, DEEPINFRA, PARASAIL_ENDPOINT_ID]
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if CHUTES in record.getMessage() and "already uses endpoint id" in record.getMessage()
+    ]
+    # Kept: the edit is skipped while the endpoint is taken, not discarded.
+    op_store.delete_provider_route_config.assert_not_awaited()
+    before = list(route_executor.routes["minimax-fast"].raw_adapters)
+
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 409, restored.text
+    assert restored.json()["detail"] == (
+        f"route {CHUTES!r} cannot be restored: its saved edit serves endpoint id "
+        f"{PARASAIL_ENDPOINT_ID!r}, which route {PARASAIL_ENDPOINT_ID!r} now uses. Delete "
+        "that route or move it to another endpoint, then restore this one."
+    )
+    assert states.rows[("minimax-fast", CHUTES)]["removed"] is True
+    assert route_executor.routes["minimax-fast"].raw_adapters == before

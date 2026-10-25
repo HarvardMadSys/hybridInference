@@ -91,6 +91,10 @@ BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 # last read from the store. It lives on the route so every path that installs
 # an adapter (_set_route_entries) applies them without reading the store.
 CAPABILITY_OVERRIDES_ATTR = "_provider_route_capability_overrides"
+# Route attribute holding, by route id, the entry each deleted config route was
+# serving when it was deleted. Its endpoint id is where the route's saved edit
+# puts it back, so it stays reserved along with the route's models.yaml ids.
+REMOVED_ENTRIES_ATTR = "_provider_route_removed_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
@@ -767,10 +771,48 @@ def _removed_baseline_entries(route) -> list[tuple[object, float, str]]:
 def _identity_entries(route) -> list[tuple[object, float, str]]:
     """Return the routes whose ids a new or edited route must not take.
 
-    A removed config route keeps its ids reserved so restoring it never
-    collides with a route added while it was gone.
+    A removed config route keeps its ids reserved, its models.yaml ids and the
+    endpoint id it served on when deleted (where its saved edit restores it),
+    so restoring it never collides with a route added while it was gone.
     """
-    return _raw_route_entries(route) + _removed_baseline_entries(route)
+    removed = _removed_baseline_entries(route)
+    removed_ids = {
+        _route_id_for_entry(adapter, endpoint_id) for adapter, _w, endpoint_id in removed
+    }
+    served = getattr(route, REMOVED_ENTRIES_ATTR, None) or {}
+    return (
+        _raw_route_entries(route)
+        + removed
+        + [entry for route_id, entry in served.items() if route_id in removed_ids]
+    )
+
+
+def _endpoint_holder(
+    entries: list[tuple[object, float, str]],
+    endpoint_id: str,
+    *,
+    except_route_id: str,
+) -> str | None:
+    """Return the id of a route other than ``except_route_id`` holding ``endpoint_id``."""
+    for adapter, _weight, entry_endpoint_id in entries:
+        entry_route_id = _route_id_for_entry(adapter, entry_endpoint_id)
+        if entry_route_id != except_route_id and endpoint_id in {entry_route_id, entry_endpoint_id}:
+            return entry_route_id
+    return None
+
+
+def _ensure_endpoint_free(route, route_id: str, endpoint_id: str) -> None:
+    """Refuse to serve ``route_id`` on an endpoint id another live route holds.
+
+    Health, latency and weight overrides are keyed by endpoint id, so two routes
+    sharing one would share all three; RouteWise refuses such a table outright.
+    """
+    holder = _endpoint_holder(_raw_route_entries(route), endpoint_id, except_route_id=route_id)
+    if holder is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"route {holder!r} already uses endpoint id {endpoint_id!r}",
+        )
 
 
 def _route_state_resolver(services) -> Any | None:
@@ -918,6 +960,28 @@ def _target_for_provider(provider: str) -> ProviderTarget:
             "or a provider with a configured route or key"
         ),
     )
+
+
+def _edited_endpoint_id(
+    model_id: str,
+    target: ProviderTarget,
+    current_adapter,
+    base_url: str,
+) -> str:
+    """Return the endpoint id a config route serves on once edited onto ``target``.
+
+    An edit that keeps the route's registered target and URL keeps its endpoint
+    id, and the in-flight accounting under it; any other edit takes the id its
+    new target implies, so health learned at one upstream never describes another.
+    """
+    canonical_url = _canonical_base_url(base_url)
+    if (
+        canonical_url is not None
+        and canonical_url == _canonical_base_url(current_adapter.config.base_url)
+        and _same_upstream_target(target, _upstream_provider(current_adapter))
+    ):
+        return endpoint_id_for_adapter(current_adapter)
+    return _make_provider_id(model_id, target.kind, base_url)
 
 
 def _same_upstream_target(target: ProviderTarget, current_provider: str) -> bool:
@@ -2718,11 +2782,7 @@ async def _prepare_route_update(
     cfg["provider_model_id"] = provider_model_id
     cfg["openrouter_sort"] = openrouter_sort
     # An ownership-only edit keeps route identities and their in-flight accounting.
-    cfg["endpoint_id"] = (
-        endpoint_id_for_adapter(current_adapter)
-        if same_target and same_url
-        else _make_provider_id(model_id, target.kind, cleaned_base_url)
-    )
+    cfg["endpoint_id"] = _edited_endpoint_id(model_id, target, current_adapter, cleaned_base_url)
     if quota_limit_override is not None:
         quota = dict(cfg.get("quota") or {})
         quota["limit"] = quota_limit_override
@@ -3396,9 +3456,9 @@ async def _prepare_update_context_from_payload(
     )
     if update.endpoint_id != old_endpoint_id:
         # A move mints the endpoint id of its new target, which another route
-        # of the model may already hold (a runtime route, say). Refused here
-        # rather than at boot, so an override saved before this check still
-        # loads.
+        # of the model may already hold (a runtime route, say), or a deleted
+        # route may need for its restore. Boot skips a saved edit only while a
+        # live route holds its endpoint, and keeps the row.
         _ensure_route_id_available(
             _identity_entries(route),
             route_id,
@@ -5370,13 +5430,19 @@ def _install_config_route_removal(services, route, index: int) -> tuple[object, 
 
     Its models.yaml entry stays in the baseline, listed and restorable, and is
     given the capability override its restore brings back, so the deleted
-    route is listed with the values it will serve again.
+    route is listed with the values it will serve again. The entry it was
+    serving is kept so its endpoint id stays reserved (see _identity_entries).
     """
     _baseline_route_entries(route)
     entries = _raw_route_entries(route)
     removed = entries[index]
     _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
     _apply_capability_overrides(route, _removed_baseline_entries(route))
+    served = getattr(route, REMOVED_ENTRIES_ATTR, None)
+    if served is None:
+        served = {}
+        setattr(route, REMOVED_ENTRIES_ATTR, served)
+    served[_route_id_for_entry(removed[0], removed[2])] = removed
     return removed
 
 
@@ -5607,6 +5673,40 @@ async def remove_config_provider_route(
     return await _list_model_routes_response(services, op_store, model_id, route)
 
 
+def _refuse_restore_onto_a_taken_endpoint(
+    model_id: str,
+    route,
+    route_id: str,
+    baseline_adapter,
+    override_row: dict[str, Any],
+) -> None:
+    """Refuse to restore a route whose saved edit serves on an endpoint another route uses.
+
+    The endpoint stays reserved while the route is deleted, but a route can
+    still hold it: one restored at boot ahead of the edit, or added by another
+    gateway process or an older build. Restoring would make two routes share it.
+    """
+    try:
+        target = _target_for_provider(str(override_row["provider"]))
+    except HTTPException:
+        # An edit naming no provider this gateway knows does not apply; the
+        # route comes back on its models.yaml target, which is reserved.
+        return
+    endpoint_id = _edited_endpoint_id(
+        model_id, target, baseline_adapter, str(override_row["base_url"])
+    )
+    holder = _endpoint_holder(_raw_route_entries(route), endpoint_id, except_route_id=route_id)
+    if holder is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"route {route_id!r} cannot be restored: its saved edit serves endpoint id "
+                f"{endpoint_id!r}, which route {holder!r} now uses. Delete that route or "
+                "move it to another endpoint, then restore this one."
+            ),
+        )
+
+
 def _entries_with_restored_route(route, restored_entry) -> list[tuple[object, float, str]]:
     """Return the live entries with a restored config route back at its models.yaml place."""
     restored_id = _route_id_for_entry(restored_entry[0], restored_entry[2])
@@ -5660,6 +5760,10 @@ async def restore_config_provider_route(
         override_row = _rows_by_route_id(
             await op_store.list_provider_route_configs_for_model(model_id)
         ).get(route_id)
+        if override_row is not None:
+            _refuse_restore_onto_a_taken_endpoint(
+                model_id, route, route_id, restored_entry[0], override_row
+            )
 
         async def persist_and_restore() -> None:
             await op_store.set_provider_route_state(
@@ -5692,6 +5796,7 @@ async def restore_config_provider_route(
                         exc_info=True,
                     )
                 raise
+            (getattr(route, REMOVED_ENTRIES_ATTR, None) or {}).pop(route_id, None)
 
             # Re-apply the route's edit override the way boot does: one that no
             # longer applies leaves the models.yaml target serving, and the
@@ -5713,6 +5818,9 @@ async def restore_config_provider_route(
                         concurrency_limit_override=override_row.get("concurrency_limit"),
                         deployment_type_override=override_row.get("deployment_type"),
                     )
+                    # Checked before anything was saved; this holds the line if
+                    # the edit resolves to another endpoint than that check saw.
+                    _ensure_endpoint_free(route, route_id, update.endpoint_id)
                     _install_route_update(services, update)
                     override_applied = True
                 except Exception as exc:
@@ -5972,6 +6080,11 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 concurrency_limit_override=row.get("concurrency_limit"),
                 deployment_type_override=row.get("deployment_type"),
             )
+            # Runtime routes are restored first, so one that holds the endpoint
+            # this edit moves to keeps it: the edit is skipped (its row kept)
+            # and the route serves its models.yaml target, the same on every
+            # start and for either router.
+            _ensure_endpoint_free(update.route, route_id, update.endpoint_id)
             _install_route_update(services, update)
         except Exception as exc:
             logger.warning(
