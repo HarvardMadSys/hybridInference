@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from routing.model_router_registry import ModelRouterRegistry, StaleRouterStrategyChangeError
+from routing.routers import adapter_supports_modalities
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
@@ -295,6 +296,36 @@ async def admin_client(monkeypatch):
     op_store.list_weight_overrides_for_model = AsyncMock(return_value=[])
     op_store.upsert_weight_override = AsyncMock()
     op_store.delete_weight_override = AsyncMock(return_value=True)
+    # Capability overrides behave like the table: the sync after an edit reads
+    # back what the edit wrote, as JSON text the way asyncpg returns JSONB.
+    capability_rows: dict[tuple[str, str], dict] = {}
+
+    async def upsert_capability_override(model_id, route_id, capabilities, updated_by):
+        capability_rows[(model_id, route_id)] = {
+            "model_id": model_id,
+            "route_id": route_id,
+            "capabilities": json.dumps(capabilities),
+            "updated_by": updated_by,
+        }
+
+    async def delete_capability_override(model_id, route_id):
+        return capability_rows.pop((model_id, route_id), None) is not None
+
+    async def list_capability_overrides_for_model(model_id):
+        return [row for (owner, _), row in sorted(capability_rows.items()) if owner == model_id]
+
+    async def list_all_capability_overrides():
+        return [row for _, row in sorted(capability_rows.items())]
+
+    op_store.capability_rows = capability_rows
+    op_store.list_route_capability_overrides_for_model = AsyncMock(
+        side_effect=list_capability_overrides_for_model
+    )
+    op_store.list_all_route_capability_overrides = AsyncMock(
+        side_effect=list_all_capability_overrides
+    )
+    op_store.upsert_route_capability_override = AsyncMock(side_effect=upsert_capability_override)
+    op_store.delete_route_capability_override = AsyncMock(side_effect=delete_capability_override)
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.upsert_provider_route_candidate = AsyncMock()
@@ -1976,6 +2007,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -2008,7 +2040,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         None,
         2.5,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -2033,6 +2065,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "minimax",
             "base_url": "https://api.minimax.io/v1",
@@ -2065,7 +2098,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
         None,
         2.0,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -2109,6 +2142,7 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "minimax",
             "base_url": "https://api.minimax.io/v1",
@@ -2202,6 +2236,7 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -2236,7 +2271,7 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
         2,
         1.0,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -2264,6 +2299,7 @@ async def test_post_provider_route_candidate_rejects_unpinned_openrouter_concurr
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
@@ -2292,6 +2328,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     create_response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -2333,7 +2370,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
         4,
         1.0,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -2388,6 +2425,7 @@ async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_mo
     response = await client.post(
         "/admin/routing/provider-route-candidates/fixed-only",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -2437,6 +2475,7 @@ async def test_resource_candidate_add_racing_fixed_patch_cannot_publish_invalid_
         client.post(
             "/admin/routing/provider-route-candidates/on-demand-only",
             json={
+                "capabilities": RUNTIME_CAPABILITIES,
                 "route_type": "concurrency",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
@@ -2490,6 +2529,7 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -2800,7 +2840,8 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         None,
         {key: value for key, value in RUNTIME_CAPABILITIES.items() if key != "supports_tools"},
         {**RUNTIME_CAPABILITIES, "input_modalities": ["image"]},
-        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]},
+        # Not a modality the request gate holds media to, so declaring it means nothing.
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]},
         {**RUNTIME_CAPABILITIES, "context_length": 0},
         {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
         # Lax coercion would read these as 1, 1 (clamping every request to one
@@ -2814,7 +2855,7 @@ def _capture_upstream_payloads(adapter, monkeypatch) -> list[dict]:
         "missing",
         "tools-unanswered",
         "no-text",
-        "unoffered-modality",
+        "unknown-modality",
         "zero-context",
         "output-over-context",
         "boolean-lengths",
@@ -2992,6 +3033,7 @@ async def test_runtime_route_added_to_a_declared_model_keeps_its_capabilities(ad
     added = await client.post(
         "/admin/routing/provider-route-candidates/deepseek-v4-flash",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -3270,6 +3312,7 @@ async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(
     response = await client.post(
         "/admin/routing/provider-route-candidates/deepseek-v4-flash",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_sort": "throughput",
@@ -3904,6 +3947,7 @@ async def test_runtime_candidate_list_ignores_stale_override_row(admin_client):
     create = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -3971,6 +4015,7 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
         response = await client.post(
             "/admin/routing/provider-route-candidates/minimax-fast",
             json={
+                "capabilities": RUNTIME_CAPABILITIES,
                 "route_type": "on_demand",
                 "upstream_provider": "acme",
                 "base_url": "https://api.acme.test/plan/v3",
@@ -4051,6 +4096,7 @@ async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_
     response = await client.post(
         "/admin/routing/provider-route-candidate-verifications/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -4078,6 +4124,7 @@ async def test_runtime_provider_route_candidate_cannot_be_overridden(admin_clien
     create_response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -4141,6 +4188,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_sort": "throughput",
@@ -4171,7 +4219,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
         None,
         1.0,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -4205,6 +4253,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -4235,7 +4284,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
         None,
         1.0,
         None,
-        None,
+        RUNTIME_CAPABILITIES,
         "admin-token",
         deployment_type="auto",
     )
@@ -4261,6 +4310,7 @@ async def test_post_provider_route_candidate_rejects_route_type_provider_mismatc
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
@@ -4284,6 +4334,7 @@ async def test_post_provider_route_candidate_rejects_provider_base_url_mismatch(
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "quota",
             "upstream_provider": "chutes",
             "base_url": "https://api.minimax.io/v1",
@@ -4311,6 +4362,7 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
     create_response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -4536,6 +4588,7 @@ async def test_last_route_delete_racing_candidate_add_leaves_no_orphan(admin_cli
         client.post(
             "/admin/routing/provider-route-candidates/deepseek-v4-flash",
             json={
+                "capabilities": RUNTIME_CAPABILITIES,
                 "route_type": "on_demand",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "deepinfra",
@@ -4978,7 +5031,7 @@ async def test_restore_keeps_a_route_whose_stored_capabilities_no_longer_validat
     admin_client, caplog
 ):
     """An invalid stored value restores the route undeclared instead of dropping it."""
-    invalid = {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "audio"]}
+    invalid = {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]}
 
     with caplog.at_level(logging.WARNING):
         restored = await _restore_runtime_rows(
@@ -5323,6 +5376,7 @@ async def test_candidate_add_refresh_failure_restores_live_route_without_key_lea
         await client.post(
             "/admin/routing/provider-route-candidates/minimax-fast",
             json={
+                "capabilities": RUNTIME_CAPABILITIES,
                 "route_type": "on_demand",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
@@ -5356,6 +5410,7 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
     create_response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -5473,6 +5528,7 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
         client.post(
             "/admin/routing/provider-route-candidates/minimax-fast",
             json={
+                "capabilities": RUNTIME_CAPABILITIES,
                 "route_type": "on_demand",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
@@ -5731,6 +5787,7 @@ async def test_route_candidate_does_not_inherit_the_cache_report_licence(admin_c
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
@@ -6010,6 +6067,7 @@ async def test_created_route_deployment_is_explicit_and_survives_reload(admin_cl
         "provider_model_id": "minimax/minimax-m2.5",
         "deployment_type": "provider_api",
         "weight": 1,
+        "capabilities": RUNTIME_CAPABILITIES,
     }
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast", json=payload, headers=AUTH
@@ -6052,6 +6110,7 @@ async def test_new_route_does_not_inherit_template_deployment_type(admin_client)
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
+            "capabilities": RUNTIME_CAPABILITIES,
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
@@ -6346,3 +6405,462 @@ async def test_route_update_audit_records_deployment_type(admin_client):
     assert action == "routing.provider_routes.update"
     assert details["old_deployment_type"] == "auto"
     assert details["deployment_type"] == "self_hosted"
+
+
+# -- Editing an existing route's capabilities -------------------------------
+
+YAML_ROUTE_PATH = "minimax-fast/minimax-fast:featherless-api"
+
+
+def _route_adapter(route_executor, route_id: str):
+    for adapter, _weight, endpoint_id in route_executor.routes["minimax-fast"].raw_adapters:
+        if provider_routes._route_id_for_entry(adapter, endpoint_id) == route_id:
+            return adapter
+    raise AssertionError(f"no route {route_id}")
+
+
+@pytest.mark.asyncio
+async def test_put_route_capabilities_overrides_a_yaml_route(admin_client, monkeypatch):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    op_store.upsert_route_capability_override.assert_awaited_once_with(
+        "minimax-fast", "minimax-fast:featherless-api", RUNTIME_CAPABILITIES, "admin-token"
+    )
+    # Only the edited route changes; its siblings keep their own values.
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:chutes-api"), DEFAULT_CAPABILITIES
+    )
+    audit = provider_routes.log_admin_action
+    audit.assert_awaited_once()
+    assert audit.await_args.args[2] == "routing.provider_routes.capabilities.update"
+    assert audit.await_args.args[4]["old_capabilities"] == DEFAULT_CAPABILITIES
+    assert audit.await_args.args[4]["capabilities"] == RUNTIME_CAPABILITIES
+
+    # The next request through the route is served with the new values.
+    adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
+    sent = _capture_upstream_payloads(adapter, monkeypatch)
+    await adapter.chat_completion(
+        [{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "read_file", "parameters": {"type": "object"}},
+            }
+        ],
+        max_tokens=32000,
+    )
+    (payload,) = sent
+    assert payload["tools"]
+    assert payload["max_tokens"] == 32000
+
+
+@pytest.mark.asyncio
+async def test_delete_route_capabilities_returns_the_route_to_its_baseline(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    path = f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}"
+    await client.put(path, json=RUNTIME_CAPABILITIES, headers=AUTH)
+
+    response = await client.delete(path, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is False
+    assert op_store.capability_rows == {}
+    adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
+    _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
+    assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
+
+
+@pytest.mark.asyncio
+async def test_put_route_capabilities_keeps_audio_and_video(admin_client):
+    """Raising a route's max output keeps the audio and video input it declares."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
+    # As a models.yaml route can declare it.
+    adapter.config.input_modalities = ["text", "image", "audio", "video"]
+    # What the console sends: the route's own modalities, with only the output raised.
+    edited = {**DEFAULT_CAPABILITIES, "max_output_length": 8192}
+    edited["input_modalities"] = ["text", "image", "audio", "video"]
+
+    response = await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=edited,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == edited
+    _assert_capabilities_values(adapter, edited)
+    stored = op_store.capability_rows[("minimax-fast", "minimax-fast:featherless-api")]
+    assert json.loads(stored["capabilities"]) == edited
+    # Audio and video requests are still routed to it.
+    assert adapter_supports_modalities(adapter, frozenset({"audio", "video"}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        {**RUNTIME_CAPABILITIES, "context_length": 8192, "max_output_length": 16384},
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["image"]},
+        {**RUNTIME_CAPABILITIES, "input_modalities": ["text", "file"]},
+        {**RUNTIME_CAPABILITIES, "supports_tools": "yes"},
+        {key: value for key, value in RUNTIME_CAPABILITIES.items() if key != "context_length"},
+    ],
+    ids=["output-over-context", "no-text", "unknown-modality", "string-tools", "missing-field"],
+)
+async def test_put_route_capabilities_rejects_invalid_values(admin_client, capabilities):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=capabilities,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    op_store.upsert_route_capability_override.assert_not_awaited()
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), DEFAULT_CAPABILITIES
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [("no-such-model/no-such-model:x-api", 404), ("minimax-fast/minimax-fast:nope-api", 400)],
+)
+async def test_put_route_capabilities_rejects_unknown_routes(admin_client, path, status):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-route-capabilities/{path}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+
+    assert response.status_code == status, response.text
+    op_store.upsert_route_capability_override.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_route_capability_override_survives_a_target_edit_and_its_reset(admin_client):
+    """Rebuilding the route (a new target, then back to models.yaml) keeps the override."""
+    client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+
+    edited = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={
+            "upstream_provider": "featherless",
+            "base_url": "https://api.featherless.ai/v2",
+        },
+        headers=AUTH,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["capabilities"] == NARROW_CAPABILITIES
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), NARROW_CAPABILITIES
+    )
+
+    # Changed while the edited target serves: the models.yaml adapter that the
+    # reset reinstalls still holds the earlier values until it is reconciled.
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+    reset = await client.delete(f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}", headers=AUTH)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), RUNTIME_CAPABILITIES
+    )
+
+    # Clearing the override after the rebuilds still finds the models.yaml values.
+    cleared = await client.delete(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}", headers=AUTH
+    )
+    assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
+
+
+@pytest.mark.asyncio
+async def test_boot_sync_applies_stored_overrides_and_skips_invalid_rows(admin_client, caplog):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.capability_rows[("minimax-fast", "minimax-fast:featherless-api")] = {
+        "model_id": "minimax-fast",
+        "route_id": "minimax-fast:featherless-api",
+        "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+    }
+    op_store.capability_rows[("minimax-fast", "minimax-fast:chutes-api")] = {
+        "model_id": "minimax-fast",
+        "route_id": "minimax-fast:chutes-api",
+        "capabilities": json.dumps({**RUNTIME_CAPABILITIES, "input_modalities": ["audio"]}),
+    }
+    # A row for a model this deployment no longer serves is ignored.
+    op_store.capability_rows[("retired-model", "retired-model:x-api")] = {
+        "model_id": "retired-model",
+        "route_id": "retired-model:x-api",
+        "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+    }
+
+    with caplog.at_level(logging.WARNING):
+        await provider_routes.sync_route_capability_overrides(client.app.state.services, op_store)
+
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), RUNTIME_CAPABILITIES
+    )
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:chutes-api"), DEFAULT_CAPABILITIES
+    )
+    assert "Ignoring invalid capability override" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "orphaned"),
+    [
+        (
+            None,
+            [
+                ("minimax-fast", "minimax-fast:10.0.0.5-api"),
+                ("retired-model", "retired-model:x-api"),
+            ],
+        ),
+        ("minimax-fast", [("minimax-fast", "minimax-fast:10.0.0.5-api")]),
+    ],
+    ids=["boot", "one-model"],
+)
+async def test_sync_warns_about_overrides_that_name_no_served_route(
+    admin_client, caplog, model_id, orphaned
+):
+    """A row nothing applies is reported: the console lists routes, not rows."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    for row_model_id, route_id in (
+        ("minimax-fast", "minimax-fast:featherless-api"),
+        # The id a route had before a models.yaml URL change minted a new one.
+        ("minimax-fast", "minimax-fast:10.0.0.5-api"),
+        ("retired-model", "retired-model:x-api"),
+    ):
+        op_store.capability_rows[(row_model_id, route_id)] = {
+            "model_id": row_model_id,
+            "route_id": route_id,
+            "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+        }
+
+    with caplog.at_level(logging.WARNING):
+        await provider_routes.sync_route_capability_overrides(
+            client.app.state.services, op_store, model_id
+        )
+
+    warned = [
+        (record.levelno, record.model_id, record.route_id)
+        for record in caplog.records
+        if getattr(record, "event", None) == "route_capability_override_orphaned"
+    ]
+    assert warned == [(logging.WARNING, *row) for row in orphaned]
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:featherless-api"), RUNTIME_CAPABILITIES
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_requires_its_own_capabilities(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    payload = {
+        "route_type": "on_demand",
+        "upstream_provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "weight": 1,
+    }
+
+    missing = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast", json=payload, headers=AUTH
+    )
+    assert missing.status_code == 422
+    verify_mock.assert_not_awaited()
+
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={**payload, "capabilities": NARROW_CAPABILITIES},
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+    route_id = added.json()["route_id"]
+    # The new route serves with what it declared, not with the first route's values.
+    _assert_capabilities_values(_route_adapter(route_executor, route_id), NARROW_CAPABILITIES)
+    _assert_capabilities_values(
+        _route_adapter(route_executor, "minimax-fast:chutes-api"), DEFAULT_CAPABILITIES
+    )
+    assert op_store.upsert_provider_route_candidate.await_args.args[12] == NARROW_CAPABILITIES
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_keeps_its_declaration_under_an_override(admin_client):
+    """A save of an overridden runtime route writes its declaration, not the override."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "capabilities": NARROW_CAPABILITIES,
+        },
+        headers=AUTH,
+    )
+    assert added.status_code == 200, added.text
+    route_id = added.json()["route_id"]
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/minimax-fast/{route_id}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+
+    edited = await client.patch(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{route_id}",
+        json={"concurrency_limit": 3},
+        headers=AUTH,
+    )
+
+    assert edited.status_code == 200, edited.text
+    assert op_store.upsert_provider_route_candidate.await_args.args[12] == NARROW_CAPABILITIES
+    _assert_capabilities_values(_route_adapter(route_executor, route_id), RUNTIME_CAPABILITIES)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_runtime_route_drops_its_capability_override(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "capabilities": NARROW_CAPABILITIES,
+        },
+        headers=AUTH,
+    )
+    route_id = added.json()["route_id"]
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/minimax-fast/{route_id}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+    assert ("minimax-fast", route_id) in op_store.capability_rows
+
+    deleted = await client.delete(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{route_id}", headers=AUTH
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert ("minimax-fast", route_id) not in op_store.capability_rows
+    overrides = getattr(
+        route_executor.routes["minimax-fast"], provider_routes.CAPABILITY_OVERRIDES_ATTR
+    )
+    assert route_id not in overrides
+
+
+OPENROUTER_ROUTE_PAYLOAD = {
+    "route_type": "on_demand",
+    "upstream_provider": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "provider_model_id": "minimax/minimax-m2.5",
+    "capabilities": NARROW_CAPABILITIES,
+}
+
+
+@pytest.mark.asyncio
+async def test_adding_a_route_is_refused_while_its_id_keeps_an_override(admin_client):
+    """Added past a row it could not clear, the route would serve with the row's values."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.delete_route_capability_override.side_effect = ConnectionError("database down")
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json=OPENROUTER_ROUTE_PAYLOAD,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 503, response.text
+    assert "the route was not added" in response.text
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_route_stands_when_its_override_cannot_be_dropped(admin_client, caplog):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    added = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json=OPENROUTER_ROUTE_PAYLOAD,
+        headers=AUTH,
+    )
+    route_id = added.json()["route_id"]
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/minimax-fast/{route_id}",
+        json=RUNTIME_CAPABILITIES,
+        headers=AUTH,
+    )
+    op_store.delete_route_capability_override.side_effect = ConnectionError("database down")
+
+    with caplog.at_level(logging.ERROR):
+        deleted = await client.delete(
+            f"/admin/routing/provider-route-candidates/minimax-fast/{route_id}", headers=AUTH
+        )
+
+    # The route is gone; its leftover row is logged loudly, by id, for an operator.
+    assert deleted.status_code == 200, deleted.text
+    assert route_id not in [route["route_id"] for route in deleted.json()["routes"]]
+    assert ("minimax-fast", route_id) in op_store.capability_rows
+    assert [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR and route_id in record.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_creating_a_model_clears_capability_overrides_left_under_its_name(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.capability_rows[("deepseek-v4-flash", "deepseek-v4-flash:openrouter-api")] = {
+        "model_id": "deepseek-v4-flash",
+        "route_id": "deepseek-v4-flash:openrouter-api",
+        "capabilities": json.dumps(NARROW_CAPABILITIES),
+    }
+
+    response = await client.post(
+        "/admin/routing/provider-route-models", json=_runtime_model_payload(), headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert op_store.capability_rows == {}
+    assert response.json()["capabilities"] == RUNTIME_CAPABILITIES
+
+
+def _assert_capabilities_values(adapter, capabilities: dict) -> None:
+    assert provider_routes._config_capabilities(adapter.config) == capabilities
