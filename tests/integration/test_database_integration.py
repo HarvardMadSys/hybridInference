@@ -69,8 +69,46 @@ async def test_api_logs_schema_contains_cost_columns(db_logger: DatabaseLogger):
 
     assert {"cache_read_tokens", "cache_write_tokens", "cost_usd"}.issubset(column_names)
     assert {"served_model_id", "served_endpoint_id"}.issubset(column_names)
+    assert {"agent_job_id", "batch_job_id"}.issubset(column_names)
     assert "prompt_hash" not in column_names
     assert "response_hash" not in column_names
+
+
+@pytest.mark.asyncio
+async def test_both_log_writers_attribute_a_row_to_its_batch(db_logger: DatabaseLogger):
+    """``metadata["batch_job_id"]`` lands in the ``batch_job_id`` column."""
+    assert db_logger.pool is not None
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
+    rows = {
+        "req-batch-attr-logger": (db_logger, {"batch_job_id": "batch_abc"}),
+        "req-batch-attr-store": (log_store, {"batch_job_id": "batch_abc"}),
+        "req-batch-attr-none": (log_store, {}),
+    }
+    for request_id, (writer, extra) in rows.items():
+        await writer.log_request(
+            request_id=request_id,
+            model_id="integration-model",
+            provider="openai",
+            prompt=[{"role": "user", "content": "hi"}],
+            response={"message": "ok"},
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+            latency_ms=10,
+            status_code=200,
+            params={},
+            metadata={"user_id": "integration-user", **extra},
+        )
+
+    async with db_logger.pool.acquire() as conn:
+        stored = await conn.fetch(
+            "SELECT request_id, batch_job_id FROM api_logs WHERE request_id = ANY($1::text[])",
+            list(rows),
+        )
+
+    assert {row["request_id"]: row["batch_job_id"] for row in stored} == {
+        "req-batch-attr-logger": "batch_abc",
+        "req-batch-attr-store": "batch_abc",
+        "req-batch-attr-none": None,
+    }
 
 
 @pytest.mark.asyncio

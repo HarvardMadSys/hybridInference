@@ -21,6 +21,7 @@ vi.mock('@/lib/api/admin', async () => {
     // reach the real gateway (see vitest.setup.ts).
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listBatchModelLimits: vi.fn(async () => ({ default_concurrency: 4, models: [] })),
     listRoutewiseSettings: vi.fn(async () => ({ settings: [] })),
     listRouteWeights: vi.fn(async () => []),
     getAlertSnooze: vi.fn(async () => ({
@@ -324,6 +325,6 @@ describe('SettingsTab section index', () => {
       const id = link.getAttribute('href')!.slice(1);
       expect(document.getElementById(id), id).not.toBeNull();
     }
-    expect(within(index).getAllByRole('link')).toHaveLength(8);
+    expect(within(index).getAllByRole('link')).toHaveLength(9);
   });
 });

@@ -1519,6 +1519,41 @@ class UpdateModelConcurrencyRequest(BaseModel):
     exempt: bool
 
 
+#: Highest per-model batch concurrency cap an administrator may set.
+MAX_BATCH_MODEL_CONCURRENCY = 10_000
+
+
+class BatchModelLimitItem(BaseModel):
+    """A model's batch concurrency cap and the batch requests it holds now."""
+
+    model_id: str
+    max_concurrency: int | None = Field(
+        None, description="The model's own cap; null when it takes the default."
+    )
+    effective_concurrency: int = Field(
+        ...,
+        description="The cap in force, across every gateway process. 0 pauses batch work.",
+    )
+    running: int = Field(0, description="Batch requests of the model running now.")
+    queued: int = Field(0, description="Batch requests of the model waiting to run.")
+
+
+class ListBatchModelLimitsResponse(BaseModel):
+    """Response payload for listing per-model batch concurrency caps."""
+
+    default_concurrency: int = Field(
+        ..., description="BATCH_MODEL_CONCURRENCY: the cap of a model without its own."
+    )
+    models: list[BatchModelLimitItem]
+
+
+class UpdateBatchModelLimitRequest(BaseModel):
+    """Request payload for setting a model's batch concurrency cap, or clearing it with null."""
+
+    # Strict, so ``true`` or ``"4"`` is rejected instead of read as 1 or a number.
+    max_concurrency: StrictInt | None = Field(..., ge=0, le=MAX_BATCH_MODEL_CONCURRENCY)
+
+
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
@@ -1972,6 +2007,7 @@ __all__ = [
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
+    "BatchModelLimitItem",
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
@@ -1987,6 +2023,7 @@ __all__ = [
     "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
+    "ListBatchModelLimitsResponse",
     "ListModelVisibilityResponse",
     "ListOffloadRoutesResponse",
     "ListOpenRouterProviderOptionsResponse",
@@ -2040,6 +2077,7 @@ __all__ = [
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateBatchModelLimitRequest",
     "UpdateModelVisibilityRequest",
     "UpdateOffloadRouteRequest",
     "UpdateProviderDefinitionRequest",

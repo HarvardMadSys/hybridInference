@@ -548,6 +548,11 @@ async def chat_completions(
     # owner's cost report and the ledger the job's budget is measured from.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # Present only when the batch worker runs the request for a batch
+    # (serving/batch/dispatch.py); lands in api_logs.batch_job_id, the batch's
+    # cost and usage attribution.
+    if user_ctx.get("batch_job_id"):
+        metadata["batch_job_id"] = user_ctx["batch_job_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
 
     early_params: dict[str, Any] = {"stream": effective_stream}
