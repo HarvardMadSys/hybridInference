@@ -2110,7 +2110,10 @@ async def sync_route_capability_overrides(
         route = services.router.routes.get(target_model_id)
         if route is None or not _is_canonical_model(target_model_id, route):
             continue
-        entries = _raw_route_entries(route)
+        # A config route deleted from this deployment keeps its override for
+        # the restore that brings it back: it is listed with it, and its row
+        # is not reported as naming no route.
+        entries = _raw_route_entries(route) + _removed_baseline_entries(route)
         setattr(route, CAPABILITY_OVERRIDES_ATTR, by_model.get(target_model_id, {}))
         _apply_capability_overrides(route, entries)
         served[target_model_id] = {
@@ -4733,6 +4736,8 @@ async def _change_route_capabilities(
     model_id, route_id, _route = _split_model_route_path(services, model_route_path)
     async with model_router_transition_lock(services, model_id):
         model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        # Its override is kept, and applies again when the route is restored.
+        _refuse_removed_route(route, route_id)
         entries = _raw_route_entries(route)
         adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
         old_capabilities = _config_capabilities(adapter.config)
@@ -5360,6 +5365,21 @@ def _refuse_removed_route(route, route_id: str) -> None:
         )
 
 
+def _install_config_route_removal(services, route, index: int) -> tuple[object, float, str]:
+    """Take the config route at ``index`` out of the live table; return its live entry.
+
+    Its models.yaml entry stays in the baseline, listed and restorable, and is
+    given the capability override its restore brings back, so the deleted
+    route is listed with the values it will serve again.
+    """
+    _baseline_route_entries(route)
+    entries = _raw_route_entries(route)
+    removed = entries[index]
+    _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+    _apply_capability_overrides(route, _removed_baseline_entries(route))
+    return removed
+
+
 @router.patch(
     "/routing/provider-route-states/{model_route_path:path}",
     response_model=ProviderRouteItem,
@@ -5548,7 +5568,7 @@ async def remove_config_provider_route(
                 resolver.set_state(
                     model_id, route_id, RouteState(disabled=previous.disabled, removed=True)
                 )
-                _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+                _install_config_route_removal(services, route, index)
             except BaseException:
                 resolver.set_state(model_id, route_id, previous)
                 try:
@@ -5746,10 +5766,7 @@ def apply_persisted_provider_route_removals(services) -> None:
             ]
             if not matches:
                 continue
-            index = matches[0]
-            _baseline_route_entries(route)
-            adapter = entries[index][0]
-            _replace_route_entries(services, route, entries[:index] + entries[index + 1 :])
+            adapter = _install_config_route_removal(services, route, matches[0])[0]
             _unregister_replaced_dynamic_adapter(route, adapter)
         except Exception as exc:
             logger.warning(

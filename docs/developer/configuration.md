@@ -378,8 +378,9 @@ field for image input only: it keeps a route's `audio` and `video` input as they
 are, and an added route starts with the first route's. The values the route has
 from the registry or from its creation stay as its baseline: the change is
 stored as an override, the next request through the route follows it, a restart
-restores it, and retargeting the route keeps it. Resetting deletes the override
-and returns the route to its baseline. Route listings report `capabilities` (as
+restores it, and retargeting the route keeps it. Deleting a registry route
+keeps it too, so **Restore** brings the route back with it. Resetting deletes
+the override and returns the route to its baseline. Route listings report `capabilities` (as
 served), `capabilities_baseline` and `capabilities_overridden`. A change applies
 in the gateway process that handles the admin request; a deployment running
 several gateway processes sees it in the others after their next restart.

@@ -8087,3 +8087,226 @@ async def test_creating_a_model_clears_capability_overrides_left_under_its_name(
 
 def _assert_capabilities_values(adapter, capabilities: dict) -> None:
     assert provider_routes._config_capabilities(adapter.config) == capabilities
+
+
+# -- Capability overrides across route edits, deletes and states -------------
+#
+# An override is keyed by route id, which every edit keeps: it follows its route
+# the way a weight override follows the route's endpoint.
+
+_RUNTIME_MODEL_FIRST_ROUTE_PARASAIL = {
+    "upstream_provider": "openrouter",
+    "openrouter_provider": "parasail",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_id": "db-openrouter",
+    "provider_model_id": "deepseek/deepseek-v4-pro",
+}
+
+
+async def _overridable_runtime_route(client, op_store, case: str) -> tuple[str, str, dict, str]:
+    """Add a runtime route that declares RUNTIME_CAPABILITIES; return how to retarget it."""
+    if case == "added-route":
+        await _add_minimax_runtime_route(client, op_store)
+        return "minimax-fast", MINIMAX_ROUTE_ID, OPENROUTER_PARASAIL_TARGET, PARASAIL_ENDPOINT_ID
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    created = await client.post(
+        "/admin/routing/provider-route-models", json=_runtime_model_payload(), headers=AUTH
+    )
+    assert created.status_code == 200, created.text
+    return (
+        "deepseek-v4-flash",
+        created.json()["route_id"],
+        _RUNTIME_MODEL_FIRST_ROUTE_PARASAIL,
+        "deepseek-v4-flash:openrouter[parasail]-api",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["added-route", "model-first-route"])
+async def test_runtime_route_edit_keeps_its_capability_override_and_declaration(admin_client, case):
+    """A retarget moves the weight override; the capability override stays on the route id."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    weights = _attach_weight_resolver(client, route_executor, table)
+    model_id, route_id, retarget, new_endpoint_id = await _overridable_runtime_route(
+        client, op_store, case
+    )
+    table.weights[(model_id, route_id)] = 3.0
+    weights.set_override(model_id, route_id, 3.0)
+    path = f"/admin/routing/provider-route-capabilities/{model_id}/{route_id}"
+    assert (await client.put(path, json=NARROW_CAPABILITIES, headers=AUTH)).status_code == 200
+
+    edited = await _patch_candidate(client, route_id, retarget, model_id=model_id)
+
+    assert edited.status_code == 200, edited.text
+    body = edited.json()
+    assert body["endpoint_id"] == new_endpoint_id
+    assert body["capabilities"] == NARROW_CAPABILITIES
+    assert body["capabilities_baseline"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    assert table.weights == {(model_id, new_endpoint_id): 3.0}
+    assert set(op_store.capability_rows) == {(model_id, route_id)}
+    # The row and the rebuilt adapter keep the declaration, never the override.
+    assert json.loads(table.row(model_id, route_id)["capabilities"]) == RUNTIME_CAPABILITIES
+    adapter = _live_entry(route_executor, route_id, model_id=model_id)[1]
+    assert provider_routes._declared_capabilities(adapter) == RUNTIME_CAPABILITIES
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+
+    # Resetting it afterwards returns the moved route to its declaration.
+    reset = await client.delete(path, headers=AUTH)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities_overridden"] is False
+
+
+def _seed_chutes_edit(op_store) -> None:
+    """Store an edit moving the CHUTES config route to OpenRouter pinned to Parasail."""
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    override = {
+        "model_id": "minimax-fast",
+        "route_id": CHUTES,
+        "provider": "openrouter[parasail]",
+        "openrouter_sort": None,
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "quota_limit": 5000,
+        "concurrency_limit": None,
+        "deployment_type": None,
+        "updated_at": NOW,
+        "updated_by": "seed-admin",
+    }
+    op_store.list_provider_route_configs_for_model.return_value = [override]
+    op_store.list_all_provider_route_configs.return_value = [override]
+
+
+def _orphan_warnings(caplog) -> list[tuple[str, str]]:
+    return [
+        (record.model_id, record.route_id)
+        for record in caplog.records
+        if getattr(record, "event", None) == "route_capability_override_orphaned"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_config_route_keeps_its_capability_override_for_its_restore(
+    admin_client, caplog
+):
+    """Restore brings the route back as it was deleted: its edit and its capabilities."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    _seed_chutes_edit(op_store)
+    await apply_persisted_provider_route_configs(client.app.state.services, op_store)
+    chutes_path = f"/admin/routing/provider-route-capabilities/minimax-fast/{CHUTES}"
+    assert (
+        await client.put(chutes_path, json=NARROW_CAPABILITIES, headers=AUTH)
+    ).status_code == 200
+
+    removed = await _remove(client, CHUTES)
+
+    assert removed.status_code == 200, removed.text
+    assert ("minimax-fast", CHUTES) in op_store.capability_rows
+    row = {r["route_id"]: r for r in removed.json()["routes"]}[CHUTES]
+    assert row["removed"] is True
+    # Listed with the values its restore brings back.
+    assert row["capabilities"] == NARROW_CAPABILITIES
+    assert row["capabilities_overridden"] is True
+
+    # A sibling's edit re-reads the model's overrides; the deleted route's row is
+    # kept for its restore, not reported as naming no route.
+    with caplog.at_level(logging.WARNING):
+        sibling = await client.put(
+            f"/admin/routing/provider-route-capabilities/minimax-fast/{FEATHERLESS}",
+            json=RUNTIME_CAPABILITIES,
+            headers=AUTH,
+        )
+        await provider_routes.sync_route_capability_overrides(client.app.state.services, op_store)
+    assert sibling.status_code == 200, sibling.text
+    assert _orphan_warnings(caplog) == []
+
+    # A deleted route is restored, not edited.
+    refused = await client.put(chutes_path, json=RUNTIME_CAPABILITIES, headers=AUTH)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == (
+        f"route {CHUTES!r} is deleted from this deployment; restore it first"
+    )
+    assert json.loads(op_store.capability_rows[("minimax-fast", CHUTES)]["capabilities"]) == (
+        NARROW_CAPABILITIES
+    )
+
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 200, restored.text
+    row = {r["route_id"]: r for r in restored.json()["routes"]}[CHUTES]
+    assert row["override_applied"] is True
+    assert row["capabilities"] == NARROW_CAPABILITIES
+    assert row["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    adapter = _route_adapter(route_executor, CHUTES)
+    assert adapter.config.openrouter_pinned_provider == "parasail"
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    # Its baseline survived the delete and the edit's re-application.
+    cleared = await client.delete(chutes_path, headers=AUTH)
+    assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
+
+
+@pytest.mark.asyncio
+async def test_a_config_route_deleted_at_boot_keeps_its_capability_override(admin_client, caplog):
+    """Boot syncs overrides before it applies removals; either order lists and restores it."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    states = _RouteStateTable(client, op_store, route_executor)
+    _seed_chutes_edit(op_store)
+    services = client.app.state.services
+    op_store.capability_rows[("minimax-fast", CHUTES)] = {
+        "model_id": "minimax-fast",
+        "route_id": CHUTES,
+        "capabilities": json.dumps(NARROW_CAPABILITIES),
+    }
+    await states.set("minimax-fast", CHUTES, disabled=False, removed=True, updated_by="a")
+    await states.resolver.load_all()
+
+    with caplog.at_level(logging.WARNING):
+        await apply_persisted_provider_route_configs(services, op_store)
+        provider_routes.apply_persisted_provider_route_removals(services)
+        await provider_routes.sync_route_capability_overrides(services, op_store)
+
+    assert CHUTES not in _live_route_ids(route_executor)
+    assert _orphan_warnings(caplog) == []
+    listed = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    row = {r["route_id"]: r for r in listed.json()["routes"]}[CHUTES]
+    assert row["removed"] is True
+    assert row["capabilities"] == NARROW_CAPABILITIES
+
+    restored = await _restore(client, CHUTES)
+
+    assert restored.status_code == 200, restored.text
+    _assert_capabilities_values(_route_adapter(route_executor, CHUTES), NARROW_CAPABILITIES)
+
+
+@pytest.mark.asyncio
+async def test_disable_and_enable_keep_a_routes_capability_override(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    weights = _CandidateTable(op_store)
+    resolver = _attach_weight_resolver(client, route_executor, weights)
+    path = f"/admin/routing/provider-route-capabilities/minimax-fast/{FEATHERLESS}"
+    assert (await client.put(path, json=NARROW_CAPABILITIES, headers=AUTH)).status_code == 200
+
+    disabled = await _set_state(client, FEATHERLESS, True)
+
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["capabilities"] == NARROW_CAPABILITIES
+    assert disabled.json()["capabilities_overridden"] is True
+    # A disabled route is listed and editable, capabilities included.
+    edited = await client.put(path, json=RUNTIME_CAPABILITIES, headers=AUTH)
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["disabled"] is True
+    # Enabling also clears a weight override of 0 left by the old disable.
+    resolver.set_override("minimax-fast", FEATHERLESS, 0.0)
+
+    enabled = await _set_state(client, FEATHERLESS, False)
+
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert enabled.json()["capabilities_overridden"] is True
+    assert set(op_store.capability_rows) == {("minimax-fast", FEATHERLESS)}
+    _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), RUNTIME_CAPABILITIES)
