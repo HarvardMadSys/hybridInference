@@ -231,6 +231,11 @@ async def _status_is(store: BatchStore, batch_id: str, status: str) -> bool:
     return await _status(store, batch_id) == status
 
 
+async def _failed_count_is(store: BatchStore, batch_id: str, count: int) -> bool:
+    row = await store.get_batch(batch_id)
+    return row is not None and row["status"] == "failed" and row["failed_count"] == count
+
+
 async def _paused(store: BatchStore, batch_id: str) -> bool:
     row = await store.get_batch(batch_id)
     return row is not None and row["paused_until"] is not None
@@ -298,11 +303,15 @@ async def test_a_revoked_key_fails_the_batch_without_calling_upstream(gateway, o
     await owner["op_store"].revoke_key(owner["user_id"])
 
     gateway.start_worker("one")
-    await _until(lambda: _status_is(store, batch_id, "failed"), what="the batch to fail")
+    # The worker claims all three at once. The first to find the key revoked
+    # fails the batch while the others may still be claimed; each of those
+    # takes the batch's verdict when it hands its claim back, so the count
+    # settles a moment after the status flips.
+    await _until(lambda: _failed_count_is(store, batch_id, 3), what="the batch to fail")
 
     row = await store.get_batch(batch_id)
+    assert row["status"] == "failed"
     assert row["error"]["code"] == "owner_unauthorized"
-    assert row["failed_count"] == 3
     assert {r["error"]["code"] for r in await store.list_results(batch_id)} == {"batch_failed"}
     assert not a.calls
 
