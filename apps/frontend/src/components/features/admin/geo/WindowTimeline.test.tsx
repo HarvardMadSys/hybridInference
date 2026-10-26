@@ -75,6 +75,15 @@ describe('WindowTimeline', () => {
     expect(screen.queryByText(/p99/)).not.toBeInTheDocument();
   });
 
+  it('preserves a rare traffic spike on the labeled value axis', () => {
+    const data = makeData(336);
+    data.hours[100].b = [['USA', 'NA', 10000, 100000]];
+    renderTimeline(336, 100, { data, metricModel: deriveGeoMetricModel(data, 'n') });
+
+    expect(screen.getByText('10k')).toBeInTheDocument();
+    expect(screen.queryByText('0.5k')).not.toBeInTheDocument();
+  });
+
   it('draws in real pixels, so its text is never stretched', () => {
     renderTimeline();
     const slider = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });

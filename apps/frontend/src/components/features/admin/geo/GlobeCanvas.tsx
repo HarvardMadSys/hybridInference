@@ -317,8 +317,10 @@ export function GlobeCanvas({
 
     const resize = () => {
       const bounds = stageElement.getBoundingClientRect();
-      const width = Math.max(280, bounds.width || 800);
-      const height = Math.max(300, bounds.height || 520);
+      // Match both layers to the real CSS box, even on narrow phones. A larger
+      // minimum would stretch the canvas while SVG letterboxes its viewBox.
+      const width = bounds.width > 0 ? bounds.width : 800;
+      const height = bounds.height > 0 ? bounds.height : 520;
       sizeRef.current = { width, height };
       const ratio = window.devicePixelRatio || 1;
       canvasElement.width = Math.round(width * ratio);

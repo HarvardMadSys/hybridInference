@@ -132,6 +132,33 @@ const transformOf = (label: string) =>
   screen.getByRole('button', { name: label, hidden: true }).getAttribute('transform');
 
 describe('GlobeCanvas', () => {
+  it('keeps canvas and SVG coordinates aligned below 280 CSS pixels', () => {
+    // A 320px phone minus the console main's 24px padding on each side.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 272,
+      height: 320,
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 272,
+      bottom: 320,
+      toJSON: () => ({}),
+    });
+    vi.stubGlobal('devicePixelRatio', 2);
+    const { container } = renderGlobe();
+    const globe = container.querySelector('svg')!;
+    const canvas = container.querySelector('canvas')!;
+    const [, , width, height] = globe.getAttribute('viewBox')!.split(' ').map(Number);
+    expect(width).toBe(272);
+    expect(height).toBe(320);
+    expect(canvas.width / 2).toBe(width);
+    expect(canvas.height / 2).toBe(height);
+    // Equal aspect ratios ensure SVG meet introduces no letterboxing relative
+    // to the canvas's CSS width/height stretch.
+    expect(width / height).toBe(272 / 320);
+  });
+
   it('renders each origin as a glowing mark with an accessible control over a drawn land layer', () => {
     renderGlobe();
 

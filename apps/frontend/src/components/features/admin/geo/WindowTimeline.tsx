@@ -4,12 +4,7 @@ import { area, curveMonotoneX, line, scaleLinear } from 'd3';
 import type { KeyboardEvent, PointerEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import {
-  buildOriginSeries,
-  ORIGIN_COLORS,
-  positiveNearestRankPercentile,
-  type GeoMetricModel,
-} from './geoMath';
+import { buildOriginSeries, ORIGIN_COLORS, type GeoMetricModel } from './geoMath';
 
 const HEIGHT = 112;
 // The right margin holds the value ticks; the plot itself starts flush left.
@@ -92,8 +87,8 @@ export function WindowTimeline({
   const metric = metricModel.metric;
   const { totalSeries, yMax } = useMemo(() => {
     const series = buildOriginSeries(data, metric);
-    // A p99 cap keeps one spike from flattening the rest of the window.
-    const cap = Math.max(1, positiveNearestRankPercentile(series, 0.99));
+    // Preserve spikes: the labeled axis must represent every plotted value.
+    const cap = Math.max(1, ...series);
     return { totalSeries: series, yMax: scaleLinear().domain([0, cap]).nice(3).domain()[1] };
   }, [data, metric]);
   const countrySeries = useMemo(
