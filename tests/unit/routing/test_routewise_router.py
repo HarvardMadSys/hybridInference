@@ -1241,7 +1241,6 @@ class TestRouteWiseLayer2:
     def test_layer2_uses_lp_when_warmed(self):
         """After profile warmup, LP path is used for S_A selection."""
         config = RouteWiseConfig(
-            latency_min_samples=5,
             latency_slo_sec=2.0,
         )
         router, _api_a, _api_b = _make_router_with_two_api(config)
@@ -1266,10 +1265,8 @@ class TestRouteWiseLayer2:
         assert router._last_lp_statuses.get("test-model") != "not_run"
 
     def test_layer2_falls_back_to_cheapest_when_cold(self):
-        """When profiles have insufficient samples, falls back to cheapest."""
-        config = RouteWiseConfig(
-            latency_min_samples=100,  # Very high threshold.
-        )
+        """When no endpoint has latency samples, falls back to cheapest."""
+        config = RouteWiseConfig()
         router, api_a, _api_b = _make_router_with_two_api(config)
 
         # Warm predictor.
@@ -1343,7 +1340,7 @@ class TestRouteWiseLayer2:
         fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
 
-        config = RouteWiseConfig(latency_min_samples=1)
+        config = RouteWiseConfig()
         router = RouteWiseRouter(route_table=fr, config=config)
 
         # Warm predictor.
@@ -1382,7 +1379,7 @@ class TestRouteWiseLayer2:
 
     def test_latency_mean_includes_error_penalty(self):
         """Body LP latency matches real-eval mean-with-errors semantics."""
-        config = RouteWiseConfig(latency_min_samples=10, latency_unprofiled_ttft_ms=5000.0)
+        config = RouteWiseConfig(latency_unprofiled_ttft_ms=5000.0)
         router, _api_a, _api_b = _make_router_with_two_api(config)
         profile = router._latency_profiles["test-model:api-a"]
         now = time.time()
@@ -1721,7 +1718,6 @@ class TestRouteWiseLayer2:
         model B's LP interval check must be independent of model A.
         """
         config = RouteWiseConfig(
-            latency_min_samples=5,
             latency_slo_sec=2.0,
         )
 

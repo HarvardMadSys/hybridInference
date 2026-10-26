@@ -188,12 +188,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "min": 0.1,
         "description": "Latency SLO in seconds for Routewise LP decisions",
     },
-    "routewise_latency_min_samples": {
-        "type": "int",
-        "default": 10,
-        "min": 1,
-        "description": "Legacy RouteWise latency sample threshold retained for compatibility",
-    },
     "routewise_probe_enabled": {
         "type": "bool",
         "default": False,

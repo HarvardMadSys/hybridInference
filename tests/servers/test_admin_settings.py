@@ -90,7 +90,6 @@ async def test_list_settings_excludes_routewise_keys(admin_client):
     keys = {item["key"] for item in response.json()["settings"]}
     assert "routewise_budget_alpha" not in keys
     assert "routewise_latency_slo_sec" not in keys
-    assert "routewise_latency_min_samples" not in keys
 
 
 @pytest.mark.asyncio

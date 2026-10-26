@@ -543,7 +543,6 @@ class RouteWiseRouter:
         *,
         budget_alpha: float | None = None,
         latency_slo_sec: float | None = None,
-        latency_min_samples: int | None = None,
         routewise_probe_enabled: bool | None = None,
         routewise_probe_interval_sec: float | None = None,
     ) -> None:
@@ -562,11 +561,6 @@ class RouteWiseRouter:
                 budget_alpha=(current.budget_alpha if budget_alpha is None else budget_alpha),
                 latency_slo_sec=(
                     current.latency_slo_sec if latency_slo_sec is None else latency_slo_sec
-                ),
-                latency_min_samples=(
-                    current.latency_min_samples
-                    if latency_min_samples is None
-                    else latency_min_samples
                 ),
                 routewise_probe_enabled=(
                     current.routewise_probe_enabled

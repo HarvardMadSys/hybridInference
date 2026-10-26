@@ -666,6 +666,49 @@ async def test_restore_applies_backup_and_preserves_locked_api_key_secret(config
 
 
 @pytest.mark.asyncio
+async def test_backup_leaves_out_the_retired_routewise_latency_threshold(config_client) -> None:
+    # routewise_latency_min_samples was removed; its rows may still be stored,
+    # and a backup taken while it existed must still restore.
+    client, _store, _audit = config_client
+    retired = [
+        {"key": "routewise_latency_min_samples", "value": "10", "value_type": "int"},
+        {
+            "key": "model_routewise_setting:routewise_latency_min_samples:chat",
+            "value": "4",
+            "value_type": "int",
+        },
+    ]
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_settings = AsyncMock(
+        return_value=[*retired, {"key": "signup_enabled", "value": "true", "value_type": "bool"}]
+    )
+    op_store.delete_setting = AsyncMock()
+    op_store.set_setting = AsyncMock()
+
+    exported = (await client.get("/admin/config/backup", headers=AUTH)).json()
+    assert [s["key"] for s in exported["site_settings"]] == ["signup_enabled"]
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={
+            "schema_version": 1,
+            "site_settings": [
+                *retired,
+                {"key": "signup_enabled", "value": "true", "value_type": "bool"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    op_store.set_setting.assert_awaited_once_with("signup_enabled", "true", "bool", "admin-token")
+    # The rows left behind are cleared rather than kept.
+    assert {call.args[0] for call in op_store.delete_setting.await_args_list} == {
+        row["key"] for row in retired
+    }
+
+
+@pytest.mark.asyncio
 async def test_restore_overwrites_generated_api_key_secret_when_no_user_keys_exist(
     config_client,
     monkeypatch,

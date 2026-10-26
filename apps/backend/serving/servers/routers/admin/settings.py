@@ -39,7 +39,6 @@ router = APIRouter(prefix="/admin")
 ROUTEWISE_SETTINGS_KEYS = {
     "routewise_budget_alpha",
     "routewise_latency_slo_sec",
-    "routewise_latency_min_samples",
     "routewise_probe_enabled",
     "routewise_probe_interval_sec",
 }

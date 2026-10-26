@@ -220,8 +220,8 @@ def test_routewise_params_extra_forbidden():
     # Defaults work
     RouteWiseParams()
     # Known field accepted
-    p = RouteWiseParams.model_validate({"latency_min_samples": 100})
-    assert p.latency_min_samples == 100
+    p = RouteWiseParams.model_validate({"latency_max_samples_per_profile": 100})
+    assert p.latency_max_samples_per_profile == 100
     # Unknown field rejected
     with pytest.raises(ValidationError):
         RouteWiseParams.model_validate({"not_a_field": 1})
@@ -233,6 +233,22 @@ def test_routewise_params_extra_forbidden():
         RouteWiseParams.model_validate({"daily_quota": 100})
     with pytest.raises(ValidationError, match=r"route-level concurrency\.limit"):
         RouteWiseParams.model_validate({"concurrency_limit": 4})
+
+
+@pytest.mark.unit
+def test_routewise_params_drop_the_removed_latency_min_samples(caplog, monkeypatch):
+    """A registry that still sets latency_min_samples loads; the key has no effect."""
+    import logging
+
+    from routing.strategies import routewise as routewise_strategy
+    from routing.strategies.routewise import RouteWiseParams
+
+    monkeypatch.setattr(routewise_strategy, "_warned_retired_params", set())
+    with caplog.at_level(logging.WARNING):
+        params = RouteWiseParams.model_validate({"latency_min_samples": 10})
+
+    assert "latency_min_samples" not in params.model_dump()
+    assert "latency_min_samples (provider selection never read it)" in caplog.text
 
 
 @pytest.mark.unit
@@ -286,10 +302,10 @@ def test_build_routewise_returns_routewise_router():
     from routing.strategies import build_router
 
     # Without a route table, RouteWiseRouter defers post-init classification.
-    router = build_router("routewise", {"latency_min_samples": 100})
+    router = build_router("routewise", {"latency_slo_sec": 2.5})
     assert isinstance(router, RouteWiseRouter)
     assert isinstance(router, RouterProtocol)
-    assert router.config.latency_min_samples == 100
+    assert router.config.latency_slo_sec == 2.5
     # route_table is None until attach_route_table is called.
     assert router.route_table is None
 

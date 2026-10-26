@@ -1268,7 +1268,6 @@ class TestRouterHedgeMode:
         """Probability-target mode returns a real HedgedAdapter."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=5,
             latency_slo_sec=3.0,
             latency_hedge_mode="probability_target",
         )
@@ -1302,7 +1301,6 @@ class TestRouterHedgeMode:
         """An in-flight hedge must not mix a new runtime SLO into its old schedule."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=3.0,
             latency_hedge_mode="probability_target",
         )
@@ -1338,7 +1336,6 @@ class TestRouterHedgeMode:
         """Probability-target hedging dispatches the backup and records the winner."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1386,7 +1383,6 @@ class TestRouterHedgeMode:
         """A hidden hedged primary failure must feed the normal observation path."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1441,7 +1437,6 @@ class TestRouterHedgeMode:
         """A planned hedge is not recorded as triggered if primary returns first."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1477,7 +1472,6 @@ class TestRouterHedgeMode:
         """Streaming hedges emit winner routing before backup content."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1530,7 +1524,6 @@ class TestRouterHedgeMode:
         """A hedged primary 400 reaches the registry unchanged and stays exempt."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1620,7 +1613,6 @@ class TestRouterHedgeMode:
         """Backup selection is not restricted to on-demand providers."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1664,7 +1656,6 @@ class TestRouterHedgeMode:
         """Quota backups consume quota when the hedge actually dispatches."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1708,7 +1699,6 @@ class TestRouterHedgeMode:
         """Checkpoint backup selection matches SIM/REAL raw marginal-cost tiebreak."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1759,7 +1749,6 @@ class TestRouterHedgeMode:
         """Checkpoint hedging re-evaluates current state instead of using a stale backup."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
