@@ -142,6 +142,7 @@ explains how to configure and extend an overlay.
    deployment
    releases
    database
+   alert-history
    trusted-proxies-and-client-ips
    automation-score
 

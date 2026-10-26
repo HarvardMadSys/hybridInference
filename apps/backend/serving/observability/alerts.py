@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import enum
+import functools
 import logging
 import platform
 import socket
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
 from serving.config.app_config import config_value
 from serving.config.settings import get_settings
+from serving.observability.alert_history import hooks as _history
+from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
@@ -200,6 +203,38 @@ def server_info() -> dict[str, str]:
 
 def _monotonic() -> float:
     return time.monotonic()
+
+
+#: Tasks currently inside an alert call, with their nesting depth. Read by
+#: alert history at shutdown, which waits (bounded) for every one of them —
+#: request handlers, background alert tasks, scheduler jobs — before it seals.
+_ACTIVE_CALLS: dict[asyncio.Task[Any], int] = {}
+
+
+def _tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Count the calling task as active for the duration of ``fn``."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        task = asyncio.current_task()
+        if task is not None:
+            _ACTIVE_CALLS[task] = _ACTIVE_CALLS.get(task, 0) + 1
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            if task is not None:
+                depth = _ACTIVE_CALLS.get(task, 1) - 1
+                if depth <= 0:
+                    _ACTIVE_CALLS.pop(task, None)
+                else:
+                    _ACTIVE_CALLS[task] = depth
+
+    return wrapper
+
+
+def active_alert_tasks() -> set[asyncio.Task[Any]]:
+    """Tasks inside :func:`alert_slack`, :func:`alert_on_transition` or the sweep."""
+    return {task for task in _ACTIVE_CALLS if not task.done()}
 
 
 def reset_dedupe_state() -> None:
@@ -398,7 +433,15 @@ async def _post_json(
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(webhook_url, json=payload)
-        except Exception:
+        except Exception as exc:
+            # A connection that was never made sent nothing; anything later
+            # (a read timeout, a reset) may have delivered the message.
+            _history.note_delivery(
+                "not_sent"
+                if isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
+                else "unknown",
+                error_code=f"transport:{type(exc).__name__.lower()}"[:100],
+            )
             # Rendered and scrubbed here rather than handed to ``log.exception``:
             # a transport that words its error in terms of the request puts the
             # URL in the traceback, and the traceback is formatted inside the
@@ -413,8 +456,12 @@ async def _post_json(
             )
             return None, "exception", redaction
         if 200 <= resp.status_code < 300:
+            _history.note_delivery("accepted", status=resp.status_code)
             return resp, "", redaction
         failure_key = str(resp.status_code)
+        _history.note_delivery(
+            "rejected", error_code=f"http_{resp.status_code}", status=resp.status_code
+        )
         # A refusal raises nothing, so without this line a webhook that had been
         # revoked failed in complete silence: it answered every post with 404,
         # the caller saw a bare ``False``, and the sole trace was httpx's INFO
@@ -482,6 +529,7 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
     try:
         body = resp.json()
     except Exception:
+        _history.note_delivery("unknown", error_code="wecom_non_json", status=resp.status_code)
         log.warning(
             "wecom webhook post rejected: non-JSON response alert=%s sink=%s",
             dedupe_key or "-",
@@ -492,7 +540,16 @@ async def _post_to_wecom(webhook_url: str, message: str, *, dedupe_key: str = ""
     # Only an integer zero confirms delivery. Missing, null or non-integer: the
     # response cannot confirm delivery, so it is a failure rather than a success.
     if isinstance(errcode, int) and not isinstance(errcode, bool) and errcode == 0:
+        _history.note_delivery("accepted", status=resp.status_code)
         return True
+    if isinstance(errcode, int) and not isinstance(errcode, bool):
+        _history.note_delivery(
+            "rejected", error_code=f"wecom_errcode_{errcode}"[:100], status=resp.status_code
+        )
+    else:
+        _history.note_delivery(
+            "unknown", error_code="wecom_errcode_missing", status=resp.status_code
+        )
     log.warning(
         "wecom webhook post rejected: errcode=%s alert=%s sink=%s",
         errcode,
@@ -521,6 +578,19 @@ class AlertSink(Protocol):
     async def post(self, message: str, *, dedupe_key: str) -> bool:
         """Deliver a message."""
         ...
+
+
+async def post_detailed(sink: AlertSink, message: str, *, dedupe_key: str) -> DeliveryOutcome:
+    """Deliver through ``sink`` and say what happened.
+
+    ``DeliveryOutcome.accepted`` is exactly the bool :meth:`AlertSink.post`
+    returns, so a caller converting back gets the old contract unchanged. A
+    sink without a ``post_detailed`` of its own is wrapped.
+    """
+    detailed = getattr(sink, "post_detailed", None)
+    if detailed is not None:
+        return await detailed(message, dedupe_key=dedupe_key)
+    return await _history.post_detailed(sink, message, dedupe_key=dedupe_key)
 
 
 @dataclass(frozen=True)
@@ -552,6 +622,10 @@ class SlackSink:
         """Post ``{"text": message}`` to this webhook."""
         return await _post_to_slack(self.webhook_url, message, dedupe_key=dedupe_key)
 
+    async def post_detailed(self, message: str, *, dedupe_key: str) -> DeliveryOutcome:
+        """Post, and report accepted / rejected / not_sent / unknown."""
+        return await _history.post_detailed(self, message, dedupe_key=dedupe_key)
+
 
 @dataclass(frozen=True)
 class WeComSink:
@@ -581,6 +655,10 @@ class WeComSink:
     async def post(self, message: str, *, dedupe_key: str) -> bool:
         """Post a markdown card to this webhook."""
         return await _post_to_wecom(self.webhook_url, message, dedupe_key=dedupe_key)
+
+    async def post_detailed(self, message: str, *, dedupe_key: str) -> DeliveryOutcome:
+        """Post, and report accepted / rejected / not_sent / unknown."""
+        return await _history.post_detailed(self, message, dedupe_key=dedupe_key)
 
 
 def configured_sink() -> AlertSink | None:
@@ -629,6 +707,7 @@ async def _type_muted(key: str) -> bool:
         return False
 
 
+@_tracked
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
@@ -637,19 +716,17 @@ async def alert_slack(
     dedupe_key: str | None = None,
     cooldown_sec: int = 300,
     status: Literal["firing", "resolved"] = "firing",
+    history_episode: str | None = None,
 ) -> bool:
     """Send an alert to the one configured channel.
 
     Returns True if the channel accepted the message, False otherwise.
-    """
-    try:
-        sink = configured_sink()
-    except ValueError:
-        log.exception("alert channel configuration is invalid; suppressing")
-        return False
-    if sink is None:
-        return False
 
+    ``history_episode`` names the alert-history episode a *resolution* belongs
+    to; the callers in this module pass it, because by the time a recovery is
+    sent its episode has already ended. A firing joins whatever episode is
+    open on the key. History never changes what this function decides.
+    """
     # Both suppressions below exist to stop a *breach* from repeating, and
     # neither may swallow a resolution. Under the alert control plane a dropped
     # resolution leaves its incident open forever, holding principal quota until
@@ -658,6 +735,22 @@ async def alert_slack(
     resolution = status == "resolved"
 
     key = dedupe_key or f"{severity.value}:{title}"
+    # Bound here, synchronously, before anything below can await: a result that
+    # returns after a new breach opened must not be attributed to it.
+    episode_id = history_episode or (
+        _history.closed_episode(key) if resolution else _history.open_episode(key)
+    )
+    try:
+        sink = configured_sink()
+    except ValueError:
+        log.exception("alert channel configuration is invalid; suppressing")
+        _history.decision(
+            key, episode_id=episode_id, reason="channel_config_invalid", resolution=resolution
+        )
+        return False
+    if sink is None:
+        _history.decision(key, episode_id=episode_id, reason="no_channel", resolution=resolution)
+        return False
     # A resolution waits for a send already running for this key rather than
     # being dropped by the guard. Dropping it costs a repeat for a breach —
     # another evaluation follows — but for a state alert the recovery edge is
@@ -695,6 +788,7 @@ async def alert_slack(
         # Two concurrent sends of the same key would duplicate rather than
         # repeat, so one of them still has to yield.
         if key in _IN_FLIGHT:
+            _history.decision(key, episode_id=episode_id, reason="in_flight", resolution=resolution)
             return False
         # The cooldown is armed on the *attempt* (see the ``finally`` below), so
         # a sink that is refusing everything suppresses repeats instead of being
@@ -707,6 +801,7 @@ async def alert_slack(
         # cooldown per key instead of one per evaluation, forever.
         retry_after_failure = _FAILED_DELIVERIES.get(key, 0) == 1
         if not resolution and last > 0.0 and now - last < cooldown_sec and not retry_after_failure:
+            _history.decision(key, episode_id=episode_id, reason="cooldown")
             return False
         _IN_FLIGHT[key] = asyncio.Event()
 
@@ -728,11 +823,13 @@ async def alert_slack(
         if not resolution:
             if await _type_muted(key):
                 muted = True
+                _history.decision(key, episode_id=episode_id, reason="type_muted")
                 return False
             try:
                 from serving.observability.alert_snooze import is_snoozed
 
                 if await is_snoozed():
+                    _history.decision(key, episode_id=episode_id, reason="snoozed")
                     return False
             except Exception:
                 log.debug("alert snooze check failed; sending alert", exc_info=True)
@@ -753,9 +850,37 @@ async def alert_slack(
                 detail = {**context, "request_id": request_id}
         # Render before attempting delivery: a rendering failure then behaves
         # like it always did (no cooldown armed).
-        message = sink.render(severity, title, detail, status)
+        try:
+            message = sink.render(severity, title, detail, status)
+        except Exception:
+            _history.render_failed(key, episode_id=episode_id, resolution=resolution, sink=sink)
+            raise
+        handle = _history.attempt_begin(
+            key,
+            episode_id=episode_id,
+            resolution=resolution,
+            sink=sink,
+            severity=severity,
+            title=title,
+            context=detail,
+            status=status,
+            sent_message=message,
+        )
         attempted = True
-        sent = await sink.post(message, dedupe_key=key)
+        if handle is None:
+            sent = await sink.post(message, dedupe_key=key)
+            return sent
+        # The same post, with its outcome explained; ``accepted`` is the bool.
+        try:
+            outcome = await post_detailed(sink, message, dedupe_key=key)
+        except asyncio.CancelledError:
+            _history.attempt_end(handle, DeliveryOutcome(False, "unknown", "cancelled"))
+            raise
+        except Exception:
+            _history.attempt_end(handle, DeliveryOutcome(False, "unknown", "exception"))
+            raise
+        _history.attempt_end(handle, outcome)
+        sent = outcome.accepted
         return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")
@@ -862,7 +987,7 @@ _RESOLUTION_DETAIL: dict[str, dict[str, Any]] = {}
 _SILENT_RESOLUTIONS: set[str] = set()
 
 
-def _forget_resolution_detail(key: str) -> None:
+def _forget_resolution_detail(key: str, *, history_episode: str | None = None) -> None:
     """Drop an incident's summary, its builder and its silence. For a close.
 
     The ``_SILENT_RESOLUTIONS`` entry goes with them: every breached evaluation
@@ -870,12 +995,17 @@ def _forget_resolution_detail(key: str) -> None:
     dynamic key and keep a rule silent after it stopped asking to be. So does
     what ``alert_slack`` recorded about the incident's firings, which describes
     this incident and must not carry over to the next one on the same key.
+
+    ``history_episode`` is the alert-history episode this close confirms; only
+    that episode's retry association is released, so a late confirmation for an
+    older episode cannot detach a newer one's.
     """
     _RESOLUTION_CONTEXT.pop(key, None)
     _RESOLUTION_DETAIL.pop(key, None)
     _SILENT_RESOLUTIONS.discard(key)
     _ANNOUNCED.discard(key)
     _MUTED_UNANNOUNCED.discard(key)
+    _history.forget(key, episode_id=history_episode)
 
 
 def _closes_silently(key: str) -> bool:
@@ -942,6 +1072,9 @@ class _PendingResolution:
     queued_at: float = field(default_factory=time.time)
     #: Retries spent by the sweep, for the attempt cap below.
     attempts: int = 0
+    #: The alert-history episode whose recovery this is, fixed when the send
+    #: failed, so retries never attach to a later episode on the same key.
+    history_episode: str | None = None
 
 
 #: Failed resolution sends by key, retried each sweep tick. In-memory like the
@@ -986,6 +1119,7 @@ def reset_transition_state() -> None:
     _MUTED_UNANNOUNCED.clear()
 
 
+@_tracked
 async def alert_on_transition(
     *,
     key: str,
@@ -1052,7 +1186,7 @@ async def alert_on_transition(
         # The incident is (still or again) real, so any resolution queued for a
         # retry is stale — sending it later would announce a live breach as
         # recovered.
-        _PENDING_RESOLUTIONS.pop(key, None)
+        superseded = _PENDING_RESOLUTIONS.pop(key, None)
         _STALE_RETRY_ATTEMPTS.pop(key, None)
         # A summary built for a close that then failed to send describes an
         # incident this breach has reopened; the next close builds its own.
@@ -1069,6 +1203,18 @@ async def alert_on_transition(
             _SILENT_RESOLUTIONS.discard(key)
         else:
             _SILENT_RESOLUTIONS.add(key)
+        detail = context()
+        # History follows the observation, not the tracker: a breach after a
+        # recovery whose card failed (the tracker re-armed and never left
+        # "firing") is a new episode, and the old one's retry ends here.
+        if superseded is not None:
+            _history.retry_terminated(
+                key,
+                episode_id=superseded.history_episode,
+                reason="superseded_by_new_episode",
+                attempts=superseded.attempts,
+            )
+        _history.breach(key, severity=severity, title=title, kind=kind, context=detail, now=moment)
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -1077,13 +1223,21 @@ async def alert_on_transition(
         return await alert_slack(
             severity,
             title,
-            context(),
+            detail,
             dedupe_key=key,
             cooldown_sec=cooldown_sec,
         )
     if transition != "resolved":
+        if not tracker.is_firing(key) and _history.open_episode(key) is not None:
+            # An episode the tracker never held — a producer held its breach
+            # back before it got here — ends at this healthy observation.
+            _history.condition_ended(key, basis="observed_healthy", now=moment)
         return False
+    # Ended now, before the recovery card awaits: whatever the card's fate, the
+    # condition is over, and a breach during the send opens a new episode.
+    episode_id = _history.condition_ended(key, basis="observed_healthy", now=moment)
     if _closes_silently(key):
+        _history.decision(key, episode_id=episode_id, reason="resolution_silenced", resolution=True)
         # Close it, say nothing. There is no send to confirm and so nothing to
         # retry: no ``_PendingResolution`` is queued and the key is not re-armed,
         # since a retry could only reproduce the card this close suppresses.
@@ -1094,7 +1248,7 @@ async def alert_on_transition(
         # dropped here too, so the sweep cannot post on this key's behalf.
         if not tracker.is_firing(key):
             tracker.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=episode_id)
         _PENDING_RESOLUTIONS.pop(key, None)
         return False
     detail = {"alert": key, **_resolution_detail(key)}
@@ -1105,6 +1259,7 @@ async def alert_on_transition(
         dedupe_key=key,
         cooldown_sec=cooldown_sec,
         status="resolved",
+        history_episode=episode_id,
     )
     if sent:
         # Confirmed close — but only when no re-breach slipped in while the
@@ -1117,7 +1272,7 @@ async def alert_on_transition(
         # budgets) would otherwise leak one entry each.
         if not tracker.is_firing(key):
             tracker.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=episode_id)
         _PENDING_RESOLUTIONS.pop(key, None)
     else:
         # ``observe`` already cleared the key, so without this the only
@@ -1131,10 +1286,12 @@ async def alert_on_transition(
             kind=kind,
             title=title,
             queued_at=moment,
+            history_episode=episode_id,
         )
     return sent
 
 
+@_tracked
 async def sweep_stale_breaches() -> None:
     """Resolve breaches that nothing is evaluating any more.
 
@@ -1159,6 +1316,7 @@ async def sweep_stale_breaches() -> None:
             # is live again and this recovery would announce it as over.
             continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
+        retry_episode = pending.history_episode
         if _closes_silently(key):
             # A silent close queues nothing — it has no send that can fail — so
             # this is an entry left by an announcing close on a key that has
@@ -1166,9 +1324,15 @@ async def sweep_stale_breaches() -> None:
             # exists to prevent, so drop it and finish the close here instead:
             # the entry is the only thing holding the incident open, and the
             # identity check above already ruled out a live re-breach.
+            _history.retry_terminated(
+                key,
+                episode_id=retry_episode,
+                reason="resolution_silenced",
+                attempts=pending.attempts,
+            )
             _PENDING_RESOLUTIONS.pop(key, None)
             tracker.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=retry_episode)
             continue
         pending.attempts += 1
         sent = False
@@ -1180,6 +1344,7 @@ async def sweep_stale_breaches() -> None:
                 dedupe_key=key,
                 cooldown_sec=0,
                 status="resolved",
+                history_episode=retry_episode,
             )
         except Exception:
             # One stuck resolution must not strand every other pending one.
@@ -1199,7 +1364,7 @@ async def sweep_stale_breaches() -> None:
             # Confirmed close: clears the re-armed firing state and the key's
             # staleness bound in one step.
             tracker.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=retry_episode)
         elif (
             pending.attempts >= _PENDING_RESOLUTION_MAX_ATTEMPTS
             or now - pending.queued_at >= _PENDING_RESOLUTION_MAX_AGE_SEC
@@ -1212,6 +1377,18 @@ async def sweep_stale_breaches() -> None:
             # that turns a down sink into a once-a-minute repeat of every
             # resolution ever queued.
             _PENDING_RESOLUTIONS.pop(key, None)
+            _history.retry_terminated(
+                key,
+                episode_id=retry_episode,
+                reason=(
+                    "max_attempts"
+                    if pending.attempts >= _PENDING_RESOLUTION_MAX_ATTEMPTS
+                    else "max_age"
+                ),
+                attempts=pending.attempts,
+            )
+            # The tracker stays re-armed, so the episode keeps its retry
+            # association for the stale sweep's own close of this key.
             _forget_resolution_detail(key)
             log.warning(
                 "giving up on resolution delivery for %s after %d attempts",
@@ -1226,7 +1403,15 @@ async def sweep_stale_breaches() -> None:
         # having no recent samples is that rule's normal state. Everything below
         # the send still runs, so the incident closes here as it always did. An
         # incident a type mute kept out of the channel closes here silently too.
+        # The sweep is the "no samples" observation. For a key the tracker had
+        # re-armed after a failed recovery card the episode already ended on
+        # an observed-healthy edge; this only retries that card.
+        episode_id = _history.condition_ended(key, basis="no_samples", now=now)
         silent = _closes_silently(key)
+        if silent:
+            _history.decision(
+                key, episode_id=episode_id, reason="resolution_silenced", resolution=True
+            )
         sent = False
         if not silent:
             try:
@@ -1248,6 +1433,7 @@ async def sweep_stale_breaches() -> None:
                     dedupe_key=key,
                     cooldown_sec=0,
                     status="resolved",
+                    history_episode=episode_id,
                 )
             except Exception:
                 # One stuck resolution must not strand every other open incident.
@@ -1268,7 +1454,7 @@ async def sweep_stale_breaches() -> None:
             # back for a card that will never be sent.
             _STALE_RETRY_ATTEMPTS.pop(key, None)
             _TRANSITIONS.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=episode_id)
             continue
         attempts = _STALE_RETRY_ATTEMPTS.get(key, 0) + 1
         if attempts >= _PENDING_RESOLUTION_MAX_ATTEMPTS:
@@ -1280,8 +1466,11 @@ async def sweep_stale_breaches() -> None:
             # armed — a swept key is one nothing is evaluating any more, so
             # leaving it firing only guarantees it comes back next tick.
             _STALE_RETRY_ATTEMPTS.pop(key, None)
+            _history.retry_terminated(
+                key, episode_id=episode_id, reason="max_attempts", attempts=attempts
+            )
             _TRANSITIONS.forget(key)
-            _forget_resolution_detail(key)
+            _forget_resolution_detail(key, history_episode=episode_id)
             log.warning(
                 "giving up on no-samples resolution for %s after %d attempts",
                 key,

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
@@ -274,6 +275,14 @@ class FailedRequestAlerter:
         if self._last_alert_at is not None and now - self._last_alert_at < timedelta(
             minutes=self.cooldown_minutes
         ):
+            alert_history.external_decision(
+                "failed_request_rate_db",
+                reason="cooldown",
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded (DB-query detector)",
+                kind="metric",
+                context={"count": count, "window_minutes": self.window_minutes},
+            )
             return
 
         breakdown = await fetch_failure_breakdown(self.pool, self.window_minutes)

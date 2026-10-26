@@ -144,6 +144,7 @@ are route handlers, listed above.
 | `/internal/users/:userId/agent-access` | whether one user may use the Cloud Agent, read by the standalone agent (see [Backend Extensions](backend-extensions.md#cloud-agent-access)) |
 | `/internal/agent-grants` | mint an inference grant (`POST`) |
 | `/internal/agent-grants/:path*` | renew / usage / revoke for one grant |
+| `/internal/alert-history/events` | alert-history ingestion from external sources (`POST`; scoped writer token, `404` while off — see [Alert history](alert-history.md)) |
 | `/health` | health check |
 | `/site-updates` | the public site banner |
 | `/site-config` | public deployment identity, consumed by the console's `SiteConfigProvider` |
