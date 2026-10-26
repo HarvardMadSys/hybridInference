@@ -801,6 +801,22 @@ async def update_user(
         if new_status == "suspended" and user_id == get_admin_user_id(request):
             raise HTTPException(409, "Cannot suspend your own account.")
 
+    # Validate key-level fields: the quota is written to the active key, so
+    # with no key -- or with the suspension below revoking it -- nothing of
+    # this request may be written either.
+    key_fields = {
+        k: v
+        for k, v in payload_dict.items()
+        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+    }
+    if key_fields:
+        if new_status == "suspended":
+            raise HTTPException(
+                409, "Suspending a user revokes their API key; change its quota separately"
+            )
+        if not await op_store.get_active_key_by_account(user_id):
+            raise HTTPException(409, "User has no active API key to update")
+
     # Collect all users-table fields for a single round-trip
     user_table_updates: dict[str, object] = {}
     if new_role is not None:
@@ -843,16 +859,7 @@ async def update_user(
         await op_store.update_user_fields(user_id, **user_table_updates)
 
     # Update key-level fields
-    key_fields = {
-        k: v
-        for k, v in payload_dict.items()
-        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
-    }
     if key_fields:
-        has_key = await op_store.get_active_key_by_account(user_id)
-        if not has_key:
-            raise HTTPException(409, "User has no active API key to update")
-
         await op_store.update_key(user_id, **key_fields)
         updated.extend(key_fields)
 

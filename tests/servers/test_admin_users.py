@@ -557,6 +557,40 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_refuses_a_quota_for_a_keyless_user_before_writing(admin_client):
+    """The quota lives on the key; refusing it must not leave the rest applied unaudited."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = None
+
+    response = await client.patch(
+        "/admin/users/u1", headers=AUTH, json={"role": "admin", "quota_daily_cost_usd": 5}
+    )
+
+    assert response.status_code == 409
+    op_store.update_user_fields.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_user_refuses_a_quota_with_a_suspension_before_writing(admin_client):
+    """Suspending revokes the key the quota would be written to."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = {"key_prefix": "hyi-abc"}
+    op_store.suspend_user = AsyncMock()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"status": "suspended", "quota_daily_cost_usd": 5},
+    )
+
+    assert response.status_code == 409
+    op_store.suspend_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_patch_user_sets_admin_note(admin_client):
     """PATCH /admin/users/{id} persists a free-text admin note."""
     client, op_store, _log_store, mock_log = admin_client
