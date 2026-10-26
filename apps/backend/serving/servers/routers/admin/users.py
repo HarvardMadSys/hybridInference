@@ -721,11 +721,12 @@ async def get_user_detail(
         last_login_at=user_row.get("last_login_at"),
         has_key=has_key,
         key_prefix=key_row["key_prefix"] if key_row else None,
+        # ``is not None``: a quota of 0 is a limit, not an unset one.
         quota_daily_usd=float(key_row["quota_daily_cost_usd"])
-        if key_row and key_row.get("quota_daily_cost_usd")
+        if key_row and key_row.get("quota_daily_cost_usd") is not None
         else None,
         quota_monthly_usd=float(key_row["quota_monthly_cost_usd"])
-        if key_row and key_row.get("quota_monthly_cost_usd")
+        if key_row and key_row.get("quota_monthly_cost_usd") is not None
         else None,
         usage_today_usd=usage_today_usd,
         usage_today_requests=usage_today_req,

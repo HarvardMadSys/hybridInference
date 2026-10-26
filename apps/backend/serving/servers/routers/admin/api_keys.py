@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.quota import resolve_quota
 from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
@@ -196,8 +197,11 @@ async def get_api_key_detail(
         models_used = key_usage.get("models_used", [])
         last_request_at = key_usage.get("last_request_at")
 
-    quota_daily = float(row["quota_daily_cost_usd"]) if row["quota_daily_cost_usd"] else 1000.0
-    quota_monthly = float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] else None
+    # As enforcement reads them: only NULL is unset, and a quota of 0 refuses everything.
+    quota_daily = resolve_quota(row["quota_daily_cost_usd"])
+    quota_monthly = (
+        float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] is not None else None
+    )
 
     usage = APIKeyDetailUsage(
         today={
@@ -208,7 +212,9 @@ async def get_api_key_detail(
         this_month={
             "cost_usd": cost_month,
             "requests": requests_month,
-            "quota_remaining_usd": (max(0, quota_monthly - cost_month) if quota_monthly else None),
+            "quota_remaining_usd": (
+                max(0, quota_monthly - cost_month) if quota_monthly is not None else None
+            ),
         },
         models_used=models_used,
         last_request_at=last_request_at,

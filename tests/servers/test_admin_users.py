@@ -2341,6 +2341,23 @@ async def test_user_detail_shows_usage_only_while_the_user_holds_a_key(admin_cli
 
 
 @pytest.mark.asyncio
+async def test_user_detail_shows_a_zero_quota_as_zero(admin_client):
+    """0 is a limit (no spend allowed), and every request is refused under it."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    log_store.get_user_detail_usage = AsyncMock(return_value={})
+    op_store.get_active_key_by_account.return_value = {
+        "key_prefix": "hyi-abc",
+        "quota_daily_cost_usd": Decimal("0.0000"),
+        "quota_monthly_cost_usd": Decimal("0.0000"),
+    }
+
+    detail = (await client.get("/admin/users/u1/detail", headers=AUTH)).json()
+
+    assert (detail["quota_daily_usd"], detail["quota_monthly_usd"]) == (0.0, 0.0)
+
+
+@pytest.mark.asyncio
 async def test_user_detail_for_an_unknown_user_is_a_404(admin_client):
     client, op_store, _log_store, _log = admin_client
     op_store.get_user_by_id.return_value = None
