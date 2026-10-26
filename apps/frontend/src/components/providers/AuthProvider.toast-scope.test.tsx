@@ -117,9 +117,8 @@ async function startAdminMutation() {
       </QueryClientProvider>
     </SiteConfigProvider>,
   );
-  // A tier change is an edit: Edit, change the draft, Save changes, Confirm save.
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
-  const selector = screen.getByLabelText('Reserved tier for key fixture-key-prefix');
+  // A tier change is an edit in place: change the draft, Save changes, Confirm save.
+  const selector = await screen.findByLabelText('Reserved tier for key fixture-key-prefix');
   chooseValue(selector, 'internal');
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to zai key tiers' }));
   expect(api.setProviderKeyMinRole).not.toHaveBeenCalled();

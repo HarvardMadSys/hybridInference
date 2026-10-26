@@ -140,7 +140,7 @@ it('sends exactly one PATCH for a confirmed account-settings save', async () => 
   renderUsers();
 
   fireEvent.click(await screen.findByText('fixture@example.test'));
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit account settings' }));
+  await screen.findByRole('combobox', { name: 'Role' });
   chooseOption('Role', 'pro');
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
   expect(updateUser).not.toHaveBeenCalled();

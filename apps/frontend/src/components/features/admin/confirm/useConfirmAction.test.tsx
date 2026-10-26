@@ -68,6 +68,53 @@ describe('useConfirmAction', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('names the running write by its key, and only while it runs', async () => {
+    let finish!: () => void;
+    const run = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    function KeyedHarness() {
+      const confirmation = useConfirmAction();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              confirmation.request({
+                key: 'alpha weights',
+                title: 'Save alpha weights?',
+                confirmLabel: 'Confirm save',
+                body: null,
+                run,
+              })
+            }
+          >
+            Save alpha
+          </button>
+          <output aria-label="Saving key">{confirmation.savingKey ?? 'none'}</output>
+          {confirmation.dialog}
+        </>
+      );
+    }
+    render(<KeyedHarness />);
+    const savingKey = screen.getByLabelText('Saving key');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    // Open for review is not saving.
+    expect(savingKey).toHaveTextContent('none');
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
+    );
+    expect(savingKey).toHaveTextContent('alpha weights');
+
+    finish();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(savingKey).toHaveTextContent('none');
+  });
+
   it('keeps the dialog open with the error, and retries on Confirm', async () => {
     const run = vi
       .fn<() => Promise<void>>()

@@ -5,6 +5,11 @@ record lists each mutation call site in `apps/frontend/src/app/dashboard/admin/`
 `apps/frontend/src/components/features/admin/`, the rule it falls under, how it is covered and which
 tests check it. It is evidence of what was implemented and verified on this date, not a design spec.
 
+> **Superseded in part (2026-10-26).** The **edit** rule's explicit Edit step is gone: settings are
+> edited in place and the save bar appears with the first change. The review and Confirm save are
+> unchanged. See [2026-10-26-admin-console-in-place-editing.md](2026-10-26-admin-console-in-place-editing.md),
+> which also maps the tests renamed since.
+
 ## Rules applied
 
 | Rule | Applies to | Behaviour |

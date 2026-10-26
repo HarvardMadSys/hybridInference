@@ -66,10 +66,6 @@ function setting(overrides: Partial<RoutewiseSettingItem> = {}): RoutewiseSettin
   };
 }
 
-function editParameters() {
-  fireEvent.click(screen.getByRole('button', { name: 'Edit RouteWise parameters' }));
-}
-
 function saveParameters() {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to RouteWise parameters' }));
 }
@@ -301,9 +297,7 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     const value = await screen.findByLabelText('Cost budget alpha value');
-    expect(value.tagName).toBe('OUTPUT');
-    expect(value).toHaveTextContent('0.55');
-    editParameters();
+    expect(value).toHaveValue(0.55);
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -320,11 +314,12 @@ describe('RoutewiseSettingsPanel model settings', () => {
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
     expect(updateRoutewiseSetting).toHaveBeenCalledWith('model-a', 'routewise_budget_alpha', 0.4);
     expect(await screen.findByText('Source: Override')).toBeInTheDocument();
-    expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.4');
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
     expect(toast.success).toHaveBeenCalledWith('Updated Cost budget alpha.');
   });
 
-  it('keeps values read-only until Edit, and Cancel writes nothing', async () => {
+  it('edits values in place with no save bar until a change, and Discard writes nothing', async () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting()],
@@ -332,26 +327,49 @@ describe('RoutewiseSettingsPanel model settings', () => {
 
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
-    await screen.findByLabelText('Cost budget alpha value');
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    const input = await screen.findByLabelText('Cost budget alpha value');
+    expect(screen.queryByRole('button', { name: /^Edit / })).not.toBeInTheDocument();
+    expect(input).toHaveValue(0.55);
     expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
 
-    editParameters();
-    const input = screen.getByLabelText('Cost budget alpha value');
-    expect(input).toHaveValue(0.55);
-    expect(screen.getByText('No changes yet')).toBeVisible();
     fireEvent.change(input, { target: { value: '0.4' } });
     expect(screen.getByText('1 unsaved change')).toBeVisible();
-    // Typed back to the stored value, it is no change.
-    fireEvent.change(input, { target: { value: '0.55' } });
     expect(
       screen.getByRole('button', { name: 'Save changes to RouteWise parameters' }),
-    ).toBeDisabled();
+    ).toBeEnabled();
+    // Typed back to the stored value, it is no change.
+    fireEvent.change(input, { target: { value: '0.55' } });
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: '0.4' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
-    expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.55');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
+    );
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.55);
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
+  });
+
+  it('reports only unsaved changes or an open confirmation to the parent', async () => {
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      model_id: 'model-a',
+      settings: [setting()],
+    });
+    const onEditingChange = vi.fn();
+
+    render(<RoutewiseSettingsPanel modelId="model-a" onEditingChange={onEditingChange} />);
+
+    const input = await screen.findByLabelText('Cost budget alpha value');
+    expect(onEditingChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(input, { target: { value: '0.4' } });
+    expect(onEditingChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(input, { target: { value: '0.55' } });
+    expect(onEditingChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
+    expect(onEditingChange).toHaveBeenLastCalledWith(true);
+    confirmIn('Cancel');
+    expect(onEditingChange).toHaveBeenLastCalledWith(false);
   });
 
   it('refuses to review an invalid value', async () => {
@@ -363,7 +381,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     await screen.findByLabelText('Cost budget alpha value');
-    editParameters();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '2' },
     });
@@ -389,8 +406,7 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     await screen.findByLabelText('Cost budget alpha value');
-    expect(screen.getByLabelText('Background probes enabled')).toHaveTextContent('Off');
-    editParameters();
+    expect(screen.getByLabelText('Background probes enabled')).not.toBeChecked();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -413,7 +429,8 @@ describe('RoutewiseSettingsPanel model settings', () => {
       ['model-a', 'routewise_budget_alpha', 0.4],
       ['model-a', 'routewise_probe_enabled', true],
     ]);
-    expect(screen.getByLabelText('Background probes enabled')).toHaveTextContent('On');
+    expect(screen.getByLabelText('Background probes enabled')).toBeChecked();
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
   });
 
   it('blocks a second Confirm and closing while the save is in flight', async () => {
@@ -432,7 +449,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     await screen.findByLabelText('Cost budget alpha value');
-    editParameters();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -464,7 +480,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     await screen.findByLabelText('Cost budget alpha value');
-    editParameters();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -494,7 +509,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     await screen.findByLabelText('Cost budget alpha value');
-    editParameters();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -561,6 +575,36 @@ describe('RoutewiseSettingsPanel model settings', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('holds Reset while that setting has an unsaved change', async () => {
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      model_id: 'model-a',
+      settings: [
+        setting({
+          value: 0.4,
+          default_value: 0.55,
+          source: 'runtime_override',
+          overridden: true,
+        }),
+      ],
+    });
+
+    render(<RoutewiseSettingsPanel modelId="model-a" />);
+
+    const reset = await screen.findByRole('button', { name: 'Reset Cost budget alpha' });
+    expect(reset).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
+      target: { value: '0.3' },
+    });
+    expect(reset).toBeDisabled();
+    expect(reset).toHaveAttribute('title', 'Save or discard the unsaved change first');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
+    );
+    expect(reset).toBeEnabled();
+    expect(resetRoutewiseSetting).not.toHaveBeenCalled();
+  });
+
   it('reloads on model changes and ignores a stale response from the old model', async () => {
     let resolveModelA!: (value: { model_id: string; settings: RoutewiseSettingItem[] }) => void;
     const modelAResponse = new Promise<{
@@ -580,7 +624,7 @@ describe('RoutewiseSettingsPanel model settings', () => {
     const view = render(<RoutewiseSettingsPanel modelId="model-a" />);
     view.rerender(<RoutewiseSettingsPanel modelId="model-b" />);
 
-    expect(await screen.findByLabelText('Cost budget alpha value')).toHaveTextContent('0.8');
+    expect(await screen.findByLabelText('Cost budget alpha value')).toHaveValue(0.8);
 
     resolveModelA({
       model_id: 'model-a',
@@ -590,7 +634,7 @@ describe('RoutewiseSettingsPanel model settings', () => {
     await waitFor(() => {
       expect(listRoutewiseSettings).toHaveBeenCalledWith('model-a');
       expect(listRoutewiseSettings).toHaveBeenCalledWith('model-b');
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.8');
+      expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.8);
     });
   });
 
@@ -618,7 +662,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
 
     const view = render(<RoutewiseSettingsPanel modelId="model-a" />);
     await screen.findByLabelText('Cost budget alpha value');
-    editParameters();
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
@@ -627,13 +670,9 @@ describe('RoutewiseSettingsPanel model settings', () => {
     await waitFor(() => expect(updateRoutewiseSetting).toHaveBeenCalled());
 
     view.rerender(<RoutewiseSettingsPanel modelId="model-b" />);
-    await waitFor(() =>
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.8'),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.8));
     view.rerender(<RoutewiseSettingsPanel modelId="model-a" />);
-    await waitFor(() =>
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.7'),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.7));
 
     resolveOldMutation(
       setting({
@@ -645,7 +684,7 @@ describe('RoutewiseSettingsPanel model settings', () => {
     );
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.7');
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.7);
     expect(screen.getByText('Source: models.yaml')).toBeInTheDocument();
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
   });

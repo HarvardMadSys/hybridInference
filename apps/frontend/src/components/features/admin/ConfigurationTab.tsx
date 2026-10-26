@@ -150,11 +150,12 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
 /**
  * Admin → Configuration: every database-backed setting, grouped by category.
  *
- * Each category saves its own changes as one batch (the backend validates a
- * batch together, so related settings can change in one save). After any
- * write the page asks the server components to re-render, which re-reads the
- * public site configuration and so updates the "required settings are
- * missing" banner.
+ * Settings are edited in place, and several categories can hold unsaved
+ * changes at once. Each category saves its own changes as one batch, after a
+ * confirmation (the backend validates a batch together, so related settings
+ * can change in one save). After any write the page asks the server
+ * components to re-render, which re-reads the public site configuration and
+ * so updates the "required settings are missing" banner.
  */
 export function ConfigurationTab({ initialMissingOnly = false }: { initialMissingOnly?: boolean }) {
   const toast = useAccountToast();
@@ -169,8 +170,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [savingGroup, setSavingGroup] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [missingOnly, setMissingOnly] = useState(initialMissingOnly);
-  // One category is edited at a time; every other one shows its saved values.
-  const [editingGroup, setEditingGroup] = useState<string | null>(null);
   // Staged like drafts: nothing is written until the category's save is confirmed.
   const [pendingResets, setPendingResets] = useState<Record<string, true>>({});
   const [pendingSecrets, setPendingSecrets] = useState<Record<string, true>>({});
@@ -294,25 +293,55 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     [config],
   );
 
+  /**
+   * Unsaved changes in a whole category, including entries a filter hides.
+   * Each variable counts once, however many things the save does to it, as the
+   * confirmation counts them; the alert channel choice counts as one.
+   */
+  const dirtyCount = useCallback(
+    (group: ConfigGroup) => {
+      const channelEntries = alertWebhookEntries(group.entries);
+      const selectedEntry = channelEntries
+        ? selectedWebhookEntry(channelEntries, alertChannel)
+        : null;
+      const changedKeys = new Set([
+        ...group.entries
+          .filter(
+            (entry) =>
+              (!channelEntries || !isAlertWebhook(entry.key)) && isDirty(entry, drafts[entry.key]),
+          )
+          .map((entry) => entry.key),
+        ...groupKeys(group, pendingResets),
+        ...groupKeys(group, pendingSecrets),
+      ]);
+      const channelDirty =
+        channelEntries !== null &&
+        (alertChannelDraft !== null ||
+          Boolean(selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])));
+      return changedKeys.size + Number(channelDirty);
+    },
+    [drafts, pendingResets, pendingSecrets, alertChannel, alertChannelDraft],
+  );
+
   const visibleGroups = useMemo(
     () =>
-      groups
-        .map((group) => ({
-          ...group,
-          entries: group.entries.filter(
-            (entry) =>
-              (!missingOnly || entry.missing) &&
-              (matchesQuery(entry, query, group.label) ||
-                (isAlertWebhook(entry.key) &&
-                  'notification channel'.includes(query.trim().toLowerCase()))),
-          ),
-        }))
-        // The edited category stays, so its Cancel and Save stay reachable.
-        .filter((group) => group.entries.length > 0 || group.id === editingGroup),
-    [groups, missingOnly, query, editingGroup],
+      groups.flatMap((group) => {
+        const entries = group.entries.filter(
+          (entry) =>
+            (!missingOnly || entry.missing) &&
+            (matchesQuery(entry, query, group.label) ||
+              (isAlertWebhook(entry.key) &&
+                'notification channel'.includes(query.trim().toLowerCase()))),
+        );
+        // A category with unsaved changes stays, so its Discard and Save stay reachable.
+        return entries.length > 0 || dirtyCount(group) > 0 ? [{ ...group, entries }] : [];
+      }),
+    [groups, missingOnly, query, dirtyCount],
   );
 
   const saveGroup = (group: ConfigGroup) => {
+    // One review at a time: an open one, or a save in flight, is never replaced.
+    if (pendingSave || saveInFlight.current) return;
     // The whole category, including entries a filter is hiding: a change the
     // administrator made stays part of the save it was made for.
     const channelEntries = alertWebhookEntries(group.entries);
@@ -405,7 +434,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       }
       const count = new Set([...keys, ...secrets, ...resets]).size;
       setPendingSave(null);
-      setEditingGroup(null);
       toast.success(
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
@@ -435,14 +463,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     }
   };
 
-  const startEditing = (group: ConfigGroup) => {
-    if (editingGroup !== null) return;
-    setGroupErrors((prev) => withoutKeys(prev, [group.id]));
-    setEditingGroup(group.id);
-  };
-
-  /** Cancel: every draft and staged action of the category goes, and it is read-only again. */
-  const cancelEditing = (group: ConfigGroup) => {
+  /** Discard: every draft and staged action of the category goes, and its saved values are back. */
+  const discardGroup = (group: ConfigGroup) => {
     if (saveInFlight.current) return;
     if (alertWebhookEntries(group.entries)) {
       if (alertTestInFlight.current) return;
@@ -455,7 +477,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setPendingResets((prev) => withoutKeys(prev, keys));
     setPendingSecrets((prev) => withoutKeys(prev, keys));
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
-    setEditingGroup(null);
   };
 
   const toggleReset = (target: ConfigEntry) => {
@@ -577,7 +598,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         setPendingSecrets({});
         setAlertChannelDraft(null);
         setAlertTestResult(null);
-        setEditingGroup(null);
         router.refresh();
         if (res.immutable_keys_preserved.length > 0) {
           toast.success(
@@ -618,32 +638,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const existingKeys = new Set(config.entries.map((entry) => entry.key));
   const resetKeys = new Set(Object.keys(pendingResets));
 
-  /**
-   * Unsaved changes in a whole category, including entries a filter hides.
-   * Each variable counts once, however many things the save does to it, as the
-   * confirmation counts them; the alert channel choice counts as one.
-   */
-  const dirtyCount = (group: ConfigGroup) => {
-    const channelEntries = alertWebhookEntries(group.entries);
-    const selectedEntry = channelEntries
-      ? selectedWebhookEntry(channelEntries, alertChannel)
-      : null;
-    const changedKeys = new Set([
-      ...group.entries
-        .filter(
-          (entry) =>
-            (!channelEntries || !isAlertWebhook(entry.key)) && isDirty(entry, drafts[entry.key]),
-        )
-        .map((entry) => entry.key),
-      ...groupKeys(group, pendingResets),
-      ...groupKeys(group, pendingSecrets),
-    ]);
-    const channelDirty =
-      channelEntries !== null &&
-      (alertChannelDraft !== null ||
-        Boolean(selectedEntry && isDirty(selectedEntry, drafts[selectedEntry.key])));
-    return changedKeys.size + Number(channelDirty);
-  };
   const fullGroup = (visible: ConfigGroup) =>
     groups.find((candidate) => candidate.id === visible.id) ?? visible;
   const sectionAnchor = (group: ConfigGroup) => `config-${group.id.replace(/[^\w-]/g, '-')}`;
@@ -817,12 +811,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           <div className="min-w-0 space-y-8">
             {visibleGroups.map((visible) => {
               const group = fullGroup(visible);
-              const editing = editingGroup === group.id;
               const channelEntries = alertWebhookEntries(group.entries);
               const dirty = dirtyCount(group);
               const hidden = group.entries.length - visible.entries.length;
               const saving = savingGroup === group.id;
               const busy = saving || Boolean(channelEntries && testingAlert);
+              const groupError = groupErrors[group.id];
               const headingId = `${searchId}-${group.id}`;
               return (
                 <section
@@ -831,40 +825,15 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                   aria-labelledby={headingId}
                   className="scroll-mt-4 focus:outline-none"
                 >
-                  <div className="mb-3 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
-                          {group.label}
-                        </h2>
-                        {editing ? (
-                          <span className="rounded bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                            Editing
-                          </span>
-                        ) : null}
-                      </div>
-                      {group.description ? (
-                        <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
-                          {group.description}
-                        </p>
-                      ) : null}
-                    </div>
-                    {editing ? null : (
-                      <button
-                        type="button"
-                        onClick={() => startEditing(group)}
-                        disabled={editingGroup !== null}
-                        title={
-                          editingGroup !== null
-                            ? 'Save or cancel the category you are editing first.'
-                            : undefined
-                        }
-                        aria-label={`Edit ${group.label}`}
-                        className={BUTTON_SECONDARY}
-                      >
-                        Edit
-                      </button>
-                    )}
+                  <div className="mb-3">
+                    <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
+                      {group.label}
+                    </h2>
+                    {group.description ? (
+                      <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
+                        {group.description}
+                      </p>
+                    ) : null}
                   </div>
 
                   {/* A form, so Enter saves the category, and one browsers do not
@@ -875,10 +844,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     noValidate
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (editing && !busy && dirty > 0) saveGroup(group);
+                      if (!busy && dirty > 0) saveGroup(group);
                     }}
                   >
-                    {editing && hidden > 0 ? (
+                    {dirty > 0 && hidden > 0 ? (
                       <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
                         {hidden === group.entries.length
                           ? 'Every setting in this category is hidden by the current filter.'
@@ -886,7 +855,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                         Unsaved changes to them are kept and saved with the rest.
                       </p>
                     ) : null}
-                    <div className={`${PANEL} ${editing ? 'border-gray-400 shadow-sm' : ''}`}>
+                    <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
                       <div className="divide-y divide-gray-100 px-4">
                         {channelEntries &&
                         visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
@@ -902,7 +871,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                             testResult={alertTestResult}
                             onTest={sendAlertTest}
                             onReset={toggleReset}
-                            readOnly={!editing}
                             pendingResets={resetKeys}
                           />
                         ) : null}
@@ -918,7 +886,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                               onReset={toggleReset}
                               onMarkSecret={toggleMarkSecret}
                               layout="split"
-                              readOnly={!editing}
                               resetPending={Boolean(pendingResets[entry.key])}
                               markSecretPending={Boolean(pendingSecrets[entry.key])}
                               disabled={busy}
@@ -926,12 +893,16 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                           ))}
                       </div>
 
-                      {editing ? (
-                        // Sticky, so Cancel and Save stay in reach anywhere in a long category.
-                        <div className="sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
-                          {groupErrors[group.id] ? (
+                      {/* Appears with the first change, or a reason to show, and stays
+                          at the bottom of the window while its category is on screen.
+                          Not the shared EditBar, whose busy state reads "Saving…": a
+                          test notification also holds the Alerts category, and saves
+                          nothing. */}
+                      {dirty > 0 || groupError || saving ? (
+                        <div className="animate-admin-reveal sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+                          {groupError ? (
                             <div className="mb-2">
-                              <AdminNotice role="alert">{groupErrors[group.id]}</AdminNotice>
+                              <AdminNotice role="alert">{groupError}</AdminNotice>
                             </div>
                           ) : null}
                           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -943,12 +914,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                             </span>
                             <button
                               type="button"
-                              onClick={() => cancelEditing(group)}
+                              onClick={() => discardGroup(group)}
                               disabled={busy}
-                              aria-label={`Cancel editing ${group.label}`}
+                              aria-label={`Discard changes to ${group.label}`}
                               className={BUTTON_GHOST}
                             >
-                              Cancel
+                              Discard
                             </button>
                             <button
                               type="submit"

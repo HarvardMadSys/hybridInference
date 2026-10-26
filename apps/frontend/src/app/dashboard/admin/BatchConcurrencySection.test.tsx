@@ -37,9 +37,13 @@ function listing(...models: AdminBatchModelLimit[]) {
 const capOf = (modelId: string) =>
   screen.getByLabelText(`Max concurrent batch requests for ${modelId}`);
 
-async function editSection() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit Batch Concurrency' }));
+/** Wait for the caps to load; they are edited in place. */
+async function loaded() {
+  await screen.findByText('glm-4.7');
 }
+
+const saveButton = () =>
+  screen.queryByRole('button', { name: 'Save changes to Batch Concurrency' });
 
 function clickSave() {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to Batch Concurrency' }));
@@ -61,7 +65,7 @@ describe('BatchConcurrencySection', () => {
     vi.clearAllMocks();
   });
 
-  it('shows each cap, its load, and the default read-only until Edit', async () => {
+  it('shows each cap, its load, and the default, editable in place', async () => {
     vi.mocked(listBatchModelLimits).mockResolvedValue(
       listing(
         row({ model_id: 'glm-4.7', running: 3, queued: 120 }),
@@ -74,18 +78,17 @@ describe('BatchConcurrencySection', () => {
 
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     expect(await screen.findByText('glm-4.7')).toBeInTheDocument();
-    expect(capOf('glm-4.7')).toHaveTextContent('Default (4)');
-    expect(capOf('qwen3.6-35b')).toHaveTextContent('8');
-    expect(capOf('deepseek-v4')).toHaveTextContent('0 (paused)');
-    const glm = screen.getByText('glm-4.7').closest('tr') as HTMLElement;
-    expect(within(glm).getByText('3')).toBeInTheDocument();
-    expect(within(glm).getByText('120')).toBeInTheDocument();
-    expect(screen.queryByRole('spinbutton')).toBeNull();
-
-    await editSection();
+    // An empty input is the default, named by its placeholder.
     expect(capOf('glm-4.7')).toHaveValue(null);
     expect(capOf('glm-4.7')).toHaveAttribute('placeholder', 'Default (4)');
     expect(capOf('qwen3.6-35b')).toHaveValue(8);
+    expect(capOf('deepseek-v4')).toHaveValue(0);
+    const glm = screen.getByText('glm-4.7').closest('tr') as HTMLElement;
+    expect(within(glm).getByText('3')).toBeInTheDocument();
+    expect(within(glm).getByText('120')).toBeInTheDocument();
+    // No Edit step, and no save bar until something changes.
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(saveButton()).toBeNull();
   });
 
   it('sets a cap after the administrator confirms the change', async () => {
@@ -96,7 +99,7 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '6' } });
     expect(updateBatchModelLimit).not.toHaveBeenCalled();
     clickSave();
@@ -110,8 +113,9 @@ describe('BatchConcurrencySection', () => {
     );
     expect(updateBatchModelLimit).toHaveBeenCalledWith('glm-4.7', 6);
     expect(updateBatchModelLimit).toHaveBeenCalledTimes(1);
-    // Read-only again, showing what the backend returned.
-    expect(capOf('glm-4.7')).toHaveTextContent('6');
+    // Nothing left to save, and the row shows what the backend returned.
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(capOf('glm-4.7')).toHaveValue(6);
     const glm = screen.getByText('glm-4.7').closest('tr') as HTMLElement;
     expect(within(glm).getByText('2')).toBeInTheDocument();
   });
@@ -124,7 +128,7 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '' } });
     clickSave();
     expect(screen.getByRole('dialog')).toHaveTextContent('glm-4.72 → Default (4)');
@@ -143,7 +147,7 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '0' } });
     clickSave();
     expect(screen.getByRole('dialog')).toHaveTextContent('glm-4.7Default (4) → 0 (paused)');
@@ -151,7 +155,8 @@ describe('BatchConcurrencySection', () => {
       within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
     );
 
-    await waitFor(() => expect(capOf('glm-4.7')).toHaveTextContent('0 (paused)'));
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(capOf('glm-4.7')).toHaveValue(0);
     expect(updateBatchModelLimit).toHaveBeenCalledWith('glm-4.7', 0);
   });
 
@@ -164,14 +169,16 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value } });
 
     expect(screen.getByRole('alert')).toHaveTextContent(message);
     expect(capOf('glm-4.7')).toHaveAttribute('aria-invalid', 'true');
-    expect(
-      screen.getByRole('button', { name: 'Save changes to Batch Concurrency' }),
-    ).toBeDisabled();
+    // The bar shows for the invalid draft, with Save held back and the reason.
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText('Correct the cap for glm-4.7 before saving.')).toBeVisible();
+    fireEvent.keyDown(capOf('glm-4.7'), { key: 'Enter' });
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(updateBatchModelLimit).not.toHaveBeenCalled();
   });
 
@@ -182,10 +189,12 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '3' } });
     fireEvent.change(capOf('qwen3.6-35b'), { target: { value: '-2' } });
+    expect(saveButton()).toBeDisabled();
     clickSave();
+    fireEvent.keyDown(capOf('glm-4.7'), { key: 'Enter' });
 
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(
@@ -207,7 +216,7 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '1' } });
     fireEvent.change(capOf('qwen3.6-35b'), { target: { value: '' } });
     expect(screen.getByText('2 unsaved changes')).toBeVisible();
@@ -246,7 +255,7 @@ describe('BatchConcurrencySection', () => {
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '2' } });
     saveAndConfirm();
 
@@ -261,19 +270,35 @@ describe('BatchConcurrencySection', () => {
     expect(onToast).toHaveBeenCalledWith('Updated batch concurrency for glm-4.7.');
   });
 
-  it('discards drafts on Cancel without writing', async () => {
+  it('discards drafts on Discard without writing', async () => {
     vi.mocked(listBatchModelLimits).mockResolvedValue(
       listing(row({ model_id: 'glm-4.7', max_concurrency: 2, effective_concurrency: 2 })),
     );
 
     render(<BatchConcurrencySection onToast={onToast} />);
 
-    await editSection();
+    await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '5' } });
     expect(screen.getByText('1 unsaved change')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Batch Concurrency' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Batch Concurrency' }));
 
-    expect(capOf('glm-4.7')).toHaveTextContent('2');
+    expect(capOf('glm-4.7')).toHaveValue(2);
+    expect(saveButton()).toBeNull();
+    expect(updateBatchModelLimit).not.toHaveBeenCalled();
+  });
+
+  it('hides the save bar again once a cap is typed back to its saved value', async () => {
+    vi.mocked(listBatchModelLimits).mockResolvedValue(
+      listing(row({ model_id: 'glm-4.7', max_concurrency: 2, effective_concurrency: 2 })),
+    );
+
+    render(<BatchConcurrencySection onToast={onToast} />);
+
+    await loaded();
+    fireEvent.change(capOf('glm-4.7'), { target: { value: '5' } });
+    expect(saveButton()).toBeEnabled();
+    fireEvent.change(capOf('glm-4.7'), { target: { value: '2' } });
+    expect(saveButton()).toBeNull();
     expect(updateBatchModelLimit).not.toHaveBeenCalled();
   });
 });

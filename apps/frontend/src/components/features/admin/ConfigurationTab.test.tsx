@@ -208,12 +208,7 @@ function confirmSave() {
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
 }
 
-/** Put a category in edit mode: every category starts read-only. */
-function editCategory(name: string) {
-  fireEvent.click(screen.getByRole('button', { name: `Edit ${name}` }));
-}
-
-/** Save a category being edited, and confirm the list of changes. */
+/** Save a category's unsaved changes, and confirm the list of them. */
 function saveAndConfirm(name: string) {
   fireEvent.click(screen.getByRole('button', { name: `Save changes to ${name}` }));
   confirmSave();
@@ -240,10 +235,13 @@ describe('alert notification channel', () => {
   it('infers Slack and shows only its friendly, write-only webhook field', async () => {
     await renderTab(alertConfig());
     const alerts = within(section('Alerts'));
-    // Read-only until Edit: the channel is shown, not offered.
-    expect(alerts.queryByRole('combobox')).not.toBeInTheDocument();
-    expect(alerts.getByLabelText('Notification channel')).toHaveTextContent('Slack');
+    // Editable in place: the channel is offered, and the saved webhook says only that it is set.
+    expect(alerts.getByRole('combobox', { name: 'Notification channel' })).toHaveTextContent(
+      'Slack',
+    );
     expect(alerts.getByLabelText('Slack webhook URL')).toHaveTextContent('Set');
+    expect(alerts.getByRole('button', { name: 'Replace Slack webhook URL' })).toBeEnabled();
+    expect(alerts.queryByRole('button', { name: /changes to Alerts$/ })).not.toBeInTheDocument();
     expect(alerts.queryByLabelText('WeCom webhook URL')).not.toBeInTheDocument();
     expect(alerts.queryByText('SLACK_WEBHOOK_URL')).not.toBeInTheDocument();
     expect(alerts.queryByText('WECOM_ALERTS_WEBHOOK_URL')).not.toBeInTheDocument();
@@ -252,7 +250,6 @@ describe('alert notification channel', () => {
 
   it('switches Slack to WeCom with one write clearing both Slack sources', async () => {
     await renderTab(alertConfig(['SLACK_ALERTS_WEBHOOK_URL', 'SLACK_WEBHOOK_URL']));
-    editCategory('Alerts');
     chooseAlertChannel('WeCom');
     expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
@@ -279,7 +276,6 @@ describe('alert notification channel', () => {
 
   it('does not clear the current channel when the chosen replacement is empty', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     chooseAlertChannel('WeCom');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Alerts' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -290,7 +286,6 @@ describe('alert notification channel', () => {
 
   it('keeps an unsaved webhook replacement when the current channel is reselected', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
       target: { value: SLACK_WEBHOOK },
@@ -325,7 +320,6 @@ describe('alert notification channel', () => {
 
   it('switches WeCom to Slack atomically using the URL that also enables failed-request alerts', async () => {
     await renderTab(alertConfig(['WECOM_ALERTS_WEBHOOK_URL']));
-    editCategory('Alerts');
     expect(screen.getByLabelText('Notification channel')).toHaveTextContent('WeCom');
     expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
     chooseAlertChannel('Slack');
@@ -346,7 +340,6 @@ describe('alert notification channel', () => {
 
   it('turns notifications off by clearing every URL including the legacy fallback', async () => {
     await renderTab(alertConfig(['SLACK_WEBHOOK_URL']));
-    editCategory('Alerts');
     chooseAlertChannel('None');
     expect(screen.queryByLabelText('Slack webhook URL')).not.toBeInTheDocument();
     expect(
@@ -367,7 +360,6 @@ describe('alert notification channel', () => {
 
   it('keeps an existing legacy Slack URL on its original key when replacing it', async () => {
     await renderTab(alertConfig(['SLACK_WEBHOOK_URL']));
-    editCategory('Alerts');
     expect(screen.getByLabelText('Notification channel')).toHaveTextContent('Slack');
     fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
@@ -385,9 +377,8 @@ describe('alert notification channel', () => {
     );
   });
 
-  it('discards hidden credential drafts when switching and restores saved selection on Cancel', async () => {
+  it('discards hidden credential drafts when switching and restores saved selection on Discard', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     chooseAlertChannel('WeCom');
     fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
       target: { value: WECOM_WEBHOOK },
@@ -396,20 +387,20 @@ describe('alert notification channel', () => {
     chooseAlertChannel('WeCom');
     expect(screen.getByLabelText('WeCom webhook URL')).toHaveValue('');
     fireEvent.click(
-      within(section('Alerts')).getByRole('button', { name: 'Cancel editing Alerts' }),
+      within(section('Alerts')).getByRole('button', { name: 'Discard changes to Alerts' }),
     );
-    expect(screen.getByLabelText('Notification channel')).toHaveTextContent('Slack');
+    expect(screen.getByRole('combobox', { name: 'Notification channel' })).toHaveTextContent(
+      'Slack',
+    );
     expect(screen.getByLabelText('Slack webhook URL')).toHaveTextContent('Set');
     expect(
       screen.queryByRole('button', { name: 'Save changes to Alerts' }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(patchConfig).not.toHaveBeenCalled();
   });
 
   it('preserves channel drafts through filtering and saves hidden category changes together', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('switch', { name: 'ALERTS_ENABLED' }));
     chooseAlertChannel('WeCom');
     fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
@@ -451,7 +442,6 @@ describe('alert notification channel', () => {
 
   it('configures fresh Slack through the shared URL used by the engine and failed-request detector', async () => {
     await renderTab(alertConfig([]));
-    editCategory('Alerts');
     chooseAlertChannel('Slack');
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
       target: { value: SLACK_WEBHOOK },
@@ -499,7 +489,6 @@ describe('alert notification channel', () => {
 
   it('tests an unsaved replacement and removes the success result when it changes', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
       target: { value: SLACK_WEBHOOK },
@@ -529,7 +518,6 @@ describe('alert notification channel', () => {
         }),
     );
     await renderTab(alertConfig());
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
       target: { value: SLACK_WEBHOOK },
@@ -540,7 +528,7 @@ describe('alert notification channel', () => {
     expect(screen.getByLabelText('Slack webhook URL')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save changes to Alerts' })).toBeDisabled();
     expect(
-      within(section('Alerts')).getByRole('button', { name: 'Cancel editing Alerts' }),
+      within(section('Alerts')).getByRole('button', { name: 'Discard changes to Alerts' }),
     ).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Sending test…' }));
     expect(testAlertNotification).toHaveBeenCalledTimes(1);
@@ -548,9 +536,26 @@ describe('alert notification channel', () => {
     await screen.findByText('Test sent. Check your Slack channel for test-123.');
   });
 
+  it('shows no save bar while the saved webhook is tested: a test changes nothing', async () => {
+    let finish!: (value: { channel: 'slack'; sent: true; test_id: string }) => void;
+    vi.mocked(testAlertNotification).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderTab(alertConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    confirmTestSend();
+    expect(screen.getByRole('button', { name: 'Sending test…' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /changes to Alerts$/ })).not.toBeInTheDocument();
+    finish({ channel: 'slack', sent: true, test_id: 'test-123' });
+    await screen.findByText('Test sent. Check your Slack channel for test-123.');
+    expect(screen.queryByRole('button', { name: /changes to Alerts$/ })).not.toBeInTheDocument();
+  });
+
   it('uses the same trimmed webhook URL when testing and saving a replacement', async () => {
     await renderTab(alertConfig());
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('button', { name: 'Replace Slack webhook URL' }));
     fireEvent.change(screen.getByLabelText('Slack webhook URL'), {
       target: { value: `  ${SLACK_WEBHOOK}  ` },
@@ -650,7 +655,6 @@ describe('alert notification channel', () => {
         : item,
     );
     await renderTab(config);
-    editCategory('Alerts');
     const alerts = within(section('Alerts'));
     expect(alerts.getByText(/empty stored value also hides any webhook/)).toBeInTheDocument();
 
@@ -677,7 +681,6 @@ describe('alert notification channel', () => {
         : item,
     );
     await renderTab(config);
-    editCategory('Alerts');
     const alerts = within(section('Alerts'));
     expect(alerts.queryByRole('button', { name: 'Reset WECOM_ALERTS_WEBHOOK_URL' })).toBeNull();
   });
@@ -694,7 +697,6 @@ describe('alert notification channel', () => {
         : item,
     );
     await renderTab(config);
-    editCategory('Alerts');
     const alerts = within(section('Alerts'));
     expect(
       alerts.getByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' }),
@@ -712,7 +714,6 @@ describe('alert notification channel', () => {
 
   it('does not offer Reset before the save that empties a channel', async () => {
     await renderTab(alertConfig(['SLACK_ALERTS_WEBHOOK_URL']));
-    editCategory('Alerts');
     chooseAlertChannel('None');
     const alerts = within(section('Alerts'));
     expect(alerts.queryByRole('button', { name: 'Reset SLACK_ALERTS_WEBHOOK_URL' })).toBeNull();
@@ -724,8 +725,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('editing a category', () => {
-  it('shows saved values read-only until the category is edited', async () => {
+describe('editing in place', () => {
+  it('offers every category for editing at once, with no Edit step and no save bar until a change', async () => {
     await renderTab(
       makeConfig({
         entries: [
@@ -741,89 +742,113 @@ describe('editing a category', () => {
       }),
     );
 
-    for (const [key, shown] of [
-      ['SMTP_HOST', 'smtp.example.test'],
-      ['SMTP_PORT', '25'],
-      ['SMTP_USERNAME', 'mailer'],
-      ['SMTP_PASSWORD', 'Set'],
-      ['TRUST_PROXY_HEADERS', 'On'],
-      ['FEATHERLESS_BASE_URL', 'https://a.test'],
-    ]) {
-      const field = screen.getByLabelText(key);
-      expect(field.tagName).toBe('OUTPUT');
-      expect(field).toHaveTextContent(shown);
-    }
-    expect(screen.queryByRole('textbox')).toBeNull();
-    expect(screen.queryByRole('spinbutton')).toBeNull();
-    expect(screen.queryByRole('switch')).toBeNull();
-    // No action that changes a value either: Reset, Replace, Clear, Save.
-    expect(screen.queryByRole('button', { name: /^(Reset|Replace|Clear|Save) / })).toBeNull();
-    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
-
-    editCategory('Email (SMTP)');
     expect(screen.getByLabelText('SMTP_HOST')).toHaveValue('smtp.example.test');
     expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(25);
     expect(screen.getByLabelText('SMTP_USERNAME')).toHaveValue('mailer');
-    expect(screen.getByRole('button', { name: 'Replace SMTP_PASSWORD' })).toBeVisible();
-    // Only that category: the others stay read-only, and cannot be opened alongside it.
-    expect(screen.getByLabelText('FEATHERLESS_BASE_URL').tagName).toBe('OUTPUT');
-    expect(screen.queryByRole('switch')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Edit Providers' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Edit Email (SMTP)' })).toBeNull();
+    expect(screen.getByLabelText('SMTP_PASSWORD')).toHaveTextContent('Set');
+    expect(screen.getByRole('button', { name: 'Replace SMTP_PASSWORD' })).toBeEnabled();
+    expect(screen.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' })).toBeChecked();
+    expect(screen.getByLabelText('FEATHERLESS_BASE_URL')).toHaveValue('https://a.test');
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(screen.queryByText('Editing')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(Discard|Save) changes to / })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+
+    fireEvent.change(screen.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    // A bar for the changed category only, and nothing written yet.
+    const email = within(section('Email (SMTP)'));
+    expect(email.getByText('1 unsaved change')).toBeVisible();
+    expect(email.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
+    expect(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' })).toBeEnabled();
+    expect(screen.getAllByRole('button', { name: /^Save changes to / })).toHaveLength(1);
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 
-  it('allows no save without a change, and counts the unsaved ones', async () => {
+  it('shows no save bar without a change, and counts the unsaved ones', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = within(section('Email (SMTP)'));
-    const save = email.getByRole('button', { name: 'Save changes to Email (SMTP)' });
+    const port = email.getByLabelText('SMTP_PORT');
 
-    expect(email.getByText('No changes yet')).toBeVisible();
-    expect(save).toBeDisabled();
-    fireEvent.submit(save.closest('form') as HTMLFormElement);
+    expect(email.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
+    // Enter with nothing changed asks nothing.
+    fireEvent.submit(port.closest('form') as HTMLFormElement);
     expect(screen.queryByRole('dialog')).toBeNull();
 
-    fireEvent.change(email.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+    fireEvent.change(port, { target: { value: '587' } });
     fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.test' } });
     expect(email.getByText('2 unsaved changes')).toBeVisible();
-    expect(save).toBeEnabled();
+    expect(email.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
 
-    // Typed back to what is saved: not a change.
-    fireEvent.change(email.getByLabelText('SMTP_PORT'), { target: { value: '25' } });
+    // Typed back to what is saved: not a change, so the bar goes again.
+    fireEvent.change(port, { target: { value: '25' } });
     fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: '' } });
-    expect(email.getByText('No changes yet')).toBeVisible();
-    expect(save).toBeDisabled();
+    expect(email.queryByText(/unsaved change/)).toBeNull();
+    expect(email.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 
-  it('cancels without writing: the drafts go and the saved values are back', async () => {
+  it("discards without writing: the category's drafts go, and another category's stay", async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = within(section('Email (SMTP)'));
+    const network = within(section('Network'));
     fireEvent.change(email.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
     fireEvent.click(email.getByRole('button', { name: 'Clear SMTP_PASSWORD' }));
     fireEvent.click(email.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    fireEvent.click(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }));
 
-    fireEvent.click(email.getByRole('button', { name: 'Cancel editing Email (SMTP)' }));
+    fireEvent.click(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' }));
 
-    expect(email.getByLabelText('SMTP_PORT')).toHaveTextContent('25');
-    expect(email.getByLabelText('SMTP_PASSWORD')).toHaveTextContent('Set');
-    expect(email.queryByRole('button', { name: /^Save changes/ })).toBeNull();
-    // Editing again starts from the saved values.
-    editCategory('Email (SMTP)');
     expect(email.getByLabelText('SMTP_PORT')).toHaveValue(25);
-    expect(email.getByText('No changes yet')).toBeVisible();
+    expect(email.getByLabelText('SMTP_PASSWORD')).toHaveTextContent('Set');
+    expect(email.queryByRole('button', { name: /changes to Email \(SMTP\)$/ })).toBeNull();
+    expect(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' })).toBeChecked();
+    expect(network.getByText('1 unsaved change')).toBeVisible();
     expect(patchConfig).not.toHaveBeenCalled();
     expect(resetConfigKey).not.toHaveBeenCalled();
   });
 
-  it('writes once, on Confirm save, and then shows the saved values read-only', async () => {
+  it('holds drafts in several categories at once, and saves only the one asked', async () => {
     const saved = makeConfig();
     saved.entries = saved.entries.map((item) =>
       item.key === 'SMTP_PORT' ? { ...item, value: 587 } : item,
     );
     vi.mocked(patchConfig).mockResolvedValueOnce(saved);
     await renderTab();
-    editCategory('Email (SMTP)');
+    const email = within(section('Email (SMTP)'));
+    const network = within(section('Network'));
+    fireEvent.change(email.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+    fireEvent.click(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }));
+    fireEvent.change(network.getByLabelText('CORS_ALLOWED_ORIGINS'), {
+      target: { value: 'https://b.test' },
+    });
+    expect(email.getByText('1 unsaved change')).toBeVisible();
+    expect(network.getByText('2 unsaved changes')).toBeVisible();
+
+    saveAndConfirm('Email (SMTP)');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } });
+    expect(email.getByLabelText('SMTP_PORT')).toHaveValue(587);
+    expect(email.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
+    // Network's drafts outlive the other category's save, still unsaved.
+    expect(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' })).toBeChecked();
+    expect(network.getByLabelText('CORS_ALLOWED_ORIGINS')).toHaveValue('https://b.test');
+    expect(network.getByText('2 unsaved changes')).toBeVisible();
+
+    saveAndConfirm('Network');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      values: { TRUST_PROXY_HEADERS: true, CORS_ALLOWED_ORIGINS: 'https://b.test' },
+    });
+  });
+
+  it('writes once, on Confirm save, and then shows the saved values', async () => {
+    const saved = makeConfig();
+    saved.entries = saved.entries.map((item) =>
+      item.key === 'SMTP_PORT' ? { ...item, value: 587 } : item,
+    );
+    vi.mocked(patchConfig).mockResolvedValueOnce(saved);
+    await renderTab();
     fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
@@ -841,10 +866,9 @@ describe('editing a category', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(patchConfig).toHaveBeenCalledTimes(1);
     expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } });
-    const port = screen.getByLabelText('SMTP_PORT');
-    expect(port.tagName).toBe('OUTPUT');
-    expect(port).toHaveTextContent('587');
-    expect(screen.getByRole('button', { name: 'Edit Email (SMTP)' })).toBeEnabled();
+    // The saved value, with nothing left unsaved.
+    expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(587);
+    expect(screen.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
   });
 
   it('blocks a second submission while the save is in flight', async () => {
@@ -856,7 +880,6 @@ describe('editing a category', () => {
         }),
     );
     await renderTab();
-    editCategory('Email (SMTP)');
     fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
     saveAndConfirm('Email (SMTP)');
 
@@ -866,7 +889,7 @@ describe('editing a category', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Saving…' }));
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Cancel editing Email (SMTP)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Discard changes to Email (SMTP)' })).toBeDisabled();
     expect(patchConfig).toHaveBeenCalledTimes(1);
 
     finish(makeConfig());
@@ -874,24 +897,29 @@ describe('editing a category', () => {
     expect(patchConfig).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the drafts and the edit open when the save fails', async () => {
+  it('keeps the drafts when the save fails, until they are discarded', async () => {
     vi.mocked(patchConfig).mockRejectedValueOnce(
       new APIError('HTTP_500', 'The database is unavailable.', 500),
     );
     await renderTab();
-    editCategory('Email (SMTP)');
     fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
     fireEvent.change(screen.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.test' } });
     saveAndConfirm('Email (SMTP)');
 
-    expect(await within(section('Email (SMTP)')).findByRole('alert')).toHaveTextContent(
-      'The database is unavailable.',
-    );
+    const email = within(section('Email (SMTP)'));
+    expect(await email.findByRole('alert')).toHaveTextContent('The database is unavailable.');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(587);
     expect(screen.getByLabelText('SMTP_HOST')).toHaveValue('smtp.test');
     expect(screen.getByText('2 unsaved changes')).toBeVisible();
     expect(refreshMock).not.toHaveBeenCalled();
+
+    // Discard takes the reason with the drafts.
+    fireEvent.click(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' }));
+    expect(email.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(25);
+    expect(email.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
+    expect(patchConfig).toHaveBeenCalledTimes(1);
   });
 
   it('confirms a secret only as Replace or Clear, never its value', async () => {
@@ -900,7 +928,6 @@ describe('editing a category', () => {
       entry({ key: 'SMTP_API_TOKEN', category: 'email', secret: true, value: LEAKED_SECRET }),
     );
     await renderTab(config);
-    editCategory('Email (SMTP)');
     fireEvent.click(screen.getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
     fireEvent.change(screen.getByLabelText('SMTP_PASSWORD'), {
       target: { value: 'typed-new-secret' },
@@ -920,7 +947,6 @@ describe('editing a category', () => {
       new APIError('HTTP_400', 'SMTP_PASSWORD: typed-new-secret is not accepted', 400),
     );
     await renderTab();
-    editCategory('Email (SMTP)');
     fireEvent.click(screen.getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
     fireEvent.change(screen.getByLabelText('SMTP_PASSWORD'), {
       target: { value: 'typed-new-secret' },
@@ -953,7 +979,6 @@ describe('edit flow edge cases', () => {
   it('keeps only the unwritten steps after a reset fails, and retries just those', async () => {
     const config = resettableEmail();
     await renderTab(config);
-    editCategory('Email (SMTP)');
     fireEvent.change(screen.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_FROM_NAME' }));
@@ -975,7 +1000,7 @@ describe('edit flow edge cases', () => {
       'SMTP_FROM_NAME could not be reset: The database is unavailable.',
     );
     expect(email.getByRole('alert')).toHaveTextContent('2 changes were saved');
-    // Still editing, with what was not written still staged.
+    // What was not written is still staged.
     expect(email.getByText('2 unsaved changes')).toBeVisible();
     expect(email.getByLabelText('SMTP_FROM_NAME')).toHaveTextContent('Reset when you save');
     expect(email.getByLabelText('SMTP_FROM_EMAIL')).toHaveTextContent('Reset when you save');
@@ -995,7 +1020,8 @@ describe('edit flow edge cases', () => {
       'SMTP_FROM_NAME',
       'SMTP_FROM_EMAIL',
     ]);
-    expect(screen.getByRole('button', { name: 'Edit Email (SMTP)' })).toBeEnabled();
+    expect(email.queryByRole('alert')).toBeNull();
+    expect(email.queryByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeNull();
   });
 
   describe('a save that both changes and resets', () => {
@@ -1015,7 +1041,6 @@ describe('edit flow edge cases', () => {
 
     async function stageTrustChange() {
       await renderTab(trustConfig());
-      editCategory('Network');
       fireEvent.click(
         within(section('Network')).getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }),
       );
@@ -1066,7 +1091,6 @@ describe('edit flow edge cases', () => {
   it('does not resend a channel switch that was written before a reset failed', async () => {
     const config = alertConfig(['SLACK_ALERTS_WEBHOOK_URL']);
     await renderTab(config);
-    editCategory('Alerts');
     chooseAlertChannel('WeCom');
     fireEvent.change(screen.getByLabelText('WeCom webhook URL'), {
       target: { value: WECOM_WEBHOOK },
@@ -1094,7 +1118,6 @@ describe('edit flow edge cases', () => {
         : item,
     );
     await renderTab(config);
-    editCategory('Alerts');
     fireEvent.click(screen.getByRole('button', { name: 'Reset SLACK_WEBHOOK_URL' }));
     chooseAlertChannel('Slack');
 
@@ -1110,18 +1133,51 @@ describe('edit flow edge cases', () => {
     expect(resetConfigKey).not.toHaveBeenCalled();
   });
 
-  it('keeps the edited category, and its Cancel and Save, visible under any filter', async () => {
+  it('keeps a category with unsaved changes visible when a search would hide it', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
+    const search = screen.getByLabelText('Search settings');
+    // With nothing changed, a search that matches nothing in Email hides it.
+    fireEvent.change(search, { target: { value: 'glm' } });
+    expect(screen.queryByRole('region', { name: 'Email (SMTP)' })).toBeNull();
+    fireEvent.change(search, { target: { value: '' } });
+
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+    fireEvent.change(search, { target: { value: 'glm' } });
+    const email = within(section('Email (SMTP)'));
+    expect(email.queryByLabelText('SMTP_PORT')).toBeNull();
+    expect(
+      email.getByText(
+        'Every setting in this category is hidden by the current filter. ' +
+          'Unsaved changes to them are kept and saved with the rest.',
+      ),
+    ).toBeVisible();
+    expect(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' })).toBeEnabled();
+    expect(email.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
+    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
+    expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
+      'unsaved changes',
+    );
+    // A category with nothing unsaved is still filtered out.
+    expect(screen.queryByRole('region', { name: 'Network' })).toBeNull();
+
+    // Once its changes are discarded, nothing keeps it there.
+    fireEvent.click(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' }));
+    expect(screen.queryByRole('region', { name: 'Email (SMTP)' })).toBeNull();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('saves changes a filter hides with the rest of their category', async () => {
+    await renderTab();
     fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
 
-    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
-    expect(screen.getByRole('button', { name: 'Cancel editing Email (SMTP)' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
-    expect(within(section('Email (SMTP)')).getByText(/hidden by the current filter/)).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: '' } });
-
     fireEvent.click(screen.getByRole('checkbox', { name: 'Missing only' }));
+    expect(screen.queryByLabelText('SMTP_PORT')).toBeNull();
+    expect(
+      within(section('Email (SMTP)')).getByText(
+        '2 settings in this category are hidden by the current filter. ' +
+          'Unsaved changes to them are kept and saved with the rest.',
+      ),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
     confirmSave();
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith({ values: { SMTP_PORT: 587 } }));
@@ -1143,7 +1199,6 @@ describe('edit flow edge cases', () => {
         pending_restart: [],
       }),
     );
-    editCategory('Providers');
     fireEvent.change(screen.getByLabelText('ROUTE_REGION'), { target: { value: 'us-east' } });
     fireEvent.click(screen.getByRole('button', { name: 'Mark ROUTE_REGION as secret' }));
 
@@ -1162,19 +1217,15 @@ describe('secrets', () => {
     expect(screen.queryByDisplayValue(LEAKED_SECRET)).not.toBeInTheDocument();
     const email = section('Email (SMTP)');
     expect(within(email).getByText('Set')).toBeInTheDocument();
-    expect(within(section('Providers')).getByLabelText('ZAI_API_KEY')).toHaveTextContent('Not set');
-    // Once edited, a secret with no value is open for typing, with nothing to reveal.
-    editCategory('Providers');
-    expect(within(section('Providers')).getByLabelText('ZAI_API_KEY')).toHaveAttribute(
-      'placeholder',
-      'Not set',
-    );
+    // A secret with no value is open for typing, with nothing to reveal.
+    const unset = within(section('Providers')).getByLabelText('ZAI_API_KEY');
+    expect(unset).toHaveAttribute('placeholder', 'Not set');
+    expect(unset).toHaveValue('');
     expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
   });
 
   it('replaces a secret write-only: the typed value is sent once and not shown again', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
 
     fireEvent.click(within(email).getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
@@ -1196,7 +1247,6 @@ describe('secrets', () => {
 
   it('clears a secret by sending the empty string', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
 
     fireEvent.click(within(email).getByRole('button', { name: 'Clear SMTP_PASSWORD' }));
@@ -1211,7 +1261,6 @@ describe('secrets', () => {
 
   it('offers no edit for an immutable secret that is set', async () => {
     await renderTab();
-    editCategory('Security');
     const security = section('Security');
 
     expect(within(security).getByText(/cannot be changed once set/)).toBeInTheDocument();
@@ -1268,14 +1317,12 @@ describe('marking a variable secret', () => {
 
   /** Stage the flag on `key` and save Providers with it. */
   function saveMarking(key: string) {
-    editCategory('Providers');
     fireEvent.click(screen.getByRole('button', { name: `Mark ${key} as secret` }));
     saveAndConfirm('Providers');
   }
 
   it('is offered for stored variables, not for built-in settings or secrets', async () => {
     await renderTab(withVariables());
-    editCategory('Providers');
 
     expect(screen.getByRole('button', { name: 'Mark MY_ROUTE_HEADER as secret' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Mark ROUTE_REGION as secret' })).toBeVisible();
@@ -1289,7 +1336,6 @@ describe('marking a variable secret', () => {
       ...config,
       entries: config.entries.map(({ origin: _origin, ...older }) => older),
     });
-    editCategory('Providers');
 
     expect(screen.queryByRole('button', { name: /^Mark .* as secret$/ })).toBeNull();
   });
@@ -1314,7 +1360,6 @@ describe('marking a variable secret', () => {
         pending_restart: [],
       }),
     );
-    editCategory('Providers');
     const providers = section('Providers');
 
     expect(
@@ -1327,7 +1372,6 @@ describe('marking a variable secret', () => {
     const config = withVariables();
     vi.mocked(patchConfig).mockResolvedValueOnce(markedIn(config, 'MY_ROUTE_HEADER', true));
     await renderTab(config);
-    editCategory('Providers');
     const providers = section('Providers');
     const field = within(providers).getByLabelText('MY_ROUTE_HEADER');
     expect(field).toHaveValue(HEADER_VALUE);
@@ -1382,7 +1426,7 @@ describe('marking a variable secret', () => {
     expect(await within(section('Providers')).findByRole('alert')).toHaveTextContent(
       'The backend answered, but ROUTE_REGION is still not secret.',
     );
-    // Still editing, with the flag still staged.
+    // The flag is still staged.
     expect(screen.getByRole('button', { name: 'Keep ROUTE_REGION visible' })).toBeVisible();
     expect(screen.getByLabelText('ROUTE_REGION')).toHaveValue('eu-west');
     expect(refreshMock).not.toHaveBeenCalled();
@@ -1392,7 +1436,7 @@ describe('marking a variable secret', () => {
   it.each([
     'ROUTE_REGION has no stored value to protect yet: set a value and mark it secret in the same save.',
     "ROUTE_REGION: a built-in setting keeps the registry's secret flag.",
-  ])('keeps the edit open with the reason the backend gave: %s', async (message) => {
+  ])('keeps the staged flag with the reason the backend gave: %s', async (message) => {
     vi.mocked(patchConfig).mockRejectedValueOnce(new APIError('HTTP_400', message, 400));
     await renderTab(withVariables());
 
@@ -1433,7 +1477,6 @@ describe('locked settings', () => {
     );
     render(<ConfigurationTab />);
     const security = await screen.findByRole('region', { name: 'Security' });
-    editCategory('Security');
 
     const fence = within(security).getByLabelText('ERASURE_FENCE_SECRET');
     expect(fence.tagName).toBe('OUTPUT');
@@ -1441,12 +1484,8 @@ describe('locked settings', () => {
     expect(within(security).getByLabelText('PINNED')).toHaveTextContent(
       'v1 · cannot be changed once set',
     );
-    // Even in edit mode: no Replace, Clear, Reset or Mark as secret, and nothing to type into.
-    expect(
-      within(security)
-        .getAllByRole('button')
-        .map((button) => button.getAttribute('aria-label')),
-    ).toEqual(['Cancel editing Security', 'Save changes to Security']);
+    // No Replace, Clear, Reset or Mark as secret, nothing to type into, and so nothing to save.
+    expect(within(security).queryAllByRole('button')).toEqual([]);
     expect(within(security).queryByRole('textbox')).toBeNull();
     expect(within(security).queryByText('Cannot be changed once it is set.')).toBeNull();
   });
@@ -1468,7 +1507,6 @@ describe('locked settings', () => {
     );
     render(<ConfigurationTab />);
     const security = await screen.findByRole('region', { name: 'Security' });
-    editCategory('Security');
 
     expect(within(security).getByLabelText('ERASURE_FENCE_SECRET')).toHaveAttribute(
       'type',
@@ -1481,7 +1519,6 @@ describe('locked settings', () => {
 describe('forms', () => {
   it('keeps what is typed out of password managers', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
 
     fireEvent.click(within(email).getByRole('button', { name: 'Replace SMTP_PASSWORD' }));
@@ -1508,7 +1545,6 @@ describe('forms', () => {
 
   it('asks for confirmation, listing each change, before anything is saved', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
     fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '587' } });
     fireEvent.click(within(email).getByRole('button', { name: 'Save changes to Email (SMTP)' }));
@@ -1531,7 +1567,6 @@ describe('forms', () => {
 
   it('saves a category on Enter, after confirmation', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
     const port = within(email).getByLabelText('SMTP_PORT');
     fireEvent.change(port, { target: { value: '587' } });
@@ -1572,7 +1607,6 @@ describe('forms', () => {
 describe('editors', () => {
   it('sends numbers and booleans as their JSON types, one batch per category', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
 
     fireEvent.change(within(section('Email (SMTP)')).getByLabelText('SMTP_PORT'), {
       target: { value: '587' },
@@ -1588,9 +1622,7 @@ describe('editors', () => {
       }),
     );
 
-    // A confirmed save leaves edit mode, so the next category can be edited.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Network' })).toBeEnabled());
-    editCategory('Network');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     fireEvent.click(
       within(section('Network')).getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }),
     );
@@ -1614,7 +1646,6 @@ describe('editors', () => {
 
   it('refuses a value that is not a whole number without calling the API', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
 
     fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '25.5' } });
@@ -1630,7 +1661,6 @@ describe('editors', () => {
       new APIError('HTTP_400', 'SMTP_PORT: must be between 1 and 65535', 400),
     );
     await renderTab();
-    editCategory('Email (SMTP)');
     const email = section('Email (SMTP)');
 
     fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '70000' } });
@@ -1708,8 +1738,6 @@ describe('badges', () => {
 describe('reset and custom variables', () => {
   it('resets a setting with DELETE after confirming', async () => {
     await renderTab();
-    expect(screen.queryByRole('button', { name: 'Reset SMTP_PORT' })).toBeNull();
-    editCategory('Email (SMTP)');
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
     // Staged: the field says what the save will do, and Undo takes it back.
@@ -1753,7 +1781,6 @@ describe('reset and custom variables', () => {
       }),
     );
 
-    editCategory('Email (SMTP)');
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
     saveAndConfirm('Email (SMTP)');
 
@@ -1779,7 +1806,6 @@ describe('reset and custom variables', () => {
       }),
     );
 
-    editCategory('Email (SMTP)');
     expect(screen.queryByRole('button', { name: /^Reset / })).toBeNull();
   });
 
@@ -1930,12 +1956,10 @@ describe('filters', () => {
     );
   });
 
-  it('flags a category with unsaved changes in the index, until they are cancelled', async () => {
+  it('flags a category with unsaved changes in the index, until they are discarded', async () => {
     await renderTab();
     const index = screen.getByRole('navigation', { name: 'Configuration categories' });
     const link = within(index).getByRole('link', { name: /Email \(SMTP\)/ });
-    // Opening a category is not a change.
-    editCategory('Email (SMTP)');
     expect(link).not.toHaveTextContent('unsaved changes');
 
     fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
@@ -1944,14 +1968,13 @@ describe('filters', () => {
     // on a phone: they must not widen the page.
     expect(escapingScreenReaderText(index)).toEqual([]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Email (SMTP)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Email (SMTP)' }));
     expect(link).not.toHaveTextContent('unsaved changes');
     expect(patchConfig).not.toHaveBeenCalled();
   });
 
   it('counts a staged reset in the index like the edit bar does', async () => {
     await renderTab();
-    editCategory('Email (SMTP)');
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
     const index = screen.getByRole('navigation', { name: 'Configuration categories' });
     expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
@@ -2094,6 +2117,9 @@ describe('backup and restore', () => {
       immutable_keys_preserved: ['API_KEY_SECRET'],
     });
     await renderTab();
+    // Unsaved drafts in two categories, which the restored values replace.
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '587' } });
+    fireEvent.click(screen.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }));
 
     const payload = {
       schema_version: 1,
@@ -2127,7 +2153,8 @@ describe('backup and restore', () => {
 
     await waitFor(() => expect(restoreConfigBackup).toHaveBeenCalledWith(payload));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByLabelText('SMTP_PORT')).toHaveTextContent('2525');
+    expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(2525);
+    expect(screen.queryByRole('button', { name: /^(Discard|Save) changes to / })).toBeNull();
     expect(refreshMock).toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith(
       'Restored configuration (preserved existing API_KEY_SECRET).',

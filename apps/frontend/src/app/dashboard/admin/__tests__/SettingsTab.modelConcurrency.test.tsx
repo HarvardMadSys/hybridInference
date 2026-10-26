@@ -89,8 +89,7 @@ describe('SettingsTab model concurrency', () => {
     );
 
     expect(await screen.findByText('Model Concurrency Limit')).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Concurrency Limit' }));
-    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));
     fireEvent.click(
       screen.getByRole('button', { name: 'Save changes to Model Concurrency Limit' }),
     );
