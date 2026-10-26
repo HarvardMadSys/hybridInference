@@ -12,6 +12,8 @@ from urllib.parse import parse_qsl, urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.config import app_config
+from serving.observability.alert_history import hooks as alert_history
+from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_mutes import (
     AlertMute,
     list_mutes,
@@ -189,19 +191,37 @@ async def test_alert_endpoint(
     test_id = f"alert-test-{uuid.uuid4().hex[:12]}"
     sink = SlackSink(webhook_url) if payload.channel == "slack" else WeComSink(webhook_url)
     sent = False
+    attempt = None
+    test_context = {
+        "test_id": test_id,
+        "message": "Sent from Admin Configuration. No alert incident was created.",
+    }
     try:
-        message = "[TEST]\n" + sink.render(
-            AlertSeverity.INFO,
-            "Test notification",
-            {
-                "test_id": test_id,
-                "message": "Sent from Admin Configuration. No alert incident was created.",
-            },
+        message = "[TEST]\n" + sink.render(AlertSeverity.INFO, "Test notification", test_context)
+        # One capture path only: the test is recorded here, as origin=test and
+        # joined to the audit row by its test id, and never as an incident.
+        attempt = alert_history.attempt_begin(
+            test_id,
+            episode_id=None,
+            resolution=False,
+            sink=sink,
+            severity=AlertSeverity.INFO,
+            title="Test notification",
+            context=test_context,
+            status="firing",
+            sent_message=message,
+            origin="test",
+            audit_ref=test_id,
+            prefix="[TEST]\n",
         )
-        sent = await sink.post(message, dedupe_key=test_id)
+        outcome = await sink.post_detailed(message, dedupe_key=test_id)
+        sent = outcome.accepted
+        alert_history.attempt_end(attempt, outcome)
+        attempt = None
     except Exception:
         # Adapter exceptions may contain the credential; retain only safe context.
         logger.warning("alert test failed: channel=%s test_id=%s", payload.channel, test_id)
+        alert_history.attempt_end(attempt, DeliveryOutcome(False, "unknown", "exception"))
     try:
         await log_admin_action(
             op_store,

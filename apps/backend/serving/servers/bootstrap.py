@@ -38,6 +38,7 @@ from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
+from serving.observability.alert_history import runtime as alert_history_runtime
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -988,6 +989,30 @@ def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
     return None
 
 
+def _alert_history_db_config() -> dict[str, Any] | None:
+    """The database alert history writes to: the gateway's own, or none."""
+    if not database_enabled():
+        return None
+    settings = get_settings()
+    return {
+        "host": settings.db_host,
+        "port": settings.db_port,
+        "database": settings.db_name,
+        "user": settings.db_user,
+        "password": settings.db_password,
+    }
+
+
+def _alert_history_fence_secret() -> str | None:
+    """The erasure-fence secret, or ``None``: history then keeps no subject digests."""
+    from serving.storage.log_schema import resolve_fence_secret
+
+    try:
+        return resolve_fence_secret(get_settings().erasure_fence_secret)
+    except ErasureFenceUnavailable:
+        return None
+
+
 async def initialize() -> AppServices:
     """Initialize application services.
 
@@ -1028,6 +1053,14 @@ async def initialize() -> AppServices:
                 "there: start the gateway once the database is available."
             ) from exc
         raise
+
+    # Alert history goes in before anything that can raise an alert, so the
+    # first breach of this process is recorded. Off by default; it never stops
+    # startup, and a database that is down only delays its writes.
+    alert_history_runtime.start_runtime(
+        db_config=_alert_history_db_config(),
+        fence_secret=_alert_history_fence_secret(),
+    )
 
     endpoint_health_registry = EndpointHealthRegistry()
     router = FixedRouter(health_registry=endpoint_health_registry)
@@ -1401,15 +1434,23 @@ async def initialize() -> AppServices:
     # ``state_changes`` would be ignored by exactly the deployments still being
     # paged. Best-effort: a deployment with no alerts.yaml keeps the defaults
     # (page once per outage, 300s apart).
+    from serving.observability.alert_config import AlertConfig as _AlertConfig
+
+    _rules_in_force = _AlertConfig()
     try:
         from serving.observability.alert_config import load_alert_config as _load_alert_config
         from serving.observability.state_alert_policy import apply_state_change_policy
 
-        apply_state_change_policy(
-            _load_alert_config(str(resolve_config_path("alerts").path)).state_changes
-        )
+        _rules_in_force = _load_alert_config(str(resolve_config_path("alerts").path))
+        apply_state_change_policy(_rules_in_force.state_changes)
     except Exception:
         logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
+    # Alert history stamps every record with the hash of the rules in force
+    # (thresholds and switches only; the file holds no credentials).
+    _history_runtime = alert_history_runtime.get_runtime()
+    if _history_runtime is not None:
+        with contextlib.suppress(Exception):
+            _history_runtime.set_rules(_rules_in_force.model_dump(mode="json"))
 
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
@@ -2075,6 +2116,11 @@ async def shutdown(services: AppServices) -> None:
         services.offload_route_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.offload_route_refresh_task
+
+    # Alert history last among the alert producers' dependents: every producer
+    # above has stopped, so it waits for sends still in flight, writes its open
+    # buckets and drains within its budget. Its pool is its own.
+    await alert_history_runtime.stop_runtime()
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

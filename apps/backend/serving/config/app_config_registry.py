@@ -1136,6 +1136,39 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "alerts",
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
     ),
+    ConfigEntry(
+        "ALERT_HISTORY_ENABLED",
+        "alerts",
+        "Keep a history of every backend alert, suppression and delivery result in the "
+        "database, and accept history from configured sources. Off by default.",
+        type="bool",
+        default="false",
+        restart_required=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_DEPLOYMENT_ID",
+        "alerts",
+        "Deployment id written on this gateway's alert history and matched by reader "
+        "credentials. Empty is 'default'.",
+        restart_required=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_READ_CREDENTIALS",
+        "alerts",
+        "JSON list of read-only alert-history credentials: SHA-256 of each token, the "
+        "deployments and environments it may read, and its expiry. Tokens themselves are "
+        "never stored.",
+        type="text",
+        secret=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_WRITER_CREDENTIALS",
+        "alerts",
+        "JSON list of alert-history source credentials: SHA-256 of each token and the "
+        "source, namespace, deployment and environments it may write, and its expiry.",
+        type="text",
+        secret=True,
+    ),
     # --- integrations ------------------------------------------------------
     ConfigEntry(
         "IDENTITY_JWT_PRIVATE_KEY",

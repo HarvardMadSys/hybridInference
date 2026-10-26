@@ -392,6 +392,7 @@ async def prepare_schema(pool: Any) -> None:
     missing, which is what made the server tests fail on a fresh database.
     Idempotent: on a prepared database every step only reads the catalog.
     """
+    from serving.storage import alert_history_store
     from serving.storage.batch_store import BatchStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.postgres_operational import PostgresOperationalStore
@@ -403,6 +404,8 @@ async def prepare_schema(pool: Any) -> None:
     await PostgresOperationalStore(pool).initialize()
     await ResponseStore(pool).initialize()
     await BatchStore(pool).initialize()
+    async with pool.acquire() as conn:
+        await alert_history_store.ensure_schema(conn)
 
 
 #: Prefix of the comment :func:`prepare_databases` puts on a database it
