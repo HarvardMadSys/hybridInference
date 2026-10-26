@@ -231,6 +231,11 @@ describe('ProviderOverviewTab', () => {
       vi.mocked(createProviderDefinition).mockResolvedValue({ ...ACME, provider: 'new_co' });
       await fillAddForm();
       expect(screen.getByRole('button', { name: 'Review provider' })).toBeDisabled();
+      // Every added provider is OpenAI-compatible: said once, not offered as a choice.
+      expect(screen.queryByLabelText('Adapter')).toBeNull();
+      expect(screen.getByLabelText('Base URL')).toHaveAccessibleDescription(
+        "The provider's OpenAI-compatible API.",
+      );
 
       fireEvent.click(screen.getByRole('button', { name: 'Probe' }));
       expect(await screen.findByText('Probe successful')).toBeInTheDocument();
@@ -245,6 +250,7 @@ describe('ProviderOverviewTab', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Review provider' }));
       const review = screen.getByRole('dialog', { name: 'Add provider “New Co”?' });
       expect(review).toHaveTextContent('Slugnew_co');
+      expect(review).not.toHaveTextContent('Adapter');
       expect(review).toHaveTextContent('Base URLhttps://api.new.test/v1');
       expect(review).toHaveTextContent('Probe model IDm-1');
       expect(review).toHaveTextContent('API keySet (hidden)');

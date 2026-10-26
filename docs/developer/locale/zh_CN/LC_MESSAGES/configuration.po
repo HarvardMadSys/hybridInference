@@ -1458,6 +1458,16 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
+#: ../developer/configuration.md:502
+msgid ""
+"It leaves out the settings that offer nothing to choose: one with a single "
+"accepted value, such as `EMAIL_PROVIDER` while SMTP is the only transport, "
+"and the phone settings while no SMS provider is registered, since they do "
+"nothing without one. Such a setting still appears while it needs attention "
+"— required and empty, stored with a value that cannot apply, or waiting for "
+"a restart — and `python -m serving.config.manage list` always shows it."
+msgstr "没有可选项的设置不会列出：只接受一个值的设置，比如只有 SMTP 一种发送方式时的 `EMAIL_PROVIDER`；还有没注册短信服务时的手机号相关设置，因为没有短信服务它们不起任何作用。这类设置在需要处理时仍会显示（必填却为空、存储的值无法生效，或者正在等待重启），`python -m serving.config.manage list` 也始终会列出它们。"
+
 #: ../developer/configuration.md:456
 #, python-brace-format
 msgid ""
@@ -1965,8 +1975,8 @@ msgstr ""
 
 
 #: ../developer/configuration.md
-msgid "Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work."
-msgstr "手机号注册、登录和绑定默认关闭。安装发行版拥有的短信服务并完成发送配置后，在 **Admin > Configuration** 中启用 `SMS_AUTH_ENABLED`，再通过 `SMS_PROVIDER` 选择已注册的服务。网关通过 `/site-config` 发布 `features.phone_auth`；共享表单仅在该功能可用时显示手机号选项。原有邮箱登录和首次启动管理员登录保持可用。"
+msgid "Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**, where the phone settings appear once a provider is registered. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work."
+msgstr "手机号注册、登录和绑定默认关闭。安装发行版拥有的短信服务并完成发送配置后，在 **Admin > Configuration** 中启用 `SMS_AUTH_ENABLED`，再通过 `SMS_PROVIDER` 选择已注册的服务；注册了短信服务之后，手机号相关设置才会出现在该页面。网关通过 `/site-config` 发布 `features.phone_auth`；共享表单仅在该功能可用时显示手机号选项。原有邮箱登录和首次启动管理员登录保持可用。"
 
 #: ../developer/configuration.md
 msgid "Account identifiers use international format, such as `+12025550123`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. The distribution chooses a number policy supported by its delivery provider; account storage and verification-code policy remain shared."
@@ -1977,8 +1987,8 @@ msgid "Email and SMS delivery providers"
 msgstr "邮件与短信发送服务"
 
 #: ../developer/configuration.md
-msgid "`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider."
-msgstr "`EMAIL_PROVIDER` 默认为 `smtp`，`SMS_PROVIDER` 默认为 `none`。其他发送服务都是部署显式加载的可选模块。未加载某个服务的网关既不提供该选项，也不会在 **Admin > Configuration** 中列出其配置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
+msgid "`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Without a provider beyond the built-in one, it does not list `EMAIL_PROVIDER` or `SMS_PROVIDER` either, which would have only one value to choose, and without an SMS provider it lists none of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider."
+msgstr "`EMAIL_PROVIDER` 默认为 `smtp`，`SMS_PROVIDER` 默认为 `none`。其他发送服务都是部署显式加载的可选模块。未加载某个服务的网关既不提供该选项，也不会在 **Admin > Configuration** 中列出其配置。除内置服务外没有其他服务时，网关也不会列出 `EMAIL_PROVIDER` 或 `SMS_PROVIDER`，因为它们只有一个值可选；没有短信服务时，网关不会列出任何手机号相关设置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
 
 #: ../developer/configuration.md
 msgid "Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`."

@@ -1671,8 +1671,13 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
     return change
 
 
-def describe() -> dict[str, Any]:
-    """Return every entry as the admin API shows it; secrets carry no value."""
+def describe(*, offered_only: bool = False) -> dict[str, Any]:
+    """Return every entry as the admin API shows it; secrets carry no value.
+
+    ``offered_only`` leaves out the entries the console does not offer
+    (:func:`~serving.config.app_config_registry.is_offered`), except one that
+    needs the administrator: missing, refused, or waiting for a restart.
+    """
     state = _STATE
     health = refresh_health()
     context = _requirement_context()
@@ -1680,6 +1685,11 @@ def describe() -> dict[str, Any]:
     pending = set(health.pending_restart)
     entries: list[dict[str, Any]] = []
     for key, entry in state.entries.items():
+        invalid = _refusal(key, entry)
+        if offered_only and not (
+            registry.is_offered(entry) or invalid or key in missing or key in pending
+        ):
+            continue
         row = state.rows.get(key)
         # A reset row stores no value but still records who reset the setting
         # and when; the console offers "Mark as secret" on it by that stamp.
@@ -1690,7 +1700,6 @@ def describe() -> dict[str, Any]:
         # wins over reports its default.
         raw, source = _in_force_raw(key, entry)
         secret = entry.secret or (row is not None and row.secret)
-        invalid = _refusal(key, entry)
         entries.append(
             {
                 "key": key,

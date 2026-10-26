@@ -24,7 +24,6 @@ import { Select } from '@/components/ui/Select';
 const SETTING_LABELS: Record<string, string> = {
   routewise_budget_alpha: 'Cost budget alpha',
   routewise_latency_slo_sec: 'Latency SLO (sec)',
-  routewise_latency_min_samples: 'Legacy sample threshold',
   routewise_probe_enabled: 'Background probes',
   routewise_probe_interval_sec: 'Probe interval (sec)',
 };

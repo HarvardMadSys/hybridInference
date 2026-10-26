@@ -1132,7 +1132,7 @@ async def restore_config_backup(
 
     return ConfigRestoreResponse(
         config=ConfigResponse(
-            **app_config.describe(),
+            **app_config.describe(offered_only=True),
             restart_supported=restart.restart_supported(),
         ),
         immutable_keys_preserved=preserved,
