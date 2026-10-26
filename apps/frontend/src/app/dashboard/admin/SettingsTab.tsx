@@ -33,7 +33,7 @@ import {
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -107,9 +107,9 @@ interface SettingChange {
 }
 
 /**
- * A group of runtime settings of one type (feature flags or numbers), shown
- * read-only until Edit. The edited values are drafts until the administrator
- * confirms the list of changes; each changed setting is one request.
+ * A group of runtime settings of one type (feature flags or numbers), edited in
+ * place. The edited values are drafts until the administrator confirms the list
+ * of changes; each changed setting is one request.
  */
 function RuntimeSettingsSection({
   id,
@@ -136,16 +136,29 @@ function RuntimeSettingsSection({
   /** Called once after a save that wrote at least one setting, even partly. */
   onAfterWrite: () => void;
   onToast: (msg: string) => void;
-  /** Read-only actions for a row, such as applying a quota to existing users. */
-  renderExtra?: (setting: RuntimeSettingItem) => React.ReactNode;
+  /**
+   * Actions on a row's saved value, such as applying a quota to existing users.
+   * `unsaved` while the row has a draft, which the action would not act on.
+   */
+  renderExtra?: (setting: RuntimeSettingItem, unsaved: boolean) => React.ReactNode;
 }) {
   const confirmation = useConfirmAction();
-  const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const draftOf = (setting: RuntimeSettingItem) =>
-    drafts[setting.key] ?? (kind === 'flag' ? !!setting.value : String(setting.value ?? ''));
+  const savedDraft = (setting: RuntimeSettingItem) =>
+    kind === 'flag' ? !!setting.value : String(setting.value ?? '');
+  const draftOf = (setting: RuntimeSettingItem) => drafts[setting.key] ?? savedDraft(setting);
+
+  // A value set back to what is saved is no draft, so a later refresh of the
+  // saved value shows through instead of being masked by a stale copy.
+  const changeDraft = (setting: RuntimeSettingItem, value: string | boolean) =>
+    setDrafts((prev) => {
+      const next = { ...prev };
+      if (value === savedDraft(setting)) delete next[setting.key];
+      else next[setting.key] = value;
+      return next;
+    });
 
   // A setting is changed when its draft is valid and differs from what is saved.
   const changes = settings.flatMap((setting): SettingChange[] => {
@@ -165,20 +178,25 @@ function RuntimeSettingsSection({
             setting.key in drafts && !validateNumeric(setting, String(drafts[setting.key])).ok,
         )
       : [];
+  // An invalid draft is unsaved too: it keeps the bar up, with Save held back.
+  const unsavedKeys = new Set([
+    ...changes.map(({ setting }) => setting.key),
+    ...invalid.map((setting) => setting.key),
+  ]);
+  const blocked =
+    invalid.length > 0
+      ? `Correct ${invalid.map((setting) => setting.key).join(', ')} before saving.`
+      : null;
 
   const cancel = () => {
     if (confirmation.busy) return;
     setDrafts({});
     setSaveError(null);
-    setEditing(false);
   };
 
   const save = () => {
-    if (invalid.length > 0) {
-      setSaveError(`Correct ${invalid.map((setting) => setting.key).join(', ')} before saving.`);
-      return;
-    }
-    if (changes.length === 0) return;
+    // Enter in a field reaches here too; the bar already says what to correct.
+    if (blocked || changes.length === 0) return;
     setSaveError(null);
     const pending = changes;
     const format = (value: unknown) => (kind === 'flag' ? flagText(value) : String(value));
@@ -222,7 +240,6 @@ function RuntimeSettingsSection({
         });
         setSaveError(failure);
         if (failure) return;
-        setEditing(false);
         onToast(
           pending.length === 1
             ? kind === 'flag'
@@ -235,23 +252,14 @@ function RuntimeSettingsSection({
   };
 
   return (
-    <AdminSection
-      id={id}
-      title={title}
-      description={description}
-      actions={
-        !editing && !loading && settings.length > 0 ? (
-          <EditButton target={title} onClick={() => setEditing(true)} />
-        ) : null
-      }
-    >
+    <AdminSection id={id} title={title} description={description}>
       {loading ? (
         <AdminLoading size="sm" />
       ) : settings.length === 0 ? (
         <AdminEmptyState title={emptyText} />
       ) : (
         <ul
-          className={`${PANEL} divide-y divide-gray-100 ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+          className={`${PANEL} divide-y divide-gray-100 ${unsavedKeys.size > 0 ? 'border-gray-400 shadow-sm' : ''}`}
         >
           {settings.map((setting) => {
             const isDefault = setting.value === setting.default_value;
@@ -285,27 +293,21 @@ function RuntimeSettingsSection({
                       </span>
                     ) : null}
                   </p>
-                  {editing && validated && !validated.ok && String(draft) !== '' && (
+                  {setting.key in drafts && validated && !validated.ok && String(draft) !== '' && (
                     <p className="mt-0.5 text-[11px] text-red-600" role="alert">
                       {validated.error}
                     </p>
                   )}
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {!editing ? (
-                    <output aria-label={name} className="text-[13px] font-medium text-gray-900">
-                      {kind === 'flag' ? flagText(setting.value) : String(setting.value ?? '')}
-                    </output>
-                  ) : kind === 'flag' ? (
+                  {kind === 'flag' ? (
                     <button
                       type="button"
                       role="switch"
                       aria-checked={draft === true}
                       aria-label={name}
                       disabled={confirmation.busy}
-                      onClick={() =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: !(draft === true) }))
-                      }
+                      onClick={() => changeDraft(setting, !(draft === true))}
                       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
                         draft === true ? 'bg-gray-900' : 'bg-gray-200'
                       }`}
@@ -324,9 +326,7 @@ function RuntimeSettingsSection({
                       max={setting.max ?? undefined}
                       value={String(draft)}
                       disabled={confirmation.busy}
-                      onChange={(e) =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                      }
+                      onChange={(e) => changeDraft(setting, e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
@@ -337,7 +337,7 @@ function RuntimeSettingsSection({
                       className={`${CONTROL} w-24 text-right`}
                     />
                   )}
-                  {!editing && renderExtra ? renderExtra(setting) : null}
+                  {renderExtra ? renderExtra(setting, unsavedKeys.has(setting.key)) : null}
                 </div>
               </li>
             );
@@ -345,16 +345,16 @@ function RuntimeSettingsSection({
         </ul>
       )}
 
-      {editing ? (
-        <EditBar
-          target={title}
-          changeCount={changes.length}
-          onCancel={cancel}
-          onSave={save}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
+      <EditBar
+        target={title}
+        changeCount={unsavedKeys.size}
+        onCancel={cancel}
+        onSave={save}
+        busy={confirmation.busy}
+        error={saveError}
+        blocked={blocked}
+        inPlace
+      />
       {confirmation.dialog}
     </AdminSection>
   );
@@ -590,14 +590,16 @@ export function SettingsTab() {
             onSaved={replaceSetting(setNumericSettings)}
             onAfterWrite={refreshSiteConfig}
             onToast={flashToast}
-            renderExtra={(setting) =>
+            renderExtra={(setting, unsaved) =>
               setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
                 <button
                   type="button"
                   onClick={() =>
                     void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
                   }
-                  disabled={quotaLoadingRole !== null || confirmation.busy}
+                  // It applies the saved quota, not the one being typed.
+                  disabled={unsaved || quotaLoadingRole !== null || confirmation.busy}
+                  title={unsaved ? 'Save or discard the new quota first' : undefined}
                   className={BUTTON_SECONDARY}
                 >
                   {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)

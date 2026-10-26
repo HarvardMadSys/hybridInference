@@ -1,14 +1,16 @@
+import { geoDistance } from 'd3';
 import { describe, expect, it } from 'vitest';
 
 import type { GeoAnalyticsResponse, GeoBucketRow } from '@/lib/api/admin';
 import {
-  CONTINENT_COLORS,
   buildColumnIndex,
   buildContinentSeries,
+  buildOriginSeries,
   buildCountryContinentMap,
-  demandWeightedRotation,
   deriveGeoMetricModel,
   hourOriginSummary,
+  landPoints,
+  openingRotation,
   positiveNearestRankPercentile,
   rotationForCoordinate,
   windowOriginSummary,
@@ -108,11 +110,20 @@ describe('continent series and fixed scales', () => {
     expect(series.get('NA')).toEqual([2, 10, 0]);
     expect(series.has('?')).toBe(false);
   });
+});
 
-  it('keeps continent colors stable independent of demand rank', () => {
-    expect(CONTINENT_COLORS.AS).toBe('#3987e5');
-    expect(CONTINENT_COLORS.NA).toBe('#199e70');
-    expect(CONTINENT_COLORS['?']).toBe('#898781');
+describe('buildOriginSeries', () => {
+  it('totals every row per hour, unlocated included, or only one country', () => {
+    const data = makeData([
+      { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2), bucket('?', '?', 3)] },
+      { b: [] },
+      { b: [bucket('USA', '?', 4, 9)] },
+    ]);
+
+    expect(buildOriginSeries(data, 'n')).toEqual([15, 0, 4]);
+    expect(buildOriginSeries(data, 'n', 'USA')).toEqual([2, 0, 4]);
+    expect(buildOriginSeries(data, 'tout', 'USA')).toEqual([20, 0, 9]);
+    expect(buildOriginSeries(data, 'n', 'JPN')).toEqual([0, 0, 0]);
   });
 });
 
@@ -204,38 +215,77 @@ describe('view rotations', () => {
     ['USA', [-98, 39]],
     ['CHN', [104, 36]],
   ]);
+  const square = (west: number, south: number, east: number, north: number) => ({
+    type: 'Feature' as const,
+    properties: {},
+    // Clockwise, as d3-geo expects for an exterior ring.
+    geometry: {
+      type: 'Polygon' as const,
+      coordinates: [
+        [
+          [west, south],
+          [west, north],
+          [east, north],
+          [east, south],
+          [west, south],
+        ],
+      ],
+    },
+  });
+  const degreesFromCenter = (rotation: [number, number], coordinate: [number, number]) =>
+    (geoDistance([-rotation[0], -rotation[1]], coordinate) * 180) / Math.PI;
 
-  it('centers on the request-weighted centroid of the window', () => {
-    const data = makeData([{ b: [bucket('USA', 'NA', 10)] }]);
+  it('samples land as points inside the countries, across the antimeridian too', () => {
+    const points = landPoints([square(0, 0, 10, 10), square(170, -10, -170, 0)]);
 
-    const rotation = demandWeightedRotation(data, COORDINATES);
-    expect(rotation).not.toBeNull();
-    expect(rotation![0]).toBeCloseTo(98);
-    expect(rotation![1]).toBeCloseTo(-39);
+    expect(points.length).toBeGreaterThan(20);
+    for (const [lon, lat] of points) {
+      const inFirst = lon >= 0 && lon <= 10 && lat >= 0 && lat <= 10;
+      const inSecond = Math.abs(lon) >= 170 && lat >= -10 && lat <= 0;
+      expect(inFirst || inSecond).toBe(true);
+    }
+    expect(points.some(([lon]) => lon > 170)).toBe(true);
+    expect(points.some(([lon]) => lon < -170)).toBe(true);
   });
 
-  it('weights the centroid by request volume', () => {
-    const data = makeData([{ b: [bucket('USA', 'NA', 99), bucket('CHN', 'AS', 1)] }]);
+  it('opens with the top origin well inside the disc', () => {
+    const rotation = openingRotation(
+      [
+        { country: 'USA', value: 10 },
+        { country: 'CHN', value: 9 },
+      ],
+      COORDINATES,
+      [],
+    )!;
 
-    const rotation = demandWeightedRotation(data, COORDINATES);
-    expect(rotation![0]).toBeGreaterThan(85);
-    expect(rotation![0]).toBeLessThan(99);
+    expect(degreesFromCenter(rotation, [-98, 39])).toBeLessThanOrEqual(58);
+    expect(-rotation[1]).toBeGreaterThanOrEqual(10);
+    expect(-rotation[1]).toBeLessThanOrEqual(45);
   });
 
-  it('scopes the centroid to one hour when hourIndex is given', () => {
-    const data = makeData([{ b: [bucket('USA', 'NA', 10)] }, { b: [bucket('CHN', 'AS', 10)] }]);
+  it('prefers a view with land in it over one that is mostly sea', () => {
+    // No single view holds all three: the Pacific one keeps China, the
+    // Atlantic one keeps Germany. Demand alone picks the Pacific; land in view
+    // tips it to the Atlantic, with the top origin still inside.
+    const coordinates = new Map(COORDINATES).set('DEU', [10, 51] as [number, number]);
+    const origins = [
+      { country: 'USA', value: 10 },
+      { country: 'CHN', value: 9 },
+      { country: 'DEU', value: 8 },
+    ];
+    const demandOnly = openingRotation(origins, coordinates, [])!;
+    const withLand = openingRotation(origins, coordinates, landPoints([square(-10, 0, 40, 55)]))!;
 
-    const rotation = demandWeightedRotation(data, COORDINATES, 1);
-    expect(rotation![0]).toBeCloseTo(-104);
-    expect(rotation![1]).toBeCloseTo(-36);
-    expect(demandWeightedRotation(data, COORDINATES, 9)).toBeNull();
+    expect(degreesFromCenter(demandOnly, [104, 36])).toBeLessThan(80);
+    expect(degreesFromCenter(demandOnly, [10, 51])).toBeGreaterThan(80);
+    expect(degreesFromCenter(withLand, [10, 51])).toBeLessThan(62);
+    expect(degreesFromCenter(withLand, [-98, 39])).toBeLessThanOrEqual(58);
   });
 
-  it('returns null without located demand and clamps extreme latitudes', () => {
-    expect(demandWeightedRotation(makeData([{ b: [bucket('?', '?', 9)] }]), COORDINATES)).toBe(
-      null,
-    );
-    expect(demandWeightedRotation(makeData([{ b: [] }]), COORDINATES)).toBeNull();
+  it('returns null without a located origin and clamps extreme latitudes', () => {
+    expect(openingRotation([{ country: '?', value: 9 }], COORDINATES, [])).toBeNull();
+    expect(openingRotation([{ country: 'USA', value: 0 }], COORDINATES, [])).toBeNull();
+    expect(openingRotation([], COORDINATES, [])).toBeNull();
     expect(rotationForCoordinate([10, 78])).toEqual([-10, -55]);
     expect(rotationForCoordinate([-98, 39])).toEqual([98, -39]);
   });

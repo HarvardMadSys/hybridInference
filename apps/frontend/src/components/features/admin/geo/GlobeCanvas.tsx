@@ -4,23 +4,17 @@ import {
   geoCentroid,
   geoCircle,
   geoDistance,
-  geoGraticule10,
   geoOrthographic,
   geoPath,
   scaleSqrt,
   select,
 } from 'd3';
-import type { GeoPermissibleObjects } from 'd3';
 import type { Feature, Geometry } from 'geojson';
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Topology } from 'topojson-specification';
-import {
-  CONTINENT_COLORS,
-  type GeoMetric,
-  type GeoMetricModel,
-  type OriginSummary,
-} from './geoMath';
+import { ORIGIN_COLORS, type GeoMetric, type GeoMetricModel, type OriginSummary } from './geoMath';
+import { estimateLabelWidth, placeLabels } from './globeLabels';
 
 interface AtlasProperties {
   id?: string;
@@ -43,6 +37,8 @@ export interface GlobeViewRequest {
   id: number;
   rotation: [number, number];
   animate?: boolean;
+  /** Leave the view alone when this point is already comfortably in sight. */
+  unlessVisible?: [number, number];
 }
 
 const COORDINATE_OVERRIDES: Readonly<Record<string, [number, number]>> = {
@@ -77,6 +73,12 @@ const NAME_OVERRIDES: Readonly<Record<string, string>> = {
 };
 
 const DRAG_THRESHOLD_PX = 6;
+const DEGREES = 180 / Math.PI;
+/** A mark nearer the rim than this is foreshortened past reading, so it is not drawn. */
+const VISIBLE_LIMIT_DEG = 80;
+/** A selection within this of the center is already in view: no fly-to. */
+const COMFORTABLE_VIEW_DEG = 55;
+const MAX_LABELS = 5;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object';
@@ -122,6 +124,12 @@ function metricLabel(metric: GeoMetric): string {
   return 'requests';
 }
 
+function formatCompact(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`;
+  return Math.round(value).toLocaleString('en-US');
+}
+
 function keyboardSelect(event: KeyboardEvent, action: () => void): void {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
@@ -129,16 +137,24 @@ function keyboardSelect(event: KeyboardEvent, action: () => void): void {
   }
 }
 
-function dayNightGeometry(date: Date) {
+function centerOf(rotation: readonly number[]): [number, number] {
+  return [-rotation[0], -rotation[1]];
+}
+
+function sunPosition(date: Date) {
   const startOfYear = Date.UTC(date.getUTCFullYear(), 0, 0);
   const dayOfYear = Math.floor((date.getTime() - startOfYear) / 86_400_000);
   const declination = 23.44 * Math.sin((2 * Math.PI * (284 + dayOfYear)) / 365);
   const utcHour = date.getUTCHours() + date.getUTCMinutes() / 60;
   const subsolarLongitude = ((180 - utcHour * 15 + 540) % 360) - 180;
-  const antipodeLongitude = ((subsolarLongitude + 360) % 360) - 180;
+  return [subsolarLongitude, declination] as [number, number];
+}
+
+function dayNightGeometry(sun: [number, number]) {
+  const antipodeLongitude = ((sun[0] + 360) % 360) - 180;
   return {
-    day: geoCircle().center([subsolarLongitude, declination]).radius(90)(),
-    night: geoCircle().center([antipodeLongitude, -declination]).radius(90)(),
+    day: geoCircle().center(sun).radius(90)(),
+    night: geoCircle().center([antipodeLongitude, -sun[1]]).radius(90)(),
   };
 }
 
@@ -151,8 +167,17 @@ interface CountryDot {
   selectedOnly: boolean;
 }
 
+/**
+ * The night-grid globe. A canvas underneath draws the sphere, its halo and the
+ * land as a dot matrix — thousands of points, redrawn on every drag frame. An
+ * SVG on top holds everything a person interacts with or reads: one focusable
+ * button per origin (a glow sized by volume around a bright core), direct
+ * labels for the biggest origins, the day/night terminator for an hour, and the
+ * drag surface.
+ */
 export function GlobeCanvas({
   atlas,
+  land,
   metricModel,
   mode,
   viewRequest,
@@ -162,6 +187,8 @@ export function GlobeCanvas({
   summary,
 }: {
   atlas: PreparedAtlas;
+  /** Land as [lon, lat] points (`landPoints`), computed once per atlas. */
+  land: readonly [number, number][];
   metricModel: GeoMetricModel;
   mode: 'window' | 'hour';
   viewRequest: GlobeViewRequest;
@@ -171,69 +198,138 @@ export function GlobeCanvas({
   summary: OriginSummary;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const gradientId = `globe${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const projectionRef = useRef(
     geoOrthographic().clipAngle(90).precision(0.4).rotate([-100, -28, 0]),
   );
+  const sizeRef = useRef({ width: 800, height: 520 });
+  // The sun of the selected hour lights its half of the land; null for a total.
+  const sunRef = useRef<[number, number] | null>(null);
   const staticRedrawRef = useRef<() => void>(() => undefined);
   const dynamicRedrawRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const stageElement = stageRef.current;
+    const canvasElement = canvasRef.current;
     const svgElement = svgRef.current;
-    if (!stageElement || !svgElement) return;
+    if (!stageElement || !canvasElement || !svgElement) return;
 
     const projection = projectionRef.current;
-    const path = geoPath(projection);
     const svg = select(svgElement);
     svg.selectAll('*').remove();
 
-    const sphere = svg
+    const glow = svg.append('defs').append('radialGradient').attr('id', `${gradientId}-glow`);
+    glow.append('stop').attr('offset', 0).attr('stop-color', 'rgba(125,211,252,0.5)');
+    glow.append('stop').attr('offset', 0.5).attr('stop-color', 'rgba(125,211,252,0.2)');
+    glow.append('stop').attr('offset', 1).attr('stop-color', 'rgba(125,211,252,0)');
+
+    svg
       .append('path')
-      .attr('data-layer', 'sphere')
-      .datum({ type: 'Sphere' } as GeoPermissibleObjects)
-      .attr('fill', 'rgba(16,21,32,0.96)')
-      .attr('stroke', 'rgba(255,255,255,0.12)');
-    const graticule = svg
-      .append('path')
-      .attr('data-layer', 'graticule')
-      .datum(geoGraticule10())
+      .attr('data-layer', 'day')
       .attr('fill', 'none')
-      .attr('stroke', 'rgba(255,255,255,0.055)')
-      .attr('stroke-width', 0.6);
-    const countriesLayer = svg.append('g').attr('data-layer', 'countries');
-    const countryPaths = countriesLayer
-      .selectAll<SVGPathElement, CountryFeature>('path')
-      .data(atlas.countries)
-      .join('path')
-      .attr('fill', '#1f2836')
-      .attr('stroke', 'rgba(255,255,255,0.06)')
-      .attr('stroke-width', 0.5);
-    svg.append('path').attr('data-layer', 'day').attr('fill', 'rgba(255,244,214,0.05)');
-    svg.append('path').attr('data-layer', 'night').attr('fill', 'rgba(2,4,12,0.30)');
+      .attr('pointer-events', 'none');
+    svg
+      .append('path')
+      .attr('data-layer', 'night')
+      .attr('fill', 'rgba(2,6,23,0.3)')
+      .attr('pointer-events', 'none');
     svg
       .append('path')
       .attr('data-layer', 'terminator')
       .attr('fill', 'none')
-      .attr('stroke', 'rgba(205,220,255,0.22)')
-      .attr('stroke-width', 1.1)
-      .attr('stroke-dasharray', '5 4');
+      .attr('pointer-events', 'none')
+      .attr('stroke', 'rgba(186,230,253,0.28)')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '2 4');
     svg.append('g').attr('data-layer', 'heat');
+    svg
+      .append('g')
+      .attr('data-layer', 'labels')
+      .attr('aria-hidden', 'true')
+      .attr('pointer-events', 'none')
+      .attr('font-size', 12.5)
+      .attr('font-weight', 500);
 
-    const redrawStatic = () => {
-      sphere.attr('d', path);
-      graticule.attr('d', path);
-      countryPaths.attr('d', path);
+    const drawBase = () => {
+      const context = canvasElement.getContext('2d');
+      if (!context) return;
+      const { width, height } = sizeRef.current;
+      const ratio = window.devicePixelRatio || 1;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      const [cx, cy] = projection.translate();
+      const radius = projection.scale();
+
+      const halo = context.createRadialGradient(cx, cy, radius * 0.96, cx, cy, radius * 1.22);
+      halo.addColorStop(0, 'rgba(56,189,248,0.16)');
+      halo.addColorStop(1, 'rgba(56,189,248,0)');
+      context.fillStyle = halo;
+      context.beginPath();
+      context.arc(cx, cy, radius * 1.22, 0, Math.PI * 2);
+      context.fill();
+
+      const body = context.createRadialGradient(
+        cx - radius * 0.3,
+        cy - radius * 0.35,
+        radius * 0.1,
+        cx,
+        cy,
+        radius,
+      );
+      body.addColorStop(0, '#13213b');
+      body.addColorStop(1, '#0a1222');
+      context.fillStyle = body;
+      context.beginPath();
+      context.arc(cx, cy, radius, 0, Math.PI * 2);
+      context.fill();
+
+      // Each land point fades and shrinks toward the rim, which is what makes
+      // the matrix read as a sphere; in an hour, the sunlit half is brighter.
+      const center = centerOf(projection.rotate());
+      const sun = sunRef.current;
+      for (const point of land) {
+        const distance = geoDistance(center, point);
+        if (distance >= Math.PI / 2) continue;
+        const projected = projection(point);
+        if (!projected) continue;
+        const facing = Math.cos(distance);
+        let alpha = 0.16 + 0.5 * facing;
+        let color = '148,163,184';
+        if (sun) {
+          const daylight = geoDistance(sun, point) < Math.PI / 2;
+          alpha *= daylight ? 1.25 : 0.5;
+          if (daylight) color = '186,198,214';
+        }
+        context.fillStyle = `rgba(${color},${Math.min(0.9, alpha)})`;
+        context.beginPath();
+        context.arc(projected[0], projected[1], 0.55 + 0.75 * facing, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.strokeStyle = 'rgba(125,211,252,0.16)';
+      context.lineWidth = 1;
+      context.beginPath();
+      context.arc(cx, cy, radius, 0, Math.PI * 2);
+      context.stroke();
     };
-    staticRedrawRef.current = redrawStatic;
+    staticRedrawRef.current = drawBase;
 
     const resize = () => {
       const bounds = stageElement.getBoundingClientRect();
-      const width = Math.max(320, bounds.width || 800);
-      const height = Math.max(360, bounds.height || 520);
+      // Match both layers to the real CSS box, even on narrow phones. A larger
+      // minimum would stretch the canvas while SVG letterboxes its viewBox.
+      const width = bounds.width > 0 ? bounds.width : 800;
+      const height = bounds.height > 0 ? bounds.height : 520;
+      sizeRef.current = { width, height };
+      const ratio = window.devicePixelRatio || 1;
+      canvasElement.width = Math.round(width * ratio);
+      canvasElement.height = Math.round(height * ratio);
       svg.attr('viewBox', `0 0 ${width} ${height}`);
-      projection.translate([width * 0.5, height * 0.5]).scale(Math.min(width, height) * 0.46);
-      redrawStatic();
+      projection
+        .translate([width * 0.5, height * 0.5])
+        .scale(Math.min(width * 0.44, height * 0.42));
+      drawBase();
       dynamicRedrawRef.current();
     };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
@@ -283,7 +379,7 @@ export function GlobeCanvas({
         Math.max(-75, Math.min(75, drag.rotation[1] - deltaY * 0.22)),
         0,
       ]);
-      redrawStatic();
+      drawBase();
       dynamicRedrawRef.current();
     };
     const pointerEnd = (event: PointerEvent) => {
@@ -332,7 +428,7 @@ export function GlobeCanvas({
       staticRedrawRef.current = () => undefined;
       svg.selectAll('*').remove();
     };
-  }, [atlas]);
+  }, [atlas, gradientId, land]);
 
   useEffect(() => {
     const svgElement = svgRef.current;
@@ -345,6 +441,7 @@ export function GlobeCanvas({
     const nightSide = svg.select<SVGPathElement>('path[data-layer="night"]');
     const terminator = svg.select<SVGPathElement>('path[data-layer="terminator"]');
     const heatLayer = svg.select<SVGGElement>('g[data-layer="heat"]');
+    const labelLayer = svg.select<SVGGElement>('g[data-layer="labels"]');
 
     const countryValues = new Map(summary.origins.map((origin) => [origin.country, origin]));
     const dots: CountryDot[] = summary.origins
@@ -369,51 +466,106 @@ export function GlobeCanvas({
         });
       }
     }
+    // One scale for the whole window (p99-capped), so a glow keeps its size
+    // from hour to hour and an outlier cannot shrink everything else.
     const radius = scaleSqrt()
       .domain([
         0,
         Math.max(1, mode === 'window' ? metricModel.countryWindowP99 : metricModel.countryHourP99),
       ])
-      .range([2.5, 26])
+      .range([2.5, 14])
       .clamp(true);
 
+    // Big marks underneath so every smaller one stays visible and clickable;
+    // the selection is drawn last, on top of its neighbours.
+    dots.sort(
+      (a, b) =>
+        Number(a.country === selectedCountry) - Number(b.country === selectedCountry) ||
+        b.value - a.value,
+    );
+    const isSelected = (dot: CountryDot) => dot.country === selectedCountry;
+    const isDimmed = (dot: CountryDot) => selectedCountry !== null && !isSelected(dot);
     const heat = heatLayer
       .selectAll<SVGGElement, CountryDot>('g')
       .data(dots, (dot) => dot.country)
       .join((enter) => {
-        const group = enter.append('g').attr('role', 'button').attr('tabindex', 0);
-        group.append('circle').attr('opacity', 0.16);
-        group.append('circle').attr('stroke', 'rgba(11,14,20,0.9)').attr('stroke-width', 1);
+        // Chromium's UA sheet outlines any focused SVG element on plain
+        // `:focus` (not `:focus-visible`), so a mouse click or tap drew a
+        // thick rectangle round the mark. Drop that outline and draw a
+        // keyboard-only ring instead.
+        const group = enter
+          .append('g')
+          .attr('role', 'button')
+          .attr('tabindex', 0)
+          .style('cursor', 'pointer')
+          .style('outline', 'none');
+        group
+          .append('circle')
+          .attr('data-layer', 'glow')
+          .attr('fill', `url(#${gradientId}-glow)`)
+          .attr('pointer-events', 'none');
+        group.append('circle').attr('data-layer', 'core').attr('pointer-events', 'none');
+        // A small core is a small target: the hit area never drops below 11px.
+        group.append('circle').attr('data-layer', 'hit').attr('fill', 'transparent');
         group
           .append('circle')
           .attr('data-layer', 'selection-ring')
           .attr('fill', 'none')
           .attr('pointer-events', 'none')
-          .attr('stroke', 'rgba(255,255,255,0.95)')
-          .attr('stroke-width', 2.2);
+          .attr('stroke', ORIGIN_COLORS.selected)
+          .attr('stroke-width', 1.5);
+        // A panel-colored halo under the accent keeps the ring legible over the
+        // land matrix and neighbouring glows alike. Direct circles, not a
+        // nested <g>: the join above selects every <g> in the layer.
+        for (const [stroke, width] of [
+          [ORIGIN_COLORS.panel, 4],
+          [ORIGIN_COLORS.mark, 2],
+        ] as const) {
+          group
+            .append('circle')
+            .attr('data-layer', 'focus-ring')
+            .attr('class', 'hidden [g:focus-visible>&]:inline')
+            .attr('fill', 'none')
+            .attr('pointer-events', 'none')
+            .attr('stroke', stroke)
+            .attr('stroke-width', width);
+        }
         group.append('title');
         return group;
       })
+      .order()
       .attr('aria-label', (dot) => `${atlasCountryName(atlas, dot.country)} request origin`)
-      .attr('aria-pressed', (dot) => (dot.country === selectedCountry ? 'true' : 'false'))
+      .attr('aria-pressed', (dot) => (isSelected(dot) ? 'true' : 'false'))
       .on('click', (_, dot) => onSelect({ type: 'country', country: dot.country }))
       .on('keydown', (event, dot) =>
         keyboardSelect(event, () => onSelect({ type: 'country', country: dot.country })),
       );
+    // Dim the marks, not the group, so a keyboard focus ring stays at full strength.
+    const markOpacity = (dot: CountryDot) => (isDimmed(dot) ? 0.35 : 1);
+    const selectionRadius = (dot: CountryDot) => (dot.selectedOnly ? 9 : radius(dot.value) + 5);
     heat
-      .select('circle:first-of-type')
-      .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
+      .select('circle[data-layer="glow"]')
+      .attr('opacity', markOpacity)
+      .attr('display', (dot) => (dot.selectedOnly ? 'none' : null))
+      .attr('r', (dot) => radius(dot.value) * 3.2);
+    heat
+      .select('circle[data-layer="core"]')
+      .attr('fill', (dot) => (isSelected(dot) ? ORIGIN_COLORS.selected : ORIGIN_COLORS.core))
+      .attr('opacity', (dot) => markOpacity(dot) * (isSelected(dot) ? 1 : 0.92))
       .attr('display', (dot) => (dot.selectedOnly ? 'none' : null))
       .attr('r', (dot) => radius(dot.value));
     heat
-      .select('circle:nth-of-type(2)')
-      .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
-      .attr('display', (dot) => (dot.selectedOnly ? 'none' : null))
-      .attr('r', (dot) => Math.max(2, radius(dot.value) * 0.22));
+      .select('circle[data-layer="hit"]')
+      .attr('r', (dot) => Math.max(11, (dot.selectedOnly ? 9 : radius(dot.value)) + 4));
     heat
       .select('circle[data-layer="selection-ring"]')
-      .attr('display', (dot) => (dot.country === selectedCountry ? null : 'none'))
-      .attr('r', (dot) => (dot.selectedOnly ? 9 : radius(dot.value) + 4.5));
+      .attr('display', (dot) => (isSelected(dot) ? null : 'none'))
+      .attr('r', selectionRadius);
+    heat.each(function (dot) {
+      select(this)
+        .selectAll('circle[data-layer="focus-ring"]')
+        .attr('r', selectionRadius(dot) + 4);
+    });
     heat
       .select('title')
       .text((dot) =>
@@ -422,28 +574,97 @@ export function GlobeCanvas({
           : `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metricModel.metric)} ${mode === 'window' ? 'in selected window' : 'this hour'} · ${dot.requests.toLocaleString()} requests`,
       );
 
+    // A window total spans every hour of the day, so a single sun position
+    // would mislabel it; only an hour drill-down has a day and night side.
     const selectedDate = new Date(snapshotTimestamp ?? '');
-    const { day, night } = dayNightGeometry(
-      Number.isNaN(selectedDate.getTime()) ? new Date(0) : selectedDate,
-    );
-    daySide.datum(day);
-    nightSide.datum(night);
-    terminator.datum(day);
+    const sun =
+      mode === 'hour'
+        ? sunPosition(Number.isNaN(selectedDate.getTime()) ? new Date(0) : selectedDate)
+        : null;
+    const daylight = sun ? dayNightGeometry(sun) : null;
+    sunRef.current = sun;
+    staticRedrawRef.current();
+    for (const layer of [daySide, nightSide, terminator]) {
+      layer.attr('display', daylight ? null : 'none');
+      if (!daylight) layer.attr('d', null);
+    }
 
-    const isFront = (coordinate: [number, number]) => {
-      const rotation = projection.rotate();
-      return geoDistance([-rotation[0], -rotation[1]], coordinate) < Math.PI / 2;
-    };
+    const isFront = (coordinate: [number, number]) =>
+      geoDistance(centerOf(projection.rotate()), coordinate) * DEGREES < VISIBLE_LIMIT_DEG;
+    // Direct labels: the selection first, then the biggest origins in view.
+    const labelOrder = [...dots].sort(
+      (a, b) => Number(isSelected(b)) - Number(isSelected(a)) || b.value - a.value,
+    );
     const redrawDynamic = () => {
-      daySide.attr('d', path(day));
-      nightSide.attr('d', path(night));
-      terminator.attr('d', path(day));
+      if (daylight) {
+        daySide.attr('d', path(daylight.day));
+        nightSide.attr('d', path(daylight.night));
+        terminator.attr('d', path(daylight.day));
+      }
       heat
         .attr('transform', (dot) => {
           const point = projection(dot.coordinate);
           return point ? `translate(${point[0]},${point[1]})` : 'translate(-999,-999)';
         })
         .attr('display', (dot) => (isFront(dot.coordinate) ? null : 'none'));
+
+      const marks = dots
+        .filter((dot) => isFront(dot.coordinate))
+        .map((dot) => {
+          const [x, y] = projection(dot.coordinate) ?? [-999, -999];
+          return { dot, x, y, r: dot.selectedOnly ? 9 : radius(dot.value) };
+        });
+      const byCountry = new Map(marks.map((mark) => [mark.dot.country, mark]));
+      const valueText = (dot: CountryDot) => (dot.selectedOnly ? '—' : formatCompact(dot.value));
+      const requests = labelOrder
+        .filter((dot) => byCountry.has(dot.country))
+        .slice(0, MAX_LABELS)
+        .map((dot) => {
+          const mark = byCountry.get(dot.country)!;
+          return {
+            key: dot.country,
+            x: mark.x,
+            y: mark.y,
+            // Clear of the selection and keyboard focus rings.
+            r: isSelected(dot) ? selectionRadius(dot) + 4 : mark.r + 3,
+            width: estimateLabelWidth(atlasCountryName(atlas, dot.country), valueText(dot)),
+          };
+        });
+      const placed = placeLabels(
+        requests,
+        sizeRef.current,
+        marks.map(({ x, y, r }) => ({ x, y, r: r + 2 })),
+      );
+      const dotByCountry = new Map(dots.map((dot) => [dot.country, dot]));
+      const labels = labelLayer
+        .selectAll<SVGTextElement, (typeof placed)[number]>('text')
+        .data(placed, (label) => label.key)
+        .join((enter) => {
+          const text = enter
+            .append('text')
+            .attr('paint-order', 'stroke')
+            .attr('stroke', 'rgba(7,11,20,0.8)')
+            .attr('stroke-width', 3)
+            .attr('stroke-linejoin', 'round');
+          text.append('tspan').attr('data-part', 'name');
+          text.append('tspan').attr('data-part', 'value').attr('dx', 5).attr('fill', '#94a3b8');
+          return text;
+        })
+        .attr('data-country', (label) => label.key)
+        .attr('x', (label) => label.x)
+        .attr('y', (label) => label.y)
+        .attr('text-anchor', (label) => label.anchor);
+      labels
+        .select('tspan[data-part="name"]')
+        .attr('fill', (label) =>
+          selectedCountry !== null && label.key !== selectedCountry
+            ? 'rgba(241,245,249,0.5)'
+            : '#f1f5f9',
+        )
+        .text((label) => atlasCountryName(atlas, label.key));
+      labels
+        .select('tspan[data-part="value"]')
+        .text((label) => valueText(dotByCountry.get(label.key)!));
     };
     dynamicRedrawRef.current = redrawDynamic;
     redrawDynamic();
@@ -453,10 +674,28 @@ export function GlobeCanvas({
         dynamicRedrawRef.current = () => undefined;
       }
     };
-  }, [atlas, metricModel, mode, onSelect, selectedCountry, snapshotTimestamp, summary]);
+    // `land` too: a new land layer rebuilds the SVG, which must then be refilled.
+  }, [
+    atlas,
+    gradientId,
+    land,
+    metricModel,
+    mode,
+    onSelect,
+    selectedCountry,
+    snapshotTimestamp,
+    summary,
+  ]);
 
   useEffect(() => {
     const projection = projectionRef.current;
+    if (
+      viewRequest.unlessVisible &&
+      geoDistance(centerOf(projection.rotate()), viewRequest.unlessVisible) * DEGREES <
+        COMFORTABLE_VIEW_DEG
+    ) {
+      return;
+    }
     const target: [number, number, number] = [viewRequest.rotation[0], viewRequest.rotation[1], 0];
     const redraw = () => {
       staticRedrawRef.current();
@@ -474,7 +713,7 @@ export function GlobeCanvas({
     // Take the short way around the antimeridian.
     const deltaLambda = ((target[0] - from[0] + 540) % 360) - 180;
     const deltaPhi = target[1] - from[1];
-    const durationMs = 600;
+    const durationMs = 650;
     const startedAt = performance.now();
     let frame = 0;
     const step = (now: number) => {
@@ -489,18 +728,25 @@ export function GlobeCanvas({
   }, [viewRequest]);
 
   return (
-    <div
-      ref={stageRef}
-      className="relative h-[clamp(380px,52vh,620px)] min-w-0 overflow-hidden rounded-xl border border-white/10 bg-[#0b0e14]"
-    >
+    <div ref={stageRef} className="relative h-full min-w-0 overflow-hidden">
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 h-full w-full"
+      />
       <svg
         ref={svgRef}
-        aria-label="Globe of IP-based request origins and day and night"
-        className="block h-full w-full cursor-grab touch-none active:cursor-grabbing"
+        aria-label={
+          mode === 'hour'
+            ? 'Globe of IP-based request origins and day and night'
+            : 'Globe of IP-based request origins'
+        }
+        className="relative block h-full w-full cursor-grab touch-none active:cursor-grabbing"
         role="group"
       />
-      <p className="pointer-events-none absolute bottom-3 left-3 text-[11px] text-gray-400">
-        Drag to rotate · dot color = continent · dot size = volume (fixed scale)
+      <p className="pointer-events-none absolute bottom-3 right-4 text-right text-[11px] text-slate-500">
+        Glow size = {metricLabel(metricModel.metric)} · drag to turn
+        {mode === 'hour' ? ' · lit land is in daylight' : ''}
       </p>
     </div>
   );

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { ChangeList, type Change } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
@@ -31,8 +31,9 @@ interface UsageInsightsSettingsSectionProps {
 /**
  * Configures the provider used by the admin Usage Insights analysis: a
  * gateway API key (stored server-side, never returned in full) and the
- * model to run the report with. The Analyze action lives on each user's detail
- * panel; this section only manages credentials.
+ * model to run the report with, both edited in place and saved after
+ * confirmation. The Analyze action lives on each user's detail panel; this
+ * section only manages credentials.
  */
 export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsSectionProps) {
   const [settings, setSettings] = useState<UsageInsightsSettings | null>(null);
@@ -40,11 +41,9 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   const [error, setError] = useState<string | null>(null);
   const confirmation = useConfirmAction();
   const busy = confirmation.busy;
-  const [editing, setEditing] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
   const baseId = useId();
 
-  // Empty key field means "leave the stored key unchanged" on save.
+  // The key field is never filled in: empty means "leave the stored key unchanged".
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
 
@@ -78,8 +77,9 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   }, [load]);
 
   const trimmedModel = model.trim();
+  const modelChanged = settings !== null && trimmedModel !== settings.model;
   const changes: Change[] = [];
-  if (settings && trimmedModel && trimmedModel !== settings.model) {
+  if (settings && trimmedModel && modelChanged) {
     changes.push({ label: 'Model', before: settings.model, after: trimmedModel });
   }
   // The key is write-only: the summary says what happens to it, never what it is.
@@ -91,21 +91,20 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
     });
   }
 
+  // An emptied model is unsaved too: it keeps the bar up, with Save held back.
+  const unsaved = changes.length + (modelChanged && !trimmedModel ? 1 : 0);
+  const blocked = unsaved > 0 && !trimmedModel ? 'Model name cannot be empty.' : null;
+  // Clear key shares the confirmation, but runs only with nothing unsaved.
+  const saving = busy && unsaved > 0;
+
   const cancel = () => {
     if (busy) return;
     setApiKey('');
     setModel(settings?.model ?? '');
-    setFormError(null);
-    setEditing(false);
   };
 
   const onSave = () => {
-    if (!trimmedModel) {
-      setFormError('Model name cannot be empty.');
-      return;
-    }
-    if (changes.length === 0) return;
-    setFormError(null);
+    if (blocked || changes.length === 0) return;
     const patch: { api_key?: string; model?: string } = {};
     if (apiKey.trim()) patch.api_key = apiKey.trim();
     if (trimmedModel !== settings?.model) patch.model = trimmedModel;
@@ -122,7 +121,6 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
         setSettings(updated);
         setModel(updated.model);
         setApiKey('');
-        setEditing(false);
         onToast('Usage Insights provider saved');
       },
     });
@@ -162,11 +160,6 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
           usage&rdquo; button.
         </>
       }
-      actions={
-        !editing && !loading && settings ? (
-          <EditButton target="Usage Insights" onClick={() => setEditing(true)} />
-        ) : null
-      }
     >
       {error && (
         <div className="mb-3">
@@ -176,9 +169,9 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
 
       {loading ? (
         <AdminLoading size="sm" />
-      ) : (
+      ) : settings ? (
         <div className={`${PANEL} max-w-3xl space-y-4 p-4`}>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span
               className={`inline-block h-2.5 w-2.5 rounded-full ${
                 configured ? 'bg-emerald-500' : 'bg-gray-300'
@@ -194,72 +187,62 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
                 'No API key configured'
               )}
             </span>
+            {configured ? (
+              // Its own confirmed action, not part of the save; it would drop a typed key.
+              <button
+                type="button"
+                disabled={busy || unsaved > 0}
+                title={unsaved > 0 ? 'Save or discard the changes first' : undefined}
+                onClick={onClearKey}
+                className={`ml-auto ${BUTTON_SECONDARY}`}
+              >
+                Clear key
+              </button>
+            ) : null}
           </div>
 
-          {editing ? (
-            <>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="sm:col-span-2">
-                  <label htmlFor={`${baseId}-key`} className={FORM_LABEL}>
-                    Gateway API key
-                  </label>
-                  <input
-                    id={`${baseId}-key`}
-                    type="password"
-                    value={apiKey}
-                    disabled={busy}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={
-                      configured ? 'Enter a new key to replace the stored one' : 'sk-...'
-                    }
-                    autoComplete="new-password"
-                    className={TEXT_FIELD}
-                  />
-                </div>
-                <div>
-                  <label htmlFor={`${baseId}-model`} className={FORM_LABEL}>
-                    Model
-                  </label>
-                  <input
-                    id={`${baseId}-model`}
-                    type="text"
-                    value={model}
-                    disabled={busy}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder="glm-5.1"
-                    className={TEXT_FIELD}
-                  />
-                </div>
-              </div>
-              <EditBar
-                target="Usage Insights"
-                changeCount={changes.length}
-                onCancel={cancel}
-                onSave={onSave}
-                busy={busy}
-                error={formError}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label htmlFor={`${baseId}-key`} className={FORM_LABEL}>
+                Gateway API key
+              </label>
+              <input
+                id={`${baseId}-key`}
+                type="password"
+                value={apiKey}
+                disabled={busy}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={configured ? 'Enter a new key to replace the stored one' : 'sk-...'}
+                autoComplete="new-password"
+                className={TEXT_FIELD}
               />
-            </>
-          ) : (
-            <>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[13px]">
-                <dt className="text-gray-500">Model</dt>
-                <dd className="text-gray-900">{settings?.model || 'Not set'}</dd>
-              </dl>
-              {configured ? (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={onClearKey}
-                  className={BUTTON_SECONDARY}
-                >
-                  Clear key
-                </button>
-              ) : null}
-            </>
-          )}
+            </div>
+            <div>
+              <label htmlFor={`${baseId}-model`} className={FORM_LABEL}>
+                Model
+              </label>
+              <input
+                id={`${baseId}-model`}
+                type="text"
+                value={model}
+                disabled={busy}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="glm-5.1"
+                className={TEXT_FIELD}
+              />
+            </div>
+          </div>
+          <EditBar
+            target="Usage Insights"
+            changeCount={unsaved}
+            onCancel={cancel}
+            onSave={onSave}
+            busy={saving}
+            blocked={blocked}
+            inPlace
+          />
         </div>
-      )}
+      ) : null}
       {confirmation.dialog}
     </AdminSection>
   );

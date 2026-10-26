@@ -94,11 +94,11 @@ function formatRelative(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   if (d < 7) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatShortDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  return new Date(iso).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -481,7 +481,7 @@ export function AuditTab() {
                     const badgeClass = entry.success
                       ? AUDIT_CATEGORY_CLASS[cat]
                       : 'bg-red-50 text-red-700';
-                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString('en-US');
                     const tid = entry.target_user_id;
                     const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
                     const isOpen = expanded.has(entry.id);

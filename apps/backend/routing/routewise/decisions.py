@@ -129,19 +129,10 @@ class RoutingDecision:
     reservation: ProviderReservation
     metadata: dict[str, Any]
     trace: RoutingTrace
-    # Optional prefill lease owned by this concrete primary attempt.  The
-    # callback is supplied by the tracker owner so this generic decision type
-    # does not know tracker internals.
-    prefill_lease: Any = None
-    prefill_release: Callable[[], None] | None = None
 
     def release(self) -> None:
-        """Release all dispatch-owned resources idempotently."""
+        """Release dispatch-owned refundable capacity idempotently."""
         self.reservation.release()
-        release = self.prefill_release
-        self.prefill_release = None
-        if release is not None:
-            release()
 
 
 __all__ = [
