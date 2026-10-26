@@ -1345,6 +1345,22 @@ msgstr ""
 "资源上限以前放在 `router_params:` "
 "里。现在启动时会拒绝这些键，报错里会指出对应的路由级替代写法，所以过时的注册表会直接报错，而不是悄悄用上默认值。"
 
+#: ../developer/routing.md:605
+msgid ""
+"RouteWise does not read prefill load: the latency estimates used by its LP and "
+"hedge choice have no backlog penalty, and it takes no prefill lease. The "
+"three keys of that withdrawn feature — `prefill_load_routing_enabled`, "
+"`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are "
+"still accepted so an older registry keeps starting, but they have no "
+"effect whatever their value, and the backend logs a warning naming them "
+"once per process. Remove them from `models.yaml`. FixedRouter's "
+"[prefill-aware selection](#prefill-aware-selection) is unchanged."
+msgstr ""
+"RouteWise 不读取 prefill 负载：它的 LP 和 hedge 选择使用的延迟估计不包含积压惩罚，也不占用 prefill "
+"租约。这项已撤回功能的三个键——`prefill_load_routing_enabled`、`prefill_load_scale_ms_per_1k` "
+"和 `prefill_load_max_penalty_ms`——仍然会被接受，以便旧的注册表照常启动，但不论取什么值都不起作用；后端会在每个进程里记录一次警告，列出这些键。请把它们从 "
+"`models.yaml` 里删掉。FixedRouter 的 [prefill 感知的选路](#prefill-aware-selection)保持不变。"
+
 #: ../developer/routing.md:490
 msgid ""
 "**Quota sources.** `quota_source:` is a selector, not a fetcher. It names"
