@@ -13,6 +13,7 @@ import {
   BroadcastListItem,
   type BroadcastPreviewRequest,
   type BroadcastPreviewResponse,
+  type Role,
   cancelBroadcast,
   createBroadcast,
   getBroadcastDetail,
@@ -47,6 +48,9 @@ import {
   TABLE_HEAD_CELL,
   TEXT_FIELD,
 } from './adminStyles';
+
+/** Every account role, lowest first. A new broadcast targets all of them. */
+const BROADCAST_ROLES: readonly Role[] = ['free', 'pro', 'internal', 'admin'];
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -112,7 +116,7 @@ export function BroadcastsTab() {
     focusOnToggle.current = true;
     setComposerOpen(open);
   };
-  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>([...BROADCAST_ROLES]);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
   // USD today (UTC). Empty string means no spend filter.
@@ -539,7 +543,7 @@ export function BroadcastsTab() {
                   <fieldset>
                     <legend className={FORM_LABEL}>Roles</legend>
                     <div className="mt-1 space-y-1">
-                      {['free', 'internal', 'admin'].map((role) => (
+                      {BROADCAST_ROLES.map((role) => (
                         <label
                           key={role}
                           className="flex items-center gap-2 text-[13px] text-gray-700"
