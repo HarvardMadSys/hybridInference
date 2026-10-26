@@ -507,15 +507,6 @@ async def test_the_queued_request_cap_cannot_be_split_around(store):
     await _create(store, user, _items(model, 4, prefix="c"), max_queued=10)
 
 
-async def test_one_users_running_items_are_capped_across_models(store):
-    user, first_model, second_model = _user(store), _model(), _model()
-    await _create(store, user, _items(first_model, 5, prefix="x"))
-    await _create(store, user, _items(second_model, 5, prefix="y"))
-    first = await _claim(store, first_model, user_max_running=3)
-    second = await _claim(store, second_model, user_max_running=3)
-    assert len(first) + len(second) == 3
-
-
 async def test_splitting_into_more_batches_earns_no_more_turns(store):
     model = _model()
     splitter, single = _user(store), _user(store)

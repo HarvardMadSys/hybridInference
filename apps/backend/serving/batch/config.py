@@ -11,6 +11,11 @@ Per-model concurrency caps are not here: they are rows an administrator edits
 per model (:mod:`serving.batch.model_limits`); ``BATCH_MODEL_CONCURRENCY`` is
 only the cap of a model without one.
 
+A user's batch work is bounded by its own per-role quota
+(``BATCH_ROLE_CONCURRENCY_<ROLE>``), not by the role's interactive concurrency
+limit: a batch neither waits on its owner's interactive requests nor takes the
+slots they need.
+
 Two switches with different reaches:
 
 - ``BATCH_ENABLED`` is the whole surface and the worker. Off, every batch
@@ -26,7 +31,7 @@ Two switches with different reaches:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from serving.config.app_config import config_value
 from serving.config.settings import VALID_ROLES, has_role
@@ -66,8 +71,11 @@ FILES_MAX_TOTAL_MB_KEY = "BATCH_FILES_MAX_TOTAL_MB_PER_USER"
 FILE_UPLOADS_PER_HOUR_KEY = "BATCH_FILE_UPLOADS_PER_HOUR"
 #: Days an uploaded file is kept.
 FILE_RETENTION_DAYS_KEY = "BATCH_FILE_RETENTION_DAYS"
-#: Batch requests one user may have running at once across the deployment.
-USER_MAX_CONCURRENCY_KEY = "BATCH_USER_MAX_CONCURRENCY"
+#: Batch requests one user of each role may have running at once in a gateway
+#: process -- the batch counterpart of the role's interactive concurrency limit.
+ROLE_CONCURRENCY_KEYS: dict[str, str] = {
+    role: f"BATCH_ROLE_CONCURRENCY_{role.upper()}" for role in ("free", "pro", "internal", "admin")
+}
 #: Slots of every model's batch cap kept free for interactive traffic.
 INTERACTIVE_RESERVE_KEY = "BATCH_INTERACTIVE_RESERVE"
 #: Anthropic API versions a Message Batch may be created under.
@@ -76,7 +84,7 @@ ANTHROPIC_VERSIONS_KEY = "BATCH_ANTHROPIC_VERSIONS"
 WEBHOOK_ALLOW_PRIVATE_KEY = "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS"
 
 DEFAULT_MIN_ROLE = "internal"
-DEFAULT_MODEL_CONCURRENCY = 4
+DEFAULT_MODEL_CONCURRENCY = 64
 DEFAULT_MAX_REQUESTS = 50_000
 DEFAULT_MAX_BODY_MB = 32
 DEFAULT_MAX_ACTIVE_PER_USER = 10
@@ -89,7 +97,8 @@ DEFAULT_MAX_RESULT_KB = 4096
 DEFAULT_FILES_MAX_TOTAL_MB = 512
 DEFAULT_FILE_UPLOADS_PER_HOUR = 60
 DEFAULT_FILE_RETENTION_DAYS = 30
-DEFAULT_USER_MAX_CONCURRENCY = 8
+#: 0 means no cap for that role.
+DEFAULT_ROLE_CONCURRENCY: dict[str, int] = {"free": 8, "pro": 16, "internal": 64, "admin": 64}
 DEFAULT_INTERACTIVE_RESERVE = 0
 #: Every Anthropic version a batch can be validated and run under (see
 #: :mod:`serving.batch.profiles`); the setting chooses among these.
@@ -121,7 +130,7 @@ class BatchConfig:
     files_max_total_bytes: int = DEFAULT_FILES_MAX_TOTAL_MB * 1024 * 1024
     file_uploads_per_hour: int = DEFAULT_FILE_UPLOADS_PER_HOUR
     file_retention_days: int = DEFAULT_FILE_RETENTION_DAYS
-    user_max_concurrency: int = DEFAULT_USER_MAX_CONCURRENCY
+    role_concurrency: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_ROLE_CONCURRENCY))
     interactive_reserve: int = DEFAULT_INTERACTIVE_RESERVE
     anthropic_versions: tuple[str, ...] = KNOWN_ANTHROPIC_VERSIONS
     webhook_allow_private: bool = False
@@ -191,9 +200,10 @@ def batch_config() -> BatchConfig:
             FILE_UPLOADS_PER_HOUR_KEY, DEFAULT_FILE_UPLOADS_PER_HOUR, minimum=1
         ),
         file_retention_days=_int(FILE_RETENTION_DAYS_KEY, DEFAULT_FILE_RETENTION_DAYS, minimum=1),
-        user_max_concurrency=_int(
-            USER_MAX_CONCURRENCY_KEY, DEFAULT_USER_MAX_CONCURRENCY, minimum=0
-        ),
+        role_concurrency={
+            role: _int(key, DEFAULT_ROLE_CONCURRENCY[role], minimum=0)
+            for role, key in ROLE_CONCURRENCY_KEYS.items()
+        },
         interactive_reserve=_int(INTERACTIVE_RESERVE_KEY, DEFAULT_INTERACTIVE_RESERVE, minimum=0),
         anthropic_versions=_versions(ANTHROPIC_VERSIONS_KEY),
         webhook_allow_private=_flag(WEBHOOK_ALLOW_PRIVATE_KEY, False),
